@@ -34,3 +34,7 @@ class IDError(LitmanError):
 
 class AddError(LitmanError):
     """`lit add` failed to materialize the paper folder."""
+
+
+class PaperNotFoundError(LitmanError):
+    """No paper with the given id exists in the vault."""

@@ -19,6 +19,8 @@ from rich.console import Console
 from litman import __version__
 from litman.commands.add import add_cmd
 from litman.commands.init import init_cmd
+from litman.commands.list import list_cmd
+from litman.commands.show import show_cmd
 from litman.exceptions import LitmanError
 
 console = Console()
@@ -35,6 +37,8 @@ def cli() -> None:
 
 cli.add_command(init_cmd)
 cli.add_command(add_cmd)
+cli.add_command(list_cmd)
+cli.add_command(show_cmd)
 
 
 @cli.command()

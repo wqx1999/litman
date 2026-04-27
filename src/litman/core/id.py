@@ -30,6 +30,25 @@ _STOP_WORDS: frozenset[str] = frozenset(
 
 _KEYWORD_MAX_LEN = 30
 
+# Valid paper id: starts with [A-Za-z0-9_-], then any of [A-Za-z0-9._-].
+# Disallows leading dot (no hidden files), spaces, slashes, ".." anywhere.
+_VALID_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
+
+
+def is_valid_id(paper_id: str) -> bool:
+    """Filesystem-safe + shape-correct check for a paper id.
+
+    Used by both ``lit add`` (validating ``--id`` overrides) and
+    ``find_paper`` (validating user-supplied lookups). Prevents path
+    traversal (``..``) and stray special chars from creating files outside
+    the vault.
+    """
+    if not paper_id:
+        return False
+    if ".." in paper_id or "/" in paper_id or "\\" in paper_id:
+        return False
+    return bool(_VALID_ID_RE.match(paper_id))
+
 
 def _slug(text: str) -> str:
     """Strip everything except ASCII alphanumerics and hyphens."""

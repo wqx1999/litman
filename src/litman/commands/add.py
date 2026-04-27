@@ -159,9 +159,15 @@ def add_cmd(
         raise
 
     authors = parsed["authors"]
-    author_summary = ", ".join(authors[:3])
-    if len(authors) > 3:
-        author_summary += " et al."
+    if not authors:
+        author_summary = "(no authors)"
+    elif len(authors) == 1:
+        author_summary = authors[0]
+    else:
+        # Use a single first-author + count to avoid confusion: each "Family,
+        # Given" string contains a comma, so naively joining with ", " makes
+        # 3 authors look like 6 people.
+        author_summary = f"{authors[0]} et al. ({len(authors)} authors)"
 
     console.print(
         Panel.fit(
