@@ -17,7 +17,11 @@ from litman.core.seeds import (
     render_index_seed,
     render_lit_config_seed,
 )
-from litman.exceptions import ParentNotFoundError, VaultExistsError
+from litman.exceptions import (
+    LibraryNotFoundError,
+    ParentNotFoundError,
+    VaultExistsError,
+)
 
 # Subdirectories created inside every vault. Order is irrelevant; mkdir handles
 # parents=True so nested paths (e.g. notes/methods) work directly.
@@ -105,3 +109,41 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
         raise
 
     return vault
+
+
+def find_vault(explicit: Path | None = None) -> Path:
+    """Locate the active vault using the standard discovery chain.
+
+    Resolution order:
+        1. ``explicit`` argument if provided (e.g. from ``--library`` flag or
+           ``LIT_LIBRARY`` environment variable surfaced through Click).
+        2. Walk up from the current working directory looking for a directory
+           that contains ``lit-config.yaml``.
+
+    Args:
+        explicit: Optional caller-supplied vault path.
+
+    Returns:
+        Absolute path to the discovered vault.
+
+    Raises:
+        LibraryNotFoundError: No ``lit-config.yaml`` discoverable.
+    """
+    if explicit is not None:
+        candidate = explicit.resolve()
+        if not (candidate / "lit-config.yaml").is_file():
+            raise LibraryNotFoundError(
+                f"No lit-config.yaml at {candidate}. "
+                "Pass --library <vault-path> or run `lit init` first."
+            )
+        return candidate
+
+    here = Path.cwd().resolve()
+    for parent in [here, *here.parents]:
+        if (parent / "lit-config.yaml").is_file():
+            return parent
+
+    raise LibraryNotFoundError(
+        "No lit-config.yaml found in the current directory or any parent. "
+        "Set LIT_LIBRARY, pass --library <vault-path>, or run `lit init` first."
+    )

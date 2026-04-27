@@ -22,3 +22,15 @@ class ParentNotFoundError(LitmanError):
 
 class VaultExistsError(LitmanError):
     """`lit init` target vault path already exists and is non-empty."""
+
+
+class ImporterError(LitmanError):
+    """An importer (CrossRef / arXiv / PDF) failed to fetch or parse metadata."""
+
+
+class IDError(LitmanError):
+    """Cannot derive a canonical paper id from the given inputs."""
+
+
+class AddError(LitmanError):
+    """`lit add` failed to materialize the paper folder."""
