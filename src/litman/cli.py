@@ -1,17 +1,24 @@
 """litman CLI entry point.
 
-This module defines the root Click group `cli` and the entry-point function
-`main` referenced by ``[project.scripts]`` in ``pyproject.toml``.
+Defines the root Click group ``cli`` and the entry-point function ``main``
+referenced by ``[project.scripts]`` in ``pyproject.toml``.
 
-Subcommands will be registered onto ``cli`` as M1.2+ adds them.
+Subcommands are registered onto ``cli`` via ``cli.add_command`` below.
+``main`` wraps ``cli`` so that ``LitmanError`` subclasses become friendly
+single-line error messages with exit code 1; other exceptions propagate as
+normal Python tracebacks (they indicate bugs, not user errors).
 """
 
 from __future__ import annotations
+
+import sys
 
 import click
 from rich.console import Console
 
 from litman import __version__
+from litman.commands.init import init_cmd
+from litman.exceptions import LitmanError
 
 console = Console()
 
@@ -25,18 +32,24 @@ def cli() -> None:
     """
 
 
+cli.add_command(init_cmd)
+
+
 @cli.command()
 def hello() -> None:
     """Sanity-check command. Confirms `lit` is installed and importable."""
     console.print(
-        f"[bold green]litman[/] v{__version__} is installed and importable.\n"
-        "[dim]Placeholder command — real commands land starting M1.2.[/]"
+        f"[bold green]litman[/] v{__version__} is installed and importable."
     )
 
 
 def main() -> None:
     """Entry point invoked by the ``lit`` console script."""
-    cli()
+    try:
+        cli()
+    except LitmanError as e:
+        console.print(f"[bold red]error:[/] {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
