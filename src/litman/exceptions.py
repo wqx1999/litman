@@ -50,3 +50,9 @@ class TaxonomyError(LitmanError):
     """`lit taxonomy` rejected an op: unknown dict, fixed-enum write,
     missing source value, or rm refused due to outstanding references.
     """
+
+
+class RenameError(LitmanError):
+    """`lit rename` rejected an op: invalid new id, name collision,
+    identical old/new, or attempting to rename a non-existent paper.
+    """
