@@ -23,6 +23,7 @@ from litman.commands.list import list_cmd
 from litman.commands.modify import modify_cmd
 from litman.commands.refresh import refresh_views_cmd
 from litman.commands.show import show_cmd
+from litman.commands.taxonomy import taxonomy_group
 from litman.exceptions import LitmanError
 
 console = Console()
@@ -43,6 +44,7 @@ cli.add_command(list_cmd)
 cli.add_command(show_cmd)
 cli.add_command(refresh_views_cmd)
 cli.add_command(modify_cmd)
+cli.add_command(taxonomy_group)
 
 
 @cli.command()

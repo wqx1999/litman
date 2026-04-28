@@ -44,3 +44,9 @@ class ModifyError(LitmanError):
     """`lit modify` rejected an op: forbidden field, malformed key=value,
     or wrong operation kind for the field's type (e.g. --add-tag on a scalar).
     """
+
+
+class TaxonomyError(LitmanError):
+    """`lit taxonomy` rejected an op: unknown dict, fixed-enum write,
+    missing source value, or rm refused due to outstanding references.
+    """
