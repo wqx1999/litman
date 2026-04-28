@@ -38,3 +38,9 @@ class AddError(LitmanError):
 
 class PaperNotFoundError(LitmanError):
     """No paper with the given id exists in the vault."""
+
+
+class ModifyError(LitmanError):
+    """`lit modify` rejected an op: forbidden field, malformed key=value,
+    or wrong operation kind for the field's type (e.g. --add-tag on a scalar).
+    """
