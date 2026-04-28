@@ -16,6 +16,7 @@ land in M2. M1.3 deliberately keeps the path short.
 from __future__ import annotations
 
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,12 +38,26 @@ _yaml.default_flow_style = False
 _yaml.preserve_quotes = True
 
 
-def _build_metadata(parsed: dict[str, Any], paper_id: str) -> dict[str, Any]:
+def _now_iso() -> str:
+    """Local-timezone ISO 8601 timestamp with seconds precision."""
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _build_metadata(
+    parsed: dict[str, Any],
+    paper_id: str,
+    now: str | None = None,
+) -> dict[str, Any]:
     """Assemble the full metadata.yaml dict in design-doc field order.
 
     Schema-less by intent (§7.3): unknown-yet fields are emitted as ``None`` /
     ``[]`` so the user can fill them later in ``lit edit`` / ``lit modify``.
+
+    The audit fields ``created-at`` and ``updated-at`` are technical (machine-
+    maintained); ``read-date`` and ``last-revisited`` are semantic (user-set).
+    Never merge the two.
     """
+    timestamp = now or _now_iso()
     return {
         # === identity layer (auto from CrossRef) ===
         "id": paper_id,
@@ -53,6 +68,9 @@ def _build_metadata(parsed: dict[str, Any], paper_id: str) -> dict[str, Any]:
         "doi": parsed.get("doi", ""),
         "arxiv-id": None,
         "github": None,
+        # === audit layer (machine-maintained) ===
+        "created-at": timestamp,
+        "updated-at": timestamp,
         # === classification layer (TAXONOMY-controlled, M2 validates) ===
         "projects": [],
         "topics": [],
@@ -68,6 +86,7 @@ def _build_metadata(parsed: dict[str, Any], paper_id: str) -> dict[str, Any]:
         "related": [],
         "contradicts": [],
         "extends": [],
+        "code-clones": [],
     }
 
 
@@ -178,7 +197,7 @@ def add_cmd(
             f"[bold]Journal:[/] {parsed['journal']}\n"
             f"[bold]Authors:[/] {author_summary}\n\n"
             "[dim]Next:[/] edit metadata.yaml to fill projects/topics/methods, "
-            "then `lit refresh-views` (M2) to update INDEX.md.",
+            "then `lit refresh-views` to update INDEX.json.",
             title="lit add",
             border_style="green",
         )

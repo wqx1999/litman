@@ -1,4 +1,4 @@
-"""``lit refresh-views`` — rebuild INDEX.md and views/by-*/ from metadata."""
+"""``lit refresh-views`` — rebuild INDEX.json and views/by-*/ from metadata."""
 
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ console = Console()
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 def refresh_views_cmd(library: Path | None) -> None:
-    """Rebuild INDEX.md and views/by-*/ symlink hubs from papers/*/metadata.yaml.
+    """Rebuild INDEX.json and views/by-*/ symlink hubs from papers/*/metadata.yaml.
 
-    The metadata files are the single source of truth. INDEX.md and the
+    The metadata files are the single source of truth. INDEX.json and the
     by-* directories are wiped and rewritten on each invocation, so any
     paper or tag value no longer present in the metadata disappears
     cleanly from the derived views.
@@ -38,7 +38,7 @@ def refresh_views_cmd(library: Path | None) -> None:
 
     n = len(papers)
     console.print(
-        f"[green]✓[/] INDEX.md updated ({n} paper{'s' if n != 1 else ''})"
+        f"[green]✓[/] INDEX.json updated ({n} paper{'s' if n != 1 else ''})"
     )
     for view_name, k in counts.items():
         console.print(f"  views/{view_name}: {k} symlink{'s' if k != 1 else ''}")

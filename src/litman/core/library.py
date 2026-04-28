@@ -8,15 +8,10 @@ tests and future programmatic callers can drive it without going through Click.
 from __future__ import annotations
 
 import shutil
-import subprocess
-from datetime import datetime
 from pathlib import Path
 
-from litman.core.seeds import (
-    TAXONOMY_SEED,
-    render_index_seed,
-    render_lit_config_seed,
-)
+from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
+from litman.core.views import write_index
 from litman.exceptions import (
     LibraryNotFoundError,
     ParentNotFoundError,
@@ -35,20 +30,11 @@ VAULT_SUBDIRS: tuple[str, ...] = (
     "views/by-method",
     "views/by-status",
     "inbox",
+    "codes",
+    ".litman-staging",
 )
 
 DEFAULT_VAULT_NAME = "literature_vault"
-
-
-def _git_init_and_commit(vault_path: Path) -> None:
-    """Initialize git inside the vault and make an initial commit."""
-    subprocess.run(["git", "init", "--quiet"], cwd=vault_path, check=True)
-    subprocess.run(["git", "add", "."], cwd=vault_path, check=True)
-    subprocess.run(
-        ["git", "commit", "--quiet", "-m", "Vault initialized by `lit init`"],
-        cwd=vault_path,
-        check=True,
-    )
 
 
 def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
@@ -93,15 +79,13 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
             (vault / sub).mkdir(parents=True, exist_ok=True)
 
         (vault / "TAXONOMY.md").write_text(TAXONOMY_SEED, encoding="utf-8")
-        (vault / "INDEX.md").write_text(
-            render_index_seed(datetime.now().strftime("%Y-%m-%d %H:%M")),
-            encoding="utf-8",
-        )
         (vault / "lit-config.yaml").write_text(
             render_lit_config_seed(library_name=name), encoding="utf-8"
         )
-
-        _git_init_and_commit(vault)
+        # INDEX.json seeded as the canonical empty form via the same renderer
+        # that `lit refresh-views` uses, so the seed never drifts from the
+        # regenerated output.
+        write_index(vault, [])
     except Exception:
         # Roll back: if we created the root, remove the half-built tree.
         if created_root and vault.exists():

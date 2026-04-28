@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -24,16 +25,24 @@ def test_create_vault_default_name(tmp_path: Path) -> None:
     for sub in VAULT_SUBDIRS:
         assert (vault / sub).is_dir(), f"missing subdirectory: {sub}"
     assert (vault / "TAXONOMY.md").is_file()
-    assert (vault / "INDEX.md").is_file()
+    assert (vault / "INDEX.json").is_file()
     assert (vault / "lit-config.yaml").is_file()
-    assert (vault / ".git").is_dir(), "git repository not initialized"
+    # vault is deliberately NOT a git repo: cloud sync (M5) handles version
+    # history and multi-file atomicity uses filesystem staging instead.
+    assert not (vault / ".git").exists()
 
 
 def test_create_vault_custom_name(tmp_path: Path) -> None:
     vault = create_vault(tmp_path, name="my_papers")
     assert vault.name == "my_papers"
     assert vault.is_dir()
-    assert (vault / ".git").is_dir()
+    assert not (vault / ".git").exists()
+
+
+def test_create_vault_creates_codes_and_staging(tmp_path: Path) -> None:
+    vault = create_vault(tmp_path)
+    assert (vault / "codes").is_dir(), "codes/ not created"
+    assert (vault / ".litman-staging").is_dir(), ".litman-staging/ not created"
 
 
 def test_create_vault_missing_parent(tmp_path: Path) -> None:
@@ -67,12 +76,14 @@ def test_create_vault_existing_empty_target_succeeds(tmp_path: Path) -> None:
     assert (vault / "TAXONOMY.md").is_file()
 
 
-def test_index_seed_has_banner(tmp_path: Path) -> None:
+def test_index_seed_is_valid_empty_json(tmp_path: Path) -> None:
     vault = create_vault(tmp_path)
-    content = (vault / "INDEX.md").read_text()
-    assert "AUTO-GENERATED" in content
-    assert "Literature Index" in content
-    assert "| id |" in content  # table header present
+    content = (vault / "INDEX.json").read_text()
+    payload = json.loads(content)
+    assert "AUTO-GENERATED" in payload["_comment"]
+    assert payload["n_papers"] == 0
+    assert payload["papers"] == []
+    assert "generated_at" in payload
 
 
 def test_taxonomy_seed_has_fixed_enums(tmp_path: Path) -> None:
@@ -90,7 +101,8 @@ def test_lit_config_seed_is_valid_yaml(tmp_path: Path) -> None:
     yaml = YAML(typ="safe")
     config = yaml.load((vault / "lit-config.yaml").read_text())
     assert config["library_name"] == "custom_lib"
-    assert config["git_auto_commit"] is True
+    # git_auto_commit was removed when the vault stopped being a git repo.
+    assert "git_auto_commit" not in config
     assert "by-topic" in config["view_definitions"]
     assert "doi" in config["unique_keys"]
 

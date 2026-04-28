@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,14 @@ def test_add_writes_metadata_yaml_correctly(
     assert metadata["year"] == 2024
     assert metadata["journal"] == "Bioinformatics"
     assert metadata["doi"] == "10.1093/bioinformatics/btae364"
+    # Audit layer (machine-maintained, ISO 8601 with timezone)
+    assert "created-at" in metadata
+    assert "updated-at" in metadata
+    assert metadata["created-at"] == metadata["updated-at"]  # equal at creation
+    # Parses cleanly as ISO 8601 with offset (datetime.fromisoformat handles
+    # the "+02:00" suffix on Python 3.11+).
+    parsed_ts = datetime.fromisoformat(metadata["created-at"])
+    assert parsed_ts.tzinfo is not None
     # Default classification
     assert metadata["projects"] == []
     assert metadata["topics"] == []
@@ -125,6 +134,8 @@ def test_add_writes_metadata_yaml_correctly(
     assert metadata["priority"] == "B"
     # Default relations
     assert metadata["related"] == []
+    # Code-binding layer (M3 will populate via `lit code add`)
+    assert metadata["code-clones"] == []
 
 
 def test_add_id_override(

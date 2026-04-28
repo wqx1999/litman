@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -50,37 +51,52 @@ def _yaml_dump_inline(value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_render_index_empty_papers_shows_fallback() -> None:
-    text = render_index([], "2026-04-27 16:00")
-    assert "AUTO-GENERATED" in text
-    assert "Literature Index" in text
-    assert "| id |" in text
-    assert "(No papers yet" in text
+def test_render_index_empty_papers_emits_empty_array() -> None:
+    text = render_index([], "2026-04-27T16:00:00+02:00")
+    payload = json.loads(text)
+    assert "AUTO-GENERATED" in payload["_comment"]
+    assert payload["generated_at"] == "2026-04-27T16:00:00+02:00"
+    assert payload["n_papers"] == 0
+    assert payload["papers"] == []
 
 
-def test_render_index_single_paper_row() -> None:
+def test_render_index_single_paper_projection() -> None:
     paper = {
         "id": "2024_Smith_Test",
+        "title": "A test",
         "year": 2024,
         "type": "research",
         "priority": "A",
         "status": "deep-read",
         "topics": ["alpha", "beta"],
         "projects": ["proj1"],
+        "methods": ["transformer"],
         "doi": "10.1/x",
     }
-    text = render_index([paper], "2026-04-27 16:00")
-    assert "2024_Smith_Test" in text
-    assert "alpha, beta" in text
-    assert "proj1" in text
-    assert "10.1/x" in text
+    text = render_index([paper], "2026-04-27T16:00:00+02:00")
+    payload = json.loads(text)
+    assert payload["n_papers"] == 1
+    p = payload["papers"][0]
+    assert p["id"] == "2024_Smith_Test"
+    assert p["title"] == "A test"
+    assert p["topics"] == ["alpha", "beta"]
+    assert p["projects"] == ["proj1"]
+    assert p["methods"] == ["transformer"]
+    assert p["doi"] == "10.1/x"
 
 
 def test_render_index_handles_missing_optional_fields() -> None:
     paper = {"id": "x", "year": 2024, "status": "inbox"}
-    text = render_index([paper], "2026-04-27 16:00")
-    # Missing topics/projects/doi rendered as em dash.
-    assert "—" in text
+    text = render_index([paper], "2026-04-27T16:00:00+02:00")
+    payload = json.loads(text)
+    p = payload["papers"][0]
+    # List fields default to [] so AI consumers don't have to special-case None.
+    assert p["topics"] == []
+    assert p["projects"] == []
+    assert p["methods"] == []
+    # Scalar absences stay as None / null.
+    assert p["doi"] is None
+    assert p["title"] is None
 
 
 def test_render_index_sorts_by_id() -> None:
@@ -89,9 +105,9 @@ def test_render_index_sorts_by_id() -> None:
         {"id": "2023_A_x", "year": 2023},
     ]
     text = render_index(papers, "t")
-    a_pos = text.index("2023_A_x")
-    z_pos = text.index("2024_Z_x")
-    assert a_pos < z_pos
+    payload = json.loads(text)
+    ids = [p["id"] for p in payload["papers"]]
+    assert ids == ["2023_A_x", "2024_Z_x"]
 
 
 # ---------------------------------------------------------------------------
@@ -185,14 +201,15 @@ def test_view_field_constants_cover_design_spec() -> None:
 
 def test_write_index_overwrites_seed_file(tmp_path: Path) -> None:
     vault = create_vault(tmp_path)
-    seed = (vault / "INDEX.md").read_text()
-    assert "(No papers yet" in seed
+    seed_payload = json.loads((vault / "INDEX.json").read_text())
+    assert seed_payload["n_papers"] == 0
+    assert seed_payload["papers"] == []
 
     papers = [{"id": "2024_X_y", "year": 2024, "status": "inbox"}]
     write_index(vault, papers)
-    new = (vault / "INDEX.md").read_text()
-    assert "2024_X_y" in new
-    assert "(No papers yet" not in new
+    new_payload = json.loads((vault / "INDEX.json").read_text())
+    assert new_payload["n_papers"] == 1
+    assert new_payload["papers"][0]["id"] == "2024_X_y"
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +225,9 @@ def test_lit_refresh_views_empty_vault(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["refresh-views", "--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert "0 papers" in result.output
-    assert "(No papers yet" in (vault / "INDEX.md").read_text()
+    payload = json.loads((vault / "INDEX.json").read_text())
+    assert payload["n_papers"] == 0
+    assert payload["papers"] == []
 
 
 def test_lit_refresh_views_with_paper(tmp_path: Path) -> None:
@@ -233,10 +252,13 @@ def test_lit_refresh_views_with_paper(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "1 paper" in result.output
 
-    index_text = (vault / "INDEX.md").read_text()
-    assert "2024_Test_Paper" in index_text
-    assert "alpha" in index_text
-    assert "pepforge" in index_text
+    payload = json.loads((vault / "INDEX.json").read_text())
+    assert payload["n_papers"] == 1
+    p = payload["papers"][0]
+    assert p["id"] == "2024_Test_Paper"
+    assert "alpha" in p["topics"]
+    assert "pepforge" in p["projects"]
+    assert "transformer" in p["methods"]
 
     # Symlinks
     assert (vault / "views" / "by-topic" / "alpha" / "2024_Test_Paper").is_symlink()
