@@ -56,3 +56,16 @@ class RenameError(LitmanError):
     """`lit rename` rejected an op: invalid new id, name collision,
     identical old/new, or attempting to rename a non-existent paper.
     """
+
+
+class RmError(LitmanError):
+    """`lit rm` rejected an op: invalid id, outstanding references in other
+    papers' ref-list fields, or `[[id]]` wikilinks in notes that the user
+    has not opted to cascade through.
+    """
+
+
+class TrashError(LitmanError):
+    """`lit trash` rejected an op: missing source, ambiguous id, restore
+    collision with an active paper, or empty/unknown entry lookup.
+    """

@@ -36,7 +36,7 @@ import io
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import click
 from rich.console import Console
@@ -47,6 +47,7 @@ from litman.core.atomic import staged_write
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault
+from litman.core.notes import enumerate_markdown_files
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RenameError
 
@@ -60,10 +61,6 @@ _yaml.default_flow_style = False
 # Metadata.yaml list fields that hold paper-id references. Wikilink-formatted
 # refs ([[id]]) live in markdown only and are handled separately.
 REF_FIELDS: tuple[str, ...] = ("related", "contradicts", "extends")
-
-# Subdirectories under notes/ that may contain wikilink references to
-# papers. Per-paper notes.md is scanned via the papers/ enumeration below.
-NOTES_SUBDIRS: tuple[str, ...] = ("methods", "ideas", "debates")
 
 
 def _now_iso() -> str:
@@ -97,31 +94,6 @@ def _replace_in_ref_lists(
         metadata[field] = new_list
         changed = True
     return changed
-
-
-def _enumerate_markdown_files(vault: Path) -> Iterable[Path]:
-    """Yield .md files that may contain ``[[id]]`` wikilink references.
-
-    Scope:
-      * ``papers/<id>/notes.md`` (per-paper notes)
-      * ``notes/{methods,ideas,debates}/*.md`` (cross-paper notes)
-
-    Anything outside these locations is the user's own thing and is left
-    untouched. notes.md inside the renamed paper's own directory is
-    included — its ``[[<old>]]`` self-references get rewritten too.
-    """
-    papers_dir = vault / "papers"
-    if papers_dir.is_dir():
-        for child in papers_dir.iterdir():
-            if child.is_dir():
-                note = child / "notes.md"
-                if note.is_file():
-                    yield note
-    for sub in NOTES_SUBDIRS:
-        notes_subdir = vault / "notes" / sub
-        if notes_subdir.is_dir():
-            for md in sorted(notes_subdir.glob("*.md")):
-                yield md
 
 
 def _format_id_list(ids: list[str], limit: int = 5) -> str:
@@ -241,7 +213,7 @@ def rename_cmd(old: str, new: str, library: Path | None) -> None:
     needle = f"[[{old}]]"
     replacement = f"[[{new}]]"
     note_updates: dict[str, str] = {}  # vault-relative path → new content
-    for md_path in _enumerate_markdown_files(vault):
+    for md_path in enumerate_markdown_files(vault):
         text = md_path.read_text(encoding="utf-8")
         if needle in text:
             note_updates[str(md_path.relative_to(vault))] = text.replace(
