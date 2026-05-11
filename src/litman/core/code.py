@@ -239,52 +239,139 @@ def write_notes(repo_dir: Path, name: str, upstream: str) -> Path:
 
 
 def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
-    """Append ``repo_name`` to the paper's ``code-clones`` list atomically.
+    """Atomically bind a paper ↔ repo on BOTH sides.
 
-    Idempotent: if ``repo_name`` is already present, returns ``False`` and
-    leaves the metadata file untouched (no spurious ``updated-at`` bump).
-    Otherwise, the paper's ``metadata.yaml`` and the vault ``INDEX.json``
-    are rewritten together via ``staged_write``.
+    Writes both ``papers/<paper_id>/metadata.yaml`` (appends ``<repo_name>`` to
+    ``code-clones``) and ``codes/<repo_name>/repo-meta.yaml`` (appends
+    ``<paper_id>`` to ``papers``) inside a single ``staged_write`` so the two
+    files cannot drift apart. ``INDEX.json`` is also re-rendered to reflect
+    the updated paper. Each side's ``updated-at`` is bumped only when that
+    side actually changed.
+
+    Idempotent on both sides: if both sides already record the binding,
+    returns ``False`` and no file is touched. If only one side is missing,
+    only that side is rewritten.
 
     Returns:
-        ``True`` if a write happened, ``False`` for the idempotent no-op.
+        ``True`` if any side was written, ``False`` for the no-op.
 
     Raises:
-        PaperNotFoundError: ``papers/<paper_id>/metadata.yaml`` is missing.
+        PaperNotFoundError: paper missing.
+        CodeError: repo missing, or either metadata file is empty.
     """
-    meta_file = vault / "papers" / paper_id / "metadata.yaml"
-    if not meta_file.is_file():
+    paper_meta_file = vault / "papers" / paper_id / "metadata.yaml"
+    repo_meta_file = vault / CODES_DIRNAME / repo_name / REPO_META_FILENAME
+
+    if not paper_meta_file.is_file():
         raise PaperNotFoundError(
             f"No paper with id {paper_id!r} in vault {vault}. "
             "Run `lit list` to see available ids."
         )
-
-    metadata = _yaml.load(meta_file.read_text(encoding="utf-8"))
-    if metadata is None:
+    if not repo_meta_file.is_file():
         raise CodeError(
-            f"metadata.yaml at {meta_file} is empty — refusing to bind. "
-            "Restore the file or re-run `lit add`."
+            f"No repo with name {repo_name!r} in vault {vault}. "
+            "Run `lit code list` to see available repos."
         )
 
-    current = metadata.get("code-clones") or []
-    if repo_name in current:
+    paper_meta = _yaml.load(paper_meta_file.read_text(encoding="utf-8"))
+    if paper_meta is None:
+        raise CodeError(
+            f"metadata.yaml at {paper_meta_file} is empty — refusing to bind. "
+            "Restore the file or re-run `lit add`."
+        )
+    repo_meta = _yaml.load(repo_meta_file.read_text(encoding="utf-8"))
+    if repo_meta is None:
+        raise CodeError(
+            f"repo-meta.yaml at {repo_meta_file} is empty — refusing to bind. "
+            "Restore the file or re-run `lit code add`."
+        )
+
+    now = _now_iso()
+    paper_changed = False
+    repo_changed = False
+
+    paper_clones = paper_meta.get("code-clones") or []
+    if repo_name not in paper_clones:
+        paper_meta["code-clones"] = list(paper_clones) + [repo_name]
+        paper_meta["updated-at"] = now
+        paper_changed = True
+
+    repo_papers = repo_meta.get("papers") or []
+    if paper_id not in repo_papers:
+        repo_meta["papers"] = list(repo_papers) + [paper_id]
+        repo_meta["updated-at"] = now
+        repo_changed = True
+
+    if not (paper_changed or repo_changed):
         return False
-    metadata["code-clones"] = list(current) + [repo_name]
-    metadata["updated-at"] = _now_iso()
 
-    new_meta_yaml = _dump_yaml_to_string(metadata)
+    # Build the INDEX.json re-render only if the paper side actually changed;
+    # the repo-side change does not affect INDEX.json contents.
+    rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
+    rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
 
-    # Re-render INDEX.json with the spliced-in updated copy.
+    with staged_write(vault, op_id=f"code-bind-{paper_id}-{repo_name}") as stage:
+        if paper_changed:
+            stage.write_text(rel_paper_meta, _dump_yaml_to_string(paper_meta))
+            all_papers = list_papers(vault)
+            all_papers = [p for p in all_papers if p.get("id") != paper_id]
+            all_papers.append(dict(paper_meta))
+            stage.write_text(
+                "INDEX.json", render_index(all_papers, _now_iso())
+            )
+        if repo_changed:
+            stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
+    return True
+
+
+def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
+    """Remove ``<repo_name>`` from every paper's ``code-clones`` list.
+
+    Used by ``lit code rm --cascade``. Single ``staged_write`` covers all
+    affected papers + ``INDEX.json``. Does NOT touch the repo's own
+    ``repo-meta.yaml`` because the caller is about to delete the repo
+    directory.
+
+    Returns:
+        Ordered list of paper ids whose metadata.yaml was rewritten.
+    """
+    affected: list[tuple[str, dict[str, Any]]] = []
+    for paper_dir in sorted((vault / "papers").iterdir()):
+        if not paper_dir.is_dir():
+            continue
+        meta_file = paper_dir / "metadata.yaml"
+        if not meta_file.is_file():
+            continue
+        try:
+            meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not meta:
+            continue
+        clones = meta.get("code-clones") or []
+        if repo_name not in clones:
+            continue
+        meta["code-clones"] = [c for c in clones if c != repo_name]
+        meta["updated-at"] = _now_iso()
+        affected.append((paper_dir.name, meta))
+
+    if not affected:
+        return []
+
+    affected_ids = {pid for pid, _ in affected}
     all_papers = list_papers(vault)
-    all_papers = [p for p in all_papers if p.get("id") != paper_id]
-    all_papers.append(dict(metadata))
+    all_papers = [p for p in all_papers if p.get("id") not in affected_ids]
+    for _pid, m in affected:
+        all_papers.append(dict(m))
     index_json = render_index(all_papers, _now_iso())
 
-    rel_meta = f"papers/{paper_id}/metadata.yaml"
-    with staged_write(vault, op_id=f"code-bind-{paper_id}-{repo_name}") as stage:
-        stage.write_text(rel_meta, new_meta_yaml)
+    with staged_write(vault, op_id=f"code-unbind-{repo_name}") as stage:
+        for pid, m in affected:
+            stage.write_text(
+                f"papers/{pid}/metadata.yaml", _dump_yaml_to_string(m)
+            )
         stage.write_text("INDEX.json", index_json)
-    return True
+    return [pid for pid, _ in affected]
 
 
 def read_repo_meta(vault: Path, repo_name: str) -> dict[str, Any]:
@@ -310,3 +397,145 @@ def read_repo_meta(vault: Path, repo_name: str) -> dict[str, Any]:
             f"{meta_file} does not contain a YAML mapping."
         )
     return meta
+
+
+# ---------------------------------------------------------------------------
+# Enumeration
+# ---------------------------------------------------------------------------
+
+
+def list_repos(vault: Path) -> list[dict[str, Any]]:
+    """Enumerate ``codes/*`` and load each ``repo-meta.yaml``.
+
+    Returns a list sorted by repo name. Each entry is the parsed metadata
+    dict with an extra synthetic ``_path`` key pointing at the repo root
+    (``codes/<name>/``). Repos without a ``repo-meta.yaml`` are skipped
+    silently — health-check is the right surface for those orphans.
+    """
+    codes_dir = vault / CODES_DIRNAME
+    if not codes_dir.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for child in sorted(codes_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        meta_file = child / REPO_META_FILENAME
+        if not meta_file.is_file():
+            continue
+        try:
+            meta = _yaml_safe.load(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        meta["_path"] = child
+        out.append(meta)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# `lit code update` — git pull, optionally promote shallow → full
+# ---------------------------------------------------------------------------
+
+
+def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
+    """Run ``git pull`` (and optionally ``--unshallow``) inside ``repo_path``.
+
+    Returns a small status dict with ``before_sha`` / ``after_sha`` /
+    ``unshallow`` flag so the CLI can print a human-readable summary.
+
+    Raises:
+        CodeError: ``repo_path`` is not a git checkout, or git fails.
+    """
+    if not (repo_path / ".git").exists():
+        raise CodeError(
+            f"{repo_path} is not a git checkout (no .git/). "
+            "Re-clone with `lit code add` or restore manually."
+        )
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(repo_path), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        before = _run(["rev-parse", "HEAD"])
+    except FileNotFoundError as e:
+        raise CodeError("`git` executable not found on PATH.") from e
+    if before.returncode != 0:
+        raise CodeError(
+            f"git rev-parse failed in {repo_path}: {before.stderr.strip()}"
+        )
+    before_sha = before.stdout.strip()
+
+    if unshallow:
+        # `--unshallow` is a no-op (with a non-zero exit) on already-full
+        # clones; tolerate that case so the user can re-run safely.
+        shallow_check = _run(["rev-parse", "--is-shallow-repository"])
+        is_shallow = shallow_check.stdout.strip() == "true"
+        if is_shallow:
+            r = _run(["fetch", "--unshallow"])
+            if r.returncode != 0:
+                raise CodeError(
+                    f"git fetch --unshallow failed: {r.stderr.strip()}"
+                )
+
+    pull = _run(["pull", "--ff-only"])
+    if pull.returncode != 0:
+        raise CodeError(
+            f"git pull --ff-only failed in {repo_path}: {pull.stderr.strip()}"
+        )
+
+    after = _run(["rev-parse", "HEAD"])
+    after_sha = after.stdout.strip() if after.returncode == 0 else before_sha
+
+    return {
+        "before_sha": before_sha,
+        "after_sha": after_sha,
+        "changed": before_sha != after_sha,
+        "unshallowed": unshallow,
+    }
+
+
+def bump_repo_updated_at(vault: Path, repo_name: str) -> None:
+    """Refresh ``updated-at`` on the repo's ``repo-meta.yaml``.
+
+    Standalone helper because ``git pull`` doesn't pass through the
+    bidirectional bind path — its metadata change is purely repo-side and
+    has no paper-side mirror.
+    """
+    meta_file = vault / CODES_DIRNAME / repo_name / REPO_META_FILENAME
+    if not meta_file.is_file():
+        raise CodeError(f"No repo-meta.yaml at {meta_file}.")
+    meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
+    if meta is None:
+        raise CodeError(f"repo-meta.yaml at {meta_file} is empty.")
+    meta["updated-at"] = _now_iso()
+    rel = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
+    with staged_write(vault, op_id=f"code-update-{repo_name}") as stage:
+        stage.write_text(rel, _dump_yaml_to_string(meta))
+
+
+# ---------------------------------------------------------------------------
+# `lit code rm` — repo directory deletion (cascade cleanup is separate)
+# ---------------------------------------------------------------------------
+
+
+def delete_repo(vault: Path, repo_name: str) -> None:
+    """Permanently delete ``codes/<repo_name>/`` from disk.
+
+    The caller is responsible for running ``unbind_repo_from_all_papers``
+    first (or refusing the op outright) — ``delete_repo`` does NOT touch
+    paper metadata. Splitting the two operations keeps each one small and
+    unit-testable.
+    """
+    repo_root = vault / CODES_DIRNAME / repo_name
+    if not repo_root.is_dir():
+        raise CodeError(
+            f"No repo with name {repo_name!r} at {repo_root}. "
+            "Run `lit code list` to see available repos."
+        )
+    shutil.rmtree(repo_root)

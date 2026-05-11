@@ -1,8 +1,9 @@
 """``lit code`` command group (M3).
 
-M3.1 ships only the ``add`` subcommand. Future subcommands (link, list,
-update, rm, restore-all) plug into the same group without touching the CLI
-root.
+M3.1: ``add`` subcommand (clone + bind).
+M3.2: ``list``, ``link``, ``update``, ``rm`` subcommands (enumeration,
+later binding to existing repos, git-pull/unshallow, recursive deletion
+with cascade cleanup).
 """
 
 from __future__ import annotations
@@ -14,18 +15,24 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
+from rich.table import Table
 
 from litman.core.code import (
     CODES_DIRNAME,
     DEFAULT_CLONE_DEPTH,
-    NOTES_FILENAME,
     REPO_DIRNAME,
     REPO_META_FILENAME,
     bind_paper_to_repo,
+    bump_repo_updated_at,
     clone_repo,
+    delete_repo,
     derive_repo_name,
+    git_pull,
     is_valid_repo_name,
+    list_repos,
     make_repo_meta,
+    read_repo_meta,
+    unbind_repo_from_all_papers,
     write_notes,
     write_repo_meta,
 )
@@ -45,6 +52,11 @@ def code_group() -> None:
     or more repos via the ``code-clones`` field; a single repo can be bound
     to multiple papers.
     """
+
+
+# ---------------------------------------------------------------------------
+# lit code add
+# ---------------------------------------------------------------------------
 
 
 @code_group.command("add")
@@ -101,7 +113,6 @@ def code_add_cmd(
     """
     vault = find_vault(library)
 
-    # ---- Pre-flight validation (cheap, fail fast before any clone) -------
     if repo_name is None:
         repo_name = derive_repo_name(url)
     elif not is_valid_repo_name(repo_name):
@@ -125,18 +136,12 @@ def code_add_cmd(
                 "Run `lit list` to see available ids."
             )
 
-    # ---- Materialize codes/<repo_name>/ ---------------------------------
-    # On any failure between mkdir and bind_paper_to_repo, rmtree the whole
-    # repo dir so a half-built clone never lingers.
     try:
         repo_root.mkdir(parents=True)
         clone_repo(url, repo_root / REPO_DIRNAME, depth=depth)
-        meta = make_repo_meta(
-            name=repo_name,
-            upstream=url,
-            papers=[paper_id] if paper_id else [],
-        )
-        write_repo_meta(repo_root, meta)
+        # Write repo-meta with empty papers list; bind_paper_to_repo handles
+        # the bidirectional sync below if --paper is set.
+        write_repo_meta(repo_root, make_repo_meta(name=repo_name, upstream=url))
         write_notes(repo_root, name=repo_name, upstream=url)
         bound_now = False
         if paper_id is not None:
@@ -146,18 +151,12 @@ def code_add_cmd(
             shutil.rmtree(repo_root, ignore_errors=True)
         raise
 
-    # ---- Summary panel ---------------------------------------------------
     binding_line = ""
     if paper_id is not None:
-        if bound_now:
-            binding_line = (
-                f"\n[bold]Bound to paper:[/] {escape(paper_id)}"
-            )
-        else:
-            binding_line = (
-                f"\n[bold]Bound to paper:[/] {escape(paper_id)} "
-                "[dim](already present, no change)[/]"
-            )
+        suffix = (
+            "" if bound_now else " [dim](already present, no change)[/]"
+        )
+        binding_line = f"\n[bold]Bound to paper:[/] {escape(paper_id)}{suffix}"
 
     depth_label = "full history" if depth < 1 else f"depth {depth}"
 
@@ -175,3 +174,305 @@ def code_add_cmd(
             border_style="green",
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# lit code list
+# ---------------------------------------------------------------------------
+
+
+@code_group.command("list")
+@click.option(
+    "--paper",
+    "paper_id",
+    default=None,
+    help="Show only repos bound to this paper id.",
+)
+@click.option(
+    "--orphan",
+    is_flag=True,
+    default=False,
+    help="Show only repos with no paper bindings (papers: []).",
+)
+@click.option(
+    "--library",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+)
+def code_list_cmd(
+    paper_id: str | None,
+    orphan: bool,
+    library: Path | None,
+) -> None:
+    """List code repositories in the vault.
+
+    Filters are mutually exclusive: pass ``--paper <id>`` OR ``--orphan``,
+    not both.
+    """
+    if paper_id and orphan:
+        raise CodeError(
+            "--paper and --orphan are mutually exclusive. "
+            "Pick one filter or pass neither."
+        )
+
+    vault = find_vault(library)
+
+    if paper_id is not None:
+        paper_meta = vault / "papers" / paper_id / "metadata.yaml"
+        if not paper_meta.is_file():
+            raise PaperNotFoundError(
+                f"No paper with id {paper_id!r} in vault {vault}. "
+                "Run `lit list` to see available ids."
+            )
+
+    repos = list_repos(vault)
+    if paper_id is not None:
+        repos = [r for r in repos if paper_id in (r.get("papers") or [])]
+    elif orphan:
+        repos = [r for r in repos if not (r.get("papers") or [])]
+
+    if not repos:
+        msg_parts = ["No code repos"]
+        if paper_id:
+            msg_parts.append(f"bound to {paper_id!r}")
+        elif orphan:
+            msg_parts.append("without paper bindings")
+        msg_parts.append(f"in {vault}.")
+        console.print(f"[yellow]{' '.join(msg_parts)}[/]")
+        return
+
+    table = Table(
+        title=f"Code repositories in {vault}",
+        header_style="bold",
+        show_lines=False,
+    )
+    table.add_column("Name", style="bold")
+    table.add_column("Papers", justify="right")
+    table.add_column("Framework")
+    table.add_column("Status")
+    table.add_column("Upstream", overflow="fold")
+
+    for meta in repos:
+        papers = meta.get("papers") or []
+        papers_cell = (
+            "[dim]—[/]" if not papers
+            else f"{len(papers)} ({escape(papers[0])}"
+                 f"{', ...' if len(papers) > 1 else ''})"
+        )
+        framework = meta.get("framework") or "[dim]—[/]"
+        status = meta.get("status") or "[dim]—[/]"
+        upstream = meta.get("upstream") or "[dim]—[/]"
+        table.add_row(
+            escape(str(meta.get("name", "?"))),
+            papers_cell,
+            escape(str(framework)) if framework != "[dim]—[/]" else framework,
+            escape(str(status)) if status != "[dim]—[/]" else status,
+            escape(str(upstream)) if upstream != "[dim]—[/]" else upstream,
+        )
+
+    console.print(table)
+    console.print(f"[dim]{len(repos)} repo(s)[/]")
+
+
+# ---------------------------------------------------------------------------
+# lit code link
+# ---------------------------------------------------------------------------
+
+
+@code_group.command("link")
+@click.argument("repo_name")
+@click.option(
+    "--paper",
+    "paper_id",
+    required=True,
+    help="Paper id to bind <repo-name> to.",
+)
+@click.option(
+    "--library",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+)
+def code_link_cmd(
+    repo_name: str,
+    paper_id: str,
+    library: Path | None,
+) -> None:
+    """Bind an existing local repo to a paper.
+
+    Appends ``<repo-name>`` to the paper's ``code-clones`` list AND
+    ``<paper-id>`` to the repo's ``repo-meta.yaml``'s ``papers`` list, both
+    atomically. Idempotent: if the binding is already present on both sides,
+    no metadata is touched.
+    """
+    vault = find_vault(library)
+    changed = bind_paper_to_repo(vault, paper_id, repo_name)
+    if changed:
+        console.print(
+            f"[bold green]Linked:[/] {escape(paper_id)} ↔ {escape(repo_name)}"
+        )
+    else:
+        console.print(
+            f"[yellow]No-op:[/] {escape(paper_id)} ↔ {escape(repo_name)} "
+            "already bound on both sides."
+        )
+
+
+# ---------------------------------------------------------------------------
+# lit code update
+# ---------------------------------------------------------------------------
+
+
+@code_group.command("update")
+@click.argument("repo_name")
+@click.option(
+    "--unshallow",
+    is_flag=True,
+    default=False,
+    help="Promote a shallow clone to full history (git fetch --unshallow).",
+)
+@click.option(
+    "--library",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+)
+def code_update_cmd(
+    repo_name: str,
+    unshallow: bool,
+    library: Path | None,
+) -> None:
+    """Run ``git pull --ff-only`` inside ``codes/<repo-name>/repo/``.
+
+    With ``--unshallow``, first promote a shallow clone to full history.
+    Bumps the repo's ``updated-at`` audit timestamp if anything changed.
+    """
+    vault = find_vault(library)
+    repo_root = vault / CODES_DIRNAME / repo_name
+    if not repo_root.is_dir():
+        raise CodeError(
+            f"No repo with name {repo_name!r} at {repo_root}. "
+            "Run `lit code list` to see available repos."
+        )
+
+    status = git_pull(repo_root / REPO_DIRNAME, unshallow=unshallow)
+    if status["changed"] or status["unshallowed"]:
+        bump_repo_updated_at(vault, repo_name)
+
+    if status["changed"]:
+        msg = (
+            f"[bold green]Updated:[/] {escape(repo_name)}\n"
+            f"[dim]HEAD:[/] {status['before_sha'][:8]} → "
+            f"{status['after_sha'][:8]}"
+        )
+    else:
+        msg = f"[yellow]Already up to date:[/] {escape(repo_name)} ({status['before_sha'][:8]})"
+    if status["unshallowed"]:
+        msg += "\n[dim]Unshallow: full history fetched.[/]"
+    console.print(msg)
+
+
+# ---------------------------------------------------------------------------
+# lit code rm
+# ---------------------------------------------------------------------------
+
+
+@code_group.command("rm")
+@click.argument("repo_name")
+@click.option(
+    "--cascade",
+    is_flag=True,
+    default=False,
+    help=(
+        "Auto-strip <repo-name> from every paper's `code-clones` list. "
+        "Without --cascade, rm refuses when any paper still references this repo."
+    ),
+)
+@click.option(
+    "--yes", "-y",
+    "yes",
+    is_flag=True,
+    default=False,
+    help="Skip the y/N confirmation prompt.",
+)
+@click.option(
+    "--library",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+)
+def code_rm_cmd(
+    repo_name: str,
+    cascade: bool,
+    yes: bool,
+    library: Path | None,
+) -> None:
+    """Permanently delete ``codes/<repo-name>/`` from the vault.
+
+    Hard delete (no trash bin for code repos in M3.2; the repo is
+    re-clonable from the upstream URL preserved in metadata). With
+    ``--cascade``, also strip the repo name from every paper's
+    ``code-clones`` list atomically before the directory is removed.
+    """
+    vault = find_vault(library)
+    repo_root = vault / CODES_DIRNAME / repo_name
+    if not repo_root.is_dir():
+        raise CodeError(
+            f"No repo with name {repo_name!r} at {repo_root}. "
+            "Run `lit code list` to see available repos."
+        )
+
+    # Find back-references via repo-meta.yaml's papers field. If repo-meta is
+    # missing or unreadable, fall back to scanning papers for code-clones
+    # entries — defensive, since the repo dir is what we are about to delete.
+    try:
+        meta = read_repo_meta(vault, repo_name)
+        bound_papers: list[str] = list(meta.get("papers") or [])
+    except CodeError:
+        bound_papers = []
+
+    if bound_papers and not cascade:
+        bullet = "\n".join(f"  - {p}" for p in bound_papers)
+        raise CodeError(
+            f"{repo_name!r} is still bound to {len(bound_papers)} paper(s):\n"
+            f"{bullet}\n\n"
+            "Re-run with --cascade to auto-strip these bindings, or unbind "
+            "manually with `lit modify <id> --rm-tag code-clones="
+            f"{repo_name}` first."
+        )
+
+    if not yes:
+        plan = f"Delete {repo_root}"
+        if bound_papers:
+            plan += (
+                f" and strip {repo_name!r} from {len(bound_papers)} paper(s) "
+                "via cascade"
+            )
+        click.confirm(f"{plan}?", abort=True, default=False)
+
+    # 1) Update paper sides atomically (only if cascade was requested AND
+    #    there's something to update — bound_papers is already empty when
+    #    cascade is False, since the refusal above would have fired).
+    affected: list[str] = []
+    if cascade:
+        affected = unbind_repo_from_all_papers(vault, repo_name)
+
+    # 2) Delete the repo directory itself. By the time we reach here, all
+    #    paper-side cleanup has committed atomically.
+    delete_repo(vault, repo_name)
+
+    summary = (
+        f"[bold green]Removed:[/] {escape(repo_name)}\n"
+        f"[dim]Folder:[/] {repo_root}"
+    )
+    if affected:
+        summary += (
+            f"\n[dim]Unbound from {len(affected)} paper(s):[/] "
+            + ", ".join(escape(p) for p in affected)
+        )
+    console.print(summary)

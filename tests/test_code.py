@@ -1,4 +1,4 @@
-"""Tests for ``lit code add`` (M3.1) — helpers in core/code.py + CLI."""
+"""Tests for ``lit code`` group — M3.1 (add) + M3.2 (list/link/update/rm)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,15 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core.code import (
     bind_paper_to_repo,
+    bump_repo_updated_at,
+    delete_repo,
     derive_repo_name,
+    git_pull,
     is_valid_repo_name,
+    list_repos,
     make_repo_meta,
     read_repo_meta,
+    unbind_repo_from_all_papers,
     write_notes,
     write_repo_meta,
 )
@@ -64,6 +69,32 @@ def _make_paper(vault: Path, paper_id: str, **extra: Any) -> Path:
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         _yaml.dump(meta, f)
     return paper_dir
+
+
+def _make_repo(
+    vault: Path,
+    repo_name: str,
+    upstream: str = "file:///tmp/upstream",
+    papers: list[str] | None = None,
+    **extra: Any,
+) -> Path:
+    """Materialize a minimal codes/<repo_name>/ tree with repo-meta.yaml.
+
+    Does NOT create a real git checkout. Tests that exercise ``git_pull`` /
+    ``--unshallow`` use the `upstream_repo` fixture and the CLI's `add`
+    subcommand to get a real .git/ in place.
+    """
+    repo_dir = vault / "codes" / repo_name
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    meta = make_repo_meta(
+        name=repo_name,
+        upstream=upstream,
+        papers=papers or [],
+        now="2026-05-11T10:00:00+02:00",
+    )
+    meta.update(extra)
+    write_repo_meta(repo_dir, meta)
+    return repo_dir
 
 
 @pytest.fixture
@@ -236,8 +267,9 @@ def test_write_notes_template(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_bind_appends_to_code_clones(vault: Path) -> None:
+def test_bind_appends_to_both_sides(vault: Path) -> None:
     _make_paper(vault, "2024_Smith_X")
+    _make_repo(vault, "MyRepo")
     changed = bind_paper_to_repo(vault, "2024_Smith_X", "MyRepo")
     assert changed is True
 
@@ -245,39 +277,157 @@ def test_bind_appends_to_code_clones(vault: Path) -> None:
         (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
     )
     assert paper_meta["code-clones"] == ["MyRepo"]
-    # updated-at should have advanced from the seed timestamp.
     assert paper_meta["updated-at"] != "2026-05-11T10:00:00+02:00"
+
+    # Repo side also picked up the back-reference.
+    repo_meta = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
+    )
+    assert repo_meta["papers"] == ["2024_Smith_X"]
+    assert repo_meta["updated-at"] != "2026-05-11T10:00:00+02:00"
 
 
 def test_bind_idempotent_returns_false(vault: Path) -> None:
     _make_paper(vault, "2024_Smith_X", **{"code-clones": ["MyRepo"]})
-    seed_updated_at = _yaml_safe.load(
+    _make_repo(vault, "MyRepo", papers=["2024_Smith_X"])
+
+    seed_paper_updated_at = _yaml_safe.load(
         (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
+    )["updated-at"]
+    seed_repo_updated_at = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
     )["updated-at"]
 
     changed = bind_paper_to_repo(vault, "2024_Smith_X", "MyRepo")
     assert changed is False
-    # updated-at should NOT have advanced — the bind was a no-op.
-    after = _yaml_safe.load(
+    # Neither side should have advanced — both already recorded the binding.
+    after_paper = _yaml_safe.load(
         (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
     )
-    assert after["updated-at"] == seed_updated_at
+    after_repo = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
+    )
+    assert after_paper["updated-at"] == seed_paper_updated_at
+    assert after_repo["updated-at"] == seed_repo_updated_at
+
+
+def test_bind_half_present_updates_only_missing_side(vault: Path) -> None:
+    """Paper already records binding but repo doesn't → repo-side write only."""
+    _make_paper(vault, "2024_Smith_X", **{"code-clones": ["MyRepo"]})
+    _make_repo(vault, "MyRepo")  # papers=[]
+    seed_paper_updated_at = _yaml_safe.load(
+        (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
+    )["updated-at"]
+
+    changed = bind_paper_to_repo(vault, "2024_Smith_X", "MyRepo")
+    assert changed is True
+
+    # Paper side untouched (its updated-at must not have moved).
+    after_paper = _yaml_safe.load(
+        (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
+    )
+    assert after_paper["updated-at"] == seed_paper_updated_at
+    # Repo side now has the back-reference.
+    after_repo = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
+    )
+    assert after_repo["papers"] == ["2024_Smith_X"]
 
 
 def test_bind_updates_index_json(vault: Path) -> None:
     _make_paper(vault, "2024_Smith_X")
+    _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "2024_Smith_X", "MyRepo")
-    # INDEX.json doesn't carry code-clones in its projection (see
-    # views.INDEX_PAPER_FIELDS), but the write should still succeed and
-    # be self-consistent — n_papers reflects on-disk state.
     payload = json.loads((vault / "INDEX.json").read_text())
     ids = {p["id"] for p in payload["papers"]}
     assert "2024_Smith_X" in ids
 
 
 def test_bind_missing_paper_raises(vault: Path) -> None:
+    _make_repo(vault, "MyRepo")
     with pytest.raises(PaperNotFoundError):
         bind_paper_to_repo(vault, "2024_Nope_X", "MyRepo")
+
+
+def test_bind_missing_repo_raises(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X")
+    with pytest.raises(CodeError, match="No repo"):
+        bind_paper_to_repo(vault, "2024_Smith_X", "NoSuchRepo")
+
+
+# ---------------------------------------------------------------------------
+# unbind_repo_from_all_papers (M3.2 cascade)
+# ---------------------------------------------------------------------------
+
+
+def test_unbind_strips_from_all_referrers(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["X", "Y"]})
+    _make_paper(vault, "p2", **{"code-clones": ["X"]})
+    _make_paper(vault, "p3", **{"code-clones": ["Y"]})  # not affected
+
+    affected = unbind_repo_from_all_papers(vault, "X")
+    assert sorted(affected) == ["p1", "p2"]
+
+    after_p1 = _yaml_safe.load(
+        (vault / "papers" / "p1" / "metadata.yaml").read_text()
+    )
+    after_p2 = _yaml_safe.load(
+        (vault / "papers" / "p2" / "metadata.yaml").read_text()
+    )
+    after_p3 = _yaml_safe.load(
+        (vault / "papers" / "p3" / "metadata.yaml").read_text()
+    )
+    assert after_p1["code-clones"] == ["Y"]
+    assert after_p2["code-clones"] == []
+    assert after_p3["code-clones"] == ["Y"]  # untouched
+
+
+def test_unbind_no_referrers_returns_empty(vault: Path) -> None:
+    _make_paper(vault, "p1")
+    affected = unbind_repo_from_all_papers(vault, "X")
+    assert affected == []
+
+
+# ---------------------------------------------------------------------------
+# list_repos
+# ---------------------------------------------------------------------------
+
+
+def test_list_repos_empty(vault: Path) -> None:
+    assert list_repos(vault) == []
+
+
+def test_list_repos_returns_sorted(vault: Path) -> None:
+    _make_repo(vault, "ZRepo")
+    _make_repo(vault, "ARepo")
+    repos = list_repos(vault)
+    names = [r["name"] for r in repos]
+    assert names == ["ARepo", "ZRepo"]
+
+
+def test_list_repos_skips_dirs_without_meta(vault: Path) -> None:
+    _make_repo(vault, "Good")
+    (vault / "codes" / "BareDir").mkdir()
+    repos = list_repos(vault)
+    assert [r["name"] for r in repos] == ["Good"]
+
+
+# ---------------------------------------------------------------------------
+# delete_repo
+# ---------------------------------------------------------------------------
+
+
+def test_delete_repo_removes_tree(vault: Path) -> None:
+    repo_dir = _make_repo(vault, "ToDelete")
+    (repo_dir / "extra.txt").write_text("hi")
+    assert repo_dir.exists()
+    delete_repo(vault, "ToDelete")
+    assert not repo_dir.exists()
+
+
+def test_delete_repo_missing_raises(vault: Path) -> None:
+    with pytest.raises(CodeError, match="No repo"):
+        delete_repo(vault, "DoesNotExist")
 
 
 # ---------------------------------------------------------------------------
@@ -463,3 +613,416 @@ def test_cli_code_group_help() -> None:
     result = runner.invoke(cli, ["code", "--help"])
     assert result.exit_code == 0
     assert "add" in result.output
+    assert "list" in result.output
+    assert "link" in result.output
+    assert "update" in result.output
+    assert "rm" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit code list
+# ---------------------------------------------------------------------------
+
+
+def test_cli_code_list_empty(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["code", "list", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "No code repos" in result.output
+
+
+def test_cli_code_list_shows_all_repos(vault: Path) -> None:
+    _make_repo(vault, "RepoA", upstream="https://github.com/a/repo")
+    _make_repo(vault, "RepoB", upstream="https://github.com/b/repo")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["code", "list", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "RepoA" in result.output
+    assert "RepoB" in result.output
+    assert "2 repo(s)" in result.output
+
+
+def test_cli_code_list_filter_by_paper(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X")
+    _make_repo(vault, "Bound", papers=["2024_Smith_X"])
+    _make_repo(vault, "Orphan", papers=[])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "list",
+            "--paper", "2024_Smith_X",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Bound" in result.output
+    assert "Orphan" not in result.output
+
+
+def test_cli_code_list_orphan_only(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X")
+    _make_repo(vault, "Bound", papers=["2024_Smith_X"])
+    _make_repo(vault, "Orphan", papers=[])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "list", "--orphan", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Orphan" in result.output
+    assert "Bound" not in result.output
+
+
+def test_cli_code_list_mutually_exclusive_filters(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "list",
+            "--paper", "2024_X_y",
+            "--orphan",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError)
+    assert "mutually exclusive" in str(result.exception)
+
+
+def test_cli_code_list_paper_filter_missing_paper(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "list",
+            "--paper", "2024_Nope_X",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, PaperNotFoundError)
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit code link
+# ---------------------------------------------------------------------------
+
+
+def test_cli_code_link_binds(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X")
+    _make_repo(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "link", "MyRepo",
+            "--paper", "2024_Smith_X",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Linked" in result.output
+
+    paper_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
+    )
+    assert paper_meta["code-clones"] == ["MyRepo"]
+    repo_meta = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
+    )
+    assert repo_meta["papers"] == ["2024_Smith_X"]
+
+
+def test_cli_code_link_idempotent(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X", **{"code-clones": ["MyRepo"]})
+    _make_repo(vault, "MyRepo", papers=["2024_Smith_X"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "link", "MyRepo",
+            "--paper", "2024_Smith_X",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "No-op" in result.output
+
+
+def test_cli_code_link_missing_paper(vault: Path) -> None:
+    _make_repo(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "link", "MyRepo",
+            "--paper", "2024_Nope_X",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, PaperNotFoundError)
+
+
+def test_cli_code_link_missing_repo(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "link", "NoSuchRepo",
+            "--paper", "2024_Smith_X",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError)
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit code update
+# ---------------------------------------------------------------------------
+
+
+def test_cli_code_update_already_uptodate(
+    vault: Path, upstream_repo: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "code", "add", str(upstream_repo),
+            "--name", "TestRepo",
+            "--library", str(vault),
+        ],
+    )
+    result = runner.invoke(
+        cli,
+        ["code", "update", "TestRepo", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "up to date" in result.output
+
+
+def test_cli_code_update_pulls_new_commit(
+    vault: Path, upstream_repo: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "code", "add", str(upstream_repo),
+            "--name", "TestRepo",
+            "--library", str(vault),
+        ],
+    )
+
+    # Push a new commit to the upstream.
+    (upstream_repo / "second.txt").write_text("more\n")
+    subprocess.run(
+        ["git", "-C", str(upstream_repo), "add", "."], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(upstream_repo),
+         "-c", "user.email=test@example.com",
+         "-c", "user.name=test",
+         "commit", "-q", "-m", "second"],
+        check=True,
+    )
+
+    result = runner.invoke(
+        cli,
+        ["code", "update", "TestRepo", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Updated" in result.output
+    assert (vault / "codes" / "TestRepo" / "repo" / "second.txt").is_file()
+
+
+def test_cli_code_update_unshallow_tolerates_full_clone(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """--unshallow against an already-full clone is a no-op (not an error).
+
+    Note: ``git clone --depth 1 file://...`` against a local upstream does
+    NOT actually produce a shallow clone (git's local-clone optimization
+    bypasses the depth flag), so we exercise the "already full → tolerated"
+    branch here rather than the true shallow→full promotion.
+    """
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "code", "add", str(upstream_repo),
+            "--name", "TestRepo",
+            "--library", str(vault),
+        ],
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "code", "update", "TestRepo",
+            "--unshallow",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_code_update_missing_repo(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "update", "NoSuchRepo", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError)
+
+
+def test_cli_code_update_non_git_dir(vault: Path) -> None:
+    # Make a repo entry with no .git/ checkout — should fail.
+    _make_repo(vault, "FakeRepo")
+    (vault / "codes" / "FakeRepo" / "repo").mkdir()  # plain dir, no .git/
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "update", "FakeRepo", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError)
+    assert "not a git checkout" in str(result.exception)
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit code rm
+# ---------------------------------------------------------------------------
+
+
+def test_cli_code_rm_no_bindings_with_yes(vault: Path) -> None:
+    _make_repo(vault, "ToDelete")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "rm", "ToDelete", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Removed" in result.output
+    assert not (vault / "codes" / "ToDelete").exists()
+
+
+def test_cli_code_rm_refuses_with_bindings(vault: Path) -> None:
+    _make_paper(vault, "2024_Smith_X", **{"code-clones": ["Bound"]})
+    _make_repo(vault, "Bound", papers=["2024_Smith_X"])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "rm", "Bound", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError)
+    assert "still bound" in str(result.exception)
+    # Repo intact, paper bindings untouched.
+    assert (vault / "codes" / "Bound").exists()
+    paper_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_Smith_X" / "metadata.yaml").read_text()
+    )
+    assert paper_meta["code-clones"] == ["Bound"]
+
+
+def test_cli_code_rm_cascade_strips_papers(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["X", "Y"]})
+    _make_paper(vault, "p2", **{"code-clones": ["X"]})
+    _make_repo(vault, "X", papers=["p1", "p2"])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "rm", "X", "--cascade", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Removed" in result.output
+    assert "Unbound from 2 paper(s)" in result.output
+
+    # Repo gone.
+    assert not (vault / "codes" / "X").exists()
+    # Paper code-clones stripped of X but not Y.
+    after_p1 = _yaml_safe.load(
+        (vault / "papers" / "p1" / "metadata.yaml").read_text()
+    )
+    after_p2 = _yaml_safe.load(
+        (vault / "papers" / "p2" / "metadata.yaml").read_text()
+    )
+    assert after_p1["code-clones"] == ["Y"]
+    assert after_p2["code-clones"] == []
+
+
+def test_cli_code_rm_aborts_on_n_prompt(vault: Path) -> None:
+    """Without --yes, type 'n' at the prompt → no deletion."""
+    _make_repo(vault, "Keep")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "rm", "Keep", "--library", str(vault)],
+        input="n\n",
+    )
+    assert result.exit_code != 0  # click.confirm(abort=True) exits non-zero
+    assert (vault / "codes" / "Keep").exists()
+
+
+def test_cli_code_rm_missing_repo(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "rm", "NoSuchRepo", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError)
+
+
+# ---------------------------------------------------------------------------
+# bump_repo_updated_at
+# ---------------------------------------------------------------------------
+
+
+def test_bump_updated_at_changes_timestamp(vault: Path) -> None:
+    _make_repo(vault, "X")
+    before = _yaml_safe.load(
+        (vault / "codes" / "X" / "repo-meta.yaml").read_text()
+    )["updated-at"]
+    bump_repo_updated_at(vault, "X")
+    after = _yaml_safe.load(
+        (vault / "codes" / "X" / "repo-meta.yaml").read_text()
+    )["updated-at"]
+    assert after != before
+
+
+# ---------------------------------------------------------------------------
+# git_pull helper unit
+# ---------------------------------------------------------------------------
+
+
+def test_git_pull_returns_status_dict(
+    vault: Path, upstream_repo: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "code", "add", str(upstream_repo),
+            "--name", "TestRepo",
+            "--library", str(vault),
+        ],
+    )
+    status = git_pull(vault / "codes" / "TestRepo" / "repo")
+    assert status["changed"] is False
+    assert status["before_sha"] == status["after_sha"]
+    assert len(status["before_sha"]) == 40  # full SHA-1
+
+
+def test_git_pull_rejects_non_git_dir(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(CodeError, match="not a git checkout"):
+        git_pull(plain)
