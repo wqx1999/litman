@@ -23,9 +23,10 @@ import io
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ruamel.yaml import YAML
 
@@ -539,3 +540,170 @@ def delete_repo(vault: Path, repo_name: str) -> None:
             "Run `lit code list` to see available repos."
         )
     shutil.rmtree(repo_root)
+
+
+# ---------------------------------------------------------------------------
+# `lit code restore-all` — cross-machine recovery
+# ---------------------------------------------------------------------------
+
+RestoreStatus = Literal["restored", "skipped", "failed"]
+
+
+@dataclass(frozen=True)
+class RestoreItem:
+    """One repo's outcome in a restore run."""
+
+    name: str
+    upstream: str
+    status: RestoreStatus
+    detail: str = ""
+
+
+@dataclass
+class RestoreReport:
+    """Aggregated result of ``restore_missing_repos``.
+
+    ``items`` covers every repo with a readable ``repo-meta.yaml`` under
+    ``codes/``. ``orphan_refs`` covers a separate failure mode: a paper's
+    ``code-clones`` field names a repo whose ``codes/<name>/repo-meta.yaml``
+    is itself missing — we have no upstream URL to clone from, so the user
+    must restore the metadata from backup or drop the dangling reference.
+    """
+
+    items: list[RestoreItem] = field(default_factory=list)
+    orphan_refs: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def restored(self) -> int:
+        return sum(1 for it in self.items if it.status == "restored")
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for it in self.items if it.status == "skipped")
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for it in self.items if it.status == "failed")
+
+    @property
+    def is_clean(self) -> bool:
+        return self.failed == 0 and not self.orphan_refs
+
+
+def find_orphan_code_refs(vault: Path) -> list[tuple[str, str]]:
+    """Find paper ``code-clones`` entries pointing at non-existent repo-meta.
+
+    A reference is orphan when the paper says ``code-clones: [<name>]`` but
+    no ``codes/<name>/repo-meta.yaml`` exists on disk — we cannot restore
+    the repo because the upstream URL is unknown.
+
+    Returns a sorted, deduplicated list of ``(paper_id, repo_name)``.
+    """
+    codes_dir = vault / CODES_DIRNAME
+    seen: set[tuple[str, str]] = set()
+    for paper in list_papers(vault):
+        refs = paper.get("code-clones") or []
+        if not isinstance(refs, list):
+            continue
+        paper_id = str(paper.get("id") or "?")
+        for name in refs:
+            if not isinstance(name, str) or not name:
+                continue
+            meta_file = codes_dir / name / REPO_META_FILENAME
+            if not meta_file.is_file():
+                seen.add((paper_id, name))
+    return sorted(seen)
+
+
+def restore_missing_repos(
+    vault: Path,
+    depth: int = DEFAULT_CLONE_DEPTH,
+    dry_run: bool = False,
+) -> RestoreReport:
+    """Re-clone every ``codes/<name>/`` whose ``repo/`` checkout is missing.
+
+    Cross-machine recovery: after a cloud sync that ships
+    ``codes/<name>/repo-meta.yaml`` but excludes the bulky ``repo/`` git
+    checkouts (recommended pattern, see design doc §5.3 / §14.5), this
+    re-creates each ``repo/`` from the ``upstream`` URL recorded in its
+    ``repo-meta.yaml``.
+
+    Failures are isolated per repo: one clone failure (network, auth, bad
+    URL, missing ``upstream``) does not abort the loop. The returned
+    ``RestoreReport`` lists every repo's outcome so the caller can render a
+    human-friendly summary and pick the exit code.
+
+    Args:
+        vault: Vault root.
+        depth: Shallow-clone depth forwarded to ``clone_repo``. ``0`` means
+            full history. Default ``1`` matches ``lit code add``.
+        dry_run: When ``True``, log what *would* be cloned without executing
+            any ``git clone``. Useful for previewing in CI before commit.
+
+    Returns:
+        A ``RestoreReport`` with per-repo items plus any orphan paper
+        references.
+    """
+    items: list[RestoreItem] = []
+    for meta in list_repos(vault):
+        name = str(meta.get("name") or meta["_path"].name)
+        upstream = str(meta.get("upstream") or "")
+        repo_dir = meta["_path"] / REPO_DIRNAME
+
+        if repo_dir.exists():
+            items.append(
+                RestoreItem(
+                    name=name,
+                    upstream=upstream,
+                    status="skipped",
+                    detail="repo/ already present",
+                )
+            )
+            continue
+
+        if not upstream:
+            items.append(
+                RestoreItem(
+                    name=name,
+                    upstream="",
+                    status="failed",
+                    detail="repo-meta.yaml has empty 'upstream' field",
+                )
+            )
+            continue
+
+        if dry_run:
+            items.append(
+                RestoreItem(
+                    name=name,
+                    upstream=upstream,
+                    status="restored",
+                    detail="(dry-run) would clone",
+                )
+            )
+            continue
+
+        try:
+            clone_repo(upstream, repo_dir, depth=depth)
+        except CodeError as e:
+            first_line = str(e).splitlines()[0] if str(e) else "git clone failed"
+            items.append(
+                RestoreItem(
+                    name=name,
+                    upstream=upstream,
+                    status="failed",
+                    detail=first_line,
+                )
+            )
+            continue
+        items.append(
+            RestoreItem(
+                name=name,
+                upstream=upstream,
+                status="restored",
+                detail=f"cloned from {upstream}",
+            )
+        )
+
+    orphan_refs = find_orphan_code_refs(vault)
+    return RestoreReport(items=items, orphan_refs=orphan_refs)

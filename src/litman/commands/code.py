@@ -4,11 +4,15 @@ M3.1: ``add`` subcommand (clone + bind).
 M3.2: ``list``, ``link``, ``update``, ``rm`` subcommands (enumeration,
 later binding to existing repos, git-pull/unshallow, recursive deletion
 with cascade cleanup).
+M3.3: ``restore-all`` subcommand (cross-machine recovery — re-clone any
+``codes/<name>/repo/`` that's missing locally, using the ``upstream`` URL
+preserved in its ``repo-meta.yaml``).
 """
 
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import click
@@ -32,6 +36,7 @@ from litman.core.code import (
     list_repos,
     make_repo_meta,
     read_repo_meta,
+    restore_missing_repos,
     unbind_repo_from_all_papers,
     write_notes,
     write_repo_meta,
@@ -476,3 +481,114 @@ def code_rm_cmd(
             + ", ".join(escape(p) for p in affected)
         )
     console.print(summary)
+
+
+# ---------------------------------------------------------------------------
+# lit code restore-all
+# ---------------------------------------------------------------------------
+
+
+@code_group.command("restore-all")
+@click.option(
+    "--depth",
+    type=int,
+    default=DEFAULT_CLONE_DEPTH,
+    show_default=True,
+    help=(
+        "git clone --depth N for every restored repo. Use 0 for full "
+        "(non-shallow) clones. Cross-machine recovery defaults to shallow "
+        "for speed; promote individually later with `lit code update --unshallow`."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview which repos would be re-cloned without running git.",
+)
+@click.option(
+    "--library",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+)
+def code_restore_all_cmd(
+    depth: int,
+    dry_run: bool,
+    library: Path | None,
+) -> None:
+    """Re-clone every code repo whose local ``repo/`` checkout is missing.
+
+    Cross-machine recovery: scans ``codes/*/repo-meta.yaml`` and runs
+    ``git clone`` for any repo whose ``codes/<name>/repo/`` directory is
+    absent, using the ``upstream`` URL recorded in its ``repo-meta.yaml``.
+    Repos already present are skipped. A single failure (network, auth,
+    bad URL) does not abort the loop.
+
+    Also reports orphan references — paper ``code-clones`` entries that
+    point at repos whose ``repo-meta.yaml`` is itself missing (broken
+    metadata; not recoverable from URL alone).
+
+    Exit code 1 if any clone failed or any orphan reference was found
+    (CI/cron-gateable); 0 if every repo is either restored or already
+    present.
+    """
+    vault = find_vault(library)
+    report = restore_missing_repos(vault, depth=depth, dry_run=dry_run)
+
+    if not report.items and not report.orphan_refs:
+        console.print(
+            f"[yellow]No code repos registered in {vault / CODES_DIRNAME}.[/]"
+        )
+        return
+
+    if report.items:
+        title = "lit code restore-all"
+        if dry_run:
+            title += " (dry-run)"
+        table = Table(title=title, header_style="bold", show_lines=False)
+        table.add_column("Name", style="bold")
+        table.add_column("Status")
+        table.add_column("Detail", overflow="fold")
+        _STATUS_STYLE = {
+            "restored": ("green", "✓ Restored" if not dry_run else "✓ Would restore"),
+            "skipped": ("yellow", "○ Skipped"),
+            "failed": ("red", "✗ Failed"),
+        }
+        for item in report.items:
+            color, label = _STATUS_STYLE[item.status]
+            table.add_row(
+                escape(item.name),
+                f"[{color}]{label}[/]",
+                escape(item.detail),
+            )
+        console.print(table)
+
+    if report.orphan_refs:
+        console.print(
+            "\n[bold red]Orphan references "
+            f"({len(report.orphan_refs)}):[/] "
+            "paper points at a repo with no `repo-meta.yaml`."
+        )
+        for paper_id, repo_name in report.orphan_refs:
+            console.print(
+                f"  - paper [bold]{escape(paper_id)}[/] → "
+                f"{escape(repo_name)} [dim](no codes/{escape(repo_name)}/{REPO_META_FILENAME})[/]"
+            )
+        console.print(
+            "\n[dim]Restore the missing repo-meta.yaml from backup, or run "
+            "`lit modify <paper-id> --rm-tag code-clones=<repo-name>` to drop "
+            "the dangling reference.[/]"
+        )
+
+    summary = (
+        f"\n[bold]{report.restored}[/] restored, "
+        f"[bold]{report.skipped}[/] skipped, "
+        f"[bold]{report.failed}[/] failed, "
+        f"[bold]{len(report.orphan_refs)}[/] orphan ref(s)."
+    )
+    console.print(summary)
+
+    if not report.is_clean:
+        sys.exit(1)

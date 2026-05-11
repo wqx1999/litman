@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -13,15 +14,19 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.code import (
+    RestoreItem,
+    RestoreReport,
     bind_paper_to_repo,
     bump_repo_updated_at,
     delete_repo,
     derive_repo_name,
+    find_orphan_code_refs,
     git_pull,
     is_valid_repo_name,
     list_repos,
     make_repo_meta,
     read_repo_meta,
+    restore_missing_repos,
     unbind_repo_from_all_papers,
     write_notes,
     write_repo_meta,
@@ -1026,3 +1031,363 @@ def test_git_pull_rejects_non_git_dir(tmp_path: Path) -> None:
     plain.mkdir()
     with pytest.raises(CodeError, match="not a git checkout"):
         git_pull(plain)
+
+
+# ---------------------------------------------------------------------------
+# M3.3 — find_orphan_code_refs
+# ---------------------------------------------------------------------------
+
+
+def test_find_orphan_refs_none_when_all_meta_present(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["RepoA"]})
+    _make_repo(vault, "RepoA")
+    assert find_orphan_code_refs(vault) == []
+
+
+def test_find_orphan_refs_flags_missing_meta(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["GhostRepo"]})
+    # No codes/GhostRepo/ at all.
+    assert find_orphan_code_refs(vault) == [("p1", "GhostRepo")]
+
+
+def test_find_orphan_refs_partial_some_meta_missing(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["RepoA", "GhostRepo"]})
+    _make_repo(vault, "RepoA")
+    # GhostRepo has no meta -> orphan; RepoA is fine.
+    assert find_orphan_code_refs(vault) == [("p1", "GhostRepo")]
+
+
+def test_find_orphan_refs_deduped_across_papers(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["GhostRepo"]})
+    _make_paper(vault, "p2", **{"code-clones": ["GhostRepo"]})
+    refs = find_orphan_code_refs(vault)
+    assert refs == [("p1", "GhostRepo"), ("p2", "GhostRepo")]
+    # Each (paper_id, repo_name) appears exactly once.
+    assert len(refs) == len(set(refs))
+
+
+def test_find_orphan_refs_ignores_non_string_entries(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["GhostRepo", 42, None, ""]})
+    # Only the string "GhostRepo" counts as a ref; others are silently skipped.
+    assert find_orphan_code_refs(vault) == [("p1", "GhostRepo")]
+
+
+def test_find_orphan_refs_codes_dir_only_no_papers(vault: Path) -> None:
+    _make_repo(vault, "RepoA")
+    # No papers -> nothing to flag.
+    assert find_orphan_code_refs(vault) == []
+
+
+# ---------------------------------------------------------------------------
+# M3.3 — RestoreReport
+# ---------------------------------------------------------------------------
+
+
+def test_restore_report_counts_and_is_clean() -> None:
+    report = RestoreReport(
+        items=[
+            RestoreItem("a", "u1", "restored", "ok"),
+            RestoreItem("b", "u2", "skipped", "already present"),
+            RestoreItem("c", "u3", "failed", "boom"),
+            RestoreItem("d", "u4", "restored", "ok"),
+        ],
+        orphan_refs=[],
+    )
+    assert report.restored == 2
+    assert report.skipped == 1
+    assert report.failed == 1
+    assert not report.is_clean  # one failure
+
+
+def test_restore_report_clean_when_no_failures_no_orphans() -> None:
+    report = RestoreReport(
+        items=[
+            RestoreItem("a", "u1", "restored", "ok"),
+            RestoreItem("b", "u2", "skipped", "already present"),
+        ],
+        orphan_refs=[],
+    )
+    assert report.is_clean
+
+
+def test_restore_report_dirty_when_orphan_present() -> None:
+    report = RestoreReport(
+        items=[RestoreItem("a", "u1", "skipped", "ok")],
+        orphan_refs=[("p1", "Ghost")],
+    )
+    assert report.failed == 0
+    assert not report.is_clean
+
+
+# ---------------------------------------------------------------------------
+# M3.3 — restore_missing_repos
+# ---------------------------------------------------------------------------
+
+
+def test_restore_empty_vault(vault: Path) -> None:
+    report = restore_missing_repos(vault)
+    assert report.items == []
+    assert report.orphan_refs == []
+    assert report.is_clean
+
+
+def test_restore_skips_when_repo_already_present(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """Repo with repo/ already cloned -> skipped, no re-clone attempt."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "add", str(upstream_repo), "--name", "Alive",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    repo_dir = vault / "codes" / "Alive" / "repo"
+    assert repo_dir.is_dir()
+
+    # Capture an inode so we can confirm restore did not delete + re-clone.
+    before_stat = (repo_dir / ".git" / "HEAD").stat().st_ino
+
+    report = restore_missing_repos(vault)
+    assert len(report.items) == 1
+    assert report.items[0].status == "skipped"
+    assert report.items[0].name == "Alive"
+    after_stat = (repo_dir / ".git" / "HEAD").stat().st_ino
+    assert before_stat == after_stat  # untouched
+
+
+def test_restore_reclones_missing_repo(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """codes/<name>/repo-meta.yaml present, repo/ gone -> git clone runs."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["code", "add", str(upstream_repo), "--name", "Gone",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    # Simulate cross-machine state: repo-meta.yaml survives, repo/ does not.
+    shutil.rmtree(vault / "codes" / "Gone" / "repo")
+    assert not (vault / "codes" / "Gone" / "repo").exists()
+
+    report = restore_missing_repos(vault)
+    assert len(report.items) == 1
+    assert report.items[0].status == "restored"
+    assert report.items[0].name == "Gone"
+    assert (vault / "codes" / "Gone" / "repo" / ".git").exists()
+    assert (vault / "codes" / "Gone" / "repo" / "README.md").is_file()
+
+
+def test_restore_mixed_present_and_missing(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """Mixed vault: one repo present, one missing -> both appear in report."""
+    runner = CliRunner()
+    for name in ("Keep", "Drop"):
+        r = runner.invoke(
+            cli,
+            ["code", "add", str(upstream_repo), "--name", name,
+             "--library", str(vault)],
+        )
+        assert r.exit_code == 0, r.output
+    shutil.rmtree(vault / "codes" / "Drop" / "repo")
+
+    report = restore_missing_repos(vault)
+    by_name = {it.name: it for it in report.items}
+    assert by_name["Keep"].status == "skipped"
+    assert by_name["Drop"].status == "restored"
+    assert (vault / "codes" / "Drop" / "repo" / ".git").exists()
+
+
+def test_restore_failed_when_upstream_empty(vault: Path) -> None:
+    """repo-meta.yaml.upstream empty -> failed, no abort, no clone."""
+    repo_dir = vault / "codes" / "NoURL"
+    repo_dir.mkdir(parents=True)
+    meta = make_repo_meta(name="NoURL", upstream="")
+    write_repo_meta(repo_dir, meta)
+
+    report = restore_missing_repos(vault)
+    assert len(report.items) == 1
+    assert report.items[0].status == "failed"
+    assert "empty" in report.items[0].detail
+    assert not (repo_dir / "repo").exists()
+
+
+def test_restore_failed_on_bad_url(vault: Path) -> None:
+    """Non-existent upstream URL -> failed, loop survives."""
+    _make_repo(vault, "BadURL", upstream="/nonexistent/path/to/repo")
+    # No repo/ subdir yet (just bare meta), so restore will try to clone.
+
+    report = restore_missing_repos(vault)
+    assert len(report.items) == 1
+    assert report.items[0].status == "failed"
+    assert not (vault / "codes" / "BadURL" / "repo").exists()
+
+
+def test_restore_isolates_failures(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """One bad URL does not block another repo from restoring."""
+    runner = CliRunner()
+    r = runner.invoke(
+        cli,
+        ["code", "add", str(upstream_repo), "--name", "Good",
+         "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+    shutil.rmtree(vault / "codes" / "Good" / "repo")
+
+    _make_repo(vault, "Bad", upstream="/nonexistent/path")
+
+    report = restore_missing_repos(vault)
+    by_name = {it.name: it for it in report.items}
+    assert by_name["Good"].status == "restored"
+    assert by_name["Bad"].status == "failed"
+
+
+def test_restore_dry_run_does_not_clone(vault: Path) -> None:
+    _make_repo(vault, "DryRunTarget", upstream="/nonexistent/path")
+
+    report = restore_missing_repos(vault, dry_run=True)
+    assert len(report.items) == 1
+    assert report.items[0].status == "restored"
+    assert "dry-run" in report.items[0].detail
+    # Crucially, no actual clone attempt happened, so even a bad URL is "OK".
+    assert not (vault / "codes" / "DryRunTarget" / "repo").exists()
+
+
+def test_restore_attaches_orphan_refs(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["GhostRepo"]})
+    _make_repo(vault, "RealRepo")  # different repo; not orphan
+
+    report = restore_missing_repos(vault)
+    assert report.orphan_refs == [("p1", "GhostRepo")]
+    # RealRepo's repo/ is also missing but has a meta with empty upstream
+    # (the default in _make_repo). So expect 1 failed item.
+    assert len(report.items) == 1
+    assert report.items[0].name == "RealRepo"
+
+
+def test_restore_respects_depth_param(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """--depth 0 forwards to clone_repo for full history."""
+    _make_repo(vault, "FullCloneTarget", upstream=str(upstream_repo))
+
+    report = restore_missing_repos(vault, depth=0)
+    assert report.items[0].status == "restored"
+    repo_dir = vault / "codes" / "FullCloneTarget" / "repo"
+    assert (repo_dir / ".git").exists()
+    # depth=0 = no --depth flag -> not a shallow clone. Cloning from a local
+    # path bypasses shallow semantics anyway (git local-clone optimization),
+    # so we only assert the clone succeeded; depth semantics over a real
+    # network are covered indirectly by lit code update --unshallow tests.
+
+
+# ---------------------------------------------------------------------------
+# M3.3 — CLI lit code restore-all
+# ---------------------------------------------------------------------------
+
+
+def test_cli_code_restore_all_empty_vault(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["code", "restore-all", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "No code repos" in result.output
+
+
+def test_cli_code_restore_all_happy_path(
+    vault: Path, upstream_repo: Path
+) -> None:
+    runner = CliRunner()
+    r = runner.invoke(
+        cli,
+        ["code", "add", str(upstream_repo), "--name", "BackMe",
+         "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+    shutil.rmtree(vault / "codes" / "BackMe" / "repo")
+
+    result = runner.invoke(
+        cli, ["code", "restore-all", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Restored" in result.output
+    assert "1 restored" in result.output
+    assert (vault / "codes" / "BackMe" / "repo" / ".git").exists()
+
+
+def test_cli_code_restore_all_dry_run_does_not_clone(
+    vault: Path, upstream_repo: Path
+) -> None:
+    runner = CliRunner()
+    r = runner.invoke(
+        cli,
+        ["code", "add", str(upstream_repo), "--name", "Preview",
+         "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+    shutil.rmtree(vault / "codes" / "Preview" / "repo")
+
+    result = runner.invoke(
+        cli, ["code", "restore-all", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in result.output
+    # Nothing was actually cloned.
+    assert not (vault / "codes" / "Preview" / "repo").exists()
+
+
+def test_cli_code_restore_all_failure_exits_one(vault: Path) -> None:
+    _make_repo(vault, "BadURL", upstream="/nonexistent/path/to/repo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["code", "restore-all", "--library", str(vault)]
+    )
+    assert result.exit_code == 1, result.output
+    assert "Failed" in result.output
+    assert "1 failed" in result.output
+
+
+def test_cli_code_restore_all_orphan_ref_exits_one(vault: Path) -> None:
+    _make_paper(vault, "p1", **{"code-clones": ["GhostRepo"]})
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["code", "restore-all", "--library", str(vault)]
+    )
+    assert result.exit_code == 1, result.output
+    assert "Orphan references" in result.output
+    assert "GhostRepo" in result.output
+    assert "p1" in result.output
+
+
+def test_cli_code_restore_all_skips_already_present(
+    vault: Path, upstream_repo: Path
+) -> None:
+    runner = CliRunner()
+    r = runner.invoke(
+        cli,
+        ["code", "add", str(upstream_repo), "--name", "Untouched",
+         "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+
+    result = runner.invoke(
+        cli, ["code", "restore-all", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Skipped" in result.output
+    assert "1 skipped" in result.output
+
+
+def test_cli_code_restore_all_help() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["code", "restore-all", "--help"])
+    assert result.exit_code == 0
+    assert "Cross-machine recovery" in result.output
+    assert "--depth" in result.output
+    assert "--dry-run" in result.output
