@@ -1,7 +1,9 @@
 """``lit add`` — import a paper into the literature vault.
 
-Pipeline (M2.9):
-    1. Fetch metadata via the chosen importer (M1.3: CrossRef only).
+Pipeline (M2.9 + M4.1):
+    1. Fetch metadata via the chosen importer:
+       - ``--doi``: CrossRef API
+       - ``--from-llm-json <path>``: LLM-prepared JSON file (M4.1)
     2. **DOI precheck**: refuse if the DOI already exists anywhere in
        ``papers/*/metadata.yaml`` (live scan, case-insensitive).
     3. Derive the canonical id (M2.9 upgraded keyword heuristic) or accept
@@ -38,6 +40,7 @@ from litman.core.id import derive_id, is_valid_id
 from litman.core.library import find_vault
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
+from litman.importers.llm import parse_llm_json
 
 console = Console()
 
@@ -191,8 +194,22 @@ def _resolve_collision(
 )
 @click.option(
     "--doi",
-    required=True,
-    help="DOI of the paper. Used to fetch metadata from CrossRef.",
+    default=None,
+    help=(
+        "DOI of the paper. Fetched from CrossRef. Mutually exclusive with "
+        "--from-llm-json; exactly one must be provided."
+    ),
+)
+@click.option(
+    "--from-llm-json",
+    "from_llm_json",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Path to an LLM-prepared metadata JSON file (see "
+        "`litman.importers.llm.LLMCandidateMeta` for the schema). Used by "
+        "the lit-library Claude Code skill. Mutually exclusive with --doi."
+    ),
 )
 @click.option(
     "--id",
@@ -218,27 +235,53 @@ def _resolve_collision(
 )
 def add_cmd(
     pdf_path: Path,
-    doi: str,
+    doi: str | None,
+    from_llm_json: Path | None,
     id_override: str | None,
     auto_suffix: bool,
     library: Path | None,
 ) -> None:
-    """Import a paper PDF + DOI into the vault.
+    """Import a paper PDF into the vault.
 
-    Fetches metadata from CrossRef, refuses on duplicate DOI, derives a
-    canonical id, and creates ``papers/<id>/`` containing ``paper.pdf``,
-    ``metadata.yaml``, and an empty ``notes.md``.
+    Source of metadata: either ``--doi`` (CrossRef fetch) or
+    ``--from-llm-json <path>`` (LLM-prepared JSON file). Exactly one is
+    required. Refuses on duplicate DOI, derives a canonical id, and
+    creates ``papers/<id>/`` containing ``paper.pdf``, ``metadata.yaml``,
+    and an empty ``notes.md``.
     """
+    if (doi is None) == (from_llm_json is None):
+        raise AddError(
+            "Provide exactly one of --doi <doi> or --from-llm-json <path>. "
+            "These flags are mutually exclusive."
+        )
+
     vault = find_vault(library)
 
-    raw = fetch_crossref(doi)
-    parsed = parse_crossref(raw)
+    if from_llm_json is not None:
+        parsed = parse_llm_json(from_llm_json)
+        # The DOI used for dedup precheck and user-facing error messages
+        # comes from the JSON; an LLM-imported paper without a DOI just
+        # skips the precheck (id collision is still enforced below).
+        doi_for_dedup = parsed.get("doi") or ""
+    else:
+        assert doi is not None  # type narrowing for mypy
+        raw = fetch_crossref(doi)
+        parsed = parse_crossref(raw)
+        doi_for_dedup = parsed.get("doi") or doi
 
     # Layer 1: DOI precheck. Refuse before id derivation — a true duplicate
-    # never gets to write anything.
-    existing = find_paper_by_doi(vault, parsed.get("doi") or doi)
-    if existing is not None:
-        _refuse_doi_duplicate(doi, existing[0], existing[1])
+    # never gets to write anything. Skipped only when no DOI is available
+    # (LLM path with doi=null); the user accepted that risk by choosing the
+    # LLM path with no DOI.
+    if doi_for_dedup:
+        existing = find_paper_by_doi(vault, doi_for_dedup)
+        if existing is not None:
+            _refuse_doi_duplicate(doi_for_dedup, existing[0], existing[1])
+
+    source_label = (
+        f"DOI {doi!r}" if doi is not None
+        else f"LLM JSON {str(from_llm_json)!r}"
+    )
 
     if id_override:
         paper_id = id_override
@@ -247,14 +290,14 @@ def add_cmd(
     else:
         if parsed["year"] is None:
             raise IDError(
-                f"CrossRef returned no year for DOI {doi!r}; "
+                f"Metadata from {source_label} has no year; "
                 "pass --id explicitly."
             )
         family_raw = _first_author_family(parsed["authors"])
         if not family_raw:
             raise IDError(
-                f"CrossRef returned no first-author family name for DOI {doi!r}; "
-                "pass --id explicitly."
+                f"Metadata from {source_label} has no first-author "
+                "family name; pass --id explicitly."
             )
         paper_id = derive_id(parsed["year"], family_raw, parsed["title"])
         year = parsed["year"]
