@@ -78,3 +78,9 @@ class TrashError(LitmanError):
     """`lit trash` rejected an op: missing source, ambiguous id, restore
     collision with an active paper, or empty/unknown entry lookup.
     """
+
+
+class CodeError(LitmanError):
+    """`lit code` rejected an op: invalid URL / repo-name, collision with an
+    existing clone, missing paper for --paper binding, or ``git clone`` failure.
+    """

@@ -18,6 +18,7 @@ from rich.console import Console
 
 from litman import __version__
 from litman.commands.add import add_cmd
+from litman.commands.code import code_group
 from litman.commands.health import health_check_cmd
 from litman.commands.init import init_cmd
 from litman.commands.list import list_cmd
@@ -53,6 +54,7 @@ cli.add_command(rename_cmd)
 cli.add_command(rm_cmd)
 cli.add_command(trash_group)
 cli.add_command(health_check_cmd)
+cli.add_command(code_group)
 
 
 @cli.command()
