@@ -68,13 +68,19 @@ in existing metadata files.
 def render_lit_config_seed(library_name: str) -> str:
     """Render the initial ``lit-config.yaml`` body.
 
+    Field set matches ``litman.core.config.LitConfig``. Each field is given
+    its schema default here so the on-disk form is self-documenting; older
+    vaults whose yaml omits any of these still load because the schema
+    supplies the same defaults.
+
     Args:
         library_name: Value to set under the ``library_name`` key. Conventionally
             matches the vault subdirectory name.
     """
     return f"""\
-# litman library configuration. Validated against `litman.config.LitConfig`
-# (validation lands in M2). Edit by hand or via `lit config set` (M2+).
+# litman library configuration. Validated against `litman.core.config.LitConfig`
+# on every command that loads config. Edit by hand; `lit config show` prints
+# the parsed view.
 
 library_name: {library_name}
 default_pdf_viewer: code
@@ -90,4 +96,13 @@ view_definitions:
 unique_keys:
   - doi
   - arxiv-id
+
+# Default --depth for `lit code add` / `lit code restore-all`. 0 = full history.
+default_clone_depth: 1
+
+# Glob patterns under codes/ that backup tools (rclone, etc.) should exclude
+# from cloud sync. The bulky `repo/` checkout is re-clonable via
+# `lit code restore-all`, so excluding it keeps the L2 backup small.
+codes_ignore_patterns:
+  - repo/
 """

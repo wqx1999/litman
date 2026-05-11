@@ -23,7 +23,6 @@ from rich.table import Table
 
 from litman.core.code import (
     CODES_DIRNAME,
-    DEFAULT_CLONE_DEPTH,
     REPO_DIRNAME,
     REPO_META_FILENAME,
     bind_paper_to_repo,
@@ -41,6 +40,7 @@ from litman.core.code import (
     write_notes,
     write_repo_meta,
 )
+from litman.core.config import load_config
 from litman.core.library import find_vault
 from litman.exceptions import CodeError, PaperNotFoundError
 
@@ -88,11 +88,12 @@ def code_group() -> None:
 @click.option(
     "--depth",
     type=int,
-    default=DEFAULT_CLONE_DEPTH,
-    show_default=True,
+    default=None,
     help=(
-        "git clone --depth N. Use 0 for a full (non-shallow) clone. Run "
-        "`lit code update --unshallow` later to promote a shallow clone."
+        "git clone --depth N. Use 0 for a full (non-shallow) clone. "
+        "Defaults to lit-config.yaml's `default_clone_depth` (1 unless "
+        "overridden). Run `lit code update --unshallow` later to promote "
+        "a shallow clone."
     ),
 )
 @click.option(
@@ -106,7 +107,7 @@ def code_add_cmd(
     url: str,
     repo_name: str | None,
     paper_id: str | None,
-    depth: int,
+    depth: int | None,
     library: Path | None,
 ) -> None:
     """Clone a code repository into ``<vault>/codes/<repo-name>/repo/``.
@@ -117,6 +118,8 @@ def code_add_cmd(
     ``code-clones`` list atomically.
     """
     vault = find_vault(library)
+    if depth is None:
+        depth = load_config(vault).default_clone_depth
 
     if repo_name is None:
         repo_name = derive_repo_name(url)
@@ -492,12 +495,12 @@ def code_rm_cmd(
 @click.option(
     "--depth",
     type=int,
-    default=DEFAULT_CLONE_DEPTH,
-    show_default=True,
+    default=None,
     help=(
         "git clone --depth N for every restored repo. Use 0 for full "
-        "(non-shallow) clones. Cross-machine recovery defaults to shallow "
-        "for speed; promote individually later with `lit code update --unshallow`."
+        "(non-shallow) clones. Defaults to lit-config.yaml's "
+        "`default_clone_depth` (1 unless overridden). Promote individually "
+        "later with `lit code update --unshallow`."
     ),
 )
 @click.option(
@@ -514,7 +517,7 @@ def code_rm_cmd(
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 def code_restore_all_cmd(
-    depth: int,
+    depth: int | None,
     dry_run: bool,
     library: Path | None,
 ) -> None:
@@ -535,6 +538,8 @@ def code_restore_all_cmd(
     present.
     """
     vault = find_vault(library)
+    if depth is None:
+        depth = load_config(vault).default_clone_depth
     report = restore_missing_repos(vault, depth=depth, dry_run=dry_run)
 
     if not report.items and not report.orphan_refs:

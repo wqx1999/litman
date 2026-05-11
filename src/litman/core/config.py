@@ -1,0 +1,175 @@
+"""``lit-config.yaml`` schema + loader.
+
+The vault's ``lit-config.yaml`` is the single source for library-level
+preferences (default viewer, view set, dedup keys, default clone depth,
+etc.). M2.0–M2.1 treated the file as a marker (its mere existence
+identified the vault root); M2.2 adds typed parsing with pydantic so
+typos / wrong types surface as explicit ``ConfigError`` instead of
+mysterious runtime behavior downstream.
+
+Design constraints honored here (see design doc §4.2):
+
+- **No LLM credentials.** Anthropic API keys live with Claude Code, not
+  this file. The schema deliberately has no field for them.
+- **All fields have safe defaults.** Existing vaults whose
+  ``lit-config.yaml`` was written before a field was added still load —
+  the missing field materializes at its default. Only ``library_name``
+  is required.
+- **Strict on unknown keys.** ``extra="forbid"`` catches typos (e.g.
+  ``default_pdf_viewr``) instead of silently ignoring them.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from ruamel.yaml import YAML
+
+from litman.exceptions import ConfigError
+
+# Canonical filename — matches the seed written by ``lit init`` and the
+# discovery probe used by ``find_vault``.
+CONFIG_FILENAME = "lit-config.yaml"
+
+# Default value sets. These are the *schema* defaults — i.e. what a vault
+# whose ``lit-config.yaml`` omits a field will compute. They must stay in
+# sync with whatever ``seeds.py`` writes for newly-initialized vaults, but
+# the two paths are deliberately separate: the seed exists so the file is
+# self-documenting on disk, the schema exists so omitted fields still work.
+DEFAULT_PDF_VIEWER = "code"
+DEFAULT_VIEW_DEFINITIONS: tuple[str, ...] = (
+    "by-project",
+    "by-topic",
+    "by-method",
+    "by-status",
+)
+DEFAULT_UNIQUE_KEYS: tuple[str, ...] = ("doi", "arxiv-id")
+DEFAULT_CLONE_DEPTH = 1
+DEFAULT_CODES_IGNORE_PATTERNS: tuple[str, ...] = ("repo/",)
+
+_yaml = YAML(typ="safe")
+
+
+class LitConfig(BaseModel):
+    """Typed view of ``lit-config.yaml``.
+
+    Adding a new field: pick a safe default so older configs still load,
+    document the field's purpose in the ``Field(..., description=...)``
+    argument, and update ``core.seeds.render_lit_config_seed`` so the
+    on-disk form for new vaults reflects the addition.
+
+    Wiring a field into a command: read it via ``load_config(vault)`` in
+    the command, NOT by importing the default constant — the user may have
+    overridden the value in their vault's yaml.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    library_name: str = Field(
+        ...,
+        description=(
+            "Human-readable label for the library. Conventionally matches "
+            "the vault subdirectory name."
+        ),
+    )
+    default_pdf_viewer: str = Field(
+        default=DEFAULT_PDF_VIEWER,
+        description=(
+            "Command used by `lit show --open` (and similar) to open PDFs. "
+            "Defaults to 'code' (VS Code with the vscode-pdf extension)."
+        ),
+    )
+    view_definitions: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_VIEW_DEFINITIONS),
+        description=(
+            "Which views/by-* directories `lit refresh-views` rebuilds. "
+            "Currently informational — the renderer hardcodes the same set; "
+            "future milestones may consume this field to scope refresh runs."
+        ),
+    )
+    unique_keys: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_UNIQUE_KEYS),
+        description=(
+            "Fields used by `lit add` to detect duplicate papers. M2.9 "
+            "implements the DOI precheck; arxiv-id support remains "
+            "informational pending a future milestone."
+        ),
+    )
+    default_clone_depth: int = Field(
+        default=DEFAULT_CLONE_DEPTH,
+        ge=0,
+        description=(
+            "Default --depth for `lit code add` / `lit code restore-all`. "
+            "0 means full history (non-shallow clone). 1 (the default) is a "
+            "shallow clone — promote later with `lit code update --unshallow`."
+        ),
+    )
+    codes_ignore_patterns: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_CODES_IGNORE_PATTERNS),
+        description=(
+            "Glob patterns under codes/ that backup tools (rclone, etc.) "
+            "should exclude from cloud sync. Default ['repo/'] — keep the "
+            "bulky checkout out of L2 backup, rebuild via "
+            "`lit code restore-all`. Informational; consumed by M6 backup."
+        ),
+    )
+
+
+def load_config(vault: Path) -> LitConfig:
+    """Load + validate ``<vault>/lit-config.yaml``.
+
+    Args:
+        vault: Vault root (the directory that contains ``lit-config.yaml``).
+
+    Returns:
+        A populated ``LitConfig``. Missing optional fields take their
+        schema defaults; required fields raise.
+
+    Raises:
+        ConfigError: file missing, unreadable, malformed YAML, top-level is
+            not a mapping, contains an unknown key, or a field fails its
+            type / constraint.
+    """
+    path = vault / CONFIG_FILENAME
+    if not path.is_file():
+        raise ConfigError(
+            f"No {CONFIG_FILENAME} at {path}. Is {vault} really a vault? "
+            "Run `lit init` first."
+        )
+    try:
+        raw = _yaml.load(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise ConfigError(
+            f"Failed to parse {path} as YAML: {e}"
+        ) from e
+    if raw is None:
+        # Empty file — fall back to defaults but library_name is required so
+        # this still surfaces as a validation error below.
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"{path} must contain a YAML mapping at the top level, got "
+            f"{type(raw).__name__}."
+        )
+    try:
+        return LitConfig.model_validate(raw)
+    except ValidationError as e:
+        # Pydantic's default message is multi-line; flatten the first error
+        # for a friendlier CLI display while preserving the full report.
+        first = e.errors()[0]
+        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
+        raise ConfigError(
+            f"Invalid {CONFIG_FILENAME} at {path}:\n  field '{loc}': "
+            f"{first['msg']}\n(full report: {e})"
+        ) from e
+
+
+def config_to_yaml_dict(config: LitConfig) -> dict[str, Any]:
+    """Render a ``LitConfig`` as a plain dict suitable for YAML dumping.
+
+    Used by ``lit config show`` and by tests that round-trip the schema.
+    Field order follows the model definition so the printed form is stable.
+    """
+    return config.model_dump(mode="python")

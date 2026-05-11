@@ -84,3 +84,12 @@ class CodeError(LitmanError):
     """`lit code` rejected an op: invalid URL / repo-name, collision with an
     existing clone, missing paper for --paper binding, or ``git clone`` failure.
     """
+
+
+class ConfigError(LitmanError):
+    """`lit-config.yaml` could not be parsed or failed schema validation.
+
+    Distinct from ``LibraryNotFoundError`` (file is missing entirely): here
+    the file exists but is malformed YAML, has an unknown key, holds a value
+    of the wrong type, or violates a field constraint.
+    """
