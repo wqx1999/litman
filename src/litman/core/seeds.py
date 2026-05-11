@@ -105,4 +105,12 @@ default_clone_depth: 1
 # `lit code restore-all`, so excluding it keeps the L2 backup small.
 codes_ignore_patterns:
   - repo/
+
+# Project name → project directory path. Consumed by `lit link/unlink` and
+# the per-project REFERENCES.md regeneration step of `lit refresh-views`.
+# Populate before linking papers, e.g.:
+#   projects:
+#     pepforge: /work/wangq/Project/PepForge
+#     pepcodec: /work/wangq/Project/PepCodec
+projects: {{}}
 """

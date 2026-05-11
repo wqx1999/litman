@@ -115,6 +115,18 @@ class LitConfig(BaseModel):
             "`lit code restore-all`. Informational; consumed by M6 backup."
         ),
     )
+    projects: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Registry of project_name → project_directory_path. Consumed "
+            "by M5 `lit link/unlink/refresh-views` to know where to drop "
+            "the project's `literature/` symlinks and regenerate "
+            "REFERENCES.md. Stored as strings (not Path) so the yaml "
+            "round-trip is plain; paths are resolved per command. Empty "
+            "default — populate as `pepforge: /work/wangq/Project/PepForge` "
+            "before linking papers to that project."
+        ),
+    )
 
 
 def load_config(vault: Path) -> LitConfig:
