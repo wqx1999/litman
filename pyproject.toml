@@ -48,6 +48,13 @@ lit = "litman.cli:main"
 where = ["src"]
 include = ["litman*"]
 
+# Bundle the skill markdown files so `lit install-skill` can copy them
+# from the installed package via importlib.resources. Without this, the
+# `lit-library/` subdirectory is dropped by the wheel build because it
+# contains no Python sources.
+[tool.setuptools.package-data]
+"litman.skills" = ["lit-library/*", "lit-library/**/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

@@ -22,6 +22,7 @@ from litman.commands.code import code_group
 from litman.commands.config import config_group
 from litman.commands.health import health_check_cmd
 from litman.commands.init import init_cmd
+from litman.commands.install_skill import install_skill_cmd
 from litman.commands.list import list_cmd
 from litman.commands.modify import modify_cmd
 from litman.commands.refresh import refresh_views_cmd
@@ -57,6 +58,7 @@ cli.add_command(trash_group)
 cli.add_command(health_check_cmd)
 cli.add_command(code_group)
 cli.add_command(config_group)
+cli.add_command(install_skill_cmd)
 
 
 @cli.command()
