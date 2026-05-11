@@ -74,6 +74,32 @@ def _project_paper(p: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _build_by_doi(papers: list[dict[str, Any]]) -> dict[str, str]:
+    """Build the ``by_doi`` reverse map: normalized DOI → paper id.
+
+    DOIs are case-insensitive per the DOI Handbook; normalized to lowercase
+    + stripped so future ``lit show --doi`` / AI lookups can hit without
+    normalizing again. Last-write wins on collisions, but a vault with two
+    papers sharing one DOI is already a health-check violation surfaced by
+    M2.8 — this map is best-effort, not the dedup source of truth.
+    """
+    # Local import avoids a hard import cycle when views.py is imported during
+    # library.create_vault() before dedup's heavier ruamel-typ machinery loads.
+    from litman.core.dedup import normalize_doi
+
+    out: dict[str, str] = {}
+    for p in papers:
+        doi = p.get("doi")
+        paper_id = p.get("id")
+        if not doi or not paper_id:
+            continue
+        key = normalize_doi(str(doi))
+        if not key:
+            continue
+        out[key] = str(paper_id)
+    return out
+
+
 def render_index(papers: list[dict[str, Any]], timestamp: str) -> str:
     """Render the INDEX.json content for a given paper list.
 
@@ -87,6 +113,7 @@ def render_index(papers: list[dict[str, Any]], timestamp: str) -> str:
         "generated_at": timestamp,
         "n_papers": len(sorted_papers),
         "papers": [_project_paper(p) for p in sorted_papers],
+        "by_doi": _build_by_doi(sorted_papers),
     }
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 

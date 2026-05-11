@@ -12,7 +12,14 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
-from litman.exceptions import AddError, IDError, LibraryNotFoundError
+from litman.exceptions import (
+    AddError,
+    DuplicateDOIError,
+    IDError,
+    LibraryNotFoundError,
+)
+
+_PAPER_ID = "2024_Chen_HELM-GPT-Macrocyclic"
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -79,7 +86,7 @@ def test_add_creates_paper_folder(
     )
     assert result.exit_code == 0, result.output
 
-    paper_id = "2024_Chen_HELM-GPT"
+    paper_id = _PAPER_ID
     paper_dir = vault / "papers" / paper_id
     assert paper_dir.is_dir()
     assert (paper_dir / "paper.pdf").is_file()
@@ -106,12 +113,12 @@ def test_add_writes_metadata_yaml_correctly(
     )
     assert result.exit_code == 0, result.output
 
-    paper_dir = vault / "papers" / "2024_Chen_HELM-GPT"
+    paper_dir = vault / "papers" / _PAPER_ID
     yaml = YAML(typ="safe")
     metadata = yaml.load((paper_dir / "metadata.yaml").read_text())
 
     # Identity layer
-    assert metadata["id"] == "2024_Chen_HELM-GPT"
+    assert metadata["id"] == _PAPER_ID
     assert metadata["title"] == "HELM-GPT: De novo macrocyclic peptide design"
     assert metadata["authors"] == ["Chen, Yi", "Wang, Lin"]
     assert metadata["year"] == 2024
@@ -155,7 +162,7 @@ def test_add_id_override(
     )
     assert result.exit_code == 0, result.output
     assert (vault / "papers" / "custom-id").is_dir()
-    assert not (vault / "papers" / "2024_Chen_HELM-GPT").exists()
+    assert not (vault / "papers" / _PAPER_ID).exists()
 
 
 def test_add_uses_lit_library_env(
@@ -171,7 +178,7 @@ def test_add_uses_lit_library_env(
         ["add", str(fake_pdf), "--doi", "10.1093/bioinformatics/btae364"],
     )
     assert result.exit_code == 0, result.output
-    assert (vault / "papers" / "2024_Chen_HELM-GPT").is_dir()
+    assert (vault / "papers" / _PAPER_ID).is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +186,12 @@ def test_add_uses_lit_library_env(
 # ---------------------------------------------------------------------------
 
 
-def test_add_existing_paper_folder_refused(
+def test_add_duplicate_doi_refused(
     vault: Path,
     fake_pdf: Path,
     mock_crossref: dict[str, Any],
 ) -> None:
+    """Second add with the same DOI fails with DuplicateDOIError (M2.9 layer 1)."""
     runner = CliRunner()
     args = [
         "add", str(fake_pdf),
@@ -195,7 +203,189 @@ def test_add_existing_paper_folder_refused(
 
     second = runner.invoke(cli, args)
     assert second.exit_code != 0
+    assert isinstance(second.exception, DuplicateDOIError)
+    # DuplicateDOIError is a subclass of AddError, so legacy catches still work.
     assert isinstance(second.exception, AddError)
+    # The error message should name the existing id so the user can jump to it.
+    assert _PAPER_ID in str(second.exception)
+
+
+def test_add_duplicate_doi_case_insensitive(
+    vault: Path,
+    fake_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DOI dedup is case-insensitive per the DOI Handbook."""
+    # First add: mixed-case DOI returned by CrossRef.
+    msg1 = {
+        **SAMPLE_MESSAGE,
+        "DOI": "10.1093/Bioinformatics/btae364",
+    }
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: msg1,
+    )
+    runner = CliRunner()
+    first = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/Bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert first.exit_code == 0, first.output
+
+    # Second add: ALL-CAPS DOI should still hit the dedup.
+    msg2 = {
+        **SAMPLE_MESSAGE,
+        "DOI": "10.1093/BIOINFORMATICS/BTAE364",
+    }
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: msg2,
+    )
+    second = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/BIOINFORMATICS/BTAE364",
+            "--library", str(vault),
+        ],
+    )
+    assert second.exit_code != 0
+    assert isinstance(second.exception, DuplicateDOIError)
+
+
+def test_add_id_collision_with_auto_suffix(
+    vault: Path,
+    fake_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same family/year/title but different DOI → auto-suffix _b (M2.9 layer 3)."""
+    # First paper: standard SAMPLE_MESSAGE.
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: SAMPLE_MESSAGE,
+    )
+    runner = CliRunner()
+    first = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert first.exit_code == 0, first.output
+
+    # Second paper: same author/year/title, DIFFERENT DOI (e.g., conference vs
+    # journal version). DOI precheck passes; id collides; auto-suffix kicks in.
+    msg2 = {**SAMPLE_MESSAGE, "DOI": "10.1093/different/btae999"}
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: msg2,
+    )
+    second = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/different/btae999",
+            "--auto-suffix",
+            "--library", str(vault),
+        ],
+    )
+    assert second.exit_code == 0, second.output
+    assert (vault / "papers" / _PAPER_ID).is_dir()
+    assert (vault / "papers" / f"{_PAPER_ID}_b").is_dir()
+
+
+def test_add_id_collision_non_tty_without_auto_suffix_refused(
+    vault: Path,
+    fake_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-TTY (CliRunner) with id collision and no --auto-suffix → AddError."""
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: SAMPLE_MESSAGE,
+    )
+    runner = CliRunner()
+    first = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert first.exit_code == 0, first.output
+
+    msg2 = {**SAMPLE_MESSAGE, "DOI": "10.1093/different/btae999"}
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: msg2,
+    )
+    second = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/different/btae999",
+            "--library", str(vault),
+        ],
+    )
+    assert second.exit_code != 0
+    assert isinstance(second.exception, AddError)
+    # Should not be a duplicate-DOI error since the DOI differs.
+    assert not isinstance(second.exception, DuplicateDOIError)
+    assert "TTY" in str(second.exception) or "auto-suffix" in str(second.exception)
+
+
+def test_add_id_override_collision_hard_fails(
+    vault: Path,
+    fake_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--id override + collision is a hard error even with --auto-suffix.
+
+    Rationale: when the user passes --id explicitly, auto-suffixing their
+    explicit choice would be surprising. If they want a suffix, they can pass
+    it directly in the --id value.
+    """
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: SAMPLE_MESSAGE,
+    )
+    runner = CliRunner()
+    first = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--id", "my-fixed-id",
+            "--library", str(vault),
+        ],
+    )
+    assert first.exit_code == 0, first.output
+
+    msg2 = {**SAMPLE_MESSAGE, "DOI": "10.1093/different/btae999"}
+    monkeypatch.setattr(
+        "litman.commands.add.fetch_crossref",
+        lambda doi, client=None: msg2,
+    )
+    second = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/different/btae999",
+            "--id", "my-fixed-id",
+            "--auto-suffix",
+            "--library", str(vault),
+        ],
+    )
+    assert second.exit_code != 0
+    assert isinstance(second.exception, AddError)
+    assert not isinstance(second.exception, DuplicateDOIError)
 
 
 def test_add_no_library_discoverable(

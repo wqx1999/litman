@@ -110,6 +110,35 @@ def test_render_index_sorts_by_id() -> None:
     assert ids == ["2023_A_x", "2024_Z_x"]
 
 
+def test_render_index_emits_by_doi_map() -> None:
+    """M2.9: INDEX.json carries a ``by_doi`` reverse map for fast lookup."""
+    papers = [
+        {"id": "2024_Smith_X", "doi": "10.1/x"},
+        {"id": "2024_Jones_Y", "doi": "10.1/y"},
+        {"id": "2024_NoDoi_Z", "doi": ""},  # empty doi excluded
+    ]
+    text = render_index(papers, "t")
+    payload = json.loads(text)
+    assert payload["by_doi"] == {
+        "10.1/x": "2024_Smith_X",
+        "10.1/y": "2024_Jones_Y",
+    }
+
+
+def test_render_index_by_doi_normalizes_case() -> None:
+    """by_doi keys are lowercase + stripped so callers don't normalize again."""
+    papers = [{"id": "p1", "doi": "  10.1/Mixed-CASE  "}]
+    text = render_index(papers, "t")
+    payload = json.loads(text)
+    assert payload["by_doi"] == {"10.1/mixed-case": "p1"}
+
+
+def test_render_index_empty_papers_empty_by_doi() -> None:
+    text = render_index([], "t")
+    payload = json.loads(text)
+    assert payload["by_doi"] == {}
+
+
 # ---------------------------------------------------------------------------
 # rebuild_views
 # ---------------------------------------------------------------------------

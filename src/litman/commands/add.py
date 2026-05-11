@@ -1,21 +1,25 @@
 """``lit add`` — import a paper into the literature vault.
 
-Pipeline:
+Pipeline (M2.9):
     1. Fetch metadata via the chosen importer (M1.3: CrossRef only).
-    2. Derive the canonical id (or accept ``--id`` override).
-    3. Create ``papers/<id>/``, atomically populated with::
+    2. **DOI precheck**: refuse if the DOI already exists anywhere in
+       ``papers/*/metadata.yaml`` (live scan, case-insensitive).
+    3. Derive the canonical id (M2.9 upgraded keyword heuristic) or accept
+       ``--id`` override.
+    4. **Id collision resolution**: if ``papers/<id>/`` exists, either
+       prompt the user (TTY) or auto-suffix ``_b`` / ``_c`` / ... when
+       ``--auto-suffix`` is passed.
+    5. Create ``papers/<id>/``, atomically populated with::
        paper.pdf  (copied, not moved — original PDF is preserved)
        metadata.yaml
        notes.md   (placeholder)
-    4. Print a summary panel.
-
-Schema validation, TAXONOMY enforcement, INDEX update, and duplicate detection
-land in M2. M1.3 deliberately keeps the path short.
+    6. Print a summary panel.
 """
 
 from __future__ import annotations
 
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,9 +29,14 @@ from rich.console import Console
 from rich.panel import Panel
 from ruamel.yaml import YAML
 
-from litman.core.id import derive_id
+from litman.core.dedup import (
+    auto_suffix_id,
+    find_paper_by_doi,
+    suggest_alternative_ids,
+)
+from litman.core.id import derive_id, is_valid_id
 from litman.core.library import find_vault
-from litman.exceptions import AddError, IDError
+from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
 
 console = Console()
@@ -97,6 +106,84 @@ def _first_author_family(authors: list[str]) -> str:
     return authors[0].split(",", 1)[0].strip()
 
 
+def _refuse_doi_duplicate(doi: str, existing_id: str, meta: dict[str, Any]) -> None:
+    """Raise a friendly DuplicateDOIError describing the existing paper."""
+    title = meta.get("title") or "(no title)"
+    added = meta.get("created-at") or "(no timestamp)"
+    raise DuplicateDOIError(
+        f"DOI {doi!r} already registered in this vault:\n"
+        f"  id:    {existing_id}\n"
+        f"  title: {title}\n"
+        f"  added: {added}\n"
+        f"\n"
+        f"Next steps:\n"
+        f"  lit show {existing_id}                       # inspect\n"
+        f"  lit rm {existing_id} && lit add <pdf> --doi {doi}   # replace"
+    )
+
+
+def _resolve_collision(
+    vault: Path,
+    primary_id: str,
+    year: int,
+    family: str,
+    title: str,
+    auto_suffix: bool,
+) -> str:
+    """Resolve an id collision by auto-suffix or interactive prompt.
+
+    Returns the chosen id (guaranteed not to collide). Raises AddError if
+    the user cancels, supplies an invalid custom id, or stdin is non-TTY
+    without ``--auto-suffix``.
+    """
+    if auto_suffix:
+        return auto_suffix_id(vault, primary_id)
+
+    if not sys.stdin.isatty():
+        raise AddError(
+            f"Paper id {primary_id!r} already exists at "
+            f"{vault / 'papers' / primary_id} and stdin is not a TTY. "
+            "Pass --auto-suffix for batch mode or --id <new-id> to specify manually."
+        )
+
+    alternatives = suggest_alternative_ids(vault, primary_id, year, family, title)
+    fallback_id = auto_suffix_id(vault, primary_id)
+
+    console.print(
+        f"\n[yellow]Paper id [bold]{primary_id}[/] already exists.[/yellow]"
+    )
+    console.print("Pick one of:")
+    menu: list[tuple[str, str]] = []
+    for alt in alternatives:
+        menu.append(("alt", alt))
+    menu.append(("suffix", fallback_id))
+    menu.append(("custom", "<enter a custom id>"))
+    menu.append(("cancel", "<cancel>"))
+
+    for idx, (_kind, label) in enumerate(menu, 1):
+        console.print(f"  [{idx}] {label}")
+
+    valid_choices = [str(i) for i in range(1, len(menu) + 1)]
+    suffix_idx = len(alternatives) + 1  # default = auto-suffix entry
+    choice = click.prompt(
+        "Choice",
+        type=click.Choice(valid_choices),
+        default=str(suffix_idx),
+        show_choices=False,
+    )
+    kind, label = menu[int(choice) - 1]
+    if kind == "alt" or kind == "suffix":
+        return label
+    if kind == "custom":
+        custom = click.prompt("Enter custom id", type=str).strip()
+        if not is_valid_id(custom):
+            raise AddError(f"Invalid id format: {custom!r}")
+        if (vault / "papers" / custom).exists():
+            raise AddError(f"Id {custom!r} also already exists.")
+        return custom
+    raise AddError("Cancelled by user.")
+
+
 @click.command("add")
 @click.argument(
     "pdf_path",
@@ -114,6 +201,15 @@ def _first_author_family(authors: list[str]) -> str:
     help="Override the auto-derived id (format: <year>_<Family>_<Keyword>).",
 )
 @click.option(
+    "--auto-suffix",
+    is_flag=True,
+    default=False,
+    help=(
+        "On id collision, auto-append _b / _c / ... without prompting. "
+        "Required for non-interactive (non-TTY) batch use."
+    ),
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -124,41 +220,72 @@ def add_cmd(
     pdf_path: Path,
     doi: str,
     id_override: str | None,
+    auto_suffix: bool,
     library: Path | None,
 ) -> None:
     """Import a paper PDF + DOI into the vault.
 
-    Fetches metadata from CrossRef, derives a canonical id, and creates
-    ``papers/<id>/`` containing ``paper.pdf``, ``metadata.yaml``, and an
-    empty ``notes.md``.
+    Fetches metadata from CrossRef, refuses on duplicate DOI, derives a
+    canonical id, and creates ``papers/<id>/`` containing ``paper.pdf``,
+    ``metadata.yaml``, and an empty ``notes.md``.
     """
     vault = find_vault(library)
 
     raw = fetch_crossref(doi)
     parsed = parse_crossref(raw)
 
+    # Layer 1: DOI precheck. Refuse before id derivation — a true duplicate
+    # never gets to write anything.
+    existing = find_paper_by_doi(vault, parsed.get("doi") or doi)
+    if existing is not None:
+        _refuse_doi_duplicate(doi, existing[0], existing[1])
+
     if id_override:
         paper_id = id_override
+        year = parsed.get("year")
+        family = _first_author_family(parsed.get("authors", []))
     else:
         if parsed["year"] is None:
             raise IDError(
                 f"CrossRef returned no year for DOI {doi!r}; "
                 "pass --id explicitly."
             )
-        family = _first_author_family(parsed["authors"])
-        if not family:
+        family_raw = _first_author_family(parsed["authors"])
+        if not family_raw:
             raise IDError(
                 f"CrossRef returned no first-author family name for DOI {doi!r}; "
                 "pass --id explicitly."
             )
-        paper_id = derive_id(parsed["year"], family, parsed["title"])
+        paper_id = derive_id(parsed["year"], family_raw, parsed["title"])
+        year = parsed["year"]
+        family = paper_id.split("_")[1]  # already-slugged & capitalized
 
+    # Layer 3: id collision resolution. The --id override gets the same
+    # treatment so batch scripts behave predictably; if you explicitly passed
+    # --id you almost certainly want the failure to be loud and immediate
+    # rather than silently auto-suffixing.
     paper_dir = vault / "papers" / paper_id
     if paper_dir.exists():
-        raise AddError(
-            f"Paper folder already exists: {paper_dir}. "
-            "Use --id to override or remove the existing folder first."
+        if id_override:
+            raise AddError(
+                f"Paper folder already exists: {paper_dir}. "
+                "Use a different --id or remove the existing folder first."
+            )
+        if year is None or not family:
+            # Should not happen given the derive_id path above, but defensive.
+            raise AddError(
+                f"Paper folder already exists: {paper_dir} and collision "
+                "resolution requires year + family. Pass --id explicitly."
+            )
+        paper_id = _resolve_collision(
+            vault,
+            paper_id,
+            year,
+            family,
+            parsed["title"],
+            auto_suffix,
         )
+        paper_dir = vault / "papers" / paper_id
 
     # Atomic creation: any failure rolls back the half-built folder.
     try:

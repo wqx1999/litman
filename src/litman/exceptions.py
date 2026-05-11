@@ -36,6 +36,15 @@ class AddError(LitmanError):
     """`lit add` failed to materialize the paper folder."""
 
 
+class DuplicateDOIError(AddError):
+    """`lit add` refused because the DOI is already registered in the vault.
+
+    Subclasses ``AddError`` so any caller catching the broader error type still
+    matches; tests and CLI rendering can pattern-match more specifically when
+    they need to surface "this is a true duplicate, not a transient failure".
+    """
+
+
 class PaperNotFoundError(LitmanError):
     """No paper with the given id exists in the vault."""
 
