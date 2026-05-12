@@ -1,15 +1,23 @@
-"""Skill installation helper for ``lit install-skill`` (M4.3).
+"""Skill installation helpers for ``lit install-skill`` (M4.3 + M9.2).
 
-Copies the bundled ``lit-library`` Claude Code skill from the installed
-litman package into the user's skill directory (default
-``~/.claude/skills/lit-library/``). The skill files live inside the
-package at ``src/litman/skills/lit-library/`` and are reachable via
+Copies every bundled Claude Code skill from the installed litman package
+into the user's skill directory (default ``~/.claude/skills/<name>/``).
+
+The skill files live inside the package at
+``src/litman/skills/<skill-name>/`` and are reachable via
 ``importlib.resources`` regardless of whether litman was installed
-editable, via pipx, or as a regular wheel.
+editable, via pipx, or as a regular wheel. Each top-level directory
+under ``src/litman/skills/`` is one skill; add a new skill by creating
+a new subdirectory with at least a ``SKILL.md``.
 
-Single-file skills today (just ``SKILL.md``); the loop is written so
-that adding supporting files (templates, examples) in the future does
-not change the call site.
+API split:
+
+* :func:`install_skill` installs **one** named skill — used by tests and
+  by callers that want fine-grained control.
+* :func:`install_all_skills` enumerates the bundle and loops over each
+  skill — used by ``lit install-skill`` with no ``--skill`` flag, so
+  users adding lit-reading later can re-run the same command to pick
+  up new bundled skills.
 """
 
 from __future__ import annotations
@@ -21,28 +29,76 @@ from typing import Any
 
 from litman.exceptions import LitmanError
 
+# Default parent dir under which each skill gets its own subdir.
+# Claude Code auto-discovers user-level skills here.
+DEFAULT_PARENT_DIR = Path.home() / ".claude" / "skills"
+
+# Backwards-compatibility re-exports — some early tests / scripts import these.
+# ``SKILL_NAME`` historically pointed at the only bundled skill; now there are
+# multiple, so it points at the first one for ergonomics but new code should
+# prefer ``list_bundled_skills`` + per-skill names.
 SKILL_NAME = "lit-library"
-DEFAULT_TARGET = Path.home() / ".claude" / "skills" / SKILL_NAME
+DEFAULT_TARGET = DEFAULT_PARENT_DIR / SKILL_NAME
 
 
 class SkillInstallError(LitmanError):
-    """``lit install-skill`` refused: target collision without --force, or
-    bundled resources missing from the installed package."""
+    """``lit install-skill`` refused: target collision without ``--force``,
+    bundled resources missing from the installed package, or an unknown
+    skill name was passed."""
 
 
-def bundled_skill_root() -> Traversable:
-    """Return the Traversable pointing at the bundled ``lit-library`` dir.
+def _skills_root() -> Traversable:
+    """Traversable pointing at ``litman.skills`` — the parent namespace
+    that contains every bundled skill subdir."""
+    return files("litman.skills")
 
-    Works for editable installs, pipx, regular wheels — anywhere
-    ``importlib.resources`` can locate the package's data files.
+
+def list_bundled_skills() -> list[str]:
+    """Return the names of every skill bundled with this litman install.
+
+    A skill is any subdirectory of ``litman.skills`` that contains at
+    least a ``SKILL.md``. Order is stable (sorted by name) so reruns of
+    ``lit install-skill`` install skills in the same order.
     """
-    return files("litman.skills") / SKILL_NAME
+    out: list[str] = []
+    for child in _skills_root().iterdir():
+        if not child.is_dir():
+            continue
+        # A directory only counts as a skill if SKILL.md is present.
+        has_skill_md = any(
+            grandchild.is_file() and grandchild.name == "SKILL.md"
+            for grandchild in child.iterdir()
+        )
+        if has_skill_md:
+            out.append(child.name)
+    out.sort()
+    return out
+
+
+def bundled_skill_root(name: str = SKILL_NAME) -> Traversable:
+    """Return the Traversable pointing at one bundled skill's directory.
+
+    Args:
+        name: Skill subdirectory name (e.g. ``"lit-library"``,
+            ``"lit-reading"``). Defaults to ``SKILL_NAME`` for legacy
+            callers that predate multi-skill support.
+
+    Raises:
+        SkillInstallError: ``name`` does not match any directory under
+            ``litman.skills``.
+    """
+    if name not in list_bundled_skills():
+        available = ", ".join(list_bundled_skills()) or "(none)"
+        raise SkillInstallError(
+            f"No bundled skill named {name!r}. Available: {available}."
+        )
+    return _skills_root() / name
 
 
 def _iter_skill_files(root: Traversable) -> list[Traversable]:
-    """List the files inside the bundled skill dir, sorted by name.
+    """List the files inside one skill's directory, sorted by name.
 
-    Flat layout assumed (no nesting). Adjust here if the skill grows
+    Flat layout assumed (no nesting). Adjust here if a skill grows
     sub-directories — current call sites iterate over the returned list
     once and copy each entry as a file.
     """
@@ -55,34 +111,46 @@ def _iter_skill_files(root: Traversable) -> list[Traversable]:
 
 
 def install_skill(
-    target: Path = DEFAULT_TARGET,
+    target: Path | None = None,
     overwrite: bool = False,
+    name: str = SKILL_NAME,
 ) -> dict[str, Any]:
-    """Copy the bundled skill into ``target``.
+    """Copy one bundled skill into ``target``.
 
     Args:
-        target: Destination directory. Created (with parents) if missing.
-            Must not exist unless ``overwrite=True``.
+        target: Destination directory for the skill (e.g.
+            ``~/.claude/skills/lit-reading``). Created with parents if
+            missing. When ``None`` (the default), uses
+            ``DEFAULT_PARENT_DIR / name`` so a fresh install lands where
+            Claude Code auto-discovers it. Must not exist unless
+            ``overwrite=True``.
         overwrite: When ``True``, an existing ``target`` is replaced
             file-by-file; files in ``target`` that are NOT part of the
             bundled skill are left in place (defensive: the user may
             have added per-machine additions next to SKILL.md).
+        name: Which bundled skill to install. Defaults to
+            ``SKILL_NAME`` (``"lit-library"``) for legacy callers.
 
     Returns:
-        A summary dict with keys ``target`` (Path), ``files`` (list of
-        copied filenames), ``mode`` ("created" or "overwritten").
+        A summary dict with keys ``name`` (str), ``target`` (Path),
+        ``files`` (list of copied filenames), ``mode``
+        (``"created"`` | ``"overwritten"``).
 
     Raises:
         SkillInstallError: target exists and ``overwrite`` is False; or
-            the bundled resources cannot be located (broken install).
+            ``name`` is unknown; or the bundled resources cannot be
+            located (broken install).
     """
-    root = bundled_skill_root()
+    root = bundled_skill_root(name)
     items = _iter_skill_files(root)
     if not items:
         raise SkillInstallError(
             f"No skill files found inside the installed package at "
             f"{root}. Reinstall litman (e.g. `pip install -e .`)."
         )
+
+    if target is None:
+        target = DEFAULT_PARENT_DIR / name
 
     target_exists = target.exists()
     if target_exists and not overwrite:
@@ -100,7 +168,39 @@ def install_skill(
         copied.append(item.name)
 
     return {
+        "name": name,
         "target": target,
         "files": copied,
         "mode": "overwritten" if target_exists else "created",
     }
+
+
+def install_all_skills(
+    parent_dir: Path = DEFAULT_PARENT_DIR,
+    overwrite: bool = False,
+) -> list[dict[str, Any]]:
+    """Install every bundled skill into ``parent_dir/<name>/``.
+
+    Each skill is installed independently — if one already exists and
+    ``overwrite`` is False, the call raises before any further skill is
+    touched. This keeps the operation atomic-from-the-user's-view: you
+    either get a clean batch install, or you get told why it stopped.
+
+    Args:
+        parent_dir: Directory under which each skill gets its own
+            subdirectory. Defaults to ``~/.claude/skills/``.
+        overwrite: Forwarded to :func:`install_skill`.
+
+    Returns:
+        A list of the summary dicts returned by :func:`install_skill`,
+        in the same order as :func:`list_bundled_skills`.
+    """
+    results: list[dict[str, Any]] = []
+    for skill_name in list_bundled_skills():
+        result = install_skill(
+            target=parent_dir / skill_name,
+            overwrite=overwrite,
+            name=skill_name,
+        )
+        results.append(result)
+    return results
