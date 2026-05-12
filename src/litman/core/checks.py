@@ -43,9 +43,10 @@ from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
 from litman.core.id import is_valid_id
-from litman.core.notes import enumerate_markdown_files
+from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME
+from litman.exceptions import VaultRegistryError
 
 _yaml = YAML(typ="safe")
 
@@ -336,12 +337,78 @@ def check_bidirectional_refs(
     return out
 
 
+def _load_vault_paper_ids(vault_path: Path) -> set[str] | None:
+    """Read ``INDEX.json`` from any vault and return its set of paper ids.
+
+    Used by ``check_dangling_wikilinks`` to resolve cross-vault wikilinks
+    (M8.4). Returns ``None`` when the vault path no longer exists, is not
+    a directory, has no INDEX.json, or whose INDEX.json is unparseable —
+    every one of those cases reads as "we can't verify what's in this
+    fork" and the caller surfaces it as a dangling-link diagnostic.
+    """
+    import json
+
+    if not vault_path.is_dir():
+        return None
+    index_path = vault_path / "INDEX.json"
+    if not index_path.is_file():
+        return None
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    papers = payload.get("papers") or []
+    return {
+        str(p.get("id"))
+        for p in papers
+        if isinstance(p, dict) and p.get("id")
+    }
+
+
 def check_dangling_wikilinks(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """``[[id]]`` in any tracked notes file pointing at a missing paper."""
+    """``[[id]]`` / ``[[vault:id]]`` in tracked notes pointing at missing papers.
+
+    M8.4 extends the legacy check: the inner target of every ``[[...]]``
+    is parsed via :func:`parse_wikilink_target`; if a vault prefix is
+    present we cross-check against that vault's registry entry +
+    INDEX.json instead of the current vault's paper set.
+
+    Failure modes the check distinguishes for cross-vault links:
+
+    * **Unregistered vault** — the prefix points at a name not in
+      ``~/.config/litman/vaults.yaml``. Surfaced with a "register or
+      correct the name" hint.
+    * **Vault registered but unreadable** — the registry entry exists
+      but the path no longer holds an INDEX.json (directory moved /
+      vault never pushed). Surfaced with a "check vault info" hint.
+    * **Paper id not found in target vault** — the vault loaded
+      cleanly but the id is absent from its INDEX.json. Same shape as
+      the legacy same-vault dangling case, just scoped to the fork.
+    * **Empty vault prefix / empty paper id** — malformed link
+      (``[[:id]]`` or ``[[vault:]]``); reported with a clear message.
+
+    Local import of vault_registry helpers avoids a cycle: vault_registry
+    depends only on stdlib + pydantic, but pulling it into checks at
+    module load would tie health-check init time to registry-load time
+    even for vaults that contain zero cross-vault wikilinks.
+    """
+    from litman.core.vault_registry import find_by_name, load_registry
+
     known_ids = {str(p.get("id")) for p in papers if p.get("id")}
     out: list[Issue] = []
+
+    # Lazy-load the registry once: we don't want to pay the file IO when
+    # no cross-vault link exists in the entire vault. None encodes both
+    # "not loaded yet" and "loaded but registry corrupt"; the boolean
+    # below disambiguates so we don't retry the load on every link.
+    registry = None
+    registry_loaded = False
+    # Cache target vault → paper-id set so repeated cross-vault refs to
+    # the same vault don't re-parse its INDEX.json.
+    target_ids_cache: dict[str, set[str] | None] = {}
+
     for md_path in enumerate_markdown_files(vault):
         try:
             text = md_path.read_text(encoding="utf-8")
@@ -350,18 +417,110 @@ def check_dangling_wikilinks(
         rel = md_path.relative_to(vault)
         seen: set[str] = set()
         for m in _WIKILINK_RE.finditer(text):
-            target = m.group(1).strip()
-            if not target or target in seen:
+            raw = m.group(1).strip()
+            if not raw or raw in seen:
                 continue
-            seen.add(target)
-            if target not in known_ids:
+            seen.add(raw)
+
+            vault_prefix, paper_id = parse_wikilink_target(raw)
+
+            if vault_prefix is None:
+                # Legacy same-vault form: paper id must exist locally.
+                if paper_id not in known_ids:
+                    out.append(
+                        Issue(
+                            category="dangling_wikilinks",
+                            severity="error",
+                            paper_id=None,
+                            message=f"{rel}: contains [[{raw}]] but no such paper",
+                            hint="edit the file to remove the bracket-link or correct the id",
+                        )
+                    )
+                continue
+
+            # Cross-vault form (M8.4).
+            if not vault_prefix or not paper_id:
                 out.append(
                     Issue(
                         category="dangling_wikilinks",
                         severity="error",
                         paper_id=None,
-                        message=f"{rel}: contains [[{target}]] but no such paper",
-                        hint="edit the file to remove the bracket-link or correct the id",
+                        message=(
+                            f"{rel}: malformed cross-vault wikilink [[{raw}]] — "
+                            "both vault name and paper id must be non-empty"
+                        ),
+                        hint="rewrite as [[vault-name:paper-id]]",
+                    )
+                )
+                continue
+
+            if not registry_loaded:
+                try:
+                    registry = load_registry()
+                except VaultRegistryError:
+                    registry = None
+                registry_loaded = True
+
+            entry = (
+                find_by_name(registry, vault_prefix)
+                if registry is not None else None
+            )
+            if entry is None:
+                out.append(
+                    Issue(
+                        category="dangling_wikilinks",
+                        severity="error",
+                        paper_id=None,
+                        message=(
+                            f"{rel}: [[{raw}]] references unregistered "
+                            f"vault {vault_prefix!r}"
+                        ),
+                        hint=(
+                            "register the vault with "
+                            f"`lit vault add {vault_prefix} <path>` "
+                            "or correct the vault prefix"
+                        ),
+                    )
+                )
+                continue
+
+            if vault_prefix not in target_ids_cache:
+                target_ids_cache[vault_prefix] = _load_vault_paper_ids(
+                    Path(entry.path)
+                )
+            target_ids = target_ids_cache[vault_prefix]
+            if target_ids is None:
+                out.append(
+                    Issue(
+                        category="dangling_wikilinks",
+                        severity="error",
+                        paper_id=None,
+                        message=(
+                            f"{rel}: [[{raw}]] target vault "
+                            f"{vault_prefix!r} is unreadable "
+                            f"(no INDEX.json at {entry.path})"
+                        ),
+                        hint=(
+                            f"`lit vault info {vault_prefix}` to inspect; "
+                            "restore the vault directory or remove this link"
+                        ),
+                    )
+                )
+                continue
+            if paper_id not in target_ids:
+                out.append(
+                    Issue(
+                        category="dangling_wikilinks",
+                        severity="error",
+                        paper_id=None,
+                        message=(
+                            f"{rel}: [[{raw}]] but vault "
+                            f"{vault_prefix!r} has no paper id {paper_id!r}"
+                        ),
+                        hint=(
+                            f"`lit list --vault {vault_prefix}` to find the "
+                            "right id, or correct the link"
+                        ),
                     )
                 )
     return out
