@@ -100,3 +100,14 @@ class SyncError(LitmanError):
     sync not yet set up in lit-config.yaml, or rclone returned a non-zero
     exit status (network down, auth failure, transfer error, etc.).
     """
+
+
+class VaultRegistryError(LitmanError):
+    """`lit vault` (M8) rejected an op against ``~/.config/litman/vaults.yaml``:
+    invalid name shape, duplicate / unknown name, registry file malformed,
+    or a path supplied to ``add`` does not point at a valid vault.
+
+    Distinct from ``LibraryNotFoundError`` (which is about the *active*
+    vault not being discoverable in a single command run): registry errors
+    surface from the user-level registry layer, not from any single vault.
+    """

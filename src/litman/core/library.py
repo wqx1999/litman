@@ -98,11 +98,20 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
 def find_vault(explicit: Path | None = None) -> Path:
     """Locate the active vault using the standard discovery chain.
 
-    Resolution order:
-        1. ``explicit`` argument if provided (e.g. from ``--library`` flag or
-           ``LIT_LIBRARY`` environment variable surfaced through Click).
-        2. Walk up from the current working directory looking for a directory
-           that contains ``lit-config.yaml``.
+    Resolution order (M8.1 added step 2):
+        1. ``explicit`` argument if provided (e.g. from ``--library`` flag,
+           ``LIT_LIBRARY`` environment variable surfaced through Click, or
+           ``--vault NAME`` after M8.3 resolves the name to a path).
+        2. The active vault from ``~/.config/litman/vaults.yaml`` if the
+           registry exists and has an entry with ``is_active=true``.
+           A *malformed* registry (corrupt yaml, schema mismatch) falls
+           through to step 3 silently — we don't want a broken registry
+           to brick every command. A *valid* registry whose active entry
+           points at a directory that no longer holds a lit-config.yaml,
+           however, raises explicitly: that's a misconfiguration the user
+           needs to see, not silently route around.
+        3. Walk up from the current working directory looking for a
+           directory that contains ``lit-config.yaml``.
 
     Args:
         explicit: Optional caller-supplied vault path.
@@ -111,7 +120,8 @@ def find_vault(explicit: Path | None = None) -> Path:
         Absolute path to the discovered vault.
 
     Raises:
-        LibraryNotFoundError: No ``lit-config.yaml`` discoverable.
+        LibraryNotFoundError: No ``lit-config.yaml`` discoverable, or the
+            registry's active entry points at a stale path.
     """
     if explicit is not None:
         candidate = explicit.resolve()
@@ -122,6 +132,35 @@ def find_vault(explicit: Path | None = None) -> Path:
             )
         return candidate
 
+    # Step 2: registry active vault. Local import avoids a circular dep
+    # because vault_registry only imports stdlib + exceptions + pydantic.
+    from litman.core.vault_registry import (
+        VaultRegistryError,
+        find_active,
+        load_registry,
+    )
+
+    try:
+        registry = load_registry()
+    except VaultRegistryError:
+        # Corrupt registry — fall through. The user will see the parse
+        # error the next time they run a `lit vault` command, which is
+        # the right surface for that diagnostic.
+        registry = None
+
+    if registry is not None:
+        active = find_active(registry)
+        if active is not None:
+            active_path = Path(active.path)
+            if (active_path / "lit-config.yaml").is_file():
+                return active_path
+            raise LibraryNotFoundError(
+                f"Active vault {active.name!r} points at {active_path} "
+                "but that directory no longer holds a lit-config.yaml. "
+                "Fix the path (move the vault back, or `lit vault remove` "
+                "and re-add), or `lit vault use <other-name>` to switch."
+            )
+
     here = Path.cwd().resolve()
     for parent in [here, *here.parents]:
         if (parent / "lit-config.yaml").is_file():
@@ -129,5 +168,6 @@ def find_vault(explicit: Path | None = None) -> Path:
 
     raise LibraryNotFoundError(
         "No lit-config.yaml found in the current directory or any parent. "
-        "Set LIT_LIBRARY, pass --library <vault-path>, or run `lit init` first."
+        "Set LIT_LIBRARY, pass --library <vault-path>, register a vault "
+        "with `lit vault add`, or run `lit init` first."
     )
