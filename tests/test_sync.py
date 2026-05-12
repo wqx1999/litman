@@ -36,9 +36,11 @@ from litman.core.sync import (
     Size,
     SyncState,
     build_exclude_args,
+    codes_ignore_patterns_to_rclone,
     compute_status,
     format_iso,
     humanize_bytes,
+    largest_files,
     list_remotes,
     local_vault_size,
     pull,
@@ -586,7 +588,10 @@ def test_cli_sync_push_uploads(
     vault, target = configured_vault
     _seed_paper(vault, "p1")
     runner = CliRunner()
-    result = runner.invoke(cli, ["sync", "push", "--library", str(vault)])
+    # First push triggers the size-preview prompt; --yes skips it.
+    result = runner.invoke(
+        cli, ["sync", "push", "--yes", "--library", str(vault)]
+    )
     assert result.exit_code == 0, result.output
     assert "Push complete" in result.output
     assert (fake_rclone_env / "papers" / "p1" / "summary.md").is_file()
@@ -702,3 +707,377 @@ def test_sync_setup_without_rclone_errors(
     assert result.exit_code != 0
     assert isinstance(result.exception, SyncError)
     assert "rclone" in str(result.exception).lower()
+
+
+# ===========================================================================
+# M6.2 — size preview, --exclude-repos, --dry-run on CLI
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# largest_files
+# ---------------------------------------------------------------------------
+
+
+def test_largest_files_returns_top_n_sorted(vault: Path) -> None:
+    """Three files of distinct sizes -> top-2 yields the two biggest."""
+    # Add to whatever seed files already exist.
+    (vault / "papers").mkdir(exist_ok=True)
+    (vault / "papers" / "big").mkdir(exist_ok=True)
+    (vault / "papers" / "big" / "huge.bin").write_bytes(b"X" * 10_000)
+    (vault / "papers" / "big" / "medium.bin").write_bytes(b"Y" * 5_000)
+    (vault / "papers" / "big" / "small.bin").write_bytes(b"Z" * 100)
+
+    top2 = largest_files(vault, n=2)
+    assert len(top2) == 2
+    assert top2[0][1] == 10_000  # huge.bin first
+    assert top2[1][1] == 5_000   # medium.bin second
+    # Names propagate via relative path.
+    assert top2[0][0].name == "huge.bin"
+
+
+def test_largest_files_respects_excludes(vault: Path) -> None:
+    """A massive file under .litman-staging/ should NOT appear in the top list."""
+    staging = vault / ".litman-staging" / "op"
+    staging.mkdir(parents=True)
+    (staging / "should-not-appear").write_bytes(b"X" * 100_000)
+
+    top = largest_files(vault, n=10)
+    rels = [str(p) for p, _ in top]
+    assert not any(".litman-staging" in r for r in rels)
+
+
+def test_largest_files_truncates_to_n(vault: Path) -> None:
+    """Vault with many files -> result list is at most n entries."""
+    (vault / "scratch").mkdir(exist_ok=True)
+    for i in range(20):
+        (vault / "scratch" / f"f{i}").write_bytes(b"x" * (100 + i))
+    top = largest_files(vault, n=3)
+    assert len(top) == 3
+
+
+def test_largest_files_empty_vault_returns_empty_list(tmp_path: Path) -> None:
+    """No files at all -> empty result, no error."""
+    empty = tmp_path / "void"
+    empty.mkdir()
+    assert largest_files(empty, n=5) == []
+
+
+# ---------------------------------------------------------------------------
+# codes_ignore_patterns_to_rclone
+# ---------------------------------------------------------------------------
+
+
+def test_codes_ignore_patterns_to_rclone_dir() -> None:
+    """``repo/`` (trailing slash) -> ``codes/*/repo/**`` (rclone glob)."""
+    from litman.core.sync import codes_ignore_patterns_to_rclone
+
+    out = codes_ignore_patterns_to_rclone(["repo/"])
+    assert out == ("codes/*/repo/**",)
+
+
+def test_codes_ignore_patterns_to_rclone_file() -> None:
+    """No trailing slash -> file-pattern form (no `/**` suffix)."""
+    from litman.core.sync import codes_ignore_patterns_to_rclone
+
+    out = codes_ignore_patterns_to_rclone(["foo.cache"])
+    assert out == ("codes/*/foo.cache",)
+
+
+def test_codes_ignore_patterns_to_rclone_drops_empty() -> None:
+    from litman.core.sync import codes_ignore_patterns_to_rclone
+
+    out = codes_ignore_patterns_to_rclone(["repo/", "  ", ""])
+    assert out == ("codes/*/repo/**",)
+
+
+def test_codes_ignore_patterns_to_rclone_multiple() -> None:
+    from litman.core.sync import codes_ignore_patterns_to_rclone
+
+    out = codes_ignore_patterns_to_rclone(["repo/", "node_modules/", "*.tmp"])
+    assert out == (
+        "codes/*/repo/**",
+        "codes/*/node_modules/**",
+        "codes/*/*.tmp",
+    )
+
+
+# ---------------------------------------------------------------------------
+# push with extra_excludes through the core (codes/*/repo/ filter)
+# ---------------------------------------------------------------------------
+
+
+def _seed_codes(vault: Path, repo_name: str, payload: str = "code\n") -> None:
+    """Drop a minimal codes/<name>/repo/<file> + repo-meta.yaml on disk."""
+    repo_root = vault / "codes" / repo_name
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "repo-meta.yaml").write_text(
+        f"name: {repo_name}\nupstream: file:///tmp/u\npapers: []\n",
+        encoding="utf-8",
+    )
+    (repo_root / "notes.md").write_text("notes\n", encoding="utf-8")
+    (repo_root / "repo").mkdir(exist_ok=True)
+    (repo_root / "repo" / "code.py").write_text(payload, encoding="utf-8")
+
+
+def test_push_excludes_repo_dirs_when_extra_excludes_set(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """``codes/*/repo/**`` exclude -> repo/ never lands on the remote, but
+    repo-meta.yaml + notes.md still travel."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    _seed_codes(vault, "MyRepo")
+
+    push(vault, target, extra_excludes=("codes/*/repo/**",))
+
+    # repo-meta.yaml + notes.md transferred...
+    assert (fake_rclone_env / "codes" / "MyRepo" / "repo-meta.yaml").is_file()
+    assert (fake_rclone_env / "codes" / "MyRepo" / "notes.md").is_file()
+    # ...but repo/ itself did not.
+    assert not (fake_rclone_env / "codes" / "MyRepo" / "repo").exists()
+
+
+def test_push_includes_repo_dirs_by_default(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """Without extra_excludes, codes/*/repo/ IS uploaded."""
+    vault, target = configured_vault
+    _seed_codes(vault, "MyRepo")
+
+    push(vault, target)  # no extra_excludes
+
+    assert (fake_rclone_env / "codes" / "MyRepo" / "repo" / "code.py").is_file()
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit sync push --yes / --dry-run / --exclude-repos
+# ---------------------------------------------------------------------------
+
+
+def test_cli_sync_push_first_time_prompts(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """Without --yes, the first push surfaces the size-preview prompt; 'n'
+    aborts and nothing is transferred."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--library", str(vault)], input="n\n"
+    )
+    assert result.exit_code != 0  # click.confirm(abort=True) on 'n'
+    assert "First-push size preview" in result.output
+    assert "Total:" in result.output
+    # Nothing was uploaded.
+    assert not (fake_rclone_env / "papers" / "p1" / "summary.md").exists()
+    # No stamp was recorded either.
+    assert read_sync_state(vault).last_push is None
+
+
+def test_cli_sync_push_yes_skips_prompt(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """--yes skips the confirmation but still prints the preview."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "First-push size preview" in result.output
+    assert "Push complete" in result.output
+    assert (fake_rclone_env / "papers" / "p1" / "summary.md").is_file()
+
+
+def test_cli_sync_push_second_push_no_prompt(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """Second push (last-push already stamped) skips the preview entirely."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    # First push (with --yes) to stamp the state file.
+    runner = CliRunner()
+    first = runner.invoke(
+        cli, ["sync", "push", "--yes", "--library", str(vault)]
+    )
+    assert first.exit_code == 0
+
+    # Second push without --yes should NOT prompt.
+    _seed_paper(vault, "p2")
+    second = runner.invoke(cli, ["sync", "push", "--library", str(vault)])
+    assert second.exit_code == 0, second.output
+    assert "First-push size preview" not in second.output
+    assert (fake_rclone_env / "papers" / "p2" / "summary.md").is_file()
+
+
+def test_cli_sync_push_dry_run_skips_preview_and_transfer(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """--dry-run on first push: no preview prompt, no transfer, no stamp."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "First-push size preview" not in result.output
+    assert "Dry-run complete" in result.output
+    assert not (fake_rclone_env / "papers" / "p1").exists()
+    assert read_sync_state(vault).last_push is None
+
+
+def test_cli_sync_push_exclude_repos_flag(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """--exclude-repos -> codes/*/repo/ excluded from the transfer."""
+    vault, target = configured_vault
+    _seed_codes(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "sync", "push",
+            "--exclude-repos",
+            "--yes",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "codes/*/repo/ excluded" in result.output
+    # repo-meta.yaml made it, repo/ did not.
+    assert (fake_rclone_env / "codes" / "MyRepo" / "repo-meta.yaml").is_file()
+    assert not (fake_rclone_env / "codes" / "MyRepo" / "repo").exists()
+
+
+def test_cli_sync_push_include_repos_overrides_config_default(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """sync.exclude_repos: true in config but --include-repos on CLI wins."""
+    vault, target = configured_vault
+    # Flip the config-file default to exclude_repos=True.
+    write_sync_to_config(
+        vault / "lit-config.yaml",
+        SetupPayload(
+            remote="fake-cloud",
+            path=str(fake_rclone_env),
+            exclude_repos=True,
+        ),
+    )
+    _seed_codes(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "sync", "push",
+            "--include-repos",
+            "--yes",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "codes/*/repo/ excluded" not in result.output
+    # repo/ should have been uploaded since CLI flag wins.
+    assert (
+        fake_rclone_env / "codes" / "MyRepo" / "repo" / "code.py"
+    ).is_file()
+
+
+def test_cli_sync_push_config_default_exclude_repos(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """sync.exclude_repos: true in config, no CLI flag -> excluded."""
+    vault, target = configured_vault
+    write_sync_to_config(
+        vault / "lit-config.yaml",
+        SetupPayload(
+            remote="fake-cloud",
+            path=str(fake_rclone_env),
+            exclude_repos=True,
+        ),
+    )
+    _seed_codes(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "codes/*/repo/ excluded" in result.output
+    assert not (fake_rclone_env / "codes" / "MyRepo" / "repo").exists()
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit sync pull --dry-run / --exclude-repos
+# ---------------------------------------------------------------------------
+
+
+def test_cli_sync_pull_dry_run_does_not_modify(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1", body="local\n")
+    push(vault, target)
+    # Remove the local copy then pull --dry-run.
+    shutil.rmtree(vault / "papers" / "p1")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "pull", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Dry-run complete" in result.output
+    # No file was restored.
+    assert not (vault / "papers" / "p1").exists()
+    # No last-pull stamp either.
+    assert read_sync_state(vault).last_pull is None
+
+
+def test_cli_sync_pull_exclude_repos_propagates(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """Pull with --exclude-repos: remote-side codes/*/repo/ not materialised
+    locally even if it exists on the remote."""
+    vault, target = configured_vault
+    _seed_codes(vault, "MyRepo")
+    # First push everything (incl. repo/) so the remote holds it.
+    push(vault, target)
+    assert (fake_rclone_env / "codes" / "MyRepo" / "repo" / "code.py").is_file()
+    # Wipe local codes/, then pull --exclude-repos.
+    shutil.rmtree(vault / "codes" / "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "sync", "pull",
+            "--exclude-repos",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Metadata files came back; repo/ did NOT.
+    assert (vault / "codes" / "MyRepo" / "repo-meta.yaml").is_file()
+    assert not (vault / "codes" / "MyRepo" / "repo").exists()
+
+
+# ---------------------------------------------------------------------------
+# Help text mentions the new flags
+# ---------------------------------------------------------------------------
+
+
+def test_cli_sync_push_help_lists_new_flags() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "push", "--help"])
+    assert result.exit_code == 0
+    assert "--exclude-repos" in result.output
+    assert "--include-repos" in result.output
+    assert "--dry-run" in result.output
+    assert "--yes" in result.output
+
+
+def test_cli_sync_pull_help_lists_new_flags() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "pull", "--help"])
+    assert result.exit_code == 0
+    assert "--exclude-repos" in result.output
+    assert "--dry-run" in result.output

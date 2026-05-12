@@ -30,13 +30,18 @@ from rich.table import Table
 from litman.core.config import CONFIG_FILENAME, load_config
 from litman.core.library import find_vault
 from litman.core.sync import (
+    DEFAULT_EXCLUDES,
     SetupPayload,
+    codes_ignore_patterns_to_rclone,
     compute_status,
     format_iso,
     humanize_bytes,
+    largest_files,
     list_remotes,
+    local_vault_size,
     pull,
     push,
+    read_sync_state,
     remote_exists,
     write_sync_to_config,
 )
@@ -204,8 +209,16 @@ def sync_setup_cmd(
 # ---------------------------------------------------------------------------
 
 
-def _require_sync_configured(vault: Path) -> str:
-    """Load config and return the rclone target URL or raise SyncError."""
+def _require_sync_configured(vault: Path) -> tuple[str, list[str], bool]:
+    """Load config and return ``(target_url, codes_ignore_patterns,
+    default_exclude_repos)`` or raise SyncError.
+
+    The second element is the raw ``codes_ignore_patterns`` field from
+    lit-config.yaml (the caller translates it to rclone globs when
+    ``--exclude-repos`` is in effect). The third element is the boolean
+    default from ``sync.exclude_repos`` so the caller can compute the
+    effective exclude state when the CLI flag was not passed explicitly.
+    """
     config = load_config(vault)
     if config.sync is None:
         raise SyncError(
@@ -218,7 +231,64 @@ def _require_sync_configured(vault: Path) -> str:
             "registered in rclone. Re-run `lit sync setup` or "
             "`rclone config`."
         )
-    return config.sync.target_url()
+    return (
+        config.sync.target_url(),
+        list(config.codes_ignore_patterns),
+        config.sync.exclude_repos,
+    )
+
+
+def _resolve_exclude_repos(
+    flag: bool | None, default_from_config: bool
+) -> bool:
+    """Decide whether ``--exclude-repos`` is in effect.
+
+    ``flag`` is the result of Click's ``--exclude-repos/--include-repos``
+    boolean pair: ``True`` if the user passed ``--exclude-repos``, ``False``
+    if they passed ``--include-repos``, and ``None`` if neither was given
+    (the latter falls back to the config-file default).
+    """
+    return default_from_config if flag is None else flag
+
+
+def _render_size_preview(
+    vault: Path,
+    extra_excludes: tuple[str, ...],
+    exclude_repos_active: bool,
+) -> None:
+    """Print a size + top-5 file preview before the first push.
+
+    Walks the local vault honoring the same exclude set that the push
+    itself will apply, prints the total size + top-5 largest files, and
+    nudges the user toward ``--exclude-repos`` when codes/ is not already
+    excluded.
+    """
+    # Re-derive the full exclude set (DEFAULT + extras) for the local walk
+    # so the preview matches what rclone will see during the actual push.
+    full = (*DEFAULT_EXCLUDES, *extra_excludes)
+    size = local_vault_size(vault, excludes=full)
+    biggest = largest_files(vault, n=5, excludes=full)
+
+    table = Table(
+        title="First-push size preview",
+        header_style="bold",
+        show_lines=False,
+    )
+    table.add_column("Path", overflow="fold")
+    table.add_column("Size", justify="right")
+    for rel, nbytes in biggest:
+        table.add_row(escape(str(rel)), humanize_bytes(nbytes))
+    console.print(table)
+    console.print(
+        f"[bold]Total:[/] {size.count} files, {humanize_bytes(size.bytes)}"
+    )
+    if not exclude_repos_active:
+        console.print(
+            "[dim]Tip: pass `--exclude-repos` (or set "
+            "`sync.exclude_repos: true` in lit-config.yaml) to skip "
+            "`codes/*/repo/` checkouts — they re-clone on the new "
+            "machine via `lit code restore-all`.[/]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -228,13 +298,44 @@ def _require_sync_configured(vault: Path) -> str:
 
 @sync_group.command("push")
 @click.option(
+    "--exclude-repos/--include-repos",
+    "exclude_repos_flag",
+    default=None,
+    help=(
+        "Apply lit-config.yaml's `codes_ignore_patterns` (default `repo/`) "
+        "to the transfer so `codes/*/repo/` checkouts are not uploaded. "
+        "When neither flag is given, falls back to `sync.exclude_repos` "
+        "in lit-config.yaml. The bulky checkouts can be re-cloned later "
+        "with `lit code restore-all`."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview only — print what rclone would transfer, then exit "
+    "without touching the remote.",
+)
+@click.option(
+    "--yes", "-y",
+    "yes",
+    is_flag=True,
+    default=False,
+    help="Skip the first-push size confirmation prompt (use in scripts).",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def sync_push_cmd(library: Path | None) -> None:
+def sync_push_cmd(
+    exclude_repos_flag: bool | None,
+    dry_run: bool,
+    yes: bool,
+    library: Path | None,
+) -> None:
     """Upload the vault to the configured cloud remote (``rclone sync``).
 
     One-way mirror: files removed locally are removed on the remote, files
@@ -242,20 +343,48 @@ def sync_push_cmd(library: Path | None) -> None:
     ``.litman-sync-state.yaml`` and ``.litman-staging/`` paths are
     unconditionally excluded.
 
-    M6.1 deliberately omits size warnings and ``--exclude-repos`` /
-    ``--dry-run`` — those land in M6.2.
+    On the FIRST push (``last-push`` blank in the sync-state file), prints
+    a size preview + top-5 largest files and confirms before transferring.
+    Subsequent pushes go straight through; pass ``--yes`` to skip the
+    confirm on first push (e.g. in cron / CI). ``--dry-run`` previews any
+    push (first or subsequent) without touching the remote.
     """
     vault = find_vault(library)
-    target = _require_sync_configured(vault)
-    console.print(
+    target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
+    extra_excludes = (
+        codes_ignore_patterns_to_rclone(codes_patterns) if exclude_repos else ()
+    )
+
+    is_first_push = read_sync_state(vault).last_push is None
+    if is_first_push and not dry_run:
+        _render_size_preview(vault, extra_excludes, exclude_repos)
+        if not yes:
+            click.confirm(
+                "Continue with first push to "
+                f"{target}?",
+                abort=True,
+                default=True,
+            )
+
+    banner = (
         f"[bold]Pushing[/] [dim]{vault}[/] → [bold]{escape(target)}[/]"
     )
-    push(vault, target)
+    if exclude_repos:
+        banner += " [dim](codes/*/repo/ excluded)[/]"
+    if dry_run:
+        banner += " [dim](dry-run)[/]"
+    console.print(banner)
+    push(vault, target, extra_excludes=extra_excludes, dry_run=dry_run)
+
+    tail = "[dim]`lit sync status` to inspect.[/]"
+    if dry_run:
+        tail = "[dim]Dry-run only — nothing transferred. Drop --dry-run to push for real.[/]"
     console.print(
         Panel.fit(
-            f"[bold green]Push complete.[/]\n"
+            f"[bold green]{'Dry-run complete' if dry_run else 'Push complete'}.[/]\n"
             f"[bold]Target:[/] {escape(target)}\n\n"
-            f"[dim]`lit sync status` to inspect.[/]",
+            f"{tail}",
             title="lit sync push",
             border_style="green",
         )
@@ -269,13 +398,35 @@ def sync_push_cmd(library: Path | None) -> None:
 
 @sync_group.command("pull")
 @click.option(
+    "--exclude-repos/--include-repos",
+    "exclude_repos_flag",
+    default=None,
+    help=(
+        "Apply lit-config.yaml's `codes_ignore_patterns` so `codes/*/repo/` "
+        "is not pulled even if the remote happens to hold it. Usually "
+        "unnecessary — if you pushed with --exclude-repos, the remote "
+        "already lacks repo/ — but kept symmetric for clarity."
+    ),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview only — print what rclone would transfer, then exit "
+    "without modifying the local vault.",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def sync_pull_cmd(library: Path | None) -> None:
+def sync_pull_cmd(
+    exclude_repos_flag: bool | None,
+    dry_run: bool,
+    library: Path | None,
+) -> None:
     """Download the configured cloud remote into the vault (``rclone sync``).
 
     Cross-machine restore: on a fresh server, run ``lit init`` to make an
@@ -285,21 +436,37 @@ def sync_pull_cmd(library: Path | None) -> None:
     One-way mirror with deletion: a file present locally but absent on the
     remote is DELETED locally. This is correct for the "freshly cloned"
     scenario; do not run pull against a vault holding unpushed local work
-    you care about.
+    you care about. Pass ``--dry-run`` to preview safely.
     """
     vault = find_vault(library)
-    target = _require_sync_configured(vault)
-    console.print(
+    target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
+    extra_excludes = (
+        codes_ignore_patterns_to_rclone(codes_patterns) if exclude_repos else ()
+    )
+
+    banner = (
         f"[bold]Pulling[/] [bold]{escape(target)}[/] → [dim]{vault}[/]"
     )
-    pull(vault, target)
+    if exclude_repos:
+        banner += " [dim](codes/*/repo/ excluded)[/]"
+    if dry_run:
+        banner += " [dim](dry-run)[/]"
+    console.print(banner)
+    pull(vault, target, extra_excludes=extra_excludes, dry_run=dry_run)
+
+    tail = (
+        "[dim]Run `lit health-check` to verify, and "
+        "`lit code restore-all` if codes/*/repo/ were excluded from "
+        "the original push.[/]"
+    )
+    if dry_run:
+        tail = "[dim]Dry-run only — nothing changed locally.[/]"
     console.print(
         Panel.fit(
-            f"[bold green]Pull complete.[/]\n"
+            f"[bold green]{'Dry-run complete' if dry_run else 'Pull complete'}.[/]\n"
             f"[bold]Source:[/] {escape(target)}\n\n"
-            f"[dim]Run `lit health-check` to verify, and "
-            "`lit code restore-all` if codes/*/repo/ were excluded from "
-            "the original push.[/]",
+            f"{tail}",
             title="lit sync pull",
             border_style="green",
         )
@@ -327,7 +494,7 @@ def sync_status_cmd(library: Path | None) -> None:
     timestamps. Output is a small table the user can eyeball at a glance.
     """
     vault = find_vault(library)
-    target = _require_sync_configured(vault)
+    target, _patterns, _default_exclude = _require_sync_configured(vault)
     report = compute_status(vault, target)
 
     table = Table(

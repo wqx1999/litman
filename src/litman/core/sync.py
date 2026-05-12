@@ -263,6 +263,75 @@ def local_vault_size(
     return Size(count=count, bytes=total)
 
 
+def largest_files(
+    vault: Path,
+    n: int = 5,
+    excludes: tuple[str, ...] = DEFAULT_EXCLUDES,
+) -> list[tuple[Path, int]]:
+    """Return the ``n`` largest files in ``vault`` after exclude filtering.
+
+    Result is ``[(relative_path, byte_size), ...]`` sorted by size descending.
+    Used by ``lit sync push`` to give the user a "here is what we'd transfer
+    and the biggest pieces" preview before the first push.
+
+    Walk + exclude semantics match ``local_vault_size`` to keep the two
+    views consistent — what gets counted is exactly what gets transferred.
+    """
+    drop_prefixes: list[str] = []
+    drop_basenames: list[str] = []
+    for pat in excludes:
+        if pat.endswith("/**"):
+            drop_prefixes.append(pat[:-3].rstrip("/"))
+        elif "/" in pat:
+            drop_prefixes.append(pat.split("/", 1)[0])
+        else:
+            drop_basenames.append(pat)
+
+    found: list[tuple[Path, int]] = []
+    for path in vault.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(vault)
+        top = rel.parts[0] if rel.parts else ""
+        if top in drop_prefixes:
+            continue
+        if rel.name in drop_basenames:
+            continue
+        try:
+            sz = path.stat().st_size
+        except OSError:
+            continue
+        found.append((rel, sz))
+    found.sort(key=lambda x: x[1], reverse=True)
+    return found[:n]
+
+
+def codes_ignore_patterns_to_rclone(
+    patterns: tuple[str, ...] | list[str],
+) -> tuple[str, ...]:
+    """Translate ``codes_ignore_patterns`` entries to rclone ``--exclude`` globs.
+
+    The lit-config field is interpreted as relative to ``codes/<name>/``:
+    ``repo/`` means "skip the checkout directory of every repo", not "skip
+    a top-level repo/ folder". Conversion rules:
+
+    - ``foo/`` (trailing slash, directory) → ``codes/*/foo/**``
+    - ``foo`` (no slash, file or glob) → ``codes/*/foo``
+
+    Empty entries are dropped silently.
+    """
+    out: list[str] = []
+    for raw in patterns:
+        pat = raw.strip()
+        if not pat:
+            continue
+        if pat.endswith("/"):
+            out.append(f"codes/*/{pat}**")
+        else:
+            out.append(f"codes/*/{pat}")
+    return tuple(out)
+
+
 def humanize_bytes(n: int) -> str:
     """Render a byte count as a human-friendly string (``1.2 MiB``)."""
     if n < 1024:
