@@ -33,6 +33,7 @@ from litman.commands.show import show_cmd
 from litman.commands.sync import sync_group
 from litman.commands.taxonomy import taxonomy_group
 from litman.commands.trash import trash_group
+from litman.commands.vault import vault_group
 from litman.exceptions import LitmanError
 
 console = Console()
@@ -64,6 +65,7 @@ cli.add_command(install_skill_cmd)
 cli.add_command(link_cmd)
 cli.add_command(unlink_cmd)
 cli.add_command(sync_group)
+cli.add_command(vault_group)
 
 
 @cli.command()
