@@ -24,7 +24,7 @@ from litman.core.config import (
     config_to_yaml_dict,
     load_config,
 )
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.exceptions import ConfigError
 
 console = Console()
@@ -62,14 +62,25 @@ def config_group() -> None:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def config_show_cmd(fmt: str, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def config_show_cmd(
+    fmt: str, library: Path | None, vault_name: str | None
+) -> None:
     """Print the parsed, validated config for the active vault.
 
     Reflects the *effective* values after schema defaults fill in any
     fields the on-disk yaml omits. Useful for confirming a hand edit took
     effect, or for inspecting an inherited vault on a new machine.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     config = load_config(vault)
 
     if fmt == "yaml":

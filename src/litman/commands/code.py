@@ -41,7 +41,7 @@ from litman.core.code import (
     write_repo_meta,
 )
 from litman.core.config import load_config
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.exceptions import CodeError, PaperNotFoundError
 
 console = Console()
@@ -103,12 +103,22 @@ def code_group() -> None:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def code_add_cmd(
     url: str,
     repo_name: str | None,
     paper_id: str | None,
     depth: int | None,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Clone a code repository into ``<vault>/codes/<repo-name>/repo/``.
 
@@ -117,7 +127,7 @@ def code_add_cmd(
     ``--paper <id>``, also appends ``<repo-name>`` to that paper's
     ``code-clones`` list atomically.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     if depth is None:
         depth = load_config(vault).default_clone_depth
 
@@ -209,10 +219,20 @@ def code_add_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def code_list_cmd(
     paper_id: str | None,
     orphan: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """List code repositories in the vault.
 
@@ -225,7 +245,7 @@ def code_list_cmd(
             "Pick one filter or pass neither."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
 
     if paper_id is not None:
         paper_meta = vault / "papers" / paper_id / "metadata.yaml"
@@ -304,10 +324,20 @@ def code_list_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def code_link_cmd(
     repo_name: str,
     paper_id: str,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Bind an existing local repo to a paper.
 
@@ -316,7 +346,7 @@ def code_link_cmd(
     atomically. Idempotent: if the binding is already present on both sides,
     no metadata is touched.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     changed = bind_paper_to_repo(vault, paper_id, repo_name)
     if changed:
         console.print(
@@ -349,17 +379,27 @@ def code_link_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def code_update_cmd(
     repo_name: str,
     unshallow: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Run ``git pull --ff-only`` inside ``codes/<repo-name>/repo/``.
 
     With ``--unshallow``, first promote a shallow clone to full history.
     Bumps the repo's ``updated-at`` audit timestamp if anything changed.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     repo_root = vault / CODES_DIRNAME / repo_name
     if not repo_root.is_dir():
         raise CodeError(
@@ -414,11 +454,21 @@ def code_update_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def code_rm_cmd(
     repo_name: str,
     cascade: bool,
     yes: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Permanently delete ``codes/<repo-name>/`` from the vault.
 
@@ -427,7 +477,7 @@ def code_rm_cmd(
     ``--cascade``, also strip the repo name from every paper's
     ``code-clones`` list atomically before the directory is removed.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     repo_root = vault / CODES_DIRNAME / repo_name
     if not repo_root.is_dir():
         raise CodeError(
@@ -516,10 +566,20 @@ def code_rm_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def code_restore_all_cmd(
     depth: int | None,
     dry_run: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Re-clone every code repo whose local ``repo/`` checkout is missing.
 
@@ -537,7 +597,7 @@ def code_restore_all_cmd(
     (CI/cron-gateable); 0 if every repo is either restored or already
     present.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     if depth is None:
         depth = load_config(vault).default_clone_depth
     report = restore_missing_repos(vault, depth=depth, dry_run=dry_run)

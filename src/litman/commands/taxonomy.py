@@ -34,7 +34,7 @@ from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.document import list_papers
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.taxonomy import (
     ALL_DICTS,
     FIXED_DICTS,
@@ -112,9 +112,22 @@ def taxonomy_group() -> None:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def taxonomy_list_cmd(dict_name: str | None, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def taxonomy_list_cmd(
+    dict_name: str | None,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
     """List values in one dict (or all dicts when no name given)."""
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     _, parsed = _load_taxonomy(vault)
 
     if dict_name is not None:
@@ -163,8 +176,20 @@ def _print_single_dict(name: str, values: list[str]) -> None:
     default=None,
     envvar="LIT_LIBRARY",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def taxonomy_add_cmd(
-    dict_name: str, values: tuple[str, ...], library: Path | None
+    dict_name: str,
+    values: tuple[str, ...],
+    library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Register new value(s) in a user dict.
 
@@ -172,7 +197,7 @@ def taxonomy_add_cmd(
     in sorted order regardless of the input order.
     """
     _validate_user_dict(dict_name)
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     text, parsed = _load_taxonomy(vault)
 
     current = parsed[dict_name]
@@ -223,8 +248,21 @@ def taxonomy_add_cmd(
     default=None,
     envvar="LIT_LIBRARY",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def taxonomy_rename_cmd(
-    dict_name: str, old: str, new: str, library: Path | None
+    dict_name: str,
+    old: str,
+    new: str,
+    library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Rename a value in a user dict and ripple to all referencing papers."""
     _validate_user_dict(dict_name)
@@ -232,7 +270,7 @@ def taxonomy_rename_cmd(
         raise TaxonomyError("`old` and `new` are identical — nothing to do.")
     if not new.strip():
         raise TaxonomyError("`new` value cannot be empty.")
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     text, parsed = _load_taxonomy(vault)
     current = parsed[dict_name]
     if old not in current:
@@ -294,11 +332,21 @@ def taxonomy_rename_cmd(
     default=None,
     envvar="LIT_LIBRARY",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def taxonomy_merge_cmd(
     dict_name: str,
     sources: tuple[str, ...],
     dest: str,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Fold one or more source values into a destination value.
 
@@ -320,7 +368,7 @@ def taxonomy_merge_cmd(
             "All sources equal the destination — nothing to merge."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     text, parsed = _load_taxonomy(vault)
     current = parsed[dict_name]
     missing = [s for s in sources_unique if s not in current]
@@ -376,8 +424,20 @@ def taxonomy_merge_cmd(
     default=None,
     envvar="LIT_LIBRARY",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def taxonomy_rm_cmd(
-    dict_name: str, value: str, library: Path | None
+    dict_name: str,
+    value: str,
+    library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Remove a value (refused if any paper still references it).
 
@@ -386,7 +446,7 @@ def taxonomy_rm_cmd(
     silent deletion of a tag from many papers should be an explicit choice.
     """
     _validate_user_dict(dict_name)
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     text, parsed = _load_taxonomy(vault)
     current = parsed[dict_name]
     if value not in current:

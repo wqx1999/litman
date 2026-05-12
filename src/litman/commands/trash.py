@@ -19,7 +19,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from litman.core.document import list_papers
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.trash import (
     empty_trash,
     list_trash,
@@ -50,9 +50,18 @@ def trash_group() -> None:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def trash_list_cmd(library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def trash_list_cmd(library: Path | None, vault_name: str | None) -> None:
     """Show trash entries, newest first."""
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
     if not entries:
         console.print("[dim](trash is empty)[/]")
@@ -98,13 +107,26 @@ def trash_list_cmd(library: Path | None) -> None:
     default=None,
     envvar="LIT_LIBRARY",
 )
-def trash_restore_cmd(paper_id_or_entry: str, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def trash_restore_cmd(
+    paper_id_or_entry: str,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
     """Restore a trashed paper to ``papers/<id>/``.
 
     Pass either the paper id (must be unambiguous) or the full entry name
     (``<id>-<UTC-timestamp>``). Refreshes INDEX.json and views/.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     entry = resolve_trash_entry(vault, paper_id_or_entry)
 
     restored_path = restore_from_trash(vault, entry)
@@ -147,9 +169,22 @@ def trash_restore_cmd(paper_id_or_entry: str, library: Path | None) -> None:
     default=None,
     envvar="LIT_LIBRARY",
 )
-def trash_empty_cmd(skip_confirm: bool, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def trash_empty_cmd(
+    skip_confirm: bool,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
     """Permanently delete every trash entry."""
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
     if not entries:
         console.print("[dim](trash is already empty)[/]")

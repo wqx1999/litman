@@ -37,7 +37,7 @@ from litman.core.dedup import (
     suggest_alternative_ids,
 )
 from litman.core.id import derive_id, is_valid_id
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
 from litman.importers.llm import parse_llm_json
@@ -233,6 +233,15 @@ def _resolve_collision(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def add_cmd(
     pdf_path: Path,
     doi: str | None,
@@ -240,6 +249,7 @@ def add_cmd(
     id_override: str | None,
     auto_suffix: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Import a paper PDF into the vault.
 
@@ -255,7 +265,7 @@ def add_cmd(
             "These flags are mutually exclusive."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
 
     if from_llm_json is not None:
         parsed = parse_llm_json(from_llm_json)

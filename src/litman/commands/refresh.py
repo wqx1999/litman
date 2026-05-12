@@ -10,7 +10,7 @@ from rich.markup import escape
 
 from litman.core.config import load_config
 from litman.core.document import list_papers
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_refs import rebuild_all_project_refs
 from litman.core.views import rebuild_views, write_index
 
@@ -25,7 +25,18 @@ console = Console()
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def refresh_views_cmd(library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def refresh_views_cmd(
+    library: Path | None, vault_name: str | None
+) -> None:
     """Rebuild derived views from ``papers/*/metadata.yaml``.
 
     Three things get refreshed, in order:
@@ -40,7 +51,7 @@ def refresh_views_cmd(library: Path | None) -> None:
     The metadata files are the single source of truth; every output here
     is derived and can be regenerated wholesale.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     papers = list_papers(vault)
     config = load_config(vault)
 

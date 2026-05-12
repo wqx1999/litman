@@ -28,7 +28,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from litman.core.config import CONFIG_FILENAME, load_config
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.sync import (
     DEFAULT_EXCLUDES,
     SetupPayload,
@@ -96,10 +96,20 @@ def sync_group() -> None:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def sync_setup_cmd(
     remote_arg: str | None,
     path_arg: str | None,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Configure the cloud sync target in ``lit-config.yaml``.
 
@@ -112,7 +122,7 @@ def sync_setup_cmd(
     entirely — useful when wangq already has a remote configured and just
     wants to point litman at it.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     config_path = vault / CONFIG_FILENAME
 
     # If the user didn't pre-supply a remote, hand the TTY to rclone config
@@ -330,11 +340,21 @@ def _render_size_preview(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def sync_push_cmd(
     exclude_repos_flag: bool | None,
     dry_run: bool,
     yes: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Upload the vault to the configured cloud remote (``rclone sync``).
 
@@ -349,7 +369,7 @@ def sync_push_cmd(
     confirm on first push (e.g. in cron / CI). ``--dry-run`` previews any
     push (first or subsequent) without touching the remote.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
     exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
     extra_excludes = (
@@ -422,10 +442,20 @@ def sync_push_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def sync_pull_cmd(
     exclude_repos_flag: bool | None,
     dry_run: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Download the configured cloud remote into the vault (``rclone sync``).
 
@@ -438,7 +468,7 @@ def sync_pull_cmd(
     scenario; do not run pull against a vault holding unpushed local work
     you care about. Pass ``--dry-run`` to preview safely.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
     exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
     extra_excludes = (
@@ -486,14 +516,23 @@ def sync_pull_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def sync_status_cmd(library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     """Show last-push / last-pull timestamps and local vs. remote file counts.
 
     No network mutation. Calls ``rclone size --json`` once to enumerate the
     remote; reads the per-machine ``.litman-sync-state.yaml`` for
     timestamps. Output is a small table the user can eyeball at a glance.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, _patterns, _default_exclude = _require_sync_configured(vault)
     report = compute_status(vault, target)
 

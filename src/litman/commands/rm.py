@@ -45,7 +45,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.trash import move_to_trash
 from litman.core.views import rebuild_views, render_index
@@ -215,12 +215,22 @@ def _build_cascade_wikilink_updates(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def rm_cmd(
     paper_id: str,
     cascade: bool,
     purge: bool,
     skip_confirm: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Remove a paper from the vault.
 
@@ -236,7 +246,7 @@ def rm_cmd(
             f"Invalid paper id {paper_id!r}. Run `lit list` to see valid ids."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_dir = vault / "papers" / paper_id
     if not paper_dir.is_dir():
         raise PaperNotFoundError(

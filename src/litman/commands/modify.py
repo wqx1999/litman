@@ -35,7 +35,7 @@ from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.document import list_papers, read_metadata
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import ModifyError, PaperNotFoundError
 
@@ -212,12 +212,22 @@ def _format_diff_value(value: Any) -> str:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def modify_cmd(
     paper_id: str,
     set_ops: tuple[str, ...],
     add_tag_ops: tuple[str, ...],
     rm_tag_ops: tuple[str, ...],
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Edit fields on an existing paper's metadata.yaml.
 
@@ -231,7 +241,7 @@ def modify_cmd(
             "Run `lit modify --help` for examples."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     meta_file = vault / "papers" / paper_id / "metadata.yaml"
     if not meta_file.is_file():
         raise PaperNotFoundError(

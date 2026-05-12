@@ -16,6 +16,7 @@ from litman.exceptions import (
     LibraryNotFoundError,
     ParentNotFoundError,
     VaultExistsError,
+    VaultRegistryError,
 )
 
 # Subdirectories created inside every vault. Order is irrelevant; mkdir handles
@@ -171,3 +172,47 @@ def find_vault(explicit: Path | None = None) -> Path:
         "Set LIT_LIBRARY, pass --library <vault-path>, register a vault "
         "with `lit vault add`, or run `lit init` first."
     )
+
+
+def resolve_library_or_vault(
+    library: Path | None,
+    vault_name: str | None,
+) -> Path | None:
+    """Collapse the ``--library`` / ``--vault`` CLI pair into one Path.
+
+    M8.3 adds ``--vault NAME`` to every command that currently accepts
+    ``--library``. The two are mutually exclusive: ``--library`` is a
+    direct filesystem path, ``--vault`` is a name in the user-level
+    registry. This helper enforces the mutual-exclusion rule and
+    resolves the name when applicable.
+
+    Args:
+        library: Value passed to ``--library`` (or surfaced via the
+            ``LIT_LIBRARY`` envvar through Click). ``None`` when not given.
+        vault_name: Value passed to ``--vault NAME``. ``None`` when not given.
+
+    Returns:
+        A Path suitable to feed into ``find_vault(explicit=...)``, or
+        ``None`` when neither option was supplied (find_vault then falls
+        through to its own discovery chain: registry active → cwd-walk).
+
+    Raises:
+        VaultRegistryError: both options were passed, or ``vault_name``
+            is not registered in ``~/.config/litman/vaults.yaml``.
+    """
+    if library is not None and vault_name is not None:
+        raise VaultRegistryError(
+            "--library and --vault are mutually exclusive. Pass one or "
+            "the other, not both."
+        )
+    if vault_name is not None:
+        # Local import keeps the module-load graph identical to find_vault's
+        # registry-active branch and avoids a circular import in any future
+        # rearrangement where vault_registry grows a dependency on library.
+        from litman.core.vault_registry import (
+            load_registry,
+            resolve_vault_param,
+        )
+
+        return resolve_vault_param(load_registry(), vault_name)
+    return library

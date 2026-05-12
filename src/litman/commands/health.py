@@ -30,7 +30,7 @@ from litman.core.checks import (
     run_all_checks,
 )
 from litman.core.document import list_papers
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 
 console = Console()
 
@@ -147,7 +147,18 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def health_check_cmd(do_fix: bool, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def health_check_cmd(
+    do_fix: bool, library: Path | None, vault_name: str | None
+) -> None:
     """Run vault-wide consistency checks.
 
     Exits 0 on a clean vault, 1 if any issue is found (so the command can
@@ -155,7 +166,7 @@ def health_check_cmd(do_fix: bool, library: Path | None) -> None:
     state — if every issue was in a fixable category, the second pass is
     clean and the command exits 0.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     papers = list_papers(vault)
     n_papers = len(papers)
     console.print(

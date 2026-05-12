@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from litman.core.document import find_paper
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 
 console = Console()
 
@@ -24,9 +24,20 @@ console = Console()
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def show_cmd(paper_id: str, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def show_cmd(
+    paper_id: str, library: Path | None, vault_name: str | None
+) -> None:
     """Show one paper's metadata.yaml plus PDF / notes paths."""
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
 
     # find_paper validates id shape and existence; raises PaperNotFoundError.
     find_paper(vault, paper_id)

@@ -10,7 +10,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from litman.core.config import load_config
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_link import (
     link_paper_to_project,
     rebuild_all_project_links,
@@ -56,12 +56,22 @@ console = Console()
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def link_cmd(
     paper_id: str | None,
     project: str | None,
     relevance: str | None,
     rebuild_all: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Link a paper to a project: tag + symlinks + REFERENCES.md.
 
@@ -84,7 +94,7 @@ def link_cmd(
                 "--rebuild-all is exclusive with <paper-id> / --project. "
                 "Pass either single-paper args OR --rebuild-all, not both."
             )
-        vault = find_vault(library)
+        vault = find_vault(resolve_library_or_vault(library, vault_name))
         config = load_config(vault)
         if not config.projects:
             console.print(
@@ -116,7 +126,7 @@ def link_cmd(
             "recovery."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     config = load_config(vault)
     result = link_paper_to_project(
         vault, paper_id, project, config.projects, relevance=relevance
@@ -187,11 +197,21 @@ def link_cmd(
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def unlink_cmd(
     paper_id: str,
     project: str,
     keep_relevance: bool,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """Unlink a paper from a project: remove tag + symlinks + REFERENCES.md.
 
@@ -199,7 +219,7 @@ def unlink_cmd(
     only removed if no OTHER linked paper in the project still
     references the same repo (shared-utility-lib case).
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     config = load_config(vault)
     result = unlink_paper_from_project(
         vault, paper_id, project, config.projects,

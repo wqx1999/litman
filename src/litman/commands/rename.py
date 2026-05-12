@@ -46,7 +46,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RenameError
@@ -114,7 +114,18 @@ def _format_id_list(ids: list[str], limit: int = 5) -> str:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
-def rename_cmd(old: str, new: str, library: Path | None) -> None:
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
+def rename_cmd(
+    old: str, new: str, library: Path | None, vault_name: str | None
+) -> None:
     """Change a paper id from ``<old>`` to ``<new>``, rippling everywhere.
 
     Touches the renamed paper's metadata + dir, every other paper's
@@ -137,7 +148,7 @@ def rename_cmd(old: str, new: str, library: Path | None) -> None:
             f"Invalid old id {old!r}. Use `lit list` to find the right id."
         )
 
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     old_dir = vault / "papers" / old
     new_dir = vault / "papers" / new
 

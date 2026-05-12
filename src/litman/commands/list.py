@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from litman.core.document import list_papers
-from litman.core.library import find_vault
+from litman.core.library import find_vault, resolve_library_or_vault
 
 console = Console()
 
@@ -73,6 +73,15 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
     envvar="LIT_LIBRARY",
     help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Mutually exclusive with --library."
+    ),
+)
 def list_cmd(
     year: int | None,
     type_filter: str | None,
@@ -84,6 +93,7 @@ def list_cmd(
     data_filter: str | None,
     author: str | None,
     library: Path | None,
+    vault_name: str | None,
 ) -> None:
     """List papers in the vault, optionally filtered.
 
@@ -91,7 +101,7 @@ def list_cmd(
     use exact list-membership; ``--author`` uses case-insensitive substring;
     other filters use exact equality.
     """
-    vault = find_vault(library)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
     all_papers = list_papers(vault)
 
     filters = {
