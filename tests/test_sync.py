@@ -1,0 +1,704 @@
+"""Tests for ``lit sync`` group — M6.1 (rclone integration basics).
+
+Strategy
+--------
+
+We do not mock rclone. The tests run against the real ``rclone`` binary on
+PATH (verified by ``test_rclone_available`` first) and use a temporary,
+test-scoped rclone config file holding a single ``[fake-cloud]`` remote of
+type ``local``. That gives us a fully real ``rclone listremotes`` / ``rclone
+sync`` / ``rclone size --json`` exercise without touching any cloud
+account.
+
+The ``fake_rclone_env`` fixture writes the temp config, points
+``RCLONE_CONFIG`` at it, and returns the storage directory the remote
+ultimately reads/writes. Test bodies pass ``fake-cloud:<storage>`` as the
+sync target — rclone's ``local`` backend interprets the path after ``:``
+as a regular filesystem path.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+from ruamel.yaml import YAML
+
+from litman.cli import cli
+from litman.core.config import SyncConfig, load_config
+from litman.core.library import create_vault
+from litman.core.sync import (
+    DEFAULT_EXCLUDES,
+    SYNC_STATE_FILENAME,
+    SetupPayload,
+    Size,
+    SyncState,
+    build_exclude_args,
+    compute_status,
+    format_iso,
+    humanize_bytes,
+    list_remotes,
+    local_vault_size,
+    pull,
+    push,
+    rclone_available,
+    read_sync_state,
+    remote_exists,
+    remote_size,
+    stamp_pull,
+    stamp_push,
+    write_sync_state,
+    write_sync_to_config,
+)
+from litman.exceptions import SyncError
+
+_yaml_safe = YAML(typ="safe")
+
+
+# ---------------------------------------------------------------------------
+# Skip the whole module if rclone isn't installed on the test machine.
+# ---------------------------------------------------------------------------
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("rclone") is None,
+    reason="rclone not installed; M6.1 integration tests require it on PATH.",
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def vault(tmp_path: Path) -> Path:
+    """A fresh vault under tmp_path."""
+    return create_vault(tmp_path)
+
+
+@pytest.fixture
+def fake_rclone_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point RCLONE_CONFIG at a temp config defining a [fake-cloud] remote.
+
+    Returns the storage directory the test should use as the rclone *path*
+    (the bit after ``fake-cloud:``). The remote itself is type ``local``,
+    so files end up as plain files under that directory.
+    """
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(
+        "[fake-cloud]\n"
+        "type = local\n"
+        "nounc = false\n"
+    )
+    storage = tmp_path / "cloud-storage"
+    storage.mkdir()
+    monkeypatch.setenv("RCLONE_CONFIG", str(conf))
+    return storage
+
+
+@pytest.fixture
+def configured_vault(
+    vault: Path, fake_rclone_env: Path
+) -> tuple[Path, str]:
+    """A vault wired up to ``fake-cloud:<storage>`` via lit-config.yaml."""
+    target_path = str(fake_rclone_env)
+    write_sync_to_config(
+        vault / "lit-config.yaml",
+        SetupPayload(remote="fake-cloud", path=target_path),
+    )
+    return vault, f"fake-cloud:{target_path}"
+
+
+def _seed_paper(vault: Path, paper_id: str, body: str = "content\n") -> None:
+    """Drop a minimal paper folder + file so push has something to transfer."""
+    paper = vault / "papers" / paper_id
+    paper.mkdir(parents=True, exist_ok=True)
+    (paper / "metadata.yaml").write_text(
+        f"id: {paper_id}\ntitle: Test\nyear: 2024\n", encoding="utf-8"
+    )
+    (paper / "summary.md").write_text(body, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# rclone availability
+# ---------------------------------------------------------------------------
+
+
+def test_rclone_available_true() -> None:
+    assert rclone_available() is True
+
+
+def test_rclone_unavailable_when_path_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/this/path/does/not/exist")
+    assert rclone_available() is False
+
+
+# ---------------------------------------------------------------------------
+# list_remotes / remote_exists
+# ---------------------------------------------------------------------------
+
+
+def test_list_remotes_returns_configured(fake_rclone_env: Path) -> None:
+    remotes = list_remotes()
+    assert "fake-cloud" in remotes
+
+
+def test_remote_exists_true(fake_rclone_env: Path) -> None:
+    assert remote_exists("fake-cloud") is True
+
+
+def test_remote_exists_false_for_unknown(fake_rclone_env: Path) -> None:
+    assert remote_exists("not-a-real-remote") is False
+
+
+# ---------------------------------------------------------------------------
+# humanize_bytes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "n,expected",
+    [
+        (0, "0 B"),
+        (512, "512 B"),
+        (1024, "1.0 KiB"),
+        (1536, "1.5 KiB"),
+        (1024 * 1024, "1.0 MiB"),
+        (1024 * 1024 * 1024 * 3, "3.0 GiB"),
+    ],
+)
+def test_humanize_bytes(n: int, expected: str) -> None:
+    assert humanize_bytes(n) == expected
+
+
+# ---------------------------------------------------------------------------
+# local_vault_size
+# ---------------------------------------------------------------------------
+
+
+def test_local_vault_size_includes_seeded_files(vault: Path) -> None:
+    _seed_paper(vault, "2024_Test_X", body="x" * 100)
+    size = local_vault_size(vault)
+    # At minimum: lit-config.yaml, TAXONOMY.md, INDEX.json, metadata.yaml,
+    # summary.md = 5 files. Some seed sub-dirs are empty so they don't add
+    # files. Be conservative and just check the lower bound.
+    assert size.count >= 5
+    assert size.bytes >= 100  # at least the summary body
+
+
+def test_local_vault_size_excludes_state_file(vault: Path) -> None:
+    """The default-exclude .litman-sync-state.yaml must not inflate size."""
+    write_sync_state(vault, SyncState(last_push="2026-05-12T10:00:00+02:00"))
+    assert (vault / SYNC_STATE_FILENAME).exists()
+    size_with_state = local_vault_size(vault)
+
+    # Compare against a re-count after deleting the state file.
+    (vault / SYNC_STATE_FILENAME).unlink()
+    size_without = local_vault_size(vault)
+    assert size_with_state.count == size_without.count
+    assert size_with_state.bytes == size_without.bytes
+
+
+def test_local_vault_size_excludes_staging_dir(vault: Path) -> None:
+    """``.litman-staging/**`` is excluded recursively — size must not change
+    when a sizeable file lands inside the staging tree."""
+    baseline = local_vault_size(vault)
+    staging = vault / ".litman-staging" / "op-abc"
+    staging.mkdir(parents=True)
+    (staging / "garbage").write_text("x" * 999, encoding="utf-8")
+    after = local_vault_size(vault)
+    assert after.count == baseline.count
+    assert after.bytes == baseline.bytes
+
+
+# ---------------------------------------------------------------------------
+# SyncState round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_sync_state_round_trip(vault: Path) -> None:
+    state = SyncState(
+        last_push="2026-05-12T10:00:00+02:00",
+        last_pull="2026-05-11T09:00:00+02:00",
+    )
+    write_sync_state(vault, state)
+    loaded = read_sync_state(vault)
+    assert loaded == state
+
+
+def test_sync_state_missing_returns_empty(vault: Path) -> None:
+    state = read_sync_state(vault)
+    assert state == SyncState(last_push=None, last_pull=None)
+
+
+def test_stamp_push_updates_only_push(vault: Path) -> None:
+    write_sync_state(vault, SyncState(last_pull="2026-05-01T00:00:00+02:00"))
+    stamp_push(vault)
+    after = read_sync_state(vault)
+    assert after.last_push is not None
+    assert after.last_pull == "2026-05-01T00:00:00+02:00"
+
+
+def test_stamp_pull_updates_only_pull(vault: Path) -> None:
+    write_sync_state(vault, SyncState(last_push="2026-05-01T00:00:00+02:00"))
+    stamp_pull(vault)
+    after = read_sync_state(vault)
+    assert after.last_pull is not None
+    assert after.last_push == "2026-05-01T00:00:00+02:00"
+
+
+def test_format_iso() -> None:
+    assert format_iso(None) == "(never)"
+    assert format_iso("2026-05-12T10:00:00+02:00") == "2026-05-12T10:00:00+02:00"
+
+
+# ---------------------------------------------------------------------------
+# build_exclude_args
+# ---------------------------------------------------------------------------
+
+
+def test_build_exclude_args_default_only() -> None:
+    args = build_exclude_args()
+    # One --exclude PATTERN pair per default.
+    assert len(args) == 2 * len(DEFAULT_EXCLUDES)
+    assert "--exclude" in args
+    for pat in DEFAULT_EXCLUDES:
+        assert pat in args
+
+
+def test_build_exclude_args_extra_appends() -> None:
+    args = build_exclude_args(("codes/*/repo/**",))
+    assert "codes/*/repo/**" in args
+    for pat in DEFAULT_EXCLUDES:
+        assert pat in args
+
+
+# ---------------------------------------------------------------------------
+# SyncConfig schema + target_url
+# ---------------------------------------------------------------------------
+
+
+def test_sync_config_target_url_with_path() -> None:
+    cfg = SyncConfig(remote="my-gdrive", path="litman-vault/")
+    assert cfg.target_url() == "my-gdrive:litman-vault/"
+
+
+def test_sync_config_target_url_empty_path() -> None:
+    cfg = SyncConfig(remote="my-gdrive", path="")
+    assert cfg.target_url() == "my-gdrive:"
+
+
+def test_sync_config_remote_required() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SyncConfig(remote="", path="x")
+
+
+def test_lit_config_sync_defaults_to_none(vault: Path) -> None:
+    cfg = load_config(vault)
+    assert cfg.sync is None
+
+
+def test_lit_config_loads_sync_block(vault: Path) -> None:
+    write_sync_to_config(
+        vault / "lit-config.yaml",
+        SetupPayload(remote="some-remote", path="litman-vault/"),
+    )
+    cfg = load_config(vault)
+    assert cfg.sync is not None
+    assert cfg.sync.remote == "some-remote"
+    assert cfg.sync.path == "litman-vault/"
+    assert cfg.sync.exclude_repos is False
+
+
+# ---------------------------------------------------------------------------
+# write_sync_to_config — yaml round-trip preserving other fields
+# ---------------------------------------------------------------------------
+
+
+def test_write_sync_to_config_preserves_other_fields(vault: Path) -> None:
+    config_path = vault / "lit-config.yaml"
+    original = config_path.read_text(encoding="utf-8")
+    assert "default_pdf_viewer" in original  # baseline
+
+    write_sync_to_config(
+        config_path,
+        SetupPayload(remote="my-gdrive", path="litman-vault/"),
+    )
+
+    # Other fields still load + still resolve to their original values.
+    cfg = load_config(vault)
+    assert cfg.library_name == "literature_vault"
+    assert cfg.default_pdf_viewer == "code"
+    assert cfg.sync is not None
+    assert cfg.sync.remote == "my-gdrive"
+
+
+def test_write_sync_to_config_overwrites_existing_sync(vault: Path) -> None:
+    config_path = vault / "lit-config.yaml"
+    write_sync_to_config(
+        config_path,
+        SetupPayload(remote="first", path="p1/"),
+    )
+    write_sync_to_config(
+        config_path,
+        SetupPayload(remote="second", path="p2/", exclude_repos=True),
+    )
+    cfg = load_config(vault)
+    assert cfg.sync is not None
+    assert cfg.sync.remote == "second"
+    assert cfg.sync.path == "p2/"
+    assert cfg.sync.exclude_repos is True
+
+
+def test_write_sync_to_config_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(SyncError, match="No lit-config.yaml"):
+        write_sync_to_config(
+            tmp_path / "nope.yaml",
+            SetupPayload(remote="x"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# push / pull — end-to-end against the fake-cloud local backend
+# ---------------------------------------------------------------------------
+
+
+def test_push_uploads_seeded_paper(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "2024_Test_X")
+
+    push(vault, target)
+    # The remote ("fake-cloud" = local backend) is just the storage dir.
+    expected = fake_rclone_env / "papers" / "2024_Test_X" / "summary.md"
+    assert expected.is_file()
+    assert expected.read_text(encoding="utf-8") == "content\n"
+
+
+def test_push_excludes_staging_dir(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    staging = vault / ".litman-staging" / "op-x"
+    staging.mkdir(parents=True)
+    (staging / "scratch").write_text("private\n", encoding="utf-8")
+
+    push(vault, target)
+    assert not (fake_rclone_env / ".litman-staging").exists()
+
+
+def test_push_excludes_sync_state_file(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    write_sync_state(vault, SyncState(last_push="prior"))
+    push(vault, target)
+    assert not (fake_rclone_env / SYNC_STATE_FILENAME).exists()
+
+
+def test_push_stamps_last_push(
+    configured_vault: tuple[Path, str],
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    assert read_sync_state(vault).last_push is None
+    push(vault, target)
+    assert read_sync_state(vault).last_push is not None
+
+
+def test_push_dry_run_does_not_transfer(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target, dry_run=True)
+    # No files should have been transferred.
+    assert not (fake_rclone_env / "papers" / "p1" / "summary.md").exists()
+    # State should NOT have been stamped (we previewed only).
+    assert read_sync_state(vault).last_push is None
+
+
+def test_push_deletes_remote_file_removed_locally(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """`rclone sync` is one-way mirror: remote files absent locally vanish."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target)
+    assert (fake_rclone_env / "papers" / "p1" / "summary.md").is_file()
+
+    # Remove the paper locally and push again.
+    shutil.rmtree(vault / "papers" / "p1")
+    push(vault, target)
+    assert not (fake_rclone_env / "papers" / "p1").exists()
+
+
+def test_pull_restores_vault_from_remote(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path, tmp_path: Path
+) -> None:
+    """Push then wipe local + recreate empty vault + pull → state restored."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1", body="restored\n")
+    push(vault, target)
+
+    # Simulate cross-machine: drop the paper locally and pull it back.
+    shutil.rmtree(vault / "papers" / "p1")
+    assert not (vault / "papers" / "p1").exists()
+
+    pull(vault, target)
+    assert (vault / "papers" / "p1" / "summary.md").is_file()
+    assert (
+        vault / "papers" / "p1" / "summary.md"
+    ).read_text(encoding="utf-8") == "restored\n"
+
+
+def test_pull_stamps_last_pull(
+    configured_vault: tuple[Path, str],
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target)
+    assert read_sync_state(vault).last_pull is None
+    pull(vault, target)
+    assert read_sync_state(vault).last_pull is not None
+
+
+# ---------------------------------------------------------------------------
+# remote_size / compute_status
+# ---------------------------------------------------------------------------
+
+
+def test_remote_size_empty_target_returns_zero(
+    fake_rclone_env: Path,
+) -> None:
+    # Empty storage dir — count and bytes both 0.
+    sz = remote_size(f"fake-cloud:{fake_rclone_env}")
+    assert sz == Size(count=0, bytes=0)
+
+
+def test_remote_size_after_push(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1", body="hello\n")
+    push(vault, target)
+    sz = remote_size(target)
+    assert sz.count >= 1
+    assert sz.bytes >= len("hello\n")
+
+
+def test_compute_status_in_sync_after_push(
+    configured_vault: tuple[Path, str],
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target)
+    report = compute_status(vault, target)
+    assert report.local.count == report.remote.count
+    assert report.local.bytes == report.remote.bytes
+    assert report.file_delta == 0
+    assert report.bytes_delta == 0
+    assert report.state.last_push is not None
+
+
+def test_compute_status_before_push(
+    configured_vault: tuple[Path, str],
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    report = compute_status(vault, target)
+    assert report.local.count > 0
+    assert report.remote.count == 0
+    assert report.file_delta == report.local.count
+    assert report.state.last_push is None
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit sync setup
+# ---------------------------------------------------------------------------
+
+
+def test_cli_sync_setup_with_remote_flag(
+    vault: Path, fake_rclone_env: Path
+) -> None:
+    """--remote skips the interactive rclone config and writes the config."""
+    target_path = str(fake_rclone_env)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "sync", "setup",
+            "--remote", "fake-cloud",
+            "--path", target_path,
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Sync configured" in result.output
+
+    cfg = load_config(vault)
+    assert cfg.sync is not None
+    assert cfg.sync.remote == "fake-cloud"
+    assert cfg.sync.path == target_path
+
+
+def test_cli_sync_setup_rejects_unknown_remote(
+    vault: Path, fake_rclone_env: Path
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "sync", "setup",
+            "--remote", "nonexistent",
+            "--path", "p/",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SyncError)
+    assert "not registered" in str(result.exception)
+
+
+def test_cli_sync_setup_help() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "setup", "--help"])
+    assert result.exit_code == 0
+    assert "--remote" in result.output
+    assert "--path" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit sync push / pull / status
+# ---------------------------------------------------------------------------
+
+
+def test_cli_sync_push_uploads(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "push", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "Push complete" in result.output
+    assert (fake_rclone_env / "papers" / "p1" / "summary.md").is_file()
+
+
+def test_cli_sync_pull_restores(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1", body="payload\n")
+    push(vault, target)
+    shutil.rmtree(vault / "papers" / "p1")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "pull", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "Pull complete" in result.output
+    assert (
+        vault / "papers" / "p1" / "summary.md"
+    ).read_text(encoding="utf-8") == "payload\n"
+
+
+def test_cli_sync_status_shows_metrics(
+    configured_vault: tuple[Path, str],
+) -> None:
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "status", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "Target" in result.output
+    assert "Last push" in result.output
+    assert "Local" in result.output
+    assert "Remote" in result.output
+    assert "in sync" in result.output
+
+
+def test_cli_sync_status_reports_delta_when_unpushed(
+    configured_vault: tuple[Path, str],
+) -> None:
+    vault, _ = configured_vault
+    _seed_paper(vault, "p1")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "status", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "local − remote" in result.output
+
+
+def test_cli_sync_push_without_setup_errors(
+    vault: Path, fake_rclone_env: Path
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "push", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SyncError)
+    assert "not configured" in str(result.exception)
+
+
+def test_cli_sync_status_without_setup_errors(
+    vault: Path, fake_rclone_env: Path
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "status", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SyncError)
+
+
+def test_cli_sync_push_with_unknown_remote_errors(
+    vault: Path, fake_rclone_env: Path
+) -> None:
+    """Sync configured but the remote was deleted from rclone afterwards."""
+    write_sync_to_config(
+        vault / "lit-config.yaml",
+        SetupPayload(remote="ghost-remote", path="p/"),
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "push", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SyncError)
+    assert "no longer registered" in str(result.exception)
+
+
+def test_cli_sync_group_help() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "--help"])
+    assert result.exit_code == 0
+    assert "setup" in result.output
+    assert "push" in result.output
+    assert "pull" in result.output
+    assert "status" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Behavior when rclone is absent on PATH (simulated via PATH override)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_setup_without_rclone_errors(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/this/path/does/not/exist")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "sync", "setup",
+            "--remote", "anything",
+            "--path", "p/",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SyncError)
+    assert "rclone" in str(result.exception).lower()

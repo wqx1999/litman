@@ -113,4 +113,11 @@ codes_ignore_patterns:
 #     pepforge: /work/wangq/Project/PepForge
 #     pepcodec: /work/wangq/Project/PepCodec
 projects: {{}}
+
+# Cloud sync target (M6). Populated by `lit sync setup`. Leave commented
+# until you have run `rclone config` to register a remote, e.g.:
+#   sync:
+#     remote: my-gdrive          # rclone remote name (see `rclone listremotes`)
+#     path: litman-vault/        # path inside the remote
+#     exclude_repos: false       # skip codes/*/repo/ on sync (M6.2)
 """

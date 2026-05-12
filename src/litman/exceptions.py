@@ -93,3 +93,10 @@ class ConfigError(LitmanError):
     the file exists but is malformed YAML, has an unknown key, holds a value
     of the wrong type, or violates a field constraint.
     """
+
+
+class SyncError(LitmanError):
+    """`lit sync` rejected an op: rclone not installed, remote misconfigured,
+    sync not yet set up in lit-config.yaml, or rclone returned a non-zero
+    exit status (network down, auth failure, transfer error, etc.).
+    """

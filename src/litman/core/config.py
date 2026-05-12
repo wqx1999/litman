@@ -52,6 +52,51 @@ DEFAULT_CODES_IGNORE_PATTERNS: tuple[str, ...] = ("repo/",)
 _yaml = YAML(typ="safe")
 
 
+class SyncConfig(BaseModel):
+    """rclone-backed cloud sync configuration (M6).
+
+    Populated by ``lit sync setup``. Absent on freshly-initialized vaults;
+    sync subcommands raise ``SyncError`` until ``sync`` is configured.
+
+    Fields:
+        remote: rclone remote name as registered in ``rclone config``
+            (e.g. ``my-gdrive``). Must match an entry in ``rclone listremotes``.
+        path: Path inside the remote where the vault is mirrored
+            (e.g. ``litman-vault/``). May be empty to sync to the remote root.
+        exclude_repos: When ``True``, M6.2's ``--exclude-repos`` style filter
+            is applied by default: ``codes/*/repo/`` checkouts are NOT
+            uploaded. Re-derive on pull with ``lit code restore-all``.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    remote: str = Field(
+        ...,
+        min_length=1,
+        description="rclone remote name (must exist in `rclone listremotes`).",
+    )
+    path: str = Field(
+        default="",
+        description="Path inside the remote. Empty syncs to remote root.",
+    )
+    exclude_repos: bool = Field(
+        default=False,
+        description=(
+            "If true, codes/*/repo/ checkouts are excluded from sync by "
+            "default (M6.2). Re-derive on pull via `lit code restore-all`."
+        ),
+    )
+
+    def target_url(self) -> str:
+        """Return the full rclone target ``"<remote>:<path>"``.
+
+        rclone expects ``remote:`` (with trailing colon) for the remote root
+        and ``remote:path/`` for a subpath. We always emit the colon so the
+        result is unambiguously a remote target, never a local path.
+        """
+        return f"{self.remote}:{self.path}"
+
+
 class LitConfig(BaseModel):
     """Typed view of ``lit-config.yaml``.
 
@@ -125,6 +170,14 @@ class LitConfig(BaseModel):
             "round-trip is plain; paths are resolved per command. Empty "
             "default — populate as `pepforge: /work/wangq/Project/PepForge` "
             "before linking papers to that project."
+        ),
+    )
+    sync: SyncConfig | None = Field(
+        default=None,
+        description=(
+            "rclone cloud sync target (M6). None means sync is not yet "
+            "configured; `lit sync setup` populates this field. Once set, "
+            "`lit sync push/pull/status` operate against it."
         ),
     )
 

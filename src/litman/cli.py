@@ -30,6 +30,7 @@ from litman.commands.refresh import refresh_views_cmd
 from litman.commands.rename import rename_cmd
 from litman.commands.rm import rm_cmd
 from litman.commands.show import show_cmd
+from litman.commands.sync import sync_group
 from litman.commands.taxonomy import taxonomy_group
 from litman.commands.trash import trash_group
 from litman.exceptions import LitmanError
@@ -62,6 +63,7 @@ cli.add_command(config_group)
 cli.add_command(install_skill_cmd)
 cli.add_command(link_cmd)
 cli.add_command(unlink_cmd)
+cli.add_command(sync_group)
 
 
 @cli.command()
