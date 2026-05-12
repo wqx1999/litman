@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import viewer as viewer_mod
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     INBOX_STALE_DAYS,
@@ -26,6 +27,7 @@ from litman.core.checks import (
     check_id_consistency,
     check_inbox_staleness,
     check_invalid_paper_dirs,
+    check_pdf_viewer,
     check_schema,
     check_stale_staging,
     check_taxonomy_drift,
@@ -382,6 +384,68 @@ def test_trash_health_orphan_sidecar(vault: Path) -> None:
     )
     issues = check_trash_health(vault, [])
     assert any(i.category == "orphan_trash_sidecar" for i in issues)
+
+
+# --- pdf_viewer -------------------------------------------------------------
+
+
+def test_pdf_viewer_clean_when_platform_default_available(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default seed has default_pdf_viewer=null; on macOS `open` is always there."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    assert check_pdf_viewer(vault, []) == []
+
+
+def test_pdf_viewer_warns_when_no_platform_default(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(viewer_mod.shutil, "which", lambda cmd: None)
+    issues = check_pdf_viewer(vault, [])
+    assert len(issues) == 1
+    assert issues[0].category == "pdf_viewer"
+    assert issues[0].severity == "warning"
+    assert "no platform PDF viewer" in issues[0].message
+
+
+def test_pdf_viewer_warns_when_configured_missing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "default_pdf_viewer: null",
+            "default_pdf_viewer: nonexistent-viewer-xyz",
+        ),
+        encoding="utf-8",
+    )
+    # Plus an unrelated `shutil.which` patch so the configured one is "missing".
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda cmd: None)
+    issues = check_pdf_viewer(vault, [])
+    assert len(issues) == 1
+    assert "nonexistent-viewer-xyz" in issues[0].message
+
+
+def test_pdf_viewer_clean_when_configured_present(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "default_pdf_viewer: null",
+            "default_pdf_viewer: somecmd",
+        ),
+        encoding="utf-8",
+    )
+    import shutil as _shutil
+
+    monkeypatch.setattr(
+        _shutil, "which", lambda cmd: f"/usr/bin/{cmd}"
+    )
+    assert check_pdf_viewer(vault, []) == []
 
 
 # ===========================================================================

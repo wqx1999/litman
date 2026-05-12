@@ -160,7 +160,7 @@ def test_load_config_bad_type_raises(vault: Path) -> None:
 
 
 def test_load_config_missing_required_raises(vault: Path) -> None:
-    _overwrite_config(vault, "default_pdf_viewer: code\n")
+    _overwrite_config(vault, "default_pdf_viewer: null\n")
     with pytest.raises(ConfigError, match="library_name"):
         load_config(vault)
 

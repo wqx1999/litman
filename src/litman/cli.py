@@ -26,6 +26,7 @@ from litman.commands.install_skill import install_skill_cmd
 from litman.commands.link import link_cmd, unlink_cmd
 from litman.commands.list import list_cmd
 from litman.commands.modify import modify_cmd
+from litman.commands.open import open_cmd
 from litman.commands.refresh import refresh_views_cmd
 from litman.commands.rename import rename_cmd
 from litman.commands.rm import rm_cmd
@@ -52,6 +53,7 @@ cli.add_command(init_cmd)
 cli.add_command(add_cmd)
 cli.add_command(list_cmd)
 cli.add_command(show_cmd)
+cli.add_command(open_cmd)
 cli.add_command(refresh_views_cmd)
 cli.add_command(modify_cmd)
 cli.add_command(taxonomy_group)

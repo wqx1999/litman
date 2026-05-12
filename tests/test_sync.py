@@ -336,7 +336,7 @@ def test_write_sync_to_config_preserves_other_fields(vault: Path) -> None:
     # Other fields still load + still resolve to their original values.
     cfg = load_config(vault)
     assert cfg.library_name == "literature_vault"
-    assert cfg.default_pdf_viewer == "code"
+    assert cfg.default_pdf_viewer is None
     assert cfg.sync is not None
     assert cfg.sync.remote == "my-gdrive"
 

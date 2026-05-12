@@ -38,7 +38,7 @@ CONFIG_FILENAME = "lit-config.yaml"
 # sync with whatever ``seeds.py`` writes for newly-initialized vaults, but
 # the two paths are deliberately separate: the seed exists so the file is
 # self-documenting on disk, the schema exists so omitted fields still work.
-DEFAULT_PDF_VIEWER = "code"
+DEFAULT_PDF_VIEWER: str | None = None
 DEFAULT_VIEW_DEFINITIONS: tuple[str, ...] = (
     "by-project",
     "by-topic",
@@ -119,11 +119,14 @@ class LitConfig(BaseModel):
             "the vault subdirectory name."
         ),
     )
-    default_pdf_viewer: str = Field(
+    default_pdf_viewer: str | None = Field(
         default=DEFAULT_PDF_VIEWER,
         description=(
-            "Command used by `lit show --open` (and similar) to open PDFs. "
-            "Defaults to 'code' (VS Code with the vscode-pdf extension)."
+            "Command used by `lit open` to launch a paper's PDF (M9.1). "
+            "``null`` (the default) falls back to the platform default: "
+            "``open`` (macOS), ``xdg-open`` (Linux), ``os.startfile`` "
+            "(Windows), or ``wslview`` (WSL). Set to a string "
+            "(e.g. 'okular', 'skim', '/usr/bin/zathura', 'code') to override."
         ),
     )
     view_definitions: list[str] = Field(

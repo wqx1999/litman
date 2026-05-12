@@ -57,6 +57,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "orphan_trash_sidecar": "Orphan .trash/ sidecars",
     "trash_size": "Trash bloat (entry count)",
     "trash_age": "Trash bloat (age)",
+    "pdf_viewer": "PDF viewer availability (for `lit open`)",
 }
 
 

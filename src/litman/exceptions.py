@@ -49,6 +49,23 @@ class PaperNotFoundError(LitmanError):
     """No paper with the given id exists in the vault."""
 
 
+class AmbiguousPaperIdError(LitmanError):
+    """Partial id supplied to a resolve step matches multiple papers.
+
+    Raised by ``litman.core.viewer.resolve_paper_id`` (used by ``lit open``).
+    Carries ``query`` (original input) and ``candidates`` (the matching
+    paper ids) so the CLI can render a candidate list and prompt the user
+    for a more specific id, exiting non-zero.
+    """
+
+    def __init__(self, query: str, candidates: list[str]) -> None:
+        self.query = query
+        self.candidates = candidates
+        super().__init__(
+            f"Multiple papers match {query!r}: {', '.join(candidates)}."
+        )
+
+
 class ModifyError(LitmanError):
     """`lit modify` rejected an op: forbidden field, malformed key=value,
     or wrong operation kind for the field's type (e.g. --add-tag on a scalar).

@@ -34,6 +34,7 @@ Cross-references:
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -640,6 +641,75 @@ def check_stale_staging(
     return out
 
 
+def check_pdf_viewer(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Probe whether ``lit open`` (M9.1) has a usable PDF viewer.
+
+    Three outcomes:
+
+    * Configured viewer present on PATH, or no config + platform default
+      available → no issue (silent ✓ in the health report).
+    * Configured ``default_pdf_viewer`` set but not on PATH → warning;
+      ``lit open`` would exit 2 with a "install / fix config" hint.
+    * No configured viewer and the platform default (``xdg-open`` /
+      ``wslview``) is missing on Linux → warning. (macOS always has
+      ``open``; Windows always has ``os.startfile``.)
+
+    Lazy imports avoid pulling pydantic + the viewer module at health-check
+    module-load time — both are heavier than checks needs for the unrelated
+    schema / id / ref probes.
+    """
+    from litman.core.config import load_config
+    from litman.core.viewer import detect_platform_viewer
+
+    try:
+        config = load_config(vault)
+    except Exception:
+        # ConfigError is surfaced by `lit config show` / any command that
+        # loads config; suppress here to avoid double-reporting.
+        return []
+
+    out: list[Issue] = []
+    configured = config.default_pdf_viewer
+    if configured:
+        if shutil.which(configured) is None:
+            out.append(
+                Issue(
+                    category="pdf_viewer",
+                    severity="warning",
+                    paper_id=None,
+                    message=(
+                        f"configured default_pdf_viewer "
+                        f"{configured!r} is not on PATH"
+                    ),
+                    hint=(
+                        "install the program or update default_pdf_viewer "
+                        "in lit-config.yaml"
+                    ),
+                )
+            )
+        return out
+
+    if detect_platform_viewer() is None:
+        out.append(
+            Issue(
+                category="pdf_viewer",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    "no platform PDF viewer detected — "
+                    "`lit open` will exit 2 and print the path only"
+                ),
+                hint=(
+                    "install xdg-utils (Linux) or wslview (WSL), "
+                    "or set default_pdf_viewer in lit-config.yaml"
+                ),
+            )
+        )
+    return out
+
+
 def check_trash_health(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -737,6 +807,7 @@ _CHECK_REGISTRY: tuple[tuple[str, Callable[[Path, list[dict[str, Any]]], list[Is
     ("inbox_staleness", check_inbox_staleness),
     ("stale_staging", check_stale_staging),
     ("trash_health", check_trash_health),
+    ("pdf_viewer", check_pdf_viewer),
 )
 
 
