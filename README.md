@@ -7,9 +7,10 @@ Local-first, AI-augmented literature management CLI.
 
 ## Quick start (developer)
 
+From the repo root:
+
 ```bash
 conda activate litman                           # conda env, Python 3.12
-cd /work/wangq/literature/litman
 pip install -e ".[dev]"                         # editable install with dev deps
 lit --help                                      # verify CLI entry point
 lit hello                                       # placeholder smoke command
