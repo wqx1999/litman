@@ -36,7 +36,7 @@ from litman.core.dedup import (
     find_paper_by_doi,
     suggest_alternative_ids,
 )
-from litman.core.id import derive_id, is_valid_id
+from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
@@ -339,6 +339,27 @@ def add_cmd(
             auto_suffix,
         )
         paper_dir = vault / "papers" / paper_id
+
+    # Cross-platform safety (ADR-005): refuse ids that differ only in case
+    # from an existing paper. ``paper_dir.exists()`` above is case-sensitive
+    # on Linux, so an id like ``2023_pandi_X`` slips past when
+    # ``2023_Pandi_X/`` is on disk; moving the vault to Windows / default
+    # macOS then collapses the two and silently loses one paper.
+    papers_root = vault / "papers"
+    if papers_root.is_dir():
+        existing_ids = [
+            d.name for d in papers_root.iterdir() if d.is_dir()
+        ]
+        case_clash = find_case_fold_collision(existing_ids, paper_id)
+        if case_clash is not None:
+            raise AddError(
+                f"Paper id {paper_id!r} differs only in case from existing "
+                f"paper {case_clash!r}. Two ids that case-fold to the same "
+                "string collide on Windows / default macOS filesystems "
+                "(case-insensitive) and the vault loses data when moved "
+                "between OSes. Pass --id <substantially-different-name> "
+                "to pick a distinct id."
+            )
 
     # Atomic creation: any failure rolls back the half-built folder.
     try:

@@ -16,12 +16,17 @@ Atomicity: the metadata + INDEX.json write goes through ``staged_write``;
 symlink creation and REFERENCES.md regeneration are post-staging steps
 (filesystem-mutating but cheap to redo, recoverable via
 ``lit link --rebuild-all``).
+
+Cross-platform: symlink creation routes through ``core.portable_link``,
+which gracefully degrades on filesystems that refuse symlinks (Windows
+without Developer Mode, FAT32, etc.). The metadata side of every
+operation succeeds regardless; only the convenience symlinks may be
+skipped (ADR-005).
 """
 
 from __future__ import annotations
 
 import io
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +36,10 @@ from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.document import list_papers, read_metadata
+from litman.core.portable_link import (
+    make_relative_symlink,
+    remove_link_if_present,
+)
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     write_references_md,
@@ -81,33 +90,6 @@ def _resolve_project_dir(
             "lit-config.yaml's `projects:` map."
         )
     return project_dir
-
-
-def _make_relative_symlink(link_path: Path, target_path: Path) -> None:
-    """Idempotently create a relative symlink ``link_path → target_path``.
-
-    Both paths must be absolute. The symlink stores the relative form so
-    cross-machine ``cp -r`` preserves resolution (M0 invariant). If
-    ``link_path`` already exists (as symlink or file), it is removed
-    first — this keeps the operation a true upsert.
-    """
-    rel = os.path.relpath(target_path, link_path.parent)
-    if link_path.is_symlink() or link_path.exists():
-        link_path.unlink()
-    link_path.parent.mkdir(parents=True, exist_ok=True)
-    link_path.symlink_to(rel)
-
-
-def _remove_symlink_if_present(link_path: Path) -> bool:
-    """Remove the symlink at ``link_path`` if it exists; return whether removed.
-
-    Only removes symlinks — refuses to delete a real file or directory at
-    that path so a user mistake doesn't nuke an actual checkout.
-    """
-    if not link_path.is_symlink():
-        return False
-    link_path.unlink()
-    return True
 
 
 def _project_link_paths(
@@ -226,7 +208,7 @@ def link_paper_to_project(
     paper_link_path, code_link_paths = _project_link_paths(
         project_dir, paper_id, code_clones
     )
-    _make_relative_symlink(
+    make_relative_symlink(
         paper_link_path, (vault / "papers" / paper_id).resolve()
     )
     code_links_created = []
@@ -236,8 +218,8 @@ def link_paper_to_project(
             # Repo bound on paper side but not present locally — skip the
             # symlink. The user can rerun after `lit code restore-all`.
             continue
-        _make_relative_symlink(link_path, repo_target)
-        code_links_created.append(repo_name)
+        if make_relative_symlink(link_path, repo_target):
+            code_links_created.append(repo_name)
 
     # 7) REFERENCES.md
     refs_path = write_references_md(vault, project, project_dir)
@@ -322,7 +304,7 @@ def unlink_paper_from_project(
 
     # 6) Paper symlink
     paper_link_path = project_dir / LITERATURE_SUBDIR / paper_id
-    paper_link_removed = _remove_symlink_if_present(paper_link_path)
+    paper_link_removed = remove_link_if_present(paper_link_path)
 
     # 7) Code symlinks — keep when another linked paper still uses the repo.
     fresh_papers = list_papers(vault)
@@ -342,7 +324,7 @@ def unlink_paper_from_project(
         if still_in_use:
             code_links_kept.append((repo_name, still_in_use))
         else:
-            _remove_symlink_if_present(link_path)
+            remove_link_if_present(link_path)
             code_links_removed.append(repo_name)
 
     # 8) REFERENCES.md
@@ -419,18 +401,18 @@ def rebuild_all_project_links(
             paper_dir = (vault / "papers" / pid).resolve()
             if not paper_dir.is_dir():
                 continue
-            _make_relative_symlink(
+            if make_relative_symlink(
                 project_dir / LITERATURE_SUBDIR / pid, paper_dir
-            )
-            n_paper_links += 1
+            ):
+                n_paper_links += 1
             for repo_name in p.get("code-clones") or []:
                 repo_target = (vault / "codes" / repo_name / "repo").resolve()
                 if not repo_target.exists():
                     continue
-                _make_relative_symlink(
+                if make_relative_symlink(
                     project_dir / CODE_SUBDIR / repo_name, repo_target
-                )
-                n_code_links += 1
+                ):
+                    n_code_links += 1
 
         write_references_md(vault, project, project_dir)
 

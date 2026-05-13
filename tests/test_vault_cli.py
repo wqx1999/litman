@@ -42,6 +42,10 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # Clear cross-cutting env vars so registry_path() resolution is
+    # deterministic regardless of the user's real shell environment.
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return home
 
 
@@ -458,3 +462,52 @@ def test_cli_vault_group_help() -> None:
     assert "list" in result.output
     assert "info" in result.output
     assert "remove" in result.output
+
+
+# ---------------------------------------------------------------------------
+# First-time registry prompt (ADR-005)
+# ---------------------------------------------------------------------------
+
+
+def test_first_time_prompt_silent_when_non_tty(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """CliRunner runs in non-TTY mode by default — prompt must be skipped
+    so CI / scripts / docker init don't hang."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    assert result.exit_code == 0
+    # The hint panel should not have appeared.
+    assert "First-time registry setup" not in result.output
+    # The vault was registered successfully.
+    assert find_by_name(load_registry(), "main") is not None
+
+
+def test_first_time_prompt_silent_when_env_var_set(
+    fake_home: Path,
+    vault_a: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """User who already set LITMAN_REGISTRY_DIR doesn't need the hint."""
+    custom = tmp_path / "custom-registry"
+    custom.mkdir()
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(custom))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    assert result.exit_code == 0
+    assert "First-time registry setup" not in result.output
+    # Registry was written under the custom dir, not under HOME.
+    assert (custom / "vaults.yaml").is_file()
+
+
+def test_first_time_prompt_skipped_after_registry_exists(
+    fake_home: Path, vault_a: Path, vault_b: Path
+) -> None:
+    """Second `lit vault add` does NOT re-prompt — registry already exists."""
+    runner = CliRunner()
+    runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    result = runner.invoke(cli, ["vault", "add", "second", str(vault_b)])
+    assert result.exit_code == 0
+    assert "First-time registry setup" not in result.output

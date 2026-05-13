@@ -9,6 +9,7 @@ from litman.core.id import (
     derive_id,
     derive_keyword,
     derive_keyword_alternatives,
+    find_case_fold_collision,
 )
 from litman.exceptions import IDError
 
@@ -198,3 +199,42 @@ def test_derive_id_non_ascii_family_raises() -> None:
 def test_derive_id_untitled_raises() -> None:
     with pytest.raises(IDError, match="title"):
         derive_id(2024, "Smith", "")
+
+
+# ---------------------------------------------------------------------------
+# find_case_fold_collision — cross-platform safety (ADR-005)
+# ---------------------------------------------------------------------------
+
+
+def test_case_fold_collision_detects_only_case_difference() -> None:
+    """Same letters, different case → clash."""
+    existing = ["2023_Pandi_Cell-free", "2024_Smith_Other"]
+    assert (
+        find_case_fold_collision(existing, "2023_pandi_cell-free")
+        == "2023_Pandi_Cell-free"
+    )
+
+
+def test_case_fold_collision_ignores_exact_match() -> None:
+    """Byte-identical id is not a *case-only* clash — caller's exact
+    collision path handles it."""
+    existing = ["2023_Pandi_Cell-free"]
+    assert find_case_fold_collision(existing, "2023_Pandi_Cell-free") is None
+
+
+def test_case_fold_collision_no_clash() -> None:
+    existing = ["2023_Pandi_Cell-free", "2024_Smith_Other"]
+    assert find_case_fold_collision(existing, "2025_Jones_New") is None
+
+
+def test_case_fold_collision_empty_pool() -> None:
+    assert find_case_fold_collision([], "anything") is None
+
+
+def test_case_fold_collision_returns_first_match() -> None:
+    """Should return *some* existing id that case-folds equal — the
+    contract guarantees there is at least one match; we don't pin order
+    too tightly but the first matching entry is a sensible default."""
+    existing = ["FOO", "Foo"]
+    clash = find_case_fold_collision(existing, "foo")
+    assert clash in {"FOO", "Foo"}

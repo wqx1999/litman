@@ -39,10 +39,21 @@ from litman.exceptions import LibraryNotFoundError, VaultRegistryError
 
 @pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect $HOME so the registry file lands in tmp_path/home/."""
+    """Redirect $HOME and clear cross-cutting env vars so the registry file
+    deterministically lands at ``tmp_path/home/.config/litman/``.
+
+    Clears:
+    * ``LITMAN_REGISTRY_DIR`` — explicit override that would shadow HOME-based
+      resolution.
+    * ``XDG_CONFIG_HOME`` — platformdirs respects it ahead of $HOME on Linux,
+      so leaking it from the user's shell would break ``registry_path()``
+      assertions.
+    """
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return home
 
 
@@ -94,7 +105,52 @@ def test_is_valid_vault_name(name: str, valid: bool) -> None:
 
 
 def test_registry_path_under_home(fake_home: Path) -> None:
-    assert registry_path() == fake_home / ".config" / "litman" / REGISTRY_FILENAME
+    """Default (no env override) resolves under $HOME/.config/litman on Linux.
+
+    On non-Linux this test is informational; CI runs Linux, where
+    platformdirs' user_config_dir defaults to XDG (=$HOME/.config).
+    """
+    import sys
+    if sys.platform.startswith("linux"):
+        assert (
+            registry_path()
+            == fake_home / ".config" / "litman" / REGISTRY_FILENAME
+        )
+
+
+def test_registry_path_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """$LITMAN_REGISTRY_DIR redirects the registry irrespective of HOME."""
+    target = tmp_path / "cloud-synced"
+    target.mkdir()
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(target))
+    assert registry_path() == target / REGISTRY_FILENAME
+
+
+def test_registry_path_env_override_blank_ignored(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty / whitespace-only env values fall through to platformdirs."""
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", "   ")
+    # Should NOT redirect — strip() yields empty.
+    import sys
+    if sys.platform.startswith("linux"):
+        assert (
+            registry_path()
+            == fake_home / ".config" / "litman" / REGISTRY_FILENAME
+        )
+
+
+def test_registry_path_env_override_expands_user(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``~`` in the env value is expanded against $HOME."""
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", "~/my-registry")
+    assert (
+        registry_path()
+        == fake_home / "my-registry" / REGISTRY_FILENAME
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +332,22 @@ def test_add_rejects_duplicate_name(vault_a: Path, vault_b: Path) -> None:
     reg = add_vault(VaultRegistry(), "main", vault_a)
     with pytest.raises(VaultRegistryError, match="already registered"):
         add_vault(reg, "main", vault_b)
+
+
+def test_add_rejects_case_fold_collision(vault_a: Path, vault_b: Path) -> None:
+    """``my-main`` and ``My-Main`` collide on Windows/macOS — reject ADR-005."""
+    reg = add_vault(VaultRegistry(), "my-main", vault_a)
+    with pytest.raises(VaultRegistryError, match="differs only in case"):
+        add_vault(reg, "My-Main", vault_b)
+
+
+def test_add_case_fold_collision_message_names_existing(
+    vault_a: Path, vault_b: Path
+) -> None:
+    """The error must point at which existing vault clashes."""
+    reg = add_vault(VaultRegistry(), "Zhang-shared", vault_a)
+    with pytest.raises(VaultRegistryError, match="Zhang-shared"):
+        add_vault(reg, "zhang-shared", vault_b)
 
 
 def test_add_rejects_bad_name(vault_a: Path) -> None:

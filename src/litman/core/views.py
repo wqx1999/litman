@@ -5,6 +5,11 @@ The metadata files are the single source of truth; INDEX.json and the
 wholesale by ``lit refresh-views``. Symlinks are relative so that
 ``cp -r`` to a new machine still resolves them.
 
+On filesystems that refuse symlinks (Windows without Developer Mode,
+FAT32, etc.), the symlink hubs are silently skipped via
+``core.portable_link``'s graceful-degrade contract (ADR-005). INDEX.json
+and metadata.yaml stay authoritative regardless.
+
 INDEX.json is consumed primarily by AI assistants and programmatic tooling.
 Humans should browse via ``lit list`` (filterable, paginated) instead of
 opening the JSON directly. JSON has no native comment syntax, so the
@@ -14,11 +19,12 @@ opening the JSON directly. JSON has no native comment syntax, so the
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from litman.core.portable_link import make_relative_symlink
 
 # Views whose tag values come from a list-typed metadata field.
 LIST_VIEW_FIELDS: dict[str, str] = {
@@ -142,25 +148,16 @@ def _clear_view_subdir(view_dir: Path) -> None:
         view_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _make_relative_symlink(link_path: Path, target_path: Path) -> None:
-    """Create a relative symlink at ``link_path`` pointing at ``target_path``.
-
-    Both inputs are absolute paths; the symlink stores the relative form
-    so that copying the entire vault to a new machine preserves resolution.
-    """
-    rel = os.path.relpath(target_path, link_path.parent)
-    if link_path.is_symlink() or link_path.exists():
-        link_path.unlink()
-    link_path.symlink_to(rel)
-
-
 def rebuild_views(
     vault: Path, papers: list[dict[str, Any]]
 ) -> dict[str, int]:
     """Rebuild ``views/by-*/`` symlink hubs from the given paper list.
 
     Returns a mapping ``{view_name: n_symlinks_created}`` for caller-side
-    reporting.
+    reporting. On platforms where symlink creation is refused (Windows
+    without dev mode, FAT32, etc.), individual entries are silently
+    skipped — the count reflects actual symlinks created, not requested.
+    A one-shot warning is emitted by ``portable_link`` on first failure.
     """
     views_dir = vault / "views"
     counts: dict[str, int] = {}
@@ -176,10 +173,10 @@ def rebuild_views(
             for value in p.get(field_name) or []:
                 bucket = view_dir / _safe_name(str(value))
                 bucket.mkdir(parents=True, exist_ok=True)
-                _make_relative_symlink(
+                if make_relative_symlink(
                     bucket / paper_id, vault / "papers" / paper_id
-                )
-                n += 1
+                ):
+                    n += 1
         counts[view_name] = n
 
     for view_name, field_name in SCALAR_VIEW_FIELDS.items():
@@ -193,10 +190,10 @@ def rebuild_views(
                 continue
             bucket = view_dir / _safe_name(str(value))
             bucket.mkdir(parents=True, exist_ok=True)
-            _make_relative_symlink(
+            if make_relative_symlink(
                 bucket / paper_id, vault / "papers" / paper_id
-            )
-            n += 1
+            ):
+                n += 1
         counts[view_name] = n
 
     return counts

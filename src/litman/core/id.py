@@ -80,6 +80,39 @@ def is_valid_id(paper_id: str) -> bool:
     return bool(_VALID_ID_RE.match(paper_id))
 
 
+def find_case_fold_collision(
+    existing_ids: list[str], new_id: str
+) -> str | None:
+    """Return an existing id that case-folds equal to ``new_id``, or ``None``.
+
+    Defends against the gotcha that Linux filesystems are case-sensitive
+    while Windows / default macOS are case-insensitive (ADR-005). Two ids
+    differing only in case (``2023_Pandi_X`` vs ``2023_pandi_X``) coexist
+    on Linux but collide on Windows / macOS — moving the vault between
+    machines silently loses one paper.
+
+    Exact matches (``new_id`` already in ``existing_ids`` byte-for-byte)
+    are NOT reported here — they belong to the normal collision path
+    (``lit add`` already prompts for an alternative). This helper
+    specifically surfaces the *case-only* clash.
+
+    Args:
+        existing_ids: All paper / vault names currently present.
+        new_id: The candidate name being added.
+
+    Returns:
+        The first existing id that ``casefold()``-matches ``new_id`` and
+        is not byte-identical to it, or ``None`` for no clash.
+    """
+    target = new_id.casefold()
+    for existing in existing_ids:
+        if existing == new_id:
+            continue
+        if existing.casefold() == target:
+            return existing
+    return None
+
+
 def _slug(text: str) -> str:
     """Strip everything except ASCII alphanumerics and hyphens."""
     return re.sub(r"[^A-Za-z0-9-]+", "", text)

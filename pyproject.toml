@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litman"
-version = "0.1.0"
+version = "0.9.0"
 description = "Local-first, AI-augmented literature management CLI"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,6 +31,7 @@ dependencies = [
     "pypdf>=4.0",
     "pydantic>=2.5",
     "rich>=13.0",
+    "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -50,10 +51,13 @@ include = ["litman*"]
 
 # Bundle the skill markdown files so `lit install-skill` can copy them
 # from the installed package via importlib.resources. Without this, the
-# `lit-library/` subdirectory is dropped by the wheel build because it
-# contains no Python sources.
+# skill subdirectories are dropped by the wheel build because they
+# contain no Python sources. Add a pair of patterns for every new skill.
 [tool.setuptools.package-data]
-"litman.skills" = ["lit-library/*", "lit-library/**/*"]
+"litman.skills" = [
+    "lit-library/*", "lit-library/**/*",
+    "lit-reading/*", "lit-reading/**/*",
+]
 
 [tool.ruff]
 line-length = 100

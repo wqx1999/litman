@@ -3,10 +3,24 @@
 litman supports multiple registered vaults on the same machine — one
 "main" vault wangq curates plus any number of forks (snapshots received
 from colleagues, archived projects, DR-restored backups). The registry
-file ``~/.config/litman/vaults.yaml`` is the authoritative list; at most
-one entry has ``is_active: true`` at a time, and that entry is the
-fallback ``find_vault()`` resolves to when no explicit ``--library`` /
-``--vault`` / ``$LIT_LIBRARY`` is given.
+file lives in a per-user config directory; ``registry_path()`` resolves
+it via the cross-platform precedence chain below. At most one entry has
+``is_active: true`` at a time, and that entry is the fallback
+``find_vault()`` resolves to when no explicit ``--library`` / ``--vault``
+/ ``$LIT_LIBRARY`` is given.
+
+Registry location resolution (precedence, highest first):
+
+1. ``$LITMAN_REGISTRY_DIR/vaults.yaml`` when the env var is set. Use this
+   to redirect the registry to a cloud-synced directory for backup /
+   cross-machine sync. Persist the env var via your shell's startup file
+   (``.bashrc`` / ``.zshrc`` / ``config.fish``). Beware: registry stores
+   absolute vault paths, so cross-machine sync only works when each vault
+   lives at the same path on every machine.
+2. ``platformdirs.user_config_dir("litman") / vaults.yaml``. On Linux
+   that's ``~/.config/litman/vaults.yaml`` (XDG); on macOS
+   ``~/Library/Application Support/litman/vaults.yaml``; on Windows
+   ``%APPDATA%\\litman\\vaults.yaml``.
 
 Design choices baked in:
 
@@ -17,6 +31,9 @@ Design choices baked in:
 - **Names exclude ``:``** because M8.4 introduces cross-vault wikilinks
   of the form ``[[<vault-name>:<paper-id>]]`` — using ``:`` inside a
   name would make the parser ambiguous.
+- **Names are checked case-fold-unique** so ``my-main`` and ``My-Main``
+  cannot both register on case-insensitive filesystems (Windows, default
+  macOS) where the two would collide if ever used as folder names.
 - **At-most-one-active is enforced at the model layer**, not just by
   convention in the writers. A hand-edit that violates the invariant
   fails ``load_registry`` rather than silently confusing later commands.
@@ -30,10 +47,12 @@ Design choices baked in:
 from __future__ import annotations
 
 import io
+import os
 import re
 from pathlib import Path
 from typing import Any
 
+from platformdirs import user_config_dir
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -44,13 +63,18 @@ from pydantic import (
 )
 from ruamel.yaml import YAML
 
+from litman.core.id import find_case_fold_collision
 from litman.exceptions import VaultRegistryError
 
-# Path layout. We deliberately resolve the registry location at call time
-# (rather than caching at import) so tests that monkeypatch HOME see the
-# tmpdir-rooted location, not whatever was true the first time the module
-# was loaded.
-REGISTRY_DIRNAME = ".config/litman"
+# Env var that, when set, overrides the platformdirs default. Point at a
+# cloud-synced directory to get backup + cross-machine sync for free.
+REGISTRY_ENV_VAR = "LITMAN_REGISTRY_DIR"
+
+# Application name fed to platformdirs. Resolves to ``~/.config/litman``
+# on Linux, ``~/Library/Application Support/litman`` on macOS, and
+# ``%APPDATA%\litman`` on Windows.
+REGISTRY_APP_NAME = "litman"
+
 REGISTRY_FILENAME = "vaults.yaml"
 
 # Vault names share the shape rule with repo names (filesystem-safe,
@@ -67,11 +91,31 @@ _yaml.default_flow_style = False
 def registry_path() -> Path:
     """Return the path to the vaults.yaml registry file.
 
-    Computed on each call so tests that monkeypatch ``HOME`` see the
-    redirected location. Production callers pay only a couple of Path
-    constructions, which is negligible.
+    Computed on each call (not cached at import) so tests that monkeypatch
+    ``HOME`` / ``$LITMAN_REGISTRY_DIR`` see the redirected location.
+
+    Resolution chain:
+
+    1. ``$LITMAN_REGISTRY_DIR / vaults.yaml`` when the env var is set
+       (and non-empty after strip). Use to point at a cloud-synced
+       directory for backup or cross-machine sync.
+    2. Otherwise, ``platformdirs.user_config_dir("litman") / vaults.yaml``
+       — XDG on Linux, ``~/Library/Application Support`` on macOS,
+       ``%APPDATA%`` on Windows.
     """
-    return Path.home() / REGISTRY_DIRNAME / REGISTRY_FILENAME
+    override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
+    if override:
+        return Path(override).expanduser() / REGISTRY_FILENAME
+    return Path(user_config_dir(REGISTRY_APP_NAME)) / REGISTRY_FILENAME
+
+
+def registry_path_default() -> Path:
+    """Return the default registry path ignoring ``$LITMAN_REGISTRY_DIR``.
+
+    Used by the first-time prompt to show the user what the default
+    location *would* be, even when they have already chosen to override it.
+    """
+    return Path(user_config_dir(REGISTRY_APP_NAME)) / REGISTRY_FILENAME
 
 
 def is_valid_vault_name(name: str) -> bool:
@@ -292,6 +336,18 @@ def add_vault(
         raise VaultRegistryError(
             f"Vault {name!r} is already registered. Run `lit vault list` "
             "to see existing vaults or pick a different name."
+        )
+    # Cross-platform safety (ADR-005): forbid names that case-fold to an
+    # existing entry. Vault names appear in cross-vault wikilinks
+    # ``[[<vault>:<id>]]`` and may end up as folder names in user-side
+    # tooling; same-fold names break when the registry or any derived
+    # artifact moves to Windows / default macOS.
+    case_clash = find_case_fold_collision([v.name for v in reg.vaults], name)
+    if case_clash is not None:
+        raise VaultRegistryError(
+            f"Vault name {name!r} differs only in case from existing "
+            f"vault {case_clash!r}. Same-fold names collide on Windows "
+            "/ default macOS filesystems. Pick a distinct name."
         )
 
     abs_path = Path(path).expanduser().resolve()
