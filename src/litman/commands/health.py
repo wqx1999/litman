@@ -58,6 +58,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "trash_size": "Trash bloat (entry count)",
     "trash_age": "Trash bloat (age)",
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
+    "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
 }
 
 

@@ -22,6 +22,7 @@ from litman.core.checks import (
     INBOX_STALE_DAYS,
     apply_autofix,
     check_bidirectional_refs,
+    check_code_clone_integrity,
     check_dangling_refs,
     check_dangling_wikilinks,
     check_id_consistency,
@@ -80,7 +81,7 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "related": fields.get("related", []),
         "contradicts": fields.get("contradicts", []),
         "extends": fields.get("extends", []),
-        "code-clones": [],
+        "code-clones": fields.get("code_clones", []),
     }
     if "drop_fields" in fields:
         for k in fields["drop_fields"]:
@@ -446,6 +447,120 @@ def test_pdf_viewer_clean_when_configured_present(
         _shutil, "which", lambda cmd: f"/usr/bin/{cmd}"
     )
     assert check_pdf_viewer(vault, []) == []
+
+
+# --- code_clone_integrity ---------------------------------------------------
+
+
+def _write_repo_meta(vault: Path, repo_name: str, papers: list[str]) -> None:
+    """Lay down a minimal ``codes/<repo_name>/repo-meta.yaml``.
+
+    The integrity check only inspects file existence — schema validation
+    is out of scope — so the payload need only be a parseable mapping.
+    """
+    repo_dir = vault / "codes" / repo_name
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    with (repo_dir / "repo-meta.yaml").open("w", encoding="utf-8") as f:
+        _yaml_dump.dump({"name": repo_name, "papers": list(papers)}, f)
+
+
+def test_code_clone_integrity_clean_no_codes_dir(vault: Path) -> None:
+    # ``create_vault`` always lays down ``codes/``; remove it to verify the
+    # defensive early-return path when the directory is genuinely absent.
+    (vault / "codes").rmdir()
+    _write_paper(vault, "2024_Foo_Bar")
+    assert check_code_clone_integrity(vault, list_papers(vault)) == []
+
+
+def test_code_clone_integrity_clean_empty_codes_dir(vault: Path) -> None:
+    # ``create_vault`` already lays down ``codes/``; this test asserts the
+    # check returns clean when the directory exists but contains no entries.
+    (vault / "codes").mkdir(exist_ok=True)
+    _write_paper(vault, "2024_Foo_Bar")
+    assert check_code_clone_integrity(vault, list_papers(vault)) == []
+
+
+def test_code_clone_integrity_dangling_clone(vault: Path) -> None:
+    """Repo on disk that no paper references → 1 warning."""
+    _write_paper(vault, "2024_Foo_Bar")
+    _write_repo_meta(vault, "X", papers=[])
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "code_clone_integrity"
+    assert issues[0].severity == "warning"
+    assert issues[0].paper_id is None
+    assert "X" in issues[0].message
+    assert "dangling" in issues[0].message
+    assert issues[0].hint is not None
+    assert "lit code rm X" in issues[0].hint
+
+
+def test_code_clone_integrity_dangling_ref(vault: Path) -> None:
+    """Paper references a repo with no codes/ dir → 1 error."""
+    _write_paper(vault, "2024_Foo_Bar", code_clones=["Y"])
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "code_clone_integrity"
+    assert issues[0].severity == "error"
+    assert issues[0].paper_id == "2024_Foo_Bar"
+    assert "Y" in issues[0].message
+    assert issues[0].hint is not None
+    assert "--rm-tag code-clones=Y" in issues[0].hint
+
+
+def test_code_clone_integrity_missing_repo_meta(vault: Path) -> None:
+    """codes/Z/ dir exists but no repo-meta.yaml inside → 1 error."""
+    (vault / "codes" / "Z").mkdir(parents=True)
+    _write_paper(vault, "2024_Foo_Bar")
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "code_clone_integrity"
+    assert issues[0].severity == "error"
+    assert issues[0].paper_id is None
+    assert "Z" in issues[0].message
+    assert issues[0].hint is not None
+    assert "lit code restore-all" in issues[0].hint
+
+
+def test_code_clone_integrity_all_three_failure_modes(vault: Path) -> None:
+    """Dangling clone + dangling ref + missing repo-meta + healthy pair."""
+    # Healthy pair: paper P references repo R, both sides exist.
+    _write_paper(vault, "P_p_p", code_clones=["R"])
+    _write_repo_meta(vault, "R", papers=["P_p_p"])
+    # Dangling clone: repo X exists, no paper references it.
+    _write_repo_meta(vault, "X", papers=[])
+    # Dangling ref: paper references Y, no codes/Y/ dir.
+    _write_paper(vault, "Q_q_q", code_clones=["Y"])
+    # Missing repo-meta: codes/Z/ exists as dir but no repo-meta.yaml.
+    (vault / "codes" / "Z").mkdir(parents=True)
+
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    assert len(issues) == 3
+    by_severity: dict[str, list[Any]] = {}
+    for i in issues:
+        by_severity.setdefault(i.severity, []).append(i)
+    # 1 warning (dangling clone X) + 2 errors (dangling ref Y, missing meta Z).
+    assert len(by_severity["warning"]) == 1
+    assert len(by_severity["error"]) == 2
+
+    warning_msg = by_severity["warning"][0].message
+    assert "X" in warning_msg and "dangling" in warning_msg
+
+    error_msgs = {i.message for i in by_severity["error"]}
+    assert any("Y" in m for m in error_msgs)
+    assert any("Z" in m for m in error_msgs)
+
+
+def test_code_clone_integrity_skips_non_directory_in_codes(vault: Path) -> None:
+    """A regular file under codes/ is not in scope — skip silently."""
+    # Healthy pair so the check actually runs over the codes/ dir.
+    _write_paper(vault, "P_p_p", code_clones=["R"])
+    _write_repo_meta(vault, "R", papers=["P_p_p"])
+    # Stray file — must not generate a missing_repo_meta or any other issue.
+    (vault / "codes" / "W").write_text("not a dir", encoding="utf-8")
+
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    assert issues == []
 
 
 # ===========================================================================

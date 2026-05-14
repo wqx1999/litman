@@ -29,6 +29,8 @@ Cross-references:
   mismatch detected by :func:`check_invalid_paper_dirs`.
 * M2.7+ added ``.trash/`` with sidecar ``<entry>.meta.yaml``. M2.8 surfaces
   orphan sidecars (sidecar without entry dir) and trash bloat.
+* invariant #12 bidirectional duality is enforced via
+  :func:`check_code_clone_integrity`.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ from typing import Any, Callable, Iterable
 from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
+from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
@@ -790,6 +793,122 @@ def check_trash_health(
     return out
 
 
+def check_code_clone_integrity(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Enforce invariant #12 — paper ``code-clones`` ↔ ``codes/<name>/`` duality.
+
+    Three failure modes, all under the single ``code_clone_integrity``
+    category so the report groups them together:
+
+    * **dangling ref** (``error``) — a paper's ``code-clones`` lists a
+      ``<name>`` with no ``codes/<name>/`` directory + ``repo-meta.yaml``
+      on disk. Active misdirection: the reader follows the link and finds
+      nothing. One Issue per ``(paper_id, missing_repo_name)`` pair so
+      each can be addressed individually.
+    * **dangling clone** (``warning``) — ``codes/<name>/repo-meta.yaml``
+      exists but no paper references ``<name>``. Disk hygiene only; the
+      clone wastes space but does not mislead.
+    * **missing repo-meta** (``error``) — ``codes/<name>/`` is a directory
+      but has no ``repo-meta.yaml``. Whatever atomic clone+link op
+      created the directory failed to land the metadata file, so the repo
+      is unrecoverable and unreferenceable.
+
+    Defensive: silently skips when ``codes/`` does not exist (vault may
+    legitimately have no clones) and skips non-directory children of
+    ``codes/`` (stray files / symlinks are not in scope here). Per
+    invariant #12 "不自动修复" the category is NOT in
+    :data:`AUTO_FIXABLE_CATEGORIES`.
+    """
+    codes_dir = vault / CODES_DIRNAME
+    if not codes_dir.is_dir():
+        return []
+
+    disk_repos: set[str] = set()
+    disk_dirs_no_meta: set[str] = set()
+    for child in codes_dir.iterdir():
+        if not child.is_dir():
+            continue
+        if (child / REPO_META_FILENAME).is_file():
+            disk_repos.add(child.name)
+        else:
+            disk_dirs_no_meta.add(child.name)
+
+    # Build referenced_repos plus a reverse map {repo_name: [paper_ids…]}
+    # so dangling-ref Issues can pin to the offending paper(s).
+    references: dict[str, list[str]] = {}
+    for p in papers:
+        pid = p.get("id")
+        if not pid:
+            continue
+        for name in p.get("code-clones") or []:
+            if not isinstance(name, str) or not name:
+                continue
+            references.setdefault(name, []).append(str(pid))
+    referenced_repos = set(references.keys())
+
+    out: list[Issue] = []
+
+    # Dangling refs: emit one Issue per (paper, missing repo) pair.
+    for repo_name in sorted(referenced_repos - disk_repos):
+        for pid in references[repo_name]:
+            out.append(
+                Issue(
+                    category="code_clone_integrity",
+                    severity="error",
+                    paper_id=pid,
+                    message=(
+                        f"{pid!r}.code-clones references {repo_name!r} "
+                        f"but no codes/{repo_name}/repo-meta.yaml exists"
+                    ),
+                    hint=(
+                        f"`lit modify {pid} --rm-tag code-clones={repo_name}` "
+                        "to drop the broken edge, or `lit code restore-all` "
+                        "to re-clone if upstream metadata is recoverable"
+                    ),
+                )
+            )
+
+    # Dangling clones: vault-level finding, no owning paper.
+    for repo_name in sorted(disk_repos - referenced_repos):
+        out.append(
+            Issue(
+                category="code_clone_integrity",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    f"codes/{repo_name}/ is a dangling clone — "
+                    f"no paper references {repo_name!r} in code-clones"
+                ),
+                hint=(
+                    f"`lit code rm {repo_name}` to delete, or "
+                    f"`lit code link {repo_name} --paper <id>` to bind it"
+                ),
+            )
+        )
+
+    # Broken clone dirs: codes/<name>/ without repo-meta.yaml. Vault-level.
+    for repo_name in sorted(disk_dirs_no_meta):
+        out.append(
+            Issue(
+                category="code_clone_integrity",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"codes/{repo_name}/ exists but has no "
+                    f"{REPO_META_FILENAME} (broken clone, likely from a "
+                    "failed atomic clone+link op)"
+                ),
+                hint=(
+                    "`lit code restore-all` to re-clone if the upstream "
+                    "is known, or remove the directory manually"
+                ),
+            )
+        )
+
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Orchestration + autofix
 # ---------------------------------------------------------------------------
@@ -808,6 +927,7 @@ _CHECK_REGISTRY: tuple[tuple[str, Callable[[Path, list[dict[str, Any]]], list[Is
     ("stale_staging", check_stale_staging),
     ("trash_health", check_trash_health),
     ("pdf_viewer", check_pdf_viewer),
+    ("code_clone_integrity", check_code_clone_integrity),
 )
 
 
