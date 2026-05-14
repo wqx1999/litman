@@ -21,6 +21,7 @@ def vault(tmp_path: Path) -> Path:
         "id: 2024_X_Foo\n"
         "year: 2024\n"
         "title: Foo paper\n"
+        "doi: 10.1234/test-foo\n"
         "authors:\n"
         "  - Smith, J\n",
         encoding="utf-8",
@@ -71,3 +72,69 @@ def test_show_rejects_invalid_id_with_path_traversal(vault: Path) -> None:
     result = runner.invoke(cli, ["show", "../../../etc/passwd", "--library", str(vault)])
     assert result.exit_code != 0
     assert isinstance(result.exception, PaperNotFoundError)
+
+
+def test_show_accepts_fuzzy_substring(vault: Path) -> None:
+    """M11: a unique case-insensitive substring resolves to the paper id."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["show", "foo", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "2024_X_Foo" in result.output
+
+
+def test_show_accepts_paper_doi(vault: Path) -> None:
+    """M11: --paper-doi reverse-looks-up the id via INDEX-less linear scan."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["show", "--paper-doi", "10.1234/test-foo", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "2024_X_Foo" in result.output
+
+
+def test_show_paper_id_and_doi_mutually_exclusive(vault: Path) -> None:
+    """M11: setting both is an error from the unified XOR helper."""
+    from litman.exceptions import LitmanError
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "show",
+            "2024_X_Foo",
+            "--paper-doi",
+            "10.1234/test-foo",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+    assert "mutually exclusive" in str(result.exception)
+
+
+def test_show_neither_id_nor_doi_errors(vault: Path) -> None:
+    from litman.exceptions import LitmanError
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["show", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+
+
+def test_show_ambiguous_substring_lists_candidates(vault: Path) -> None:
+    """M11: 2+ matches must surface the candidate ids in the error message."""
+    (vault / "papers" / "2025_X_Foobar").mkdir(parents=True)
+    (vault / "papers" / "2025_X_Foobar" / "metadata.yaml").write_text(
+        "id: 2025_X_Foobar\nyear: 2025\ntitle: Foobar\nauthors:\n  - Jones, K\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["show", "foo", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, PaperNotFoundError)
+    msg = str(result.exception)
+    assert "Ambiguous" in msg
+    assert "2024_X_Foo" in msg
+    assert "2025_X_Foobar" in msg

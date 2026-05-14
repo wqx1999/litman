@@ -104,10 +104,12 @@ def _make_repo(
 
 @pytest.fixture
 def upstream_repo(tmp_path: Path) -> Path:
-    """A real local git repo wangq can clone from a file:// URL.
+    """A real local git repo every URL-branch test clones from a file:// URL.
 
-    Some tests bypass this and clone from a literal directory path — both work
-    with git as long as the directory holds a .git/ dir.
+    M3.4 changed ``lit code add`` to route bare local paths through the new
+    local-import branch. URL-branch tests that need a "real git source" still
+    use this fixture, but pass ``f"file://{upstream_repo}"`` to keep
+    exercising the ``git clone`` path. The fixture itself is unchanged.
     """
     upstream = tmp_path / "upstream"
     upstream.mkdir()
@@ -443,11 +445,12 @@ def test_delete_repo_missing_raises(vault: Path) -> None:
 def test_cli_code_add_creates_clone(
     vault: Path, upstream_repo: Path
 ) -> None:
+    upstream_url = f"file://{upstream_repo}"
     runner = CliRunner()
     result = runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", upstream_url,
             "--name", "TestRepo",
             "--library", str(vault),
         ],
@@ -464,7 +467,7 @@ def test_cli_code_add_creates_clone(
 
     meta = _yaml_safe.load((repo_root / "repo-meta.yaml").read_text())
     assert meta["name"] == "TestRepo"
-    assert meta["upstream"] == str(upstream_repo)
+    assert meta["upstream"] == upstream_url
     assert meta["papers"] == []
     assert meta["framework"] is None
 
@@ -473,11 +476,11 @@ def test_cli_code_add_auto_derives_name(
     vault: Path, upstream_repo: Path
 ) -> None:
     runner = CliRunner()
-    # Pass the path with a trailing .git-style segment — derive_repo_name
-    # would strip a real ".git" suffix; here the last segment is "upstream".
+    # file:// URL — derive_repo_name takes the last segment ("upstream"),
+    # stripping any trailing ".git" if present (none here).
     result = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--library", str(vault)],
+        ["code", "add", f"file://{upstream_repo}", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     assert (vault / "codes" / "upstream" / "repo" / ".git").exists()
@@ -491,7 +494,7 @@ def test_cli_code_add_binds_paper(
     result = runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "MyRepo",
             "--paper", "2024_Smith_X",
             "--library", str(vault),
@@ -516,7 +519,7 @@ def test_cli_code_add_existing_repo_refused(
     """Same --name twice → CodeError, no half-built state."""
     runner = CliRunner()
     args = [
-        "code", "add", str(upstream_repo),
+        "code", "add", f"file://{upstream_repo}",
         "--name", "MyRepo",
         "--library", str(vault),
     ]
@@ -537,7 +540,7 @@ def test_cli_code_add_missing_paper_refused(
     result = runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "MyRepo",
             "--paper", "2024_Nope_X",
             "--library", str(vault),
@@ -553,7 +556,7 @@ def test_cli_code_add_clone_failure_rolls_back(
     vault: Path,
 ) -> None:
     """git clone failure (URL doesn't exist) → CodeError + no half-built dir."""
-    bogus = "/nonexistent/path/that/is/not/a/repo"
+    bogus = "file:///nonexistent/path/that/is/not/a/repo"
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -576,7 +579,7 @@ def test_cli_code_add_invalid_name_refused(
     result = runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "-bad-leading-hyphen",
             "--library", str(vault),
         ],
@@ -595,7 +598,7 @@ def test_cli_code_add_full_clone_with_depth_zero(
     result = runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "FullRepo",
             "--depth", "0",
             "--library", str(vault),
@@ -785,6 +788,79 @@ def test_cli_code_link_missing_repo(vault: Path) -> None:
     assert isinstance(result.exception, CodeError)
 
 
+def test_cli_code_link_accepts_fuzzy_paper(vault: Path) -> None:
+    """M11 smoke: --paper accepts a unique substring of the id."""
+    _make_paper(vault, "2024_Pandi_Cellfree")
+    _make_repo(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "link", "MyRepo",
+            "--paper", "Pandi",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_code_link_accepts_paper_doi(vault: Path) -> None:
+    """M11 smoke: --paper-doi reverse-looks-up the paper."""
+    _make_paper(vault, "2024_Foo_Bar", doi="10.5/foo")
+    _make_repo(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "link", "MyRepo",
+            "--paper-doi", "10.5/foo",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_code_add_accepts_fuzzy_paper(
+    vault: Path, upstream_repo: Path
+) -> None:
+    """M11 smoke: code add --paper accepts a unique substring of the id."""
+    _make_paper(vault, "2024_Pandi_Cellfree")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "add", f"file://{upstream_repo}",
+            "--name", "MyRepo",
+            "--paper", "Pandi",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    paper_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_Pandi_Cellfree" / "metadata.yaml").read_text()
+    )
+    assert paper_meta["code-clones"] == ["MyRepo"]
+
+
+def test_cli_code_list_accepts_fuzzy_paper_filter(vault: Path) -> None:
+    """M11 smoke: code list --paper accepts a unique substring."""
+    _make_paper(vault, "2024_Pandi_Cellfree")
+    _make_repo(vault, "Bound", papers=["2024_Pandi_Cellfree"])
+    _make_repo(vault, "Orphan")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "list",
+            "--paper", "Pandi",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Bound" in result.output
+    assert "Orphan" not in result.output
+
+
 # ---------------------------------------------------------------------------
 # CLI: lit code update
 # ---------------------------------------------------------------------------
@@ -797,7 +873,7 @@ def test_cli_code_update_already_uptodate(
     runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "TestRepo",
             "--library", str(vault),
         ],
@@ -817,7 +893,7 @@ def test_cli_code_update_pulls_new_commit(
     runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "TestRepo",
             "--library", str(vault),
         ],
@@ -859,7 +935,7 @@ def test_cli_code_update_unshallow_tolerates_full_clone(
     runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "TestRepo",
             "--library", str(vault),
         ],
@@ -1015,7 +1091,7 @@ def test_git_pull_returns_status_dict(
     runner.invoke(
         cli,
         [
-            "code", "add", str(upstream_repo),
+            "code", "add", f"file://{upstream_repo}",
             "--name", "TestRepo",
             "--library", str(vault),
         ],
@@ -1138,7 +1214,7 @@ def test_restore_skips_when_repo_already_present(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--name", "Alive",
+        ["code", "add", f"file://{upstream_repo}", "--name", "Alive",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
@@ -1163,7 +1239,7 @@ def test_restore_reclones_missing_repo(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--name", "Gone",
+        ["code", "add", f"file://{upstream_repo}", "--name", "Gone",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
@@ -1188,7 +1264,7 @@ def test_restore_mixed_present_and_missing(
     for name in ("Keep", "Drop"):
         r = runner.invoke(
             cli,
-            ["code", "add", str(upstream_repo), "--name", name,
+            ["code", "add", f"file://{upstream_repo}", "--name", name,
              "--library", str(vault)],
         )
         assert r.exit_code == 0, r.output
@@ -1233,7 +1309,7 @@ def test_restore_isolates_failures(
     runner = CliRunner()
     r = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--name", "Good",
+        ["code", "add", f"file://{upstream_repo}", "--name", "Good",
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output
@@ -1306,7 +1382,7 @@ def test_cli_code_restore_all_happy_path(
     runner = CliRunner()
     r = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--name", "BackMe",
+        ["code", "add", f"file://{upstream_repo}", "--name", "BackMe",
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output
@@ -1327,7 +1403,7 @@ def test_cli_code_restore_all_dry_run_does_not_clone(
     runner = CliRunner()
     r = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--name", "Preview",
+        ["code", "add", f"file://{upstream_repo}", "--name", "Preview",
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output
@@ -1371,7 +1447,7 @@ def test_cli_code_restore_all_skips_already_present(
     runner = CliRunner()
     r = runner.invoke(
         cli,
-        ["code", "add", str(upstream_repo), "--name", "Untouched",
+        ["code", "add", f"file://{upstream_repo}", "--name", "Untouched",
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output

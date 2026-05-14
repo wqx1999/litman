@@ -348,8 +348,13 @@ def test_rm_invalid_id(vault: Path) -> None:
         cli, ["rm", "../escape", "--yes", "--library", str(vault)]
     )
     assert result.exit_code != 0
-    assert isinstance(result.exception, RmError)
-    assert "Invalid paper id" in str(result.exception)
+    # M11 routes the positional arg through paper_lookup.resolve_paper_input
+    # first, so a path-traversal string that matches no paper surfaces as
+    # PaperNotFoundError ("No paper matching ...") rather than the older
+    # RmError ("Invalid paper id ..."). The pre-flight refusal is preserved;
+    # only the exception class moved.
+    assert isinstance(result.exception, PaperNotFoundError)
+    assert "No paper matching" in str(result.exception)
 
 
 def test_rm_paper_not_found(vault: Path) -> None:
@@ -373,3 +378,34 @@ def test_rm_help() -> None:
     assert "rm" in result.output.lower()
     assert "--cascade" in result.output
     assert "--yes" in result.output
+    assert "--paper-doi" in result.output
+
+
+def test_rm_accepts_fuzzy_substring(vault: Path) -> None:
+    """M11 smoke: substring of the id resolves to the paper correctly."""
+    _write_paper(vault, "2024_Pandi_Cellfree")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "Pandi", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert not (vault / "papers" / "2024_Pandi_Cellfree").exists()
+
+
+def test_rm_accepts_paper_doi(vault: Path) -> None:
+    """M11 smoke: --paper-doi reverse-looks-up the id."""
+    _write_paper(vault, "2024_X_Foo", doi="10.5555/foo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "rm",
+            "--paper-doi",
+            "10.5555/foo",
+            "--yes",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert not (vault / "papers" / "2024_X_Foo").exists()

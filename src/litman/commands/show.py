@@ -11,12 +11,24 @@ from rich.syntax import Syntax
 
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 
 console = Console()
 
 
 @click.command("show")
-@click.argument("paper_id")
+@click.argument(
+    "paper_id", required=False, shell_complete=complete_paper_id
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying the id. "
+        "Mutually exclusive with the positional paper id."
+    ),
+)
 @click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
@@ -34,12 +46,19 @@ console = Console()
     ),
 )
 def show_cmd(
-    paper_id: str, library: Path | None, vault_name: str | None
+    paper_id: str | None,
+    paper_doi: str | None,
+    library: Path | None,
+    vault_name: str | None,
 ) -> None:
-    """Show one paper's metadata.yaml plus PDF / notes paths."""
-    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    """Show one paper's metadata.yaml plus PDF / notes paths.
 
-    # find_paper validates id shape and existence; raises PaperNotFoundError.
+    The paper id accepts a full id, a unique case-insensitive substring,
+    or omit it and pass ``--paper-doi <DOI>`` instead.
+    """
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
+
     find_paper(vault, paper_id)
 
     paper_dir = vault / "papers" / paper_id

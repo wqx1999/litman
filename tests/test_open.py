@@ -385,3 +385,60 @@ def test_open_via_env_var(
     assert darwin_popen.calls[0][1].endswith(
         "/papers/2024_Smith_Foo/paper.pdf"
     )
+
+
+def test_open_paper_doi_resolves(
+    vault: Path, darwin_popen: _PopenRecorder
+) -> None:
+    """M11 smoke: --paper-doi reverse-lookup works for `lit open`."""
+    paper_dir = vault / "papers" / "2025_Doe_Test"
+    paper_dir.mkdir(parents=True)
+    yaml = YAML()
+    yaml.default_flow_style = False
+    with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(
+            {
+                "id": "2025_Doe_Test",
+                "title": "Title for 2025_Doe_Test",
+                "year": 2025,
+                "doi": "10.7777/test-doe",
+            },
+            f,
+        )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4 fake\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "open",
+            "--paper-doi",
+            "10.7777/test-doe",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert darwin_popen.calls[0][1].endswith(
+        "/papers/2025_Doe_Test/paper.pdf"
+    )
+
+
+def test_open_id_and_doi_mutually_exclusive(
+    vault: Path, darwin_popen: _PopenRecorder
+) -> None:
+    from litman.exceptions import LitmanError
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "open",
+            "2024_Smith_Foo",
+            "--paper-doi",
+            "10.0/x",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)

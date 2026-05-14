@@ -48,6 +48,7 @@ from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RenameError
 
@@ -105,7 +106,7 @@ def _format_id_list(ids: list[str], limit: int = 5) -> str:
 
 
 @click.command("rename")
-@click.argument("old")
+@click.argument("old", shell_complete=complete_paper_id)
 @click.argument("new")
 @click.option(
     "--library",
@@ -128,10 +129,24 @@ def rename_cmd(
 ) -> None:
     """Change a paper id from ``<old>`` to ``<new>``, rippling everywhere.
 
+    The ``<old>`` argument accepts a full id or a unique case-insensitive
+    substring. ``<new>`` is the destination id and must be the exact
+    target shape — fuzzy resolution does NOT apply to ``<new>`` (a paper
+    matching that substring would be an unrelated collision, not the
+    desired target).
+
+    No ``--paper-doi`` option is offered here: rename takes two positional
+    arguments and Click's parser cannot reliably tell which positional is
+    ``<old>`` vs ``<new>`` when ``<old>`` is omitted. Use ``lit list`` to
+    look up the id by DOI if needed.
+
     Touches the renamed paper's metadata + dir, every other paper's
     metadata that references it, every notes.md with a ``[[<old>]]``
     wikilink, INDEX.json, and views/.
     """
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    old = resolve_paper_id(vault, old)
+
     if old == new:
         raise RenameError("`old` and `new` are identical — nothing to do.")
     if not is_valid_id(new):
@@ -141,14 +156,10 @@ def rename_cmd(
             "slashes, no '..'."
         )
     if not is_valid_id(old):
-        # Symmetry: the old id should also pass the validator. If it
-        # doesn't, the on-disk dir is suspect and we shouldn't trust the
-        # rename.
         raise RenameError(
             f"Invalid old id {old!r}. Use `lit list` to find the right id."
         )
 
-    vault = find_vault(resolve_library_or_vault(library, vault_name))
     old_dir = vault / "papers" / old
     new_dir = vault / "papers" / new
 

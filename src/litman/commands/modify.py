@@ -36,6 +36,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.document import list_papers, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import ModifyError, PaperNotFoundError
 
@@ -183,7 +184,18 @@ def _format_diff_value(value: Any) -> str:
 
 
 @click.command("modify")
-@click.argument("paper_id")
+@click.argument(
+    "paper_id", required=False, shell_complete=complete_paper_id
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying the id. "
+        "Mutually exclusive with the positional paper id."
+    ),
+)
 @click.option(
     "--set",
     "set_ops",
@@ -222,7 +234,8 @@ def _format_diff_value(value: Any) -> str:
     ),
 )
 def modify_cmd(
-    paper_id: str,
+    paper_id: str | None,
+    paper_doi: str | None,
     set_ops: tuple[str, ...],
     add_tag_ops: tuple[str, ...],
     rm_tag_ops: tuple[str, ...],
@@ -230,6 +243,9 @@ def modify_cmd(
     vault_name: str | None,
 ) -> None:
     """Edit fields on an existing paper's metadata.yaml.
+
+    The paper id accepts a full id, a unique case-insensitive substring,
+    or omit it and pass ``--paper-doi <DOI>`` instead.
 
     Updates ``papers/<id>/metadata.yaml`` (with a refreshed ``updated-at``
     audit timestamp) and ``INDEX.json`` atomically; ``views/by-*/`` symlinks
@@ -242,6 +258,7 @@ def modify_cmd(
         )
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     meta_file = vault / "papers" / paper_id / "metadata.yaml"
     if not meta_file.is_file():
         raise PaperNotFoundError(

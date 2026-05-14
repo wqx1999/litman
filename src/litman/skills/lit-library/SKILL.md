@@ -115,7 +115,7 @@ Unknown keys are rejected (`extra="forbid"`). If you want to suggest topics/meth
 
 ### When `lit add --from-llm-json` errors
 
-- **"DOI 'x' already registered"** → the paper is already in the vault. Show the existing id, ask the user if they want to inspect (`lit show <id>`) or replace.
+- **"DOI 'x' already registered"** → the paper is already in the vault. Show the existing id, ask the user if they want to inspect (`lit show <id-or-substring>` or `lit show --paper-doi <doi>`) or replace.
 - **"Metadata from LLM JSON has no year"** → re-read the PDF for a year, or ask the user, or pass `--id 2024_Family_Keyword` explicitly.
 - **"field 'title': String should have at least 1 character"** → schema rejected an empty field; re-extract.
 
@@ -155,9 +155,12 @@ Most browsing is a single CLI call. Don't write a wrapper — call `lit list` di
 lit list                                     # full vault
 lit list --topic transformer --year ">=2023" # filter
 lit list --status deep-read --priority A     # by personal evaluation
-lit show <paper-id>                          # full metadata.yaml
-lit show <paper-id> --format json            # machine-friendly
+lit show Pandi                               # fuzzy: unique substring of id
+lit show 2023_Pandi_Cell-free                # exact id also works
+lit show --paper-doi 10.1038/...             # DOI reverse-lookup
 ```
+
+The paper-id input on every `lit` command that takes one (`show`, `open`, `modify`, `rm`, `rename`, `link`, `unlink`, `code link`, `code add --paper`, `code list --paper`) accepts (a) the full id, (b) a unique case-insensitive substring, or (c) `--paper-doi <DOI>` as a separate option mutually exclusive with the positional / `--paper` channel. Ambiguous substrings (2+ matches) print the candidate list and exit non-zero. `lit rename <old> <new>` is the one exception: it has no `--paper-doi` because two positionals make Click's parser unable to disambiguate.
 
 For "find a paper I read last month about X", scan `lit list --format json` and grep semantically — this is where the LLM adds value.
 
@@ -219,7 +222,7 @@ If unsure whether an operation respects these invariants, run `lit health-check`
 | `lit add <pdf> --doi <doi>` | Add via CrossRef |
 | `lit add <pdf> --from-llm-json <json>` | Add via LLM-extracted JSON |
 | `lit list [filters]` | Browse |
-| `lit show <id>` | Single-paper metadata |
+| `lit show <id-or-substring>` | Single-paper metadata (fuzzy substring OK; `--paper-doi` also supported) |
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields |
 | `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Manage controlled vocab |
 | `lit code add <url> --paper <id>` | Clone + bind a code repo |

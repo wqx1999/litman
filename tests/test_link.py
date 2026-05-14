@@ -548,3 +548,81 @@ def test_cli_link_help() -> None:
     assert "--project" in result.output
     assert "--rebuild-all" in result.output
     assert "--relevance" in result.output
+    assert "--paper-doi" in result.output
+
+
+def test_cli_link_accepts_fuzzy_substring(
+    vault: Path, project_dir: Path
+) -> None:
+    """M11 smoke: fuzzy substring resolves to the unique paper."""
+    _write_config_with_project(vault, "pepforge", project_dir)
+    _make_paper(vault, "2024_Pandi_Cellfree")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "link",
+            "Pandi",
+            "--project",
+            "pepforge",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "2024_Pandi_Cellfree" in result.output
+
+
+def test_cli_link_accepts_paper_doi(
+    vault: Path, project_dir: Path
+) -> None:
+    """M11 smoke: --paper-doi reverse-looks-up the paper."""
+    _write_config_with_project(vault, "pepforge", project_dir)
+    _make_paper(vault, "p1")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "link",
+            "--paper-doi",
+            "10.test/p1",
+            "--project",
+            "pepforge",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_cli_unlink_accepts_fuzzy_substring(
+    vault: Path, project_dir: Path
+) -> None:
+    """M11 smoke: unlink also routes through the fuzzy resolver."""
+    _write_config_with_project(vault, "pepforge", project_dir)
+    _make_paper(vault, "2024_Pandi_Cellfree")
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "link",
+            "2024_Pandi_Cellfree",
+            "--project",
+            "pepforge",
+            "--library",
+            str(vault),
+        ],
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "unlink",
+            "Pandi",
+            "--project",
+            "pepforge",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Unlinked" in result.output

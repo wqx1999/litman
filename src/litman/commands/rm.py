@@ -47,6 +47,7 @@ from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.trash import move_to_trash
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RmError
@@ -184,7 +185,18 @@ def _build_cascade_wikilink_updates(
 
 
 @click.command("rm")
-@click.argument("paper_id")
+@click.argument(
+    "paper_id", required=False, shell_complete=complete_paper_id
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying the id. "
+        "Mutually exclusive with the positional paper id."
+    ),
+)
 @click.option(
     "--cascade",
     is_flag=True,
@@ -225,7 +237,8 @@ def _build_cascade_wikilink_updates(
     ),
 )
 def rm_cmd(
-    paper_id: str,
+    paper_id: str | None,
+    paper_doi: str | None,
     cascade: bool,
     purge: bool,
     skip_confirm: bool,
@@ -234,6 +247,9 @@ def rm_cmd(
 ) -> None:
     """Remove a paper from the vault.
 
+    The paper id accepts a full id, a unique case-insensitive substring,
+    or omit it and pass ``--paper-doi <DOI>`` instead.
+
     By default moves ``papers/<id>/`` to ``<vault>/.trash/`` (recoverable
     via ``lit trash restore <id>``). Pass ``--purge`` to permanently delete.
     INDEX.json and ``views/by-*/`` are refreshed either way. Refuses if
@@ -241,12 +257,14 @@ def rm_cmd(
     ``extends``) or any notes file contains ``[[<id>]]``, unless
     ``--cascade`` is given.
     """
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
+
     if not is_valid_id(paper_id):
         raise RmError(
             f"Invalid paper id {paper_id!r}. Run `lit list` to see valid ids."
         )
 
-    vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_dir = vault / "papers" / paper_id
     if not paper_dir.is_dir():
         raise PaperNotFoundError(

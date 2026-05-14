@@ -282,7 +282,7 @@ def test_code_add_uses_config_default_clone_depth(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["code", "add", str(upstream), "--name", "Full",
+        ["code", "add", f"file://{upstream}", "--name", "Full",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
@@ -316,7 +316,7 @@ def test_code_add_cli_depth_overrides_config(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["code", "add", str(upstream), "--name", "Shallow",
+        ["code", "add", f"file://{upstream}", "--name", "Shallow",
          "--depth", "1", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output

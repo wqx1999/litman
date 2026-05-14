@@ -511,3 +511,42 @@ def test_modify_help() -> None:
     assert "--set" in result.output
     assert "--add-tag" in result.output
     assert "--rm-tag" in result.output
+    assert "--paper-doi" in result.output
+
+
+def test_modify_accepts_fuzzy_substring(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """M11 smoke: substring of the id resolves correctly through modify."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", "Foo", "--set", "priority=A", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    meta = _read_meta(vault, paper_id)
+    assert meta["priority"] == "A"
+
+
+def test_modify_accepts_paper_doi(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """M11 smoke: --paper-doi reverse-looks-up the id."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "modify",
+            "--paper-doi",
+            "10.1/x",
+            "--set",
+            "priority=A",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    meta = _read_meta(vault, paper_id)
+    assert meta["priority"] == "A"

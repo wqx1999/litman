@@ -400,3 +400,22 @@ def test_rename_help() -> None:
     result = runner.invoke(cli, ["rename", "--help"])
     assert result.exit_code == 0
     assert "rename" in result.output.lower()
+
+
+def test_rename_accepts_fuzzy_old(vault: Path) -> None:
+    """M11 smoke: old id accepts a substring; new is NOT fuzzy-matched."""
+    _write_paper(vault, "2024_Pandi_Cellfree")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "rename",
+            "Pandi",
+            "2024_Pandi_CellfreeV2",
+            "--library",
+            str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (vault / "papers" / "2024_Pandi_CellfreeV2").is_dir()
+    assert not (vault / "papers" / "2024_Pandi_Cellfree").exists()

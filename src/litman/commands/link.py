@@ -11,6 +11,12 @@ from rich.panel import Panel
 
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.paper_lookup import (
+    complete_paper_id,
+    find_paper_id_by_doi,
+    resolve_paper_id,
+    resolve_paper_input,
+)
 from litman.core.project_link import (
     link_paper_to_project,
     rebuild_all_project_links,
@@ -22,7 +28,18 @@ console = Console()
 
 
 @click.command("link")
-@click.argument("paper_id", required=False)
+@click.argument(
+    "paper_id", required=False, shell_complete=complete_paper_id
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying the id. "
+        "Mutually exclusive with the positional paper id and --rebuild-all."
+    ),
+)
 @click.option(
     "--project",
     "project",
@@ -67,6 +84,7 @@ console = Console()
 )
 def link_cmd(
     paper_id: str | None,
+    paper_doi: str | None,
     project: str | None,
     relevance: str | None,
     rebuild_all: bool,
@@ -75,10 +93,12 @@ def link_cmd(
 ) -> None:
     """Link a paper to a project: tag + symlinks + REFERENCES.md.
 
-    Single-paper mode::
+    Single-paper mode (paper id accepts full id, unique substring, or
+    ``--paper-doi <DOI>``)::
 
         lit link <paper-id> --project <name>
         lit link <paper-id> --project <name> --relevance "Direct baseline"
+        lit link --paper-doi 10.1038/... --project <name>
 
     Cross-machine recovery mode::
 
@@ -89,10 +109,11 @@ def link_cmd(
     ``lit-config.yaml`` only stores the path, not the directory itself.
     """
     if rebuild_all:
-        if paper_id or project:
+        if paper_id or project or paper_doi:
             raise LitmanError(
-                "--rebuild-all is exclusive with <paper-id> / --project. "
-                "Pass either single-paper args OR --rebuild-all, not both."
+                "--rebuild-all is exclusive with <paper-id> / --paper-doi / "
+                "--project. Pass either single-paper args OR --rebuild-all, "
+                "not both."
             )
         vault = find_vault(resolve_library_or_vault(library, vault_name))
         config = load_config(vault)
@@ -119,14 +140,32 @@ def link_cmd(
                 )
         return
 
-    if not paper_id or not project:
+    has_id = paper_id is not None and paper_id != ""
+    has_doi = paper_doi is not None and paper_doi != ""
+    if has_id and has_doi:
         raise LitmanError(
-            "Single-paper mode requires both <paper-id> argument and "
-            "--project <name>. Or pass --rebuild-all for cross-machine "
+            "--paper-doi and the positional paper id are mutually "
+            "exclusive. Pass one or the other, not both."
+        )
+    if not has_id and not has_doi:
+        raise LitmanError(
+            "Single-paper mode requires a paper id (or --paper-doi <DOI>) "
+            "and --project <name>. Or pass --rebuild-all for cross-machine "
             "recovery."
+        )
+    if not project:
+        raise LitmanError(
+            "Single-paper mode requires --project <name>. "
+            "Or pass --rebuild-all for cross-machine recovery."
         )
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+    if has_doi:
+        assert paper_doi is not None
+        paper_id = find_paper_id_by_doi(vault, paper_doi)
+    else:
+        assert paper_id is not None
+        paper_id = resolve_paper_id(vault, paper_id)
     config = load_config(vault)
     result = link_paper_to_project(
         vault, paper_id, project, config.projects, relevance=relevance
@@ -173,7 +212,18 @@ def link_cmd(
 
 
 @click.command("unlink")
-@click.argument("paper_id")
+@click.argument(
+    "paper_id", required=False, shell_complete=complete_paper_id
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying the id. "
+        "Mutually exclusive with the positional paper id."
+    ),
+)
 @click.option(
     "--project",
     "project",
@@ -207,7 +257,8 @@ def link_cmd(
     ),
 )
 def unlink_cmd(
-    paper_id: str,
+    paper_id: str | None,
+    paper_doi: str | None,
     project: str,
     keep_relevance: bool,
     library: Path | None,
@@ -215,11 +266,15 @@ def unlink_cmd(
 ) -> None:
     """Unlink a paper from a project: remove tag + symlinks + REFERENCES.md.
 
+    The paper id accepts a full id, a unique case-insensitive substring,
+    or omit it and pass ``--paper-doi <DOI>`` instead.
+
     The reverse of ``lit link``. Code symlinks under the project are
     only removed if no OTHER linked paper in the project still
     references the same repo (shared-utility-lib case).
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     config = load_config(vault)
     result = unlink_paper_from_project(
         vault, paper_id, project, config.projects,

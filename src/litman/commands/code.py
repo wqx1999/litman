@@ -31,6 +31,7 @@ from litman.core.code import (
     delete_repo,
     derive_repo_name,
     git_pull,
+    import_local_repo,
     is_valid_repo_name,
     list_repos,
     make_repo_meta,
@@ -42,9 +43,29 @@ from litman.core.code import (
 )
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.exceptions import CodeError, PaperNotFoundError
 
 console = Console()
+
+
+_URL_PREFIXES: tuple[str, ...] = (
+    "http://",
+    "https://",
+    "git@",
+    "ssh://",
+    "file://",
+)
+
+
+def _is_url(arg: str) -> bool:
+    """First-arg discriminator for ``lit code add``.
+
+    Recognises the clone-URL forms ``git`` natively accepts. Everything else
+    routes to the local-import branch (the caller verifies it actually points
+    at a real directory).
+    """
+    return arg.startswith(_URL_PREFIXES)
 
 
 @click.group("code")
@@ -65,24 +86,36 @@ def code_group() -> None:
 
 
 @code_group.command("add")
-@click.argument("url")
+@click.argument("source")
 @click.option(
     "--name",
     "repo_name",
     default=None,
     help=(
-        "Override the auto-derived repo name (default: last URL segment, "
-        "minus '.git'). Must match [A-Za-z0-9_][A-Za-z0-9._-]* — same shape "
-        "as paper ids, no leading hyphen."
+        "Override the auto-derived repo name. For a URL, default is the "
+        "last URL segment minus '.git'; for a local path, default is the "
+        "directory's basename. Must match [A-Za-z0-9_][A-Za-z0-9._-]* — "
+        "same shape as paper ids, no leading hyphen."
     ),
 )
 @click.option(
     "--paper",
     "paper_id",
     default=None,
+    shell_complete=complete_paper_id,
     help=(
-        "Bind the cloned repo to this paper id: appends <repo-name> to the "
-        "paper's `code-clones` list. The paper must exist."
+        "Bind the added repo to this paper id (full or unique "
+        "case-insensitive substring): appends <repo-name> to the paper's "
+        "`code-clones` list. The paper must exist."
+    ),
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying ``--paper``. "
+        "Mutually exclusive with --paper."
     ),
 )
 @click.option(
@@ -90,10 +123,22 @@ def code_group() -> None:
     type=int,
     default=None,
     help=(
-        "git clone --depth N. Use 0 for a full (non-shallow) clone. "
-        "Defaults to lit-config.yaml's `default_clone_depth` (1 unless "
-        "overridden). Run `lit code update --unshallow` later to promote "
-        "a shallow clone."
+        "git clone --depth N (URL sources only — ignored for local imports). "
+        "Use 0 for a full (non-shallow) clone. Defaults to lit-config.yaml's "
+        "`default_clone_depth` (1 unless overridden). Run `lit code update "
+        "--unshallow` later to promote a shallow clone."
+    ),
+)
+@click.option(
+    "--move",
+    "move_src",
+    is_flag=True,
+    default=False,
+    help=(
+        "Local-import only: move the source directory into the vault "
+        "instead of copying. The source disappears on success. Useful for "
+        "/tmp / Downloads sources you want cleaned up automatically. "
+        "Ignored for URL sources."
     ),
 )
 @click.option(
@@ -113,26 +158,62 @@ def code_group() -> None:
     ),
 )
 def code_add_cmd(
-    url: str,
+    source: str,
     repo_name: str | None,
     paper_id: str | None,
+    paper_doi: str | None,
     depth: int | None,
+    move_src: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Clone a code repository into ``<vault>/codes/<repo-name>/repo/``.
+    """Add a code repository to ``<vault>/codes/<repo-name>/repo/``.
+
+    ``SOURCE`` is either a clone URL (``http://``, ``https://``, ``git@``,
+    ``ssh://``, ``file://``) or a path to an existing local directory.
+
+    - URL source → ``git clone`` runs against the URL (default behavior, M3.1).
+    - Local-path source → the directory is copied (default) or moved (with
+      ``--move``) into the vault. If the source is already a git repo, its
+      ``remote.origin.url`` becomes the recorded ``upstream``; otherwise the
+      target is initialised as a fresh git repo with a single import commit,
+      and ``upstream`` is recorded as ``local:<absolute-source-path>`` for
+      provenance.
 
     Auto-generates ``repo-meta.yaml`` (papers / framework / runs-on / status
-    skeleton) and a ``notes.md`` placeholder alongside the clone. With
-    ``--paper <id>``, also appends ``<repo-name>`` to that paper's
-    ``code-clones`` list atomically.
+    skeleton) and a ``notes.md`` placeholder. With ``--paper <id>`` (full or
+    unique substring) or ``--paper-doi <DOI>``, also appends ``<repo-name>``
+    to that paper's ``code-clones`` list atomically.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    if depth is None:
-        depth = load_config(vault).default_clone_depth
+
+    if paper_id is not None or paper_doi is not None:
+        paper_id = resolve_paper_input(vault, paper_id, paper_doi)
+
+    use_url = _is_url(source)
+
+    if use_url:
+        clone_url = source
+        if depth is None:
+            depth = load_config(vault).default_clone_depth
+        derived_name = derive_repo_name(clone_url)
+        src_path: Path | None = None
+    else:
+        src_path = Path(source).expanduser().resolve()
+        if not src_path.is_dir():
+            raise CodeError(
+                f"Source is neither a recognised clone URL nor an existing "
+                f"local directory: {source!r}."
+            )
+        derived_name = src_path.name
 
     if repo_name is None:
-        repo_name = derive_repo_name(url)
+        repo_name = derived_name
+        if not is_valid_repo_name(repo_name):
+            raise CodeError(
+                f"Cannot derive a valid repo name from {source!r}. "
+                f"Got {repo_name!r}. Pass --name <repo-name> to override."
+            )
     elif not is_valid_repo_name(repo_name):
         raise CodeError(
             f"Invalid --name {repo_name!r}: must match "
@@ -156,11 +237,16 @@ def code_add_cmd(
 
     try:
         repo_root.mkdir(parents=True)
-        clone_repo(url, repo_root / REPO_DIRNAME, depth=depth)
-        # Write repo-meta with empty papers list; bind_paper_to_repo handles
-        # the bidirectional sync below if --paper is set.
-        write_repo_meta(repo_root, make_repo_meta(name=repo_name, upstream=url))
-        write_notes(repo_root, name=repo_name, upstream=url)
+        if use_url:
+            clone_repo(clone_url, repo_root / REPO_DIRNAME, depth=depth)
+            meta = make_repo_meta(name=repo_name, upstream=clone_url)
+        else:
+            assert src_path is not None  # mypy/pyright narrowing
+            meta = import_local_repo(
+                src_path, repo_root / REPO_DIRNAME, move=move_src
+            )
+        write_repo_meta(repo_root, meta)
+        write_notes(repo_root, name=repo_name, upstream=meta.get("upstream"))
         bound_now = False
         if paper_id is not None:
             bound_now = bind_paper_to_repo(vault, paper_id, repo_name)
@@ -176,14 +262,23 @@ def code_add_cmd(
         )
         binding_line = f"\n[bold]Bound to paper:[/] {escape(paper_id)}{suffix}"
 
-    depth_label = "full history" if depth < 1 else f"depth {depth}"
+    upstream_display = meta.get("upstream") or "(none)"
+    if use_url:
+        depth_label = "full history" if depth < 1 else f"depth {depth}"
+        provenance_line = f"[bold]Clone:[/] {depth_label}"
+    else:
+        verb = "moved" if move_src else "copied"
+        provenance_line = (
+            f"[bold]Local import:[/] {verb} from "
+            f"{escape(str(src_path))}"
+        )
 
     console.print(
         Panel.fit(
             f"[bold green]Code added:[/] {escape(repo_name)}\n"
             f"[dim]Folder:[/] {repo_root}\n\n"
-            f"[bold]Upstream:[/] {escape(url)}\n"
-            f"[bold]Clone:[/] {depth_label}"
+            f"[bold]Upstream:[/] {escape(str(upstream_display))}\n"
+            f"{provenance_line}"
             f"{binding_line}\n\n"
             f"[dim]Next:[/] edit {REPO_META_FILENAME} to fill "
             "framework / runs-on / status, then `lit refresh-views` to "
@@ -204,7 +299,20 @@ def code_add_cmd(
     "--paper",
     "paper_id",
     default=None,
-    help="Show only repos bound to this paper id.",
+    shell_complete=complete_paper_id,
+    help=(
+        "Show only repos bound to this paper id (full or unique "
+        "case-insensitive substring)."
+    ),
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Show only repos bound to the paper with this DOI. Mutually "
+        "exclusive with --paper."
+    ),
 )
 @click.option(
     "--orphan",
@@ -230,30 +338,36 @@ def code_add_cmd(
 )
 def code_list_cmd(
     paper_id: str | None,
+    paper_doi: str | None,
     orphan: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
     """List code repositories in the vault.
 
-    Filters are mutually exclusive: pass ``--paper <id>`` OR ``--orphan``,
-    not both.
+    Filters are mutually exclusive: pass at most one of ``--paper <id>`` /
+    ``--paper-doi <DOI>`` / ``--orphan``. ``--paper`` accepts a full id or
+    a unique case-insensitive substring.
     """
-    if paper_id and orphan:
+    n_paper_filters = sum(
+        1 for v in (paper_id, paper_doi) if v is not None and v != ""
+    )
+    if n_paper_filters > 1:
         raise CodeError(
-            "--paper and --orphan are mutually exclusive. "
+            "--paper and --paper-doi are mutually exclusive. "
+            "Pick one paper-side filter."
+        )
+    paper_filter_set = n_paper_filters == 1
+    if paper_filter_set and orphan:
+        raise CodeError(
+            "--paper / --paper-doi and --orphan are mutually exclusive. "
             "Pick one filter or pass neither."
         )
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
-    if paper_id is not None:
-        paper_meta = vault / "papers" / paper_id / "metadata.yaml"
-        if not paper_meta.is_file():
-            raise PaperNotFoundError(
-                f"No paper with id {paper_id!r} in vault {vault}. "
-                "Run `lit list` to see available ids."
-            )
+    if paper_filter_set:
+        paper_id = resolve_paper_input(vault, paper_id, paper_doi)
 
     repos = list_repos(vault)
     if paper_id is not None:
@@ -314,8 +428,21 @@ def code_list_cmd(
 @click.option(
     "--paper",
     "paper_id",
-    required=True,
-    help="Paper id to bind <repo-name> to.",
+    default=None,
+    shell_complete=complete_paper_id,
+    help=(
+        "Paper id to bind <repo-name> to (full or unique case-insensitive "
+        "substring). Required unless --paper-doi is given."
+    ),
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying ``--paper``. "
+        "Mutually exclusive with --paper."
+    ),
 )
 @click.option(
     "--library",
@@ -335,7 +462,8 @@ def code_list_cmd(
 )
 def code_link_cmd(
     repo_name: str,
-    paper_id: str,
+    paper_id: str | None,
+    paper_doi: str | None,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -347,6 +475,7 @@ def code_link_cmd(
     no metadata is touched.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     changed = bind_paper_to_repo(vault, paper_id, repo_name)
     if changed:
         console.print(

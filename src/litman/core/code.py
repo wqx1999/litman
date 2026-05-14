@@ -167,13 +167,178 @@ def clone_repo(
 
 
 # ---------------------------------------------------------------------------
+# Local import (M3.4) — bring an already-downloaded repo into the vault
+# ---------------------------------------------------------------------------
+
+
+def _extract_upstream_from_git_dir(repo_dir: Path) -> str | None:
+    """Read ``remote.origin.url`` from ``<repo_dir>/.git/config``.
+
+    Uses ``git -C <repo_dir> config --get remote.origin.url`` so it works for
+    both real ``.git/`` directories and the ``.git`` file form (worktrees /
+    submodules). Returns ``None`` when no origin remote is configured.
+    """
+    if not (repo_dir / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "config", "--get", "remote.origin.url"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise CodeError(
+            "`git` executable not found on PATH. Install git first."
+        ) from e
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
+def _init_git_repo_at(target_dir: Path, orig_path: Path) -> None:
+    """``git init && git add -A && git commit`` inside ``target_dir``.
+
+    Used when importing a non-git directory: we want every imported repo to
+    have a ``.git/`` so ``lit code update`` and downstream tooling can treat
+    it uniformly. The commit captures the import provenance in its message.
+
+    ``user.email`` / ``user.name`` are injected per-command so the operation
+    succeeds even when the host has no git global identity configured (CI,
+    fresh machines, containers).
+    """
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        init = _run(["git", "-C", str(target_dir), "init", "-q"])
+    except FileNotFoundError as e:
+        raise CodeError(
+            "`git` executable not found on PATH. Install git first."
+        ) from e
+    if init.returncode != 0:
+        raise CodeError(
+            f"git init failed in {target_dir}: {(init.stderr or '').strip()}"
+        )
+
+    add = _run(["git", "-C", str(target_dir), "add", "-A"])
+    if add.returncode != 0:
+        raise CodeError(
+            f"git add failed in {target_dir}: {(add.stderr or '').strip()}"
+        )
+
+    commit = _run(
+        [
+            "git", "-C", str(target_dir),
+            "-c", "user.email=litman@localhost",
+            "-c", "user.name=litman",
+            "commit", "-q", "-m", f"import from {orig_path}",
+        ]
+    )
+    if commit.returncode != 0:
+        raise CodeError(
+            f"git commit failed in {target_dir}: "
+            f"{(commit.stderr or '').strip()}"
+        )
+
+
+def import_local_repo(
+    src_path: Path,
+    target_repo_root: Path,
+    *,
+    move: bool = False,
+) -> dict[str, Any]:
+    """Import a local directory into ``<vault>/codes/<name>/repo/``.
+
+    Three cases, all converging on a ``.git/``-bearing ``target_repo_root``:
+
+    1. ``src_path`` is a git repo (``.git/`` exists, file or dir form) →
+       copy / move it whole. ``upstream`` is taken from ``remote.origin.url``
+       if set; otherwise ``None``.
+    2. ``src_path`` is a non-empty directory without ``.git/`` → copy / move,
+       then ``git init && add -A && commit`` inside the target so the result
+       is still a normal-looking checkout. ``upstream`` becomes
+       ``"local:<absolute-src-path>"`` for provenance tracing.
+    3. Anything else (does not exist, is a file, is an empty dir) → raise.
+
+    Args:
+        src_path: User-supplied path. Already resolved / expanded by the
+            caller. Either a git repo or a non-empty plain directory.
+        target_repo_root: Destination ``codes/<name>/repo/`` directory. Must
+            NOT exist (caller verifies the surrounding ``codes/<name>/`` is
+            free of collisions before invoking).
+        move: When ``True``, ``shutil.move`` the source instead of ``cp -r``.
+            Caller's responsibility to wrap in try/except and clean up the
+            half-built target on failure; this function does not own
+            rollback of the surrounding ``codes/<name>/`` directory.
+
+    Returns:
+        A dict suitable for ``write_repo_meta``: the same shape ``make_repo_meta``
+        produces, with ``upstream`` filled appropriately for the source case.
+        The caller still owns ``name`` selection, paper binding, and writing
+        the file to disk.
+
+    Raises:
+        CodeError: ``src_path`` is invalid (missing, not a directory, empty),
+            ``target_repo_root`` already exists, or any git subprocess fails.
+    """
+    if not src_path.exists():
+        raise CodeError(
+            f"Source path does not exist: {src_path}. "
+            "Pass a real local directory or a clone URL."
+        )
+    if not src_path.is_dir():
+        raise CodeError(
+            f"Source path is not a directory: {src_path}. "
+            "Local import expects a folder (clone / extracted source / etc.)."
+        )
+
+    is_git = (src_path / ".git").exists()
+    if not is_git:
+        has_content = any(src_path.iterdir())
+        if not has_content:
+            raise CodeError(
+                f"Source directory is empty: {src_path}. "
+                "Nothing to import."
+            )
+
+    if target_repo_root.exists():
+        raise CodeError(
+            f"Import target already exists: {target_repo_root}. "
+            "Remove it first or pick a different --name."
+        )
+
+    target_repo_root.parent.mkdir(parents=True, exist_ok=True)
+
+    if move:
+        shutil.move(str(src_path), str(target_repo_root))
+    else:
+        shutil.copytree(src_path, target_repo_root, symlinks=True)
+
+    name = target_repo_root.parent.name
+    if is_git:
+        upstream = _extract_upstream_from_git_dir(target_repo_root)
+        return make_repo_meta(name=name, upstream=upstream)
+
+    _init_git_repo_at(target_repo_root, orig_path=src_path)
+    return make_repo_meta(name=name, upstream=f"local:{src_path}")
+
+
+# ---------------------------------------------------------------------------
 # repo-meta.yaml + notes.md scaffolding
 # ---------------------------------------------------------------------------
 
 
 def make_repo_meta(
     name: str,
-    upstream: str,
+    upstream: str | None,
     papers: list[str] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
@@ -181,6 +346,10 @@ def make_repo_meta(
 
     Field order follows the paper metadata convention: identity layer first
     (machine-maintained), then audit, then relations, then user-fills.
+
+    ``upstream`` may be ``None`` (e.g., a local git repo without an origin
+    remote — nothing fetchable to record). ``restore_missing_repos`` treats
+    empty or absent upstream as "cannot restore" and reports it as failed.
     """
     timestamp = now or _now_iso()
     return {
@@ -224,11 +393,11 @@ later. Long-form. The structured fields live in `repo-meta.yaml`.)
 """
 
 
-def write_notes(repo_dir: Path, name: str, upstream: str) -> Path:
+def write_notes(repo_dir: Path, name: str, upstream: str | None) -> Path:
     """Write the placeholder ``<repo_dir>/notes.md`` and return its path."""
     target = repo_dir / NOTES_FILENAME
     target.write_text(
-        _NOTES_TEMPLATE.format(name=name, upstream=upstream),
+        _NOTES_TEMPLATE.format(name=name, upstream=upstream or "(none)"),
         encoding="utf-8",
     )
     return target
