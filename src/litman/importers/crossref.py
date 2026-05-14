@@ -89,8 +89,33 @@ def _extract_year(message: dict[str, Any]) -> int | None:
     return None
 
 
+# CrossRef "type" values whose container-title is a proceedings or chapter
+# venue rather than a journal. For these, the container goes to `booktitle`
+# (used by @inproceedings / @incollection) and `journal` stays empty.
+# Everything else (including unknown / missing type) routes container-title
+# to `journal`, the conservative default that matches the legacy 5-field
+# parser behaviour.
+_NON_JOURNAL_VENUE_TYPES: frozenset[str] = frozenset({
+    "proceedings-article",
+    "book-chapter",
+})
+
+
 def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
-    """Convert a CrossRef ``message`` object into the standard metadata dict."""
+    """Convert a CrossRef ``message`` object into the standard metadata dict.
+
+    Returns the 5 legacy fields (title / authors / year / journal / doi)
+    plus 6 bib-oriented fields added in M12.0:
+    ``volume``, ``issue``, ``pages``, ``publisher``, ``venue-type``,
+    ``booktitle``. Missing fields come back as ``""`` (string) rather
+    than ``None`` so the metadata dict reads uniformly; the schema-less
+    invariant lets ``_build_metadata`` drop genuinely empty strings if a
+    future caller wants stricter null semantics.
+
+    The container-title routing depends on ``message.type``: proceedings
+    or chapter types land in ``booktitle`` (and ``journal`` stays empty),
+    everything else lands in ``journal`` (and ``booktitle`` stays empty).
+    """
     title_list = message.get("title") or []
     title = title_list[0] if title_list else ""
 
@@ -106,7 +131,15 @@ def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
             authors.append(given)
 
     container_list = message.get("container-title") or []
-    journal = container_list[0] if container_list else ""
+    container = container_list[0] if container_list else ""
+
+    venue_type = message.get("type") or ""
+    if venue_type in _NON_JOURNAL_VENUE_TYPES:
+        journal = ""
+        booktitle = container
+    else:
+        journal = container
+        booktitle = ""
 
     return {
         "title": title,
@@ -114,4 +147,12 @@ def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
         "year": _extract_year(message),
         "journal": journal,
         "doi": message.get("DOI", ""),
+        # M12.0 bib-oriented fields. Stored as raw CrossRef values; bib
+        # rendering (e.g. "45-67" -> "45--67") happens in the exporter.
+        "volume": message.get("volume", "") or "",
+        "issue": message.get("issue", "") or "",
+        "pages": message.get("page", "") or "",
+        "publisher": message.get("publisher", "") or "",
+        "venue-type": venue_type,
+        "booktitle": booktitle,
     }

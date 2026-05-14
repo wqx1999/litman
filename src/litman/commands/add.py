@@ -80,6 +80,16 @@ def _build_metadata(
         "doi": parsed.get("doi", ""),
         "arxiv-id": None,
         "github": None,
+        # M12.0 bib-oriented fields. Schema-less: empty string = "not
+        # applicable to this paper" (a preprint typically has no volume /
+        # pages; a book chapter has no journal). The exporter drops
+        # empty fields rather than emitting `volume = {}`.
+        "volume": parsed.get("volume", "") or "",
+        "issue": parsed.get("issue", "") or "",
+        "pages": parsed.get("pages", "") or "",
+        "publisher": parsed.get("publisher", "") or "",
+        "venue-type": parsed.get("venue-type", "") or "",
+        "booktitle": parsed.get("booktitle", "") or "",
         # === audit layer (machine-maintained) ===
         "created-at": timestamp,
         "updated-at": timestamp,

@@ -18,19 +18,32 @@ Why a file and not stdin/argv:
 Schema (validated via pydantic ``extra='forbid'`` so typos surface):
 
     {
-        "title":    str,           # required, the paper's title
-        "authors":  list[str],     # required, each "Family, Given"
-        "year":     int | null,    # publication year
-        "doi":      str | null,    # canonical DOI (no URL prefix)
-        "journal":  str | null,    # venue / preprint server
-        "arxiv-id": str | null,    # optional; currently informational
-        "abstract": str | null,    # optional; currently informational
+        "title":      str,           # required, the paper's title
+        "authors":    list[str],     # required, each "Family, Given"
+        "year":       int | null,    # publication year
+        "doi":        str | null,    # canonical DOI (no URL prefix)
+        "journal":    str | null,    # venue / preprint server
+        "arxiv-id":   str | null,    # optional; currently informational
+        "abstract":   str | null,    # optional; currently informational
+
+        # M12.0 bib-oriented fields (all optional; agent may omit them):
+        "volume":     str | null,    # @article volume
+        "issue":      str | null,    # @article issue
+        "pages":      str | null,    # "45-67" -> rendered "45--67" by exporter
+        "publisher":  str | null,    # @book / @inproceedings publisher
+        "venue-type": str | null,    # CrossRef-style: "journal-article",
+                                     # "proceedings-article", "posted-content",
+                                     # "book", "book-chapter", "dissertation",
+                                     # "report". Drives bibtex entry type.
+        "booktitle":  str | null,    # @inproceedings / @incollection;
+                                     # leave null when journal already holds
+                                     # the venue.
     }
 
 The returned dict matches ``parse_crossref``'s output (``title``,
-``authors``, ``year``, ``journal``, ``doi``) so the rest of ``lit add``
-sees a uniform shape regardless of whether metadata came from CrossRef
-or from an LLM.
+``authors``, ``year``, ``journal``, ``doi`` + the 6 M12.0 fields) so
+the rest of ``lit add`` sees a uniform shape regardless of whether
+metadata came from CrossRef or from an LLM.
 """
 
 from __future__ import annotations
@@ -73,6 +86,46 @@ class LLMCandidateMeta(BaseModel):
     abstract: str | None = Field(
         default=None,
         description="Optional abstract; not currently written to disk.",
+    )
+
+    # M12.0 bib-oriented fields. All optional; older skill JSON payloads
+    # that omit them are accepted unchanged (pydantic defaults to None
+    # when a field is missing, and ``extra='forbid'`` only fires on
+    # unknown keys, not absent ones).
+    volume: str | None = Field(
+        default=None,
+        description="Journal volume (@article).",
+    )
+    issue: str | None = Field(
+        default=None,
+        description="Journal issue / number (@article).",
+    )
+    pages: str | None = Field(
+        default=None,
+        description="Page range like '45-67'; exporter renders as '45--67'.",
+    )
+    publisher: str | None = Field(
+        default=None,
+        description="Publisher (@book / @inproceedings / @phdthesis).",
+    )
+    venue_type: str | None = Field(
+        default=None,
+        alias="venue-type",
+        description=(
+            "CrossRef-style venue type ('journal-article', "
+            "'proceedings-article', 'posted-content', 'book', "
+            "'book-chapter', 'dissertation', 'report'). Drives the "
+            "bibtex entry type chosen by `lit export`. Distinct from "
+            "the editorial `type` field (research / review / position) "
+            "in metadata.yaml."
+        ),
+    )
+    booktitle: str | None = Field(
+        default=None,
+        description=(
+            "Conference / book title (@inproceedings / @incollection). "
+            "Leave null for @article — the journal field holds the venue."
+        ),
     )
 
 
@@ -122,13 +175,21 @@ def parse_llm_json(json_path: Path) -> dict[str, Any]:
         ) from e
 
     # Normalize to the parse_crossref output shape so downstream add.py
-    # logic does not branch on importer.
+    # logic does not branch on importer. The 6 M12.0 fields default to
+    # "" (not None) to match parse_crossref's shape.
     return {
         "title": meta.title,
         "authors": list(meta.authors),
         "year": meta.year,
         "journal": meta.journal or "",
         "doi": (meta.doi or "").strip(),
+        # M12.0 bib-oriented fields.
+        "volume": meta.volume or "",
+        "issue": meta.issue or "",
+        "pages": meta.pages or "",
+        "publisher": meta.publisher or "",
+        "venue-type": meta.venue_type or "",
+        "booktitle": meta.booktitle or "",
         # Optional pass-throughs — currently unused by _build_metadata but
         # available if a future caller wants them.
         "arxiv-id": meta.arxiv_id,

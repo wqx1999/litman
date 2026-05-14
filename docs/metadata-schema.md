@@ -32,6 +32,12 @@ see [philosophy: schema-less metadata](philosophy.md#schema-less-metadata).
 | `doi` | string | `""` | Canonical DOI (no URL prefix). Used for `lit add` dedup; see `unique_keys` in [config-schema.md](config-schema.md). |
 | `arxiv-id` | string or null | null | arXiv identifier; informational. |
 | `github` | string or null | null | URL of the paper's official code repo; informational. Use `lit code add` + `code-clones` for actual binding. |
+| `volume` | string | `""` | Journal volume. Filled from CrossRef `message.volume` for `@article`. Empty for preprints / books. |
+| `issue` | string | `""` | Journal issue / number. Filled from CrossRef `message.issue`. |
+| `pages` | string | `""` | Page range, raw CrossRef form (e.g. `"45-67"`). `lit export` renders to `"45--67"` for bibtex. |
+| `publisher` | string | `""` | Publisher / conference organizer. Used by `@book`, `@inproceedings`, `@phdthesis`. |
+| `venue-type` | string | `""` | CrossRef-style publication form: `journal-article`, `proceedings-article`, `posted-content`, `book`, `book-chapter`, `dissertation`, `report`. **Distinct from `type` below** (editorial classification). Drives the bibtex entry chosen by `lit export`; missing / unknown maps to `@misc`. |
+| `booktitle` | string | `""` | Conference / book title for `@inproceedings` / `@incollection`. Filled instead of `journal` when CrossRef `type` is a proceedings or chapter form. Empty for journal articles. |
 
 ## Audit layer (machine-maintained — do not edit)
 
@@ -60,6 +66,16 @@ before tagging.
 `type` enum values (defined in [taxonomy-schema.md](taxonomy-schema.md)):
 `research`, `review`, `position`, `benchmark`, `dataset`, `tutorial`,
 `thesis`, `book-chapter`. Default: `research`.
+
+**`type` vs `venue-type` — keep them straight**: `type` is your
+editorial label for what kind of paper it is to you (a research paper
+you'll cite for results, a review that surveys the field, a position
+piece on direction). `venue-type` (identity layer above) is CrossRef's
+label for what kind of publication object it is (journal article,
+proceedings article, preprint, book chapter). The two are intentionally
+independent — a peer-reviewed `journal-article` can be a `review`, and
+a `proceedings-article` can be a `position` piece. `lit export` uses
+`venue-type` (not `type`) to pick a bibtex entry type.
 
 ## Personal evaluation layer
 
@@ -126,6 +142,12 @@ journal: "NeurIPS"
 doi: "10.48550/arXiv.1706.03762"
 arxiv-id: "1706.03762"
 github: null
+volume: "30"
+issue: ""
+pages: "5998-6008"
+publisher: ""
+venue-type: journal-article
+booktitle: ""
 
 # Audit (machine)
 created-at: "2026-05-13T10:00:00+00:00"

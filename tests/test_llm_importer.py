@@ -134,6 +134,78 @@ def test_schema_is_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------
+# M12.0 — bib-oriented LLM fields
+# ---------------------------------------------------------------------------
+
+
+def test_schema_accepts_m12_bib_fields() -> None:
+    """Pydantic accepts the 6 M12.0 fields with their hyphenated aliases."""
+    meta = LLMCandidateMeta.model_validate({
+        "title": "Paper",
+        "authors": ["Doe, J."],
+        "volume": "42",
+        "issue": "3",
+        "pages": "100-120",
+        "publisher": "ACM",
+        "venue-type": "proceedings-article",
+        "booktitle": "ICML Proceedings",
+    })
+    assert meta.volume == "42"
+    assert meta.issue == "3"
+    assert meta.pages == "100-120"
+    assert meta.publisher == "ACM"
+    assert meta.venue_type == "proceedings-article"
+    assert meta.booktitle == "ICML Proceedings"
+
+
+def test_schema_m12_fields_optional_default_none() -> None:
+    """Old payloads (without the 6 new fields) still parse — backwards compat."""
+    meta = LLMCandidateMeta.model_validate({
+        "title": "Paper",
+        "authors": ["Doe, J."],
+    })
+    assert meta.volume is None
+    assert meta.issue is None
+    assert meta.pages is None
+    assert meta.publisher is None
+    assert meta.venue_type is None
+    assert meta.booktitle is None
+
+
+def test_parse_llm_json_full_m12_fields_normalize_to_empty_string(
+    tmp_path: Path,
+) -> None:
+    """parse_llm_json returns "" (not None) so the dict matches parse_crossref."""
+    p = _write_json(tmp_path / "meta.json", {
+        "title": "Paper",
+        "authors": ["Doe, J."],
+        "volume": "42",
+        "venue-type": "journal-article",
+    })
+    parsed = parse_llm_json(p)
+    assert parsed["volume"] == "42"
+    assert parsed["venue-type"] == "journal-article"
+    # Absent ones come back as "" (matching parse_crossref shape).
+    assert parsed["issue"] == ""
+    assert parsed["pages"] == ""
+    assert parsed["publisher"] == ""
+    assert parsed["booktitle"] == ""
+
+
+def test_parse_llm_json_minimal_payload_has_empty_m12_fields(
+    tmp_path: Path,
+) -> None:
+    """A minimal payload still produces all 6 M12.0 keys (as empty strings)."""
+    p = _write_json(tmp_path / "meta.json", {
+        "title": "Minimal",
+        "authors": ["Doe, J."],
+    })
+    parsed = parse_llm_json(p)
+    for key in ("volume", "issue", "pages", "publisher", "venue-type", "booktitle"):
+        assert parsed[key] == "", f"{key!r} should default to empty string"
+
+
+# ---------------------------------------------------------------------------
 # parse_llm_json file I/O
 # ---------------------------------------------------------------------------
 
