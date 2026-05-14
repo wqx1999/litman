@@ -168,9 +168,37 @@ For "find a paper I read last month about X", scan `lit list --format json` and 
 
 ## [E] Modify Metadata or Taxonomy
 
-**Field changes** use `lit modify`:
+### Sugar commands — prefer over `lit modify --set` for known semantic fields
+
+Five one-shot commands compress the most common `lit modify --set` patterns. **Prefer the sugar form whenever it applies** — it removes 3 of the 4 decision steps (recall field name + compute today's date + assemble `--set` syntax) and eliminates a class of typos (`status=dropd`, `read_date` vs `read-date`).
+
 ```bash
-lit modify <id> --set status=deep-read --set priority=A
+lit read <id>                       # stamp read-date = today
+lit read <id> --date 2026-05-11     # backdate
+lit revisit <id>                    # stamp last-revisited = today
+lit drop <id>                       # status = dropped
+lit promote <id>                    # status = deep-read
+lit skim <id>                       # status = skim
+```
+
+Each sugar accepts the same id channels as every other paper-targeted command: full id, unique substring, or `--paper-doi <DOI>`.
+
+**Equivalence cheatsheet** — when to reach for the sugar vs `lit modify`:
+
+| Sugar | Equivalent `lit modify` | Notes |
+|---|---|---|
+| `lit read <id>` | `lit modify <id> --set read-date=<YYYY-MM-DD>` | Date defaults to today; `--date` backdates |
+| `lit revisit <id>` | `lit modify <id> --set last-revisited=<YYYY-MM-DD>` | Distinct from `lit read` — invariant #11 keeps the two fields separate |
+| `lit drop <id>` | `lit modify <id> --set status=dropped` | Reverse with `lit modify <id> --set status=<new>` |
+| `lit promote <id>` | `lit modify <id> --set status=deep-read` | Does **not** also stamp `read-date` — run `lit read` separately if needed |
+| `lit skim <id>` | `lit modify <id> --set status=skim` | |
+
+Same-day / same-value repeats are no-ops: `lit read X` twice on the same day does not bump `updated-at`. This mirrors the `--add-tag` / `--rm-tag` no-op semantics in `lit modify`.
+
+When the sugar does NOT apply (changing `priority`, an arbitrary scalar field, or tag-list fields), fall back to:
+
+```bash
+lit modify <id> --set priority=A
 lit modify <id> --add-tag topics=peptide-LM --add-tag methods=transformer
 lit modify <id> --rm-tag topics=outdated-value
 ```
@@ -224,6 +252,11 @@ If unsure whether an operation respects these invariants, run `lit health-check`
 | `lit list [filters]` | Browse |
 | `lit show <id-or-substring>` | Single-paper metadata (fuzzy substring OK; `--paper-doi` also supported) |
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields |
+| `lit read <id> [--date YYYY-MM-DD]` | Sugar: stamp `read-date` (defaults to today) |
+| `lit revisit <id> [--date YYYY-MM-DD]` | Sugar: stamp `last-revisited` (defaults to today) |
+| `lit drop <id>` | Sugar: `status=dropped` |
+| `lit promote <id>` | Sugar: `status=deep-read` (does NOT touch `read-date`) |
+| `lit skim <id>` | Sugar: `status=skim` |
 | `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Manage controlled vocab |
 | `lit code add <url> --paper <id>` | Clone + bind a code repo |
 | `lit code list [--paper <id>]` | Browse code repos |

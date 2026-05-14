@@ -20,6 +20,7 @@ from litman import __version__
 from litman.commands.add import add_cmd
 from litman.commands.code import code_group
 from litman.commands.config import config_group
+from litman.commands.drop import drop_cmd
 from litman.commands.export import export_cmd
 from litman.commands.health import health_check_cmd
 from litman.commands.init import init_cmd
@@ -29,10 +30,14 @@ from litman.commands.link import link_cmd, unlink_cmd
 from litman.commands.list import list_cmd
 from litman.commands.modify import modify_cmd
 from litman.commands.open import open_cmd
+from litman.commands.promote import promote_cmd
+from litman.commands.read import read_cmd
 from litman.commands.refresh import refresh_views_cmd
 from litman.commands.rename import rename_cmd
+from litman.commands.revisit import revisit_cmd
 from litman.commands.rm import rm_cmd
 from litman.commands.show import show_cmd
+from litman.commands.skim import skim_cmd
 from litman.commands.sync import sync_group
 from litman.commands.taxonomy import taxonomy_group
 from litman.commands.trash import trash_group
@@ -58,6 +63,11 @@ cli.add_command(show_cmd)
 cli.add_command(open_cmd)
 cli.add_command(refresh_views_cmd)
 cli.add_command(modify_cmd)
+cli.add_command(read_cmd)
+cli.add_command(revisit_cmd)
+cli.add_command(drop_cmd)
+cli.add_command(promote_cmd)
+cli.add_command(skim_cmd)
 cli.add_command(taxonomy_group)
 cli.add_command(rename_cmd)
 cli.add_command(rm_cmd)

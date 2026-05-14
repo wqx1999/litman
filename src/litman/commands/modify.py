@@ -183,6 +183,151 @@ def _format_diff_value(value: Any) -> str:
     return repr(value) if isinstance(value, str) else str(value)
 
 
+def _apply_modify(
+    vault: Path,
+    paper_id: str,
+    set_ops: tuple[str, ...] = (),
+    add_tag_ops: tuple[str, ...] = (),
+    rm_tag_ops: tuple[str, ...] = (),
+    skip_set_noop: bool = False,
+) -> bool:
+    """Apply set / add-tag / rm-tag ops to one paper's metadata.yaml.
+
+    Shared backend for ``lit modify`` and the M13 semantic-sugar commands
+    (``lit read`` / ``lit revisit`` / ``lit drop`` / ``lit promote`` /
+    ``lit skim``). Handles the full pipeline:
+
+    1. Resolve metadata file path (caller has already resolved ``paper_id``
+       through ``resolve_paper_input``).
+    2. Load metadata, apply ops, compute diffs.
+    3. No-op short-circuit if every op was already in effect — does NOT
+       bump ``updated-at`` and skips staged_write entirely.
+    4. Otherwise: bump ``updated-at``, render INDEX.json, staged-write
+       both files atomically, rebuild views/.
+    5. Print human-readable diff summary to the console.
+
+    Args:
+        vault: Vault root (already discovered).
+        paper_id: Canonical paper id (already resolved through fuzzy /
+            DOI channel).
+        set_ops: Sequence of ``"key=value"`` --set specs.
+        add_tag_ops: Sequence of ``"key=value"`` --add-tag specs.
+        rm_tag_ops: Sequence of ``"key=value"`` --rm-tag specs.
+        skip_set_noop: If True, --set ops whose new value equals the
+            current value are silently dropped from the diff (no
+            ``updated-at`` bump if every op turns out to be redundant).
+            Default False preserves ``lit modify``'s public contract:
+            redundant ``--set`` still bumps ``updated-at`` (since the
+            user explicitly asked to write that value). M13 sugar
+            commands pass True so that ``lit read X`` twice in one day
+            is a true no-op.
+
+    Returns:
+        ``True`` when at least one change landed on disk, ``False`` when
+        every op was a redundant no-op and metadata.yaml was not touched.
+
+    Raises:
+        PaperNotFoundError: ``papers/<id>/metadata.yaml`` does not exist.
+        ModifyError: empty metadata file, malformed key=value spec, or
+            an op rejected by ``_apply_set`` / ``_apply_add_tag`` /
+            ``_apply_rm_tag`` (forbidden field, wrong type, etc.).
+    """
+    meta_file = vault / "papers" / paper_id / "metadata.yaml"
+    if not meta_file.is_file():
+        raise PaperNotFoundError(
+            f"No paper with id {paper_id!r} in vault {vault}. "
+            "Run `lit list` to see available ids."
+        )
+
+    # Roundtrip-load preserves comments and quoting in the metadata file.
+    metadata = _yaml.load(meta_file.read_text(encoding="utf-8"))
+    if metadata is None:
+        raise ModifyError(
+            f"metadata.yaml at {meta_file} is empty — refusing to modify. "
+            "Restore the file or re-run `lit add`."
+        )
+
+    diffs: list[tuple[str, Any, Any]] = []
+
+    for spec in set_ops:
+        key, value = _parse_kv(spec, "--set")
+        before, after = _apply_set(metadata, key, value)
+        if skip_set_noop and before == after:
+            # Sugar-command path (lit read / drop / etc.): same-value set
+            # is treated as a true no-op so a repeated `lit read X`
+            # doesn't bump updated-at. The default `lit modify --set`
+            # path always counts the op (preserves its public contract:
+            # explicit --set always bumps updated-at).
+            continue
+        diffs.append((key, before, after))
+
+    for spec in add_tag_ops:
+        key, value = _parse_kv(spec, "--add-tag")
+        change = _apply_add_tag(metadata, key, value)
+        if change is not None:
+            before, after = change
+            diffs.append((key, before, after))
+
+    for spec in rm_tag_ops:
+        key, value = _parse_kv(spec, "--rm-tag")
+        change = _apply_rm_tag(metadata, key, value)
+        if change is not None:
+            before, after = change
+            diffs.append((key, before, after))
+
+    # Even if every requested op was a no-op (e.g. --add-tag of an existing
+    # value), bumping updated-at is wrong because nothing changed. Detect
+    # the all-no-op case and short-circuit.
+    if not diffs:
+        console.print(
+            f"[yellow]No-op:[/] every requested change to {paper_id} was "
+            "already in effect. metadata.yaml not touched."
+        )
+        return False
+
+    new_updated_at = _now_iso()
+    old_updated_at = metadata.get("updated-at")
+    metadata["updated-at"] = new_updated_at
+
+    metadata_yaml = _dump_yaml_to_string(metadata)
+
+    # Re-render INDEX.json from the latest paper list, splicing in our
+    # in-memory modified copy so the index reflects the staged change
+    # without depending on disk state.
+    all_papers = list_papers(vault)
+    all_papers = [p for p in all_papers if p.get("id") != paper_id]
+    # ruamel YAML's CommentedMap is dict-compatible for our consumers.
+    all_papers.append(dict(metadata))
+    index_json = render_index(all_papers, _now_iso())
+
+    rel_meta = f"papers/{paper_id}/metadata.yaml"
+    with staged_write(vault, op_id=f"modify-{paper_id}") as stage:
+        stage.write_text(rel_meta, metadata_yaml)
+        stage.write_text("INDEX.json", index_json)
+
+    # views/ rebuild is filesystem-mutating but not text-file-atomic; do it
+    # after the staged commit so a failure here leaves the metadata + index
+    # consistent and only views/ stale (recoverable via `lit refresh-views`).
+    fresh_papers = list_papers(vault)
+    rebuild_views(vault, fresh_papers)
+
+    # ----- Output -----
+    console.print(f"[bold green]✓ Modified[/] {paper_id}")
+    for key, before, after in diffs:
+        # `escape()` keeps literal `[]` from being parsed as Rich markup tags
+        # — list-typed values (e.g. "[peptide]") would otherwise vanish.
+        console.print(
+            f"  {key}: [dim]{escape(_format_diff_value(before))}[/] → "
+            f"{escape(_format_diff_value(after))}"
+        )
+    console.print(
+        f"  updated-at: [dim]{escape(str(old_updated_at))}[/] → "
+        f"{escape(new_updated_at)}"
+    )
+    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    return True
+
+
 @click.command("modify")
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
@@ -259,89 +404,10 @@ def modify_cmd(
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
-    meta_file = vault / "papers" / paper_id / "metadata.yaml"
-    if not meta_file.is_file():
-        raise PaperNotFoundError(
-            f"No paper with id {paper_id!r} in vault {vault}. "
-            "Run `lit list` to see available ids."
-        )
-
-    # Roundtrip-load preserves comments and quoting in the metadata file.
-    metadata = _yaml.load(meta_file.read_text(encoding="utf-8"))
-    if metadata is None:
-        raise ModifyError(
-            f"metadata.yaml at {meta_file} is empty — refusing to modify. "
-            "Restore the file or re-run `lit add`."
-        )
-
-    diffs: list[tuple[str, Any, Any]] = []
-
-    for spec in set_ops:
-        key, value = _parse_kv(spec, "--set")
-        before, after = _apply_set(metadata, key, value)
-        diffs.append((key, before, after))
-
-    for spec in add_tag_ops:
-        key, value = _parse_kv(spec, "--add-tag")
-        change = _apply_add_tag(metadata, key, value)
-        if change is not None:
-            before, after = change
-            diffs.append((key, before, after))
-
-    for spec in rm_tag_ops:
-        key, value = _parse_kv(spec, "--rm-tag")
-        change = _apply_rm_tag(metadata, key, value)
-        if change is not None:
-            before, after = change
-            diffs.append((key, before, after))
-
-    # Even if every requested op was a no-op (e.g. --add-tag of an existing
-    # value), bumping updated-at is wrong because nothing changed. Detect
-    # the all-no-op case and short-circuit.
-    if not diffs:
-        console.print(
-            f"[yellow]No-op:[/] every requested change to {paper_id} was "
-            "already in effect. metadata.yaml not touched."
-        )
-        return
-
-    new_updated_at = _now_iso()
-    old_updated_at = metadata.get("updated-at")
-    metadata["updated-at"] = new_updated_at
-
-    metadata_yaml = _dump_yaml_to_string(metadata)
-
-    # Re-render INDEX.json from the latest paper list, splicing in our
-    # in-memory modified copy so the index reflects the staged change
-    # without depending on disk state.
-    all_papers = list_papers(vault)
-    all_papers = [p for p in all_papers if p.get("id") != paper_id]
-    # ruamel YAML's CommentedMap is dict-compatible for our consumers.
-    all_papers.append(dict(metadata))
-    index_json = render_index(all_papers, _now_iso())
-
-    rel_meta = f"papers/{paper_id}/metadata.yaml"
-    with staged_write(vault, op_id=f"modify-{paper_id}") as stage:
-        stage.write_text(rel_meta, metadata_yaml)
-        stage.write_text("INDEX.json", index_json)
-
-    # views/ rebuild is filesystem-mutating but not text-file-atomic; do it
-    # after the staged commit so a failure here leaves the metadata + index
-    # consistent and only views/ stale (recoverable via `lit refresh-views`).
-    fresh_papers = list_papers(vault)
-    rebuild_views(vault, fresh_papers)
-
-    # ----- Output -----
-    console.print(f"[bold green]✓ Modified[/] {paper_id}")
-    for key, before, after in diffs:
-        # `escape()` keeps literal `[]` from being parsed as Rich markup tags
-        # — list-typed values (e.g. "[peptide]") would otherwise vanish.
-        console.print(
-            f"  {key}: [dim]{escape(_format_diff_value(before))}[/] → "
-            f"{escape(_format_diff_value(after))}"
-        )
-    console.print(
-        f"  updated-at: [dim]{escape(str(old_updated_at))}[/] → "
-        f"{escape(new_updated_at)}"
+    _apply_modify(
+        vault,
+        paper_id,
+        set_ops=set_ops,
+        add_tag_ops=add_tag_ops,
+        rm_tag_ops=rm_tag_ops,
     )
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
