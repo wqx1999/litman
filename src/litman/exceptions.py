@@ -119,6 +119,14 @@ class SyncError(LitmanError):
     """
 
 
+class ExportError(LitmanError):
+    """`lit export` (M12.1) rejected an op: mutually-exclusive flags missing
+    or doubled, target file is hand-edited (no litman sentinel) and `--force`
+    not supplied, or the resolved vault has no papers matching the filters
+    when the user explicitly opted in to filtering.
+    """
+
+
 class VaultRegistryError(LitmanError):
     """`lit vault` (M8) rejected an op against ``~/.config/litman/vaults.yaml``:
     invalid name shape, duplicate / unknown name, registry file malformed,

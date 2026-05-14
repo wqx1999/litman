@@ -20,6 +20,7 @@ from litman import __version__
 from litman.commands.add import add_cmd
 from litman.commands.code import code_group
 from litman.commands.config import config_group
+from litman.commands.export import export_cmd
 from litman.commands.health import health_check_cmd
 from litman.commands.init import init_cmd
 from litman.commands.install_completion import install_completion_cmd
@@ -70,6 +71,7 @@ cli.add_command(link_cmd)
 cli.add_command(unlink_cmd)
 cli.add_command(sync_group)
 cli.add_command(vault_group)
+cli.add_command(export_cmd)
 
 
 @cli.command()
