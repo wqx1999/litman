@@ -597,6 +597,56 @@ def test_project_rm_atomicity_rollback_on_staged_write_failure(
 
 
 # ---------------------------------------------------------------------------
+# W2 regression: rm / rename must rebuild vault-internal views/by-project
+# ---------------------------------------------------------------------------
+
+
+def test_project_rm_rebuilds_views_drops_stale_by_project(
+    vault: Path, proj_dir: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    by_project = vault / "views" / "by-project" / "pepforge"
+    assert by_project.exists()  # stale entry present before rm
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert not by_project.exists()  # rm rebuilt views, stale entry gone
+
+
+def test_project_rename_rebuilds_views_swaps_by_project(
+    vault: Path, proj_dir: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    assert (vault / "views" / "by-project" / "pepforge").exists()
+
+    result = runner.invoke(
+        cli,
+        ["project", "rename", "pepforge", "pepcodec",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert not (vault / "views" / "by-project" / "pepforge").exists()
+    assert (vault / "views" / "by-project" / "pepcodec").exists()
+
+
+# ---------------------------------------------------------------------------
 # smoke
 # ---------------------------------------------------------------------------
 

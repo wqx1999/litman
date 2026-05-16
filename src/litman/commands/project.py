@@ -53,7 +53,7 @@ from litman.core.taxonomy import (
     parse_taxonomy,
     update_user_dict_section,
 )
-from litman.core.views import render_index
+from litman.core.views import rebuild_views, render_index
 from litman.exceptions import TaxonomyError
 
 console = Console()
@@ -355,6 +355,12 @@ def project_rename_cmd(
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", fresh_index)
 
+    # Rebuild vault-internal views so views/by-project/ shows the new name
+    # and drops the old one (mirrors taxonomy rename; project rename
+    # previously skipped this and left the old name in by-project).
+    if n_changed > 0:
+        rebuild_views(vault, list_papers(vault))
+
     # Post-commit: rebuild symlinks + REFERENCES.md so the old project name
     # no longer appears and the new one is materialized. Best-effort per
     # invariant #9 (filesystem mutation, recoverable via --rebuild-all).
@@ -549,6 +555,12 @@ def project_rm_cmd(
         for relpath, content in staged_meta_paths:
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", fresh_index)
+
+    # Rebuild vault-internal views so views/by-project/<name>/ no longer
+    # carries the removed project (mirrors taxonomy rm; project rm previously
+    # skipped this and left a stale by-project tree).
+    if n_changed > 0:
+        rebuild_views(vault, list_papers(vault))
 
     # Post-commit teardown of the project's on-disk artifacts. Mirrors the
     # unlink pattern: filesystem-mutating, cheap to redo, recoverable.
