@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from click.testing import CliRunner
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.views import INDEX_PAPER_FIELDS
 
 
 def _seed_paper(vault: Path, paper_id: str, **fields: object) -> None:
@@ -207,3 +209,107 @@ def test_list_combined_three_filters(vault: Path) -> None:
     assert result.exit_code == 0
     assert "2024_Doe_GNN" in result.output
     assert "1 of 3" in result.output
+
+
+# ---------------------------------------------------------------------------
+# --format json (M18 — agent bounded-retrieval exit)
+# ---------------------------------------------------------------------------
+
+
+def test_list_format_json_is_valid_array_with_index_schema(vault: Path) -> None:
+    result = _invoke(vault, "--format", "json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert isinstance(payload, list)
+    assert len(payload) == 3
+    for entry in payload:
+        # Key set must be byte-identical to the INDEX.json single-paper
+        # projection — no extra, no missing.
+        assert set(entry.keys()) == set(INDEX_PAPER_FIELDS)
+    ids = {entry["id"] for entry in payload}
+    assert ids == {
+        "2023_Pandi_Cellfree",
+        "2024_Smith_BERT",
+        "2024_Doe_GNN",
+    }
+
+
+def test_list_format_json_normalizes_absent_fields(tmp_path: Path) -> None:
+    # AC1 (invariant #10 / ADR-007): the json projection must be
+    # byte-identical to INDEX.json's single-paper projection, including
+    # the absent-field normalization that is most likely to silently
+    # drift — absent scalar -> JSON null, absent list -> [].
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2024_With_Doi",
+        year=2024,
+        doi="10.1000/withdoi",
+        topics=["AMP-prediction"],
+        methods=["transformer"],
+        projects=["PepForge"],
+        title="Paper that has a doi",
+    )
+    _seed_paper(
+        v, "2024_No_Doi_No_Lists",
+        year=2024,
+        title="Paper missing doi and all list fields",
+    )
+
+    result = _invoke(v, "--format", "json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    by_id = {entry["id"]: entry for entry in payload}
+
+    with_doi = by_id["2024_With_Doi"]
+    assert with_doi["doi"] == "10.1000/withdoi"
+
+    no_doi = by_id["2024_No_Doi_No_Lists"]
+    # Absent scalar field -> JSON null (Python None after json.loads),
+    # key present (not missing).
+    assert "doi" in no_doi
+    assert no_doi["doi"] is None
+    # Absent list fields -> [] (not null, not missing).
+    for list_field in ("topics", "projects", "methods"):
+        assert no_doi[list_field] == []
+        assert no_doi[list_field] is not None
+
+
+def test_list_format_json_respects_filters(vault: Path) -> None:
+    result = _invoke(vault, "--topic", "transformer", "--format", "json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    ids = {entry["id"] for entry in payload}
+    # Only 2024_Smith_BERT has 'transformer' in topics.
+    assert ids == {"2024_Smith_BERT"}
+    assert "transformer" in payload[0]["topics"]
+
+
+def test_list_format_json_empty_hit_is_empty_array(vault: Path) -> None:
+    result = _invoke(vault, "--topic", "zzz", "--format", "json")
+    assert result.exit_code == 0
+    assert result.output.strip() == "[]"
+    assert json.loads(result.output) == []
+    # No human-facing "No papers match" text leaks into json mode.
+    assert "No papers" not in result.output
+
+
+def test_list_format_json_is_loads_parseable_no_markup(vault: Path) -> None:
+    result = _invoke(vault, "--format", "json")
+    assert result.exit_code == 0
+    # Directly parseable: no Rich markup, no stray stderr mixed in
+    # (CliRunner mixes stderr into output by default, so a clean parse
+    # also proves nothing was written to stderr in the json path).
+    parsed = json.loads(result.output)
+    assert isinstance(parsed, list)
+    assert "[dim]" not in result.output
+    assert "\x1b[" not in result.output  # no ANSI escape sequences
+
+
+def test_list_default_still_renders_rich_table(vault: Path) -> None:
+    # Regression: omitting --format keeps the original human table.
+    result = _invoke(vault)
+    assert result.exit_code == 0
+    assert "3 of 3" in result.output
+    assert "Papers (3 of 3)" in result.output
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.output)

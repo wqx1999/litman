@@ -68,8 +68,13 @@ def _safe_name(value: str) -> str:
     return value.replace("/", "_").replace("\\", "_").strip()
 
 
-def _project_paper(p: dict[str, Any]) -> dict[str, Any]:
-    """Pick the INDEX.json subset of fields from a metadata dict."""
+def project_paper(p: dict[str, Any]) -> dict[str, Any]:
+    """Pick the INDEX.json subset of fields from a metadata dict.
+
+    Public so ``lit list --format json`` can reuse the exact same
+    projection, keeping its per-paper schema byte-identical to
+    INDEX.json (no second projection definition can drift).
+    """
     out: dict[str, Any] = {}
     for field in INDEX_PAPER_FIELDS:
         value = p.get(field)
@@ -78,6 +83,12 @@ def _project_paper(p: dict[str, Any]) -> dict[str, Any]:
         else:
             out[field] = value
     return out
+
+
+# Backward-compat alias: existing internal callers / tests reference the
+# private name. Keep it pointing at the public function so neither has to
+# change.
+_project_paper = project_paper
 
 
 def _build_by_doi(papers: list[dict[str, Any]]) -> dict[str, str]:

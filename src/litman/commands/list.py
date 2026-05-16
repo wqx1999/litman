@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.views import project_paper
 
 console = Console()
 
@@ -67,6 +69,13 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
     help="Case-insensitive substring match against any author entry.",
 )
 @click.option(
+    "--format", "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format. 'json' emits the same per-paper projection "
+         "as INDEX.json (for agent bounded retrieval).",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -92,6 +101,7 @@ def list_cmd(
     project: str | None,
     data_filter: str | None,
     author: str | None,
+    output_format: str,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -116,6 +126,11 @@ def list_cmd(
         "author": author,
     }
     filtered = [p for p in all_papers if _matches_filters(p, filters)]
+
+    if output_format == "json":
+        click.echo(json.dumps([project_paper(p) for p in filtered],
+                               ensure_ascii=False))
+        return
 
     if not filtered:
         if not all_papers:
