@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.taxonomy import USER_DICTS
 from litman.core.views import INDEX_PAPER_FIELDS
 
 
@@ -272,6 +273,64 @@ def test_list_format_json_normalizes_absent_fields(tmp_path: Path) -> None:
     for list_field in ("topics", "projects", "methods"):
         assert no_doi[list_field] == []
         assert no_doi[list_field] is not None
+
+
+def test_user_dicts_are_synced_into_index_projection() -> None:
+    # Sync contract (M19, invariant #10 / ADR-007): every controlled
+    # user-dict must surface in the per-paper INDEX.json / `lit list
+    # --format json` projection, otherwise the agent can never retrieve
+    # papers by that dimension. INDEX_PAPER_FIELDS (views.py) and
+    # USER_DICTS (taxonomy.py) are two independently hardcoded tuples with
+    # zero code linkage — this test is the only thing keeping them from
+    # silently drifting apart.
+    missing = set(USER_DICTS) - set(INDEX_PAPER_FIELDS)
+    assert not missing, (
+        f"user-dict(s) {sorted(missing)} are in USER_DICTS "
+        f"(taxonomy.py) but missing from INDEX_PAPER_FIELDS (views.py). "
+        f"A new user-dict must EITHER be synced into INDEX_PAPER_FIELDS "
+        f"(so the agent can retrieve papers by it) OR have its exclusion "
+        f"explicitly recorded under invariant #10. 不允许靠人记得 — "
+        f"this contract is enforced here, not in anyone's memory."
+    )
+
+
+def test_list_format_json_passes_through_data_values(tmp_path: Path) -> None:
+    # M19 positive coverage: a paper WITH `data` values carries the `data`
+    # key with its values passed through, identical to topics/methods.
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2024_With_Data",
+        year=2024,
+        data=["GDP-2", "SignalP-6.0"],
+        topics=["AMP-prediction"],
+        methods=["transformer"],
+        title="Paper that declares datasets",
+    )
+    result = _invoke(v, "--format", "json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    entry = next(e for e in payload if e["id"] == "2024_With_Data")
+    assert entry["data"] == ["GDP-2", "SignalP-6.0"]
+
+
+def test_list_format_json_absent_data_normalizes_to_empty_list(
+    tmp_path: Path,
+) -> None:
+    # M19 AC2: a paper WITHOUT `data` must project `data` to [] — not
+    # null, not missing — symmetric with topics/projects/methods.
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2024_No_Data",
+        year=2024,
+        title="Paper missing the data field",
+    )
+    result = _invoke(v, "--format", "json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    entry = next(e for e in payload if e["id"] == "2024_No_Data")
+    assert "data" in entry
+    assert entry["data"] == []
+    assert entry["data"] is not None
 
 
 def test_list_format_json_respects_filters(vault: Path) -> None:

@@ -51,12 +51,13 @@ INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "topics",
     "projects",
     "methods",
+    "data",
     "doi",
 )
 
 # Fields stored as lists in metadata.yaml — emitted as `[]` when absent so
 # downstream consumers don't have to special-case None.
-_LIST_FIELDS = {"topics", "projects", "methods"}
+_LIST_FIELDS = {"topics", "projects", "methods", "data"}
 
 
 def _now_iso() -> str:

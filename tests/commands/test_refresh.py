@@ -71,6 +71,7 @@ def test_render_index_single_paper_projection() -> None:
         "topics": ["alpha", "beta"],
         "projects": ["proj1"],
         "methods": ["transformer"],
+        "data": ["GDP-2"],
         "doi": "10.1/x",
     }
     text = render_index([paper], "2026-04-27T16:00:00+02:00")
@@ -82,6 +83,7 @@ def test_render_index_single_paper_projection() -> None:
     assert p["topics"] == ["alpha", "beta"]
     assert p["projects"] == ["proj1"]
     assert p["methods"] == ["transformer"]
+    assert p["data"] == ["GDP-2"]
     assert p["doi"] == "10.1/x"
 
 
@@ -94,6 +96,7 @@ def test_render_index_handles_missing_optional_fields() -> None:
     assert p["topics"] == []
     assert p["projects"] == []
     assert p["methods"] == []
+    assert p["data"] == []
     # Scalar absences stay as None / null.
     assert p["doi"] is None
     assert p["title"] is None
