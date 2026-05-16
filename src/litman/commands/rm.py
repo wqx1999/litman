@@ -8,8 +8,8 @@ against silent data loss:
 
 * Reverse-ref scan: refuse if any other paper's
   ``related`` / ``contradicts`` / ``extends`` list contains ``<id>``.
-* Wikilink scan: refuse if any ``papers/*/notes.md`` or
-  ``notes/{methods,ideas,debates}/*.md`` contains ``[[<id>]]``.
+* Wikilink scan: refuse if any ``papers/*/notes.md`` contains
+  ``[[<id>]]``.
 
 Both checks are bypassed by ``--cascade``, which auto-clears the references
 (deletes the id from ref-list fields and replaces ``[[<id>]]`` with the

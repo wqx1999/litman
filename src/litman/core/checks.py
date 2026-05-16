@@ -7,7 +7,7 @@ Each ``check_*`` function is a self-contained probe that returns a list of
 Design notes:
 
 * Checks are pure functions of ``(vault, papers)`` plus whatever extra disk
-  reads they need (TAXONOMY.md, notes/, ``.litman-staging/``, ``.trash/``).
+  reads they need (TAXONOMY.md, ``.litman-staging/``, ``.trash/``).
   They never mutate the vault — auto-fix lives in :func:`apply_autofix`.
 * Severity is one of ``error`` / ``warning`` / ``info``. Errors indicate
   active inconsistency (dangling refs, schema violations, half-finished

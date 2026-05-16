@@ -199,8 +199,8 @@ the repo, and `repo-meta.yaml`'s `papers` field references the paper(s).
 
 ## Wikilink
 
-In `notes.md` and the cross-paper notes under `<vault>/notes/`, you can
-reference another paper with the wikilink syntax:
+In a paper's `notes.md` you can reference another paper with the
+wikilink syntax:
 
 ```markdown
 This idea extends [[2017_Vaswani_Attention]].

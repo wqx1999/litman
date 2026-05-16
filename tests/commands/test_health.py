@@ -267,23 +267,9 @@ def test_dangling_wikilinks_in_paper_notes(vault: Path) -> None:
     assert "[[GHOST_x_y]]" in issues[0].message
 
 
-def test_dangling_wikilinks_in_cross_paper_notes(vault: Path) -> None:
-    _write_paper(vault, "A_a_a")
-    methods_dir = vault / "notes" / "methods"
-    (methods_dir / "deep-learning.md").write_text(
-        "Survey: [[A_a_a]] and [[B_missing]].\n", encoding="utf-8"
-    )
-    issues = check_dangling_wikilinks(vault, list_papers(vault))
-    assert len(issues) == 1
-    assert "B_missing" in issues[0].message
-
-
 def test_dangling_wikilinks_dedupes_per_file(vault: Path) -> None:
     """A single file mentioning the same dangling id N times reports only once."""
-    _write_paper(vault, "A_a_a")
-    (vault / "notes" / "ideas" / "x.md").write_text(
-        "[[ZOMBIE]] [[ZOMBIE]] [[ZOMBIE]]\n", encoding="utf-8"
-    )
+    _write_paper(vault, "A_a_a", notes="[[ZOMBIE]] [[ZOMBIE]] [[ZOMBIE]]\n")
     issues = check_dangling_wikilinks(vault, list_papers(vault))
     assert len(issues) == 1
 

@@ -45,6 +45,24 @@ def test_create_vault_creates_codes_and_staging(tmp_path: Path) -> None:
     assert (vault / ".litman-staging").is_dir(), ".litman-staging/ not created"
 
 
+def test_create_vault_has_no_top_level_notes_dir(tmp_path: Path) -> None:
+    """ADR-008 / M16: the top-level notes/ dir is no longer part of the
+    skeleton, but every other expected dir still is."""
+    vault = create_vault(tmp_path)
+    assert not (vault / "notes").exists(), "notes/ should not be created"
+    for expected in (
+        "papers",
+        "codes",
+        "inbox",
+        "views/by-project",
+        "views/by-topic",
+        "views/by-method",
+        "views/by-status",
+        ".litman-staging",
+    ):
+        assert (vault / expected).is_dir(), f"missing skeleton dir: {expected}"
+
+
 def test_create_vault_missing_parent(tmp_path: Path) -> None:
     missing = tmp_path / "nonexistent"
     with pytest.raises(ParentNotFoundError):

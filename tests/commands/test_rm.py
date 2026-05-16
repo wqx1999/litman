@@ -196,20 +196,6 @@ def test_rm_refuses_when_wikilinked_in_paper_notes(vault: Path) -> None:
     assert (vault / "papers" / "2024_Target").is_dir()
 
 
-def test_rm_refuses_when_wikilinked_in_cross_paper_notes(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
-    methods_md = vault / "notes" / "methods" / "transformer.md"
-    methods_md.write_text(
-        "[[2024_Target]] is canonical here.\n", encoding="utf-8"
-    )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli, ["rm", "2024_Target", "--yes", "--library", str(vault)]
-    )
-    assert result.exit_code != 0
-    assert "notes/methods/transformer.md" in str(result.exception)
-
-
 # ===========================================================================
 # --cascade
 # ===========================================================================
@@ -244,8 +230,6 @@ def test_rm_cascade_strips_wikilinks(vault: Path) -> None:
         vault, "2024_Other",
         notes="Compare [[2024_Target]] and [[2024_Target]] here.\n",
     )
-    methods_md = vault / "notes" / "methods" / "survey.md"
-    methods_md.write_text("Anchor: [[2024_Target]].\n", encoding="utf-8")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -258,10 +242,6 @@ def test_rm_cascade_strips_wikilinks(vault: Path) -> None:
     other_notes = (vault / "papers/2024_Other/notes.md").read_text()
     assert "[[2024_Target]]" not in other_notes
     assert "Compare 2024_Target and 2024_Target here." in other_notes
-
-    methods_text = methods_md.read_text()
-    assert "[[2024_Target]]" not in methods_text
-    assert "Anchor: 2024_Target." in methods_text
 
     assert "Stripped" in result.output
 

@@ -220,30 +220,6 @@ def test_rename_rewrites_paper_notes_md(vault: Path) -> None:
     assert untouched == "No refs here.\n"
 
 
-def test_rename_rewrites_cross_paper_notes(vault: Path) -> None:
-    _write_paper(vault, "2024_Foo_Bar")
-    methods_md = vault / "notes" / "methods" / "transformer-survey.md"
-    methods_md.write_text(
-        "Transformer methods include [[2024_Foo_Bar]].\n",
-        encoding="utf-8",
-    )
-    ideas_md = vault / "notes" / "ideas" / "amp-design.md"
-    ideas_md.write_text(
-        "Inspired by [[2024_Foo_Bar]] (the Bar paper).\n",
-        encoding="utf-8",
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)],
-    )
-    assert result.exit_code == 0, result.output
-
-    assert "[[2024_Foo_Baz]]" in methods_md.read_text()
-    assert "[[2024_Foo_Baz]]" in ideas_md.read_text()
-
-
 def test_rename_refreshes_index_and_views(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar", topics=["alpha"])
 

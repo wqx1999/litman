@@ -7,9 +7,8 @@ caller honest about which files participate in the wikilink graph.
 
 Wikilink scope (per design doc §5.1):
     * ``papers/<id>/notes.md``                       — per-paper notes
-    * ``notes/{methods,ideas,debates}/*.md``         — cross-paper notes
 
-Anything outside these locations is the user's own thing and is left
+Anything outside this location is the user's own thing and is left
 untouched by both rename and rm.
 
 Wikilink syntax (M8.4 extends the original one-form syntax):
@@ -29,9 +28,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-# Subdirectories under notes/ that may contain wikilink references.
-NOTES_SUBDIRS: tuple[str, ...] = ("methods", "ideas", "debates")
-
 
 def enumerate_markdown_files(vault: Path) -> Iterable[Path]:
     """Yield .md files in the wikilink scope (see module docstring)."""
@@ -42,11 +38,6 @@ def enumerate_markdown_files(vault: Path) -> Iterable[Path]:
                 note = child / "notes.md"
                 if note.is_file():
                     yield note
-    for sub in NOTES_SUBDIRS:
-        notes_subdir = vault / "notes" / sub
-        if notes_subdir.is_dir():
-            for md in sorted(notes_subdir.glob("*.md")):
-                yield md
 
 
 def parse_wikilink_target(raw: str) -> tuple[str | None, str]:

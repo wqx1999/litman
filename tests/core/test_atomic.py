@@ -40,11 +40,11 @@ def test_staged_write_promotes_on_success(vault: Path) -> None:
 def test_staged_write_multiple_files_all_promoted(vault: Path) -> None:
     with staged_write(vault) as stage:
         stage.write_text("INDEX.json", '{"a": 1}')
-        stage.write_text("notes/methods/foo.md", "# foo\n")
+        stage.write_text("subdir/foo.md", "# foo\n")
         stage.write_text("papers/2024_X_y/metadata.yaml", "id: 2024_X_y\n")
 
     assert (vault / "INDEX.json").read_text() == '{"a": 1}'
-    assert (vault / "notes/methods/foo.md").read_text() == "# foo\n"
+    assert (vault / "subdir/foo.md").read_text() == "# foo\n"
     assert (vault / "papers/2024_X_y/metadata.yaml").read_text() == "id: 2024_X_y\n"
 
 

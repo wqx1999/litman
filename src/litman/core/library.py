@@ -20,12 +20,9 @@ from litman.exceptions import (
 )
 
 # Subdirectories created inside every vault. Order is irrelevant; mkdir handles
-# parents=True so nested paths (e.g. notes/methods) work directly.
+# parents=True so nested paths (e.g. views/by-project) work directly.
 VAULT_SUBDIRS: tuple[str, ...] = (
     "papers",
-    "notes/methods",
-    "notes/ideas",
-    "notes/debates",
     "views/by-project",
     "views/by-topic",
     "views/by-method",

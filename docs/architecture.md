@@ -33,11 +33,6 @@ they are not required for any data operation.
 │       ├── repo-meta.yaml
 │       └── notes.md
 │
-├── notes/                  # cross-paper notes; wikilinks resolve here too
-│   ├── methods/
-│   ├── ideas/
-│   └── debates/
-│
 ├── views/                  # symlink hubs faceted by metadata fields
 │   ├── by-project/
 │   ├── by-topic/

@@ -9,9 +9,8 @@ metadata.yaml ``id`` field, the value used in other papers'
    in the ref-list fields.
 2. Every other ``papers/<other>/metadata.yaml`` whose ref lists contain
    ``<old>``.
-3. Every markdown notes file in ``papers/*/notes.md`` and
-   ``notes/{methods,ideas,debates}/*.md`` containing the literal substring
-   ``[[<old>]]``.
+3. Every markdown notes file in ``papers/*/notes.md`` containing the
+   literal substring ``[[<old>]]``.
 4. ``INDEX.json`` (regenerated from the post-rename paper list).
 5. The directory itself: ``papers/<old>/`` → ``papers/<new>/``.
 6. ``views/by-*/`` symlink hubs (rebuilt afterward).
