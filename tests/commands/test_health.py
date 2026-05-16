@@ -352,10 +352,71 @@ def test_stale_staging_clean(vault: Path) -> None:
 
 
 def test_stale_staging_finds_leftover(vault: Path) -> None:
+    # No COMMITTED sentinel → clean abort → info severity (M17 tri-state).
     (vault / ".litman-staging" / "op-crashed").mkdir()
     issues = check_stale_staging(vault, [])
     assert len(issues) == 1
     assert "op-crashed" in issues[0].message
+    assert issues[0].severity == "info"
+    assert issues[0].category == "stale_staging"
+
+
+def test_stale_staging_unrecoverable_is_error(vault: Path) -> None:
+    """COMMITTED + a manifested relpath missing from both sides → error.
+
+    Not auto-fixable; a human must decide (M17 §M17.2).
+    """
+    op = vault / ".litman-staging" / "op-torn"
+    op.mkdir()
+    (op / "MANIFEST.json").write_text(
+        '{"op_id": "op-torn", "files": ["papers/2024_X/metadata.yaml"]}',
+        encoding="utf-8",
+    )
+    (op / "COMMITTED").write_bytes(b"")
+    issues = check_stale_staging(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].category == "stale_staging_unrecoverable"
+    assert "stale_staging_unrecoverable" not in AUTO_FIXABLE_CATEGORIES
+
+
+def test_stale_staging_unrecoverable_uses_pending_voice(vault: Path) -> None:
+    """Read-only check (no --fix): partial tear → pending wording.
+
+    Two manifested relpaths: one already on target (recoverable, --fix
+    WOULD roll it forward), one missing from both sides (lost). The
+    classifier never promotes, so the message must use conditional/future
+    voice with the real recoverable count (1), NOT completed past-tense
+    and NOT a hardcoded 0.
+    """
+    op = vault / ".litman-staging" / "op-partial"
+    op.mkdir()
+    (op / "MANIFEST.json").write_text(
+        '{"op_id": "op-partial", "files": '
+        '["papers/2024_R/metadata.yaml", "papers/2024_L/metadata.yaml"]}',
+        encoding="utf-8",
+    )
+    (op / "COMMITTED").write_bytes(b"")
+    # papers/2024_R/metadata.yaml already promoted to target → recoverable.
+    (vault / "papers" / "2024_R").mkdir(parents=True)
+    (vault / "papers" / "2024_R" / "metadata.yaml").write_text(
+        "id: 2024_R\n", encoding="utf-8"
+    )
+    # papers/2024_L/metadata.yaml absent from both staging and target → lost.
+
+    issues = check_stale_staging(vault, [])
+    assert len(issues) == 1
+    msg = issues[0].message or ""
+    assert issues[0].severity == "error"
+    assert issues[0].category == "stale_staging_unrecoverable"
+    # Pending voice with the real recoverable count (1), not 0, not done.
+    assert "可 roll-forward 同 op 内其余 1 个文件" in msg
+    assert "（运行 lit health-check --fix 后）" in msg
+    assert "已 roll-forward" not in msg
+    assert "papers/2024_L/metadata.yaml" in msg
+    # No promotion happened — read-only probe must not touch the target.
+    assert not (vault / "papers" / "2024_L").exists()
+    assert (op / "MANIFEST.json").exists()
 
 
 # --- trash_health -----------------------------------------------------------
@@ -626,15 +687,19 @@ def test_health_check_with_issues_exits_one(vault: Path) -> None:
 
 
 def test_health_check_fix_clears_staging(vault: Path) -> None:
+    """M17: a no-COMMITTED leftover is rolled back by the vault-open hook
+    before checks even run, so health-check sees a clean vault and the
+    leftover is gone — no explicit ``--fix`` pass is needed.
+    """
     op_dir = vault / ".litman-staging" / "op-crashed"
     op_dir.mkdir()
     runner = CliRunner()
     result = runner.invoke(
         cli, ["health-check", "--fix", "--library", str(vault)]
     )
-    assert result.exit_code == 0  # post-fix vault is clean
-    assert "Auto-fix" in result.output
+    assert result.exit_code == 0  # vault self-healed at open
     assert not op_dir.exists()
+    assert "All checks passed" in result.output
 
 
 def test_health_check_fix_does_not_touch_unfixable(vault: Path) -> None:

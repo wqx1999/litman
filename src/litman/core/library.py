@@ -121,6 +121,12 @@ def find_vault(explicit: Path | None = None) -> Path:
         LibraryNotFoundError: No ``lit-config.yaml`` discoverable, or the
             registry's active entry points at a stale path.
     """
+    # Local import: atomic only depends on stdlib + rich, but importing it
+    # at module top would couple the library skeleton builder to the
+    # recovery machinery. recover_staging never calls find_vault, so this
+    # introduces no recursion.
+    from litman.core.atomic import ensure_vault_recovered
+
     if explicit is not None:
         candidate = explicit.resolve()
         if not (candidate / "lit-config.yaml").is_file():
@@ -128,6 +134,7 @@ def find_vault(explicit: Path | None = None) -> Path:
                 f"No lit-config.yaml at {candidate}. "
                 "Pass --library <vault-path> or run `lit init` first."
             )
+        ensure_vault_recovered(candidate)
         return candidate
 
     # Step 2: registry active vault. Local import avoids a circular dep
@@ -151,6 +158,7 @@ def find_vault(explicit: Path | None = None) -> Path:
         if active is not None:
             active_path = Path(active.path)
             if (active_path / "lit-config.yaml").is_file():
+                ensure_vault_recovered(active_path)
                 return active_path
             raise LibraryNotFoundError(
                 f"Active vault {active.name!r} points at {active_path} "
@@ -162,6 +170,7 @@ def find_vault(explicit: Path | None = None) -> Path:
     here = Path.cwd().resolve()
     for parent in [here, *here.parents]:
         if (parent / "lit-config.yaml").is_file():
+            ensure_vault_recovered(parent)
             return parent
 
     raise LibraryNotFoundError(

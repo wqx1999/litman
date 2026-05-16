@@ -743,26 +743,158 @@ def check_project_path_exists(
 def check_stale_staging(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Leftover op directories under ``.litman-staging/`` from crashed runs."""
+    """Leftover op directories under ``.litman-staging/`` (M17 tri-state).
+
+    Three outcomes per leftover op directory:
+
+    * No ``COMMITTED`` sentinel → clean abort before the commit decision
+      point. Normal, recoverable via roll-back → ``info`` severity, in
+      ``AUTO_FIXABLE_CATEGORIES`` (``--fix`` rolls it back).
+    * ``COMMITTED`` present, manifest fully replayable → torn commit that
+      roll-forward can finish → ``info`` severity, auto-fixable. (In
+      practice the vault-open hook has already healed this before
+      health-check runs; this branch covers a direct call / a race.)
+    * ``COMMITTED`` present but a manifested relpath is missing from both
+      staging and target (or the manifest is unreadable) → unrecoverable
+      data loss → ``error`` severity, **not** auto-fixable: a human must
+      decide. Reuses :class:`RecoveryResult.message`.
+
+    The probe is read-only — it inspects on-disk state and reuses the
+    recovery classifier without mutating anything (``--fix`` performs the
+    actual roll-back / roll-forward through ``cleanup_stale_staging``).
+    """
+    from litman.core.atomic import _SENTINEL_FILENAME, RecoveryResult
+
     out: list[Issue] = []
     staging = vault / ".litman-staging"
     if not staging.is_dir():
         return out
     for child in sorted(staging.iterdir()):
-        out.append(
-            Issue(
-                category="stale_staging",
-                severity="warning",
-                paper_id=None,
-                message=(
-                    f".litman-staging/{child.name}/ — leftover op dir"
-                    if child.is_dir()
-                    else f".litman-staging/{child.name} — leftover entry"
-                ),
-                hint="run `lit health-check --fix` to clean",
+        if not child.is_dir():
+            out.append(
+                Issue(
+                    category="stale_staging",
+                    severity="info",
+                    paper_id=None,
+                    message=(
+                        f".litman-staging/{child.name} — leftover entry"
+                    ),
+                    hint="run `lit health-check --fix` to clean",
+                )
             )
-        )
+            continue
+
+        sentinel = child / _SENTINEL_FILENAME
+        if not sentinel.is_file():
+            out.append(
+                Issue(
+                    category="stale_staging",
+                    severity="info",
+                    paper_id=None,
+                    message=(
+                        f".litman-staging/{child.name}/ — leftover op dir "
+                        "(clean abort, no commit record)"
+                    ),
+                    hint="run `lit health-check --fix` to clean",
+                )
+            )
+            continue
+
+        result = _classify_torn_op(child, vault, RecoveryResult)
+        if result.kind == "unrecoverable":
+            out.append(
+                Issue(
+                    category="stale_staging_unrecoverable",
+                    severity="error",
+                    paper_id=None,
+                    message=result.message or (
+                        f".litman-staging/{child.name}/ — unrecoverable "
+                        "torn commit"
+                    ),
+                    hint=(
+                        "data was lost mid-commit; inspect "
+                        f".litman-staging/{child.name}/ manually — "
+                        "NOT auto-fixed"
+                    ),
+                )
+            )
+        else:
+            out.append(
+                Issue(
+                    category="stale_staging",
+                    severity="info",
+                    paper_id=None,
+                    message=(
+                        f".litman-staging/{child.name}/ — torn commit, "
+                        "roll-forward pending"
+                    ),
+                    hint="run `lit health-check --fix` to roll forward",
+                )
+            )
     return out
+
+
+def _classify_torn_op(
+    op_dir: Path,
+    vault: Path,
+    result_cls: type,
+) -> Any:
+    """Read-only classification of a ``COMMITTED`` op dir.
+
+    Returns a :class:`RecoveryResult`-shaped object with ``kind`` of
+    ``rolled_forward`` (all files replayable) or ``unrecoverable`` (some
+    manifested relpath lost from both sides, or manifest unreadable).
+    Performs no filesystem mutation — health-check must be able to report
+    without changing state.
+    """
+    # Shared, side-effect-free helpers from the recoverer so the
+    # unrecoverable-detection predicate AND the Chinese data-loss-path
+    # message strings have a single source of truth and cannot drift
+    # between the read-only classifier and the mutating recoverer.
+    from litman.core.atomic import (
+        _manifest_unreadable_message,
+        _read_manifest_relpaths,
+        _unrecoverable_message,
+    )
+
+    op_id = op_dir.name
+    relpaths = _read_manifest_relpaths(op_dir)
+    if relpaths is None:
+        return result_cls(
+            op_id=op_id,
+            kind="unrecoverable",
+            n_files=0,
+            message=_manifest_unreadable_message(op_id),
+        )
+
+    recoverable = 0
+    unrecoverable: list[str] = []
+    for relpath in relpaths:
+        staging_path = op_dir / relpath
+        target_path = vault / relpath
+        if staging_path.exists() or target_path.exists():
+            recoverable += 1
+        else:
+            unrecoverable.append(relpath)
+
+    if unrecoverable:
+        return result_cls(
+            op_id=op_id,
+            kind="unrecoverable",
+            n_files=recoverable,
+            # Read-only probe never promotes: pending voice + the real
+            # count of files --fix WOULD roll forward (not 0). The
+            # mutating recoverer passes mode="done" + its promoted count.
+            message=_unrecoverable_message(
+                op_id, unrecoverable, recoverable, mode="pending"
+            ),
+        )
+    return result_cls(
+        op_id=op_id,
+        kind="rolled_forward",
+        n_files=recoverable,
+        message=None,
+    )
 
 
 def check_pdf_viewer(
