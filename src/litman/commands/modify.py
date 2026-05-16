@@ -37,6 +37,7 @@ from litman.core.atomic import staged_write
 from litman.core.document import list_papers, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import ModifyError, PaperNotFoundError
 
@@ -129,9 +130,20 @@ def _apply_set(metadata: dict[str, Any], key: str, raw_value: str) -> tuple[Any,
 
 
 def _apply_add_tag(
-    metadata: dict[str, Any], key: str, value: str
+    vault: Path, metadata: dict[str, Any], key: str, value: str
 ) -> tuple[list[Any], list[Any]] | None:
-    """Apply --add-tag. Returns (before, after) only when a change happened."""
+    """Apply --add-tag. Returns (before, after) only when a change happened.
+
+    Register-first validation (M15): for the four USER_DICTS
+    (``projects`` / ``topics`` / ``methods`` / ``data``) the value MUST
+    already be registered in TAXONOMY.md. This closes the channel by which
+    an agent could schema-drift the controlled vocabulary through
+    ``--add-tag``. Schemaless scalars, reference fields, and fixed enums
+    are NOT validated here (invariant #7 — schemaless is the foundation;
+    refs go through dangling-ref health checks; fixed enums are
+    hard-coded). ``--rm-tag`` is never validated (clearing a stale value
+    is a legitimate cleanup action).
+    """
     if key not in LIST_FIELDS:
         raise ModifyError(
             f"--add-tag rejects {key!r}: not a list field. "
@@ -139,6 +151,22 @@ def _apply_add_tag(
         )
     if not value:
         raise ModifyError(f"--add-tag {key}= got empty value.")
+    if key in USER_DICTS:
+        registered = parse_taxonomy(
+            (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+        )[key]
+        if value not in registered:
+            if key == "projects":
+                hint = (
+                    f"Run `lit project add {value} --path <abs-path>` "
+                    "first."
+                )
+            else:
+                hint = f"Run `lit taxonomy add {key} {value}` first."
+            raise ModifyError(
+                f"{key!r} value {value!r} is not registered in "
+                f"TAXONOMY.md. {hint}"
+            )
     current = metadata.get(key)
     before = list(current) if current else []
     if value in before:
@@ -263,7 +291,7 @@ def _apply_modify(
 
     for spec in add_tag_ops:
         key, value = _parse_kv(spec, "--add-tag")
-        change = _apply_add_tag(metadata, key, value)
+        change = _apply_add_tag(vault, metadata, key, value)
         if change is not None:
             before, after = change
             diffs.append((key, before, after))

@@ -83,6 +83,16 @@ def _read_taxonomy(vault: Path) -> dict[str, list[str]]:
     return parse_taxonomy((vault / "TAXONOMY.md").read_text())
 
 
+def _vault_snapshot(vault: Path) -> dict[str, bytes]:
+    """Byte-exact map of every vault file (skips the staging scratch dir)."""
+    snap: dict[str, bytes] = {}
+    for path in sorted(vault.rglob("*")):
+        if path.is_dir() or ".litman-staging" in path.parts:
+            continue
+        snap[str(path.relative_to(vault))] = path.read_bytes()
+    return snap
+
+
 # ===========================================================================
 # core/taxonomy.py — pure helpers
 # ===========================================================================
@@ -372,7 +382,7 @@ def test_taxonomy_merge_into_new_value(vault: Path) -> None:
     result = runner.invoke(
         cli,
         ["taxonomy", "merge", "topics", "AMP", "peptide",
-         "--into", "AMP-design", "--library", str(vault)],
+         "--into", "AMP-design", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     assert "Updated 2 paper" in result.output
@@ -399,7 +409,7 @@ def test_taxonomy_merge_into_existing_source(vault: Path) -> None:
     result = runner.invoke(
         cli,
         ["taxonomy", "merge", "topics", "alpha", "beta",
-         "--into", "alpha", "--library", str(vault)],
+         "--into", "alpha", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
@@ -452,7 +462,13 @@ def test_taxonomy_rm_unreferenced_value(vault: Path) -> None:
     assert _read_taxonomy(vault)["topics"] == ["beta"]
 
 
-def test_taxonomy_rm_referenced_refused(vault: Path) -> None:
+def test_taxonomy_rm_referenced_non_tty_aborts(vault: Path) -> None:
+    """M15: rm of a referenced value in a non-tty without --yes aborts.
+
+    Replaces the pre-M15 "refuse if referenced" contract. The value is
+    now removable via cascade-with-confirm, but a non-interactive run
+    that supplies no confirmation must NOT silently destroy data.
+    """
     _write_paper(vault, "2024_A", topics=["peptide"])
     _write_paper(vault, "2024_B", topics=["peptide"])
     runner = CliRunner()
@@ -463,13 +479,10 @@ def test_taxonomy_rm_referenced_refused(vault: Path) -> None:
         cli, ["taxonomy", "rm", "topics", "peptide", "--library", str(vault)]
     )
     assert result.exit_code != 0
-    assert isinstance(result.exception, TaxonomyError)
-    err = str(result.exception)
-    assert "2 paper" in err
-    assert "2024_A" in err
-    assert "2024_B" in err
-    # Taxonomy NOT modified.
+    assert "Non-interactive environment" in result.output
+    # Taxonomy + papers NOT modified.
     assert _read_taxonomy(vault)["topics"] == ["peptide"]
+    assert _read_meta(vault, "2024_A")["topics"] == ["peptide"]
 
 
 def test_taxonomy_rm_unknown_value(vault: Path) -> None:
@@ -518,3 +531,175 @@ def test_taxonomy_atomicity_metadata_and_index_match(vault: Path) -> None:
         meta = _read_meta(vault, p["id"])
         assert meta["topics"] == p["topics"]
         assert "peptide" not in meta["topics"]
+
+
+# ===========================================================================
+# M15: projects hard-deprecation + cascade-with-confirm rm/merge
+# ===========================================================================
+
+
+def test_taxonomy_add_projects_hard_error(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["taxonomy", "add", "projects", "pepforge",
+              "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, TaxonomyError)
+    msg = str(result.exception)
+    assert "lit project add" in msg
+    assert "path binding" in msg
+
+
+def test_taxonomy_rename_projects_hard_error(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["taxonomy", "rename", "projects", "a", "b",
+              "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, TaxonomyError)
+    assert "lit project rename" in str(result.exception)
+
+
+def test_taxonomy_rm_projects_hard_error(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["taxonomy", "rm", "projects", "x", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, TaxonomyError)
+    assert "lit project rm" in str(result.exception)
+
+
+def test_taxonomy_list_projects_still_works(vault: Path) -> None:
+    """list is read-only — must NOT be deprecated."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["taxonomy", "list", "projects", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "projects" in result.output
+
+
+def test_taxonomy_rm_referenced_prompt_then_cascade(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "litman.core.confirm._stdin_is_tty", lambda: True
+    )
+    _write_paper(vault, "2024_A", topics=["peptide"])
+    _write_paper(vault, "2024_B", topics=["peptide"])
+    runner = CliRunner()
+    runner.invoke(cli, ["taxonomy", "add", "topics", "peptide",
+                        "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["taxonomy", "rm", "topics", "peptide", "--library", str(vault)],
+        input="y\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "untag" in result.output.lower()
+    assert _read_taxonomy(vault)["topics"] == []
+    assert _read_meta(vault, "2024_A")["topics"] == []
+    assert _read_meta(vault, "2024_B")["topics"] == []
+
+
+def test_taxonomy_rm_yes_skips_prompt(vault: Path) -> None:
+    _write_paper(vault, "2024_A", topics=["peptide"])
+    runner = CliRunner()
+    runner.invoke(cli, ["taxonomy", "add", "topics", "peptide",
+                        "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["taxonomy", "rm", "topics", "peptide", "--yes",
+              "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_taxonomy(vault)["topics"] == []
+    assert _read_meta(vault, "2024_A")["topics"] == []
+
+
+def test_taxonomy_merge_referenced_prompt(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "litman.core.confirm._stdin_is_tty", lambda: True
+    )
+    _write_paper(vault, "2024_A", topics=["transformers"])
+    runner = CliRunner()
+    runner.invoke(cli, ["taxonomy", "add", "topics", "transformers",
+                        "transformer", "--library", str(vault)])
+    result = runner.invoke(
+        cli,
+        ["taxonomy", "merge", "topics", "transformers", "--into",
+         "transformer", "--library", str(vault)],
+        input="y\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "rewrite" in result.output.lower()
+    assert _read_meta(vault, "2024_A")["topics"] == ["transformer"]
+
+
+def test_taxonomy_rm_stray_stdin_no_yes_aborts_unmutated(
+    vault: Path,
+) -> None:
+    """C1 regression (taxonomy rm mirror): a non-tty stdin carrying a
+    stray ``y\\n`` must NOT satisfy the confirmation. The spec
+    ("不读不存在的 stdin") forbids reading stdin at all in a
+    non-interactive environment without --yes.
+    """
+    _write_paper(vault, "2024_A", topics=["peptide"])
+    _write_paper(vault, "2024_B", topics=["peptide"])
+    runner = CliRunner()
+    runner.invoke(cli, ["taxonomy", "add", "topics", "peptide",
+                        "--library", str(vault)])
+
+    before = _vault_snapshot(vault)
+    result = runner.invoke(
+        cli, ["taxonomy", "rm", "topics", "peptide", "--library", str(vault)],
+        input="y\n",
+    )
+    assert result.exit_code != 0
+    assert "Non-interactive environment" in result.output
+    assert _vault_snapshot(vault) == before
+
+
+def test_taxonomy_rm_atomicity_rollback_on_staged_write_failure(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §测试覆盖 'rm atomicity rollback' + §边界 case line 164
+    (taxonomy rm mirror).
+
+    Injects a failure in the SECOND ``StagedWrite.write_text`` call and
+    asserts TAXONOMY.md + every paper metadata.yaml + INDEX.json are
+    byte-identical to the pre-op state, with non-zero exit.
+    """
+    from litman.core.atomic import StagedWrite
+
+    _write_paper(vault, "2024_A", topics=["peptide"])
+    _write_paper(vault, "2024_B", topics=["peptide"])
+    runner = CliRunner()
+    runner.invoke(cli, ["taxonomy", "add", "topics", "peptide",
+                        "--library", str(vault)])
+
+    before = _vault_snapshot(vault)
+
+    real_write_text = StagedWrite.write_text
+    calls = {"n": 0}
+
+    def flaky_write_text(
+        self: StagedWrite, relpath: str, content: str
+    ) -> Path:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise OSError("injected mid-staged_write failure")
+        return real_write_text(self, relpath, content)
+
+    monkeypatch.setattr(StagedWrite, "write_text", flaky_write_text)
+
+    result = runner.invoke(
+        cli, ["taxonomy", "rm", "topics", "peptide", "--yes",
+              "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert calls["n"] >= 2
+    assert _vault_snapshot(vault) == before

@@ -30,6 +30,7 @@ from litman.commands.link import link_cmd, unlink_cmd
 from litman.commands.list import list_cmd
 from litman.commands.modify import modify_cmd
 from litman.commands.open import open_cmd
+from litman.commands.project import project_group
 from litman.commands.promote import promote_cmd
 from litman.commands.read import read_cmd
 from litman.commands.refresh import refresh_views_cmd
@@ -69,6 +70,7 @@ cli.add_command(drop_cmd)
 cli.add_command(promote_cmd)
 cli.add_command(skim_cmd)
 cli.add_command(taxonomy_group)
+cli.add_command(project_group)
 cli.add_command(rename_cmd)
 cli.add_command(rm_cmd)
 cli.add_command(trash_group)

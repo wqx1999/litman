@@ -233,6 +233,9 @@ def test_modify_add_tag_to_empty_list(
 ) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
+    )
     result = runner.invoke(
         cli,
         ["modify", paper_id, "--add-tag", "topics=peptide", "--library", str(vault)],
@@ -247,6 +250,9 @@ def test_modify_add_tag_dedupes(vault_with_paper: tuple[Path, str]) -> None:
     """Adding a value already present is an idempotent no-op (no duplication)."""
     vault, paper_id = vault_with_paper
     runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
+    )
     runner.invoke(
         cli,
         ["modify", paper_id, "--add-tag", "topics=peptide", "--library", str(vault)],
@@ -268,6 +274,20 @@ def test_modify_add_tag_multiple_fields(
 ) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "AMP",
+              "--library", str(vault)]
+    )
+    runner.invoke(
+        cli, ["taxonomy", "add", "methods", "cell-free",
+              "--library", str(vault)]
+    )
+    proj = vault / "_proj_pepforge"
+    proj.mkdir()
+    runner.invoke(
+        cli, ["project", "add", "pepforge", "--path", str(proj),
+              "--library", str(vault)]
+    )
     result = runner.invoke(
         cli,
         [
@@ -322,6 +342,10 @@ def test_modify_add_tag_empty_value_rejected(
 def test_modify_rm_tag_existing(vault_with_paper: tuple[Path, str]) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "AMP",
+              "--library", str(vault)]
+    )
     runner.invoke(
         cli,
         [
@@ -399,6 +423,9 @@ def test_modify_refreshes_index_json(
 ) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
+    )
     result = runner.invoke(
         cli,
         [
@@ -421,6 +448,15 @@ def test_modify_refreshes_index_json(
 def test_modify_rebuilds_views(vault_with_paper: tuple[Path, str]) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
+    )
+    proj = vault / "_proj_pepforge"
+    proj.mkdir()
+    runner.invoke(
+        cli, ["project", "add", "pepforge", "--path", str(proj),
+              "--library", str(vault)]
+    )
     result = runner.invoke(
         cli,
         [
@@ -550,3 +586,106 @@ def test_modify_accepts_paper_doi(
     assert result.exit_code == 0, result.output
     meta = _read_meta(vault, paper_id)
     assert meta["priority"] == "A"
+
+
+# ---------------------------------------------------------------------------
+# M15: register-first validation on --add-tag
+# ---------------------------------------------------------------------------
+
+
+def test_modify_add_tag_unregistered_topic_rejected(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--add-tag", "topics=brand-new",
+         "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    msg = str(result.exception)
+    assert "not registered" in msg
+    assert "lit taxonomy add topics brand-new" in msg
+
+
+def test_modify_add_tag_registered_topic_allowed(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["taxonomy", "add", "topics", "peptide", "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--add-tag", "topics=peptide",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["topics"] == ["peptide"]
+
+
+def test_modify_add_tag_unregistered_project_redirects_to_lit_project(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--add-tag", "projects=pepforge",
+         "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    msg = str(result.exception)
+    assert "not registered" in msg
+    assert "lit project add pepforge --path" in msg
+
+
+def test_modify_rm_tag_not_validated(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """--rm-tag of a never-registered value is a legitimate cleanup, no reject."""
+    vault, paper_id = vault_with_paper
+    # Seed an unregistered value directly so we can prove --rm-tag clears it
+    # without register-first complaining.
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["taxonomy", "add", "topics", "stale", "--library", str(vault)],
+    )
+    runner.invoke(
+        cli,
+        ["modify", paper_id, "--add-tag", "topics=stale",
+         "--library", str(vault)],
+    )
+    runner.invoke(
+        cli,
+        ["taxonomy", "rm", "topics", "stale", "--yes",
+         "--library", str(vault)],
+    )
+    # 'stale' is gone from TAXONOMY now but the rm-tag must still work.
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--rm-tag", "topics=stale",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_modify_set_scalar_not_register_validated(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Schemaless scalar fields are NOT register-first checked (invariant #7)."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "read-date=2026-05-16",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["read-date"] == "2026-05-16"

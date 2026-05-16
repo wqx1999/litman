@@ -207,11 +207,33 @@ lit modify <id> --rm-tag topics=outdated-value
 ```bash
 lit taxonomy add topics peptide-design               # add a new value
 lit taxonomy rename topics old-name new-name         # cascade across all papers
-lit taxonomy merge methods old-method into new-method
-lit taxonomy rm topics unused-value                  # refuses if any paper still uses it
+lit taxonomy merge methods old-method --into new-method   # prompts (cascade-with-confirm)
+lit taxonomy rm topics unused-value                  # prompts then cascade-untags refs
 ```
 
+`merge` / `rm` are **cascade-with-confirm** (M15): they list affected papers and prompt `Continue? [y/N]`. In a non-interactive run (you, an agent) you MUST pass `--yes` / `-y` or the command aborts non-zero with "Non-interactive environment — pass --yes to confirm." Never assume the prompt will be answered for you.
+
 Both commands write atomically (staging dir + `os.replace`) and refresh `INDEX.json` afterward.
+
+### Register-first (MANDATORY for the four controlled dicts)
+
+`projects` / `topics` / `methods` / `data` are **controlled vocabularies**. `lit modify --add-tag <dict>=<value>` HARD-REJECTS a value that is not already registered in `TAXONOMY.md`. There is deliberately no `--register` escape hatch — registration is a separate, explicit step.
+
+Correct order before tagging a paper with a controlled value:
+
+```bash
+# topics / methods / data — register via lit taxonomy:
+lit taxonomy add topics peptide-LM
+lit modify <id> --add-tag topics=peptide-LM            # now allowed
+
+# projects — register via lit project (NOT lit taxonomy):
+lit project add pepforge --path /abs/path/to/pepforge
+lit modify <id> --add-tag projects=pepforge            # now allowed
+```
+
+`projects` is special: it carries an on-disk path binding, so it has its own command group `lit project {add,list,rename,set-path,rm}` that keeps `TAXONOMY.md` and `lit-config.yaml`'s `projects:` map atomically in sync. **`lit taxonomy {add,rename,rm} projects` is hard-deprecated** — it errors and redirects you to `lit project`. (`lit taxonomy list projects` still works — read-only.) Never hand-edit `lit-config.yaml`'s `projects:` map.
+
+What is NOT register-first checked (do not try to "register" these): schemaless scalar fields (`read-date`, `doi`, `year`, any custom scalar — invariant #7), reference fields (`authors`, `related`, `contradicts`, `extends`, `code-clones` — validated by dangling-ref health checks), and fixed enums (`type`, `status`, `priority` — hard-coded). `--rm-tag` is never register-checked (clearing a stale value is legitimate).
 
 ---
 
@@ -233,7 +255,7 @@ When the user moves their vault to a new machine (rclone sync, USB stick, `cp -r
 ## Architecture Invariants (do not violate)
 
 1. **Never** write `papers/<id>/metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `codes/<name>/repo-meta.yaml` directly. Always go through `lit add` / `lit modify` / `lit taxonomy` / `lit code …`.
-2. **Never** suggest hand-editing `TAXONOMY.md` to remove a value — it leaves dangling refs. Use `lit taxonomy rm` (refuses if still referenced) or `lit taxonomy rename` / `merge` (cascades).
+2. **Never** suggest hand-editing `TAXONOMY.md` or `lit-config.yaml`'s `projects:` map. Use `lit taxonomy {rm,rename,merge}` for topics/methods/data and `lit project {add,rename,set-path,rm}` for projects — both keep the truth sources atomic. Tagging a paper requires the value to be registered first (register-first; no escape hatch).
 3. **Never** assume the vault is git-tracked. It is deliberately not. Multi-file atomicity is provided by `<vault>/.litman-staging/` + `os.replace`, not git.
 4. **Never** store API keys in `lit-config.yaml`. The CLI does not call any LLM API — that's your job (the agent), via the JSON-file bridge.
 5. **Never** install / uninstall litman or modify its conda env. If `lit` is missing, tell the user and stop.
@@ -257,7 +279,8 @@ If unsure whether an operation respects these invariants, run `lit health-check`
 | `lit drop <id>` | Sugar: `status=dropped` |
 | `lit promote <id>` | Sugar: `status=deep-read` (does NOT touch `read-date`) |
 | `lit skim <id>` | Sugar: `status=skim` |
-| `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Manage controlled vocab |
+| `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Manage topics/methods/data vocab (merge/rm prompt; pass `--yes` non-interactively) |
+| `lit project {add,list,rename,set-path,rm} [args]` | Manage projects (path-bound; dual-writes TAXONOMY + config) |
 | `lit code add <url> --paper <id>` | Clone + bind a code repo |
 | `lit code list [--paper <id>]` | Browse code repos |
 | `lit code update <name> [--unshallow]` | git pull / promote shallow |

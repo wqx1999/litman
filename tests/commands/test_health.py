@@ -29,6 +29,8 @@ from litman.core.checks import (
     check_inbox_staleness,
     check_invalid_paper_dirs,
     check_pdf_viewer,
+    check_project_config_consistency,
+    check_project_path_exists,
     check_schema,
     check_stale_staging,
     check_taxonomy_drift,
@@ -670,3 +672,107 @@ def test_health_check_help() -> None:
     assert result.exit_code == 0
     assert "--fix" in result.output
     assert "stale_staging" in result.output
+
+
+# ===========================================================================
+# M15: project registry health-checks
+# ===========================================================================
+
+
+def _set_taxonomy_projects(vault: Path, names: list[str]) -> None:
+    from litman.core.taxonomy import update_user_dict_section
+
+    txt = (vault / "TAXONOMY.md").read_text()
+    (vault / "TAXONOMY.md").write_text(
+        update_user_dict_section(txt, "projects", names), encoding="utf-8"
+    )
+
+
+def _set_config_projects(vault: Path, mapping: dict[str, str]) -> None:
+    lines = [f"library_name: {vault.name}"]
+    if mapping:
+        lines.append("projects:")
+        for k, v in mapping.items():
+            lines.append(f"  {k}: {v}")
+    (vault / "lit-config.yaml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
+def test_project_config_consistency_taxonomy_only_warns(
+    vault: Path,
+) -> None:
+    _set_taxonomy_projects(vault, ["pepforge"])
+    _set_config_projects(vault, {})
+    issues = check_project_config_consistency(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "TAXONOMY.md" in issues[0].message
+    assert issues[0].category == "project_config_consistency"
+    assert issues[0].category not in AUTO_FIXABLE_CATEGORIES
+
+
+def test_project_config_consistency_config_only_warns(
+    vault: Path, tmp_path: Path
+) -> None:
+    d = tmp_path / "proj"
+    d.mkdir()
+    _set_config_projects(vault, {"pepforge": str(d)})
+    # TAXONOMY projects stays empty (seed default).
+    issues = check_project_config_consistency(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "lit-config.yaml" in issues[0].message
+
+
+def test_project_config_consistency_in_sync_no_issue(
+    vault: Path, tmp_path: Path
+) -> None:
+    d = tmp_path / "proj"
+    d.mkdir()
+    _set_taxonomy_projects(vault, ["pepforge"])
+    _set_config_projects(vault, {"pepforge": str(d)})
+    assert check_project_config_consistency(vault, []) == []
+
+
+def test_project_config_consistency_empty_no_issue(vault: Path) -> None:
+    assert check_project_config_consistency(vault, []) == []
+
+
+def test_project_path_exists_missing_warns(
+    vault: Path, tmp_path: Path
+) -> None:
+    missing = tmp_path / "gone"
+    _set_config_projects(vault, {"p": str(missing)})
+    issues = check_project_path_exists(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "does not exist" in issues[0].message
+    assert issues[0].category not in AUTO_FIXABLE_CATEGORIES
+
+
+def test_project_path_exists_is_file_warns(
+    vault: Path, tmp_path: Path
+) -> None:
+    f = tmp_path / "afile"
+    f.write_text("x")
+    _set_config_projects(vault, {"p": str(f)})
+    issues = check_project_path_exists(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "not a directory" in issues[0].message
+
+
+def test_project_path_exists_empty_map_no_issue(vault: Path) -> None:
+    assert check_project_path_exists(vault, []) == []
+
+
+def test_project_checks_registered_in_run_all(
+    vault: Path, tmp_path: Path
+) -> None:
+    missing = tmp_path / "gone"
+    _set_config_projects(vault, {"p": str(missing)})
+    issues = run_all_checks(vault, list_papers(vault))
+    cats = {i.category for i in issues}
+    assert "project_path_exists" in cats
+    assert "project_config_consistency" in cats

@@ -33,6 +33,7 @@ from rich.table import Table
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.taxonomy import (
@@ -78,6 +79,25 @@ def _validate_user_dict(dict_name: str) -> None:
         raise TaxonomyError(
             f"Unknown dict {dict_name!r}. "
             f"User-extensible dicts: {', '.join(USER_DICTS)}."
+        )
+
+
+def _reject_projects_write(dict_name: str) -> None:
+    """Hard-deprecate ``lit taxonomy {add,rename,rm} projects`` (M15).
+
+    ``projects`` carries a path binding in lit-config.yaml, so a write
+    through the generic taxonomy path would be a half-update footgun
+    (TAXONOMY.md changed, config map not). The dedicated ``lit project``
+    group keeps both truth sources atomic. ``lit taxonomy list projects``
+    stays available (read-only, no side effect) — only the writers redirect.
+    """
+    if dict_name == "projects":
+        raise TaxonomyError(
+            "'projects' has path binding requirements; use `lit project` "
+            "instead.\n"
+            "  add:    lit project add <name> --path <abs-path>\n"
+            "  rename: lit project rename <old> <new>\n"
+            "  rm:     lit project rm <name>"
         )
 
 
@@ -196,6 +216,7 @@ def taxonomy_add_cmd(
     Already-present values are silent no-ops. The dict body is rewritten
     in sorted order regardless of the input order.
     """
+    _reject_projects_write(dict_name)
     _validate_user_dict(dict_name)
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     text, parsed = _load_taxonomy(vault)
@@ -265,6 +286,7 @@ def taxonomy_rename_cmd(
     vault_name: str | None,
 ) -> None:
     """Rename a value in a user dict and ripple to all referencing papers."""
+    _reject_projects_write(dict_name)
     _validate_user_dict(dict_name)
     if old == new:
         raise TaxonomyError("`old` and `new` are identical — nothing to do.")
@@ -327,6 +349,14 @@ def taxonomy_rename_cmd(
     help="Destination value to merge into. May be one of the sources.",
 )
 @click.option(
+    "--yes",
+    "-y",
+    "yes",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt (for agents / scripts / CI).",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -345,6 +375,7 @@ def taxonomy_merge_cmd(
     dict_name: str,
     sources: tuple[str, ...],
     dest: str,
+    yes: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -386,6 +417,32 @@ def taxonomy_merge_cmd(
 
     field = USER_DICT_TO_METADATA_FIELD[dict_name]
     replacements = {s: dest for s in sources_to_remove}
+
+    # Cascade-with-confirm (M15): rewriting many papers' metadata changes
+    # their semantics, so gate it behind a confirmation. Scope = union of
+    # papers referencing any source value.
+    affected: list[str] = []
+    seen_affected: set[str] = set()
+    for src in sources_to_remove:
+        for pid in find_referencing_papers(list_papers(vault), dict_name, src):
+            if pid not in seen_affected:
+                seen_affected.add(pid)
+                affected.append(pid)
+    if affected:
+        warning_lines = [
+            f"[yellow]⚠[/] Merging "
+            f"{', '.join(escape(s) for s in sources_to_remove)} → "
+            f"{escape(dest)} will rewrite [bold]{len(affected)}[/] "
+            f"paper(s):",
+        ]
+        for pid in sorted(affected)[:10]:
+            warning_lines.append(f"  - {escape(pid)}")
+        if len(affected) > 10:
+            warning_lines.append(f"  ... and {len(affected) - 10} more")
+        if not _confirm_destructive(warning_lines, yes=yes):
+            console.print("[dim]Aborted. Nothing changed.[/]")
+            return
+
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
         vault, field, replacements
     )
@@ -419,6 +476,14 @@ def taxonomy_merge_cmd(
 @click.argument("dict_name")
 @click.argument("value")
 @click.option(
+    "--yes",
+    "-y",
+    "yes",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt (for agents / scripts / CI).",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -436,15 +501,20 @@ def taxonomy_merge_cmd(
 def taxonomy_rm_cmd(
     dict_name: str,
     value: str,
+    yes: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Remove a value (refused if any paper still references it).
+    """Remove a value, cascading the removal to every referencing paper.
 
-    No automatic ripple — users must clear references via
-    ``lit modify --rm-tag <field>=<value>`` first. This is intentional:
-    silent deletion of a tag from many papers should be an explicit choice.
+    M15 changed this from "refuse if referenced" to cascade-with-confirm:
+    referencing papers are listed, a y/N prompt gates the teardown, and on
+    confirm the value is dropped from each paper's metadata AND from
+    TAXONOMY.md in one atomic staged_write. ``--yes`` / ``-y`` skips the
+    prompt; a non-tty without ``--yes`` aborts cleanly. With no references
+    the command executes immediately (nothing to warn about).
     """
+    _reject_projects_write(dict_name)
     _validate_user_dict(dict_name)
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     text, parsed = _load_taxonomy(vault)
@@ -457,27 +527,44 @@ def taxonomy_rm_cmd(
     papers = list_papers(vault)
     referencing = find_referencing_papers(papers, dict_name, value)
     if referencing:
-        joined = "\n  - ".join(referencing[:10])
-        more = (
-            f"\n  ... and {len(referencing) - 10} more"
-            if len(referencing) > 10
-            else ""
-        )
-        raise TaxonomyError(
-            f"Cannot remove {value!r} from {dict_name}: "
-            f"{len(referencing)} paper(s) still reference it.\n  - {joined}{more}\n"
-            f"Run `lit modify <id> --rm-tag {dict_name}={value}` "
-            "on each paper first."
-        )
+        warning_lines = [
+            f"[yellow]⚠[/] Removing {escape(value)!r} from "
+            f"{escape(dict_name)} will untag "
+            f"[bold]{len(referencing)}[/] paper(s):",
+        ]
+        for pid in referencing[:10]:
+            warning_lines.append(f"  - {escape(pid)}")
+        if len(referencing) > 10:
+            warning_lines.append(
+                f"  ... and {len(referencing) - 10} more"
+            )
+        if not _confirm_destructive(warning_lines, yes=yes):
+            console.print("[dim]Aborted. Nothing changed.[/]")
+            return
 
     new_body = [v for v in current if v != value]
     new_text = update_user_dict_section(text, dict_name, new_body)
 
+    n_changed, staged_meta_paths, all_papers = _ripple_removals(
+        vault, USER_DICT_TO_METADATA_FIELD[dict_name], value
+    )
+    fresh_index = render_index(all_papers, _now_iso())
+
     with staged_write(vault, op_id=f"taxonomy-rm-{dict_name}") as stage:
         stage.write_text("TAXONOMY.md", new_text)
+        for relpath, content in staged_meta_paths:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", fresh_index)
+
+    if n_changed > 0:
+        rebuild_views(vault, list_papers(vault))
 
     console.print(
         f"[bold green]✓ Removed[/] {escape(value)} from {escape(dict_name)}."
+    )
+    console.print(
+        f"  Untagged [bold]{n_changed}[/] paper"
+        f"{'s' if n_changed != 1 else ''}."
     )
 
 
@@ -536,5 +623,55 @@ def _ripple_replacements(
             paper[field] = list(rt_metadata[field])
             paper["updated-at"] = now
             n_changed += 1
+
+    return n_changed, staged, papers
+
+
+def _ripple_removals(
+    vault: Path,
+    field: str,
+    value: str,
+) -> tuple[int, list[tuple[str, str]], list[dict[str, Any]]]:
+    """Drop ``value`` from ``field`` of every paper that references it.
+
+    The cascade-deletion counterpart of :func:`_ripple_replacements`.
+    Kept as a dedicated helper (not ``_ripple_replacements`` with an
+    empty-string target) so ``replace_value_in_field`` keeps clean
+    replacement-only semantics — a removal is a structurally different
+    operation (the value disappears, it is not substituted).
+
+    Returns the same shape as :func:`_ripple_replacements`:
+        (n_changed, staged_writes, all_papers_with_changes_applied)
+    """
+    papers = list_papers(vault)
+    staged: list[tuple[str, str]] = []
+    n_changed = 0
+    now = _now_iso()
+
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        values = paper.get(field) or []
+        if value not in values:
+            continue
+        meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
+        rt_metadata = _yaml.load(meta_path.read_text(encoding="utf-8"))
+        if rt_metadata is None:
+            continue
+        current = rt_metadata.get(field) or []
+        if value not in current:
+            continue
+        rt_metadata[field] = [v for v in current if v != value]
+        rt_metadata["updated-at"] = now
+        staged.append(
+            (
+                f"papers/{paper_id}/metadata.yaml",
+                _dump_yaml_to_string(rt_metadata),
+            )
+        )
+        paper[field] = list(rt_metadata[field])
+        paper["updated-at"] = now
+        n_changed += 1
 
     return n_changed, staged, papers

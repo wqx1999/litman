@@ -614,6 +614,127 @@ def check_inbox_staleness(
     return out
 
 
+def check_project_config_consistency(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """TAXONOMY.md ``## projects`` ↔ lit-config.yaml ``projects:`` same set.
+
+    M15 added ``lit project`` which writes both truth sources atomically.
+    Old hand-edited vaults (or a half-applied legacy edit) may have a name
+    in one but not the other. Either direction is a warning, not an error:
+    nothing is actively broken, but `lit link` / register-first validation
+    will behave inconsistently until reconciled. NOT auto-fixable — the
+    user decides which side is authoritative.
+    """
+    taxonomy_file = vault / "TAXONOMY.md"
+    if not taxonomy_file.is_file():
+        return []
+    try:
+        registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+    from litman.core.config import load_config
+
+    try:
+        config = load_config(vault)
+    except Exception:
+        # ConfigError surfaces via `lit config show`; don't double-report.
+        return []
+
+    taxonomy_names = set(registered.get("projects", []))
+    config_names = set(config.projects)
+
+    out: list[Issue] = []
+    for name in sorted(taxonomy_names - config_names):
+        out.append(
+            Issue(
+                category="project_config_consistency",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    f"project {name!r} is in TAXONOMY.md but not in "
+                    "lit-config.yaml's projects: map"
+                ),
+                hint=(
+                    f"`lit project add {name} --path <path>` to register "
+                    "its path, or remove it from TAXONOMY.md via "
+                    f"`lit project rm {name}`"
+                ),
+            )
+        )
+    for name in sorted(config_names - taxonomy_names):
+        out.append(
+            Issue(
+                category="project_config_consistency",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    f"project {name!r} is in lit-config.yaml but not in "
+                    "TAXONOMY.md's ## projects section"
+                ),
+                hint=(
+                    f"`lit project add {name} --path <existing-path>` to "
+                    "complete the registration (or fix the yaml by hand)"
+                ),
+            )
+        )
+    return out
+
+
+def check_project_path_exists(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Every lit-config.yaml ``projects:`` path exists and is a directory.
+
+    Common after cross-machine sync (rclone / USB) where the registry
+    travels but the project working directories live at different absolute
+    paths per machine. Warning (not error) + NOT auto-fixable: only the
+    user knows the correct path on this machine.
+    """
+    from litman.core.config import load_config
+
+    try:
+        config = load_config(vault)
+    except Exception:
+        return []
+
+    out: list[Issue] = []
+    for name, path_str in sorted(config.projects.items()):
+        project_dir = Path(path_str).expanduser()
+        if not project_dir.exists():
+            out.append(
+                Issue(
+                    category="project_path_exists",
+                    severity="warning",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} path does not exist: {path_str}"
+                    ),
+                    hint=(
+                        f"`lit project set-path {name} <correct-path>` "
+                        "(likely cross-machine path drift)"
+                    ),
+                )
+            )
+        elif not project_dir.is_dir():
+            out.append(
+                Issue(
+                    category="project_path_exists",
+                    severity="warning",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} path is not a directory: "
+                        f"{path_str}"
+                    ),
+                    hint=(
+                        f"`lit project set-path {name} <correct-path>`"
+                    ),
+                )
+            )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Vault-level checks
 # ---------------------------------------------------------------------------
@@ -922,6 +1043,8 @@ _CHECK_REGISTRY: tuple[tuple[str, Callable[[Path, list[dict[str, Any]]], list[Is
     ("dangling_refs", check_dangling_refs),
     ("dangling_wikilinks", check_dangling_wikilinks),
     ("taxonomy_drift", check_taxonomy_drift),
+    ("project_config_consistency", check_project_config_consistency),
+    ("project_path_exists", check_project_path_exists),
     ("bidirectional_refs", check_bidirectional_refs),
     ("inbox_staleness", check_inbox_staleness),
     ("stale_staging", check_stale_staging),

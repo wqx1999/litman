@@ -36,5 +36,5 @@
 - PyPI release (`pipx install litman`) is gated on M10 (docs) being
   done. M7 is independent — the migration is internal dogfood.
 
-The full development milestone index lives in the development repository
-at `dev_docs/milestones/README.md`.
+The full development todo index lives in the development repository
+at `dev_docs/todo/README.md`.

@@ -102,9 +102,9 @@ Procedure when the user asks "connect this paper to my <project>":
 1. Read `<vault>/lit-config.yaml` → `projects:` map. If the requested project isn't there, tell the user — they can register it via the lit-library skill / `lit config`.
 2. From the resolved project directory, read in this order (stop when you have enough to answer):
    - `<project>/dev_docs/identity.md` — what is this project, current goals
-   - `<project>/dev_docs/milestones/active/*.md` — what is the team currently doing
+   - `<project>/dev_docs/todo/active/*.md` — what the team is currently doing
    - `<project>/dev_docs/proposals/*.md` — what is being considered
-3. Synthesise: paper's claim/method/data ↔ project's current question/blocker/opportunity. Use concrete pointers ("paper §3 shows X; PepCodec's active milestone M3.2 needs Y; the link is …").
+3. Synthesise: paper's claim/method/data ↔ project's current question/blocker/opportunity. Use concrete pointers ("paper §3 shows X; PepCodec's active todo M3.2 needs Y; the link is …").
 
 Do **not** auto-write anything into either the paper's notes or the project's docs from this step — Phase 5 (below) handles deliberate sediment.
 

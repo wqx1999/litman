@@ -51,6 +51,10 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "dangling_refs": "Dangling references (related/contradicts/extends)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "taxonomy_drift": "Taxonomy drift (unregistered values)",
+    "project_config_consistency": (
+        "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"
+    ),
+    "project_path_exists": "Project path existence (config paths on disk)",
     "bidirectional_refs": "Bidirectional 'related' asymmetry",
     "inbox_staleness": "Inbox staleness (>14 days)",
     "stale_staging": ".litman-staging/ leftovers",
