@@ -31,6 +31,7 @@ from rich.console import Console
 from rich.panel import Panel
 from ruamel.yaml import YAML
 
+from litman.core.code_scan import scan_code_urls
 from litman.core.dedup import (
     auto_suffix_id,
     find_paper_by_doi,
@@ -388,6 +389,21 @@ def add_cmd(
             shutil.rmtree(paper_dir, ignore_errors=True)
         raise
 
+    # Pure recall increment, AFTER the atomic block: the paper is already
+    # safely on disk, so the scan can never roll it back. Double defense:
+    # scan_code_urls() already guarantees no-throw, but ingestion must NOT
+    # be held hostage to scan success/failure (same principle as the
+    # two-transaction "paper ingest not bound to clone success" rule), so
+    # the call site has its own try/except fallback.
+    try:
+        code_candidates = scan_code_urls(paper_dir / "paper.pdf")
+    except Exception as exc:  # pragma: no cover - defense in depth
+        code_candidates = []
+        console.print(
+            f"[yellow]Warning:[/] code-URL scan failed "
+            f"({exc.__class__.__name__}); paper was still ingested."
+        )
+
     authors = parsed["authors"]
     if not authors:
         author_summary = "(no authors)"
@@ -399,6 +415,32 @@ def add_cmd(
         # 3 authors look like 6 people.
         author_summary = f"{authors[0]} et al. ({len(authors)} authors)"
 
+    # Structurally-stable code_candidates block. A skill prompt can teach an
+    # agent to parse it: the block is fenced by the literal markers
+    # "[code_candidates]" / "[/code_candidates]", one candidate per line as
+    # "<url> (p<page>, x<count>)". No false positive when empty: a single
+    # explicit "no code repo URL found in full text" line instead.
+    #
+    # The fence markers are escaped with a leading backslash so Rich emits
+    # them as literal text (an unescaped "[code_candidates]" would be parsed
+    # as an unknown style tag and stripped, breaking the agent-parseable
+    # contract).
+    candidate_lines = [
+        f"{c['url']} (p{c['page']}, ×{c['count']})"
+        for c in code_candidates
+    ]
+    body = (
+        "\n".join(candidate_lines)
+        if candidate_lines
+        else "no code repo URL found in full text"
+    )
+    code_block = (
+        "\n\n[bold]Code candidates (full-text scan):[/]\n"
+        "\\[code_candidates]\n"
+        f"{body}\n"
+        "\\[/code_candidates]"
+    )
+
     console.print(
         Panel.fit(
             f"[bold green]Paper added:[/] {paper_id}\n"
@@ -406,7 +448,8 @@ def add_cmd(
             f"[bold]Title:[/] {parsed['title']}\n"
             f"[bold]Year:[/] {parsed['year']}    "
             f"[bold]Journal:[/] {parsed['journal']}\n"
-            f"[bold]Authors:[/] {author_summary}\n\n"
+            f"[bold]Authors:[/] {author_summary}"
+            f"{code_block}\n\n"
             "[dim]Next:[/] edit metadata.yaml to fill projects/topics/methods, "
             "then `lit refresh-views` to update INDEX.json.",
             title="lit add",

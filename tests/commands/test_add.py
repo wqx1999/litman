@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -468,3 +469,104 @@ def test_add_passes_doi_to_fetcher(
     )
     assert result.exit_code == 0, result.output
     assert mock_crossref["doi"] == "10.1093/bioinformatics/btae364"
+
+
+# ---------------------------------------------------------------------------
+# M20: full-text code-URL recall scan surfaced in the add panel
+# ---------------------------------------------------------------------------
+
+
+def test_add_surfaces_code_candidates(
+    vault: Path,
+    mock_crossref: dict[str, Any],
+    make_text_pdf: Callable[..., Path],
+) -> None:
+    """A PDF whose only github URL sits on a tail page is ingested AND the
+    URL is surfaced in the structurally-stable code_candidates block."""
+    pdf = make_text_pdf(
+        [
+            ["Title page, metadata only."],
+            ["Methods, no links."],
+            [
+                "Code availability: https://github.com/team/deliverable "
+                "is the released code."
+            ],
+        ],
+        name="tail.pdf",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Paper still fully ingested.
+    paper_dir = vault / "papers" / _PAPER_ID
+    assert (paper_dir / "paper.pdf").is_file()
+    assert (paper_dir / "metadata.yaml").is_file()
+    # Stable block markers + candidate line are present in the panel.
+    assert "[code_candidates]" in result.output
+    assert "[/code_candidates]" in result.output
+    assert "https://github.com/team/deliverable" in result.output
+    assert "p3" in result.output
+
+
+def test_add_no_code_candidate_no_error(
+    vault: Path,
+    mock_crossref: dict[str, Any],
+    make_text_pdf: Callable[..., Path],
+) -> None:
+    """A PDF with no code-host URL ingests cleanly and the block renders the
+    explicit no-false-positive sentinel line."""
+    pdf = make_text_pdf(
+        [["Plain prose, no repository link at all."]],
+        name="plain.pdf",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (vault / "papers" / _PAPER_ID).is_dir()
+    assert "no code repo URL found in full text" in result.output
+
+
+def test_add_scan_failure_does_not_block_ingest(
+    vault: Path,
+    fake_pdf: Path,
+    mock_crossref: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injected scan failure: paper is STILL fully ingested, command exits 0,
+    and a warning is surfaced (ingest not held hostage to scan success)."""
+
+    def _boom(_path: Path) -> list[dict]:
+        raise RuntimeError("injected scan explosion")
+
+    monkeypatch.setattr("litman.commands.add.scan_code_urls", _boom)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    paper_dir = vault / "papers" / _PAPER_ID
+    assert (paper_dir / "paper.pdf").is_file()
+    assert (paper_dir / "metadata.yaml").is_file()
+    assert (paper_dir / "notes.md").is_file()
+    assert "Warning" in result.output
+    assert "scan failed" in result.output
