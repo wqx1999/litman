@@ -36,3 +36,43 @@ def test_hello_command() -> None:
     assert result.exit_code == 0
     assert litman.__version__ in result.output
     assert "installed" in result.output
+
+
+def test_help_command_no_args_lists_commands() -> None:
+    # `lit help` is an alias for `lit --help`: prints the top-level command list.
+    runner = CliRunner()
+    result = runner.invoke(cli, ["help"])
+    assert result.exit_code == 0
+    assert "Commands:" in result.output
+    assert "taxonomy" in result.output
+
+
+def test_help_command_for_leaf() -> None:
+    # prog_name mirrors the real `lit` console script (CliRunner would
+    # otherwise default it to the group's function name).
+    runner = CliRunner()
+    result = runner.invoke(cli, ["help", "init"], prog_name="lit")
+    assert result.exit_code == 0
+    # Usage line is rendered with the resolved command path, not "lit help".
+    assert "Usage: lit init" in result.output
+
+
+def test_help_command_for_nested_subcommand() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["help", "code", "add"], prog_name="lit")
+    assert result.exit_code == 0
+    assert "Usage: lit code add" in result.output
+
+
+def test_help_command_unknown_errors() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["help", "nonexistent"])
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
+def test_help_command_leaf_rejects_subcommand() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["help", "read", "read"])
+    assert result.exit_code != 0
+    assert "no subcommands" in result.output.lower()

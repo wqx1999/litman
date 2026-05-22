@@ -130,7 +130,7 @@ def _vault_option(fn):
         "vault_name",
         default=None,
         help=(
-            "Vault name from ~/.config/litman/vaults.yaml (M8). "
+            "Vault name from ~/.config/litman/vaults.yaml. "
             "Mutually exclusive with --library."
         ),
     )(fn)
@@ -231,15 +231,17 @@ def project_list_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """List every project (JOIN TAXONOMY.md ## projects ∪ config map).
+    """List every project (a JOIN of TAXONOMY.md's projects section and the
+    lit-config.yaml projects map).
 
-    Drift markers:
+    Each row is tagged with one drift marker:
 
-    * ``✓``               — name in BOTH truth sources, path exists on disk
-    * ``⚠ path-missing``  — name in both but the config path is absent /
-      not a directory on this machine (likely cross-machine path drift)
-    * ``⚠ config-only``   — in lit-config.yaml but missing from TAXONOMY.md
-    * ``⚠ taxonomy-only`` — in TAXONOMY.md but missing from the config map
+    \b
+      ✓                name in BOTH truth sources, path exists on disk
+      ⚠ path-missing   name in both, but the config path is absent / not a
+                       directory on this machine (likely cross-machine drift)
+      ⚠ config-only    in lit-config.yaml but missing from TAXONOMY.md
+      ⚠ taxonomy-only  in TAXONOMY.md but missing from the config map
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     _, parsed = _load_taxonomy(vault)
@@ -477,11 +479,10 @@ def project_rm_cmd(
 ) -> None:
     """Delete a project: cascade-untag papers + drop from both truth sources.
 
-    Cascade-with-confirm (see spec §Part C): if any paper references the
-    project, a warning block lists them and a y/N prompt gates the
-    teardown. ``--yes`` / ``-y`` skips the prompt; a non-tty without
-    ``--yes`` aborts cleanly. With no references the command executes
-    immediately (nothing to warn about).
+    Cascade-with-confirm: if any paper references the project, a warning
+    block lists them and a y/N prompt gates the teardown. ``--yes`` / ``-y``
+    skips the prompt; a non-tty without ``--yes`` aborts cleanly. With no
+    references the command executes immediately (nothing to warn about).
     """
     name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))

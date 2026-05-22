@@ -115,7 +115,17 @@ def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
 
 @click.group("taxonomy")
 def taxonomy_group() -> None:
-    """Manage TAXONOMY.md — controlled vocabulary for paper metadata."""
+    """Manage TAXONOMY.md, the controlled vocabulary for paper metadata.
+
+    Governs three user dictionaries only: ``topics``, ``methods``, ``data``.
+    Tagging a paper with a value requires the value to be registered here
+    first (register-first; there is no escape hatch on ``lit modify``).
+
+    ``projects`` is NOT managed here. It carries an on-disk path binding, so
+    it has its own command group: use ``lit project {add,rename,rm,set-path}``
+    instead. ``lit taxonomy {add,rename,rm} projects`` is rejected and
+    redirects you there; only ``lit taxonomy list projects`` (read-only) works.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +147,7 @@ def taxonomy_group() -> None:
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -195,13 +205,14 @@ def _print_single_dict(name: str, values: list[str]) -> None:
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 @click.option(
     "--vault",
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -268,13 +279,14 @@ def taxonomy_add_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 @click.option(
     "--vault",
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -361,13 +373,14 @@ def taxonomy_rename_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 @click.option(
     "--vault",
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -488,13 +501,14 @@ def taxonomy_merge_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 @click.option(
     "--vault",
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -507,12 +521,11 @@ def taxonomy_rm_cmd(
 ) -> None:
     """Remove a value, cascading the removal to every referencing paper.
 
-    M15 changed this from "refuse if referenced" to cascade-with-confirm:
-    referencing papers are listed, a y/N prompt gates the teardown, and on
-    confirm the value is dropped from each paper's metadata AND from
-    TAXONOMY.md in one atomic staged_write. ``--yes`` / ``-y`` skips the
-    prompt; a non-tty without ``--yes`` aborts cleanly. With no references
-    the command executes immediately (nothing to warn about).
+    Cascade-with-confirm: referencing papers are listed, a y/N prompt gates
+    the teardown, and on confirm the value is dropped from each paper's
+    metadata AND from TAXONOMY.md in one atomic staged_write. ``--yes`` /
+    ``-y`` skips the prompt; a non-tty without ``--yes`` aborts cleanly. With
+    no references the command executes immediately (nothing to warn about).
     """
     _reject_projects_write(dict_name)
     _validate_user_dict(dict_name)

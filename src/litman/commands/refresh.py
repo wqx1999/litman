@@ -30,7 +30,7 @@ console = Console()
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -41,12 +41,13 @@ def refresh_views_cmd(
 
     Three things get refreshed, in order:
 
-    1. ``INDEX.json`` — global paper summary + by-doi reverse map.
-    2. ``views/by-*/`` symlink hubs — wiped and rebuilt; stale tag
-       buckets disappear.
-    3. ``<project_dir>/literature/REFERENCES.md`` for each project in
-       ``lit-config.yaml``'s ``projects`` map. Per-project failures
-       (missing project dir on this machine) are skipped, not aborted.
+    \b
+    1. INDEX.json — global paper summary + by-doi reverse map.
+    2. views/by-*/ symlink hubs — wiped and rebuilt; stale tag buckets
+       disappear.
+    3. <project_dir>/literature/REFERENCES.md for each project in
+       lit-config.yaml's projects map. Per-project failures (missing
+       project dir on this machine) are skipped, not aborted.
 
     The metadata files are the single source of truth; every output here
     is derived and can be regenerated wholesale.

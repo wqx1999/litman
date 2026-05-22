@@ -119,7 +119,7 @@ def _format_id_list(ids: list[str], limit: int = 5) -> str:
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

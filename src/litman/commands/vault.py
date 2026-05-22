@@ -52,23 +52,24 @@ console = Console()
 
 @click.group("vault")
 def vault_group() -> None:
-    """Manage the set of vaults registered with litman (M8).
+    """Manage the set of vaults registered with litman.
 
-    Multiple vaults can coexist on one machine — typically wangq's own
-    main vault plus any forks received from colleagues (snapshot
-    transfer + independent evolution; see ADR-001). The registry is
-    managed entirely through this command group; do not hand-edit the
-    file.
+    Multiple vaults can coexist on one machine: typically your own main
+    vault plus any forks received from colleagues (each evolves
+    independently from a snapshot). The registry is managed entirely
+    through this command group; do not hand-edit the file.
 
-    Registry location resolves at command time (ADR-005):
-      1. ``$LITMAN_REGISTRY_DIR/vaults.yaml`` when the env var is set —
-         use to redirect the registry to a cloud-synced directory.
-      2. Otherwise the platform-default config dir
-         (``~/.config/litman/`` on Linux,
-         ``~/Library/Application Support/litman/`` on macOS,
-         ``%APPDATA%\\litman\\`` on Windows).
+    The registry file location resolves at command time:
 
-    At any moment one vault is *active* — that's the vault every other
+    \b
+      1. $LITMAN_REGISTRY_DIR/vaults.yaml when that env var is set — use
+         it to redirect the registry into a cloud-synced directory.
+      2. Otherwise the platform-default config dir:
+           ~/.config/litman/                    on Linux
+           ~/Library/Application Support/litman/ on macOS
+           %APPDATA%\\litman\\                    on Windows
+
+    At any moment exactly one vault is active: the vault every other
     ``lit`` command resolves to by default (after the explicit
     ``--library`` / ``$LIT_LIBRARY`` checks). ``lit vault use NAME``
     switches the active vault.

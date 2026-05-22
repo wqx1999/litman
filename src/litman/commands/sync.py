@@ -52,7 +52,7 @@ console = Console()
 
 @click.group("sync")
 def sync_group() -> None:
-    """rclone-backed cloud sync for the vault (M6).
+    """rclone-backed cloud sync for the vault.
 
     One-way mirror: ``push`` copies the vault to your configured cloud
     remote, ``pull`` reverses the direction for cross-machine restore.
@@ -101,7 +101,7 @@ def sync_group() -> None:
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -345,7 +345,7 @@ def _render_size_preview(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -447,7 +447,7 @@ def sync_push_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -521,7 +521,7 @@ def sync_pull_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

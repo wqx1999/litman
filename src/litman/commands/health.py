@@ -158,7 +158,7 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

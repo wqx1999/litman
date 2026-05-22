@@ -153,7 +153,7 @@ def code_group() -> None:
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -172,7 +172,7 @@ def code_add_cmd(
     ``SOURCE`` is either a clone URL (``http://``, ``https://``, ``git@``,
     ``ssh://``, ``file://``) or a path to an existing local directory.
 
-    - URL source → ``git clone`` runs against the URL (default behavior, M3.1).
+    - URL source → ``git clone`` runs against the URL (the default).
     - Local-path source → the directory is copied (default) or moved (with
       ``--move``) into the vault. If the source is already a git repo, its
       ``remote.origin.url`` becomes the recorded ``upstream``; otherwise the
@@ -332,7 +332,7 @@ def code_add_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -456,7 +456,7 @@ def code_list_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -513,7 +513,7 @@ def code_link_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -588,7 +588,7 @@ def code_update_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -601,7 +601,7 @@ def code_rm_cmd(
 ) -> None:
     """Permanently delete ``codes/<repo-name>/`` from the vault.
 
-    Hard delete (no trash bin for code repos in M3.2; the repo is
+    Hard delete (there is no trash bin for code repos; the repo is
     re-clonable from the upstream URL preserved in metadata). With
     ``--cascade``, also strip the repo name from every paper's
     ``code-clones`` list atomically before the directory is removed.
@@ -700,7 +700,7 @@ def code_rm_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

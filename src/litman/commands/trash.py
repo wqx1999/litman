@@ -55,7 +55,7 @@ def trash_group() -> None:
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -106,13 +106,14 @@ def trash_list_cmd(library: Path | None, vault_name: str | None) -> None:
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 @click.option(
     "--vault",
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -168,13 +169,14 @@ def trash_restore_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
+    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
 )
 @click.option(
     "--vault",
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

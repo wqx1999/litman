@@ -78,7 +78,7 @@ console = Console()
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -93,20 +93,23 @@ def link_cmd(
 ) -> None:
     """Link a paper to a project: tag + symlinks + REFERENCES.md.
 
-    Single-paper mode (paper id accepts full id, unique substring, or
-    ``--paper-doi <DOI>``)::
+    Single-paper mode (the paper id accepts a full id, a unique substring,
+    or --paper-doi <DOI>):
 
+    \b
         lit link <paper-id> --project <name>
         lit link <paper-id> --project <name> --relevance "Direct baseline"
         lit link --paper-doi 10.1038/... --project <name>
 
-    Cross-machine recovery mode::
+    Cross-machine recovery mode (rebuild every project's symlinks +
+    REFERENCES.md from each paper's projects field):
 
+    \b
         lit link --rebuild-all
 
-    The project must be registered in ``lit-config.yaml``'s ``projects:``
-    map BEFORE linking. The project's directory must exist on disk —
-    ``lit-config.yaml`` only stores the path, not the directory itself.
+    The project must be registered in lit-config.yaml's projects map BEFORE
+    linking, and its directory must exist on disk (lit-config.yaml stores
+    only the path, not the directory itself).
     """
     if rebuild_all:
         if paper_id or project or paper_doi:
@@ -252,7 +255,7 @@ def link_cmd(
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

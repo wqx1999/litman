@@ -34,9 +34,15 @@ console = Console()
 def init_cmd(parent_dir: Path, name: str) -> None:
     """Initialize a new literature vault.
 
-    Creates ``PARENT_DIR/<name>/`` and populates it with the standard skeleton
-    (papers/, notes/, views/, inbox/, TAXONOMY.md, INDEX.md, lit-config.yaml)
-    plus a fresh git repository with an initial commit.
+    Creates ``PARENT_DIR/<name>/`` and populates it with the standard skeleton:
+    ``papers/``, ``inbox/``, ``codes/``, the four ``views/by-*`` symlink hubs
+    (project / topic / method / status), a seeded ``TAXONOMY.md`` (controlled
+    vocabulary), an empty ``INDEX.json`` (the agent-facing summary index), and
+    a ``lit-config.yaml``.
+
+    The vault is deliberately NOT a git repository: version history is the
+    job of cloud sync (``lit sync push/pull``), and multi-file atomicity is
+    provided by an internal staging directory plus ``os.replace``, not git.
 
     PARENT_DIR defaults to the current working directory.
     """

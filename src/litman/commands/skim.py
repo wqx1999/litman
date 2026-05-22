@@ -41,7 +41,7 @@ from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )

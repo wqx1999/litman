@@ -176,7 +176,7 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, list[str] | None]
     type=click.Choice(["bibtex"], case_sensitive=False),
     default="bibtex",
     show_default=True,
-    help="Output format. Reserved for future formats; only `bibtex` works in M12.",
+    help="Output format. Reserved for future formats; only `bibtex` is currently implemented.",
 )
 @click.option(
     "--library",
@@ -190,7 +190,7 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, list[str] | None]
     "vault_name",
     default=None,
     help=(
-        "Vault name from ~/.config/litman/vaults.yaml (M8). "
+        "Vault name from ~/.config/litman/vaults.yaml. "
         "Mutually exclusive with --library."
     ),
 )
@@ -207,7 +207,7 @@ def export_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Project the vault out to a .bib file (M12).
+    """Project the vault out to a .bib file.
 
     Cite keys equal paper ids, so a freshly-exported bibliography
     works with ``\\cite{<paper-id>}`` immediately. Re-running the

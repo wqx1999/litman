@@ -53,7 +53,8 @@ console = Console()
 def cli() -> None:
     """litman — local-first, AI-augmented literature management CLI.
 
-    Run ``lit COMMAND --help`` for command-specific help.
+    Run ``lit help COMMAND`` (or ``lit COMMAND --help``) for command-specific
+    help, e.g. ``lit help code add``.
     """
 
 
@@ -92,6 +93,40 @@ def hello() -> None:
     console.print(
         f"[bold green]litman[/] v{__version__} is installed and importable."
     )
+
+
+@cli.command("help")
+@click.argument("command_path", nargs=-1)
+@click.pass_context
+def help_cmd(ctx: click.Context, command_path: tuple[str, ...]) -> None:
+    """Show help for `lit` or a specific command.
+
+    `lit help` prints the top-level command list (same as `lit --help`).
+    `lit help COMMAND [SUBCOMMAND ...]` prints that command's help (same as
+    `lit COMMAND ... --help`), e.g. `lit help code add`.
+    """
+    # ctx.parent is the root `cli` group's context (info_name == "lit").
+    root_ctx = ctx.parent
+    if not command_path:
+        click.echo(cli.get_help(root_ctx))
+        return
+
+    current_cmd: click.Command = cli
+    current_ctx = root_ctx
+    walked: list[str] = []
+    for name in command_path:
+        if not isinstance(current_cmd, click.Group):
+            raise click.UsageError(
+                f"'lit {' '.join(walked)}' takes no subcommands, "
+                f"so '{name}' has no help."
+            )
+        sub = current_cmd.get_command(current_ctx, name)
+        if sub is None:
+            raise click.UsageError(f"No such command: {' '.join(command_path)!r}")
+        current_ctx = click.Context(sub, info_name=name, parent=current_ctx)
+        current_cmd = sub
+        walked.append(name)
+    click.echo(current_cmd.get_help(current_ctx))
 
 
 def main() -> None:
