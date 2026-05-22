@@ -86,13 +86,13 @@ def read_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Mark a paper as read by stamping ``read-date``.
+    """Mark a paper as read by stamping read-date.
 
-    Equivalent to ``lit modify <id> --set read-date=<YYYY-MM-DD>``.
-    Defaults to today (local timezone); use ``--date`` to backdate.
+    Equivalent to lit modify <id> --set read-date=<YYYY-MM-DD>.
+    Defaults to today (local timezone); use --date to backdate.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead.
+    or omit it and pass --paper-doi <DOI> instead.
     """
     date_value = _validate_iso_date(date_str) if date_str else _today_iso()
     vault = find_vault(resolve_library_or_vault(library, vault_name))

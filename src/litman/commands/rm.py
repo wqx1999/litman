@@ -248,14 +248,14 @@ def rm_cmd(
     """Remove a paper from the vault.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead.
+    or omit it and pass --paper-doi <DOI> instead.
 
-    By default moves ``papers/<id>/`` to ``<vault>/.trash/`` (recoverable
-    via ``lit trash restore <id>``). Pass ``--purge`` to permanently delete.
-    INDEX.json and ``views/by-*/`` are refreshed either way. Refuses if
-    any other paper references it (via ``related`` / ``contradicts`` /
-    ``extends``) or any notes file contains ``[[<id>]]``, unless
-    ``--cascade`` is given.
+    By default moves papers/<id>/ to <vault>/.trash/ (recoverable
+    via lit trash restore <id>). Pass --purge to permanently delete.
+    INDEX.json and views/by-*/ are refreshed either way. Refuses if
+    any other paper references it (via related / contradicts /
+    extends) or any notes file contains [[<id>]], unless
+    --cascade is given.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)

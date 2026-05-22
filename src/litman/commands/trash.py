@@ -34,7 +34,7 @@ console = Console()
 
 @click.group("trash")
 def trash_group() -> None:
-    """Manage the recoverable-delete bin under ``<vault>/.trash/``."""
+    """Manage the recoverable-delete bin under <vault>/.trash/."""
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +122,10 @@ def trash_restore_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Restore a trashed paper to ``papers/<id>/``.
+    """Restore a trashed paper to papers/<id>/.
 
     Pass either the paper id (must be unambiguous) or the full entry name
-    (``<id>-<UTC-timestamp>``). Refreshes INDEX.json and views/.
+    (<id>-<UTC-timestamp>). Refreshes INDEX.json and views/.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entry = resolve_trash_entry(vault, paper_id_or_entry)

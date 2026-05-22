@@ -75,7 +75,7 @@ def open_cmd(
     """Open a paper's PDF in the configured (or platform default) viewer.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead. Multiple substring
+    or omit it and pass --paper-doi <DOI> instead. Multiple substring
     matches print the candidate list and exit 1 so the user can re-run
     with a more specific id.
     """

@@ -37,7 +37,7 @@ console = Console()
 def refresh_views_cmd(
     library: Path | None, vault_name: str | None
 ) -> None:
-    """Rebuild derived views from ``papers/*/metadata.yaml``.
+    """Rebuild derived views from papers/*/metadata.yaml.
 
     Three things get refreshed, in order:
 

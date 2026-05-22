@@ -37,11 +37,11 @@ _yaml.default_flow_style = False
 
 @click.group("config")
 def config_group() -> None:
-    """Inspect the vault's ``lit-config.yaml``.
+    """Inspect the vault's lit-config.yaml.
 
     The config file controls library-level preferences (default PDF
     viewer, view set, default clone depth, etc.). It is read by every
-    command that needs a config-driven default — pass ``--<flag>`` on the
+    command that needs a config-driven default — pass --<flag> on the
     command line to override per-invocation.
     """
 

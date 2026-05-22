@@ -108,16 +108,16 @@ def _install_block(plan: _ShellPlan) -> bool:
     type=click.Choice(SUPPORTED_SHELLS, case_sensitive=False),
 )
 def install_completion_cmd(shell: str) -> None:
-    """Install ``lit`` shell tab-completion for the current user.
+    """Install lit shell tab-completion for the current user.
 
-    Supported shells: ``bash`` / ``zsh`` / ``fish``. For bash/zsh the
-    completion eval line is appended to ``~/.bashrc`` / ``~/.zshrc``; for
+    Supported shells: bash / zsh / fish. For bash/zsh the
+    completion eval line is appended to ~/.bashrc / ~/.zshrc; for
     fish a self-sourcing snippet lands in
-    ``~/.config/fish/completions/lit.fish``. Idempotent — re-running detects
+    ~/.config/fish/completions/lit.fish. Idempotent — re-running detects
     the existing block via a sentinel comment and skips the rewrite.
 
-    Restart the shell (or run ``source ~/.zshrc`` etc.) to activate
-    completion. After that, ``lit show <Tab>`` lists paper ids in the
+    Restart the shell (or run source ~/.zshrc etc.) to activate
+    completion. After that, lit show <Tab> lists paper ids in the
     active vault.
     """
     shell = shell.lower()

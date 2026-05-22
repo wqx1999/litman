@@ -72,10 +72,10 @@ def _is_url(arg: str) -> bool:
 def code_group() -> None:
     """Manage code repositories bound to papers in the vault.
 
-    Code repos live under ``<vault>/codes/<repo-name>/`` with the layout
-    ``repo/`` (git checkout), ``repo-meta.yaml`` (our annotations), and
-    ``notes.md`` (usage notes). A paper's ``metadata.yaml`` references one
-    or more repos via the ``code-clones`` field; a single repo can be bound
+    Code repos live under <vault>/codes/<repo-name>/ with the layout
+    repo/ (git checkout), repo-meta.yaml (our annotations), and
+    notes.md (usage notes). A paper's metadata.yaml references one
+    or more repos via the code-clones field; a single repo can be bound
     to multiple papers.
     """
 
@@ -106,7 +106,7 @@ def code_group() -> None:
     help=(
         "Bind the added repo to this paper id (full or unique "
         "case-insensitive substring): appends <repo-name> to the paper's "
-        "`code-clones` list. The paper must exist."
+        "code-clones list. The paper must exist."
     ),
 )
 @click.option(
@@ -114,7 +114,7 @@ def code_group() -> None:
     "paper_doi",
     default=None,
     help=(
-        "Reverse-lookup the paper by DOI instead of supplying ``--paper``. "
+        "Reverse-lookup the paper by DOI instead of supplying --paper. "
         "Mutually exclusive with --paper."
     ),
 )
@@ -125,8 +125,8 @@ def code_group() -> None:
     help=(
         "git clone --depth N (URL sources only — ignored for local imports). "
         "Use 0 for a full (non-shallow) clone. Defaults to lit-config.yaml's "
-        "`default_clone_depth` (1 unless overridden). Run `lit code update "
-        "--unshallow` later to promote a shallow clone."
+        "default_clone_depth (1 unless overridden). Run lit code update "
+        "--unshallow later to promote a shallow clone."
     ),
 )
 @click.option(
@@ -167,23 +167,23 @@ def code_add_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Add a code repository to ``<vault>/codes/<repo-name>/repo/``.
+    """Add a code repository to <vault>/codes/<repo-name>/repo/.
 
-    ``SOURCE`` is either a clone URL (``http://``, ``https://``, ``git@``,
-    ``ssh://``, ``file://``) or a path to an existing local directory.
+    SOURCE is either a clone URL (http://, https://, git@,
+    ssh://, file://) or a path to an existing local directory.
 
-    - URL source → ``git clone`` runs against the URL (the default).
+    - URL source → git clone runs against the URL (the default).
     - Local-path source → the directory is copied (default) or moved (with
-      ``--move``) into the vault. If the source is already a git repo, its
-      ``remote.origin.url`` becomes the recorded ``upstream``; otherwise the
+      --move) into the vault. If the source is already a git repo, its
+      remote.origin.url becomes the recorded upstream; otherwise the
       target is initialised as a fresh git repo with a single import commit,
-      and ``upstream`` is recorded as ``local:<absolute-source-path>`` for
+      and upstream is recorded as local:<absolute-source-path> for
       provenance.
 
-    Auto-generates ``repo-meta.yaml`` (papers / framework / runs-on / status
-    skeleton) and a ``notes.md`` placeholder. With ``--paper <id>`` (full or
-    unique substring) or ``--paper-doi <DOI>``, also appends ``<repo-name>``
-    to that paper's ``code-clones`` list atomically.
+    Auto-generates repo-meta.yaml (papers / framework / runs-on / status
+    skeleton) and a notes.md placeholder. With --paper <id> (full or
+    unique substring) or --paper-doi <DOI>, also appends <repo-name>
+    to that paper's code-clones list atomically.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
@@ -345,8 +345,8 @@ def code_list_cmd(
 ) -> None:
     """List code repositories in the vault.
 
-    Filters are mutually exclusive: pass at most one of ``--paper <id>`` /
-    ``--paper-doi <DOI>`` / ``--orphan``. ``--paper`` accepts a full id or
+    Filters are mutually exclusive: pass at most one of --paper <id> /
+    --paper-doi <DOI> / --orphan. --paper accepts a full id or
     a unique case-insensitive substring.
     """
     n_paper_filters = sum(
@@ -440,7 +440,7 @@ def code_list_cmd(
     "paper_doi",
     default=None,
     help=(
-        "Reverse-lookup the paper by DOI instead of supplying ``--paper``. "
+        "Reverse-lookup the paper by DOI instead of supplying --paper. "
         "Mutually exclusive with --paper."
     ),
 )
@@ -469,8 +469,8 @@ def code_link_cmd(
 ) -> None:
     """Bind an existing local repo to a paper.
 
-    Appends ``<repo-name>`` to the paper's ``code-clones`` list AND
-    ``<paper-id>`` to the repo's ``repo-meta.yaml``'s ``papers`` list, both
+    Appends <repo-name> to the paper's code-clones list AND
+    <paper-id> to the repo's repo-meta.yaml's papers list, both
     atomically. Idempotent: if the binding is already present on both sides,
     no metadata is touched.
     """
@@ -523,10 +523,10 @@ def code_update_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Run ``git pull --ff-only`` inside ``codes/<repo-name>/repo/``.
+    """Run git pull --ff-only inside codes/<repo-name>/repo/.
 
-    With ``--unshallow``, first promote a shallow clone to full history.
-    Bumps the repo's ``updated-at`` audit timestamp if anything changed.
+    With --unshallow, first promote a shallow clone to full history.
+    Bumps the repo's updated-at audit timestamp if anything changed.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     repo_root = vault / CODES_DIRNAME / repo_name
@@ -565,7 +565,7 @@ def code_update_cmd(
     is_flag=True,
     default=False,
     help=(
-        "Auto-strip <repo-name> from every paper's `code-clones` list. "
+        "Auto-strip <repo-name> from every paper's code-clones list. "
         "Without --cascade, rm refuses when any paper still references this repo."
     ),
 )
@@ -599,12 +599,12 @@ def code_rm_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Permanently delete ``codes/<repo-name>/`` from the vault.
+    """Permanently delete codes/<repo-name>/ from the vault.
 
     Hard delete (there is no trash bin for code repos; the repo is
     re-clonable from the upstream URL preserved in metadata). With
-    ``--cascade``, also strip the repo name from every paper's
-    ``code-clones`` list atomically before the directory is removed.
+    --cascade, also strip the repo name from every paper's
+    code-clones list atomically before the directory is removed.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     repo_root = vault / CODES_DIRNAME / repo_name
@@ -678,8 +678,8 @@ def code_rm_cmd(
     help=(
         "git clone --depth N for every restored repo. Use 0 for full "
         "(non-shallow) clones. Defaults to lit-config.yaml's "
-        "`default_clone_depth` (1 unless overridden). Promote individually "
-        "later with `lit code update --unshallow`."
+        "default_clone_depth (1 unless overridden). Promote individually "
+        "later with lit code update --unshallow."
     ),
 )
 @click.option(
@@ -710,16 +710,16 @@ def code_restore_all_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Re-clone every code repo whose local ``repo/`` checkout is missing.
+    """Re-clone every code repo whose local repo/ checkout is missing.
 
-    Cross-machine recovery: scans ``codes/*/repo-meta.yaml`` and runs
-    ``git clone`` for any repo whose ``codes/<name>/repo/`` directory is
-    absent, using the ``upstream`` URL recorded in its ``repo-meta.yaml``.
+    Cross-machine recovery: scans codes/*/repo-meta.yaml and runs
+    git clone for any repo whose codes/<name>/repo/ directory is
+    absent, using the upstream URL recorded in its repo-meta.yaml.
     Repos already present are skipped. A single failure (network, auth,
     bad URL) does not abort the loop.
 
-    Also reports orphan references — paper ``code-clones`` entries that
-    point at repos whose ``repo-meta.yaml`` is itself missing (broken
+    Also reports orphan references — paper code-clones entries that
+    point at repos whose repo-meta.yaml is itself missing (broken
     metadata; not recoverable from URL alone).
 
     Exit code 1 if any clone failed or any orphan reference was found

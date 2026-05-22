@@ -141,19 +141,19 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, list[str] | None]
     default=None,
     help=(
         "Comma-separated list of priorities to include "
-        "(e.g. `--priority A,B`). Within the flag values are OR-combined; "
+        "(e.g. --priority A,B). Within the flag values are OR-combined; "
         "across flags they are AND-combined."
     ),
 )
 @click.option(
     "--status",
     default=None,
-    help="Comma-separated list of statuses (e.g. `--status deep-read,skim`).",
+    help="Comma-separated list of statuses (e.g. --status deep-read,skim).",
 )
 @click.option(
     "--year",
     default=None,
-    help="Comma-separated list of years (e.g. `--year 2023,2024`).",
+    help="Comma-separated list of years (e.g. --year 2023,2024).",
 )
 @click.option(
     "--type",
@@ -176,7 +176,7 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, list[str] | None]
     type=click.Choice(["bibtex"], case_sensitive=False),
     default="bibtex",
     show_default=True,
-    help="Output format. Reserved for future formats; only `bibtex` is currently implemented.",
+    help="Output format. Reserved for future formats; only bibtex is currently implemented.",
 )
 @click.option(
     "--library",
@@ -210,7 +210,7 @@ def export_cmd(
     """Project the vault out to a .bib file.
 
     Cite keys equal paper ids, so a freshly-exported bibliography
-    works with ``\\cite{<paper-id>}`` immediately. Re-running the
+    works with \\cite{<paper-id>} immediately. Re-running the
     command on the same file is the supported update path.
     """
     if export_all and project is not None:

@@ -44,16 +44,16 @@ console = Console()
     "--project",
     "project",
     default=None,
-    help="Project name (must be registered in lit-config.yaml's `projects:`).",
+    help="Project name (must be registered in lit-config.yaml's projects:).",
 )
 @click.option(
     "--relevance",
     "relevance",
     default=None,
     help=(
-        "Set the `relevance-<project>` annotation in one shot. Without "
+        "Set the relevance-<project> annotation in one shot. Without "
         "this flag, the field is left untouched and you can set it later "
-        "via `lit modify <id> --set relevance-<project>='...'`."
+        "via lit modify <id> --set relevance-<project>='...'."
     ),
 )
 @click.option(
@@ -63,7 +63,7 @@ console = Console()
     help=(
         "Cross-machine recovery: skip <paper-id>/--project and instead "
         "rebuild every registered project's symlinks + REFERENCES.md "
-        "from scratch, based on each paper's `projects` field."
+        "from scratch, based on each paper's projects field."
     ),
 )
 @click.option(
@@ -238,7 +238,7 @@ def link_cmd(
     is_flag=True,
     default=False,
     help=(
-        "Preserve the `relevance-<project>` field in metadata. Default "
+        "Preserve the relevance-<project> field in metadata. Default "
         "is to drop it (the value is echoed in the summary so you can "
         "recover it from terminal scrollback if needed)."
     ),
@@ -270,9 +270,9 @@ def unlink_cmd(
     """Unlink a paper from a project: remove tag + symlinks + REFERENCES.md.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead.
+    or omit it and pass --paper-doi <DOI> instead.
 
-    The reverse of ``lit link``. Code symlinks under the project are
+    The reverse of lit link. Code symlinks under the project are
     only removed if no OTHER linked paper in the project still
     references the same repo (shared-utility-lib case).
     """

@@ -70,8 +70,8 @@ def vault_group() -> None:
            %APPDATA%\\litman\\                    on Windows
 
     At any moment exactly one vault is active: the vault every other
-    ``lit`` command resolves to by default (after the explicit
-    ``--library`` / ``$LIT_LIBRARY`` checks). ``lit vault use NAME``
+    lit command resolves to by default (after the explicit
+    --library / $LIT_LIBRARY checks). lit vault use NAME
     switches the active vault.
     """
 
@@ -230,12 +230,12 @@ def vault_add_cmd(
     imported_at: str | None,
     set_active_flag: bool,
 ) -> None:
-    """Register an existing vault directory under ``NAME``.
+    """Register an existing vault directory under NAME.
 
-    The directory must already exist AND contain a ``lit-config.yaml``
-    (i.e. it must already be a litman vault, created by ``lit init`` or
-    obtained as a snapshot). ``lit vault add`` does NOT create a new
-    vault; use ``lit init`` for that.
+    The directory must already exist AND contain a lit-config.yaml
+    (i.e. it must already be a litman vault, created by lit init or
+    obtained as a snapshot). lit vault add does NOT create a new
+    vault; use lit init for that.
     """
     if imported_from is not None and imported_at is None:
         imported_at = date.today().isoformat()
@@ -277,10 +277,10 @@ def vault_add_cmd(
 @vault_group.command("use")
 @click.argument("name")
 def vault_use_cmd(name: str) -> None:
-    """Switch the active vault to ``NAME``.
+    """Switch the active vault to NAME.
 
-    Subsequent ``lit`` commands without an explicit ``--library`` /
-    ``--vault`` / ``$LIT_LIBRARY`` will resolve to this vault.
+    Subsequent lit commands without an explicit --library /
+    --vault / $LIT_LIBRARY will resolve to this vault.
     """
     registry = load_registry()
     updated = set_active(registry, name)
@@ -428,12 +428,12 @@ def vault_info_cmd(name: str) -> None:
     help="Skip the y/N confirmation prompt.",
 )
 def vault_remove_cmd(name: str, yes: bool) -> None:
-    """Unregister ``NAME`` from the registry.
+    """Unregister NAME from the registry.
 
     The vault directory itself is NOT deleted — only the registry entry
-    is removed. To delete the directory too, ``rm -rf <path>`` after the
+    is removed. To delete the directory too, rm -rf <path> after the
     unregister. Removing the active vault leaves the registry with no
-    active vault; pick the next one with ``lit vault use <other>``.
+    active vault; pick the next one with lit vault use <other>.
     """
     registry = load_registry()
     entry = find_by_name(registry, name)

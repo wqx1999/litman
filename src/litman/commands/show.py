@@ -54,7 +54,7 @@ def show_cmd(
     """Show one paper's metadata.yaml plus PDF / notes paths.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead.
+    or omit it and pass --paper-doi <DOI> instead.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)

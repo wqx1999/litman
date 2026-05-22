@@ -117,14 +117,14 @@ def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
 def taxonomy_group() -> None:
     """Manage TAXONOMY.md, the controlled vocabulary for paper metadata.
 
-    Governs three user dictionaries only: ``topics``, ``methods``, ``data``.
+    Governs three user dictionaries only: topics, methods, data.
     Tagging a paper with a value requires the value to be registered here
-    first (register-first; there is no escape hatch on ``lit modify``).
+    first (register-first; there is no escape hatch on lit modify).
 
-    ``projects`` is NOT managed here. It carries an on-disk path binding, so
-    it has its own command group: use ``lit project {add,rename,rm,set-path}``
-    instead. ``lit taxonomy {add,rename,rm} projects`` is rejected and
-    redirects you there; only ``lit taxonomy list projects`` (read-only) works.
+    projects is NOT managed here. It carries an on-disk path binding, so
+    it has its own command group: use lit project {add,rename,rm,set-path}
+    instead. lit taxonomy {add,rename,rm} projects is rejected and
+    redirects you there; only lit taxonomy list projects (read-only) works.
     """
 
 
@@ -523,8 +523,8 @@ def taxonomy_rm_cmd(
 
     Cascade-with-confirm: referencing papers are listed, a y/N prompt gates
     the teardown, and on confirm the value is dropped from each paper's
-    metadata AND from TAXONOMY.md in one atomic staged_write. ``--yes`` /
-    ``-y`` skips the prompt; a non-tty without ``--yes`` aborts cleanly. With
+    metadata AND from TAXONOMY.md in one atomic staged_write. --yes /
+    -y skips the prompt; a non-tty without --yes aborts cleanly. With
     no references the command executes immediately (nothing to warn about).
     """
     _reject_projects_write(dict_name)

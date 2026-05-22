@@ -86,15 +86,15 @@ def revisit_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Mark a paper as revisited by stamping ``last-revisited``.
+    """Mark a paper as revisited by stamping last-revisited.
 
-    Equivalent to ``lit modify <id> --set last-revisited=<YYYY-MM-DD>``.
-    Defaults to today (local timezone); use ``--date`` to backdate.
+    Equivalent to lit modify <id> --set last-revisited=<YYYY-MM-DD>.
+    Defaults to today (local timezone); use --date to backdate.
 
-    Distinct from ``lit read`` (which stamps ``read-date``, the first
+    Distinct from lit read (which stamps read-date, the first
     read); invariant #11 keeps the two fields semantically separate.
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead.
+    or omit it and pass --paper-doi <DOI> instead.
     """
     date_value = _validate_iso_date(date_str) if date_str else _today_iso()
     vault = find_vault(resolve_library_or_vault(library, vault_name))

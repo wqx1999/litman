@@ -168,7 +168,7 @@ def health_check_cmd(
     """Run vault-wide consistency checks.
 
     Exits 0 on a clean vault, 1 if any issue is found (so the command can
-    gate cron / CI tasks). With ``--fix`` the exit code reflects post-fix
+    gate cron / CI tasks). With --fix the exit code reflects post-fix
     state — if every issue was in a fixable category, the second pass is
     clean and the command exits 0.
     """

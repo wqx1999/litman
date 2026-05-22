@@ -53,8 +53,8 @@ console = Console()
 def cli() -> None:
     """litman — local-first, AI-augmented literature management CLI.
 
-    Run ``lit help COMMAND`` (or ``lit COMMAND --help``) for command-specific
-    help, e.g. ``lit help code add``.
+    Run lit help COMMAND (or lit COMMAND --help) for command-specific
+    help, e.g. lit help code add.
     """
 
 
@@ -89,7 +89,7 @@ cli.add_command(export_cmd)
 
 @cli.command()
 def hello() -> None:
-    """Sanity-check command. Confirms `lit` is installed and importable."""
+    """Sanity-check command. Confirms lit is installed and importable."""
     console.print(
         f"[bold green]litman[/] v{__version__} is installed and importable."
     )
@@ -99,11 +99,11 @@ def hello() -> None:
 @click.argument("command_path", nargs=-1)
 @click.pass_context
 def help_cmd(ctx: click.Context, command_path: tuple[str, ...]) -> None:
-    """Show help for `lit` or a specific command.
+    """Show help for lit or a specific command.
 
-    `lit help` prints the top-level command list (same as `lit --help`).
-    `lit help COMMAND [SUBCOMMAND ...]` prints that command's help (same as
-    `lit COMMAND ... --help`), e.g. `lit help code add`.
+    "lit help" prints the top-level command list (same as "lit --help").
+    "lit help COMMAND [SUBCOMMAND ...]" prints that command's help (same as
+    "lit COMMAND ... --help"), e.g. "lit help code add".
     """
     # ctx.parent is the root `cli` group's context (info_name == "lit").
     root_ctx = ctx.parent

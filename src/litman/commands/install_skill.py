@@ -62,14 +62,14 @@ def install_skill_cmd(
 ) -> None:
     """Install the bundled litman Claude Code skills.
 
-    Currently bundled: ``lit-library`` (vault write / management) and
-    ``lit-reading`` (paper-discussion read companion). Both are
-    **optional** — the ``lit`` CLI is fully usable without any skill,
+    Currently bundled: lit-library (vault write / management) and
+    lit-reading (paper-discussion read companion). Both are
+    **optional** — the lit CLI is fully usable without any skill,
     but installing them makes agent-mediated workflows nicer.
 
     Running this command does NOT install Claude Code itself, configure
     API keys, or modify any of the user's other skills. It only copies
-    files into ``--parent-dir``.
+    files into --parent-dir.
     """
     if skill_name is not None:
         results = [

@@ -105,9 +105,9 @@ def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
 def project_group() -> None:
     """Manage the project registry (TAXONOMY.md + lit-config.yaml in sync).
 
-    A project is a controlled ``projects`` value bound to an on-disk
-    working directory. Both truth sources — TAXONOMY.md's ``## projects``
-    section and lit-config.yaml's ``projects:`` map — are kept consistent
+    A project is a controlled projects value bound to an on-disk
+    working directory. Both truth sources — TAXONOMY.md's ## projects
+    section and lit-config.yaml's projects: map — are kept consistent
     by every subcommand here. Never hand-edit either side for projects.
     """
 
@@ -307,7 +307,7 @@ def project_rename_cmd(
     """Rename a project: TAXONOMY + config key + every paper + INDEX.
 
     Semantics-preserving (no data loss), so no confirmation prompt — same
-    policy as ``lit taxonomy rename``. The project's on-disk path is
+    policy as lit taxonomy rename. The project's on-disk path is
     carried over unchanged under the new key.
     """
     old = old.strip()
@@ -480,8 +480,8 @@ def project_rm_cmd(
     """Delete a project: cascade-untag papers + drop from both truth sources.
 
     Cascade-with-confirm: if any paper references the project, a warning
-    block lists them and a y/N prompt gates the teardown. ``--yes`` / ``-y``
-    skips the prompt; a non-tty without ``--yes`` aborts cleanly. With no
+    block lists them and a y/N prompt gates the teardown. --yes / -y
+    skips the prompt; a non-tty without --yes aborts cleanly. With no
     references the command executes immediately (nothing to warn about).
     """
     name = name.strip()

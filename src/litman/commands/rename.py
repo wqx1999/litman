@@ -126,21 +126,21 @@ def _format_id_list(ids: list[str], limit: int = 5) -> str:
 def rename_cmd(
     old: str, new: str, library: Path | None, vault_name: str | None
 ) -> None:
-    """Change a paper id from ``<old>`` to ``<new>``, rippling everywhere.
+    """Change a paper id from <old> to <new>, rippling everywhere.
 
-    The ``<old>`` argument accepts a full id or a unique case-insensitive
-    substring. ``<new>`` is the destination id and must be the exact
-    target shape — fuzzy resolution does NOT apply to ``<new>`` (a paper
+    The <old> argument accepts a full id or a unique case-insensitive
+    substring. <new> is the destination id and must be the exact
+    target shape — fuzzy resolution does NOT apply to <new> (a paper
     matching that substring would be an unrelated collision, not the
     desired target).
 
-    No ``--paper-doi`` option is offered here: rename takes two positional
+    No --paper-doi option is offered here: rename takes two positional
     arguments and Click's parser cannot reliably tell which positional is
-    ``<old>`` vs ``<new>`` when ``<old>`` is omitted. Use ``lit list`` to
+    <old> vs <new> when <old> is omitted. Use lit list to
     look up the id by DOI if needed.
 
     Touches the renamed paper's metadata + dir, every other paper's
-    metadata that references it, every notes.md with a ``[[<old>]]``
+    metadata that references it, every notes.md with a [[<old>]]
     wikilink, INDEX.json, and views/.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))

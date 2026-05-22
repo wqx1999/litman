@@ -108,7 +108,7 @@ def list_cmd(
     """List papers in the vault, optionally filtered.
 
     Filters are AND-combined. Multi-valued fields (topics/methods/projects/data)
-    use exact list-membership; ``--author`` uses case-insensitive substring;
+    use exact list-membership; --author uses case-insensitive substring;
     other filters use exact equality.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))

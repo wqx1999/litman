@@ -418,10 +418,10 @@ def modify_cmd(
     """Edit fields on an existing paper's metadata.yaml.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass ``--paper-doi <DOI>`` instead.
+    or omit it and pass --paper-doi <DOI> instead.
 
-    Updates ``papers/<id>/metadata.yaml`` (with a refreshed ``updated-at``
-    audit timestamp) and ``INDEX.json`` atomically; ``views/by-*/`` symlinks
+    Updates papers/<id>/metadata.yaml (with a refreshed updated-at
+    audit timestamp) and INDEX.json atomically; views/by-*/ symlinks
     are rebuilt afterwards.
     """
     if not (set_ops or add_tag_ops or rm_tag_ops):

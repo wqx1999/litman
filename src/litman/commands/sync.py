@@ -54,13 +54,13 @@ console = Console()
 def sync_group() -> None:
     """rclone-backed cloud sync for the vault.
 
-    One-way mirror: ``push`` copies the vault to your configured cloud
-    remote, ``pull`` reverses the direction for cross-machine restore.
-    ``setup`` walks you through registering a remote in ``rclone config``
-    and writes the chosen target into ``lit-config.yaml``.
+    One-way mirror: push copies the vault to your configured cloud
+    remote, pull reverses the direction for cross-machine restore.
+    setup walks you through registering a remote in rclone config
+    and writes the chosen target into lit-config.yaml.
 
-    The vault root file ``.litman-sync-state.yaml`` and the transient
-    ``.litman-staging/`` directory are excluded by default and never travel
+    The vault root file .litman-sync-state.yaml and the transient
+    .litman-staging/ directory are excluded by default and never travel
     between machines.
     """
 
@@ -77,7 +77,7 @@ def sync_group() -> None:
     default=None,
     help=(
         "Use an already-registered rclone remote by name and skip the "
-        "interactive `rclone config` step. Validated via `rclone listremotes`."
+        "interactive rclone config step. Validated via rclone listremotes."
     ),
 )
 @click.option(
@@ -111,14 +111,14 @@ def sync_setup_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Configure the cloud sync target in ``lit-config.yaml``.
+    """Configure the cloud sync target in lit-config.yaml.
 
-    Default flow: invoke ``rclone config`` so wangq can register a new
+    Default flow: invoke rclone config so wangq can register a new
     remote (browser OAuth, etc. — rclone owns that). After it exits we
     prompt for the remote name and a path inside it, validate the remote
-    exists in ``rclone listremotes``, then write to ``lit-config.yaml``.
+    exists in rclone listremotes, then write to lit-config.yaml.
 
-    Pass ``--remote NAME`` to skip the interactive ``rclone config`` step
+    Pass --remote NAME to skip the interactive rclone config step
     entirely — useful when wangq already has a remote configured and just
     wants to point litman at it.
     """
@@ -312,11 +312,11 @@ def _render_size_preview(
     "exclude_repos_flag",
     default=None,
     help=(
-        "Apply lit-config.yaml's `codes_ignore_patterns` (default `repo/`) "
-        "to the transfer so `codes/*/repo/` checkouts are not uploaded. "
-        "When neither flag is given, falls back to `sync.exclude_repos` "
+        "Apply lit-config.yaml's codes_ignore_patterns (default repo/) "
+        "to the transfer so codes/*/repo/ checkouts are not uploaded. "
+        "When neither flag is given, falls back to sync.exclude_repos "
         "in lit-config.yaml. The bulky checkouts can be re-cloned later "
-        "with `lit code restore-all`."
+        "with lit code restore-all."
     ),
 )
 @click.option(
@@ -356,17 +356,17 @@ def sync_push_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Upload the vault to the configured cloud remote (``rclone sync``).
+    """Upload the vault to the configured cloud remote (rclone sync).
 
     One-way mirror: files removed locally are removed on the remote, files
     added or modified locally overwrite the remote. The
-    ``.litman-sync-state.yaml`` and ``.litman-staging/`` paths are
+    .litman-sync-state.yaml and .litman-staging/ paths are
     unconditionally excluded.
 
-    On the FIRST push (``last-push`` blank in the sync-state file), prints
+    On the FIRST push (last-push blank in the sync-state file), prints
     a size preview + top-5 largest files and confirms before transferring.
-    Subsequent pushes go straight through; pass ``--yes`` to skip the
-    confirm on first push (e.g. in cron / CI). ``--dry-run`` previews any
+    Subsequent pushes go straight through; pass --yes to skip the
+    confirm on first push (e.g. in cron / CI). --dry-run previews any
     push (first or subsequent) without touching the remote.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
@@ -422,7 +422,7 @@ def sync_push_cmd(
     "exclude_repos_flag",
     default=None,
     help=(
-        "Apply lit-config.yaml's `codes_ignore_patterns` so `codes/*/repo/` "
+        "Apply lit-config.yaml's codes_ignore_patterns so codes/*/repo/ "
         "is not pulled even if the remote happens to hold it. Usually "
         "unnecessary — if you pushed with --exclude-repos, the remote "
         "already lacks repo/ — but kept symmetric for clarity."
@@ -457,16 +457,16 @@ def sync_pull_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Download the configured cloud remote into the vault (``rclone sync``).
+    """Download the configured cloud remote into the vault (rclone sync).
 
-    Cross-machine restore: on a fresh server, run ``lit init`` to make an
-    empty vault, ``rclone config`` to register the remote, ``lit sync setup``
-    to point litman at it, then ``lit sync pull`` to materialise everything.
+    Cross-machine restore: on a fresh server, run lit init to make an
+    empty vault, rclone config to register the remote, lit sync setup
+    to point litman at it, then lit sync pull to materialise everything.
 
     One-way mirror with deletion: a file present locally but absent on the
     remote is DELETED locally. This is correct for the "freshly cloned"
     scenario; do not run pull against a vault holding unpushed local work
-    you care about. Pass ``--dry-run`` to preview safely.
+    you care about. Pass --dry-run to preview safely.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
@@ -528,8 +528,8 @@ def sync_pull_cmd(
 def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     """Show last-push / last-pull timestamps and local vs. remote file counts.
 
-    No network mutation. Calls ``rclone size --json`` once to enumerate the
-    remote; reads the per-machine ``.litman-sync-state.yaml`` for
+    No network mutation. Calls rclone size --json once to enumerate the
+    remote; reads the per-machine .litman-sync-state.yaml for
     timestamps. Output is a small table the user can eyeball at a glance.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))

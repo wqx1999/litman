@@ -218,7 +218,7 @@ def _resolve_collision(
     default=None,
     help=(
         "Path to an LLM-prepared metadata JSON file (see "
-        "`litman.importers.llm.LLMCandidateMeta` for the schema). Used by "
+        "litman.importers.llm.LLMCandidateMeta for the schema). Used by "
         "the lit-library Claude Code skill. Mutually exclusive with --doi."
     ),
 )
@@ -264,11 +264,11 @@ def add_cmd(
 ) -> None:
     """Import a paper PDF into the vault.
 
-    Source of metadata: either ``--doi`` (CrossRef fetch) or
-    ``--from-llm-json <path>`` (LLM-prepared JSON file). Exactly one is
+    Source of metadata: either --doi (CrossRef fetch) or
+    --from-llm-json <path> (LLM-prepared JSON file). Exactly one is
     required. Refuses on duplicate DOI, derives a canonical id, and
-    creates ``papers/<id>/`` containing ``paper.pdf``, ``metadata.yaml``,
-    and an empty ``notes.md``.
+    creates papers/<id>/ containing paper.pdf, metadata.yaml,
+    and an empty notes.md.
     """
     if (doi is None) == (from_llm_json is None):
         raise AddError(
