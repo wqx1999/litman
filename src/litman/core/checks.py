@@ -123,6 +123,12 @@ _FIXED_ENUM_VALUES: dict[str, frozenset[str]] = {
 _REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
+# Inline deletion-status marker the CLI maintains on same-vault wikilinks
+# (M24 / ADR-013). check_dangling_wikilinks peeks at the slice AFTER each
+# match's ``]]`` for this suffix; _WIKILINK_RE itself is left untouched so
+# rename + cross-vault logic stay agnostic to it.
+_DELETED_SUFFIX = " (deleted)"
+
 
 # ---------------------------------------------------------------------------
 # Per-paper / cross-paper checks
@@ -406,14 +412,33 @@ def _load_vault_paper_ids(vault_path: Path) -> set[str] | None:
 def check_dangling_wikilinks(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """``[[id]]`` / ``[[vault:id]]`` in tracked notes pointing at missing papers.
+    """``[[id]]`` / ``[[vault:id]]`` in tracked notes vs the deletion-tag truth.
 
     M8.4 extends the legacy check: the inner target of every ``[[...]]``
     is parsed via :func:`parse_wikilink_target`; if a vault prefix is
     present we cross-check against that vault's registry entry +
     INDEX.json instead of the current vault's paper set.
 
-    Failure modes the check distinguishes for cross-vault links:
+    Same-vault ``[[X]]`` (M24 deletion-tag drift, two warning cases):
+
+    * **Missing-tag** (``warning``) — ``[[X]]`` whose ``papers/X/`` does
+      NOT exist and which is NOT followed by ``" (deleted)"``. The link
+      points at a paper not in the vault and carries no deletion marker, so
+      an agent reading the note may hallucinate the paper is still present.
+      The filesystem cannot tell "deleted" from "never existed" (ADR-013:
+      ``papers/X/`` presence is the only truth), so both collapse to this
+      one warning — there is no separate "genuinely never existed" error
+      for the same-vault case, which avoids double-reporting one ``[[X]]``.
+    * **Stale-tag** (``warning``) — ``[[X]] (deleted)`` whose ``papers/X/``
+      DOES exist (the paper was restored but the tag was not cleared, e.g.
+      an agent rewrote the note past the de-annotation). The marker now
+      lies; health-check surfaces it for the next write to clean.
+    * A correctly-tagged deleted link (``[[X]] (deleted)`` with ``papers/X/``
+      absent) and a correctly-bare live link (``[[X]]`` with ``papers/X/``
+      present) are both clean — no issue.
+
+    Failure modes the check distinguishes for CROSS-vault links (errors —
+    a fork prefix that cannot resolve is a genuine breakage, not drift):
 
     * **Unregistered vault** — the prefix points at a name not in
       ``~/.config/litman/vaults.yaml``. Surfaced with a "register or
@@ -422,8 +447,7 @@ def check_dangling_wikilinks(
       but the path no longer holds an INDEX.json (directory moved /
       vault never pushed). Surfaced with a "check vault info" hint.
     * **Paper id not found in target vault** — the vault loaded
-      cleanly but the id is absent from its INDEX.json. Same shape as
-      the legacy same-vault dangling case, just scoped to the fork.
+      cleanly but the id is absent from its INDEX.json.
     * **Empty vault prefix / empty paper id** — malformed link
       (``[[:id]]`` or ``[[vault:]]``); reported with a clear message.
 
@@ -453,25 +477,64 @@ def check_dangling_wikilinks(
         except OSError:
             continue
         rel = md_path.relative_to(vault)
-        seen: set[str] = set()
+        # Same-vault dedup must account for per-occurrence tag state: the
+        # same ``[[X]]`` can appear both ``(deleted)``-tagged and bare in
+        # one file, and only the bare one is a missing-tag drift. Keying on
+        # ``raw`` alone would drop the bare occurrence after a tagged one was
+        # seen (M24.2 regression). Cross-vault links carry no tag, so their
+        # dedup collapses on ``raw`` regardless of the (always-False) flag.
+        seen: set[tuple[str, bool]] = set()
         for m in _WIKILINK_RE.finditer(text):
             raw = m.group(1).strip()
-            if not raw or raw in seen:
+            if not raw:
                 continue
-            seen.add(raw)
+            # Peek at the char(s) after this link's ``]]`` for the deletion
+            # marker (M24). Done on the slice, not the regex, so the form
+            # rename + cross-vault logic see is unchanged.
+            has_deleted_tag = text.startswith(_DELETED_SUFFIX, m.end())
+            key = (raw, has_deleted_tag)
+            if key in seen:
+                continue
+            seen.add(key)
 
             vault_prefix, paper_id = parse_wikilink_target(raw)
 
             if vault_prefix is None:
-                # Legacy same-vault form: paper id must exist locally.
-                if paper_id not in known_ids:
+                # Same-vault form: reconcile against the filesystem truth
+                # (paper present ⇔ in known_ids). Two M24 drift warnings.
+                exists = paper_id in known_ids
+                if not exists and not has_deleted_tag:
+                    # Missing-tag: link to an absent paper with no marker.
                     out.append(
                         Issue(
                             category="dangling_wikilinks",
-                            severity="error",
+                            severity="warning",
                             paper_id=None,
-                            message=f"{rel}: contains [[{raw}]] but no such paper",
-                            hint="edit the file to remove the bracket-link or correct the id",
+                            message=(
+                                f"{rel}: [[{raw}]] points at a paper not in the "
+                                "vault but is not tagged (deleted)"
+                            ),
+                            hint=(
+                                "mark it `[[id]] (deleted)`, correct the id, or "
+                                "remove the bracket-link"
+                            ),
+                        )
+                    )
+                elif exists and has_deleted_tag:
+                    # Stale-tag: marker says deleted but the paper is back.
+                    out.append(
+                        Issue(
+                            category="dangling_wikilinks",
+                            severity="warning",
+                            paper_id=None,
+                            message=(
+                                f"{rel}: [[{raw}]] (deleted) but the paper exists "
+                                "(stale deletion tag)"
+                            ),
+                            hint=(
+                                "drop the ` (deleted)` marker — the paper was "
+                                "restored"
+                            ),
                         )
                     )
                 continue

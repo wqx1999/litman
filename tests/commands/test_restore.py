@@ -1,12 +1,14 @@
-"""Tests for ``lit trash restore`` symmetric rebuild (M23.2).
+"""Tests for ``lit trash restore`` symmetric rebuild (M23.2 + M24 de-annotate).
 
 The restore is the inverse of M23.1's rm cascade: from the paper's OWN sealed
 fields it rebuilds every opposite paper's paired reverse edge, re-binds
 surviving repos, re-creates project symlinks + REFERENCES.md, re-clones a 1:1
 hard-deleted repo (post-transaction), prunes dead edges silently, refuses an
-id-slot collision, and appends a ``restored`` row to the deletion log.
+id-slot collision, and (M24) strips the ``[[A]] (deleted)`` tag back to
+``[[A]]`` on referencing notes. The M23 deletion log is gone — restore writes
+no ``.deletion-log.jsonl``.
 
-Covers the four M23.2 acceptance criteria:
+Covers the four M23.2 acceptance criteria plus the M24 de-annotation:
   1. related / code / project rebuilt; extends/contradicts reverse edges
      (incl. inbound) written back.
   2. dead-edge silent-drop + self-heal (restore order does not matter).
@@ -14,7 +16,7 @@ Covers the four M23.2 acceptance criteria:
      kept + warning, NOT deleted (clone uses a local git upstream — no
      network I/O).
   4. id-slot occupied → refuse, live paper untouched; -y non-interactive;
-     .deletion-log.jsonl gets a restored row.
+     no .deletion-log.jsonl generated; [[A]] (deleted) de-annotated.
 """
 
 from __future__ import annotations
@@ -77,6 +79,9 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     yaml.default_flow_style = False
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(payload, f)
+    notes = fields.get("notes")
+    if notes is not None:
+        (paper_dir / "notes.md").write_text(notes, encoding="utf-8")
 
 
 def _make_fake_repo(
@@ -429,24 +434,38 @@ def test_restore_yes_is_non_interactive(vault: Path, tmp_path: Path) -> None:
     assert (vault / "codes" / "RepoNI" / "repo").is_dir()
 
 
-def test_restore_writes_restored_log_row(vault: Path) -> None:
+def test_restore_writes_no_deletion_log(vault: Path) -> None:
+    # AC89: the M23 deletion log is removed; restore never generates it.
     _write_paper(vault, "2024_Foo_Bar", title="The Foo")
     runner = CliRunner()
     runner.invoke(cli, ["rm", "2024_Foo_Bar", "-y", "--library", str(vault)])
     runner.invoke(
         cli, ["trash", "restore", "2024_Foo_Bar", "--library", str(vault)]
     )
-    log = (vault / ".deletion-log.jsonl").read_text().strip().splitlines()
-    # One trashed row + one restored row.
-    actions = [json.loads(line)["action"] for line in log]
-    assert "trashed" in actions
-    assert "restored" in actions
-    restored_row = json.loads(
-        next(line for line in log if json.loads(line)["action"] == "restored")
+    assert not (vault / ".deletion-log.jsonl").exists()
+
+
+def test_restore_deannotates(vault: Path) -> None:
+    # AC88: after rm tags [[A]] (deleted), restore strips it back to [[A]].
+    _write_paper(vault, "2024_Target")
+    _write_paper(
+        vault, "2024_Other", notes="Discussed in [[2024_Target]] earlier.\n"
     )
-    assert restored_row["id"] == "2024_Foo_Bar"
-    assert restored_row["title"] == "The Foo"
-    assert "at" in restored_row
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+    # rm tagged the referencing note.
+    assert (
+        vault / "papers/2024_Other/notes.md"
+    ).read_text() == "Discussed in [[2024_Target]] (deleted) earlier.\n"
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # restore de-annotated it back to the bare link.
+    assert (
+        vault / "papers/2024_Other/notes.md"
+    ).read_text() == "Discussed in [[2024_Target]] earlier.\n"
 
 
 def test_restore_refreshes_index_and_views(vault: Path) -> None:

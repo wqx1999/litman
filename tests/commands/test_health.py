@@ -340,6 +340,60 @@ def test_dangling_wikilinks_dedupes_per_file(vault: Path) -> None:
     assert len(issues) == 1
 
 
+def test_health_missing_deleted_tag(vault: Path) -> None:
+    # M24.2 / AC90 missing-tag: [[X]] at an absent paper with no (deleted)
+    # marker → warning (hallucination risk).
+    _write_paper(vault, "A_a_a", notes="Related: [[GHOST_x_y]].")
+    issues = check_dangling_wikilinks(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "not tagged" in issues[0].message
+    assert "[[GHOST_x_y]]" in issues[0].message
+
+
+def test_health_correctly_tagged_deleted_is_clean(vault: Path) -> None:
+    # A [[X]] (deleted) whose paper is genuinely absent is the desired
+    # post-rm state — no drift, no issue.
+    _write_paper(vault, "A_a_a", notes="Gone now: [[GHOST_x_y]] (deleted).\n")
+    assert check_dangling_wikilinks(vault, list_papers(vault)) == []
+
+
+def test_health_missing_tag_after_tagged_same_link(vault: Path) -> None:
+    # M24.2 regression: the SAME absent [[X]] appears both (deleted)-tagged
+    # AND bare (tagged first). The per-occurrence tag state must not let the
+    # tagged occurrence mask the bare one — the bare untagged link is still a
+    # missing-tag drift (and a mixed tagged/bare file is exactly the
+    # agent-rewrite drift the health-check backstops).
+    _write_paper(
+        vault,
+        "A_a_a",
+        notes="Gone: [[GHOST_x_y]] (deleted), but later bare [[GHOST_x_y]].\n",
+    )
+    issues = check_dangling_wikilinks(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "not tagged" in issues[0].message
+    assert "[[GHOST_x_y]]" in issues[0].message
+
+
+def test_health_stale_deleted_tag(vault: Path) -> None:
+    # M24.2 / AC90 stale-tag: [[X]] (deleted) but papers/X/ exists (restored)
+    # → warning.
+    _write_paper(vault, "A_a_a", notes="See [[B_b_b]] (deleted) here.\n")
+    _write_paper(vault, "B_b_b")
+    issues = check_dangling_wikilinks(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert "stale deletion tag" in issues[0].message
+
+
+def test_health_live_link_clean(vault: Path) -> None:
+    # A bare [[X]] whose paper exists is clean (no missing-tag false positive).
+    _write_paper(vault, "A_a_a", notes="See [[B_b_b]] for context.\n")
+    _write_paper(vault, "B_b_b")
+    assert check_dangling_wikilinks(vault, list_papers(vault)) == []
+
+
 # --- taxonomy_drift ---------------------------------------------------------
 
 

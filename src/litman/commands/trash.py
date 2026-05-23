@@ -15,7 +15,6 @@ Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 from __future__ import annotations
 
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -33,7 +32,6 @@ from litman.core.code import (
     write_repo_meta,
 )
 from litman.core.config import load_config
-from litman.core.deletion_log import append_log_entry
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.trash import (
@@ -47,10 +45,6 @@ from litman.core.views import rebuild_views, write_index
 from litman.exceptions import CodeError, TrashError
 
 console = Console()
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 @click.group("trash")
@@ -300,18 +294,9 @@ def trash_restore_cmd(
     # without rolling back the restore).
     _handle_missing_repos(vault, result, skip_confirm=skip_confirm)
 
-    # Step 4: append a restored row to the deletion log (write-only,
-    # invariant #1). Step 5 (TAXONOMY drift) is intentionally left to
-    # health-check — restore never edits TAXONOMY (invariant #2).
-    append_log_entry(
-        vault,
-        {
-            "id": entry.paper_id,
-            "title": str(result.title) if result.title else None,
-            "action": "restored",
-            "at": _now_iso(),
-        },
-    )
+    # TAXONOMY drift is intentionally left to health-check — restore never
+    # edits TAXONOMY (invariant #2). The `[[A]] (deleted)` de-annotation is
+    # done inside restore_from_trash's transaction (M24).
 
     console.print("[dim]INDEX.json + views/ refreshed.[/]")
 

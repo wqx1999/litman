@@ -245,6 +245,29 @@ def test_rename_rewrites_paper_notes_md(vault: Path) -> None:
     assert untouched == "No refs here.\n"
 
 
+def test_rename_rewrites_paper_discussion_md(vault: Path) -> None:
+    """Q1 widening: enumerate_markdown_files now yields discussion.md, so a
+    ``[[old-id]]`` inside a referencing paper's discussion.md is rewritten to
+    ``[[new-id]]`` (mirrors the notes.md rewrite path)."""
+    _write_paper(vault, "2024_Foo_Bar")
+    _write_paper(vault, "2024_Other")
+    (vault / "papers/2024_Other/discussion.md").write_text(
+        "Discussed alongside [[2024_Foo_Bar]] in the lab meeting.\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    discussion = (vault / "papers/2024_Other/discussion.md").read_text()
+    assert "[[2024_Foo_Baz]]" in discussion
+    assert "[[2024_Foo_Bar]]" not in discussion
+
+
 def test_rename_refreshes_index_and_views(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar", topics=["alpha"])
 

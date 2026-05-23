@@ -1,10 +1,12 @@
-"""Tests for ``lit rm`` (M23.1 unified delete flow).
+"""Tests for ``lit rm`` (M23.1 unified delete flow + M24 deletion tags).
 
 Covers happy-path delete, the relationship-count confirmation, cascade
 teardown of external→A edges (literature ref incl. reverse fields, code 1:1
-orphan / 1:N keep, project symlink + REFERENCES re-render), wikilink
-no-touch, the deletion log, ``-y`` non-interactive force-delete, prompt
-abort, INDEX/views refresh, and removal of ``--cascade``.
+orphan / 1:N keep, project symlink + REFERENCES re-render), the M24
+``[[A]] (deleted)`` annotation of referencing notes/discussion (idempotent,
+both soft + purge), removal of the M23 deletion log (no ``.deletion-log.jsonl``
+generated), ``-y`` non-interactive force-delete, prompt abort, INDEX/views
+refresh, and removal of ``--cascade``.
 """
 
 from __future__ import annotations
@@ -69,6 +71,9 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     notes = fields.get("notes")
     if notes is not None:
         (paper_dir / "notes.md").write_text(notes, encoding="utf-8")
+    discussion = fields.get("discussion")
+    if discussion is not None:
+        (paper_dir / "discussion.md").write_text(discussion, encoding="utf-8")
 
 
 def _make_fake_repo(
@@ -431,16 +436,84 @@ def test_rm_cascade_project_symlink_and_references(
 
 
 # ===========================================================================
-# Wikilink: scan only, never modify
+# Wikilink: M24 annotate referencing notes/discussion with `(deleted)`
 # ===========================================================================
 
 
-def test_rm_does_not_strip_wikilinks(vault: Path) -> None:
+def test_rm_annotates_referencing_notes(vault: Path) -> None:
+    # AC87: every referencing [[A]] in notes becomes [[A]] (deleted).
     _write_paper(vault, "2024_Target", related=["2024_Other"])
     _write_paper(
         vault, "2024_Other",
         related=["2024_Target"],
         notes="See [[2024_Target]] and [[2024_Target]] here.\n",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    notes_after = (vault / "papers/2024_Other/notes.md").read_text()
+    assert (
+        notes_after
+        == "See [[2024_Target]] (deleted) and [[2024_Target]] (deleted) here.\n"
+    )
+    assert "Tagged 1 referencing note" in result.output
+
+
+def test_rm_annotates_referencing_discussion(vault: Path) -> None:
+    # Q1 coverage: discussion.md is in scope alongside notes.md.
+    _write_paper(vault, "2024_Target")
+    _write_paper(
+        vault, "2024_Other",
+        discussion="Compared against [[2024_Target]] in detail.\n",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        vault / "papers/2024_Other/discussion.md"
+    ).read_text() == "Compared against [[2024_Target]] (deleted) in detail.\n"
+
+
+def test_rm_purge_annotates(vault: Path) -> None:
+    # AC87: --purge also tags referencing notes.
+    _write_paper(vault, "2024_Target")
+    _write_paper(vault, "2024_Other", notes="cf [[2024_Target]].\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "--purge", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        vault / "papers/2024_Other/notes.md"
+    ).read_text() == "cf [[2024_Target]] (deleted).\n"
+
+
+def test_rm_annotate_idempotent(vault: Path) -> None:
+    # AC87: a note already carrying the (deleted) tag is not double-tagged.
+    _write_paper(vault, "2024_Target")
+    _write_paper(
+        vault, "2024_Other",
+        notes="old [[2024_Target]] (deleted) plus fresh [[2024_Target]].\n",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    notes_after = (vault / "papers/2024_Other/notes.md").read_text()
+    assert notes_after.count("(deleted)") == 2
+    assert "(deleted) (deleted)" not in notes_after
+
+
+def test_rm_does_not_touch_unreferenced_notes(vault: Path) -> None:
+    # A note that does not reference the deleted paper stays byte-identical.
+    _write_paper(vault, "2024_Target")
+    _write_paper(
+        vault, "2024_Other", notes="A note about [[2024_Unrelated]] only.\n"
     )
     notes_before = (vault / "papers/2024_Other/notes.md").read_text()
     runner = CliRunner()
@@ -448,43 +521,33 @@ def test_rm_does_not_strip_wikilinks(vault: Path) -> None:
         cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
-    # notes.md byte-identical: [[id]] is NOT stripped.
     assert (
         vault / "papers/2024_Other/notes.md"
     ).read_text() == notes_before
+    assert "Tagged" not in result.output
 
 
 # ===========================================================================
-# Deletion log
+# Deletion log removed (M24): no .deletion-log.jsonl is ever generated
 # ===========================================================================
 
 
-def test_rm_writes_trashed_log_row(vault: Path) -> None:
+def test_rm_does_not_write_deletion_log(vault: Path) -> None:
+    # AC89: the M23 log is gone — soft delete writes no log file.
     _write_paper(vault, "2024_Foo_Bar", title="The Foo")
     runner = CliRunner()
     runner.invoke(cli, ["rm", "2024_Foo_Bar", "-y", "--library", str(vault)])
-    log = (vault / ".deletion-log.jsonl").read_text().strip().splitlines()
-    assert len(log) == 1
-    row = json.loads(log[0])
-    assert row["id"] == "2024_Foo_Bar"
-    assert row["title"] == "The Foo"
-    assert row["action"] == "trashed"
-    assert "at" in row
-    assert "trash_path" in row
+    assert not (vault / ".deletion-log.jsonl").exists()
 
 
-def test_rm_writes_purged_log_row(vault: Path) -> None:
+def test_rm_purge_does_not_write_deletion_log(vault: Path) -> None:
+    # AC89: --purge writes no log file either.
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     runner.invoke(
         cli, ["rm", "2024_Foo_Bar", "--purge", "-y", "--library", str(vault)]
     )
-    log = (vault / ".deletion-log.jsonl").read_text().strip().splitlines()
-    assert len(log) == 1
-    row = json.loads(log[0])
-    assert row["id"] == "2024_Foo_Bar"
-    assert row["action"] == "purged"
-    assert "trash_path" not in row
+    assert not (vault / ".deletion-log.jsonl").exists()
 
 
 # ===========================================================================

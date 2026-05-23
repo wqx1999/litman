@@ -37,10 +37,12 @@ A's OWN fields (forward + reverse relation fields, code-clones, projects)
 are left one byte unchanged — they ride into trash with the folder. This is
 the precondition M23.2 restore depends on.
 
-``[[id]]`` wikilinks in notes/discussion are NEVER touched — the
-relationship count is computed from structured metadata fields only.
-
-A delete is recorded in ``<vault>/.deletion-log.jsonl`` (trashed / purged).
+Same-vault ``[[A]]`` wikilinks in notes/discussion ARE rewritten (M24): the
+delete stages a ``[[A]] (deleted)`` annotation on every referencing file so
+an agent reading those notes sees the paper is gone (ADR-013). This is the
+only prose edit ``lit rm`` performs; the relationship count is still computed
+from structured metadata fields only. Cross-vault ``[[v:A]]`` is out of scope
+(per-vault, like health-check).
 
 Atomicity layers:
 
@@ -68,10 +70,13 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.config import load_config
-from litman.core.deletion_log import append_log_entry
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.notes import (
+    annotate_deleted_wikilinks,
+    enumerate_markdown_files,
+)
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.portable_link import remove_link_if_present
 from litman.core.project_link import (
@@ -438,11 +443,27 @@ def rm_cmd(
     surviving = [p for p in safe_papers if p.get("id") != paper_id]
     new_index = render_index(surviving, now)
 
+    # ----- Annotate referencing notes/discussion with `(deleted)` (M24) -----
+    # Scan every tracked markdown file; stage only those whose text actually
+    # changed (mirrors rename's wikilink-rewrite pattern). The deleted paper's
+    # own notes ride into trash unchanged — they are filtered out so we never
+    # stage a write against a path that's about to move.
+    note_updates: dict[str, str] = {}  # vault-relative path → annotated text
+    for md_path in enumerate_markdown_files(vault):
+        if md_path.parent.name == paper_id:
+            continue
+        text = md_path.read_text(encoding="utf-8")
+        annotated = annotate_deleted_wikilinks(text, paper_id)
+        if annotated != text:
+            note_updates[str(md_path.relative_to(vault))] = annotated
+
     # ----- Phase 1: staged commit of all file content updates -----
     with staged_write(vault, op_id=f"rm-{paper_id}") as stage:
         for pid, content in cascade_ref_updates.items():
             stage.write_text(f"papers/{pid}/metadata.yaml", content)
         for relpath, content in cascade_repo_updates.items():
+            stage.write_text(relpath, content)
+        for relpath, content in note_updates.items():
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", new_index)
 
@@ -451,11 +472,8 @@ def rm_cmd(
     # will flag the orphan dir.
     if purge:
         shutil.rmtree(paper_dir)
-        trash_entry_path = None
     else:
-        trash_entry_path = move_to_trash(
-            vault, paper_id, orphan_repos=orphan_repos
-        )
+        move_to_trash(vault, paper_id, orphan_repos=orphan_repos)
 
     # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
     for repo_name in orphan_repos:
@@ -471,25 +489,6 @@ def rm_cmd(
 
     # ----- Phase 3c: views/ rebuild (best-effort, recoverable) -----
     rebuild_views(vault, list_papers(vault))
-
-    # ----- Phase 3d: deletion log (write-only; invariant #1) -----
-    if purge:
-        append_log_entry(
-            vault,
-            {"id": paper_id, "title": str(title), "action": "purged", "at": now},
-        )
-    else:
-        assert trash_entry_path is not None
-        append_log_entry(
-            vault,
-            {
-                "id": paper_id,
-                "title": str(title),
-                "action": "trashed",
-                "at": now,
-                "trash_path": str(trash_entry_path.relative_to(vault)),
-            },
-        )
 
     # ----- Output -----
     if purge:
@@ -533,5 +532,11 @@ def rm_cmd(
         console.print(
             f"  Unlinked from [bold]{len(projects)}[/] project"
             f"{'s' if len(projects) != 1 else ''}"
+        )
+    if note_updates:
+        n = len(note_updates)
+        console.print(
+            f"  Tagged [bold]{n}[/] referencing note{'s' if n != 1 else ''} "
+            f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"
         )
     console.print("[dim]INDEX.json + views/ refreshed.[/]")

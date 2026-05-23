@@ -50,6 +50,10 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.document import list_papers
+from litman.core.notes import (
+    deannotate_deleted_wikilinks,
+    enumerate_markdown_files,
+)
 from litman.core.portable_link import make_relative_symlink
 from litman.core.project_link import CODE_SUBDIR
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
@@ -532,12 +536,13 @@ def restore_from_trash(
         2. (atomic, one ``staged_write``) From A's OWN sealed fields:
            rebuild every opposite paper's paired reverse field, re-bind
            surviving repos' ``repo-meta.papers``, prune dead edges out of A,
-           and re-render INDEX.json. The folder move + these writes are the
+           de-annotate any ``[[A]] (deleted)`` tag back to ``[[A]]`` (M24,
+           best-effort: missed stale tags are left to health-check), and
+           re-render INDEX.json. The folder move + these writes are the
            transaction (steps 1-2); a failure rolls A back into trash.
         3. (caller, POST-transaction) re-clone any 1:1 hard-deleted repo —
            surfaced via ``RestoreResult.missing_repos``; never a precondition
            for restore success (decision #2).
-        4. (caller) append a ``restored`` row to the deletion log.
 
     Project symlink + REFERENCES re-render run after the staged commit
     (filesystem-only, recoverable). TAXONOMY drift is left for health-check
@@ -589,6 +594,17 @@ def restore_from_trash(
     surviving.append(dict(sealed_meta))
     new_index = render_index(surviving, now)
 
+    # De-annotate `[[A]] (deleted)` → `[[A]]` across all tracked notes now
+    # that A is back on disk (M24). A's own restored notes are scanned too
+    # (the folder is already at papers/A/). Stage only files whose text
+    # changed; best-effort — a missed stale tag is left to health-check.
+    note_updates: dict[str, str] = {}
+    for md_path in enumerate_markdown_files(vault):
+        text = md_path.read_text(encoding="utf-8")
+        cleaned = deannotate_deleted_wikilinks(text, paper_id)
+        if cleaned != text:
+            note_updates[str(md_path.relative_to(vault))] = cleaned
+
     try:
         with staged_write(vault, op_id=f"restore-{paper_id}") as stage:
             if pruned_meta_text is not None:
@@ -598,6 +614,8 @@ def restore_from_trash(
             for oid, content in ref_writes.items():
                 stage.write_text(f"papers/{oid}/metadata.yaml", content)
             for relpath, content in code_writes.items():
+                stage.write_text(relpath, content)
+            for relpath, content in note_updates.items():
                 stage.write_text(relpath, content)
             stage.write_text("INDEX.json", new_index)
     except Exception:

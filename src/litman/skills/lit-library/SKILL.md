@@ -259,8 +259,9 @@ When the user moves their vault to a new machine (rclone sync, USB stick, `cp -r
 3. **Never** assume the vault is git-tracked. It is deliberately not. Multi-file atomicity is provided by `<vault>/.litman-staging/` + `os.replace`, not git.
 4. **Never** store API keys in `lit-config.yaml`. The CLI does not call any LLM API — that's your job (the agent), via the JSON-file bridge.
 5. **Never** install / uninstall litman or modify its conda env. If `lit` is missing, tell the user and stop.
+6. **Verify every `[[X]]` wikilink against the filesystem before you write or keep it.** When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (e.g. `lit show X` resolves, or it appears in `lit list`). If it does not, write the link as `[[X]] (deleted)` — never emit a bare `[[X]]` for a paper that is not in the vault. The CLI maintains this `(deleted)` marker on `lit rm` / `lit trash restore` (ADR-013), but a full-note rewrite can wipe it; you are the second line of defence. A bare `[[X]]` for a missing paper makes the next agent hallucinate the paper is still present.
 
-If unsure whether an operation respects these invariants, run `lit health-check` after — it surfaces 10 categories of vault drift and the user gets to inspect before acting.
+If unsure whether an operation respects these invariants, run `lit health-check` after — it surfaces vault drift (including missing / stale `(deleted)` tags) and the user gets to inspect before acting.
 
 ---
 

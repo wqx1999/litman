@@ -153,13 +153,17 @@ def _write_index(vault: Path) -> None:
 def test_same_vault_dangling_link_still_detected(
     fake_home: Path, vault_a: Path
 ) -> None:
-    """A plain ``[[ghost]]`` (no vault prefix) is still reported by the
-    legacy path even when no registry is configured."""
+    """A plain ``[[ghost]]`` (no vault prefix, no ``(deleted)`` marker) is
+    still reported even when no registry is configured. M24 reclassified this
+    same-vault case from an error to a missing-tag warning (the filesystem
+    cannot tell "deleted" from "never existed"), but the link is still
+    surfaced one-per-file."""
     _seed_paper(vault_a, "p1", notes_body="See [[ghost]]\n")
     issues = check_dangling_wikilinks(vault_a, list_papers(vault_a))
     assert len(issues) == 1
     assert "[[ghost]]" in issues[0].message
-    assert "but no such paper" in issues[0].message
+    assert issues[0].severity == "warning"
+    assert "not tagged" in issues[0].message
 
 
 def test_same_vault_resolved_link_not_flagged(
