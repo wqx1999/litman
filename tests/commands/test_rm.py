@@ -16,7 +16,9 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import trash as trash_mod
 from litman.core.library import create_vault
+from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES, list_trash
 from litman.exceptions import PaperNotFoundError, RmError
 
 _yaml = YAML(typ="safe")
@@ -389,3 +391,98 @@ def test_rm_accepts_paper_doi(vault: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert not (vault / "papers" / "2024_X_Foo").exists()
+
+
+# ===========================================================================
+# Trash ring eviction (M22) — `lit rm` triggers enforce_cap
+# ===========================================================================
+
+
+def _prefill_trash(vault: Path, n: int) -> list[str]:
+    """Fabricate ``n`` trash entries on disk with timestamps in the past.
+
+    Returns paper ids oldest-first. Timestamps are all on 2020 dates so any
+    real `move_to_trash` (uses "now") sorts as newer than every fabricated
+    entry — the oldest fabricated one is always the eviction target.
+    """
+    trash_root = vault / TRASH_DIRNAME
+    trash_root.mkdir(parents=True, exist_ok=True)
+    ids: list[str] = []
+    for i in range(n):
+        pid = f"2020_Old{i:03d}"
+        # Valid YYYYMMDDTHHMMSSZ in the past (all 2020). Index encoded across
+        # minutes/seconds so ordering is strict and every timestamp is real.
+        ts = f"20200101T00{i // 60:02d}{i % 60:02d}Z"
+        entry = trash_root / f"{pid}-{ts}"
+        entry.mkdir()
+        (entry / "metadata.yaml").write_text(
+            f"id: {pid}\ntitle: Old {pid}\n", encoding="utf-8"
+        )
+        (trash_root / f"{pid}-{ts}.meta.yaml").write_text(
+            f"paper_id: {pid}\ndeleted_at: '2020-01-01T00:00:00+00:00'\n"
+            f"cascade_was_used: false\ntitle: Old {pid}\n",
+            encoding="utf-8",
+        )
+        ids.append(pid)
+    return ids
+
+
+def test_rm_at_cap_evicts_oldest_and_exits_zero(vault: Path) -> None:
+    old_ids = _prefill_trash(vault, TRASH_MAX_ENTRIES)  # exactly 100
+    _write_paper(vault, "2024_New")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_New", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Eviction line printed, naming the oldest fabricated id.
+    assert f"Trash at cap ({TRASH_MAX_ENTRIES})" in result.output
+    assert "permanently removed oldest" in result.output
+    assert old_ids[0] in result.output
+    # Oldest gone; trash back at the cap.
+    remaining = {e.paper_id for e in list_trash(vault)}
+    assert old_ids[0] not in remaining
+    assert len(remaining) == TRASH_MAX_ENTRIES
+
+
+def test_rm_under_cap_evicts_nothing(vault: Path) -> None:
+    _prefill_trash(vault, 3)
+    _write_paper(vault, "2024_New")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_New", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "permanently removed oldest" not in result.output
+    # 3 old + 1 new = 4, none evicted.
+    assert len(list_trash(vault)) == 4
+
+
+def test_rm_eviction_failure_still_exits_zero(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prefill_trash(vault, TRASH_MAX_ENTRIES)
+    _write_paper(vault, "2024_New")
+
+    real_rmtree = trash_mod.shutil.rmtree
+
+    def flaky_rmtree(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Fail only for the eviction of the oldest fabricated entry; the new
+        # paper's move into trash uses shutil.move, not rmtree, so this does
+        # not interfere with the rm itself.
+        if Path(path).name.startswith("2020_Old000"):
+            raise OSError("simulated eviction failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(trash_mod.shutil, "rmtree", flaky_rmtree)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_New", "--yes", "--library", str(vault)]
+    )
+    # Best-effort housekeeping never hijacks rm.
+    assert result.exit_code == 0, result.output
+    assert "Trashed 2024_New" in result.output
+    # The failed-to-evict entry is still present (swallowed, skipped).
+    remaining = {e.paper_id for e in list_trash(vault)}
+    assert "2020_Old000" in remaining

@@ -17,8 +17,15 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import trash as trash_mod
 from litman.core.library import create_vault
-from litman.core.trash import TRASH_DIRNAME, list_trash, move_to_trash
+from litman.core.trash import (
+    TRASH_DIRNAME,
+    TRASH_MAX_ENTRIES,
+    enforce_cap,
+    list_trash,
+    move_to_trash,
+)
 from litman.exceptions import TrashError
 
 _yaml = YAML(typ="safe")
@@ -368,3 +375,131 @@ def test_rm_help_mentions_purge() -> None:
     assert result.exit_code == 0
     assert "--purge" in result.output
     assert ".trash" in result.output
+
+
+# ===========================================================================
+# enforce_cap (ring eviction)
+# ===========================================================================
+
+
+def _fabricate_trash_entry(
+    vault: Path, paper_id: str, ts: str, *, with_sidecar: bool = True
+) -> Path:
+    """Build a trash entry directly on disk in the format `list_trash` parses.
+
+    ``ts`` is the compact UTC timestamp portion of the entry name
+    (``YYYYMMDDTHHMMSSZ``); newest-first ordering keys off it. Bypasses the
+    full `lit add` + `lit rm` path so cap tests stay fast.
+    """
+    trash_root = vault / TRASH_DIRNAME
+    trash_root.mkdir(parents=True, exist_ok=True)
+    entry_name = f"{paper_id}-{ts}"
+    entry_path = trash_root / entry_name
+    entry_path.mkdir()
+    (entry_path / "metadata.yaml").write_text(
+        f"id: {paper_id}\ntitle: Title of {paper_id}\n", encoding="utf-8"
+    )
+    if with_sidecar:
+        (trash_root / f"{entry_name}.meta.yaml").write_text(
+            f"paper_id: {paper_id}\ndeleted_at: '2026-05-01T00:00:00+00:00'\n"
+            f"cascade_was_used: false\ntitle: Title of {paper_id}\n",
+            encoding="utf-8",
+        )
+    return entry_path
+
+
+def _make_entries(vault: Path, n: int, *, prefix: str = "2024_P") -> list[str]:
+    """Create ``n`` trash entries with strictly increasing timestamps.
+
+    Returns the paper ids in creation order (oldest first). Entry i gets a
+    later timestamp than i-1, so `list_trash` (newest-first) reverses them.
+    """
+    ids: list[str] = []
+    for i in range(n):
+        pid = f"{prefix}{i:03d}"
+        ts = f"202605{(i + 1):02d}T000000Z"  # day component encodes order
+        _fabricate_trash_entry(vault, pid, ts)
+        ids.append(pid)
+    return ids
+
+
+def test_enforce_cap_under_cap_no_eviction(vault: Path) -> None:
+    _make_entries(vault, 3)
+    evicted = enforce_cap(vault, cap=5)
+    assert evicted == []
+    # All three still on disk.
+    assert len([e for e in list_trash(vault)]) == 3
+
+
+def test_enforce_cap_at_cap_no_eviction(vault: Path) -> None:
+    _make_entries(vault, 5)
+    assert enforce_cap(vault, cap=5) == []
+    assert len(list_trash(vault)) == 5
+
+
+def test_enforce_cap_one_over_evicts_oldest(vault: Path) -> None:
+    ids = _make_entries(vault, 6)  # oldest first
+    evicted = enforce_cap(vault, cap=5)
+    # Exactly the oldest one is removed.
+    assert evicted == [ids[0]]
+    remaining = {e.paper_id for e in list_trash(vault)}
+    assert remaining == set(ids[1:])
+    # Oldest entry dir + sidecar gone.
+    assert not (vault / TRASH_DIRNAME / f"{ids[0]}-20260501T000000Z").exists()
+    assert not (
+        vault / TRASH_DIRNAME / f"{ids[0]}-20260501T000000Z.meta.yaml"
+    ).exists()
+
+
+def test_enforce_cap_evicts_tail_in_order(vault: Path) -> None:
+    ids = _make_entries(vault, 8)  # oldest first: ids[0] oldest, ids[7] newest
+    evicted = enforce_cap(vault, cap=3)
+    # Keep newest 3 (ids[7..5]); evict the rest. list_trash is newest-first,
+    # so entries[cap:] runs ids[4], ids[3], ids[2], ids[1], ids[0].
+    assert evicted == [ids[4], ids[3], ids[2], ids[1], ids[0]]
+    remaining = {e.paper_id for e in list_trash(vault)}
+    assert remaining == set(ids[5:])
+
+
+def test_enforce_cap_orders_missing_sidecar_by_name(vault: Path) -> None:
+    # Three entries, the middle (by timestamp) one missing its sidecar.
+    _fabricate_trash_entry(vault, "2024_A", "20260501T000000Z")
+    _fabricate_trash_entry(
+        vault, "2024_B", "20260503T000000Z", with_sidecar=False
+    )
+    _fabricate_trash_entry(vault, "2024_C", "20260505T000000Z")
+    # cap=2 → evict the single oldest by in-name timestamp (2024_A).
+    evicted = enforce_cap(vault, cap=2)
+    assert evicted == ["2024_A"]
+    remaining = {e.paper_id for e in list_trash(vault)}
+    assert remaining == {"2024_B", "2024_C"}
+
+
+def test_enforce_cap_best_effort_on_delete_failure(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _make_entries(vault, 5)  # cap=2 → evict oldest 3: ids[2], ids[1], ids[0]
+    failing_id = ids[1]
+    real_rmtree = trash_mod.shutil.rmtree
+
+    def flaky_rmtree(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if Path(path).name.startswith(failing_id):
+            raise OSError("simulated delete failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(trash_mod.shutil, "rmtree", flaky_rmtree)
+
+    # Does not raise; the failed entry is skipped, others still evicted.
+    evicted = enforce_cap(vault, cap=2)
+    assert failing_id not in evicted
+    assert ids[2] in evicted and ids[0] in evicted
+    remaining = {e.paper_id for e in list_trash(vault)}
+    # The two newest survive plus the entry whose delete failed.
+    assert remaining == {ids[4], ids[3], failing_id}
+
+
+def test_enforce_cap_default_cap_is_100(vault: Path) -> None:
+    assert TRASH_MAX_ENTRIES == 100
+    # Under default cap with a handful of entries → no-op.
+    _make_entries(vault, 4)
+    assert enforce_cap(vault) == []

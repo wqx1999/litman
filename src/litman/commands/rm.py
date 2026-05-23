@@ -48,7 +48,7 @@ from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-from litman.core.trash import move_to_trash
+from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RmError
 
@@ -402,6 +402,15 @@ def rm_cmd(
             f"[bold green]✓ Trashed[/] {escape(paper_id)} "
             f"[dim](recover via `lit trash restore {escape(paper_id)}`)[/]"
         )
+        # Ring eviction: keep at most TRASH_MAX_ENTRIES; surface what we
+        # permanently dropped (never silent — invariant #1).
+        evicted = enforce_cap(vault)
+        if evicted:
+            console.print(
+                f"  [yellow]Trash at cap ({TRASH_MAX_ENTRIES}); "
+                f"permanently removed oldest: "
+                f"{escape(', '.join(evicted))}[/]"
+            )
     if cascade_holder_ids:
         n = len(cascade_holder_ids)
         console.print(

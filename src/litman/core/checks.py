@@ -49,7 +49,7 @@ from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
-from litman.core.trash import TRASH_DIRNAME
+from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
 from litman.exceptions import VaultRegistryError
 
 _yaml = YAML(typ="safe")
@@ -87,9 +87,10 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
 INBOX_STALE_DAYS = 14
 
-# Trash-health warning thresholds.
+# Trash-health warning threshold. Half of the count-based eviction cap
+# (TRASH_MAX_ENTRIES=100, see core/trash.py) — the "approaching limit"
+# midpoint that forms a "50 heads-up → 100 auto-evict" ladder.
 TRASH_SIZE_WARN = 50
-TRASH_AGE_WARN_DAYS = 30
 
 
 # Schema rules: required fields and their allowed values.
@@ -969,7 +970,7 @@ def check_pdf_viewer(
 def check_trash_health(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Orphan sidecars + size/age warnings for ``.trash/``."""
+    """Orphan sidecars + size warning for ``.trash/``."""
     trash_root = vault / TRASH_DIRNAME
     if not trash_root.is_dir():
         return []
@@ -1006,40 +1007,10 @@ def check_trash_health(
                 severity="info",
                 paper_id=None,
                 message=(
-                    f".trash/ holds {n_entries} entries "
-                    f"(>{TRASH_SIZE_WARN} threshold)"
+                    f".trash/ holds {n_entries} entries; oldest are "
+                    f"auto-evicted at {TRASH_MAX_ENTRIES}"
                 ),
-                hint="run `lit trash empty` to permanently delete",
-            )
-        )
-
-    age_threshold = datetime.now(timezone.utc) - timedelta(
-        days=TRASH_AGE_WARN_DAYS
-    )
-    n_old = 0
-    for entry_name in entry_dirs:
-        m = re.match(r"^(.+?)-(\d{8}T\d{6}Z)$", entry_name)
-        if not m:
-            continue
-        try:
-            ts = datetime.strptime(m.group(2), "%Y%m%dT%H%M%SZ").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        if ts < age_threshold:
-            n_old += 1
-    if n_old > 0:
-        out.append(
-            Issue(
-                category="trash_age",
-                severity="info",
-                paper_id=None,
-                message=(
-                    f"{n_old} trash entr{'y' if n_old == 1 else 'ies'} older "
-                    f"than {TRASH_AGE_WARN_DAYS} days"
-                ),
-                hint="run `lit trash empty` if you no longer need them",
+                hint="run `lit trash empty` to clear it now",
             )
         )
 

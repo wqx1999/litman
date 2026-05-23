@@ -43,6 +43,13 @@ from litman.exceptions import TrashError
 
 TRASH_DIRNAME = ".trash"
 
+# Count-based ring eviction: keep at most the N most-recently-deleted
+# entries. When `move_to_trash` pushes past N, the oldest are permanently
+# removed (see `enforce_cap`). Hardcoded by design — no flag, no tunable
+# (ADR-011). N=100 gives a generous undo window under single-paper curation
+# (invariant #13: deletion is rare).
+TRASH_MAX_ENTRIES = 100
+
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
 _yaml_dump.indent(mapping=2, sequence=4, offset=2)
@@ -272,3 +279,34 @@ def empty_trash(vault: Path) -> int:
             shutil.rmtree(child)
             n += 1
     return n
+
+
+def enforce_cap(vault: Path, cap: int = TRASH_MAX_ENTRIES) -> list[str]:
+    """Permanently evict the oldest entries beyond ``cap`` (ring eviction).
+
+    Reuses ``list_trash`` for enumeration and newest-first ordering (which
+    already tolerates missing sidecars and orders by the in-name UTC
+    timestamp), so the tail ``entries[cap:]`` is the oldest surplus. Each
+    surplus entry's folder and sidecar are deleted, mirroring ``empty_trash``.
+
+    Returns the paper ids of the evicted entries (empty if nothing exceeded
+    the cap).
+
+    Best-effort: a single failed deletion is swallowed and that entry is
+    skipped — this function never raises. Eviction is post-hoc housekeeping
+    triggered after a paper is already safely in trash, so it must not abort
+    the caller (``lit rm`` exits 0 regardless).
+    """
+    entries = list_trash(vault)
+    if len(entries) <= cap:
+        return []
+
+    evicted: list[str] = []
+    for entry in entries[cap:]:
+        try:
+            shutil.rmtree(entry.entry_path)
+            _sidecar_path(entry.entry_path).unlink(missing_ok=True)
+        except Exception:
+            continue
+        evicted.append(entry.paper_id)
+    return evicted

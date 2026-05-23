@@ -436,6 +436,37 @@ def test_trash_health_orphan_sidecar(vault: Path) -> None:
     assert any(i.category == "orphan_trash_sidecar" for i in issues)
 
 
+def test_trash_health_size_warns_above_threshold(vault: Path) -> None:
+    """>TRASH_SIZE_WARN entries → info, message aligned to the eviction cap."""
+    from litman.core.checks import TRASH_SIZE_WARN
+    from litman.core.trash import TRASH_MAX_ENTRIES
+
+    trash = vault / ".trash"
+    trash.mkdir()
+    for i in range(TRASH_SIZE_WARN + 1):
+        (trash / f"2024_E{i:03d}-202601{(i % 28) + 1:02d}T000000Z").mkdir()
+
+    issues = check_trash_health(vault, [])
+    size_issues = [i for i in issues if i.category == "trash_size"]
+    assert len(size_issues) == 1
+    msg = size_issues[0].message
+    assert str(TRASH_MAX_ENTRIES) in msg  # message references the cap
+    assert "auto-evicted" in msg
+    # The retired time-based warning is gone.
+    assert all(i.category != "trash_age" for i in issues)
+
+
+def test_trash_health_no_age_warning(vault: Path) -> None:
+    """Old entries no longer raise a `trash_age` info (retired in M22)."""
+    trash = vault / ".trash"
+    trash.mkdir()
+    # An entry dated well over a year ago — would have tripped the old
+    # 30-day age warning.
+    (trash / "2020_Ancient-20200101T000000Z").mkdir()
+    issues = check_trash_health(vault, [])
+    assert all(i.category != "trash_age" for i in issues)
+
+
 # --- pdf_viewer -------------------------------------------------------------
 
 
