@@ -48,6 +48,7 @@ from litman.core.atomic import cleanup_stale_staging
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
+from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
 from litman.exceptions import VaultRegistryError
@@ -117,7 +118,9 @@ _FIXED_ENUM_VALUES: dict[str, frozenset[str]] = {
     "priority": frozenset({"A", "B", "C"}),
 }
 
-_REF_FIELDS: tuple[str, ...] = ("related", "contradicts", "extends")
+# Forward + reverse relation fields (ADR-012). Sourced from the shared
+# RELATION_PAIRS map so dangling-ref scans cover reverse fields too.
+_REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
 
@@ -270,7 +273,13 @@ def check_invalid_paper_dirs(
 def check_dangling_refs(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """``related`` / ``contradicts`` / ``extends`` referencing missing ids."""
+    """Any relation field (forward or reverse) referencing missing ids.
+
+    Covers ``related`` / ``contradicts`` / ``extends`` and their ADR-012
+    reverse fields ``contradicted-by`` / ``extended-by`` (the full
+    ``ALL_REF_FIELDS`` set), so a reverse edge left dangling by a deletion
+    or rename is reported the same as a forward one.
+    """
     known_ids = {str(p.get("id")) for p in papers if p.get("id")}
     out: list[Issue] = []
     for p in papers:
@@ -301,44 +310,68 @@ def check_dangling_refs(
 def check_bidirectional_refs(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """``related`` should be symmetric (A→B implies B→A).
+    """Every relation edge must have its ADR-012 paired reverse edge.
 
-    Only ``related`` is checked: ``extends`` is intentionally directional
-    (A extends B != B extends A) and ``contradicts`` may be one-sided when
-    only one paper raises the disagreement. Only flags edges where both
-    endpoints exist (dangling refs are reported separately).
+    Three pairs are validated via ``RELATION_PAIRS``:
+
+    * ``related`` is self-paired — A.related:[B] implies B.related:[A].
+    * ``extends`` ↔ ``extended-by`` — A.extends:[B] implies
+      B.extended-by:[A].
+    * ``contradicts`` ↔ ``contradicted-by`` — A.contradicts:[B] implies
+      B.contradicted-by:[A].
+
+    ADR-012 retired the old "extends is intentionally directional" stance:
+    directional relations are now stored symmetrically and maintained by
+    the CLI's auto double-write, so a one-directional residual means the
+    pairing got out of sync (e.g. a hand-edit or an interrupted write) and
+    is reported as an error. Only edges whose other endpoint exists are
+    flagged; missing endpoints are reported by ``check_dangling_refs``.
     """
     by_id = {str(p.get("id")): p for p in papers if p.get("id")}
     out: list[Issue] = []
-    seen_pairs: set[tuple[str, str]] = set()
+    # Deduplicate symmetric (``related``) findings: A↔B and B↔A are one
+    # missing pairing. Directional pairs are never collapsed — the missing
+    # side is unambiguous, so each is reported on its own field.
+    seen_related_pairs: set[tuple[str, str]] = set()
     for pid, paper in by_id.items():
-        for ref in paper.get("related") or []:
-            ref = str(ref)
-            other = by_id.get(ref)
-            if other is None:
-                continue
-            other_related = {str(x) for x in (other.get("related") or [])}
-            if pid in other_related:
-                continue
-            pair = tuple(sorted((pid, ref)))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-            out.append(
-                Issue(
-                    category="bidirectional_refs",
-                    severity="warning",
-                    paper_id=pid,
-                    message=(
-                        f"{pid!r}.related contains {ref!r} but "
-                        f"{ref!r}.related does not contain {pid!r}"
-                    ),
-                    hint=(
-                        f"`lit modify {ref} --add-tag related={pid}` "
-                        "to make symmetric"
-                    ),
+        for field, reverse in RELATION_PAIRS.items():
+            for ref in paper.get(field) or []:
+                ref = str(ref)
+                other = by_id.get(ref)
+                if other is None:
+                    continue
+                other_vals = {str(x) for x in (other.get(reverse) or [])}
+                if pid in other_vals:
+                    continue
+                if field == reverse:
+                    pair = tuple(sorted((pid, ref)))
+                    if pair in seen_related_pairs:
+                        continue
+                    seen_related_pairs.add(pair)
+                # Phrase the fix as a command the CLI accepts: reverse
+                # fields are not user-settable, so re-run the *forward*
+                # edge and let the auto double-write regenerate the
+                # reverse. When the residual sits on a reverse field, the
+                # forward edge lives on the other paper (``ref``).
+                if field in REVERSE_REF_FIELDS:
+                    fwd, owner, tgt = reverse, ref, pid
+                else:
+                    fwd, owner, tgt = field, pid, ref
+                out.append(
+                    Issue(
+                        category="bidirectional_refs",
+                        severity="error",
+                        paper_id=pid,
+                        message=(
+                            f"{pid!r}.{field} contains {ref!r} but "
+                            f"{ref!r}.{reverse} does not contain {pid!r}"
+                        ),
+                        hint=(
+                            f"`lit modify {owner} --rm-tag {fwd}={tgt}` then "
+                            f"`--add-tag {fwd}={tgt}` to re-sync the pairing"
+                        ),
+                    )
                 )
-            )
     return out
 
 

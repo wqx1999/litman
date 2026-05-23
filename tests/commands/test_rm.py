@@ -1,8 +1,10 @@
-"""Tests for ``lit rm``.
+"""Tests for ``lit rm`` (M23.1 unified delete flow).
 
-Covers happy-path delete, reverse-ref pre-flight, wikilink pre-flight,
-``--cascade`` ref clearing + wikilink stripping, ``--yes`` prompt skip,
-prompt abort, INDEX/views refresh, and pre-flight rejection.
+Covers happy-path delete, the relationship-count confirmation, cascade
+teardown of external→A edges (literature ref incl. reverse fields, code 1:1
+orphan / 1:N keep, project symlink + REFERENCES re-render), wikilink
+no-touch, the deletion log, ``-y`` non-interactive force-delete, prompt
+abort, INDEX/views refresh, and removal of ``--cascade``.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from litman.cli import cli
 from litman.core import trash as trash_mod
 from litman.core.library import create_vault
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES, list_trash
-from litman.exceptions import PaperNotFoundError, RmError
+from litman.exceptions import PaperNotFoundError
 
 _yaml = YAML(typ="safe")
 
@@ -54,8 +56,10 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "last-revisited": None,
         "related": fields.get("related", []),
         "contradicts": fields.get("contradicts", []),
+        "contradicted-by": fields.get("contradicted_by", []),
         "extends": fields.get("extends", []),
-        "code-clones": [],
+        "extended-by": fields.get("extended_by", []),
+        "code-clones": fields.get("code_clones", []),
     }
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -65,6 +69,38 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     notes = fields.get("notes")
     if notes is not None:
         (paper_dir / "notes.md").write_text(notes, encoding="utf-8")
+
+
+def _make_fake_repo(
+    vault: Path, repo_name: str, *, papers: list[str], upstream: str = "file:///fake"
+) -> Path:
+    """Materialize codes/<repo>/repo/ + repo-meta.yaml for cascade tests."""
+    repo_root = vault / "codes" / repo_name
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "repo").mkdir(exist_ok=True)
+    (repo_root / "repo" / "README.md").write_text("# fake\n", encoding="utf-8")
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.default_flow_style = False
+    payload = {
+        "name": repo_name,
+        "upstream": upstream,
+        "created-at": "2026-04-28T10:00:00+02:00",
+        "updated-at": "2026-04-28T10:00:00+02:00",
+        "papers": list(papers),
+        "framework": None,
+        "runs-on": None,
+        "status": None,
+    }
+    with (repo_root / "repo-meta.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(payload, f)
+    return repo_root
+
+
+def _read_repo_meta(vault: Path, repo_name: str) -> dict[str, Any]:
+    return _yaml.load(
+        (vault / "codes" / repo_name / "repo-meta.yaml").read_text()
+    )
 
 
 def _read_meta(vault: Path, paper_id: str) -> dict[str, Any]:
@@ -140,133 +176,315 @@ def test_rm_does_not_touch_unrelated_papers(vault: Path) -> None:
 
 
 # ===========================================================================
-# Reverse-ref pre-flight
+# Relationship-count confirmation + cascade teardown (literature ref)
 # ===========================================================================
 
 
-def test_rm_refuses_when_referenced(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
-    _write_paper(vault, "2024_Holder", related=["2024_Target"])
+def test_rm_no_relations_deletes_after_confirm(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     result = runner.invoke(
-        cli, ["rm", "2024_Target", "--yes", "--library", str(vault)]
+        cli, ["rm", "2024_Foo_Bar", "--library", str(vault)], input="y\n"
     )
-    assert result.exit_code != 0
-    assert isinstance(result.exception, RmError)
-    assert "still reference" in str(result.exception)
-    assert "2024_Holder (related)" in str(result.exception)
-    # Target dir still on disk — pre-flight rejected before any destruction.
+    assert result.exit_code == 0, result.output
+    assert not (vault / "papers" / "2024_Foo_Bar").exists()
+    # No relationship banner when there are no links.
+    assert "is linked with" not in result.output
+
+
+def test_rm_has_relations_reports_total_and_pointer(vault: Path) -> None:
+    _write_paper(vault, "2024_Target", related=["2024_B"], extends=["2024_C"])
+    _write_paper(vault, "2024_B", related=["2024_Target"])
+    _write_paper(vault, "2024_C", extended_by=["2024_Target"])
+    runner = CliRunner()
+    # Default N — refuse, touch nothing.
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "--library", str(vault)], input="\n"
+    )
+    assert result.exit_code == 0, result.output
+    # 2 ref opposites, total = 2.
+    assert "is linked with 2 entries" in result.output
+    assert "lit show 2024_Target" in result.output
+    # Refused (default N) → nothing changed.
     assert (vault / "papers" / "2024_Target").is_dir()
+    assert _read_meta(vault, "2024_B")["related"] == ["2024_Target"]
+    # No entry enumeration — only the total + pointer.
+    assert "2024_B" not in result.output
+    assert "2024_C" not in result.output
 
 
-def test_rm_refuses_listing_multiple_holders(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
-    _write_paper(vault, "2024_HolderA", related=["2024_Target"])
-    _write_paper(vault, "2024_HolderB", contradicts=["2024_Target"])
-    _write_paper(vault, "2024_HolderC", extends=["2024_Target"])
-    runner = CliRunner()
-    result = runner.invoke(
-        cli, ["rm", "2024_Target", "--yes", "--library", str(vault)]
+def test_rm_refuse_is_zero_mutation(vault: Path, tmp_path: Path) -> None:
+    # Refuse must touch NOTHING across all three link substrates
+    # (literature ref, code, project) — spec red line "拒绝则零改动".
+    project_dir = tmp_path / "myproj"
+    project_dir.mkdir()
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "projects: {}", f"projects:\n  myproj: {project_dir}"
+        ),
+        encoding="utf-8",
     )
-    assert result.exit_code != 0
-    msg = str(result.exception)
-    assert "3 paper(s) still reference" in msg
-    assert "2024_HolderA (related)" in msg
-    assert "2024_HolderB (contradicts)" in msg
-    assert "2024_HolderC (extends)" in msg
-
-
-# ===========================================================================
-# Wikilink pre-flight
-# ===========================================================================
-
-
-def test_rm_refuses_when_wikilinked_in_paper_notes(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
     _write_paper(
-        vault, "2024_Other",
-        notes="See [[2024_Target]] for context.\n",
+        vault,
+        "2024_Target",
+        related=["2024_Holder"],
+        code_clones=["SoloLib"],
+        projects=["myproj"],
     )
+    _write_paper(vault, "2024_Holder", related=["2024_Target"])
+    _make_fake_repo(vault, "SoloLib", papers=["2024_Target"])
     runner = CliRunner()
-    result = runner.invoke(
-        cli, ["rm", "2024_Target", "--yes", "--library", str(vault)]
+    link_res = runner.invoke(
+        cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
     )
-    assert result.exit_code != 0
-    assert isinstance(result.exception, RmError)
-    assert "wikilinks" in str(result.exception)
-    assert "papers/2024_Other/notes.md" in str(result.exception)
+    assert link_res.exit_code == 0, link_res.output
+
+    holder_before = (vault / "papers/2024_Holder/metadata.yaml").read_text()
+    repo_meta_before = _read_repo_meta(vault, "SoloLib")
+    refs_before = (project_dir / "literature" / "REFERENCES.md").read_text()
+
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "--library", str(vault)], input="n\n"
+    )
+    assert result.exit_code == 0, result.output
+    # Paper itself untouched.
     assert (vault / "papers" / "2024_Target").is_dir()
+    # Literature ref opposite untouched (byte-identical).
+    assert (
+        vault / "papers/2024_Holder/metadata.yaml"
+    ).read_text() == holder_before
+    # Code: repo dir kept, repo-meta.papers unchanged.
+    assert (vault / "codes" / "SoloLib").is_dir()
+    assert _read_repo_meta(vault, "SoloLib")["papers"] == repo_meta_before["papers"]
+    # Project: symlink + REFERENCES untouched.
+    assert (project_dir / "literature" / "2024_Target").is_symlink()
+    assert (project_dir / "literature" / "REFERENCES.md").read_text() == refs_before
+    # No log row written.
+    assert not (vault / ".deletion-log.jsonl").exists()
 
 
-# ===========================================================================
-# --cascade
-# ===========================================================================
-
-
-def test_rm_cascade_clears_refs(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
+def test_rm_cascade_clears_symmetric_related(vault: Path) -> None:
+    _write_paper(vault, "2024_Target", related=["2024_Holder", "2022_Other"])
     _write_paper(
         vault, "2024_Holder",
-        related=["2024_Target", "2022_Other"],
-        extends=["2024_Target"],
+        related=["2024_Target"],
+        extends=["2022_Other"],
     )
+    _write_paper(vault, "2022_Other")
     runner = CliRunner()
     result = runner.invoke(
-        cli,
-        ["rm", "2024_Target", "--cascade", "--yes", "--library", str(vault)],
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert not (vault / "papers" / "2024_Target").exists()
 
     holder = _read_meta(vault, "2024_Holder")
-    assert holder["related"] == ["2022_Other"]
-    assert holder["extends"] == []
+    # Holder.related drops Target; the unrelated extends edge is untouched.
+    assert holder["related"] == []
+    assert holder["extends"] == ["2022_Other"]
     assert holder["updated-at"] != "2026-04-28T10:00:00+02:00"
-    assert "Cleared references in 1 paper" in result.output
-    assert "2024_Holder" in result.output
+    assert "Cleared references in" in result.output
 
 
-def test_rm_cascade_strips_wikilinks(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
+def test_rm_cascade_clears_extends_reverse_field(vault: Path) -> None:
+    # Target EXTENDS X (forward on Target). After M23.0 symmetry, X holds
+    # extended-by:[Target]; deleting Target must drop it from X.extended-by.
+    _write_paper(vault, "2024_Target", extends=["2024_X"])
+    _write_paper(vault, "2024_X", extended_by=["2024_Target"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, "2024_X")["extended-by"] == []
+
+
+def test_rm_cascade_clears_inbound_extends(vault: Path) -> None:
+    # Someone EXTENDS Target: X.extends:[Target], Target.extended-by:[X].
+    # Deleting Target must drop Target from X.extends (the inbound edge,
+    # reachable via Target's own reverse field).
+    _write_paper(vault, "2024_Target", extended_by=["2024_X"])
+    _write_paper(vault, "2024_X", extends=["2024_Target"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, "2024_X")["extends"] == []
+
+
+def test_rm_cascade_clears_contradicts_pair(vault: Path) -> None:
+    # C contradicts Target: Target.contradicted-by:[C], C.contradicts:[Target].
+    _write_paper(vault, "2024_Target", contradicted_by=["2024_C"])
+    _write_paper(vault, "2024_C", contradicts=["2024_Target"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, "2024_C")["contradicts"] == []
+
+
+def test_rm_seals_own_fields_into_trash(vault: Path) -> None:
+    # A's own forward+reverse fields are NOT cleared — they ride into trash.
+    _write_paper(vault, "2024_Target", related=["2024_B"], extends=["2024_C"])
+    _write_paper(vault, "2024_B", related=["2024_Target"])
+    _write_paper(vault, "2024_C", extended_by=["2024_Target"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    trash_meta = next(
+        (vault / TRASH_DIRNAME).glob("2024_Target-*/metadata.yaml")
+    )
+    sealed = _yaml.load(trash_meta.read_text())
+    assert sealed["related"] == ["2024_B"]
+    assert sealed["extends"] == ["2024_C"]
+
+
+# ===========================================================================
+# Cascade teardown — code clones
+# ===========================================================================
+
+
+def test_rm_cascade_code_1to1_hard_deletes_orphan(vault: Path) -> None:
+    _write_paper(vault, "2024_Target", code_clones=["RepoX"])
+    _make_fake_repo(
+        vault, "RepoX", papers=["2024_Target"], upstream="https://x/repo.git"
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Orphan repo dir hard-deleted.
+    assert not (vault / "codes" / "RepoX").exists()
+    # Sidecar records the upstream url for M23.2 re-clone.
+    sidecar = next((vault / TRASH_DIRNAME).glob("2024_Target-*.meta.yaml"))
+    data = _yaml.load(sidecar.read_text())
+    assert data["orphan_repos"] == {"RepoX": "https://x/repo.git"}
+    assert "Removed 1 orphan repo" in result.output
+
+
+def test_rm_cascade_code_1toN_only_unbinds(vault: Path) -> None:
+    _write_paper(vault, "2024_Target", code_clones=["SharedLib"])
+    _write_paper(vault, "2024_Keeper", code_clones=["SharedLib"])
+    _make_fake_repo(
+        vault, "SharedLib", papers=["2024_Target", "2024_Keeper"]
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Repo dir kept (still bound by Keeper).
+    assert (vault / "codes" / "SharedLib").is_dir()
+    meta = _read_repo_meta(vault, "SharedLib")
+    assert meta["papers"] == ["2024_Keeper"]
+    # Not recorded as orphan.
+    sidecar = next((vault / TRASH_DIRNAME).glob("2024_Target-*.meta.yaml"))
+    data = _yaml.load(sidecar.read_text())
+    assert data["orphan_repos"] == {}
+    assert "Unbound from 1 repo" in result.output
+
+
+# ===========================================================================
+# Cascade teardown — project links
+# ===========================================================================
+
+
+def test_rm_cascade_project_symlink_and_references(
+    vault: Path, tmp_path: Path
+) -> None:
+    project_dir = tmp_path / "myproj"
+    project_dir.mkdir()
+    # Register the project in lit-config.yaml (replace the empty default).
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "projects: {}", f"projects:\n  myproj: {project_dir}"
+        ),
+        encoding="utf-8",
+    )
+    _write_paper(vault, "2024_Target", projects=["myproj"])
+    runner = CliRunner()
+    # Link first so the symlink + REFERENCES.md exist.
+    link_res = runner.invoke(
+        cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
+    )
+    assert link_res.exit_code == 0, link_res.output
+    assert (project_dir / "literature" / "2024_Target").is_symlink()
+    refs_before = (project_dir / "literature" / "REFERENCES.md").read_text()
+    assert "2024_Target" in refs_before
+
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Symlink removed, REFERENCES re-rendered without the paper.
+    assert not (project_dir / "literature" / "2024_Target").exists()
+    refs_after = (project_dir / "literature" / "REFERENCES.md").read_text()
+    assert "2024_Target" not in refs_after
+    assert "Unlinked from 1 project" in result.output
+
+
+# ===========================================================================
+# Wikilink: scan only, never modify
+# ===========================================================================
+
+
+def test_rm_does_not_strip_wikilinks(vault: Path) -> None:
+    _write_paper(vault, "2024_Target", related=["2024_Other"])
     _write_paper(
         vault, "2024_Other",
-        notes="Compare [[2024_Target]] and [[2024_Target]] here.\n",
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["rm", "2024_Target", "--cascade", "--yes", "--library", str(vault)],
-    )
-    assert result.exit_code == 0, result.output
-
-    # Bracket-stripped: "[[id]]" → "id" (text preserved).
-    other_notes = (vault / "papers/2024_Other/notes.md").read_text()
-    assert "[[2024_Target]]" not in other_notes
-    assert "Compare 2024_Target and 2024_Target here." in other_notes
-
-    assert "Stripped" in result.output
-
-
-def test_rm_cascade_handles_both_refs_and_wikilinks(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
-    _write_paper(
-        vault, "2024_Holder",
         related=["2024_Target"],
-        notes="[[2024_Target]] is referenced.\n",
+        notes="See [[2024_Target]] and [[2024_Target]] here.\n",
     )
+    notes_before = (vault / "papers/2024_Other/notes.md").read_text()
     runner = CliRunner()
     result = runner.invoke(
-        cli,
-        ["rm", "2024_Target", "--cascade", "--yes", "--library", str(vault)],
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
+    # notes.md byte-identical: [[id]] is NOT stripped.
+    assert (
+        vault / "papers/2024_Other/notes.md"
+    ).read_text() == notes_before
 
-    holder = _read_meta(vault, "2024_Holder")
-    assert holder["related"] == []
-    holder_notes = (vault / "papers/2024_Holder/notes.md").read_text()
-    assert "[[2024_Target]]" not in holder_notes
-    assert "2024_Target is referenced." in holder_notes
+
+# ===========================================================================
+# Deletion log
+# ===========================================================================
+
+
+def test_rm_writes_trashed_log_row(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar", title="The Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo_Bar", "-y", "--library", str(vault)])
+    log = (vault / ".deletion-log.jsonl").read_text().strip().splitlines()
+    assert len(log) == 1
+    row = json.loads(log[0])
+    assert row["id"] == "2024_Foo_Bar"
+    assert row["title"] == "The Foo"
+    assert row["action"] == "trashed"
+    assert "at" in row
+    assert "trash_path" in row
+
+
+def test_rm_writes_purged_log_row(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["rm", "2024_Foo_Bar", "--purge", "-y", "--library", str(vault)]
+    )
+    log = (vault / ".deletion-log.jsonl").read_text().strip().splitlines()
+    assert len(log) == 1
+    row = json.loads(log[0])
+    assert row["id"] == "2024_Foo_Bar"
+    assert row["action"] == "purged"
+    assert "trash_path" not in row
 
 
 # ===========================================================================
@@ -277,12 +495,26 @@ def test_rm_cascade_handles_both_refs_and_wikilinks(vault: Path) -> None:
 def test_rm_yes_skips_prompt(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
-    # No stdin provided; --yes should skip the prompt entirely.
+    # No stdin provided; -y should skip the prompt entirely.
     result = runner.invoke(
         cli, ["rm", "2024_Foo_Bar", "--yes", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert not (vault / "papers" / "2024_Foo_Bar").exists()
+
+
+def test_rm_yes_non_interactive_with_relations(vault: Path) -> None:
+    """-y is a full force-delete: no prompt even when relations exist."""
+    _write_paper(vault, "2024_Target", related=["2024_Holder"])
+    _write_paper(vault, "2024_Holder", related=["2024_Target"])
+    runner = CliRunner()
+    # No stdin at all — must not block on a prompt.
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert not (vault / "papers" / "2024_Target").exists()
+    assert _read_meta(vault, "2024_Holder")["related"] == []
 
 
 def test_rm_prompt_y_proceeds(vault: Path) -> None:
@@ -358,9 +590,13 @@ def test_rm_help() -> None:
     result = runner.invoke(cli, ["rm", "--help"])
     assert result.exit_code == 0
     assert "rm" in result.output.lower()
-    assert "--cascade" in result.output
+    # --cascade fully removed in M23.1.
+    assert "--cascade" not in result.output
     assert "--yes" in result.output
+    assert "--purge" in result.output
     assert "--paper-doi" in result.output
+    # -y now documents non-interactive force-delete, not just "skip prompt".
+    assert "non-interactive" in result.output.lower()
 
 
 def test_rm_accepts_fuzzy_substring(vault: Path) -> None:

@@ -108,7 +108,9 @@ def _build_metadata(
         # === relations layer ===
         "related": [],
         "contradicts": [],
+        "contradicted-by": [],
         "extends": [],
+        "extended-by": [],
         "code-clones": [],
     }
 

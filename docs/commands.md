@@ -93,16 +93,27 @@ through `lit taxonomy` and require a code release to extend.
 
 | Command | What it does |
 |---|---|
-| `lit rm <id>` | Move `papers/<id>/` to `<vault>/.trash/`. Refuses on existing references. |
-| `lit rm <id> --cascade` | Auto-clear references in other papers + strip `[[id]]` wikilinks (text preserved). |
+| `lit rm <id>` | Move `papers/<id>/` to `<vault>/.trash/`, atomically tearing down all external links to it (other papers' relation fields, repo bindings, project symlinks). Reports the relationship count + a `lit show` pointer, then confirms (default N). |
 | `lit rm <id> --purge` | Permanently delete instead of moving to `.trash/`. |
-| `lit rm <id> -y` | Skip the y/N confirmation prompt. |
+| `lit rm <id> -y` | Non-interactive force-delete: skip the prompt and tear down in one step (script / agent path). |
 | `lit trash list` | Show trash entries, newest first. |
 | `lit trash restore <id>` | Restore a trashed paper to `papers/<id>/`. |
 | `lit trash empty` | Permanently delete every trash entry. |
 
-The default refusal-on-references behaviour is intentional. Pass
-`--cascade` only when you are sure the references should be cleared.
+`lit rm` is a single unified flow: it tears down the *external→A* half of
+the relationship network (drops the paper from opposite papers' paired
+relation fields, unbinds it from each repo's `repo-meta.yaml`, removes its
+project symlinks and re-renders `REFERENCES.md`) in one atomic transaction.
+A repo whose last binder was this paper (the 1:1 case) is hard-deleted and
+its upstream URL recorded in the trash sidecar for re-clone on restore; a
+repo still bound by another paper (1:N) only loses the binding. The paper's
+*own* fields ride into trash unchanged so `lit trash restore` can rebuild
+them. `[[id]]` wikilinks in notes are never modified. Every removal is
+appended to `<vault>/.deletion-log.jsonl`.
+
+Trash is capped at 100 entries. When `lit rm` would push it past 100,
+the oldest entry is permanently removed (the evicted id is printed).
+`lit trash empty` still clears everything manually.
 
 ## Scenario 7 — Bind papers to projects
 

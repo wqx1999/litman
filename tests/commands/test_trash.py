@@ -106,7 +106,9 @@ def test_rm_writes_sidecar_metadata(vault: Path) -> None:
     data = _yaml.load(sidecars[0].read_text())
     assert data["paper_id"] == "2024_Foo"
     assert data["title"] == "The Foo Paper"
-    assert data["cascade_was_used"] is False
+    # M23.1: cascade_was_used no longer written; orphan_repos is the new key.
+    assert "cascade_was_used" not in data
+    assert data["orphan_repos"] == {}
     assert "deleted_at" in data
 
 
@@ -124,20 +126,17 @@ def test_rm_purge_skips_trash(vault: Path) -> None:
     assert not trash_root.exists() or not any(trash_root.iterdir())
 
 
-def test_rm_cascade_records_flag_in_sidecar(vault: Path) -> None:
-    _write_paper(vault, "2024_Target")
-    _write_paper(vault, "2024_Holder", related=["2024_Target"])
+def test_rm_legacy_sidecar_tolerated_by_list(vault: Path) -> None:
+    """list_trash defaults cascade_was_used to False when the key is absent."""
+    _write_paper(vault, "2024_Foo")
     runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["rm", "2024_Target", "--cascade", "--yes", "--library", str(vault)],
-    )
-    assert result.exit_code == 0, result.output
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
 
-    trash_root = vault / TRASH_DIRNAME
-    sidecar = next(trash_root.glob("*.meta.yaml"))
-    data = _yaml.load(sidecar.read_text())
-    assert data["cascade_was_used"] is True
+    entries = list_trash(vault)
+    assert len(entries) == 1
+    # New writer omits cascade_was_used; reader defaults it to False.
+    assert entries[0].cascade_was_used is False
+    assert entries[0].orphan_repos == {}
 
 
 def test_trash_excluded_from_index_and_list(vault: Path) -> None:
@@ -337,7 +336,7 @@ def test_trash_empty_prompt_aborts(vault: Path) -> None:
 
 def test_move_to_trash_missing_paper(vault: Path) -> None:
     with pytest.raises(TrashError):
-        move_to_trash(vault, "9999_Ghost", cascade_was_used=False)
+        move_to_trash(vault, "9999_Ghost")
 
 
 def test_list_trash_tolerates_missing_sidecar(vault: Path) -> None:

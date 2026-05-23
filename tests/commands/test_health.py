@@ -82,7 +82,9 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "last-revisited": None,
         "related": fields.get("related", []),
         "contradicts": fields.get("contradicts", []),
+        "contradicted-by": fields.get("contradicted_by", []),
         "extends": fields.get("extends", []),
+        "extended-by": fields.get("extended_by", []),
         "code-clones": fields.get("code_clones", []),
     }
     if "drop_fields" in fields:
@@ -218,6 +220,20 @@ def test_dangling_refs_across_all_three_fields(vault: Path) -> None:
     assert cats == {"'related'", "'contradicts'", "'extends'"}
 
 
+def test_dangling_refs_covers_reverse_fields(vault: Path) -> None:
+    # ADR-012: reverse fields (extended-by / contradicted-by) referencing a
+    # missing paper must be reported just like forward fields.
+    _write_paper(
+        vault,
+        "A_a_a",
+        extended_by=["GHOST_one"],
+        contradicted_by=["GHOST_two"],
+    )
+    issues = check_dangling_refs(vault, list_papers(vault))
+    cats = {i.message.split()[0] for i in issues}
+    assert cats == {"'extended-by'", "'contradicted-by'"}
+
+
 # --- bidirectional_refs -----------------------------------------------------
 
 
@@ -245,11 +261,61 @@ def test_bidirectional_skips_dangling(vault: Path) -> None:
     assert issues == []
 
 
-def test_bidirectional_ignores_extends_and_contradicts(vault: Path) -> None:
-    _write_paper(vault, "A_a_a", extends=["B_b_b"], contradicts=["B_b_b"])
+def test_bidirectional_extends_paired_clean(vault: Path) -> None:
+    # ADR-012: extends is symmetric via extended-by. A.extends:[B] +
+    # B.extended-by:[A] is a complete pairing → no issue.
+    _write_paper(vault, "A_a_a", extends=["B_b_b"])
+    _write_paper(vault, "B_b_b", extended_by=["A_a_a"])
+    assert check_bidirectional_refs(vault, list_papers(vault)) == []
+
+
+def test_bidirectional_extends_one_sided_is_error(vault: Path) -> None:
+    # A.extends:[B] but B has no extended-by:[A] → reported as error.
+    _write_paper(vault, "A_a_a", extends=["B_b_b"])
     _write_paper(vault, "B_b_b")
     issues = check_bidirectional_refs(vault, list_papers(vault))
-    assert issues == []  # only `related` is symmetric
+    assert len(issues) == 1
+    assert issues[0].category == "bidirectional_refs"
+    assert issues[0].severity == "error"
+    assert issues[0].paper_id == "A_a_a"
+    assert "extends" in issues[0].message
+    assert "extended-by" in issues[0].message
+
+
+def test_bidirectional_contradicts_paired_clean(vault: Path) -> None:
+    _write_paper(vault, "A_a_a", contradicts=["B_b_b"])
+    _write_paper(vault, "B_b_b", contradicted_by=["A_a_a"])
+    assert check_bidirectional_refs(vault, list_papers(vault)) == []
+
+
+def test_bidirectional_contradicts_one_sided_is_error(vault: Path) -> None:
+    _write_paper(vault, "A_a_a", contradicts=["B_b_b"])
+    _write_paper(vault, "B_b_b")
+    issues = check_bidirectional_refs(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "contradicts" in issues[0].message
+    assert "contradicted-by" in issues[0].message
+
+
+def test_bidirectional_reverse_field_orphan_is_error(vault: Path) -> None:
+    # The residual can also show up on the reverse field: B has
+    # extended-by:[A] but A dropped its extends:[B].
+    _write_paper(vault, "A_a_a")
+    _write_paper(vault, "B_b_b", extended_by=["A_a_a"])
+    issues = check_bidirectional_refs(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "extended-by" in issues[0].message
+
+
+def test_bidirectional_related_still_error_severity(vault: Path) -> None:
+    # related residual is now an error too (ADR-012 unified severity).
+    _write_paper(vault, "A_a_a", related=["B_b_b"])
+    _write_paper(vault, "B_b_b")
+    issues = check_bidirectional_refs(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
 
 
 # --- dangling_wikilinks -----------------------------------------------------

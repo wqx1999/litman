@@ -37,6 +37,7 @@ from litman.core.atomic import staged_write
 from litman.core.document import list_papers, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import ModifyError, PaperNotFoundError
@@ -57,10 +58,14 @@ FORBIDDEN_SET_FIELDS: frozenset[str] = frozenset({
     "updated-at",
 })
 
-# Canonical list-typed fields. --add-tag / --rm-tag operate on these only;
-# attempting --add-tag on a non-listed field raises so users don't
-# accidentally clobber a scalar. Schemaless metadata is preserved for
-# --set, so future custom scalar fields work without a registry update.
+# Canonical list-typed fields. The list-semantics primitives
+# (``_apply_add_tag`` / ``_apply_rm_tag``) operate on these; attempting
+# them on a non-listed field raises so users don't accidentally clobber a
+# scalar. Schemaless metadata is preserved for --set, so future custom
+# scalar fields work without a registry update. This set INCLUDES the
+# ADR-012 reverse fields (``extended-by`` / ``contradicted-by``) so the
+# auto double-write can maintain them with correct list semantics — but
+# users may NOT name them on the command line (see USER_TAG_FIELDS).
 LIST_FIELDS: frozenset[str] = frozenset({
     "authors",
     "projects",
@@ -69,9 +74,24 @@ LIST_FIELDS: frozenset[str] = frozenset({
     "data",
     "related",
     "contradicts",
+    "contradicted-by",
     "extends",
+    "extended-by",
     "code-clones",
 })
+
+# Reverse relation fields (ADR-012) are maintained ONLY by the auto
+# double-write; a user must never set them directly via --add-tag /
+# --rm-tag, or the pairing breaks. The canonical set lives in
+# core/relations.py (single de-drift source); imported as REVERSE_REF_FIELDS.
+
+# Relation fields whose forward direction the user MAY drive. Writing any
+# of these triggers the paired reverse write on the opposite paper.
+RELATION_TAG_FIELDS: frozenset[str] = frozenset(RELATION_PAIRS) - REVERSE_REF_FIELDS
+
+# Fields a user may name in --add-tag / --rm-tag: every list field except
+# the reverse relation fields.
+USER_TAG_FIELDS: frozenset[str] = LIST_FIELDS - REVERSE_REF_FIELDS
 
 
 def _now_iso() -> str:
@@ -147,7 +167,7 @@ def _apply_add_tag(
     if key not in LIST_FIELDS:
         raise ModifyError(
             f"--add-tag rejects {key!r}: not a list field. "
-            f"Allowed: {', '.join(sorted(LIST_FIELDS))}."
+            f"Allowed: {', '.join(sorted(USER_TAG_FIELDS))}."
         )
     if not value:
         raise ModifyError(f"--add-tag {key}= got empty value.")
@@ -183,7 +203,7 @@ def _apply_rm_tag(
     if key not in LIST_FIELDS:
         raise ModifyError(
             f"--rm-tag rejects {key!r}: not a list field. "
-            f"Allowed: {', '.join(sorted(LIST_FIELDS))}."
+            f"Allowed: {', '.join(sorted(USER_TAG_FIELDS))}."
         )
     current = metadata.get(key)
     before = list(current) if current else []
@@ -192,6 +212,24 @@ def _apply_rm_tag(
     after = [v for v in before if v != value]
     metadata[key] = after
     return before, after
+
+
+def _reject_reverse_field(key: str, flag_name: str) -> None:
+    """Forbid a user from naming a reverse relation field directly.
+
+    Reverse fields (``extended-by`` / ``contradicted-by``) are maintained
+    only by the auto double-write (ADR-012). Letting a user set them by
+    hand would break the forward/reverse pairing.
+    """
+    if key in REVERSE_REF_FIELDS:
+        forward = RELATION_PAIRS[key]
+        raise ModifyError(
+            f"{flag_name} {key!r} is not allowed: {key!r} is a reverse "
+            f"relation field, maintained automatically when you write its "
+            f"forward field {forward!r}. "
+            f"Use `{flag_name} {forward}=<other-paper-id>` on the other "
+            "paper instead."
+        )
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -276,6 +314,10 @@ def _apply_modify(
         )
 
     diffs: list[tuple[str, Any, Any]] = []
+    # Relation tag ops that landed on the originating paper, recorded as
+    # (op_kind, forward_field, opposite_paper_id). After the originating
+    # side is settled, each drives a paired write on the opposite paper.
+    relation_ops: list[tuple[str, str, str]] = []
 
     for spec in set_ops:
         key, value = _parse_kv(spec, "--set")
@@ -291,22 +333,62 @@ def _apply_modify(
 
     for spec in add_tag_ops:
         key, value = _parse_kv(spec, "--add-tag")
+        _reject_reverse_field(key, "--add-tag")
         change = _apply_add_tag(vault, metadata, key, value)
         if change is not None:
             before, after = change
             diffs.append((key, before, after))
+        if key in RELATION_TAG_FIELDS:
+            relation_ops.append(("add", key, value))
 
     for spec in rm_tag_ops:
         key, value = _parse_kv(spec, "--rm-tag")
+        _reject_reverse_field(key, "--rm-tag")
         change = _apply_rm_tag(metadata, key, value)
         if change is not None:
             before, after = change
             diffs.append((key, before, after))
+        if key in RELATION_TAG_FIELDS:
+            relation_ops.append(("rm", key, value))
+
+    # ----- ADR-012 auto double-write -----
+    # For each relation tag the user wrote, mirror it onto the opposite
+    # paper's paired field within the SAME transaction. The originating
+    # side's no-op status is irrelevant: even if A.extends:[B] was already
+    # present, B.extended-by may be missing in a vault that predates this
+    # feature, so we still reconcile the opposite side. Opposite writes are
+    # collected as paper_id → (in-memory metadata, relpath); only those
+    # whose metadata actually changed are committed.
+    opposite_writes: dict[str, dict[str, Any]] = {}
+    for op_kind, forward, opposite_id in relation_ops:
+        reverse = RELATION_PAIRS[forward]
+        if opposite_id == paper_id:
+            continue  # self-reference: no separate opposite to write
+        opp_file = vault / "papers" / opposite_id / "metadata.yaml"
+        if not opp_file.is_file():
+            # Opposite paper missing: write the originating side only. The
+            # one-directional residual is reported later by
+            # check_bidirectional_refs; we never create the opposite.
+            continue
+        opp_meta = opposite_writes.get(opposite_id)
+        if opp_meta is None:
+            opp_meta = _yaml.load(opp_file.read_text(encoding="utf-8"))
+            if opp_meta is None:
+                continue
+        if op_kind == "add":
+            # Reuse the dedup primitive: already present → no change.
+            opp_change = _apply_add_tag(vault, opp_meta, reverse, paper_id)
+        else:
+            opp_change = _apply_rm_tag(opp_meta, reverse, paper_id)
+        if opp_change is not None:
+            opposite_writes[opposite_id] = opp_meta
 
     # Even if every requested op was a no-op (e.g. --add-tag of an existing
     # value), bumping updated-at is wrong because nothing changed. Detect
-    # the all-no-op case and short-circuit.
-    if not diffs:
+    # the all-no-op case and short-circuit. An opposite-only change (the
+    # originating side already had the edge, the opposite was missing it)
+    # still counts as a real change worth committing.
+    if not diffs and not opposite_writes:
         console.print(
             f"[yellow]No-op:[/] every requested change to {paper_id} was "
             "already in effect. metadata.yaml not touched."
@@ -318,19 +400,29 @@ def _apply_modify(
     metadata["updated-at"] = new_updated_at
 
     metadata_yaml = _dump_yaml_to_string(metadata)
+    for opp_meta in opposite_writes.values():
+        opp_meta["updated-at"] = new_updated_at
 
     # Re-render INDEX.json from the latest paper list, splicing in our
-    # in-memory modified copy so the index reflects the staged change
-    # without depending on disk state.
+    # in-memory modified copies (originating + every touched opposite) so
+    # the index reflects the staged change without depending on disk state.
+    changed_ids = {paper_id} | set(opposite_writes)
     all_papers = list_papers(vault)
-    all_papers = [p for p in all_papers if p.get("id") != paper_id]
+    all_papers = [p for p in all_papers if p.get("id") not in changed_ids]
     # ruamel YAML's CommentedMap is dict-compatible for our consumers.
     all_papers.append(dict(metadata))
+    for opp_meta in opposite_writes.values():
+        all_papers.append(dict(opp_meta))
     index_json = render_index(all_papers, _now_iso())
 
     rel_meta = f"papers/{paper_id}/metadata.yaml"
     with staged_write(vault, op_id=f"modify-{paper_id}") as stage:
         stage.write_text(rel_meta, metadata_yaml)
+        for opposite_id, opp_meta in opposite_writes.items():
+            stage.write_text(
+                f"papers/{opposite_id}/metadata.yaml",
+                _dump_yaml_to_string(opp_meta),
+            )
         stage.write_text("INDEX.json", index_json)
 
     # views/ rebuild is filesystem-mutating but not text-file-atomic; do it
@@ -352,6 +444,10 @@ def _apply_modify(
         f"  updated-at: [dim]{escape(str(old_updated_at))}[/] → "
         f"{escape(new_updated_at)}"
     )
+    for opposite_id in opposite_writes:
+        console.print(
+            f"  [dim]↔ paired reverse field written on[/] {escape(opposite_id)}"
+        )
     console.print("[dim]INDEX.json + views/ refreshed.[/]")
     return True
 

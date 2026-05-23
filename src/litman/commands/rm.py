@@ -1,32 +1,55 @@
-"""``lit rm`` — remove a paper from the vault.
+"""``lit rm`` — remove a paper from the vault (M23.1 unified delete flow).
 
-Symmetric to ``lit rename`` (M2.6) but destructive. By default the paper
-folder is moved into ``<vault>/.trash/`` (recoverable via
-``lit trash restore <id>``); pass ``--purge`` to permanently delete.
-Either way, INDEX.json and views/ are refreshed. Two safety nets guard
-against silent data loss:
+By default the paper folder is moved into ``<vault>/.trash/`` (recoverable
+via ``lit trash restore <id>``); pass ``--purge`` to permanently delete.
+Either way INDEX.json and views/ are refreshed.
 
-* Reverse-ref scan: refuse if any other paper's
-  ``related`` / ``contradicts`` / ``extends`` list contains ``<id>``.
-* Wikilink scan: refuse if any ``papers/*/notes.md`` contains
-  ``[[<id>]]``.
+Unlike the earlier "refuse unless --cascade" design, ``lit rm`` now always
+tears down the *external→A* half of A's relationship network in one atomic
+step, then seals A (with its own A→external fields intact) into trash. A
+single confirmation gates the destruction:
 
-Both checks are bypassed by ``--cascade``, which auto-clears the references
-(deletes the id from ref-list fields and replaces ``[[<id>]]`` with the
-bare ``<id>`` text so the surrounding prose stays readable). Cascade
-modifications are NOT recorded in trash — only the removed paper itself
-is restorable.
+* A has relations (literature ref / code clone / project link) → the prompt
+  reports the TOTAL count + points at ``lit show`` for inspection, default
+  ``N``.
+* A has no relations → the standard delete confirmation.
 
-A ``y/N`` prompt is shown before destruction, suppressed by ``--yes``.
+``-y`` / ``--yes`` is the full non-interactive force-delete entry (script /
+weak-LLM / agent path, invariant #5): ``lit rm A -y`` deletes clean with no
+prompt.
 
-Atomicity layers (mirrors rename):
+Cascade teardown (one ``staged_write`` transaction, invariant #9/#12):
 
-* All file content updates (INDEX.json + cascade ref/wikilink edits) go
-  through one ``staged_write`` so they either all land or all roll back.
-* The paper-folder move-to-trash (or rmtree on ``--purge``) is the final
-  step after the file commit. A failure here leaves INDEX.json claiming
-  the paper is gone while the dir is still on disk — detectable and
-  recoverable (``lit health-check`` will flag this in M2.8).
+* Literature ref: for each opposite paper named in A's own relation fields,
+  drop A from that opposite's *paired* field (RELATION_PAIRS lookup). After
+  M23.0 symmetry this uniformly removes every "external→A" edge.
+* Code: for each repo in A's ``code-clones``, drop A from
+  ``codes/<repo>/repo-meta.yaml::papers``. If that empties the repo's binder
+  list (1:1, the common case) the orphan ``codes/<repo>/`` dir is
+  hard-deleted and ``{name: upstream}`` is recorded in the trash sidecar for
+  M23.2 re-clone. A still-bound repo (1:N) only loses the binding.
+* Project: for each project in A's ``projects``, the ``literature/A``
+  symlink is removed, the parallel ``code/<repo>`` symlink is removed only
+  when no other paper in that project still binds the repo, and
+  REFERENCES.md is re-rendered.
+
+A's OWN fields (forward + reverse relation fields, code-clones, projects)
+are left one byte unchanged — they ride into trash with the folder. This is
+the precondition M23.2 restore depends on.
+
+``[[id]]`` wikilinks in notes/discussion are NEVER touched — the
+relationship count is computed from structured metadata fields only.
+
+A delete is recorded in ``<vault>/.deletion-log.jsonl`` (trashed / purged).
+
+Atomicity layers:
+
+* All metadata.yaml + repo-meta.yaml + INDEX.json writes go through one
+  ``staged_write`` so they either all land or all roll back.
+* Filesystem-only steps (paper-folder move/rmtree, orphan-repo rmtree,
+  project symlink removal, REFERENCES.md re-render, views rebuild) run after
+  the staged commit. A failure there leaves INDEX.json claiming the paper is
+  gone while the dir is still on disk — ``lit health-check`` flags this.
 """
 
 from __future__ import annotations
@@ -43,11 +66,20 @@ from rich.markup import escape
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
+from litman.core.config import load_config
+from litman.core.deletion_log import append_log_entry
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.portable_link import remove_link_if_present
+from litman.core.project_link import (
+    CODE_SUBDIR,
+    _papers_using_repo_in_project,
+)
+from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
+from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RmError
@@ -58,8 +90,6 @@ _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.preserve_quotes = True
 _yaml.default_flow_style = False
-
-REF_FIELDS: tuple[str, ...] = ("related", "contradicts", "extends")
 
 
 def _now_iso() -> str:
@@ -72,116 +102,191 @@ def _dump_yaml_to_string(data: dict[str, Any]) -> str:
     return buf.getvalue()
 
 
-def _scan_ref_holders(
-    papers: list[dict[str, Any]], target_id: str
-) -> list[tuple[str, str]]:
-    """Return ``[(holder_id, ref_field), ...]`` for papers referencing ``target_id``.
+# ---------------------------------------------------------------------------
+# Relationship-network discovery (structured fields only)
+# ---------------------------------------------------------------------------
 
-    A paper that lists ``target_id`` in two ref fields appears twice (one
-    entry per field) so the user sees the full picture.
+
+def _opposite_ref_targets(target_meta: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return ``[(opposite_id, paired_field), ...]`` to clear external→A edges.
+
+    Reads A's *own* relation fields. For each opposite paper A names, the
+    edge to remove from that opposite is its RELATION_PAIRS-paired field
+    (e.g. A.extends:[B] ⇒ remove A from B.extended-by). After M23.0 symmetry
+    this enumerates every "external→A" edge, since every inbound edge is
+    mirrored in one of A's own fields.
     """
     out: list[tuple[str, str]] = []
-    for paper in papers:
-        pid = paper.get("id")
-        if not pid or pid == target_id:
-            continue
-        for field in REF_FIELDS:
-            values = paper.get(field) or []
-            if target_id in values:
-                out.append((str(pid), field))
+    for field in ALL_REF_FIELDS:
+        for opposite_id in target_meta.get(field) or []:
+            paired = RELATION_PAIRS[field]
+            out.append((str(opposite_id), paired))
     return out
-
-
-def _scan_wikilink_files(
-    vault: Path, target_id: str
-) -> list[tuple[Path, int]]:
-    """Return ``[(path, occurrence_count), ...]`` for notes containing ``[[<id>]]``."""
-    needle = f"[[{target_id}]]"
-    out: list[tuple[Path, int]] = []
-    for md_path in enumerate_markdown_files(vault):
-        text = md_path.read_text(encoding="utf-8")
-        n = text.count(needle)
-        if n > 0:
-            out.append((md_path, n))
-    return out
-
-
-def _format_holders_block(holders: list[tuple[str, str]], limit: int = 10) -> str:
-    head = holders[:limit]
-    lines = [f"  - {pid} ({field})" for pid, field in head]
-    if len(holders) > limit:
-        lines.append(f"  ... and {len(holders) - limit} more")
-    return "\n".join(lines)
-
-
-def _format_wikilinks_block(
-    vault: Path, hits: list[tuple[Path, int]], limit: int = 10
-) -> str:
-    head = hits[:limit]
-    lines = []
-    for path, n in head:
-        rel = path.relative_to(vault)
-        suffix = "" if n == 1 else f" ({n} occurrences)"
-        lines.append(f"  - {rel}{suffix}")
-    if len(hits) > limit:
-        lines.append(f"  ... and {len(hits) - limit} more")
-    return "\n".join(lines)
 
 
 def _build_cascade_ref_updates(
     vault: Path,
-    holders: list[tuple[str, str]],
+    target_meta: dict[str, Any],
     target_id: str,
     now: str,
     safe_papers: list[dict[str, Any]],
 ) -> tuple[dict[str, str], set[str]]:
-    """Build staged metadata.yaml writes that drop ``target_id`` from ref fields.
+    """Build staged metadata.yaml writes that drop ``target_id`` from opposites.
+
+    For each opposite paper named in A's relation fields, remove A from the
+    opposite's paired field (RELATION_PAIRS). A single opposite may need
+    several of its fields touched (e.g. A both ``related`` and ``extends`` B);
+    they are coalesced into one rewrite per opposite paper.
 
     Mutates ``safe_papers`` in place so the caller can re-render INDEX.json
     from the same in-memory list without re-reading disk.
 
-    Returns ``(staged_writes, holder_id_set)`` where:
+    Returns ``(staged_writes, opposite_id_set)`` where:
         * ``staged_writes`` maps paper-id → new yaml text
-        * ``holder_id_set`` is the unique set of holder ids touched
+        * ``opposite_id_set`` is the unique set of opposite ids touched
     """
-    holder_ids = {pid for pid, _ in holders}
+    # opposite_id → set of its own fields that must drop target_id.
+    by_opposite: dict[str, set[str]] = {}
+    for opposite_id, paired_field in _opposite_ref_targets(target_meta):
+        if opposite_id == target_id:
+            continue  # self-reference: no separate opposite
+        by_opposite.setdefault(opposite_id, set()).add(paired_field)
+
     staged: dict[str, str] = {}
-    for pid in holder_ids:
-        meta_path = vault / "papers" / pid / "metadata.yaml"
+    touched: set[str] = set()
+    for opposite_id, fields in by_opposite.items():
+        meta_path = vault / "papers" / opposite_id / "metadata.yaml"
+        if not meta_path.is_file():
+            # Opposite already gone: nothing to clear. The dangling
+            # forward edge rides into trash inside A's own fields.
+            continue
         rt = _yaml.load(meta_path.read_text(encoding="utf-8"))
         if rt is None:
             continue
-        for field in REF_FIELDS:
+        changed = False
+        for field in fields:
             cur = rt.get(field)
             if cur and target_id in cur:
                 rt[field] = [v for v in cur if v != target_id]
+                changed = True
+        if not changed:
+            continue
         rt["updated-at"] = now
-        staged[pid] = _dump_yaml_to_string(rt)
-        # Mirror into the safe-loaded copy so INDEX.json is correct.
+        staged[opposite_id] = _dump_yaml_to_string(rt)
+        touched.add(opposite_id)
+        # Keep the in-memory copy in parity with what we just staged to
+        # disk. Relation fields and updated-at are NOT in the INDEX
+        # projection (see views.INDEX_PAPER_FIELDS), so this does not affect
+        # INDEX.json today; it guards any future consumer of safe_papers
+        # against reading stale edges for the opposite paper.
         for paper in safe_papers:
-            if paper.get("id") == pid:
-                for field in REF_FIELDS:
+            if paper.get("id") == opposite_id:
+                for field in fields:
                     cur = paper.get(field) or []
                     if target_id in cur:
                         paper[field] = [v for v in cur if v != target_id]
                 paper["updated-at"] = now
                 break
-    return staged, holder_ids
+    return staged, touched
 
 
-def _build_cascade_wikilink_updates(
+def _build_cascade_code_updates(
     vault: Path,
-    hits: list[tuple[Path, int]],
+    target_meta: dict[str, Any],
     target_id: str,
-) -> dict[str, str]:
-    """Build staged note rewrites: ``[[<id>]]`` → ``<id>`` (text preserved)."""
-    needle = f"[[{target_id}]]"
-    replacement = target_id
-    out: dict[str, str] = {}
-    for path, _ in hits:
-        text = path.read_text(encoding="utf-8")
-        out[str(path.relative_to(vault))] = text.replace(needle, replacement)
-    return out
+    now: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build staged repo-meta.yaml writes that unbind A from each repo.
+
+    Mirrors ``bind_paper_to_repo`` in reverse, single-paper-single-repo:
+    drops ``target_id`` from each ``codes/<repo>/repo-meta.yaml::papers``.
+    Does NOT use ``unbind_repo_from_all_papers`` (that strips a repo from
+    *every* paper and skips repo-meta — the wrong direction here).
+
+    Returns ``(staged_writes, orphan_repos)`` where:
+        * ``staged_writes`` maps ``codes/<repo>/repo-meta.yaml`` relpath →
+          new yaml text (only for repos that stay, i.e. 1:N survivors)
+        * ``orphan_repos`` maps ``repo_name → upstream_url`` for repos whose
+          binder list became empty (1:1) — caller hard-deletes the dir and
+          records the url in the trash sidecar. Orphan repos are NOT staged
+          (their dir is removed wholesale post-stage).
+    """
+    staged: dict[str, str] = {}
+    orphan_repos: dict[str, str] = {}
+    for repo_name in target_meta.get("code-clones") or []:
+        repo_meta_path = (
+            vault / CODES_DIRNAME / str(repo_name) / REPO_META_FILENAME
+        )
+        if not repo_meta_path.is_file():
+            # Binding present on the paper side but repo-meta is missing.
+            # Nothing to unbind; health-check surfaces the orphan ref.
+            continue
+        rt = _yaml.load(repo_meta_path.read_text(encoding="utf-8"))
+        if rt is None:
+            continue
+        papers = rt.get("papers") or []
+        remaining = [p for p in papers if p != target_id]
+        if not remaining:
+            # 1:1 — A was the last (or only) binder. Orphan the dir.
+            orphan_repos[str(repo_name)] = rt.get("upstream") or ""
+            continue
+        rt["papers"] = remaining
+        rt["updated-at"] = now
+        staged[f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"] = (
+            _dump_yaml_to_string(rt)
+        )
+    return staged, orphan_repos
+
+
+def _teardown_project_links(
+    vault: Path,
+    target_meta: dict[str, Any],
+    target_id: str,
+    registry: dict[str, str],
+    surviving_papers: list[dict[str, Any]],
+) -> None:
+    """Remove A's project symlinks + re-render REFERENCES.md (post-stage).
+
+    Filesystem-only: A's ``projects`` field is sealed into trash unchanged.
+    For each project A was tagged with:
+        * remove ``<project>/literature/A`` symlink;
+        * remove ``<project>/code/<repo>`` symlink only when no OTHER paper
+          in the project still binds the repo (shared-utility-lib case);
+        * re-render REFERENCES.md from the surviving paper list.
+
+    Unregistered or missing project dirs are skipped silently — the metadata
+    side of the delete already succeeded; symlinks are a convenience layer.
+    """
+    code_clones = [str(r) for r in (target_meta.get("code-clones") or [])]
+    for project in target_meta.get("projects") or []:
+        project = str(project)
+        project_dir_str = registry.get(project)
+        if not project_dir_str:
+            continue
+        project_dir = Path(project_dir_str).expanduser()
+        if not project_dir.is_dir():
+            continue
+
+        paper_link = project_dir / LITERATURE_SUBDIR / target_id
+        remove_link_if_present(paper_link)
+
+        for repo_name in code_clones:
+            link_path = project_dir / CODE_SUBDIR / repo_name
+            if not link_path.is_symlink():
+                continue
+            still_used = _papers_using_repo_in_project(
+                surviving_papers, project, repo_name,
+                exclude_paper_id=target_id,
+            )
+            if not still_used:
+                remove_link_if_present(link_path)
+
+        # REFERENCES.md reads list_papers(vault); A is already in trash by
+        # the time this runs, so it drops out naturally.
+        try:
+            write_references_md(vault, project, project_dir)
+        except FileNotFoundError:
+            continue
 
 
 @click.command("rm")
@@ -198,15 +303,6 @@ def _build_cascade_wikilink_updates(
     ),
 )
 @click.option(
-    "--cascade",
-    is_flag=True,
-    default=False,
-    help=(
-        "Auto-clear references in other papers and strip [[id]] wikilinks "
-        "(text preserved without brackets). Default refuses when refs exist."
-    ),
-)
-@click.option(
     "--purge",
     is_flag=True,
     default=False,
@@ -218,7 +314,10 @@ def _build_cascade_wikilink_updates(
     "skip_confirm",
     is_flag=True,
     default=False,
-    help="Skip the y/N confirmation prompt.",
+    help=(
+        "Non-interactive force-delete: skip the confirmation and tear down "
+        "all external links in one step (script / agent path)."
+    ),
 )
 @click.option(
     "--library",
@@ -239,7 +338,6 @@ def _build_cascade_wikilink_updates(
 def rm_cmd(
     paper_id: str | None,
     paper_doi: str | None,
-    cascade: bool,
     purge: bool,
     skip_confirm: bool,
     library: Path | None,
@@ -250,12 +348,15 @@ def rm_cmd(
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.
 
-    By default moves papers/<id>/ to <vault>/.trash/ (recoverable
-    via lit trash restore <id>). Pass --purge to permanently delete.
-    INDEX.json and views/by-*/ are refreshed either way. Refuses if
-    any other paper references it (via related / contradicts /
-    extends) or any notes file contains [[<id>]], unless
-    --cascade is given.
+    By default moves papers/<id>/ to <vault>/.trash/ (recoverable via
+    lit trash restore <id>). Pass --purge to permanently delete. INDEX.json
+    and views/by-*/ are refreshed either way.
+
+    All external links to the paper (other papers' relation fields, repo
+    bindings, project symlinks) are torn down atomically; the paper's own
+    fields ride into trash so a later lit trash restore can rebuild them.
+    A y/N confirmation guards the delete (default N); pass -y to force it
+    non-interactively.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
@@ -282,57 +383,29 @@ def rm_cmd(
     if target_meta is None:
         target_meta = {}
 
-    # ----- Reverse-ref scan -----
-    safe_papers = list_papers(vault)
-    holders = _scan_ref_holders(safe_papers, paper_id)
-    if holders and not cascade:
-        block = _format_holders_block(holders)
-        n_papers = len({pid for pid, _ in holders})
-        raise RmError(
-            f"Cannot remove {paper_id!r}: {n_papers} paper(s) still "
-            f"reference it.\n{block}\n"
-            f"Run `lit modify <id> --rm-tag <field>={paper_id}` on each, "
-            "or pass --cascade to auto-clear."
-        )
-
-    # ----- Wikilink scan -----
-    wiki_hits = _scan_wikilink_files(vault, paper_id)
-    if wiki_hits and not cascade:
-        block = _format_wikilinks_block(vault, wiki_hits)
-        raise RmError(
-            f"Cannot remove {paper_id!r}: {len(wiki_hits)} notes file(s) "
-            f"contain [[{paper_id}]] wikilinks.\n{block}\n"
-            "Edit those notes manually, or pass --cascade to strip the "
-            "brackets (text preserved)."
-        )
+    # ----- Relationship-network discovery (structured fields only) -----
+    ref_opposites = {
+        oid for oid, _ in _opposite_ref_targets(target_meta) if oid != paper_id
+    }
+    code_clones = [str(r) for r in (target_meta.get("code-clones") or [])]
+    projects = [str(p) for p in (target_meta.get("projects") or [])]
+    n_relations = len(ref_opposites) + len(code_clones) + len(projects)
 
     # ----- Confirmation -----
     title = target_meta.get("title") or "(no title)"
-    added = target_meta.get("created-at") or "(unknown)"
     if not skip_confirm:
         action = "permanently delete" if purge else "move to .trash/"
+        if n_relations:
+            console.print(
+                f"This paper is linked with [bold]{n_relations}[/] "
+                f"entr{'y' if n_relations == 1 else 'ies'} in {escape(str(vault))}."
+            )
+            console.print(
+                f"  [dim](run 'lit show {escape(paper_id)}' to inspect them)[/]"
+            )
         console.print(f"[bold yellow]About to {action}:[/]")
         console.print(f"  id     : {escape(paper_id)}")
         console.print(f"  title  : {escape(str(title))}")
-        console.print(f"  added  : {escape(str(added))}")
-        if cascade and (holders or wiki_hits):
-            n_holders = len({pid for pid, _ in holders})
-            extras = []
-            if holders:
-                extras.append(
-                    f"{n_holders} ref-holding paper{'s' if n_holders != 1 else ''}"
-                )
-            if wiki_hits:
-                extras.append(
-                    f"{len(wiki_hits)} notes file{'s' if len(wiki_hits) != 1 else ''}"
-                )
-            console.print(
-                f"  [yellow]--cascade:[/] will also touch {' + '.join(extras)}."
-            )
-            console.print(
-                "  [yellow]Note:[/] cascade edits to other papers / notes "
-                "are NOT recorded in trash — only this paper is restorable."
-            )
         if purge:
             console.print(
                 f"This permanently removes "
@@ -345,25 +418,21 @@ def rm_cmd(
                 "into .trash/ and updates INDEX/views. "
                 "Recover with [bold]lit trash restore[/]."
             )
-        if not click.confirm("Continue?", default=False):
+        if not click.confirm("Delete?", default=False):
             console.print("[dim]Aborted. No changes made.[/]")
             return
 
     now = _now_iso()
+    registry = load_config(vault).projects
 
-    # ----- Build cascade updates (only if --cascade) -----
-    cascade_meta_updates: dict[str, str] = {}
-    cascade_holder_ids: set[str] = set()
-    cascade_note_updates: dict[str, str] = {}
-    if cascade:
-        if holders:
-            cascade_meta_updates, cascade_holder_ids = _build_cascade_ref_updates(
-                vault, holders, paper_id, now, safe_papers
-            )
-        if wiki_hits:
-            cascade_note_updates = _build_cascade_wikilink_updates(
-                vault, wiki_hits, paper_id
-            )
+    # ----- Build cascade updates (always; teardown is the default now) -----
+    safe_papers = list_papers(vault)
+    cascade_ref_updates, touched_ref_ids = _build_cascade_ref_updates(
+        vault, target_meta, paper_id, now, safe_papers
+    )
+    cascade_repo_updates, orphan_repos = _build_cascade_code_updates(
+        vault, target_meta, paper_id, now
+    )
 
     # ----- Drop the target from the in-memory paper list (for INDEX) -----
     surviving = [p for p in safe_papers if p.get("id") != paper_id]
@@ -371,25 +440,56 @@ def rm_cmd(
 
     # ----- Phase 1: staged commit of all file content updates -----
     with staged_write(vault, op_id=f"rm-{paper_id}") as stage:
-        for pid, content in cascade_meta_updates.items():
+        for pid, content in cascade_ref_updates.items():
             stage.write_text(f"papers/{pid}/metadata.yaml", content)
-        for relpath, content in cascade_note_updates.items():
+        for relpath, content in cascade_repo_updates.items():
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", new_index)
 
     # ----- Phase 2: paper-folder removal (purge or trash) -----
-    # If this fails partway, INDEX has already been updated; M2.8
-    # health-check will flag the orphan dir.
+    # If this fails partway, INDEX has already been updated; health-check
+    # will flag the orphan dir.
     if purge:
         shutil.rmtree(paper_dir)
         trash_entry_path = None
     else:
         trash_entry_path = move_to_trash(
-            vault, paper_id, cascade_was_used=cascade
+            vault, paper_id, orphan_repos=orphan_repos
         )
 
-    # ----- Phase 3: views/ rebuild (best-effort, recoverable) -----
+    # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
+    for repo_name in orphan_repos:
+        repo_root = vault / CODES_DIRNAME / repo_name
+        if repo_root.is_dir():
+            shutil.rmtree(repo_root)
+
+    # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
+    if projects:
+        _teardown_project_links(
+            vault, target_meta, paper_id, registry, list_papers(vault)
+        )
+
+    # ----- Phase 3c: views/ rebuild (best-effort, recoverable) -----
     rebuild_views(vault, list_papers(vault))
+
+    # ----- Phase 3d: deletion log (write-only; invariant #1) -----
+    if purge:
+        append_log_entry(
+            vault,
+            {"id": paper_id, "title": str(title), "action": "purged", "at": now},
+        )
+    else:
+        assert trash_entry_path is not None
+        append_log_entry(
+            vault,
+            {
+                "id": paper_id,
+                "title": str(title),
+                "action": "trashed",
+                "at": now,
+                "trash_path": str(trash_entry_path.relative_to(vault)),
+            },
+        )
 
     # ----- Output -----
     if purge:
@@ -397,7 +497,6 @@ def rm_cmd(
             f"[bold green]✓ Purged[/] {escape(paper_id)} [dim](permanent)[/]"
         )
     else:
-        assert trash_entry_path is not None
         console.print(
             f"[bold green]✓ Trashed[/] {escape(paper_id)} "
             f"[dim](recover via `lit trash restore {escape(paper_id)}`)[/]"
@@ -411,17 +510,28 @@ def rm_cmd(
                 f"permanently removed oldest: "
                 f"{escape(', '.join(evicted))}[/]"
             )
-    if cascade_holder_ids:
-        n = len(cascade_holder_ids)
+    if touched_ref_ids:
+        n = len(touched_ref_ids)
         console.print(
             f"  Cleared references in [bold]{n}[/] paper"
             f"{'s' if n != 1 else ''} "
-            f"[dim]({escape(', '.join(sorted(cascade_holder_ids)))})[/]"
+            f"[dim]({escape(', '.join(sorted(touched_ref_ids)))})[/]"
         )
-    if cascade_note_updates:
-        n = len(cascade_note_updates)
+    if cascade_repo_updates:
+        n = len(cascade_repo_updates)
         console.print(
-            f"  Stripped [[{escape(paper_id)}]] from [bold]{n}[/] notes file"
-            f"{'s' if n != 1 else ''}"
+            f"  Unbound from [bold]{n}[/] repo{'s' if n != 1 else ''} "
+            "[dim](still bound by other papers)[/]"
+        )
+    if orphan_repos:
+        n = len(orphan_repos)
+        console.print(
+            f"  Removed [bold]{n}[/] orphan repo{'s' if n != 1 else ''} "
+            f"[dim]({escape(', '.join(sorted(orphan_repos)))})[/]"
+        )
+    if projects:
+        console.print(
+            f"  Unlinked from [bold]{len(projects)}[/] project"
+            f"{'s' if len(projects) != 1 else ''}"
         )
     console.print("[dim]INDEX.json + views/ refreshed.[/]")

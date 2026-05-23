@@ -48,7 +48,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "schema": "Schema (required fields + fixed enums)",
     "id_consistency": "ID consistency (dir name vs metadata id)",
     "invalid_paper_dirs": "Invalid paper directories",
-    "dangling_refs": "Dangling references (related/contradicts/extends)",
+    "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "taxonomy_drift": "Taxonomy drift (unregistered values)",
     "project_config_consistency": (

@@ -48,6 +48,7 @@ from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
+from litman.core.relations import ALL_REF_FIELDS
 from litman.core.views import rebuild_views, render_index
 from litman.exceptions import PaperNotFoundError, RenameError
 
@@ -58,9 +59,12 @@ _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.preserve_quotes = True
 _yaml.default_flow_style = False
 
-# Metadata.yaml list fields that hold paper-id references. Wikilink-formatted
-# refs ([[id]]) live in markdown only and are handled separately.
-REF_FIELDS: tuple[str, ...] = ("related", "contradicts", "extends")
+# Metadata.yaml list fields that hold paper-id references, forward and
+# reverse (ADR-012). Renaming an id must rewrite it inside reverse fields
+# (`extended-by` / `contradicted-by`) too, else a dangling reverse ref is
+# left behind. Wikilink-formatted refs ([[id]]) live in markdown only and
+# are handled separately.
+REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
 
 
 def _now_iso() -> str:

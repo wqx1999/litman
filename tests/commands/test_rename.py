@@ -53,7 +53,9 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "last-revisited": None,
         "related": fields.get("related", []),
         "contradicts": fields.get("contradicts", []),
+        "contradicted-by": fields.get("contradicted_by", []),
         "extends": fields.get("extends", []),
+        "extended-by": fields.get("extended_by", []),
         "code-clones": [],
     }
     yaml = YAML()
@@ -130,6 +132,29 @@ def test_rename_ripples_to_back_references(vault: Path) -> None:
 
     no_ref = _read_meta(vault, "2024_NoRef")
     assert no_ref["updated-at"] == "2026-04-28T10:00:00+02:00"
+
+
+def test_rename_rewrites_reverse_fields(vault: Path) -> None:
+    """ADR-012: renaming an id rewrites it inside reverse relation fields
+    (extended-by / contradicted-by) too, not just the forward fields."""
+    _write_paper(vault, "2023_Old_Source")
+    _write_paper(
+        vault, "2024_Downstream",
+        extended_by=["2023_Old_Source"],
+        contradicted_by=["2023_Old_Source"],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["rename", "2023_Old_Source", "2023_New_Source",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    d = _read_meta(vault, "2024_Downstream")
+    assert d["extended-by"] == ["2023_New_Source"]
+    assert d["contradicted-by"] == ["2023_New_Source"]
 
 
 def test_rename_self_reference_updated(vault: Path) -> None:

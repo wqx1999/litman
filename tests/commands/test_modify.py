@@ -689,3 +689,284 @@ def test_modify_set_scalar_not_register_validated(
     )
     assert result.exit_code == 0, result.output
     assert _read_meta(vault, paper_id)["read-date"] == "2026-05-16"
+
+
+# ---------------------------------------------------------------------------
+# M23.0: ADR-012 symmetric relations — auto double-write
+# ---------------------------------------------------------------------------
+
+
+def _write_relation_paper(vault: Path, paper_id: str) -> None:
+    """Hand-write a paper carrying the full relation schema incl. reverse
+    fields (extended-by / contradicted-by)."""
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    (paper_dir / "metadata.yaml").write_text(
+        f"id: {paper_id}\n"
+        f"title: {paper_id}\n"
+        "authors:\n"
+        "  - Foo, Alice\n"
+        "year: 2024\n"
+        "journal: Test J.\n"
+        f"doi: 10.0/{paper_id}\n"
+        "arxiv-id:\n"
+        "github:\n"
+        "created-at: '2026-04-28T10:00:00+02:00'\n"
+        "updated-at: '2026-04-28T10:00:00+02:00'\n"
+        "projects: []\n"
+        "topics: []\n"
+        "methods: []\n"
+        "data: []\n"
+        "type: research\n"
+        "status: inbox\n"
+        "priority: B\n"
+        "read-date:\n"
+        "last-revisited:\n"
+        "related: []\n"
+        "contradicts: []\n"
+        "contradicted-by: []\n"
+        "extends: []\n"
+        "extended-by: []\n"
+        "code-clones: []\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def vault_two_papers(tmp_path: Path) -> tuple[Path, str, str]:
+    vault = create_vault(tmp_path)
+    a, b = "2024_Paper_A", "2024_Paper_B"
+    _write_relation_paper(vault, a)
+    _write_relation_paper(vault, b)
+    return vault, a, b
+
+
+def test_modify_extends_double_writes_reverse(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC1: --add-tag extends=B writes A.extends:[B] AND B.extended-by:[A]."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["extends"] == [b]
+    assert _read_meta(vault, b)["extended-by"] == [a]
+    # opposite paper's updated-at also bumped.
+    assert _read_meta(vault, b)["updated-at"] != "2026-04-28T10:00:00+02:00"
+
+
+def test_modify_extends_rm_double_removes_reverse(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC1: --rm-tag extends=B removes both sides symmetrically."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    result = runner.invoke(
+        cli, ["modify", a, "--rm-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["extends"] == []
+    assert _read_meta(vault, b)["extended-by"] == []
+
+
+def test_modify_contradicts_double_writes_reverse(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC2: contradicts ↔ contradicted-by."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", a, "--add-tag", f"contradicts={b}", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["contradicts"] == [b]
+    assert _read_meta(vault, b)["contradicted-by"] == [a]
+
+    result = runner.invoke(
+        cli,
+        ["modify", a, "--rm-tag", f"contradicts={b}", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["contradicts"] == []
+    assert _read_meta(vault, b)["contradicted-by"] == []
+
+
+def test_modify_related_double_writes_symmetric(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC2: related ↔ related (self-paired)."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"related={b}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["related"] == [b]
+    assert _read_meta(vault, b)["related"] == [a]
+
+    result = runner.invoke(
+        cli, ["modify", a, "--rm-tag", f"related={b}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["related"] == []
+    assert _read_meta(vault, b)["related"] == []
+
+
+def test_modify_relation_passes_bidirectional_check(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """Auto double-write leaves the vault green under check_bidirectional_refs."""
+    from litman.core.checks import check_bidirectional_refs
+    from litman.core.document import list_papers
+
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    issues = check_bidirectional_refs(vault, list_papers(vault))
+    assert issues == []
+
+
+def test_modify_opposite_missing_single_side_only(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC6 boundary: opposite paper absent → write originating side only,
+    no error, no opposite created."""
+    vault, a, _b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", a, "--add-tag", "extends=2099_Ghost",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["extends"] == ["2099_Ghost"]
+    # ghost paper was NOT created.
+    assert not (vault / "papers" / "2099_Ghost").exists()
+
+
+def test_modify_self_reference_skips_double_write(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC6 boundary: related=<self> records the forward edge but does not
+    attempt a separate opposite write (no crash, no extra field)."""
+    vault, a, _b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"related={a}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["related"] == [a]
+
+
+def test_modify_opposite_dedup_no_duplicate(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC6 boundary: re-adding an existing edge does not duplicate the
+    reverse entry on the opposite paper."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    # Add the same edge again.
+    runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert _read_meta(vault, a)["extends"] == [b]
+    assert _read_meta(vault, b)["extended-by"] == [a]  # not [a, a]
+
+
+def test_modify_reverse_field_rejected_for_user(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC7: user cannot set a reverse field via --add-tag extended-by=..."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", a, "--add-tag", f"extended-by={b}", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    msg = str(result.exception)
+    assert "extended-by" in msg
+    assert "reverse relation field" in msg
+    # nothing written.
+    assert _read_meta(vault, a)["extended-by"] == []
+
+
+def test_modify_reverse_field_rejected_rm_tag(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC7: --rm-tag contradicted-by=... is rejected too."""
+    vault, a, b = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", a, "--rm-tag", f"contradicted-by={b}",
+         "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "contradicted-by" in str(result.exception)
+
+
+def test_modify_opposite_only_change_not_treated_as_noop(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """When the originating side already has the edge but the opposite is
+    missing its reverse entry, the command must still reconcile the
+    opposite rather than short-circuiting as a no-op."""
+    vault, a, b = vault_two_papers
+    # Seed A.extends:[B] directly WITHOUT the reverse on B (simulates a
+    # pre-feature vault).
+    meta_a = (vault / "papers" / a / "metadata.yaml")
+    meta_a.write_text(
+        meta_a.read_text().replace("extends: []\n", f"extends:\n  - {b}\n"),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # A unchanged (already had it), but B's reverse now reconciled.
+    assert _read_meta(vault, a)["extends"] == [b]
+    assert _read_meta(vault, b)["extended-by"] == [a]
+
+
+def test_modify_rm_tag_opposite_lacks_item_is_noop(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    """AC6 boundary (d): --rm-tag when the opposite paper never had the
+    reverse entry must be a true no-op on the opposite (no spurious write,
+    no updated-at bump). Seeds A.extends:[B] with B.extended-by empty (a
+    hand-edited / pre-feature vault) then removes the forward edge."""
+    vault, a, b = vault_two_papers
+    seed_updated = "2026-04-28T10:00:00+02:00"
+    meta_a = vault / "papers" / a / "metadata.yaml"
+    meta_a.write_text(
+        meta_a.read_text().replace("extends: []\n", f"extends:\n  - {b}\n"),
+        encoding="utf-8",
+    )
+    # B's extended-by deliberately stays [] (asymmetric seed).
+    assert _read_meta(vault, b)["extended-by"] == []
+    assert _read_meta(vault, b)["updated-at"] == seed_updated
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--rm-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Originating side dropped the edge.
+    assert _read_meta(vault, a)["extends"] == []
+    # Opposite untouched: still empty AND not re-stamped.
+    assert _read_meta(vault, b)["extended-by"] == []
+    assert _read_meta(vault, b)["updated-at"] == seed_updated
