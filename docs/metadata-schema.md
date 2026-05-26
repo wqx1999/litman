@@ -95,19 +95,37 @@ combinations (e.g. `read-date` set but `status` still `inbox`).
 ## Relations layer
 
 All fields are list[string] of other paper ids. Empty by default. The
-forward direction is stored on this paper; back-references are derived
-on demand by `lit show` and `lit health-check`.
+three paper-to-paper relations are **symmetric and stored on both ends**
+(ADR-012): you set the *forward* field on one paper, and the CLI's atomic
+double-write maintains the paired *reverse* field on the opposite paper
+in the same transaction. Back-references are therefore real stored fields,
+not computed on demand. `lit health-check` validates that every pair is
+intact (`extends`↔`extended-by`, `contradicts`↔`contradicted-by`,
+`related` self-paired).
 
-| Field | Semantic |
-|---|---|
-| `related` | Generic "see also". Use when the link is informational, not directional. |
-| `contradicts` | This paper's results disagree with the linked paper(s). |
-| `extends` | This paper builds on or improves the linked paper(s). |
-| `code-clones` | Names of repos under `<vault>/codes/<name>/` that implement this paper. Maintained by `lit code link` / `lit code add --paper`. |
+| Field | Direction | Semantic |
+|---|---|---|
+| `related` | symmetric | Generic "see also". Use when the link is informational, not directional. Self-paired: `A.related:[B]` implies `B.related:[A]`. |
+| `extends` | forward | This paper builds on or improves the linked paper(s). |
+| `extended-by` | reverse | Set automatically when another paper lists this one under `extends`. **CLI-maintained — never set it directly.** |
+| `contradicts` | forward | This paper's results disagree with the linked paper(s). |
+| `contradicted-by` | reverse | Set automatically when another paper lists this one under `contradicts`. **CLI-maintained — never set it directly.** |
+| `code-clones` | — | Names of repos under `<vault>/codes/<name>/` that implement this paper. Maintained by `lit code link` / `lit code add --paper`. |
+
+**Forward vs reverse — what you may edit.** You drive only the forward
+fields (`related` / `extends` / `contradicts`) via `lit modify --add-tag` /
+`--rm-tag`; each write triggers the paired reverse write on the opposite
+paper. The reverse fields (`extended-by` / `contradicted-by`) are
+maintained by that auto double-write **only** — `lit modify` rejects them
+as `--add-tag` / `--rm-tag` targets, because naming a reverse field by hand
+would break the pairing. To re-sync a broken pair, always act on the
+forward field. (`related` has no separate reverse field; it pairs with
+itself.)
 
 `lit rename <old> <new>` rewrites every occurrence of `<old>` across all
-papers' relations fields atomically. `lit rm <id>` refuses if any other
-paper still references `<id>`, unless `--cascade` is given.
+papers' relations fields (forward and reverse) atomically. `lit rm <id>`
+refuses if any other paper still references `<id>`, unless `--cascade` is
+given.
 
 ## Project-relevance layer (dynamic per project)
 
@@ -174,7 +192,9 @@ last-revisited: "2026-04-18"
 related:
   - 2018_Devlin_BERT
 contradicts: []
+contradicted-by: []      # CLI-maintained reverse field
 extends: []
+extended-by: []          # CLI-maintained reverse field
 code-clones:
   - transformer-pytorch
 
