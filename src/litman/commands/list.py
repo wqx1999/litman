@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,41 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
     return True
 
 
+def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
+    """Sort key for ``--sort recent``: the more recent of two engagement
+    signals, as a POSIX timestamp.
+
+    1. ``paper.pdf`` filesystem mtime — bumps when the user annotates the
+       PDF in a viewer that writes back to the file (the reading signal,
+       viewer-agnostic because mtime is OS-maintained).
+    2. ``updated-at`` metadata field — bumps on any litman write
+       (lit read / lit modify / tag / link = agent-mediated curation).
+
+    Returns the later of the two. A missing PDF or a missing/malformed
+    ``updated-at`` contributes 0.0, so a paper with neither engagement
+    signal sinks to the bottom.
+    """
+    pdf = vault / "papers" / str(paper.get("id", "")) / "paper.pdf"
+    try:
+        pdf_mtime = pdf.stat().st_mtime
+    except OSError:
+        pdf_mtime = 0.0
+    # The YAML safe-loader parses an ISO 8601 timestamp into a datetime
+    # object, so updated-at usually arrives already typed. A plain string
+    # is still accepted (e.g. a non-roundtripped value) via fromisoformat.
+    raw = paper.get("updated-at")
+    try:
+        if isinstance(raw, datetime):
+            updated = raw.timestamp()
+        elif raw:
+            updated = datetime.fromisoformat(raw).timestamp()
+        else:
+            updated = 0.0
+    except (ValueError, TypeError, OSError, OverflowError):
+        updated = 0.0
+    return max(pdf_mtime, updated)
+
+
 @click.command("list")
 @click.option("--year", type=int, help="Filter by exact publication year.")
 @click.option(
@@ -67,6 +103,17 @@ def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
 @click.option(
     "--author",
     help="Case-insensitive substring match against any author entry.",
+)
+@click.option(
+    "--unread", is_flag=True, default=False,
+    help="Only papers not yet finished reading (read-date is empty).",
+)
+@click.option(
+    "--sort", "sort_by",
+    type=click.Choice(["id", "recent"]), default="id",
+    help="Sort order. 'id' = ascending by paper id (default, stable, "
+         "matches INDEX.json). 'recent' = most-recently-engaged first "
+         "(max of paper.pdf mtime and updated-at).",
 )
 @click.option(
     "--format", "output_format",
@@ -101,6 +148,8 @@ def list_cmd(
     project: str | None,
     data_filter: str | None,
     author: str | None,
+    unread: bool,
+    sort_by: str,
     output_format: str,
     library: Path | None,
     vault_name: str | None,
@@ -126,6 +175,15 @@ def list_cmd(
         "author": author,
     }
     filtered = [p for p in all_papers if _matches_filters(p, filters)]
+
+    if unread:
+        filtered = [p for p in filtered if not p.get("read-date")]
+
+    if sort_by == "recent":
+        # list.sort is stable: papers with equal recency keep the incoming
+        # id-ascending order (list_papers returns id-asc). So no explicit
+        # tie-break is needed — equal-recency ties stay deterministic.
+        filtered.sort(key=lambda p: _recency_key(vault, p), reverse=True)
 
     if output_format == "json":
         click.echo(json.dumps([project_paper(p) for p in filtered],

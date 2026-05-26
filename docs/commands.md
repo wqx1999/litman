@@ -45,12 +45,19 @@ JSON file. The CLI refuses both at once.
 | `lit list --year 2024 --status deep-read` | AND-combined filters. |
 | `lit list --topic transformer` | Match papers whose `topics` list contains exactly this value. |
 | `lit list --author wang` | Case-insensitive substring against any author entry. |
+| `lit list --unread --sort recent` | Unread papers (empty `read-date`), most-recently-engaged first — the "continue reading" primitive. |
 | `lit show <id>` | Print one paper's full metadata + file paths. |
 
 Available `lit list` filters: `--year`, `--type`, `--status`,
-`--priority`, `--topic`, `--method`, `--project`, `--data`, `--author`.
-Multi-valued fields use exact list-membership; `--author` uses substring;
-all other filters use exact equality.
+`--priority`, `--topic`, `--method`, `--project`, `--data`, `--author`,
+`--unread`. Multi-valued fields use exact list-membership; `--author` uses
+substring; all other filters use exact equality. `--unread` keeps only
+papers whose `read-date` is empty (None/missing/empty string).
+
+`--sort [id|recent]` controls order (default `id`, ascending, matches
+`INDEX.json`). `--sort recent` orders most-recently-engaged first, by
+`max(paper.pdf mtime, updated-at)`. Both options apply to `--format json`
+as well as the default table.
 
 ## Scenario 4 — Edit a paper's metadata
 
