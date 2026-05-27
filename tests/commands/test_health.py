@@ -649,6 +649,42 @@ def test_pdf_viewer_clean_when_configured_present(
     assert check_pdf_viewer(vault, []) == []
 
 
+def test_pdf_viewer_warns_when_xdg_open_headless(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Linux + xdg-open present + no configured viewer + headless → warn."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        viewer_mod.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "xdg-open" else None,
+    )
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    issues = check_pdf_viewer(vault, [])
+    assert len(issues) == 1
+    assert issues[0].category == "pdf_viewer"
+    assert issues[0].severity == "warning"
+    # Distinct from the "not installed" message.
+    assert "no graphical display" in issues[0].message
+    assert "no platform PDF viewer" not in issues[0].message
+
+
+def test_pdf_viewer_clean_when_xdg_open_with_display(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Linux + xdg-open present + DISPLAY set + no configured viewer → clean."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        viewer_mod.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "xdg-open" else None,
+    )
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert check_pdf_viewer(vault, []) == []
+
+
 # --- code_clone_integrity ---------------------------------------------------
 
 
@@ -816,7 +852,12 @@ def test_auto_fixable_categories_constant() -> None:
 # ===========================================================================
 
 
-def test_health_check_clean_vault_exits_zero(vault: Path) -> None:
+def test_health_check_clean_vault_exits_zero(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pin platform to macOS so the pdf_viewer probe is deterministically clean
+    # regardless of the host's DISPLAY / xdg-open state (CI may be headless).
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     result = runner.invoke(
@@ -837,11 +878,16 @@ def test_health_check_with_issues_exits_one(vault: Path) -> None:
     assert "GHOST" in result.output
 
 
-def test_health_check_fix_clears_staging(vault: Path) -> None:
+def test_health_check_fix_clears_staging(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """M17: a no-COMMITTED leftover is rolled back by the vault-open hook
     before checks even run, so health-check sees a clean vault and the
     leftover is gone — no explicit ``--fix`` pass is needed.
     """
+    # Pin platform to macOS so the pdf_viewer probe is deterministically clean
+    # regardless of the host's DISPLAY / xdg-open state (CI may be headless).
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
     op_dir = vault / ".litman-staging" / "op-crashed"
     op_dir.mkdir()
     runner = CliRunner()

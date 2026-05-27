@@ -1014,7 +1014,7 @@ def check_pdf_viewer(
     schema / id / ref probes.
     """
     from litman.core.config import load_config
-    from litman.core.viewer import detect_platform_viewer
+    from litman.core.viewer import detect_platform_viewer, is_headless
 
     try:
         config = load_config(vault)
@@ -1044,7 +1044,8 @@ def check_pdf_viewer(
             )
         return out
 
-    if detect_platform_viewer() is None:
+    viewer = detect_platform_viewer()
+    if viewer is None:
         out.append(
             Issue(
                 category="pdf_viewer",
@@ -1057,6 +1058,24 @@ def check_pdf_viewer(
                 hint=(
                     "install xdg-utils (Linux) or wslview (WSL), "
                     "or set default_pdf_viewer in lit-config.yaml"
+                ),
+            )
+        )
+    elif viewer == "xdg-open" and is_headless():
+        out.append(
+            Issue(
+                category="pdf_viewer",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    "xdg-open is installed but no graphical display is "
+                    "reachable in this session — `lit open` will exit 2 "
+                    "and print the path only"
+                ),
+                hint=(
+                    "set default_pdf_viewer in lit-config.yaml to a viewer "
+                    "usable without an X display, or run lit open from a "
+                    "session with DISPLAY/WAYLAND_DISPLAY set"
                 ),
             )
         )

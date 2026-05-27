@@ -87,6 +87,16 @@ def resolve_paper_id(vault: Path, query: str) -> str:
     raise AmbiguousPaperIdError(query, matches)
 
 
+def is_headless() -> bool:
+    """True when no X11/Wayland display is reachable.
+
+    Only meaningful for the xdg-open branch of launch_pdf: macOS/Windows
+    don't consult DISPLAY, and the wslview branch reaches the Windows host
+    regardless of any Linux display.
+    """
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def detect_platform_viewer() -> str | None:
     """Return the platform default PDF viewer command, or None.
 
@@ -132,8 +142,11 @@ def launch_pdf(
         prints this so the user knows which viewer was actually invoked.
 
     Raises:
-        FileNotFoundError: No usable viewer. Message tells the user what
-            to install or which config field to update.
+        FileNotFoundError: No usable viewer in this session. Either the
+            command is missing (tells the user what to install / which
+            config field to update), or the platform default is
+            ``xdg-open`` but no graphical display is reachable (headless
+            session). The CLI maps this to exit 2 + path print.
     """
     if configured_viewer:
         try:
@@ -163,6 +176,19 @@ def launch_pdf(
         # os.startfile is Windows-only; mypy can't see it on other platforms.
         os.startfile(str(pdf_path))  # type: ignore[attr-defined]
         return ("os.startfile", "platform")
+
+    if viewer == "xdg-open" and is_headless():
+        # Reuse FileNotFoundError (not a new exception): open.py already maps
+        # it to exit 2 + "PDF path:" print, the documented "no usable viewer
+        # in this session" behavior. A LitmanError subclass would map to exit
+        # 1 via cli.py, breaking that exit-2 contract.
+        raise FileNotFoundError(
+            "No graphical display detected (DISPLAY and WAYLAND_DISPLAY both "
+            "unset); xdg-open cannot launch a viewer in this session. The PDF "
+            "path is printed below for manual handling. Set default_pdf_viewer "
+            "in lit-config.yaml to a viewer usable without an X display, or run "
+            "from a session with a display."
+        )
 
     source = "wsl-fallback" if viewer == "wslview" else "platform"
     try:

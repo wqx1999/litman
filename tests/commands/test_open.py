@@ -20,6 +20,7 @@ from litman.core import viewer as viewer_mod
 from litman.core.library import create_vault
 from litman.core.viewer import (
     detect_platform_viewer,
+    is_headless,
     launch_pdf,
     resolve_paper_id,
 )
@@ -222,6 +223,97 @@ def test_launch_pdf_treats_empty_string_as_no_config(
 
 
 # ---------------------------------------------------------------------------
+# launch_pdf — headless (xdg-open without a display)
+# ---------------------------------------------------------------------------
+
+
+def _patch_linux_xdg(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux with xdg-open present (and no wslview)."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        viewer_mod.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "xdg-open" else None,
+    )
+
+
+def test_launch_pdf_xdg_open_with_display_launches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _PopenRecorder()
+    monkeypatch.setattr(viewer_mod.subprocess, "Popen", recorder)
+    _patch_linux_xdg(monkeypatch)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF")
+    cmd, source = launch_pdf(pdf, None)
+    assert (cmd, source) == ("xdg-open", "platform")
+    assert recorder.calls == [["xdg-open", str(pdf)]]
+
+
+def test_launch_pdf_xdg_open_headless_raises_and_skips_popen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recorder = _PopenRecorder()
+    monkeypatch.setattr(viewer_mod.subprocess, "Popen", recorder)
+    _patch_linux_xdg(monkeypatch)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF")
+    with pytest.raises(FileNotFoundError, match="No graphical display"):
+        launch_pdf(pdf, None)
+    # Must NOT have forked a process that silently fails.
+    assert recorder.calls == []
+
+
+def test_launch_pdf_xdg_open_wayland_only_launches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """WAYLAND_DISPLAY set (DISPLAY unset) still counts as a display."""
+    recorder = _PopenRecorder()
+    monkeypatch.setattr(viewer_mod.subprocess, "Popen", recorder)
+    _patch_linux_xdg(monkeypatch)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF")
+    cmd, source = launch_pdf(pdf, None)
+    assert (cmd, source) == ("xdg-open", "platform")
+    assert recorder.calls == [["xdg-open", str(pdf)]]
+
+
+def test_launch_pdf_wslview_not_gated_by_display(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """wslview reaches the Windows host regardless of any Linux display."""
+    recorder = _PopenRecorder()
+    monkeypatch.setattr(viewer_mod.subprocess, "Popen", recorder)
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        viewer_mod.shutil,
+        "which",
+        lambda cmd: "/usr/bin/wslview" if cmd == "wslview" else None,
+    )
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF")
+    cmd, source = launch_pdf(pdf, None)
+    assert (cmd, source) == ("wslview", "wsl-fallback")
+    assert recorder.calls == [["wslview", str(pdf)]]
+
+
+def test_is_headless_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert is_headless() is True
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert is_headless() is False
+
+
+# ---------------------------------------------------------------------------
 # lit open CLI
 # ---------------------------------------------------------------------------
 
@@ -346,6 +438,33 @@ def test_open_no_viewer_exits_2(
     assert "No platform PDF viewer" in result.output
     # Path must be printed so the user can copy / pipe it.
     assert "paper.pdf" in result.output
+
+
+def test_open_xdg_open_headless_exits_2(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Linux + xdg-open present but no display → exit 2, path, no 'Opened'."""
+    recorder = _PopenRecorder()
+    monkeypatch.setattr(viewer_mod.subprocess, "Popen", recorder)
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        viewer_mod.shutil,
+        "which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd == "xdg-open" else None,
+    )
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["open", "2024_Smith_Foo", "--library", str(vault)]
+    )
+    assert result.exit_code == 2
+    assert "No graphical display" in result.output
+    assert "paper.pdf" in result.output
+    assert "Opened" not in result.output
+    # No process was forked.
+    assert recorder.calls == []
 
 
 def test_open_configured_viewer_missing_exits_2(
