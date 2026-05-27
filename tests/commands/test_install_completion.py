@@ -8,7 +8,11 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
-from litman.commands.install_completion import SENTINEL
+from litman.commands.install_completion import (
+    SENTINEL,
+    completion_installed,
+    detect_shell,
+)
 
 
 def _run(runner: CliRunner, *args: str) -> "object":
@@ -154,3 +158,58 @@ def test_install_completion_help_lists_shells() -> None:
     assert result.exit_code == 0
     for shell in ("bash", "zsh", "fish"):
         assert shell in result.output
+
+
+# ---------------------------------------------------------------------------
+# M27 — shell detection + no-arg invocation + completion_installed helper
+# ---------------------------------------------------------------------------
+
+
+def test_detect_shell_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+    assert detect_shell() == "zsh"
+    monkeypatch.setenv("SHELL", "/bin/tcsh")
+    assert detect_shell() is None
+    monkeypatch.delenv("SHELL", raising=False)
+    assert detect_shell() is None
+
+
+def test_install_completion_no_arg_uses_detected_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    runner = CliRunner()
+    result = runner.invoke(cli, ["install-completion"])
+    assert result.exit_code == 0, result.output
+
+    bashrc = tmp_path / ".bashrc"
+    assert bashrc.is_file()
+    assert SENTINEL in bashrc.read_text(encoding="utf-8")
+
+
+def test_install_completion_no_arg_undetectable_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SHELL", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["install-completion"])
+    assert result.exit_code != 0
+    out = (result.output or "") + (
+        str(result.exception) if result.exception else ""
+    )
+    assert "pass it explicitly" in out.lower()
+
+
+def test_completion_installed_true_after_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert completion_installed("bash", home=tmp_path) is False
+    runner = CliRunner()
+    result = _run(runner, "bash")
+    assert result.exit_code == 0, result.output
+    assert completion_installed("bash", home=tmp_path) is True
+    # A shell that was never installed is still reported as not installed.
+    assert completion_installed("zsh", home=tmp_path) is False

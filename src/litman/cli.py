@@ -37,6 +37,7 @@ from litman.commands.refresh import refresh_views_cmd
 from litman.commands.rename import rename_cmd
 from litman.commands.revisit import revisit_cmd
 from litman.commands.rm import rm_cmd
+from litman.commands.setup import setup_cmd
 from litman.commands.show import show_cmd
 from litman.commands.skim import skim_cmd
 from litman.commands.sync import sync_group
@@ -48,7 +49,63 @@ from litman.exceptions import LitmanError
 console = Console()
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+# Workflow-ordered command groups for `lit --help` / `lit help`. Any command
+# not listed here still appears under "Other" (so a newly added command is
+# never silently hidden) — add it to the right section when you add it.
+_COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Setup & vaults",
+     ("setup", "init", "vault", "install-completion", "install-skill", "help")),
+    ("Papers",
+     ("add", "list", "show", "open", "modify", "rename", "rm")),
+    ("Reading status",
+     ("read", "skim", "promote", "revisit", "drop")),
+    ("Linking & organization",
+     ("link", "unlink", "project", "code", "taxonomy")),
+    ("Maintenance",
+     ("health-check", "refresh-views", "trash", "sync", "export", "config")),
+)
+
+
+class LitGroup(click.Group):
+    """Root group that renders the command list in workflow sections instead
+    of one flat alphabetical block. Falls back to an 'Other' section for any
+    command missing from _COMMAND_SECTIONS so nothing is silently hidden."""
+
+    def format_commands(
+        self, ctx: click.Context, formatter: click.HelpFormatter
+    ) -> None:
+        visible: dict[str, click.Command] = {}
+        for name in self.list_commands(ctx):
+            cmd = self.get_command(ctx, name)
+            if cmd is None or cmd.hidden:
+                continue
+            visible[name] = cmd
+        if not visible:
+            return
+        limit = formatter.width - 6 - max(len(n) for n in visible)
+
+        def rows(names: list[str]) -> list[tuple[str, str]]:
+            return [(n, visible[n].get_short_help_str(limit)) for n in names]
+
+        placed: set[str] = set()
+        for title, names in _COMMAND_SECTIONS:
+            present = [n for n in names if n in visible]
+            if not present:
+                continue
+            with formatter.section(title):
+                formatter.write_dl(rows(present))
+            placed.update(present)
+
+        leftover = [n for n in visible if n not in placed]
+        if leftover:
+            with formatter.section("Other"):
+                formatter.write_dl(rows(leftover))
+
+
+@click.group(
+    cls=LitGroup,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 @click.version_option(version=__version__, prog_name="lit")
 def cli() -> None:
     """litman — local-first, AI-augmented literature management CLI.
@@ -58,6 +115,7 @@ def cli() -> None:
     """
 
 
+cli.add_command(setup_cmd)
 cli.add_command(init_cmd)
 cli.add_command(add_cmd)
 cli.add_command(list_cmd)
@@ -87,7 +145,7 @@ cli.add_command(vault_group)
 cli.add_command(export_cmd)
 
 
-@cli.command()
+@cli.command(hidden=True)
 def hello() -> None:
     """Sanity-check command. Confirms lit is installed and importable."""
     console.print(

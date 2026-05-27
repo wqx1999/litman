@@ -21,6 +21,7 @@ Claude Code skills and runs entirely inside the user's shell.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import NamedTuple
 
@@ -102,24 +103,61 @@ def _install_block(plan: _ShellPlan) -> bool:
     return True
 
 
+def detect_shell() -> str | None:
+    """Best-effort detection of the user's shell from ``$SHELL``.
+
+    Returns the basename of ``$SHELL`` lower-cased if it is one of
+    ``SUPPORTED_SHELLS``, else ``None`` (caller then errors and asks the
+    user to pass the shell explicitly rather than guessing a wrong default).
+    """
+    raw = os.environ.get("SHELL", "").strip()
+    if not raw:
+        return None
+    name = Path(raw).name.lower()
+    return name if name in SUPPORTED_SHELLS else None
+
+
+def completion_installed(shell: str, home: Path | None = None) -> bool:
+    """True iff the completion sentinel is already present for ``shell``.
+
+    Used by ``lit setup`` to skip a pointless "install completion?" prompt
+    when the block is already in place. Mirrors ``_install_block``'s
+    idempotency check without writing anything.
+    """
+    plan = _build_plan(shell, home or Path.home())
+    target = plan.target_path
+    return target.is_file() and SENTINEL in target.read_text(encoding="utf-8")
+
+
 @click.command("install-completion")
 @click.argument(
     "shell",
     type=click.Choice(SUPPORTED_SHELLS, case_sensitive=False),
+    required=False,
+    default=None,
 )
-def install_completion_cmd(shell: str) -> None:
+def install_completion_cmd(shell: str | None) -> None:
     """Install lit shell tab-completion for the current user.
 
-    Supported shells: bash / zsh / fish. For bash/zsh the
-    completion eval line is appended to ~/.bashrc / ~/.zshrc; for
-    fish a self-sourcing snippet lands in
-    ~/.config/fish/completions/lit.fish. Idempotent — re-running detects
-    the existing block via a sentinel comment and skips the rewrite.
+    SHELL is optional: when omitted, lit detects it from $SHELL. Supported
+    shells: bash / zsh / fish. For bash/zsh the completion eval line is
+    appended to ~/.bashrc / ~/.zshrc; for fish a self-sourcing snippet
+    lands in ~/.config/fish/completions/lit.fish. Idempotent — re-running
+    detects the existing block via a sentinel comment and skips the rewrite.
 
-    Restart the shell (or run source ~/.zshrc etc.) to activate
-    completion. After that, lit show <Tab> lists paper ids in the
-    active vault.
+    Restart the shell (or run source ~/.zshrc etc.) to activate completion.
+    After that, lit show <Tab> lists paper ids in the active vault.
     """
+    if shell is None:
+        shell = detect_shell()
+        if shell is None:
+            raise LitmanError(
+                "Could not detect your shell from $SHELL. Pass it "
+                f"explicitly: lit install-completion "
+                f"{{{'|'.join(SUPPORTED_SHELLS)}}}."
+            )
+        console.print(f"[dim]Detected shell from $SHELL: {shell}[/]")
+
     shell = shell.lower()
     home = Path.home()
     plan = _build_plan(shell, home)

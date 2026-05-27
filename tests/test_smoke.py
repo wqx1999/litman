@@ -39,11 +39,13 @@ def test_hello_command() -> None:
 
 
 def test_help_command_no_args_lists_commands() -> None:
-    # `lit help` is an alias for `lit --help`: prints the top-level command list.
+    # `lit help` is an alias for `lit --help`: prints the top-level command
+    # list. M27 replaced the flat "Commands:" block with workflow sections,
+    # so assert against a section title rather than the old generic header.
     runner = CliRunner()
     result = runner.invoke(cli, ["help"])
     assert result.exit_code == 0
-    assert "Commands:" in result.output
+    assert "Setup & vaults" in result.output
     assert "taxonomy" in result.output
 
 
