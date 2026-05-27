@@ -19,6 +19,7 @@ from litman.core.vault_registry import (
     VaultEntry,
     VaultRegistry,
     add_vault,
+    ensure_name_registrable,
     find_active,
     find_by_name,
     is_valid_vault_name,
@@ -292,6 +293,35 @@ def test_save_adds_human_warning_header(fake_home: Path, vault_a: Path) -> None:
     body = registry_path().read_text(encoding="utf-8")
     assert "Do not hand-edit" in body
     assert "lit vault" in body
+
+
+# ---------------------------------------------------------------------------
+# ensure_name_registrable
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_name_registrable_passes_clean(vault_a: Path) -> None:
+    """A clean, novel name raises nothing."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    # No exception → registrable.
+    ensure_name_registrable(reg, "second")
+
+
+def test_ensure_name_registrable_rejects_duplicate(vault_a: Path) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError, match="already registered"):
+        ensure_name_registrable(reg, "main")
+
+
+def test_ensure_name_registrable_rejects_case_fold(vault_a: Path) -> None:
+    reg = add_vault(VaultRegistry(), "my-main", vault_a)
+    with pytest.raises(VaultRegistryError, match="differs only in case"):
+        ensure_name_registrable(reg, "My-Main")
+
+
+def test_ensure_name_registrable_rejects_bad_shape() -> None:
+    with pytest.raises(VaultRegistryError, match="Invalid vault name"):
+        ensure_name_registrable(VaultRegistry(), "bad:name")
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +622,7 @@ def test_find_vault_no_explicit_no_registry_no_cwd_raises(
     import os
     os.chdir(nowhere)
     try:
-        with pytest.raises(LibraryNotFoundError, match="No lit-config.yaml"):
+        with pytest.raises(LibraryNotFoundError, match="No vault found"):
             find_vault()
     finally:
         os.chdir(Path(__file__).parent)

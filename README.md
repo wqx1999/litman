@@ -90,33 +90,60 @@ lit init /path/to/parent     # create your vault — see Quick start
 Dependencies (auto-installed): `click`, `ruamel.yaml`, `httpx`, `pypdf`,
 `pydantic`, `rich`, `platformdirs`.
 
+### Platform notes
+
+- **Linux / macOS**: install directly (the steps above).
+- **Windows**: run litman inside **WSL** (recommended — it's a Linux
+  environment, so everything including the symlink-based browsing views and
+  project bridges works with zero extra setup). Native PowerShell / cmd also
+  work for all core commands (add / list / show / modify / taxonomy / export);
+  the symlink-based convenience features need the terminal to be launched with
+  "Run as administrator" (otherwise they're skipped with a one-line notice and
+  everything else keeps working).
+
 ## Quick start
 
 ```bash
-# 1. Create a vault. You pass the PARENT dir; the CLI creates the vault subdir.
-lit init /work/me/                  # → /work/me/literature_vault/
+# 1. Create a vault. You pass the PARENT dir; the CLI creates the vault
+#    subdir AND registers it as your active vault — no env var to set.
+lit init /work/me/                  # → /work/me/literature_vault/ (registered, active)
 
-# 2. Point your shell at it (drop into ~/.bashrc / ~/.zshrc).
-export LIT_LIBRARY=/work/me/literature_vault
-
-# 3. Add your first paper (CrossRef fetch).
+# 2. Add your first paper (CrossRef fetch). lit already knows your active vault.
 lit add ~/Downloads/attention_is_all_you_need.pdf --doi 10.48550/arXiv.1706.03762
 
-# 4. Browse.
+# 3. Browse.
 lit list
 lit show 2017_Vaswani_Attention
 lit open 2017_Vaswani_Attention      # launches your configured PDF viewer
 
-# 5. Classify (registers a topic, then tags the paper with it).
+# 4. Classify (registers a topic, then tags the paper with it).
 lit taxonomy add topics transformer attention
 lit modify 2017_Vaswani_Attention --add-tag topics=transformer
 
-# 6. Bind to a project (project must be declared in lit-config.yaml first).
+# 5. Bind to a project (project must be declared in lit-config.yaml first).
 lit link 2017_Vaswani_Attention --project MyResearchProject
 
-# 7. (Skills are wired during Install; re-run after upgrades to refresh them.)
+# 6. (Skills are wired during Install; re-run after upgrades to refresh them.)
 lit install-skill
 ```
+
+### Multiple vaults & overrides (advanced)
+
+`lit init` registers your vault and makes it active, so the common case needs
+no configuration. Beyond that:
+
+- **Manage multiple vaults**: `lit vault add <name> <path>` registers an
+  existing vault (e.g. a snapshot from a colleague); `lit vault list` shows
+  all registered vaults and which is active; `lit vault use <name>` switches
+  the active vault.
+- **Override per-command / per-shell**: `--library <path>` or the
+  `LIT_LIBRARY` environment variable point a single command (or shell) at a
+  specific vault without touching the active selection. Useful for scripts,
+  CI, or working with two vaults in parallel terminals.
+- **Back up the registry**: the registry lives at your platform's user-config
+  dir by default. Set `LITMAN_REGISTRY_DIR` to a cloud-synced folder to get
+  backup + cross-machine sync. (Vault paths are stored absolute, so
+  cross-machine sync needs each vault at the same path on every machine.)
 
 ---
 

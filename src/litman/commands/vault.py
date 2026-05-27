@@ -19,8 +19,6 @@ rendering, friendly error wording).
 from __future__ import annotations
 
 import json
-import os
-import sys
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -31,16 +29,14 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.commands._registry_first_time import maybe_first_time_registry_prompt
 from litman.core.sync import humanize_bytes
 from litman.core.vault_registry import (
-    REGISTRY_ENV_VAR,
     VaultEntry,
     add_vault,
     find_active,
     find_by_name,
     load_registry,
-    registry_path,
-    registry_path_default,
     remove_vault,
     save_registry,
     set_active,
@@ -131,56 +127,6 @@ def _provenance_label(entry: VaultEntry) -> str:
     return ", ".join(parts)
 
 
-def _maybe_first_time_registry_prompt() -> None:
-    """One-shot hint shown the first time ``lit vault add`` creates the registry.
-
-    Triggers iff:
-    * The registry file does not yet exist on disk (registry is about to
-      be created by this very command).
-    * ``$LITMAN_REGISTRY_DIR`` is NOT already set — if the user has
-      explicitly redirected, they don't need the hint.
-    * stdin is a TTY — non-TTY (CI / scripts / docker init) silently
-      defaults so automation doesn't hang.
-
-    Prints a shell-agnostic hint about pointing ``$LITMAN_REGISTRY_DIR``
-    at a cloud-synced directory for backup, then asks for confirmation.
-    Aborting here gives the user a chance to set the env var and re-run.
-    """
-    if registry_path().is_file():
-        return
-    if os.environ.get(REGISTRY_ENV_VAR, "").strip():
-        return
-    if not sys.stdin.isatty():
-        return
-
-    default_path = registry_path_default()
-    console.print(
-        Panel.fit(
-            f"litman is about to create its vault registry at:\n"
-            f"  [bold]{escape(str(default_path))}[/]\n\n"
-            f"[bold]💡 Tip — optional backup setup[/]\n"
-            f"To redirect the registry to a cloud-synced directory "
-            f"(GoogleDrive / Dropbox / Syncthing) and get free backup + "
-            f"cross-machine sync, set:\n\n"
-            f"  [bold cyan]export {REGISTRY_ENV_VAR}=\"/path/to/cloud/litman-config\"[/]\n\n"
-            f"Add that line to your shell's startup file (e.g. "
-            f"[dim]~/.bashrc[/], [dim]~/.zshrc[/], or "
-            f"[dim]~/.config/fish/config.fish[/]) so it persists across "
-            f"sessions. Then rerun `lit vault add`.\n\n"
-            f"[dim]Note: when syncing across machines, the registry stores "
-            f"absolute vault paths — sync works cleanly only if each vault "
-            f"is at the same path on every machine.[/]",
-            title="First-time registry setup",
-            border_style="cyan",
-        )
-    )
-    if not click.confirm(
-        "Continue with the default registry location?",
-        default=True,
-    ):
-        raise click.Abort()
-
-
 # ---------------------------------------------------------------------------
 # lit vault add
 # ---------------------------------------------------------------------------
@@ -240,7 +186,7 @@ def vault_add_cmd(
     if imported_from is not None and imported_at is None:
         imported_at = date.today().isoformat()
 
-    _maybe_first_time_registry_prompt()
+    maybe_first_time_registry_prompt()
 
     registry = load_registry()
     updated = add_vault(

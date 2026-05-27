@@ -10,12 +10,15 @@ directory on disk with a fixed skeleton (see [Vault layout](architecture.md#vaul
 You can have multiple vaults (e.g. your own + a colleague's snapshot) and
 switch between them with `lit vault use`.
 
-A vault is identified to the CLI in one of four ways, in priority order:
+Normally you set nothing: `lit init` registers the vault and makes it active,
+and the CLI resolves to that active registered vault. The other ways are
+explicit overrides, in priority order:
 
 1. `--vault <name>` — a name registered with `lit vault add`
 2. `--library <path>` — explicit filesystem path
 3. `$LIT_LIBRARY` — environment variable
-4. cwd-walk — `lit` walks up from your current directory looking for
+4. the active registered vault (set by `lit init` / `lit vault use`)
+5. cwd-walk — `lit` walks up from your current directory looking for
    the vault marker
 
 ## Paper folder

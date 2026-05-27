@@ -300,6 +300,40 @@ def _clear_all_active(entries: list[VaultEntry]) -> list[VaultEntry]:
     return [v.model_copy(update={"is_active": False}) for v in entries]
 
 
+def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
+    """Raise ``VaultRegistryError`` if ``name`` cannot be added to ``reg``.
+
+    Checks name shape, exact-duplicate, and case-fold collision — the three
+    name-level constraints that do not depend on the vault path existing yet.
+    ``lit init`` calls this *before* creating the vault directory so a name
+    clash aborts cleanly (no orphan vault left on disk); ``add_vault`` calls
+    it too so the single source of truth for name rules lives here.
+    """
+    if not is_valid_vault_name(name):
+        raise VaultRegistryError(
+            f"Invalid vault name {name!r}: must match "
+            "[A-Za-z0-9_][A-Za-z0-9._-]* (filesystem-safe, no leading "
+            "hyphen, no ':' which is reserved for cross-vault wikilinks)."
+        )
+    if any(v.name == name for v in reg.vaults):
+        raise VaultRegistryError(
+            f"Vault {name!r} is already registered. Run `lit vault list` "
+            "to see existing vaults or pick a different name."
+        )
+    # Cross-platform safety (ADR-005): forbid names that case-fold to an
+    # existing entry. Vault names appear in cross-vault wikilinks
+    # ``[[<vault>:<id>]]`` and may end up as folder names in user-side
+    # tooling; same-fold names break when the registry or any derived
+    # artifact moves to Windows / default macOS.
+    case_clash = find_case_fold_collision([v.name for v in reg.vaults], name)
+    if case_clash is not None:
+        raise VaultRegistryError(
+            f"Vault name {name!r} differs only in case from existing "
+            f"vault {case_clash!r}. Same-fold names collide on Windows "
+            "/ default macOS filesystems. Pick a distinct name."
+        )
+
+
 def add_vault(
     reg: VaultRegistry,
     name: str,
@@ -326,29 +360,9 @@ def add_vault(
         VaultRegistryError: invalid name shape, duplicate name, missing
             directory, or directory not a vault (no lit-config.yaml).
     """
-    if not is_valid_vault_name(name):
-        raise VaultRegistryError(
-            f"Invalid vault name {name!r}: must match "
-            "[A-Za-z0-9_][A-Za-z0-9._-]* (filesystem-safe, no leading "
-            "hyphen, no ':' which is reserved for cross-vault wikilinks)."
-        )
-    if any(v.name == name for v in reg.vaults):
-        raise VaultRegistryError(
-            f"Vault {name!r} is already registered. Run `lit vault list` "
-            "to see existing vaults or pick a different name."
-        )
-    # Cross-platform safety (ADR-005): forbid names that case-fold to an
-    # existing entry. Vault names appear in cross-vault wikilinks
-    # ``[[<vault>:<id>]]`` and may end up as folder names in user-side
-    # tooling; same-fold names break when the registry or any derived
-    # artifact moves to Windows / default macOS.
-    case_clash = find_case_fold_collision([v.name for v in reg.vaults], name)
-    if case_clash is not None:
-        raise VaultRegistryError(
-            f"Vault name {name!r} differs only in case from existing "
-            f"vault {case_clash!r}. Same-fold names collide on Windows "
-            "/ default macOS filesystems. Pick a distinct name."
-        )
+    # Name-level checks (shape / duplicate / case-fold) live in the shared
+    # helper so ``lit init`` can run them before creating the vault dir.
+    ensure_name_registrable(reg, name)
 
     abs_path = Path(path).expanduser().resolve()
     if not abs_path.is_dir():

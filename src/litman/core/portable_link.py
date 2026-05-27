@@ -117,14 +117,14 @@ def _warn_symlink_unsupported(link_path: Path, err: OSError) -> None:
     _WARNED_THIS_PROCESS = True
     if sys.platform == "win32":
         hint = (
-            "Symlink creation refused on this Windows installation. "
-            "litman's views/by-*/ and project literature/code bridges "
-            "will be skipped on this run; metadata.yaml and INDEX.json "
-            "remain authoritative, and every metadata-touching command "
-            "(lit add / list / show / modify / taxonomy) is unaffected. "
-            "To enable symlinks, turn on Windows Developer Mode "
-            "(Settings > Update & Security > For developers) and re-run "
-            "the command, or run your terminal as Administrator."
+            "Symlink creation refused on this Windows shell. litman's "
+            "views/by-*/ and project literature/code bridges are skipped on "
+            "this run; metadata.yaml and INDEX.json remain authoritative, "
+            "and every metadata-touching command (lit add / list / show / "
+            "modify / taxonomy) is unaffected. For full functionality, run "
+            "litman inside WSL (recommended — it's Linux, symlinks just "
+            "work), or run this command from a terminal launched with "
+            "'Run as administrator'."
         )
     else:
         hint = (

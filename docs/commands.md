@@ -18,8 +18,10 @@ For one-line summaries of every command, run `lit --help` or
 | `lit vault use <name>` | Set it as the active vault. |
 | `lit config show` | Print the parsed `lit-config.yaml`. Use to verify defaults. |
 
-After `lit init`, point `$LIT_LIBRARY` at the vault root (or rely on
-`lit vault use`).
+`lit init` registers the new vault and (for your first vault) makes it the
+active vault automatically, so subsequent commands find it with no further
+setup. Use `lit vault use <name>` to switch the active vault, or
+`$LIT_LIBRARY` / `--library` to override per shell or per command.
 
 ## Scenario 2 — Add a paper
 
@@ -301,13 +303,16 @@ Every command accepts these:
 
 ### Vault discovery chain
 
-When neither `--library` nor `--vault` is given, litman resolves the
-vault in this order (highest to lowest precedence):
+The everyday default is the **active registered vault**: `lit init` registers
+your vault and activates it, so you normally set nothing. `$LIT_LIBRARY` and
+`--library` are explicit overrides for scripts, CI, or working with several
+vaults at once. Full precedence (highest to lowest):
 
 1. `--vault <name>` flag
 2. `--library <path>` flag
 3. `$LIT_LIBRARY` environment variable
-4. The active vault in `~/.config/litman/vaults.yaml`
+4. The active vault in `~/.config/litman/vaults.yaml` (set by `lit init` /
+   `lit vault use`)
 5. cwd-walk: `lit` walks up from the current directory looking for the
    vault marker (`lit-config.yaml`)
 

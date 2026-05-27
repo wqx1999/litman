@@ -174,9 +174,10 @@ def find_vault(explicit: Path | None = None) -> Path:
             return parent
 
     raise LibraryNotFoundError(
-        "No lit-config.yaml found in the current directory or any parent. "
-        "Set LIT_LIBRARY, pass --library <vault-path>, register a vault "
-        "with `lit vault add`, or run `lit init` first."
+        "No vault found. Run `lit init <parent-dir>` to create one (it "
+        "registers automatically), or `lit vault add <name> <path>` to "
+        "register an existing vault. Advanced: set $LIT_LIBRARY or pass "
+        "--library <vault-path>."
     )
 
 

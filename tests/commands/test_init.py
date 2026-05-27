@@ -11,7 +11,32 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import VAULT_SUBDIRS, create_vault
+from litman.core.vault_registry import add_vault, load_registry, save_registry
 from litman.exceptions import ParentNotFoundError, VaultExistsError
+
+
+# ---------------------------------------------------------------------------
+# Registry isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect $HOME + clear cross-cutting env vars so every test in this
+    module reads/writes a tmp-path-rooted registry instead of the real
+    ``~/.config/litman/vaults.yaml``.
+
+    Autouse because ``lit init`` now registers vaults — without isolation,
+    even the plain CLI tests would scribble over wangq's real registry.
+    Mirrors the ``fake_home`` fixture in test_vault.py / test_vault_registry.py.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return home
+
 
 # ---------------------------------------------------------------------------
 # core/library.py — direct function tests
@@ -157,10 +182,15 @@ def test_lit_init_missing_parent_exits_nonzero(tmp_path: Path) -> None:
 
 
 def test_lit_init_existing_vault_refused(tmp_path: Path) -> None:
+    # --no-register on both runs skips the registry name pre-flight, so the
+    # second invocation reaches create_vault and raises VaultExistsError (the
+    # behavior under test). With registration on, a duplicate registry name
+    # would short-circuit earlier; that path is covered by
+    # test_init_duplicate_name_aborts_without_creating_vault below.
     runner = CliRunner()
-    first = runner.invoke(cli, ["init", str(tmp_path)])
+    first = runner.invoke(cli, ["init", str(tmp_path), "--no-register"])
     assert first.exit_code == 0, first.output
-    second = runner.invoke(cli, ["init", str(tmp_path)])
+    second = runner.invoke(cli, ["init", str(tmp_path), "--no-register"])
     assert second.exit_code != 0
     assert isinstance(second.exception, VaultExistsError)
 
@@ -170,3 +200,126 @@ def test_lit_init_help_lists_command() -> None:
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "init" in result.output
+
+
+# ---------------------------------------------------------------------------
+# M26 — registry-first auto-register
+# ---------------------------------------------------------------------------
+
+
+def test_init_registers_and_activates_first_vault(tmp_path: Path) -> None:
+    """First `lit init` into an empty registry registers + auto-activates."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init", str(parent)])
+    assert result.exit_code == 0, result.output
+
+    reg = load_registry()
+    assert len(reg.vaults) == 1
+    entry = reg.vaults[0]
+    assert entry.name == "literature_vault"
+    assert entry.is_active is True
+    assert "registered" in result.output.lower()
+    assert "active" in result.output.lower()
+
+
+def test_init_second_vault_not_active(tmp_path: Path) -> None:
+    """A second `lit init` registers but does not preempt the active vault."""
+    parent1 = tmp_path / "p1"
+    parent1.mkdir()
+    parent2 = tmp_path / "p2"
+    parent2.mkdir()
+    runner = CliRunner()
+
+    first = runner.invoke(cli, ["init", str(parent1)])
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(
+        cli, ["init", str(parent2), "--register-as", "fork1"]
+    )
+    assert second.exit_code == 0, second.output
+
+    reg = load_registry()
+    by_name = {v.name: v for v in reg.vaults}
+    assert by_name["fork1"].is_active is False
+    assert by_name["literature_vault"].is_active is True
+    assert "lit vault use fork1" in second.output
+
+
+def test_init_duplicate_name_aborts_without_creating_vault(
+    tmp_path: Path,
+) -> None:
+    """A duplicate registry name fails fast, leaving no orphan vault dir."""
+    parent1 = tmp_path / "p1"
+    parent1.mkdir()
+    parent2 = tmp_path / "p2"
+    parent2.mkdir()
+    runner = CliRunner()
+
+    first = runner.invoke(cli, ["init", str(parent1)])
+    assert first.exit_code == 0, first.output
+
+    # Second init under a different parent, but default name collides.
+    second = runner.invoke(cli, ["init", str(parent2)])
+    assert second.exit_code != 0
+    assert not (parent2 / "literature_vault").exists()
+    assert "--register-as" in second.output
+
+
+def test_init_register_as_overrides_name(tmp_path: Path) -> None:
+    """--register-as sets the registry name; the dir name stays default."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["init", str(parent), "--register-as", "main"]
+    )
+    assert result.exit_code == 0, result.output
+
+    reg = load_registry()
+    assert len(reg.vaults) == 1
+    assert reg.vaults[0].name == "main"
+    assert (parent / "literature_vault").is_dir()
+
+
+def test_init_no_register_skips_registry(tmp_path: Path) -> None:
+    """--no-register creates the vault but writes nothing to the registry."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init", str(parent), "--no-register"])
+    assert result.exit_code == 0, result.output
+    assert (parent / "literature_vault").is_dir()
+    assert load_registry().vaults == []
+    assert "Not registered" in result.output
+
+
+def test_init_case_fold_collision_aborts(tmp_path: Path) -> None:
+    """A name differing only in case from an existing entry fails fast."""
+    parent1 = tmp_path / "p1"
+    parent1.mkdir()
+    parent2 = tmp_path / "p2"
+    parent2.mkdir()
+
+    # Seed the registry with `Main` directly via the data layer.
+    existing = create_vault(parent1, name="Main")
+    save_registry(add_vault(load_registry(), "Main", existing))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["init", str(parent2), "--register-as", "main"]
+    )
+    assert result.exit_code != 0
+    assert "case" in result.output.lower()
+    assert not (parent2 / "literature_vault").exists()
+
+
+def test_init_output_has_no_export_lit_library(tmp_path: Path) -> None:
+    """Regression: the default init panel must not teach `export LIT_LIBRARY`."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init", str(parent)])
+    assert result.exit_code == 0, result.output
+    assert "export LIT_LIBRARY" not in result.output

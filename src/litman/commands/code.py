@@ -146,7 +146,7 @@ def code_group() -> None:
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
-    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
 )
 @click.option(
     "--vault",
@@ -325,7 +325,7 @@ def code_add_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
-    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
 )
 @click.option(
     "--vault",
@@ -449,7 +449,7 @@ def code_list_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
-    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
 )
 @click.option(
     "--vault",
@@ -506,7 +506,7 @@ def code_link_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
-    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
 )
 @click.option(
     "--vault",
@@ -581,7 +581,7 @@ def code_update_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
-    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
 )
 @click.option(
     "--vault",
@@ -693,7 +693,7 @@ def code_rm_cmd(
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
     envvar="LIT_LIBRARY",
-    help="Vault path. Defaults to $LIT_LIBRARY or cwd-walk discovery.",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
 )
 @click.option(
     "--vault",

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
 from click.testing import CliRunner
 from ruamel.yaml import YAML
 
@@ -22,6 +23,20 @@ from litman.core.views import (
 
 
 _yaml = YAML(typ="safe")
+
+
+@pytest.fixture(autouse=True)
+def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Isolate the vault registry. ``lit init`` now registers vaults, so the
+    init-based tests below would otherwise write to / collide on the real
+    ``~/.config/litman/vaults.yaml``. Mirrors the fixture in test_init.py.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return home
 
 
 def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
