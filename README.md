@@ -5,10 +5,6 @@ One paper, one folder, one structured metadata file — governed by a
 controlled vocabulary, queried by a fast index, and designed from day one
 to be navigated by a Claude Code agent.
 
-> **Status: Alpha.** Core CLI is feature-complete (M0–M5, M8, M9 tagged
-> through `v0.9.0-m9`). Two Claude Code skills are bundled. PyPI release
-> pending. See [docs/roadmap.md](docs/roadmap.md) for the full timeline.
-
 ---
 
 ## What is litman
@@ -137,7 +133,6 @@ Full reference lives under [`docs/`](docs/):
 | `TAXONOMY.md` schema | [docs/taxonomy-schema.md](docs/taxonomy-schema.md) |
 | Four-layer architecture | [docs/architecture.md](docs/architecture.md) |
 | Design philosophy | [docs/philosophy.md](docs/philosophy.md) |
-| Roadmap and release history | [docs/roadmap.md](docs/roadmap.md) |
 
 Local-preview the docs as a static site:
 

@@ -15,7 +15,6 @@ it; this directory holds the long-form reference.
 | `TAXONOMY.md` schema | [taxonomy-schema.md](taxonomy-schema.md) |
 | Four-layer architecture | [architecture.md](architecture.md) |
 | Design philosophy | [philosophy.md](philosophy.md) |
-| Roadmap and release history | [roadmap.md](roadmap.md) |
 
 ## Local preview as a static site
 
@@ -25,5 +24,5 @@ cd litman/
 mkdocs serve
 ```
 
-Open <http://127.0.0.1:8000> in your browser. Hosting on a public docs
-URL is on the roadmap, gated on the PyPI release.
+Open <http://127.0.0.1:8000> in your browser. A public docs site will
+follow the PyPI release.
