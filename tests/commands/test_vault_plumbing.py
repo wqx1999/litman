@@ -204,7 +204,13 @@ def test_cli_show_paper_missing_in_chosen_vault(
 
 def test_cli_health_check_with_vault_runs_against_chosen(
     registry_with_two_vaults: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Pin DISPLAY so the pdf_viewer probe is deterministically clean on a
+    # headless host (this asserts vault routing, not viewer availability).
+    # setenv (not sys.platform=darwin) keeps the --vault registry lookup
+    # untouched.
+    monkeypatch.setenv("DISPLAY", ":0")
     vault_a, _ = registry_with_two_vaults
     _seed_paper(vault_a, "PAPER1")
     runner = CliRunner()

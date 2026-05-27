@@ -401,9 +401,17 @@ def test_cli_health_check_flags_cross_vault_dangling(
 
 
 def test_cli_health_check_clean_with_resolved_cross_vault_link(
-    fake_home: Path, vault_a: Path, vault_b: Path
+    fake_home: Path,
+    vault_a: Path,
+    vault_b: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cross-vault link that resolves → health-check exits 0."""
+    # Pin DISPLAY so the pdf_viewer probe is deterministically clean on a
+    # headless host (this asserts cross-vault link resolution, not viewer
+    # availability). setenv (not sys.platform=darwin) keeps the --vault
+    # registry lookup untouched.
+    monkeypatch.setenv("DISPLAY", ":0")
     reg = add_vault(VaultRegistry(), "main", vault_a)
     reg = add_vault(reg, "second", vault_b)
     save_registry(reg)
