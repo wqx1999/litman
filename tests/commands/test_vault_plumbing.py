@@ -20,6 +20,7 @@ vaults never touches the user's real registry.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -79,7 +80,14 @@ def registry_with_two_vaults(
 
 
 def _seed_paper(vault: Path, paper_id: str, title: str = "Test") -> None:
-    """Materialize a minimal paper folder so list / show / health-check have data."""
+    """Materialize a minimal paper folder so list / show / health-check have data.
+
+    ``created-at`` is stamped at call time, not hardcoded. These tests assert a
+    freshly-seeded vault is *clean* (health-check exit 0); a hardcoded past date
+    would silently rot past the 14-day inbox-staleness threshold and flip the
+    assertion to red purely because the wall-clock advanced.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -95,8 +103,8 @@ def _seed_paper(vault: Path, paper_id: str, title: str = "Test") -> None:
         "methods": [],
         "data": [],
         "authors": ["Test, A."],
-        "created-at": "2026-05-12T10:00:00+02:00",
-        "updated-at": "2026-05-12T10:00:00+02:00",
+        "created-at": now_iso,
+        "updated-at": now_iso,
     }
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         _yaml.dump(meta, f)

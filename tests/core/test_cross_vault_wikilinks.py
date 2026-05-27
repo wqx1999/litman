@@ -16,6 +16,7 @@ Every test redirects ``$HOME`` so the registry lands in tmp.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -97,7 +98,14 @@ def vault_b(tmp_path: Path) -> Path:
 def _seed_paper(
     vault: Path, paper_id: str, title: str = "Test", notes_body: str = ""
 ) -> None:
-    """Drop a minimal paper folder with metadata + notes.md."""
+    """Drop a minimal paper folder with metadata + notes.md.
+
+    ``created-at`` is stamped at call time, not hardcoded: the health-check
+    cases here expect a *clean* vault, and a hardcoded past date would rot past
+    the 14-day inbox-staleness threshold and turn those assertions red purely
+    because the wall-clock advanced.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -113,8 +121,8 @@ def _seed_paper(
         "methods": [],
         "data": [],
         "authors": ["Test, A."],
-        "created-at": "2026-05-12T10:00:00+02:00",
-        "updated-at": "2026-05-12T10:00:00+02:00",
+        "created-at": now_iso,
+        "updated-at": now_iso,
     }
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         _yaml.dump(meta, f)
