@@ -65,23 +65,34 @@ over time, and an AI assistant can actually understand it.
 
 ## Install
 
+litman lives in its own environment, so it never pollutes `base` or another
+project. Two ways in — both isolate the install, then share the same two
+follow-up steps.
+
+**From a clone of this repo** — `install.sh` creates (or reuses) a `litman`
+conda env and installs into it (requires conda):
+
 ```bash
-# Recommended: use a dedicated conda env so litman's deps stay isolated.
-conda create -n litman python=3.12
-conda activate litman
+./install.sh            # editable dev install into conda env 'litman'
+# ./install.sh --prod   # regular (non-editable) install
+# ./install.sh --env X  # use a different env name
+```
 
-# From a clone of this repository:
-pip install -e ".[dev]"
+**From PyPI** (not yet shipped; planned) — `pipx` isolates automatically:
 
-# Sanity check.
-lit --help
-lit hello
+```bash
+pipx install litman
+```
+
+Both install *only*. Finish with the same two manual steps:
+
+```bash
+lit install-skill            # deploy the Claude Code skills into ~/.claude/skills/
+lit init /path/to/parent     # create your vault — see Quick start
 ```
 
 Dependencies (auto-installed): `click`, `ruamel.yaml`, `httpx`, `pypdf`,
 `pydantic`, `rich`, `platformdirs`.
-
-PyPI release (`pipx install litman`) is on the roadmap, not yet shipped.
 
 ## Quick start
 
@@ -107,7 +118,7 @@ lit modify 2017_Vaswani_Attention --add-tag topics=transformer
 # 6. Bind to a project (project must be declared in lit-config.yaml first).
 lit link 2017_Vaswani_Attention --project MyResearchProject
 
-# 7. Install the Claude Code skills (optional, lets the agent navigate your vault).
+# 7. (Skills are wired during Install; re-run after upgrades to refresh them.)
 lit install-skill
 ```
 
