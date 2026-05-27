@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litman"
-version = "0.13.0"
+dynamic = ["version"]
 description = "Local-first, AI-augmented literature management CLI"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -44,6 +44,13 @@ dev = [
 
 [project.scripts]
 lit = "litman.cli:main"
+
+# Single source of truth for the version: src/litman/__init__.py __version__.
+# pyproject reads it via attr so `lit --version`, the wheel metadata, and the
+# string in exported BibTeX / the Crossref User-Agent can never drift apart.
+# Bump __version__ to match the X.Y.Z of the milestone tag (v<X.Y.Z>-m<N>).
+[tool.setuptools.dynamic]
+version = { attr = "litman.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
