@@ -117,7 +117,7 @@ def test_link_adds_to_projects_and_symlinks(vault: Path, project_dir: Path) -> N
     assert result["added_to_projects"] is True
     meta = _read_paper_meta(vault, "p1")
     assert meta["projects"] == ["pepforge"]
-    link = project_dir / "literature" / "p1"
+    link = project_dir / "litman_reflib" / "p1"
     assert link.is_symlink()
     assert link.resolve() == (vault / "papers" / "p1").resolve()
     # Symlink stores a RELATIVE path (M0 invariant).
@@ -132,7 +132,7 @@ def test_link_idempotent_no_metadata_change(vault: Path, project_dir: Path) -> N
     assert result["added_to_projects"] is False
     assert result["metadata_changed"] is False
     # Symlink still created (defensive — self-heal partial state).
-    assert (project_dir / "literature" / "p1").is_symlink()
+    assert (project_dir / "litman_reflib" / "p1").is_symlink()
 
 
 def test_link_dedups_projects(vault: Path, project_dir: Path) -> None:
@@ -194,7 +194,7 @@ def test_link_writes_references_md(vault: Path, project_dir: Path) -> None:
     link_paper_to_project(
         vault, "p1", "pepforge", {"pepforge": str(project_dir)}
     )
-    refs = project_dir / "literature" / "REFERENCES.md"
+    refs = project_dir / "litman_reflib" / "REFERENCES.md"
     assert refs.is_file()
     body = refs.read_text(encoding="utf-8")
     assert "Hello paper" in body
@@ -210,7 +210,7 @@ def test_link_creates_code_symlinks_when_repo_present(
         vault, "p1", "pepforge", {"pepforge": str(project_dir)}
     )
     assert result["code_links"] == ["MyRepo"]
-    code_link = project_dir / "code" / "MyRepo"
+    code_link = project_dir / "litman_code" / "MyRepo"
     assert code_link.is_symlink()
     assert code_link.resolve() == (vault / "codes" / "MyRepo" / "repo").resolve()
 
@@ -226,7 +226,7 @@ def test_link_skips_code_symlink_when_repo_missing_locally(
     )
     assert result["code_links"] == []
     assert result["code_links_skipped_missing_repo"] == ["GhostRepo"]
-    assert not (project_dir / "code" / "GhostRepo").exists()
+    assert not (project_dir / "litman_code" / "GhostRepo").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ def test_unlink_removes_from_projects_and_symlink(
     assert result["paper_link_removed"] is True
     meta = _read_paper_meta(vault, "p1")
     assert meta["projects"] == []
-    assert not (project_dir / "literature" / "p1").is_symlink()
+    assert not (project_dir / "litman_reflib" / "p1").is_symlink()
 
 
 def test_unlink_drops_relevance_by_default(vault: Path, project_dir: Path) -> None:
@@ -317,11 +317,11 @@ def test_unlink_keeps_shared_code_symlink(vault: Path, project_dir: Path) -> Non
     registry = {"pepforge": str(project_dir)}
     link_paper_to_project(vault, "p1", "pepforge", registry)
     link_paper_to_project(vault, "p2", "pepforge", registry)
-    assert (project_dir / "code" / "SharedRepo").is_symlink()
+    assert (project_dir / "litman_code" / "SharedRepo").is_symlink()
 
     result = unlink_paper_from_project(vault, "p1", "pepforge", registry)
     # Symlink stays because p2 still uses SharedRepo under pepforge.
-    assert (project_dir / "code" / "SharedRepo").is_symlink()
+    assert (project_dir / "litman_code" / "SharedRepo").is_symlink()
     assert result["code_links_removed"] == []
     assert len(result["code_links_kept"]) == 1
 
@@ -333,10 +333,10 @@ def test_unlink_removes_exclusive_code_symlink(
     _make_paper(vault, "p1", code_clones=["SoloRepo"])
     registry = {"pepforge": str(project_dir)}
     link_paper_to_project(vault, "p1", "pepforge", registry)
-    assert (project_dir / "code" / "SoloRepo").is_symlink()
+    assert (project_dir / "litman_code" / "SoloRepo").is_symlink()
 
     result = unlink_paper_from_project(vault, "p1", "pepforge", registry)
-    assert not (project_dir / "code" / "SoloRepo").exists()
+    assert not (project_dir / "litman_code" / "SoloRepo").exists()
     assert result["code_links_removed"] == ["SoloRepo"]
 
 
@@ -354,13 +354,13 @@ def test_unlink_regenerates_references_md(vault: Path, project_dir: Path) -> Non
     _make_paper(vault, "p1", title="To be unlinked")
     registry = {"pepforge": str(project_dir)}
     link_paper_to_project(vault, "p1", "pepforge", registry)
-    body_before = (project_dir / "literature" / "REFERENCES.md").read_text(
+    body_before = (project_dir / "litman_reflib" / "REFERENCES.md").read_text(
         encoding="utf-8"
     )
     assert "To be unlinked" in body_before
 
     unlink_paper_from_project(vault, "p1", "pepforge", registry)
-    body_after = (project_dir / "literature" / "REFERENCES.md").read_text(
+    body_after = (project_dir / "litman_reflib" / "REFERENCES.md").read_text(
         encoding="utf-8"
     )
     assert "To be unlinked" not in body_after
@@ -382,29 +382,29 @@ def test_rebuild_all_creates_links_for_each_tagged_paper(
     results = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert results["pepforge"]["status"] == "rebuilt"
     assert results["pepforge"]["n_paper_links"] == 2
-    assert (project_dir / "literature" / "p1").is_symlink()
-    assert (project_dir / "literature" / "p2").is_symlink()
-    assert not (project_dir / "literature" / "p3").exists()
+    assert (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert (project_dir / "litman_reflib" / "p2").is_symlink()
+    assert not (project_dir / "litman_reflib" / "p3").exists()
 
 
 def test_rebuild_all_wipes_stale_symlinks(vault: Path, project_dir: Path) -> None:
     """Stale symlink from a prior state -> wiped on rebuild."""
-    (project_dir / "literature").mkdir()
-    stale = project_dir / "literature" / "old_paper_no_longer_tagged"
+    (project_dir / "litman_reflib").mkdir()
+    stale = project_dir / "litman_reflib" / "old_paper_no_longer_tagged"
     os.symlink("../../irrelevant", stale)
     _make_paper(vault, "p1", projects=["pepforge"])
 
     rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert not stale.exists()
-    assert (project_dir / "literature" / "p1").is_symlink()
+    assert (project_dir / "litman_reflib" / "p1").is_symlink()
 
 
 def test_rebuild_all_preserves_references_md_during_wipe(
     vault: Path, project_dir: Path
 ) -> None:
     """REFERENCES.md is content, not a symlink — must survive symlink wipe."""
-    (project_dir / "literature").mkdir()
-    refs = project_dir / "literature" / "REFERENCES.md"
+    (project_dir / "litman_reflib").mkdir()
+    refs = project_dir / "litman_reflib" / "REFERENCES.md"
     refs.write_text("placeholder body\n", encoding="utf-8")
     _make_paper(vault, "p1", projects=["pepforge"])
 
@@ -432,7 +432,7 @@ def test_rebuild_all_recreates_code_symlinks(
     _make_paper(vault, "p1", projects=["pepforge"], code_clones=["MyRepo"])
     results = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert results["pepforge"]["n_code_links"] == 1
-    assert (project_dir / "code" / "MyRepo").is_symlink()
+    assert (project_dir / "litman_code" / "MyRepo").is_symlink()
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +457,7 @@ def test_cli_link_happy_path(vault: Path, project_dir: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Linked" in result.output
-    assert (project_dir / "literature" / "p1").is_symlink()
+    assert (project_dir / "litman_reflib" / "p1").is_symlink()
 
 
 def test_cli_link_with_relevance(vault: Path, project_dir: Path) -> None:
@@ -500,7 +500,7 @@ def test_cli_unlink_happy_path(vault: Path, project_dir: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Unlinked" in result.output
-    assert not (project_dir / "literature" / "p1").exists()
+    assert not (project_dir / "litman_reflib" / "p1").exists()
 
 
 def test_cli_link_rebuild_all(vault: Path, project_dir: Path) -> None:
@@ -514,8 +514,8 @@ def test_cli_link_rebuild_all(vault: Path, project_dir: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "pepforge" in result.output
     assert "2 paper link" in result.output
-    assert (project_dir / "literature" / "p1").is_symlink()
-    assert (project_dir / "literature" / "p2").is_symlink()
+    assert (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert (project_dir / "litman_reflib" / "p2").is_symlink()
 
 
 def test_cli_link_rebuild_all_no_projects(vault: Path) -> None:

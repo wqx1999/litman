@@ -239,8 +239,8 @@ def test_rebuild_all_writes_each_registered_project(vault: Path, tmp_path: Path)
     assert results["pepcodec"]["status"] == "written"
     assert results["pepforge"]["n_papers"] == 2
     assert results["pepcodec"]["n_papers"] == 2
-    assert (pf_dir / "literature" / "REFERENCES.md").is_file()
-    assert (pc_dir / "literature" / "REFERENCES.md").is_file()
+    assert (pf_dir / "litman_reflib" / "REFERENCES.md").is_file()
+    assert (pc_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
 
 def test_rebuild_all_skips_missing_project_dir(vault: Path, tmp_path: Path) -> None:
@@ -281,7 +281,7 @@ def test_rebuild_all_expands_tilde(vault: Path, tmp_path: Path, monkeypatch: pyt
         vault, {"pepforge": "~/pepforge_proj"}
     )
     assert results["pepforge"]["status"] == "written"
-    assert (pf_dir / "literature" / "REFERENCES.md").is_file()
+    assert (pf_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def test_cli_refresh_views_writes_project_refs(vault: Path, tmp_path: Path) -> N
     assert result.exit_code == 0, result.output
     assert "Project REFERENCES.md" in result.output
     assert "pepforge: 1 paper" in result.output
-    target = pf_dir / "literature" / "REFERENCES.md"
+    target = pf_dir / "litman_reflib" / "REFERENCES.md"
     assert target.is_file()
     body = target.read_text(encoding="utf-8")
     assert "p1" in body

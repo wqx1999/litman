@@ -130,7 +130,7 @@ projects:
 Project name → project directory path. **Must be populated before
 `lit link`** — the CLI refuses to link a paper to a project that is
 not in this map. Paths are resolved per command; the project's
-`literature/` subdirectory and `REFERENCES.md` are written under
+`litman_reflib/` subdirectory and `REFERENCES.md` are written under
 each registered path during `refresh-views`.
 
 ### `sync`

@@ -251,18 +251,18 @@ def test_restore_rebuilds_project_symlink_and_references(
     runner.invoke(
         cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
     )
-    assert (project_dir / "literature" / "2024_Target").is_symlink()
+    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
 
     runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
-    assert not (project_dir / "literature" / "2024_Target").exists()
+    assert not (project_dir / "litman_reflib" / "2024_Target").exists()
 
     result = runner.invoke(
         cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     # Symlink re-created and REFERENCES re-rendered with the paper.
-    assert (project_dir / "literature" / "2024_Target").is_symlink()
-    refs = (project_dir / "literature" / "REFERENCES.md").read_text()
+    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    refs = (project_dir / "litman_reflib" / "REFERENCES.md").read_text()
     assert "2024_Target" in refs
 
 

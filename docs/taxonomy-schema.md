@@ -65,7 +65,7 @@ Future `lit health-check` rules may flag deviations.
 
 - **kebab-case, lowercase.** `peptide-design`, not `Peptide_Design` or
   `peptideDesign`. Project names are the one exception — they appear in
-  paths (`<project>/literature/`) and may use mixed case (`PepCodec`)
+  paths (`<project>/litman_reflib/`) and may use mixed case (`PepCodec`)
   to match a real directory.
 - **No leading punctuation, no whitespace, no slashes.** Values are
   embedded in YAML lists; weird characters force quoting and break

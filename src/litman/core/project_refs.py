@@ -1,7 +1,7 @@
 """Per-project ``REFERENCES.md`` generator (M5.1).
 
 For each project registered in ``lit-config.yaml``'s ``projects`` map,
-this module emits ``<project_dir>/literature/REFERENCES.md`` listing
+this module emits ``<project_dir>/litman_reflib/REFERENCES.md`` listing
 every paper whose metadata ``projects`` field contains the project name.
 The file is grouped by priority (A → B → C → unprioritized) and within
 each group sorted by year descending then by id alphabetically.
@@ -13,7 +13,7 @@ hand (the AUTO-GENERATED banner says so).
 
 Wiki-links (``[[<id>]]``) are used instead of markdown filesystem paths
 so the file resolves in Obsidian/Foam and stays valid even if the
-literature/ symlinks (created by ``lit link``, M5.2) are absent — e.g.
+litman_reflib/ symlinks (created by ``lit link``, M5.2) are absent — e.g.
 on a fresh machine before the user runs ``lit link --rebuild-all``.
 """
 
@@ -26,7 +26,7 @@ from typing import Any
 from litman.core.document import list_papers
 
 REFERENCES_FILENAME = "REFERENCES.md"
-LITERATURE_SUBDIR = "literature"
+LITERATURE_SUBDIR = "litman_reflib"
 
 # Priority order, with ``None`` (unprioritized) coming last.
 _PRIORITY_ORDER = ("A", "B", "C")
@@ -193,9 +193,9 @@ def write_references_md(
     now: str | None = None,
     papers: list[dict[str, Any]] | None = None,
 ) -> Path:
-    """Write ``<project_dir>/literature/REFERENCES.md``.
+    """Write ``<project_dir>/litman_reflib/REFERENCES.md``.
 
-    Auto-creates ``<project_dir>/literature/`` if missing. The project
+    Auto-creates ``<project_dir>/litman_reflib/`` if missing. The project
     directory itself must exist on disk (this is the user's working
     project root; auto-creating it would surprise the user).
 

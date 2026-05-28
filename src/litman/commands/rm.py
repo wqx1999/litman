@@ -28,8 +28,8 @@ Cascade teardown (one ``staged_write`` transaction, invariant #9/#12):
   list (1:1, the common case) the orphan ``codes/<repo>/`` dir is
   hard-deleted and ``{name: upstream}`` is recorded in the trash sidecar for
   M23.2 re-clone. A still-bound repo (1:N) only loses the binding.
-* Project: for each project in A's ``projects``, the ``literature/A``
-  symlink is removed, the parallel ``code/<repo>`` symlink is removed only
+* Project: for each project in A's ``projects``, the ``litman_reflib/A``
+  symlink is removed, the parallel ``litman_code/<repo>`` symlink is removed only
   when no other paper in that project still binds the repo, and
   REFERENCES.md is re-rendered.
 
@@ -254,8 +254,8 @@ def _teardown_project_links(
 
     Filesystem-only: A's ``projects`` field is sealed into trash unchanged.
     For each project A was tagged with:
-        * remove ``<project>/literature/A`` symlink;
-        * remove ``<project>/code/<repo>`` symlink only when no OTHER paper
+        * remove ``<project>/litman_reflib/A`` symlink;
+        * remove ``<project>/litman_code/<repo>`` symlink only when no OTHER paper
           in the project still binds the repo (shared-utility-lib case);
         * re-render REFERENCES.md from the surviving paper list.
 

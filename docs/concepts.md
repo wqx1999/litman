@@ -167,7 +167,7 @@ This does four things atomically:
 
 1. Adds `PepCodec` to the paper's `projects` field.
 2. Sets `relevance-PepCodec` on the paper's metadata (project-specific note).
-3. Creates a symlink `<project>/literature/<paper-id>/` pointing back to
+3. Creates a symlink `<project>/litman_reflib/<paper-id>/` pointing back to
    the paper folder in the vault.
 4. Regenerates `<project>/REFERENCES.md` with the project's full reading
    list.

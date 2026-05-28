@@ -247,7 +247,7 @@ def test_rm_refuse_is_zero_mutation(vault: Path, tmp_path: Path) -> None:
 
     holder_before = (vault / "papers/2024_Holder/metadata.yaml").read_text()
     repo_meta_before = _read_repo_meta(vault, "SoloLib")
-    refs_before = (project_dir / "literature" / "REFERENCES.md").read_text()
+    refs_before = (project_dir / "litman_reflib" / "REFERENCES.md").read_text()
 
     result = runner.invoke(
         cli, ["rm", "2024_Target", "--library", str(vault)], input="n\n"
@@ -263,8 +263,8 @@ def test_rm_refuse_is_zero_mutation(vault: Path, tmp_path: Path) -> None:
     assert (vault / "codes" / "SoloLib").is_dir()
     assert _read_repo_meta(vault, "SoloLib")["papers"] == repo_meta_before["papers"]
     # Project: symlink + REFERENCES untouched.
-    assert (project_dir / "literature" / "2024_Target").is_symlink()
-    assert (project_dir / "literature" / "REFERENCES.md").read_text() == refs_before
+    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    assert (project_dir / "litman_reflib" / "REFERENCES.md").read_text() == refs_before
     # No log row written.
     assert not (vault / ".deletion-log.jsonl").exists()
 
@@ -420,8 +420,8 @@ def test_rm_cascade_project_symlink_and_references(
         cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
     )
     assert link_res.exit_code == 0, link_res.output
-    assert (project_dir / "literature" / "2024_Target").is_symlink()
-    refs_before = (project_dir / "literature" / "REFERENCES.md").read_text()
+    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    refs_before = (project_dir / "litman_reflib" / "REFERENCES.md").read_text()
     assert "2024_Target" in refs_before
 
     result = runner.invoke(
@@ -429,8 +429,8 @@ def test_rm_cascade_project_symlink_and_references(
     )
     assert result.exit_code == 0, result.output
     # Symlink removed, REFERENCES re-rendered without the paper.
-    assert not (project_dir / "literature" / "2024_Target").exists()
-    refs_after = (project_dir / "literature" / "REFERENCES.md").read_text()
+    assert not (project_dir / "litman_reflib" / "2024_Target").exists()
+    refs_after = (project_dir / "litman_reflib" / "REFERENCES.md").read_text()
     assert "2024_Target" not in refs_after
     assert "Unlinked from 1 project" in result.output
 

@@ -480,8 +480,8 @@ def _rebuild_project_links(
     """Re-create A's project symlinks + re-render REFERENCES.md (post-stage).
 
     Inverse of rm's ``_teardown_project_links``. For each project A names:
-        * (re)create ``<project>/literature/A`` symlink into papers/A/;
-        * (re)create ``<project>/code/<repo>`` symlink for each surviving repo;
+        * (re)create ``<project>/litman_reflib/A`` symlink into papers/A/;
+        * (re)create ``<project>/litman_code/<repo>`` symlink for each surviving repo;
         * re-render REFERENCES.md (A is back in papers/ so it reappears).
     A project not registered or whose dir is missing on disk is skipped
     (decision: P missing → skip) — A's own ``projects`` field is untouched.

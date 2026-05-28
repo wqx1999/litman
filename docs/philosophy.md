@@ -67,7 +67,7 @@ elsewhere first.
 
 Papers, projects, and code clones bind to each other via metadata fields
 (`projects`, `code-clones`, `related`, `contradicts`, `extends`) and
-filesystem symlinks (`<project>/literature/<paper-id>/`, vault-resident
+filesystem symlinks (`<project>/litman_reflib/<paper-id>/`, vault-resident
 `codes/<repo-name>/`). The knowledge graph is **emergent** from these
 bindings, not stored explicitly as a separate file.
 

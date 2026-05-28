@@ -142,7 +142,7 @@ before linking.
 
 | Command | What it does |
 |---|---|
-| `lit link <id> --project <name>` | Bind: add tag, write symlink under `<project>/literature/<id>/`, regenerate `<project>/REFERENCES.md`. |
+| `lit link <id> --project <name>` | Bind: add tag, write symlink under `<project>/litman_reflib/<id>/`, regenerate `<project>/REFERENCES.md`. |
 | `lit link <id> --project <name> --relevance "..."` | Same plus write `relevance-<project>` field on the paper. |
 | `lit link --rebuild-all` | Cross-machine recovery: rebuild every project's symlinks + REFERENCES.md from scratch, scanning each paper's metadata. |
 | `lit unlink <id> --project <name>` | Reverse a link. Drops the tag, the symlink, the REFERENCES.md entry, and (by default) the `relevance-<project>` field. |

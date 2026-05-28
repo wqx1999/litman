@@ -45,7 +45,7 @@ def refresh_views_cmd(
     1. INDEX.json — global paper summary + by-doi reverse map.
     2. views/by-*/ symlink hubs — wiped and rebuilt; stale tag buckets
        disappear.
-    3. <project_dir>/literature/REFERENCES.md for each project in
+    3. <project_dir>/litman_reflib/REFERENCES.md for each project in
        lit-config.yaml's projects map. Per-project failures (missing
        project dir on this machine) are skipped, not aborted.
 

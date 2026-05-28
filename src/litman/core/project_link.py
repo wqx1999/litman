@@ -5,11 +5,11 @@ relative symlinks. A linked paper means three things in concert:
 
 1. The paper's ``metadata.yaml`` lists the project in its ``projects``
    field (single source of truth — derived REFERENCES.md reads it).
-2. ``<project_dir>/literature/<paper-id>`` is a relative symlink into
+2. ``<project_dir>/litman_reflib/<paper-id>`` is a relative symlink into
    ``<vault>/papers/<paper-id>/``, so the user can ``cd`` into the
    paper from the project root.
 3. For each repo in the paper's ``code-clones``, a parallel symlink at
-   ``<project_dir>/code/<repo-name>`` → ``<vault>/codes/<repo>/repo/``
+   ``<project_dir>/litman_code/<repo-name>`` → ``<vault>/codes/<repo>/repo/``
    (the git checkout, not the metadata wrapper).
 
 Atomicity: the metadata + INDEX.json write goes through ``staged_write``;
@@ -47,7 +47,7 @@ from litman.core.project_refs import (
 from litman.core.views import render_index
 from litman.exceptions import LitmanError, PaperNotFoundError
 
-CODE_SUBDIR = "code"
+CODE_SUBDIR = "litman_code"
 
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
@@ -146,9 +146,9 @@ def link_paper_to_project(
            - Bump ``updated-at`` if anything actually changed.
         4. Re-render INDEX.json (in-memory splice on the modified copy).
         5. staged_write(metadata + INDEX.json).
-        6. Create / refresh ``<project_dir>/literature/<paper-id>``
-           symlink + per-code-clone symlinks under ``<project_dir>/code/``.
-        7. Regenerate ``<project_dir>/literature/REFERENCES.md``.
+        6. Create / refresh ``<project_dir>/litman_reflib/<paper-id>``
+           symlink + per-code-clone symlinks under ``<project_dir>/litman_code/``.
+        7. Regenerate ``<project_dir>/litman_reflib/REFERENCES.md``.
 
     Returns:
         A summary dict for the CLI to render.
@@ -390,7 +390,7 @@ def rebuild_all_project_links(
             else:
                 sub_dir.mkdir(exist_ok=True)
         # Preserve REFERENCES.md across the wipe — it lives in
-        # literature/ alongside the symlinks but is content, not a link.
+        # litman_reflib/ alongside the symlinks but is content, not a link.
 
         n_paper_links = 0
         n_code_links = 0

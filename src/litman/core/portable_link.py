@@ -4,8 +4,8 @@ litman creates relative symlinks in two places:
 
 1. ``<vault>/views/by-{project,topic,method,status}/<tag>/<paper-id>`` —
    convenience browsing views (``core/views.py``).
-2. ``<project_dir>/literature/<paper-id>`` and
-   ``<project_dir>/code/<repo>`` — bridges from external project working
+2. ``<project_dir>/litman_reflib/<paper-id>`` and
+   ``<project_dir>/litman_code/<repo>`` — bridges from external project working
    directories into the vault (``core/project_link.py``).
 
 These symlinks are pure **convenience** — the authoritative data lives in
@@ -118,7 +118,7 @@ def _warn_symlink_unsupported(link_path: Path, err: OSError) -> None:
     if sys.platform == "win32":
         hint = (
             "Symlink creation refused on this Windows shell. litman's "
-            "views/by-*/ and project literature/code bridges are skipped on "
+            "views/by-*/ and project litman_reflib/litman_code bridges are skipped on "
             "this run; metadata.yaml and INDEX.json remain authoritative, "
             "and every metadata-touching command (lit add / list / show / "
             "modify / taxonomy) is unaffected. For full functionality, run "
@@ -129,7 +129,7 @@ def _warn_symlink_unsupported(link_path: Path, err: OSError) -> None:
     else:
         hint = (
             "Filesystem refused symlink creation. litman's views/by-*/ "
-            "and project literature/code bridges will be skipped on this "
+            "and project litman_reflib/litman_code bridges will be skipped on this "
             "run; metadata.yaml and INDEX.json remain authoritative. "
             "Common causes: FAT32 / exFAT filesystems, some SMB or "
             "WebDAV mounts. Move the vault to a filesystem that supports "
