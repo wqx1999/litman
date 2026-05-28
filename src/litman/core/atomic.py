@@ -96,8 +96,15 @@ def _fsync_file(path: Path) -> None:
 
     Open the file, ``os.fsync`` the descriptor, close it. The caller has
     already written the bytes; this only forces them durable.
+
+    The fd is opened ``O_WRONLY``, not the intuitive ``O_RDONLY``: on
+    Windows ``os.fsync`` calls MSVCRT ``_commit()`` which requires the fd
+    be opened for writing (otherwise it returns ``EBADF`` — bad file
+    descriptor). POSIX ``fsync(2)`` accepts both modes, so ``O_WRONLY``
+    is the minimal portable flag. Mirrors ``_fsync_dir``'s ADR-005
+    cross-platform-compatibility stance.
     """
-    fd = os.open(path, os.O_RDONLY)
+    fd = os.open(path, os.O_WRONLY)
     try:
         os.fsync(fd)
     finally:
