@@ -67,9 +67,9 @@ available in every shell, isolated from your other Python environments.
 **From a clone of this repo**:
 
 ```bash
-pipx install /path/to/litman_dev/litman
-# editable dev install:
-pipx install --editable /path/to/litman_dev/litman
+git clone https://github.com/wqx1999/litman.git
+cd litman
+pipx install .
 ```
 
 **From PyPI** (not yet shipped; planned):
