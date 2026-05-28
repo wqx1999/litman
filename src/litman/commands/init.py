@@ -68,9 +68,9 @@ def init_cmd(
 ) -> None:
     """Initialize a new literature vault and register it as active.
 
-    Creates PARENT_DIR/<name>/ with the standard skeleton (papers/, inbox/,
-    codes/, the four views/by-* hubs, a seeded TAXONOMY.md, an empty
-    INDEX.json, and lit-config.yaml), then registers it in litman's
+    Creates PARENT_DIR/<name>/ with the standard skeleton (papers/, codes/,
+    the four views/by-* hubs, a seeded TAXONOMY.md, an empty INDEX.json, and
+    lit-config.yaml), then registers it in litman's
     user-level vault registry. The first vault you create becomes the active
     vault automatically, so subsequent commands (lit add / list / ...) find
     it with no environment variable to set. Pass --no-register to skip

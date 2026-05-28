@@ -59,9 +59,9 @@ def test_staged_write_creates_target_parent_dirs(vault: Path) -> None:
 def test_staged_write_write_bytes(vault: Path) -> None:
     payload = b"\x89PNG\r\n\x1a\n"
     with staged_write(vault) as stage:
-        stage.write_bytes("inbox/blob.bin", payload)
+        stage.write_bytes("attachments/blob.bin", payload)
 
-    assert (vault / "inbox/blob.bin").read_bytes() == payload
+    assert (vault / "attachments/blob.bin").read_bytes() == payload
 
 
 # ---------------------------------------------------------------------------

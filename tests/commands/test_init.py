@@ -78,7 +78,6 @@ def test_create_vault_has_no_top_level_notes_dir(tmp_path: Path) -> None:
     for expected in (
         "papers",
         "codes",
-        "inbox",
         "views/by-project",
         "views/by-topic",
         "views/by-method",
@@ -86,6 +85,10 @@ def test_create_vault_has_no_top_level_notes_dir(tmp_path: Path) -> None:
         ".litman-staging",
     ):
         assert (vault / expected).is_dir(), f"missing skeleton dir: {expected}"
+    # inbox/ used to be a vault skeleton dir but was never used by any command;
+    # the "inbox" concept is now the default value of metadata.yaml's status
+    # field. The folder is retired.
+    assert not (vault / "inbox").exists(), "inbox/ should not be created"
 
 
 def test_create_vault_missing_parent(tmp_path: Path) -> None:

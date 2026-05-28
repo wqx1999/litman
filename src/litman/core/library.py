@@ -27,7 +27,6 @@ VAULT_SUBDIRS: tuple[str, ...] = (
     "views/by-topic",
     "views/by-method",
     "views/by-status",
-    "inbox",
     "codes",
     ".litman-staging",
 )
