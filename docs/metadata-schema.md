@@ -65,7 +65,10 @@ before tagging.
 
 `type` enum values (defined in [taxonomy-schema.md](taxonomy-schema.md)):
 `research`, `review`, `position`, `benchmark`, `dataset`, `tutorial`,
-`thesis`, `book-chapter`. Default: `research`.
+`thesis`, `book-chapter`. Default: `null` (unset until you classify the
+paper — `lit health-check` tolerates null, but a non-null value must be
+in the enum). `lit add` writes `null`; the `lit-reading` skill's verdict
+ritual offers candidates with rationale on first read.
 
 **`type` vs `venue-type` — keep them straight**: `type` is your
 editorial label for what kind of paper it is to you (a research paper
@@ -82,7 +85,7 @@ a `proceedings-article` can be a `position` piece. `lit export` uses
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `status` | string enum | `inbox` | Reading workflow state. Values: `inbox`, `skim`, `deep-read`, `dropped`. |
-| `priority` | string enum | `B` | Reading priority. Values: `A`, `B`, `C`. |
+| `priority` | string enum or null | `null` | Reading priority. Values: `A`, `B`, `C`. `null` = "not yet evaluated"; `lit add` writes `null` and the `lit-reading` verdict ritual offers a value on first read. `lit health-check` tolerates `null` but rejects non-enum values. |
 | `read-date` | date string or null | null | When you finished a deep read. **Semantic** (user-set). Format `YYYY-MM-DD`. |
 | `last-revisited` | date string or null | null | When you most recently re-read or referenced this paper. **Semantic** (user-set). Format `YYYY-MM-DD`. |
 
@@ -147,6 +150,11 @@ own perspective on the same paper (e.g. baseline for one project,
 peripheral for another) without forcing a uniform schema.
 
 ## Putting it together — full example
+
+The example below is a **fully evaluated** paper after a deep read, not
+the freshly-added state from `lit add`. On first add, `type`, `priority`,
+`read-date`, and `last-revisited` are all `null`; you fill them via the
+`lit-reading` skill's verdict ritual or `lit modify --set …`.
 
 ```yaml
 # Identity
