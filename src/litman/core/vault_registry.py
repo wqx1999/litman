@@ -449,6 +449,20 @@ def find_by_name(reg: VaultRegistry, name: str) -> VaultEntry | None:
     return None
 
 
+def find_dangling(reg: VaultRegistry) -> list[VaultEntry]:
+    """Return registered vault entries whose ``path`` no longer exists on disk.
+
+    "Dangling" here means **the directory itself is missing** (``Path.exists()``
+    returns False). A directory that exists but no longer holds a
+    ``lit-config.yaml`` is a different failure mode handled by ``find_vault()``
+    — we intentionally don't conflate the two so drift surfacing can be loud
+    (yes/no prompt to prune) while corrupted-vault has its own targeted error.
+
+    Order matches ``reg.vaults`` so callers can render the list deterministically.
+    """
+    return [v for v in reg.vaults if not Path(v.path).exists()]
+
+
 def resolve_vault_param(reg: VaultRegistry, name: str) -> Path:
     """Return the absolute path of vault ``name`` for ``--vault`` plumbing.
 

@@ -31,6 +31,8 @@ from litman.core.checks import (
 )
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.vault_registry import find_dangling, load_registry
+from litman.exceptions import VaultRegistryError
 
 console = Console()
 
@@ -62,7 +64,36 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "trash_size": "Trash bloat (entry count)",
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
+    "vault_registry_drift": "Vault registry drift (registered path missing)",
 }
+
+
+def _vault_registry_drift_issues() -> list[Issue]:
+    """Compute Issues for any dangling vault registration entries.
+
+    Registry drift is a user-level concern (not vault-scoped), so it lives
+    outside ``_CHECK_REGISTRY``. We still surface it through the same
+    ``Issue`` pipeline so ``health-check`` stays the canonical "everything
+    I should know" report. The day-to-day surfacing path is the root-group
+    hook (M28); this is the cron / "I want a full audit" path.
+    """
+    try:
+        reg = load_registry()
+    except VaultRegistryError:
+        return []
+    return [
+        Issue(
+            category="vault_registry_drift",
+            severity="warning",
+            paper_id=None,
+            message=(
+                f"registered vault {entry.name!r} points at "
+                f"{entry.path} but that path no longer exists"
+            ),
+            hint=f"lit vault remove {entry.name}",
+        )
+        for entry in find_dangling(reg)
+    ]
 
 
 def _render_issue_line(issue: Issue, max_msg_width: int = 100) -> str:
@@ -180,6 +211,7 @@ def health_check_cmd(
     )
 
     issues = run_all_checks(vault, papers)
+    issues.extend(_vault_registry_drift_issues())
     _render_report(issues)
 
     if do_fix and issues:
@@ -195,6 +227,7 @@ def health_check_cmd(
             # Re-run checks so the post-fix summary is honest.
             papers = list_papers(vault)
             issues = run_all_checks(vault, papers)
+            issues.extend(_vault_registry_drift_issues())
             n_papers = len(papers)
 
     _summarize(issues, n_papers)

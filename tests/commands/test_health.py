@@ -1024,3 +1024,60 @@ def test_project_checks_registered_in_run_all(
     cats = {i.category for i in issues}
     assert "project_path_exists" in cats
     assert "project_config_consistency" in cats
+
+
+# ===========================================================================
+# M28: vault registry drift surfaced as a health-check finding
+# ===========================================================================
+
+
+def test_health_check_reports_vault_registry_drift(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dangling vault registry entry must show up as a
+    ``vault_registry_drift`` warning in ``lit health-check`` output.
+
+    health-check itself routes through the root-group drift hook too, but
+    CliRunner is non-TTY → the hook only emits a single stderr warning
+    without mutating the registry, so the dangling entry is still present
+    when health-check runs its own probe. Both surfacings coexist by design
+    (stderr warning + report finding are two granularities of the same
+    information).
+    """
+    from litman.core.vault_registry import (
+        VaultEntry,
+        VaultRegistry,
+        save_registry,
+    )
+
+    # Isolate registry to a tmp HOME so we don't scribble on the dev's real
+    # ``~/.config/litman/vaults.yaml``. Local to this test — the rest of
+    # test_health.py does not touch the registry, so a module-level fixture
+    # would be needless cross-cutting state.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    # Construct a registry with one dangling entry directly (bypassing
+    # ``add_vault`` which would reject a non-existent path).
+    ghost = tmp_path / "ghost"  # never created on disk
+    save_registry(
+        VaultRegistry(
+            vaults=[
+                VaultEntry(name="ghost", path=str(ghost), is_active=False),
+            ]
+        )
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--library", str(vault)]
+    )
+
+    # drift is a warning → counts as an issue → exit 1.
+    assert result.exit_code == 1, result.output
+    assert "Vault registry drift" in result.output
+    assert "ghost" in result.output
+    assert "lit vault remove ghost" in result.output

@@ -12,6 +12,7 @@ normal Python tracebacks (they indicate bugs, not user errors).
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 import click
 from rich.console import Console
@@ -67,9 +68,42 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 class LitGroup(click.Group):
-    """Root group that renders the command list in workflow sections instead
-    of one flat alphabetical block. Falls back to an 'Other' section for any
-    command missing from _COMMAND_SECTIONS so nothing is silently hidden."""
+    """Root group that (1) renders the command list in workflow sections
+    instead of one flat alphabetical block (M27), and (2) surfaces vault
+    registry drift before dispatching to most subcommands (M28). Falls back
+    to an 'Other' section for any command missing from _COMMAND_SECTIONS so
+    nothing is silently hidden."""
+
+    # Subcommands that must NOT trigger the drift prompt:
+    # - help / hello: trivial, registry-irrelevant; would feel out of place
+    # - None: the user typed `lit` with no subcommand and is about to see
+    #   the help message; don't ambush them with a registry prompt
+    _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", None})
+
+    def invoke(self, ctx: click.Context) -> Any:
+        # ``ctx.invoked_subcommand`` is only populated inside ``Group.invoke``
+        # AFTER our override runs, so we peek at the raw protected args set
+        # by ``Group.parse_args`` to know which subcommand is about to run.
+        # An empty protected-args list means ``lit`` with no subcommand
+        # (e.g. about to render help) — represented as ``None`` in the skip
+        # set, matching the convention used by ``ctx.invoked_subcommand``.
+        #
+        # ``ctx._protected_args`` is a Click-8.x internal carrying the same
+        # value, populated by ``parse_args``. Click 9 plans to remove this
+        # attribute (deprecation flagged in 8.2), so ``pyproject.toml`` pins
+        # ``click<9``. Bumping past 9 requires either moving this hook into
+        # the group callback (after ``parse_args`` has populated
+        # ``invoked_subcommand``) or switching to a public-API replacement.
+        protected = getattr(ctx, "_protected_args", None) or []
+        cmd_name: str | None = protected[0] if protected else None
+        if cmd_name not in self._DRIFT_SKIP:
+            # Local import keeps cli.py's import graph shallow at module load
+            # (commands/_drift.py pulls in vault_registry + rich), and avoids
+            # a circular import if _drift ever needs to reference cli.
+            from litman.commands._drift import check_and_prompt_registry_drift
+
+            check_and_prompt_registry_drift()
+        return super().invoke(ctx)
 
     def format_commands(
         self, ctx: click.Context, formatter: click.HelpFormatter
