@@ -62,11 +62,11 @@ over time, and an AI assistant can actually understand it.
 ## Install
 
 litman lives in its own environment, so it never pollutes `base` or another
-project. Two ways in — both isolate the install, then share the same
+project. Pick the install path that matches your platform, then run the same
 onboarding wizard.
 
-**From a clone of this repo** — `install.sh` creates (or reuses) a `litman`
-conda env and installs into it (requires conda):
+**From a clone of this repo (Linux / macOS / WSL)** — `install.sh` creates
+(or reuses) a `litman` conda env and installs into it (requires conda):
 
 ```bash
 ./install.sh            # editable dev install into conda env 'litman'
@@ -74,13 +74,24 @@ conda env and installs into it (requires conda):
 # ./install.sh --env X  # use a different env name
 ```
 
-**From PyPI** (not yet shipped; planned) — `pipx` isolates automatically:
+**From a clone of this repo (native Windows — PowerShell / cmd)** —
+`install.sh` needs bash, so call conda + pip directly. The result is identical
+to running `install.sh`:
+
+```powershell
+conda create -n litman python=3.12 -y
+conda activate litman
+pip install -e .         # or `pip install .` for non-editable
+```
+
+**From PyPI** (not yet shipped; planned) — `pipx` isolates automatically,
+works on every platform without conda:
 
 ```bash
 pipx install litman
 ```
 
-Both install *only*. Then run the one-shot onboarding wizard:
+All three install *only*. Then run the one-shot onboarding wizard:
 
 ```bash
 lit setup                    # interactive: shell completion → Claude Code skill → vault → (optional) cloud sync

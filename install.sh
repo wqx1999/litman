@@ -5,11 +5,13 @@
 # This is the source-tree counterpart of `pipx install litman`: both put litman
 # into its OWN environment, so it never pollutes base or another project's env.
 #
-# It does ONE thing — install. It deliberately does NOT:
-#   * deploy the Claude Code skills  — run `lit install-skill` afterwards
-#   * create a vault                 — run `lit init <parent-dir>` afterwards
-# Those follow-ups are identical whether you installed from source (here) or
-# from PyPI (pipx), which keeps the README a single symmetric table.
+# It does ONE thing — install. It deliberately does NOT deploy the Claude Code
+# skills, create a vault, install shell completion, or configure cloud sync.
+# Run `lit setup` after install for the interactive onboarding wizard, or call
+# the individual commands directly (`lit install-completion`, `lit install-skill`,
+# `lit init`, `lit sync setup`) for scripted onboarding.
+# The follow-up wizard is identical whether you installed from source (here) or
+# from PyPI (pipx), which keeps the README symmetric across the two paths.
 #
 set -euo pipefail
 
@@ -17,8 +19,9 @@ usage() {
   cat <<'EOF'
 install.sh — install litman into an isolated conda env (source-tree path).
 
-Counterpart of `pipx install litman`. Installs only; deploy skills and create
-the vault as explicit follow-ups (lit install-skill / lit init).
+Counterpart of `pipx install litman`. Installs only; run `lit setup` after
+install for the interactive onboarding wizard (completion, skill, vault,
+optional sync), or call those four commands directly for scripted onboarding.
 
 Usage:
   ./install.sh                 # editable dev install into conda env 'litman'
@@ -90,12 +93,15 @@ cat <<EOF
 
 ${GREEN}${BOLD}litman is installed in conda env '${ENV_NAME}'.${RESET}
 
-Two manual follow-ups (same steps as the PyPI / pipx path):
+Next step (interactive onboarding wizard — same on PyPI / pipx path):
 
   conda activate ${ENV_NAME}
-  lit install-skill                     # deploy: wire Claude Code skills into ~/.claude/skills/
-  lit init /path/to/parent              # create your vault (you choose the location)
-  export LIT_LIBRARY=/path/to/parent/literature_vault   # add to ~/.bashrc / ~/.zshrc
+  lit setup                             # completion + Claude Code skill + first vault + (optional) cloud sync
+
+For scripted onboarding, call the four steps directly instead of \`lit setup\`:
+\`lit install-completion\`, \`lit install-skill\`, \`lit init /path/to/parent\`,
+\`lit sync setup\`. \`lit init\` auto-registers the new vault as active, so no
+\`\$LIT_LIBRARY\` export is needed.
 
 Headless/HPC? set 'default_pdf_viewer' in <vault>/lit-config.yaml.
 EOF
