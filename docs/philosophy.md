@@ -78,6 +78,6 @@ reconstruct it.
 
 ---
 
-The full 12-rule list with rationale lives in the development repository
+The full 13-rule list with rationale lives in the development repository
 at `dev_docs/invariants.md`. The principles above are the user-facing
 subset: what every command on the public CLI promises.

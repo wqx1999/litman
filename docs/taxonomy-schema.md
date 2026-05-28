@@ -94,10 +94,13 @@ The cascade rewrites every paper's `topics` list in one atomic op.
 | `lit taxonomy add <dict> <value>` | `dict` is a fixed enum; `value` already registered. |
 | `lit taxonomy rename <dict> <old> <new>` | `dict` is a fixed enum; `old` not registered; `new` already registered. |
 | `lit taxonomy merge <dict> <src>... --into <dest>` | `dict` is a fixed enum; any `src` not registered; `dest` not registered. |
-| `lit taxonomy rm <dict> <value>` | `dict` is a fixed enum; **any paper still references `value`** (must `merge` or hand-edit metadata first). |
+| `lit taxonomy rm <dict> <value>` | `dict` is a fixed enum. (When any paper still references `value`, `rm` does **not** refuse — it shows the affected-paper count and prompts for confirmation; default `N`. Pass `-y` for non-interactive runs.) |
 
-The refusal on `rm` is the single most important guard. It ensures the
-vault never reaches a state where `metadata.yaml` references a value
+`lit taxonomy rm` and `lit taxonomy merge` are confirm-and-cascade: on
+confirmation, the value is removed from `TAXONOMY.md` and from every
+referencing `metadata.yaml` (and from `INDEX.json`) in one atomic
+transaction. The prompt + default-`N` is the guard — it ensures the vault
+never silently reaches a state where `metadata.yaml` references a value
 that TAXONOMY no longer lists.
 
 ## Initial seed

@@ -62,8 +62,8 @@ over time, and an AI assistant can actually understand it.
 ## Install
 
 litman lives in its own environment, so it never pollutes `base` or another
-project. Two ways in — both isolate the install, then share the same two
-follow-up steps.
+project. Two ways in — both isolate the install, then share the same
+onboarding wizard.
 
 **From a clone of this repo** — `install.sh` creates (or reuses) a `litman`
 conda env and installs into it (requires conda):
@@ -80,11 +80,20 @@ conda env and installs into it (requires conda):
 pipx install litman
 ```
 
-Both install *only*. Finish with the same two manual steps:
+Both install *only*. Then run the one-shot onboarding wizard:
 
 ```bash
+lit setup                    # interactive: shell completion → Claude Code skill → vault → (optional) cloud sync
+```
+
+`lit setup` chains four standalone commands behind simple prompts. If you
+prefer to script onboarding, call them directly instead:
+
+```bash
+lit install-completion       # shell tab-completion (auto-detects bash/zsh/fish from $SHELL)
 lit install-skill            # deploy the Claude Code skills into ~/.claude/skills/
 lit init /path/to/parent     # create your vault — see Quick start
+lit sync setup               # optional: configure rclone cloud sync
 ```
 
 Dependencies (auto-installed): `click`, `ruamel.yaml`, `httpx`, `pypdf`,
@@ -122,9 +131,6 @@ lit modify 2017_Vaswani_Attention --add-tag topics=transformer
 
 # 5. Bind to a project (project must be declared in lit-config.yaml first).
 lit link 2017_Vaswani_Attention --project MyResearchProject
-
-# 6. (Skills are wired during Install; re-run after upgrades to refresh them.)
-lit install-skill
 ```
 
 ### Multiple vaults & overrides (advanced)

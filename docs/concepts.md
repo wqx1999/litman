@@ -217,8 +217,10 @@ A similar argument appears in [[zhang-shared:2024_Tobacco_Survey]].
 ```
 
 `lit health-check` validates that every `[[...]]` resolves to an
-existing paper in the named (or active) vault; `lit rename` and
-`lit rm` rewrite or strip wikilinks atomically.
+existing paper in the named (or active) vault. `lit rename` rewrites
+wikilinks atomically. `lit rm` annotates referring wikilinks with a
+trailing ` (deleted)` marker (the link text is preserved); `lit trash
+restore` removes the marker atomically.
 
 ## Atomic operations
 

@@ -124,8 +124,9 @@ itself.)
 
 `lit rename <old> <new>` rewrites every occurrence of `<old>` across all
 papers' relations fields (forward and reverse) atomically. `lit rm <id>`
-refuses if any other paper still references `<id>`, unless `--cascade` is
-given.
+shows the count of external references that will be torn down and prompts
+for confirmation (default `N`); answer `y` (or pass `-y` for
+non-interactive runs) to commit the cascade atomically.
 
 ## Project-relevance layer (dynamic per project)
 

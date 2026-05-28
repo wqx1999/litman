@@ -12,9 +12,12 @@ For one-line summaries of every command, run `lit --help` or
 
 | Command | What it does |
 |---|---|
+| `lit setup` | Interactive first-run wizard: shell completion → Claude Code skill → first vault → optional cloud sync. Chains the four commands below behind simple prompts. TTY-only. |
 | `lit init <parent_dir>` | Create a vault under `<parent_dir>/literature_vault/`. |
 | `lit init <parent_dir> --name <subdir>` | Override the default subdir name. |
-| `lit vault add <name> <path>` | Register the new vault in `~/.config/litman/vaults.yaml`. |
+| `lit init <parent_dir> --no-register` | Skip auto-registration in the vault registry. |
+| `lit init <parent_dir> --register-as <name>` | Override the registered name (default: subdir name). |
+| `lit vault add <name> <path>` | Register an *existing* vault directory in `~/.config/litman/vaults.yaml`. |
 | `lit vault use <name>` | Set it as the active vault. |
 | `lit config show` | Print the parsed `lit-config.yaml`. Use to verify defaults. |
 
@@ -22,6 +25,10 @@ For one-line summaries of every command, run `lit --help` or
 active vault automatically, so subsequent commands find it with no further
 setup. Use `lit vault use <name>` to switch the active vault, or
 `$LIT_LIBRARY` / `--library` to override per shell or per command.
+
+For automated / scripted onboarding (CI, dotfiles, install scripts), call the
+individual commands directly instead of `lit setup` — the wizard refuses to
+run outside a TTY and lists the equivalent commands.
 
 ## Scenario 2 — Add a paper
 
@@ -117,8 +124,11 @@ A repo whose last binder was this paper (the 1:1 case) is hard-deleted and
 its upstream URL recorded in the trash sidecar for re-clone on restore; a
 repo still bound by another paper (1:N) only loses the binding. The paper's
 *own* fields ride into trash unchanged so `lit trash restore` can rebuild
-them. `[[id]]` wikilinks in notes are never modified. Every removal is
-appended to `<vault>/.deletion-log.jsonl`.
+them. `[[id]]` wikilinks in other papers' `notes.md` / `discussion.md` are
+**annotated** with a trailing ` (deleted)` marker so an agent reading the
+note can tell the target is gone; `lit trash restore` removes the marker
+atomically. The wikilink text itself is never stripped, so manual recovery
+stays possible.
 
 Trash is capped at 100 entries. When `lit rm` would push it past 100,
 the oldest entry is permanently removed (the evicted id is printed).
@@ -276,18 +286,24 @@ missing these fields, fill them in with
 ``lit modify <id> --set venue-type=journal-article`` etc.; the schema
 is forgiving (missing fields become empty bibtex keys, not errors).
 
-## Scenario 14 — Install Claude Code skills
+## Scenario 14 — Install shell completion and Claude Code skills
+
+Standalone onboarding steps. `lit setup` (see [Scenario 1](#scenario-1--set-up-a-new-vault))
+runs both interactively; call them directly for scripted setup.
 
 | Command | What it does |
 |---|---|
+| `lit install-completion` | Install shell tab-completion. Auto-detects `bash` / `zsh` / `fish` from `$SHELL`; for bash/zsh, appends an eval line to `~/.bashrc` / `~/.zshrc`; for fish, drops a self-sourcing snippet under `~/.config/fish/completions/lit.fish`. Idempotent via a sentinel comment. Restart the shell (or `source`) to activate. |
+| `lit install-completion <shell>` | Force a specific shell (`bash` / `zsh` / `fish`) instead of `$SHELL` auto-detection. |
 | `lit install-skill` | Install every bundled skill (`lit-library` + `lit-reading`) to `~/.claude/skills/`. |
 | `lit install-skill --skill lit-reading` | Install just one skill. |
 | `lit install-skill --parent-dir <path>` | Override the install directory. |
 | `lit install-skill --force` | Overwrite files inside an existing target directory. Files in the target that are NOT part of the bundled skill are left in place. |
 
-Skills are **optional**. The CLI is fully usable without any skill;
-installing them just makes Claude Code's agent-mediated workflows
-nicer. See [philosophy: CLI must work standalone](philosophy.md#cli-must-work-standalone).
+Both are **optional**. The CLI is fully usable without completion or skills;
+installing them just makes day-to-day use nicer (faster typing; Claude
+Code's agent-mediated workflows). See
+[philosophy: CLI must work standalone](philosophy.md#cli-must-work-standalone).
 
 ---
 
