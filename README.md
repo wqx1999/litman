@@ -61,35 +61,27 @@ over time, and an AI assistant can actually understand it.
 
 ## Install
 
-litman lives in its own environment, so it never pollutes `base` or another
-project. Pick the install path that matches your platform, then run the same
-onboarding wizard.
+litman is a Python CLI tool. Install with **pipx** so `lit` is permanently
+available in every shell, isolated from your other Python environments.
 
-**From a clone of this repo (Linux / macOS / WSL)** — `install.sh` creates
-(or reuses) a `litman` conda env and installs into it (requires conda):
+**From a clone of this repo**:
 
 ```bash
-./install.sh            # editable dev install into conda env 'litman'
-# ./install.sh --prod   # regular (non-editable) install
-# ./install.sh --env X  # use a different env name
+pipx install /path/to/litman_dev/litman
+# editable dev install:
+pipx install --editable /path/to/litman_dev/litman
 ```
 
-**From a clone of this repo (native Windows — PowerShell / cmd)**:
-
-```powershell
-conda create -n litman python=3.12 -y
-conda activate litman
-pip install -e .         # or `pip install .` for non-editable
-```
-
-**From PyPI** (not yet shipped; planned) — `pipx` isolates automatically,
-works on every platform without conda:
+**From PyPI** (not yet shipped; planned):
 
 ```bash
 pipx install litman
 ```
 
-All three install *only*. Then run the one-shot onboarding wizard:
+Don't have pipx? `python -m pip install --user pipx` (or `apt install pipx` /
+`brew install pipx` / `conda install -c conda-forge pipx`).
+
+Then run the one-shot onboarding wizard:
 
 ```bash
 lit setup                    # interactive: shell completion → Claude Code skill → vault → (optional) cloud sync
