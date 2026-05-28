@@ -280,6 +280,48 @@ def test_setup_sync_already_configured_reconfigure_default_no(
     assert "sync" in result.output
 
 
+def test_setup_skill_step_skips_when_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-run idempotency for step 2: when bundled skill targets are already
+    present, the wizard must NOT call install_skill_cmd (which would raise
+    SkillInstallError without --force), and must continue to step 3 / 4 so
+    the user can still create vaults or configure sync."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    # Pretend every bundled skill is already installed. Stubbing the helper
+    # in the setup module's import path avoids the module-load-time
+    # snapshotting of DEFAULT_PARENT_DIR (which freezes to the real HOME
+    # before fake_home redirects $HOME, so creating dirs under fake_home is
+    # not picked up by the real helper).
+    from litman.core.skill import list_bundled_skills
+
+    bundled = set(list_bundled_skills())
+    monkeypatch.setattr(
+        "litman.commands.setup.installed_skill_names",
+        lambda: bundled,
+    )
+    # If the wizard slipped through to install, fail loudly: invoking the
+    # real install_skill_cmd would raise SkillInstallError mid-wizard.
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.install_skill_cmd",
+        _make_recording_stub(calls),
+    )
+
+    runner = CliRunner()
+    # completion no / vault no. NO line for the skill prompt — step 2 must
+    # short-circuit silently and never reach the "1) Claude Code / 2) skip"
+    # prompt.
+    result = runner.invoke(cli, ["setup"], input="n\nn\n")
+    assert result.exit_code == 0, result.output
+    assert calls == []  # install_skill_cmd was NOT called
+    assert "already installed" in result.output
+    assert "Install agent skill?" not in result.output  # prompt skipped
+
+
 def test_setup_completion_step_skips_when_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

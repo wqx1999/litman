@@ -175,6 +175,26 @@ def install_skill(
     }
 
 
+def installed_skill_names(
+    parent_dir: Path = DEFAULT_PARENT_DIR,
+) -> set[str]:
+    """Return the subset of bundled skill names whose target directory
+    already exists under ``parent_dir``.
+
+    Mirrors :func:`litman.commands.install_completion.completion_installed`
+    so wizards / setup flows can detect a prior install and skip rather than
+    crash on the first ``SkillInstallError`` from :func:`install_skill`.
+    Presence of the directory — not its contents — is the signal: a
+    half-populated dir still counts as installed, because :func:`install_skill`
+    would still refuse without ``overwrite=True``.
+    """
+    return {
+        name
+        for name in list_bundled_skills()
+        if (parent_dir / name).exists()
+    }
+
+
 def install_all_skills(
     parent_dir: Path = DEFAULT_PARENT_DIR,
     overwrite: bool = False,

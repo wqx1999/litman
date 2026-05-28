@@ -34,6 +34,7 @@ from litman.commands.install_skill import install_skill_cmd
 from litman.commands.sync import sync_setup_cmd
 from litman.core.config import load_config
 from litman.core.library import DEFAULT_VAULT_NAME, find_vault
+from litman.core.skill import installed_skill_names, list_bundled_skills
 from litman.core.vault_registry import (
     VaultRegistryError,
     ensure_name_registrable,
@@ -131,6 +132,35 @@ def _step_skill(
     ctx: click.Context, did: list[str], skipped: list[str]
 ) -> None:
     console.rule("[bold]Step 2/4 — agent skill")
+
+    # Re-run idempotency: install_skill_cmd defaults to force=False and the
+    # underlying install_all_skills raises SkillInstallError on the first
+    # already-present target. Without this short-circuit, re-running the
+    # wizard after a prior setup would abort here and never reach step 3 / 4.
+    # Mirrors completion_installed() in _step_completion.
+    bundled = set(list_bundled_skills())
+    already = installed_skill_names()
+    if already:
+        if already >= bundled:
+            console.print(
+                f"[dim]Skills already installed "
+                f"({', '.join(sorted(already))}); skipping. "
+                "Reinstall with [bold]lit install-skill --force[/].[/]"
+            )
+            skipped.append("skill (already installed)")
+        else:
+            missing = bundled - already
+            console.print(
+                f"[dim]Some skills already installed "
+                f"({', '.join(sorted(already))}); "
+                f"missing ({', '.join(sorted(missing))}). "
+                "Run [bold]lit install-skill --force[/] to refresh all, or "
+                "[bold]lit install-skill --skill <name>[/] for one. "
+                "Skipping this step to keep the wizard moving.[/]"
+            )
+            skipped.append("skill (partially installed)")
+        return
+
     console.print(
         "An agent skill lets Claude Code drive litman (optional; the CLI "
         "works fully without it)."
