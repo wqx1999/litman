@@ -33,12 +33,27 @@ def vault(tmp_path: Path) -> Path:
     return create_vault(tmp_path)
 
 
+_FAKE_PDF_BYTES = b"%PDF-1.4\n% fake content for tests\n%%EOF\n"
+
+
 @pytest.fixture
 def fake_pdf(tmp_path: Path) -> Path:
     """A small file masquerading as a PDF."""
     pdf = tmp_path / "fake.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n% fake content for tests\n%%EOF\n")
+    pdf.write_bytes(_FAKE_PDF_BYTES)
     return pdf
+
+
+def _restore_fake_pdf(p: Path) -> None:
+    """Re-create the fake PDF after `lit add` consumed it (mv semantics).
+
+    `lit add` now removes the source after a successful ingest, so any test
+    that drives a second `lit add` invocation pointed at the same path needs
+    to mint a fresh source first — otherwise click rejects the second call
+    at the usage layer (path does not exist) before reaching the duplicate /
+    collision logic the test is actually exercising.
+    """
+    p.write_bytes(_FAKE_PDF_BYTES)
 
 
 SAMPLE_MESSAGE: dict[str, Any] = {
@@ -94,8 +109,9 @@ def test_add_creates_paper_folder(
     assert (paper_dir / "metadata.yaml").is_file()
     assert (paper_dir / "notes.md").is_file()
 
-    # Original PDF preserved (copy, not move).
-    assert fake_pdf.is_file()
+    # Original PDF moved into the vault (mv semantics, not cp): the source
+    # disappearing is the user-visible "ingest succeeded" signal.
+    assert not fake_pdf.exists()
 
 
 def test_add_writes_metadata_yaml_correctly(
@@ -202,6 +218,7 @@ def test_add_duplicate_doi_refused(
     first = runner.invoke(cli, args)
     assert first.exit_code == 0, first.output
 
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(cli, args)
     assert second.exit_code != 0
     assert isinstance(second.exception, DuplicateDOIError)
@@ -246,6 +263,7 @@ def test_add_duplicate_doi_case_insensitive(
         "litman.commands.add.fetch_crossref",
         lambda doi, client=None: msg2,
     )
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(
         cli,
         [
@@ -287,6 +305,7 @@ def test_add_id_collision_with_auto_suffix(
         "litman.commands.add.fetch_crossref",
         lambda doi, client=None: msg2,
     )
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(
         cli,
         [
@@ -327,6 +346,7 @@ def test_add_id_collision_non_tty_without_auto_suffix_refused(
         "litman.commands.add.fetch_crossref",
         lambda doi, client=None: msg2,
     )
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(
         cli,
         [
@@ -374,6 +394,7 @@ def test_add_id_override_collision_hard_fails(
         "litman.commands.add.fetch_crossref",
         lambda doi, client=None: msg2,
     )
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(
         cli,
         [

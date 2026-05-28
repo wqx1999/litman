@@ -12,10 +12,14 @@ Pipeline (M2.9 + M4.1):
        prompt the user (TTY) or auto-suffix ``_b`` / ``_c`` / ... when
        ``--auto-suffix`` is passed.
     5. Create ``papers/<id>/``, atomically populated with::
-       paper.pdf  (copied, not moved — original PDF is preserved)
+       paper.pdf
        metadata.yaml
        notes.md   (placeholder)
-    6. Print a summary panel.
+    6. Remove the source PDF (``mv`` semantics — file disappearing from the
+       source dir is the user-visible success signal). The atomic block uses
+       ``copy2`` so a mid-write failure does not strand the original; the
+       ``unlink`` happens only once the vault is consistent.
+    7. Print a summary panel.
 """
 
 from __future__ import annotations
@@ -375,6 +379,9 @@ def add_cmd(
             )
 
     # Atomic creation: any failure rolls back the half-built folder.
+    # The source PDF is copied (not moved) inside the atomic block so that a
+    # mid-write failure leaves the original intact; the unlink runs after the
+    # block once the vault is known-consistent.
     try:
         paper_dir.mkdir(parents=True)
         with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
@@ -390,6 +397,18 @@ def add_cmd(
         if paper_dir.exists():
             shutil.rmtree(paper_dir, ignore_errors=True)
         raise
+
+    # Vault is consistent. Remove the source PDF (mv semantics). Tolerate
+    # failure: a successful ingest must not be reported as failure just
+    # because the source could not be removed (e.g. read-only source dir).
+    try:
+        pdf_path.unlink()
+    except OSError as exc:
+        console.print(
+            f"[yellow]Warning:[/] could not remove source PDF "
+            f"{str(pdf_path)!r} ({exc.__class__.__name__}); paper was still "
+            "ingested. Delete it manually if no longer needed."
+        )
 
     # Pure recall increment, AFTER the atomic block: the paper is already
     # safely on disk, so the scan can never roll it back. Double defense:
@@ -451,9 +470,7 @@ def add_cmd(
             f"[bold]Year:[/] {parsed['year']}    "
             f"[bold]Journal:[/] {parsed['journal']}\n"
             f"[bold]Authors:[/] {author_summary}"
-            f"{code_block}\n\n"
-            "[dim]Next:[/] edit metadata.yaml to fill projects/topics/methods, "
-            "then `lit refresh-views` to update INDEX.json.",
+            f"{code_block}",
             title="lit add",
             border_style="green",
         )

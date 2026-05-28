@@ -27,11 +27,25 @@ def vault(tmp_path: Path) -> Path:
     return create_vault(tmp_path)
 
 
+_FAKE_PDF_BYTES = b"%PDF-1.4\n%test\n%%EOF\n"
+
+
 @pytest.fixture
 def fake_pdf(tmp_path: Path) -> Path:
     pdf = tmp_path / "fake.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n%test\n%%EOF\n")
+    pdf.write_bytes(_FAKE_PDF_BYTES)
     return pdf
+
+
+def _restore_fake_pdf(p: Path) -> None:
+    """Re-create the fake PDF after `lit add` consumed it (mv semantics).
+
+    Mirrors the test_add.py helper. Required for any test that drives a
+    second `lit add` against the same path — otherwise click's path-exists
+    check short-circuits the second invocation before the code under test
+    runs.
+    """
+    p.write_bytes(_FAKE_PDF_BYTES)
 
 
 _FULL_LLM_PAYLOAD = {
@@ -342,6 +356,7 @@ def test_cli_add_from_llm_json_doi_dedup_still_applies(
     )
     assert first.exit_code == 0, first.output
 
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(
         cli,
         [
@@ -455,6 +470,7 @@ def test_cli_add_from_llm_json_id_collision_autosuffix(
     )
     assert first.exit_code == 0, first.output
 
+    _restore_fake_pdf(fake_pdf)
     second = runner.invoke(
         cli,
         [
