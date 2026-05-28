@@ -74,9 +74,7 @@ onboarding wizard.
 # ./install.sh --env X  # use a different env name
 ```
 
-**From a clone of this repo (native Windows — PowerShell / cmd)** —
-`install.sh` needs bash, so call conda + pip directly. The result is identical
-to running `install.sh`:
+**From a clone of this repo (native Windows — PowerShell / cmd)**:
 
 ```powershell
 conda create -n litman python=3.12 -y
