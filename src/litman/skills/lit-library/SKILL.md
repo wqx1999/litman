@@ -108,7 +108,14 @@ This is the **headline workflow** for lit-library. Use when the user has a PDF a
 
 **Pipeline**:
 
-1. **Read the PDF**. Use the `pdf` skill or your built-in PDF reading to extract: title (page 1 header), authors (page 1 list — preserve "Family, Given" order), year, DOI (search first 1-2 pages — many PDFs print "DOI: 10.xxx/yyy"), journal / venue, abstract.
+1. **Read the PDF** — a *must-achieve* goal, not best-effort. Walk this ladder until one rung works; **never stop at rung 1's failure** and tell the user "I can't read PDFs":
+
+   1. **Claude Code `Read` tool** (default — ~99% of CC users with any vision-capable Claude model): `Read(pdf_path, pages="1-3")`. PDFs are natively handled via CC's multimodal pipeline; do NOT try external CLIs first.
+   2. **PDF-related MCP tool** (for non-multimodal backends — DeepSeek / GLM / Qwen / etc.): scan your current `available tools` list for any tool whose description mentions PDF / document / extract, and use that.
+   3. **System CLI fallback** (probe with `command -v` first, then run the first available): `pdftotext -layout <pdf> -`, `mutool draw -F txt <pdf> -`, or `python -c "from pypdf import PdfReader; print(PdfReader('<pdf>').pages[N].extract_text())"`.
+   4. **Tell the user what's missing — with concrete install commands for their OS** (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`), or suggest switching to a vision-capable model. Never report a vague "can't read PDF" — name the rung that failed and the exact gap.
+
+   Extract: title (page 1 header), authors (page 1 list — preserve "Family, Given" order), year, DOI (search first 1-2 pages — many PDFs print "DOI: 10.xxx/yyy"), journal / venue, abstract.
 
 2. **Verify**, do NOT hallucinate. If you cannot find a field after reading the relevant pages, leave it as `null` rather than guessing. A wrong DOI corrupts the vault's dedup index for that paper forever.
 

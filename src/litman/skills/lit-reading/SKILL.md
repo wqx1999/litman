@@ -166,7 +166,16 @@ Then, once you have an id, load just enough paper context. Read in this order, s
 | **Always** | `<vault>/papers/<id>/metadata.yaml` | Identity, taxonomy, refs |
 | Usually | `<vault>/papers/<id>/notes.md` | The current-understanding snapshot — agent-assisted, user-read-only (overwrite-style summary, regenerated on explicit request) |
 | On drill-down | `<vault>/papers/<id>/discussion.md` | The append+timestamp discussion trail (LOG); pull only the relevant dated section when the user drills into details, not by default |
-| Only when needed | `<vault>/papers/<id>/paper.pdf` | For specific sections / figures / numbers the user asks about — read with the `Read` tool and **the `pages` parameter** so you fetch §3, not the whole 40-page PDF |
+| Only when needed | `<vault>/papers/<id>/paper.pdf` | For specific sections / figures / numbers — walk the **PDF reading ladder** below (use the `pages` parameter so you fetch §3, not the whole 40-page PDF) |
+
+**PDF reading ladder — reading the PDF is a *must-achieve* goal, not best-effort.** Walk the rungs until one works; **never stop at rung 1's first failure** and report "I can't read PDFs":
+
+1. **Claude Code `Read` tool** (default — covers ~99% of CC users with any vision-capable Claude model): `Read(pdf_path, pages="1-10")`. PDFs are natively handled via CC's multimodal pipeline; do NOT try external CLIs first.
+2. **PDF-related MCP tool** (for non-multimodal backends — DeepSeek / GLM / Qwen / etc.): scan your current `available tools` list for any tool whose description mentions PDF / document / extract, and use that.
+3. **System CLI fallback** (probe with `command -v` first, then run the first available): `pdftotext -layout <pdf> -`, `mutool draw -F txt <pdf> -`, or `python -c "from pypdf import PdfReader; print(PdfReader('<pdf>').pages[N].extract_text())"`.
+4. **Tell the user what's missing — with concrete install commands for their OS** (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`), or suggest switching to a vision-capable model. Never report a vague "can't read PDF" — name the rung that failed and the exact gap.
+
+**Forbidden**: stopping at rung 1's failure without trying 2/3/4; summarizing from the paper's title / training data without reading (invariant #1); batching all 20 pages into a single Read call when the user only needs §3.
 
 `notes.md` vs `discussion.md` (state/log split): **`notes.md` is the STATE** — the current-understanding snapshot, kept as a single latest version to avoid ambiguity, agent-assisted and overwrite-regenerated (B10 step 1). **`discussion.md` is the immutable LOG** — each session appends a distilled conclusion (Phase 5). If the notes drift, they can be rebuilt from the discussion trail.
 
