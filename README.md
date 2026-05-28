@@ -84,7 +84,7 @@ Don't have pipx? `python -m pip install --user pipx` (or `apt install pipx` /
 Then run the one-shot onboarding wizard:
 
 ```bash
-lit setup                    # interactive: shell completion → Claude Code skill → vault → (optional) cloud sync
+lit setup                    # interactive: shell completion → Claude Code skill → vault (name + parent dir) → (optional) cloud sync
 ```
 
 `lit setup` chains four standalone commands behind simple prompts. If you

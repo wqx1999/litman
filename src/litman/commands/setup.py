@@ -154,12 +154,12 @@ def _step_vault(
 ) -> None:
     console.rule("[bold]Step 3/4 — create a vault")
     reg = load_registry()
-    register_as: str | None = None
 
     if not reg.vaults:
         if not click.confirm("Create your first vault now?", default=True):
             skipped.append("vault (declined)")
             return
+        default_name = DEFAULT_VAULT_NAME
     else:
         console.print(
             f"[dim]You already have {len(reg.vaults)} registered "
@@ -169,27 +169,51 @@ def _step_vault(
         if not click.confirm("Create another vault?", default=False):
             skipped.append("vault (already have one)")
             return
-        # Default registry name 'literature_vault' would clash with the
-        # existing vault, so require a distinct registry name up front
-        # (lit init would otherwise fail-fast, M26 behavior).
-        register_as = _prompt_distinct_register_name(reg)
+        # The bare default 'literature_vault' would collide with the existing
+        # registration, so suggest a collision-free '<base>_<n>' instead. User
+        # can still type their own name (validated below).
+        default_name = _suggest_distinct_name(reg)
+
+    name = _prompt_vault_name(reg, default_name)
 
     parent = click.prompt(
         "Parent directory for the vault (the CLI creates a "
-        f"'{DEFAULT_VAULT_NAME}/' subdir inside it)",
+        f"'{name}/' subdir inside it)",
         type=click.Path(file_okay=False, path_type=Path),
         default=str(Path.cwd()),
     )
-    ctx.invoke(init_cmd, parent_dir=Path(parent), register_as=register_as)
+    # Wizard ties --name and --register-as together so on-disk and registry
+    # names agree. Advanced users wanting them to differ go through `lit init`
+    # directly (`--name X --register-as Y`).
+    ctx.invoke(
+        init_cmd, parent_dir=Path(parent), name=name, register_as=name
+    )
     did.append("vault")
 
 
-def _prompt_distinct_register_name(reg) -> str:
-    """Loop until the user gives a registry name that passes
-    ensure_name_registrable (the default name would collide)."""
+def _suggest_distinct_name(reg) -> str:
+    """Return ``DEFAULT_VAULT_NAME`` if it is free, else the first
+    ``<base>_<n>`` (n=2,3,...) that is not already in the registry. Seeds
+    the wizard's name prompt with a collision-free default so the common
+    case is one Enter, not a re-prompt loop."""
+    used = {v.name for v in reg.vaults}
+    if DEFAULT_VAULT_NAME not in used:
+        return DEFAULT_VAULT_NAME
+    n = 2
+    while f"{DEFAULT_VAULT_NAME}_{n}" in used:
+        n += 1
+    return f"{DEFAULT_VAULT_NAME}_{n}"
+
+
+def _prompt_vault_name(reg, default: str) -> str:
+    """Loop until the user gives a name that passes ensure_name_registrable.
+    The suggested default is already collision-free, so the loop only fires
+    when the user types a name that clashes with an existing registration."""
     while True:
         name = click.prompt(
-            "Registry name for the new vault (must be distinct)", type=str
+            "Vault name (used as the on-disk subdir AND the registry name)",
+            type=str,
+            default=default,
         ).strip()
         try:
             ensure_name_registrable(reg, name)

@@ -12,9 +12,9 @@ For one-line summaries of every command, run `lit --help` or
 
 | Command | What it does |
 |---|---|
-| `lit setup` | Interactive first-run wizard: shell completion → Claude Code skill → first vault → optional cloud sync. Chains the four commands below behind simple prompts. TTY-only. |
+| `lit setup` | Interactive first-run wizard: shell completion → Claude Code skill → first vault (prompts for parent dir AND vault name) → optional cloud sync. Chains the four commands below behind simple prompts. TTY-only. |
 | `lit init <parent_dir>` | Create a vault under `<parent_dir>/literature_vault/`. |
-| `lit init <parent_dir> --name <subdir>` | Override the default subdir name. |
+| `lit init <parent_dir> --name <subdir>` | Override the default subdir name (e.g. `--name pepforge_lib`). |
 | `lit init <parent_dir> --no-register` | Skip auto-registration in the vault registry. |
 | `lit init <parent_dir> --register-as <name>` | Override the registered name (default: subdir name). |
 | `lit vault add <name> <path>` | Register an *existing* vault directory in `~/.config/litman/vaults.yaml`. |

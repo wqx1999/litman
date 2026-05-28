@@ -118,15 +118,16 @@ def test_setup_creates_first_vault(
     parent.mkdir()
 
     runner = CliRunner()
-    # completion no / skill skip / vault yes / parent dir.
+    # completion no / skill skip / vault yes / accept default name / parent.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\n{parent}\n"
+        cli, ["setup"], input=f"n\n2\ny\n\n{parent}\n"
     )
     assert result.exit_code == 0, result.output
 
     reg = load_registry()
     assert len(reg.vaults) == 1
     assert find_active(reg) is not None
+    assert reg.vaults[0].name == "literature_vault"
     assert (parent / "literature_vault" / "lit-config.yaml").is_file()
 
     # Summary's "Done" block must name the performed step. Rich may wrap the
@@ -136,9 +137,12 @@ def test_setup_creates_first_vault(
     assert "vault" in result.output
 
 
-def test_setup_second_vault_requires_register_name(
+def test_setup_second_vault_uses_chosen_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """When a vault is already registered, step 3 suggests a collision-free
+    default (e.g. ``literature_vault_2``) but the user may override. The
+    typed name flows to BOTH the on-disk subdir AND the registry entry."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
@@ -155,8 +159,8 @@ def test_setup_second_vault_requires_register_name(
     parent2.mkdir()
 
     runner = CliRunner()
-    # completion no / skill skip / vault yes -> "create another" -> register
-    # name 'fork1' -> parent dir.
+    # completion no / skill skip / vault yes -> "create another" -> override
+    # the suggested default with 'fork1' -> parent dir.
     result = runner.invoke(
         cli, ["setup"], input=f"n\n2\ny\nfork1\n{parent2}\n"
     )
@@ -167,7 +171,35 @@ def test_setup_second_vault_requires_register_name(
     assert "fork1" in by_name
     assert by_name["fork1"].is_active is False
     assert by_name["literature_vault"].is_active is True
-    assert (parent2 / "literature_vault" / "lit-config.yaml").is_file()
+    # The chosen name drives the on-disk subdir too — not the hardcoded
+    # 'literature_vault/' from before the wizard exposed --name.
+    assert (parent2 / "fork1" / "lit-config.yaml").is_file()
+
+
+def test_setup_first_vault_custom_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-vault branch: user can rename the vault from the default
+    ``literature_vault`` to something domain-specific (e.g. ``pepforge_lib``)
+    by typing at the name prompt instead of pressing Enter."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    parent = tmp_path / "vault_parent"
+    parent.mkdir()
+
+    runner = CliRunner()
+    # completion no / skill skip / vault yes / typed name / parent.
+    result = runner.invoke(
+        cli, ["setup"], input=f"n\n2\ny\npepforge_lib\n{parent}\n"
+    )
+    assert result.exit_code == 0, result.output
+
+    reg = load_registry()
+    assert len(reg.vaults) == 1
+    assert reg.vaults[0].name == "pepforge_lib"
+    assert (parent / "pepforge_lib" / "lit-config.yaml").is_file()
+    assert not (parent / "literature_vault").exists()
 
 
 def test_setup_sync_when_configurable(
