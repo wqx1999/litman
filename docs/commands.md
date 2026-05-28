@@ -196,6 +196,12 @@ Cross-vault wikilinks (`[[<vault-name>:<paper-id>]]`) resolve against
 the registry. `lit health-check` validates the prefix is a registered
 vault and that the id exists in it.
 
+If a registered vault directory is later moved or deleted manually, the
+next `lit *` command surfaces the dangling registration: in a TTY it
+prompts `[Y/n]` (default Y) to drop the entry, and in a non-TTY context
+(scripts, CI, piped output) it prints a one-line stderr warning naming
+the entry and the `lit vault remove <name>` command to run.
+
 ## Scenario 10 — Cloud sync and cross-machine moves
 
 litman uses rclone for cloud sync. The vault root and the
@@ -231,7 +237,7 @@ lit link --rebuild-all               # rebuild every project's symlinks + REFERE
 
 | Command | What it does |
 |---|---|
-| `lit health-check` | Scan the vault for dangling refs, schema gaps, stale staging dirs, missing PDFs, dangling wikilinks. Exits 1 if any issue is found. |
+| `lit health-check` | Scan the vault for dangling refs, schema gaps, stale staging dirs, missing PDFs, dangling wikilinks, dangling vault-registry entries. Exits 1 if any issue is found. |
 | `lit health-check --fix` | Auto-clean fixable categories (orphan trash sidecars, stale staging). Exits 0 if every remaining issue is fixable. |
 | `lit refresh-views` | Rebuild `INDEX.json`, `views/by-*/` symlink hubs, and every project's `REFERENCES.md` from each paper's `metadata.yaml`. |
 

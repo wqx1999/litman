@@ -87,16 +87,6 @@ Then run the one-shot onboarding wizard:
 lit setup                    # interactive: shell completion → Claude Code skill → vault (name + parent dir) → (optional) cloud sync
 ```
 
-`lit setup` chains four standalone commands behind simple prompts. If you
-prefer to script onboarding, call them directly instead:
-
-```bash
-lit install-completion       # shell tab-completion (auto-detects bash/zsh/fish from $SHELL)
-lit install-skill            # deploy the Claude Code skills into ~/.claude/skills/
-lit init /path/to/parent     # create your vault — see Quick start
-lit sync setup               # optional: configure rclone cloud sync
-```
-
 Dependencies (auto-installed): `click`, `ruamel.yaml`, `httpx`, `pypdf`,
 `pydantic`, `rich`, `platformdirs`.
 
@@ -151,6 +141,10 @@ no configuration. Beyond that:
   dir by default. Set `LITMAN_REGISTRY_DIR` to a cloud-synced folder to get
   backup + cross-machine sync. (Vault paths are stored absolute, so
   cross-machine sync needs each vault at the same path on every machine.)
+- **Drift is surfaced automatically**: if you delete or move a registered
+  vault directory by hand, the next `lit *` command offers to drop the
+  stale entry (TTY: `[Y/n]` default Y; non-TTY: one-line stderr warning).
+  `lit health-check` also reports it.
 
 ---
 
