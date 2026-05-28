@@ -135,30 +135,46 @@ def _step_skill(
 
     # Re-run idempotency: install_skill_cmd defaults to force=False and the
     # underlying install_all_skills raises SkillInstallError on the first
-    # already-present target. Without this short-circuit, re-running the
-    # wizard after a prior setup would abort here and never reach step 3 / 4.
-    # Mirrors completion_installed() in _step_completion.
+    # already-present target. Probe state first and expose --force as a
+    # prompt so wizard users can refresh skills (e.g., after a litman
+    # upgrade ships updated skill content) without dropping to the
+    # standalone command. Mirrors feedback_wizard_mirrors_command_flags.
     bundled = set(list_bundled_skills())
     already = installed_skill_names()
     if already:
         if already >= bundled:
             console.print(
                 f"[dim]Skills already installed "
-                f"({', '.join(sorted(already))}); skipping. "
-                "Reinstall with [bold]lit install-skill --force[/].[/]"
+                f"({', '.join(sorted(already))}).[/]"
             )
-            skipped.append("skill (already installed)")
-        else:
-            missing = bundled - already
-            console.print(
-                f"[dim]Some skills already installed "
-                f"({', '.join(sorted(already))}); "
-                f"missing ({', '.join(sorted(missing))}). "
-                "Run [bold]lit install-skill --force[/] to refresh all, or "
-                "[bold]lit install-skill --skill <name>[/] for one. "
-                "Skipping this step to keep the wizard moving.[/]"
-            )
+            if not click.confirm(
+                "Reinstall (overwrite with the bundled version)?",
+                default=False,
+            ):
+                skipped.append("skill (already installed)")
+                return
+            ctx.invoke(install_skill_cmd, force=True)
+            did.append("skill (reinstalled, Claude Code)")
+            return
+        missing = bundled - already
+        console.print(
+            f"[dim]Some skills already installed "
+            f"({', '.join(sorted(already))}); "
+            f"missing ({', '.join(sorted(missing))}).[/]"
+        )
+        # --force is required because install_all_skills raises on the
+        # first present target; we cannot install just the missing ones
+        # via install_all without it. Default Y because the user clearly
+        # wanted skills before.
+        if not click.confirm(
+            "Install missing skills (also refreshes present ones with the "
+            "bundled version)?",
+            default=True,
+        ):
             skipped.append("skill (partially installed)")
+            return
+        ctx.invoke(install_skill_cmd, force=True)
+        did.append("skill (refreshed, Claude Code)")
         return
 
     console.print(

@@ -45,6 +45,25 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+@pytest.fixture(autouse=True)
+def pretend_no_skills_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub ``installed_skill_names`` to return an empty set by default.
+
+    Why: ``DEFAULT_PARENT_DIR`` in ``litman.core.skill`` is computed at
+    module-load time from the *real* ``$HOME``, before pytest's monkeypatch
+    redirects ``$HOME``. The helper therefore scans the developer's real
+    ``~/.claude/skills/``, which on machines that have already run
+    ``lit install-skill`` returns a non-empty set — silently flipping setup
+    tests from the "no skills installed" branch to the "already installed"
+    branch and breaking their scripted input. Tests that specifically need
+    the "already installed" branch override this fixture with their own
+    ``monkeypatch.setattr`` call.
+    """
+    monkeypatch.setattr(
+        "litman.commands.setup.installed_skill_names", lambda: set()
+    )
+
+
 def _force_tty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "litman.commands.setup._stdin_is_tty", lambda: True
@@ -219,7 +238,7 @@ def test_setup_sync_when_configurable(
         "litman.commands.setup.shutil.which", lambda _x: "/usr/bin/rclone"
     )
     # Stub the invoked sync command so no real rclone TUI launches.
-    calls: list[bool] = []
+    calls: list[dict] = []
     monkeypatch.setattr(
         "litman.commands.setup.sync_setup_cmd",
         _make_recording_stub(calls),
@@ -230,7 +249,7 @@ def test_setup_sync_when_configurable(
     # sync yes.
     result = runner.invoke(cli, ["setup"], input="n\n2\nn\ny\n")
     assert result.exit_code == 0, result.output
-    assert calls == [True]
+    assert calls == [{}]
 
 
 def test_setup_sync_already_configured_reconfigure_default_no(
@@ -261,7 +280,7 @@ def test_setup_sync_already_configured_reconfigure_default_no(
         "litman.commands.setup.shutil.which", lambda _x: "/usr/bin/rclone"
     )
     # Stub the invoked sync command; reconfigure==No must leave it uncalled.
-    calls: list[bool] = []
+    calls: list[dict] = []
     monkeypatch.setattr(
         "litman.commands.setup.sync_setup_cmd",
         _make_recording_stub(calls),
@@ -280,13 +299,14 @@ def test_setup_sync_already_configured_reconfigure_default_no(
     assert "sync" in result.output
 
 
-def test_setup_skill_step_skips_when_installed(
+def test_setup_skill_step_offers_reinstall_when_installed_default_no(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Re-run idempotency for step 2: when bundled skill targets are already
-    present, the wizard must NOT call install_skill_cmd (which would raise
-    SkillInstallError without --force), and must continue to step 3 / 4 so
-    the user can still create vaults or configure sync."""
+    present, the wizard offers a Reinstall prompt (so users can refresh after
+    a litman upgrade) but defaults to N. Declining must NOT call
+    install_skill_cmd (which would raise SkillInstallError without --force)
+    and must continue to step 3 / 4."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
@@ -305,21 +325,53 @@ def test_setup_skill_step_skips_when_installed(
     )
     # If the wizard slipped through to install, fail loudly: invoking the
     # real install_skill_cmd would raise SkillInstallError mid-wizard.
-    calls: list[bool] = []
+    calls: list[dict] = []
     monkeypatch.setattr(
         "litman.commands.setup.install_skill_cmd",
         _make_recording_stub(calls),
     )
 
     runner = CliRunner()
-    # completion no / vault no. NO line for the skill prompt — step 2 must
-    # short-circuit silently and never reach the "1) Claude Code / 2) skip"
-    # prompt.
-    result = runner.invoke(cli, ["setup"], input="n\nn\n")
+    # completion no / skill reinstall no / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n")
     assert result.exit_code == 0, result.output
     assert calls == []  # install_skill_cmd was NOT called
     assert "already installed" in result.output
-    assert "Install agent skill?" not in result.output  # prompt skipped
+    assert "Reinstall" in result.output
+    # The "1) Claude Code / 2) skip" picker only fires when nothing is
+    # installed; it must not appear in the already-installed branch.
+    assert "Install agent skill?" not in result.output
+
+
+def test_setup_skill_step_reinstall_yes_invokes_with_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepting the Reinstall prompt must call install_skill_cmd with
+    force=True (the underlying flag the wizard now exposes). Asserts the
+    wizard does not silently swallow the --force capability."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    from litman.core.skill import list_bundled_skills
+
+    bundled = set(list_bundled_skills())
+    monkeypatch.setattr(
+        "litman.commands.setup.installed_skill_names",
+        lambda: bundled,
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.install_skill_cmd",
+        _make_recording_stub(calls),
+    )
+
+    runner = CliRunner()
+    # completion no / skill reinstall yes / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\ny\nn\n")
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0].get("force") is True
 
 
 def test_setup_completion_step_skips_when_installed(
@@ -345,12 +397,14 @@ def test_setup_completion_step_skips_when_installed(
 
 # A click.Command-shaped stub: ctx.invoke calls the underlying callback, so a
 # plain Click command whose callback records the call is enough to assert the
-# wizard reached step 4 without launching rclone.
-def _make_recording_stub(calls: list[bool]):
+# wizard reached the invocation site. The callback accepts **kwargs so the
+# stub works whether the wizard invokes it with no args (sync_setup_cmd) or
+# with flags (install_skill_cmd, force=True).
+def _make_recording_stub(calls: list[dict]):
     import click
 
-    @click.command("sync-setup-stub")
-    def _stub() -> None:
-        calls.append(True)
+    @click.command("recording-stub")
+    def _stub(**kwargs) -> None:
+        calls.append(dict(kwargs))
 
     return _stub
