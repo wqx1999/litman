@@ -20,6 +20,11 @@ console = Console()
 # Title column display cap. Beyond this, an ellipsis is appended.
 _TITLE_MAX = 60
 
+# Row cap for ``--sort recent`` in the table view. "Most-recently-engaged"
+# implies top-N — printing hundreds of rows defeats the intent. JSON output
+# is NOT capped so agent retrieval still gets the full ranked list.
+_RECENT_TABLE_CAP = 10
+
 
 def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
     """Return True if the paper matches every non-None filter."""
@@ -113,7 +118,8 @@ def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
     type=click.Choice(["id", "recent"]), default="id",
     help="Sort order. 'id' = ascending by paper id (default, stable, "
          "matches INDEX.json). 'recent' = most-recently-engaged first "
-         "(max of paper.pdf mtime and updated-at).",
+         "(max of paper.pdf mtime and updated-at); the table view shows "
+         "only the top 10, use --format json for the full ranked list.",
 )
 @click.option(
     "--format", "output_format",
@@ -203,10 +209,18 @@ def list_cmd(
             )
         return
 
-    table = Table(
-        title=f"Papers ({len(filtered)} of {len(all_papers)})",
-        show_lines=False,
-    )
+    # Truncate to the top-N for table display when sorted by recency. The
+    # underlying ``filtered`` list is mutated *after* the JSON branch has
+    # already returned, so JSON output stays full-length for agents.
+    matched_count = len(filtered)
+    truncated = sort_by == "recent" and matched_count > _RECENT_TABLE_CAP
+    if truncated:
+        filtered = filtered[:_RECENT_TABLE_CAP]
+        title = f"Papers (recent {_RECENT_TABLE_CAP} of {matched_count})"
+    else:
+        title = f"Papers ({matched_count} of {len(all_papers)})"
+
+    table = Table(title=title, show_lines=False)
     table.add_column("id", style="cyan", no_wrap=True)
     table.add_column("year", justify="right")
     table.add_column("type")

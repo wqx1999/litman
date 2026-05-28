@@ -209,3 +209,58 @@ def test_default_sort_is_id_ascending(tmp_path: Path) -> None:
 
     # No --sort -> id ascending, unaffected by mtime.
     assert _json_ids(v) == ["p_a", "p_b", "p_c"]
+
+
+# ---------------------------------------------------------------------------
+# Table-view top-10 cap for --sort recent
+# ---------------------------------------------------------------------------
+
+
+def _seed_n_recent(vault: Path, n: int) -> None:
+    """Seed n papers with strictly increasing pdf mtimes; id ordering
+    aligns with mtime ordering (p00 oldest, p{n-1} newest)."""
+    base = 1_700_000_000
+    for i in range(n):
+        paper_dir = _seed_with_meta(
+            vault, f"p{i:02d}", {"year": 2024, "title": f"paper {i}"}
+        )
+        _make_pdf(paper_dir, base + i)
+
+
+def test_sort_recent_table_caps_at_10(tmp_path: Path) -> None:
+    v = create_vault(tmp_path)
+    _seed_n_recent(v, 12)
+
+    result = _invoke(v, "--sort", "recent")
+    assert result.exit_code == 0, result.output
+    # Title surfaces the cap so the user knows the table is truncated.
+    assert "recent 10 of 12" in result.output
+    # The 2 oldest (p00, p01) must be excluded from the rendered table.
+    assert "p00" not in result.output
+    assert "p01" not in result.output
+    # The newest (p11) must be present.
+    assert "p11" in result.output
+
+
+def test_sort_recent_json_is_not_capped(tmp_path: Path) -> None:
+    v = create_vault(tmp_path)
+    _seed_n_recent(v, 12)
+
+    # JSON path stays full-length so agent retrieval gets every match.
+    ids = _json_ids(v, "--sort", "recent")
+    assert len(ids) == 12
+    assert ids[0] == "p11"  # newest first
+    assert ids[-1] == "p00"  # oldest last
+
+
+def test_sort_id_table_is_not_capped(tmp_path: Path) -> None:
+    v = create_vault(tmp_path)
+    _seed_n_recent(v, 12)
+
+    # Default --sort id has "full browse" semantics; no truncation.
+    result = _invoke(v)
+    assert result.exit_code == 0, result.output
+    assert "12 of 12" in result.output
+    # All 12 ids must render.
+    for i in range(12):
+        assert f"p{i:02d}" in result.output
