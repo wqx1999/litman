@@ -103,10 +103,10 @@ def _build_metadata(
         "topics": [],
         "methods": [],
         "data": [],
-        "type": "research",
+        "type": None,
         # === personal evaluation layer ===
         "status": "inbox",
-        "priority": "B",
+        "priority": None,
         "read-date": None,
         "last-revisited": None,
         # === relations layer ===

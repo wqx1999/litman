@@ -118,6 +118,14 @@ _FIXED_ENUM_VALUES: dict[str, frozenset[str]] = {
     "priority": frozenset({"A", "B", "C"}),
 }
 
+# Fixed enums where ``None`` is a legitimate "not yet evaluated" state
+# rather than a schema error. M29: `priority` and `type` are personal-
+# evaluation fields the user fills after reading; `lit add` writes None,
+# and `lit-reading` B10 self-check is the surfacing path. ``status``
+# stays required (its "not yet evaluated" state is the explicit value
+# "inbox", not None).
+_OPTIONAL_FIXED_ENUMS: frozenset[str] = frozenset({"priority", "type"})
+
 # Forward + reverse relation fields (ADR-012). Sourced from the shared
 # RELATION_PAIRS map so dangling-ref scans cover reverse fields too.
 _REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
@@ -159,6 +167,9 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
         for field, allowed in _FIXED_ENUM_VALUES.items():
             value = p.get(field)
             if value is None:
+                if field in _OPTIONAL_FIXED_ENUMS:
+                    # legitimate "not yet evaluated" — see M29
+                    continue
                 out.append(
                     Issue(
                         category="schema",

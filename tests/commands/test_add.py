@@ -152,10 +152,10 @@ def test_add_writes_metadata_yaml_correctly(
     # Default classification
     assert metadata["projects"] == []
     assert metadata["topics"] == []
-    assert metadata["type"] == "research"
+    assert metadata["type"] is None
     # Default evaluation
     assert metadata["status"] == "inbox"
-    assert metadata["priority"] == "B"
+    assert metadata["priority"] is None
     # Default relations
     assert metadata["related"] == []
     # Code-binding layer (M3 will populate via `lit code add`)

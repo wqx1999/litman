@@ -372,3 +372,33 @@ def test_list_default_still_renders_rich_table(vault: Path) -> None:
     assert "Papers (3 of 3)" in result.output
     with pytest.raises(json.JSONDecodeError):
         json.loads(result.output)
+
+
+def test_list_displays_dash_for_none_priority_and_type(tmp_path: Path) -> None:
+    # M29: lit add writes priority/type as None by default; the table must
+    # render them as "-", never the literal "None".
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v,
+        "2024_Solid_Paper",
+        year=2024,
+        type="research",
+        status="inbox",
+        priority="B",
+        title="Has both fields set",
+    )
+    _seed_paper(
+        v,
+        "2024_Unset_Paper",
+        year=2024,
+        type=None,
+        status="inbox",
+        priority=None,
+        title="Has neither priority nor type",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list", "--library", str(v)])
+    assert result.exit_code == 0
+    assert "2024_Unset_Paper" in result.output
+    # The literal string "None" must not appear (would mean str(None) leaked).
+    assert "None" not in result.output

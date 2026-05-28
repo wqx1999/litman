@@ -26,6 +26,16 @@ _TITLE_MAX = 60
 _RECENT_TABLE_CAP = 10
 
 
+def _format_cell(value: Any) -> str:
+    """Render a metadata field for the list table.
+
+    None becomes "-" (the M29 "not yet evaluated" sentinel for optional
+    fixed-enum fields like priority and type); everything else falls
+    through to ``str()``.
+    """
+    return "-" if value is None else str(value)
+
+
 def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
     """Return True if the paper matches every non-None filter."""
     # List-membership filters (exact value-in-list).
@@ -233,11 +243,11 @@ def list_cmd(
         if len(title) > _TITLE_MAX:
             title = title[: _TITLE_MAX - 1] + "…"
         table.add_row(
-            str(p.get("id", "?")),
-            str(p.get("year", "?")),
-            str(p.get("type", "?")),
-            str(p.get("status", "?")),
-            str(p.get("priority", "?")),
+            _format_cell(p.get("id")),
+            _format_cell(p.get("year")),
+            _format_cell(p.get("type")),
+            _format_cell(p.get("status")),
+            _format_cell(p.get("priority")),
             title,
         )
 
