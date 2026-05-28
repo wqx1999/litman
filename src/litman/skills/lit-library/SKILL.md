@@ -31,7 +31,7 @@ Classify every action before you take it. The tier is about *behavior*, not whic
 | 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after the value passed Flow A/B — [E])*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, only on explicit request — [H])*, `lit code link`, `lit modify --set relevance-<P>=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm title before commit — [A]/[B]), `lit code add` (git clone), `lit taxonomy add` / `lit project add` (register a new controlled value — user types it), `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` (governance — cascades to every referencing paper, see [J]/[H]), `lit export --force` (overwrite a hand-edited bib — [G]) |
 
-**M15 already physically split tier 2 from tier 3.** Registering a controlled value (`lit taxonomy add` / `lit project add`, tier 3, *the user types it*) is a separate hard step from applying it (`lit modify --add-tag`, tier 2, *you run it*). The CLI hard-rejects unregistered values, so your only job is to **not invent values** (curation boundary) — the CLI polices registration.
+**The CLI already physically splits tier 2 from tier 3.** Registering a controlled value (`lit taxonomy add` / `lit project add`, tier 3, *the user types it*) is a separate hard step from applying it (`lit modify --add-tag`, tier 2, *you run it*). The CLI hard-rejects unregistered values, so your only job is to **not invent values** (curation boundary) — the CLI polices registration.
 
 **Execution ownership.** **lit-library runs every Tier-2 write INLINE — it owns the write surface.** lit-reading owns only the single-paper *evaluation stamps* (`lit read`/`promote`/`skim`/`drop`/`revisit`, `lit modify --set priority=`) inline, and chains to lit-library for everything else (vocab tagging, edges, project binding, ingest, restore, governance). When lit-reading hands one of those off to you, just run it (see A2 inbound-defense).
 
@@ -104,7 +104,7 @@ If the user has both a project `References/` and a global vault, ask which one t
 
 This is the **headline workflow** for lit-library. Use when the user has a PDF and no DOI (e.g. preprint, internal report, paywalled paper where CrossRef fails) OR explicitly says "add this paper with AI".
 
-**PDF-required precondition.** `lit add` takes the **local PDF path as a required positional argument** (`lit add [OPTIONS] PDF_PATH`); a DOI / arXiv link alone cannot ingest. This is intentional (ADR-006: curation means you have *read* the PDF — litman is not a fetch-by-DOI discovery tool). If the user asks to add a paper but supplies only a DOI / URL with **no local file**, do **not** let `lit add` error out on the missing argument — explain the precondition ("litman ingests from a local PDF you've read; point me at the file") and ask for the path. (B9 mirrors this on the read side.)
+**PDF-required precondition.** `lit add` takes the **local PDF path as a required positional argument** (`lit add [OPTIONS] PDF_PATH`); a DOI / arXiv link alone cannot ingest. This is intentional: curation means you have *read* the PDF — litman is not a fetch-by-DOI discovery tool. If the user asks to add a paper but supplies only a DOI / URL with **no local file**, do **not** let `lit add` error out on the missing argument — explain the precondition ("litman ingests from a local PDF you've read; point me at the file") and ask for the path. (B9 mirrors this on the read side.)
 
 **Pipeline**:
 
@@ -142,11 +142,11 @@ This is the **headline workflow** for lit-library. Use when the user has a PDF a
 
 5. **The CLI handles**: JSON schema validation (rejects unknown keys / missing required fields), DOI dedup precheck, id derivation (`<year>_<Family>_<title-keyword>`), id-collision resolution (`--auto-suffix` for `_b` / `_c`), atomic write of `papers/<id>/{paper.pdf, metadata.yaml, notes.md}`.
 
-6. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs the M20 code-URL scan. **Read out the derived `id` and the `title`, then stop and wait for the user to confirm the source metadata is right.** You do **not** self-judge title correctness — the human confirms. **Surface only id + title.** After the user confirms:
+6. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. **Read out the derived `id` and the `title`, then stop and wait for the user to confirm the source metadata is right.** You do **not** self-judge title correctness — the human confirms. **Surface only id + title.** After the user confirms:
    - if the scan found candidates → present them ([C] scan present-and-pick);
    - otherwise stop. Do **NOT** proactively enumerate tag / project / status / priority offers — those are separate intents the user will trigger when they decide to read / curate the paper. SOP-1 governs: list observations only when asked, never pre-stage menus the user did not request.
 
-**Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id when the paper is already in the vault. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id). Re-adding a paper you already have is almost always intent to open it, not duplicate it (invariant #13 — one paper, one folder). This is the ingest-side counterpart to B9's in-vault check.
+**Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id when the paper is already in the vault. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id). Re-adding a paper you already have is almost always intent to open it, not duplicate it (one paper, one folder — that is litman's hard rule). This is the ingest-side counterpart to B9's in-vault check.
 
 ### JSON Schema Contract (LLMCandidateMeta)
 
@@ -194,17 +194,17 @@ The pipeline is identical from id derivation onward; only the metadata source di
 
 ## [C] Code repositories — bind, link, retire
 
-A paper's `code-clones` field is a **1:N** relationship: one repo under `<vault>/codes/<name>/` can be cited by several papers (invariant #12). Three operations:
+A paper's `code-clones` field is a **1:N** relationship: one repo under `<vault>/codes/<name>/` can be cited by several papers. Three operations:
 
 ### [C.1] Bind a NEW clone — present-and-pick from the full-text scan
 
-`lit add` already runs the M20 `scan_code_urls` full-text recall and prints the result in a structurally-stable block you parse: fenced by the literal markers `[code_candidates]` / `[/code_candidates]`, **one candidate per line as `<url> (p<page>, ×<count>)`**, ranked by hit-count descending. The empty case prints a single `no code repo URL found in full text` line.
+`lit add` already runs a full-text `scan_code_urls` recall and prints the result in a structurally-stable block you parse: fenced by the literal markers `[code_candidates]` / `[/code_candidates]`, **one candidate per line as `<url> (p<page>, ×<count>)`**, ranked by hit-count descending. The empty case prints a single `no code repo URL found in full text` line.
 
-- **Non-empty** → present the deduped candidate list (url + page + hit-count; there is **no "original line" field** — the scan returns only `{url, page, count}`) and let the user **multi-select 0+**. Do **zero judgment / zero silent dropping / zero pre-filtering** — M20 over-captures (reference and dependency URLs are listed too); precision comes from the user's eyes, not your guess (invariant #5). Each selected item runs:
+- **Non-empty** → present the deduped candidate list (url + page + hit-count; there is **no "original line" field** — the scan returns only `{url, page, count}`) and let the user **multi-select 0+**. Do **zero judgment / zero silent dropping / zero pre-filtering** — the full-text scan over-captures (reference and dependency URLs are listed too); precision comes from the user's eyes, not your guess (litman is curation-only — the human owns the judgment). Each selected item runs:
   ```bash
   lit code add <url> --paper <current-id>      # clone (--depth 1) + bind, atomic
   ```
-  This creates `codes/<repo-name>/{repo/, repo-meta.yaml, notes.md}` and bidirectionally binds the paper's `code-clones` ↔ repo-meta's `papers`. **Tier 3** (git clone = remote IO). Binding one paper to multiple repos does not violate invariant #13 — ingest is still one paper.
+  This creates `codes/<repo-name>/{repo/, repo-meta.yaml, notes.md}` and bidirectionally binds the paper's `code-clones` ↔ repo-meta's `papers`. **Tier 3** (git clone = remote IO). Binding one paper to multiple repos is not batch ingest — ingest is still one paper.
 - **Empty scan → do not prompt at all.**
 
 Inspect with `lit code list --paper <paper-id>` (tier-1 read). Pull updates with `lit code update <name>`.
@@ -221,7 +221,7 @@ lit code link <repo-name> --paper <id>       # bind only, no clone
 
 ### [C.3] Retire / unbind — read the reverse list FIRST
 
-Before unbinding, do a **deterministic table lookup, not a model guess**: `cat <vault>/codes/<repo>/repo-meta.yaml`, read the `papers:` reverse list (the M14 truth source), remove the current paper, then branch:
+Before unbinding, do a **deterministic table lookup, not a model guess**: `cat <vault>/codes/<repo>/repo-meta.yaml`, read the `papers:` reverse list (the truth source for paper↔repo binding), remove the current paper, then branch:
 
 - **Reverse list now empty** (current paper is the last citer) → unbinding the field alone would orphan the directory into a dangling clone. Retire the whole repo:
   ```bash
@@ -232,7 +232,7 @@ Before unbinding, do a **deterministic table lookup, not a model guess**: `cat <
   ```bash
   lit modify <id> --rm-tag code-clones=<repo>     # drops the field, keeps the directory
   ```
-  This is *correct* under invariant #12's 1:N semantics (keeping the directory for the others is the point, not a violation). **Tier 2** (single-paper field edit, reversible).
+  This is *correct* under the 1:N semantics of `code-clones` (keeping the directory for the others is the point, not a violation). **Tier 2** (single-paper field edit, reversible).
 - **Never** `lit code rm --cascade` while other papers still cite the repo, and **never** leave a `--rm-tag` orphan directory when unbinding the last citer (both produce a state `lit health-check` flags).
 - `lit unlink` is paper↔project ([H]), **not** for code — do not use it to unbind a repo.
 
@@ -280,7 +280,7 @@ While enumerating candidates you MAY **propose** a TAXONOMY merge if you spot ne
 
 ### Flow B — user names a value ("add tokenization")
 
-Check if it is registered. **Registered → apply.** **Not registered → the CLI HARD-REJECTS** (M15, no escape hatch); say so and route registration by dict:
+Check if it is registered. **Registered → apply.** **Not registered → the CLI HARD-REJECTS** (no escape hatch); say so and route registration by dict:
 
 ```bash
 # topics / methods / data — register via lit taxonomy:
@@ -298,7 +298,7 @@ After the user registers, **re-read `TAXONOMY.md`** (cache invalidation) and the
 
 `projects` / `topics` / `methods` / `data` are **controlled vocabularies**. `lit modify --add-tag <dict>=<value>` HARD-REJECTS a value not already registered in `TAXONOMY.md`. There is deliberately no `--register` escape hatch — registration is a separate, explicit step (Flow B above). `projects` is special: it carries an on-disk path binding, so it has its own group `lit project {add,list,rename,set-path,rm}` ([H]) that keeps `TAXONOMY.md` and `lit-config.yaml`'s `projects:` map atomically in sync. **`lit taxonomy {add,rename,rm} projects` is hard-deprecated** — it errors and redirects to `lit project`. (`lit taxonomy list projects` still works — read-only.) Never hand-edit `lit-config.yaml`'s `projects:` map.
 
-What is NOT register-first checked (do not try to "register" these): schemaless scalar fields (`read-date`, `doi`, `year`, any custom scalar — invariant #7), reference fields (`authors`, `related`, `contradicts`, `extends`, `code-clones` — validated by dangling-ref health checks), and fixed enums (`type`, `status`, `priority` — hard-coded). `--rm-tag` is never register-checked (clearing a stale value is legitimate).
+What is NOT register-first checked (do not try to "register" these): schemaless scalar fields (`read-date`, `doi`, `year`, any custom scalar — metadata is schema-less by design), reference fields (`authors`, `related`, `contradicts`, `extends`, `code-clones` — validated by dangling-ref health checks), and fixed enums (`type`, `status`, `priority` — hard-coded). `--rm-tag` is never register-checked (clearing a stale value is legitimate).
 
 ### Sugar commands — prefer over `lit modify --set` for known semantic fields
 
@@ -306,7 +306,7 @@ Five one-shot commands compress the most common `lit modify --set` patterns; pre
 
 ```bash
 lit read <id> [--date YYYY-MM-DD]   # stamp read-date (defaults to today; --date backdates)
-lit revisit <id>                    # stamp last-revisited = today (distinct field, invariant #11)
+lit revisit <id>                    # stamp last-revisited = today (distinct from read-date)
 lit drop <id>                       # status = dropped
 lit promote <id>                    # status = deep-read  (does NOT also stamp read-date)
 lit skim <id>                       # status = skim
@@ -322,7 +322,7 @@ When lit-reading hands off a **user-confirmed** edge, run the **forward** field 
 lit modify <id> --add-tag extends=<other-id>      # or related=<other-id> / contradicts=<other-id>
 ```
 
-After M23.0 the CLI mirrors the paired reverse field on the opposite paper automatically (`extends` → `other.extended-by`, `contradicts` → `other.contradicted-by`, `related` self-paired) inside the same `staged_write` — **never run a second command for the reverse, never set `extended-by` / `contradicted-by` directly** (the CLI does not expose them as tag targets). Edges are reference fields (not register-first checked). You apply **only** an edge the user already confirmed in the reading discussion — you do not originate edges here.
+The CLI mirrors the paired reverse field on the opposite paper automatically (`extends` → `other.extended-by`, `contradicts` → `other.contradicted-by`, `related` self-paired) inside the same `staged_write` — **never run a second command for the reverse, never set `extended-by` / `contradicted-by` directly** (the CLI does not expose them as tag targets). Edges are reference fields (not register-first checked). You apply **only** an edge the user already confirmed in the reading discussion — you do not originate edges here.
 
 ---
 
@@ -345,7 +345,7 @@ Three hard rules:
 2. **Path inference**: "current dir" / "here" → default `./refs.bib`; a *named* directory ("thesis dir") → ask for the path, do not guess.
 3. **Project token**: an unregistered `--project` gets deterministic canonicalization (case/whitespace) only, else present the registered set — same no-fuzzy-guess rule as [H].
 
-Tier: the projection is tier 2 (local, reversible file write); the `--force`-over-sentinel decision is a **tier-3 ask** (never silent). This is read-vault → write-disk projection, no ingest, so it does not touch ADR-006 curation.
+Tier: the projection is tier 2 (local, reversible file write); the `--force`-over-sentinel decision is a **tier-3 ask** (never silent). This is read-vault → write-disk projection, no ingest, so it does not touch the curation rule.
 
 ---
 
@@ -375,11 +375,11 @@ After lit-reading B13 hands off a **user-confirmed** paper id (find + confirm ha
 lit trash restore <id>          # or the full entry name <id>-<UTC-timestamp>
 ```
 
-What the command does (one atomic `staged_write`, M23.2 — do NOT re-implement or second-guess it):
+What the command does (one atomic `staged_write` — do NOT re-implement or second-guess it):
 
 - Accepts the **paper id** (must be unambiguous) or the **full entry name** `<id>-<UTC-timestamp>`. If the same id was deleted more than once, the CLI raises with the list of entry names — **relay it and ask which timestamp**, do not guess.
 - **Step 0 — id-slot collision**: if `papers/<id>/` already holds a LIVE paper, restore **REFUSES** (never clobbers). Relay the error; tell the user to rename / remove the active paper first. Do not force.
-- **Steps 1-2 (atomic)**: moves `papers/<id>/` back; rebuilds every opposite paper's paired reverse edge from A's own sealed fields (M23.0 symmetry); re-binds surviving repos' `repo-meta.papers`; **silently drops** edges whose opposite is no longer in the library; de-annotates `[[A]] (deleted)` → `[[A]]` across notes (M24); refreshes INDEX/views.
+- **Steps 1-2 (atomic)**: moves `papers/<id>/` back; rebuilds every opposite paper's paired reverse edge from A's own sealed fields (the symmetric-edge invariant); re-binds surviving repos' `repo-meta.papers`; **silently drops** edges whose opposite is no longer in the library; de-annotates `[[A]] (deleted)` → `[[A]]` across notes; refreshes INDEX/views.
 - **Step 3 — re-clone is built INTO restore, NOT a separate `lit code add`.** A repo that was A's *sole* binder (1:1) got hard-deleted at rm time; its upstream URL was preserved in the trash sidecar (`orphan_repos`). Restore re-clones it: **prompted per repo (default Yes) interactively, or auto with `-y`**. On refuse / clone failure the binding `A.code-clones:[X]` is **KEPT** + a warning emitted (health-check backstops); re-clone is **never a precondition** for restore success.
 
 Agent behavior around the re-clone sub-decision (where the autonomy ladder bites):
@@ -400,8 +400,8 @@ Maintain the controlled vocabulary so it does not drift (near-duplicate values, 
   - `lit taxonomy rename <dict> <old> <new>` — rename a value, ripples to every referencing paper.
   - `lit taxonomy merge` — fold one or more near-duplicate sources into one destination, re-tags every referencing paper, drops the sources.
   - `lit taxonomy rm <dict> <value>` — remove a value, strips it from every referencing paper.
-- **Safety (invariant #2, hard line)**: NEVER hand-edit `TAXONOMY.md`; always the atomic CLI. Each verb cascades across the vault in one transaction — a hand-edit would leave dangling references.
-- **Tier 3 (cascades to N papers)**: before running, **show the impact** ("merge folds `tokenisation` into `tokenization` and re-tags the N papers using it") and **ask once**. `merge` / `rm` are cascade-with-confirm (M15) and prompt `Continue? [y/N]`; in a non-interactive run you MUST pass `--yes` / `-y` or the command aborts. On confirm, run + relay, then **re-read `TAXONOMY.md`** (cache invalidation).
+- **Safety (hard line)**: NEVER hand-edit `TAXONOMY.md`; always the atomic CLI. Each verb cascades across the vault in one transaction — a hand-edit would leave dangling references.
+- **Tier 3 (cascades to N papers)**: before running, **show the impact** ("merge folds `tokenisation` into `tokenization` and re-tags the N papers using it") and **ask once**. `merge` / `rm` are cascade-with-confirm and prompt `Continue? [y/N]`; in a non-interactive run you MUST pass `--yes` / `-y` or the command aborts. On confirm, run + relay, then **re-read `TAXONOMY.md`** (cache invalidation).
 - **The agent never decides a consolidation** — which values "mean the same thing" is a vocabulary judgment the user owns (present-and-user-picks). You MAY **propose** a merge when you spot near-duplicate registered values (e.g. while enumerating candidates in Flow A), but propose only; never run governance on your own initiative.
 - **dict routing**: these verbs operate on `topics` / `methods` / `data`. The **`projects` dict is governed through `lit project` ([H]), not `lit taxonomy`** (mirror the Flow B add-routing split; verify the project-lifecycle surface with `lit project --help`).
 
@@ -414,7 +414,7 @@ Maintain the controlled vocabulary so it does not drift (near-duplicate values, 
 3. **Never** assume the vault is git-tracked. It is deliberately not. Multi-file atomicity is `<vault>/.litman-staging/` + `os.replace`, not git.
 4. **Never** store API keys in `lit-config.yaml`. The CLI calls no LLM API — that's your job (the agent), via the JSON-file bridge.
 5. **Never** install / uninstall litman or modify its conda env. If `lit` is missing, tell the user and stop.
-6. **Verify every `[[X]]` wikilink against the filesystem before you write or keep it.** When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (`lit show X` resolves, or it appears in `lit list`). If not, write it as `[[X]] (deleted)` — **never emit a bare `[[X]]` for a paper not in the vault.** The CLI maintains this `(deleted)` marker on `lit rm` / `lit trash restore` (ADR-013), but a full-note rewrite can wipe it; you are the second line of defence (this pairs with lit-reading B3's `notes.md` overwrite discipline — losing it reopens M24's hallucination hole, with `lit health-check` the only remaining backstop).
+6. **Verify every `[[X]]` wikilink against the filesystem before you write or keep it.** When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (`lit show X` resolves, or it appears in `lit list`). If not, write it as `[[X]] (deleted)` — **never emit a bare `[[X]]` for a paper not in the vault.** The CLI maintains this `(deleted)` marker on `lit rm` / `lit trash restore`, but a full-note rewrite can wipe it; you are the second line of defence (this pairs with lit-reading B3's `notes.md` overwrite discipline — losing it reopens the wikilink-hallucination hole, with `lit health-check` the only remaining backstop).
 7. **Never** set a reverse relation field (`extended-by` / `contradicted-by`) by hand — drive only the forward field and let the CLI's atomic double-write maintain the pair ([E]).
 
 If unsure whether an operation respects these, run `lit health-check` after — it surfaces vault drift (including missing / stale `(deleted)` tags and broken bidirectional pairs) and the user inspects before acting.
