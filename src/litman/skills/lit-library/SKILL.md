@@ -117,7 +117,7 @@ This is the **headline workflow** for lit-library. Use when the user has a PDF a
 
    Extract: title (page 1 header), authors (page 1 list — preserve "Family, Given" order), year, DOI (search first 1-2 pages — many PDFs print "DOI: 10.xxx/yyy"), journal / venue, abstract.
 
-   **Also harvest code-repo URLs into a side-buffer** (NOT part of the metadata JSON — feeds the [C.1] reconciliation). Pay attention to the spots `scan_code_urls`'s single-line regex / pypdf's text extraction tend to miss: any `Code Availability` / `Data Availability` block (often near the END of the body — Nature / Science / Cell mandate it there, NOT on page 1), Acknowledgments, footer / first-page footnote, and inline phrasing like "we release at https://…" or "available at https://github.com/…". For each URL note one short context cue ("we present X" / "we use X" / "see also"). Without this side-buffer the CLI scan is the only signal, and it has known recall holes (URLs broken across lines, garbled-cmap PDFs).
+   **Also harvest code-repo URLs into a side-buffer** (NOT part of the metadata JSON — feeds [C.1]). Look in: `Code Availability` / `Data Availability` blocks (often near the END of the body, not page 1), Acknowledgments, footnotes, first-page footer, and inline "we release at https://…" / "available at https://github.com/…" phrasing. For each URL note one short context cue ("we present X" / "we use X" / "see also").
 
 2. **Verify**, do NOT hallucinate. If you cannot find a field after reading the relevant pages, leave it as `null` rather than guessing. A wrong DOI corrupts the vault's dedup index for that paper forever.
 
@@ -145,7 +145,7 @@ This is the **headline workflow** for lit-library. Use when the user has a PDF a
 5. **The CLI handles**: JSON schema validation (rejects unknown keys / missing required fields), DOI dedup precheck, id derivation (`<year>_<Family>_<title-keyword>`), id-collision resolution (`--auto-suffix` for `_b` / `_c`), atomic write of `papers/<id>/{paper.pdf, metadata.yaml, notes.md}`.
 
 6. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. **Read out the derived `id` and the `title`, then stop and wait for the user to confirm the source metadata is right.** You do **not** self-judge title correctness — the human confirms. **Surface only id + title.** After the user confirms:
-   - if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → reconcile and present ([C.1] CLI ⨯ agent reconciled table);
+   - if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]);
    - otherwise stop. Do **NOT** proactively enumerate tag / project / status / priority offers — those are separate intents the user will trigger when they decide to read / curate the paper. SOP-1 governs: list observations only when asked, never pre-stage menus the user did not request.
 
 **Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id when the paper is already in the vault. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id). Re-adding a paper you already have is almost always intent to open it, not duplicate it (one paper, one folder — that is litman's hard rule). This is the ingest-side counterpart to B9's in-vault check.
@@ -198,37 +198,37 @@ The pipeline is identical from id derivation onward; only the metadata source di
 
 A paper's `code-clones` field is a **1:N** relationship: one repo under `<vault>/codes/<name>/` can be cited by several papers. Three operations:
 
-### [C.1] Bind a NEW clone — present-and-pick from CLI scan ⨯ agent re-read (reconciled)
+### [C.1] Bind a NEW clone — reconcile CLI scan with agent re-read
 
-The candidate set comes from **two independent sources**, then reconciled — neither alone is enough:
+Two sources:
 
-1. **CLI scan** — `lit add` runs a full-text `scan_code_urls` recall and prints the result fenced by literal markers `[code_candidates]` / `[/code_candidates]`, one per line as `<url> (p<page>, ×<count>)`, ranked by hit-count descending. Empty case prints `no code repo URL found in full text`. **Deterministic baseline** (no LLM in the loop — recall quality cannot depend on the agent). Known holes: single-line regex misses URLs broken across lines; pypdf's `extract_text()` garbles characters on some embedded fonts; only the welded-in host list (`github`, `gitlab`, `bitbucket`, `huggingface`, `zenodo`, `osf`, `codeocean`) matches.
-2. **Agent re-read** — the side-buffer of code-repo URLs you harvested in [A] step 1 from Code/Data Availability / Acknowledgments / footnotes / inline prose, each annotated with a short context cue. Catches what (1) misses.
+1. **CLI scan** — `lit add` prints candidates fenced by `[code_candidates]` / `[/code_candidates]`, one per line as `<url> (p<page>, ×<count>)`. Empty: `no code repo URL found in full text`.
+2. **Agent side-buffer** — the URLs you harvested in [A] step 1.
 
-**Reconcile by `_normalize_url`-equivalent matching** (lowercase scheme + host, strip trailing `/` and sentence punctuation, path is case-preserved — GitHub paths are case-sensitive), tag each candidate `[both]` / `[CLI only]` / `[agent only]`, and **present ONE merged table to the user — do NOT echo the raw `[code_candidates]` block separately**. Example:
+**Merge** (lowercase scheme + host, strip trailing `/` and sentence punctuation, preserve path case), tag each `[both]` / `[CLI only]` / `[agent only]`, present ONE table:
 
 ```
 Code repo candidates for <id>:
-[both]       https://github.com/foo/bar     CLI: p7 ×3  | agent: "Code Availability — we release..."
-[CLI only]   https://github.com/baz/lib     p12 ×1     | agent cue: appears as dependency citation
-[agent only] https://github.com/qux/model               | agent: footer p2 — CLI likely missed (line break in URL)
+[both]       https://github.com/foo/bar     CLI: p7 ×3 | agent: "Code Availability — we release..."
+[CLI only]   https://github.com/baz/lib     p12 ×1    | agent cue: appears as dependency citation
+[agent only] https://github.com/qux/model              | agent: footer p2
 
 Pick which to bind: [1,3] / all / none
 ```
 
-Tag semantics:
+Tag rules:
 
-- **`[both]`** — high confidence; near-binary user pick.
-- **`[CLI only]`** — agent SHOULD add a one-line advisory cue from the PDF context when it can ("appears as dependency citation" / "deliverable in Methods"). The cue is **advisory, never a silent drop** — every CLI candidate is shown (zero pre-filtering rule preserved; precision still comes from the user's eyes — litman is curation-only).
-- **`[agent only]`** — explain what the CLI likely missed (line break / garbled extraction / mirror host outside the welded-in list) so the user can sanity-check the recall.
+- **`[both]`** — high confidence.
+- **`[CLI only]`** — agent adds a one-line cue from PDF context when it can ("appears as dependency citation" / "deliverable in Methods"). **Advisory; never silently drop a CLI candidate** — every CLI candidate is shown.
+- **`[agent only]`** — note where in the PDF the agent saw it.
 
-**Both lists empty** → do not prompt; this is a genuine no-code-repo paper (and now meaningful, because two independent signals agree — not one possibly-blind signal).
+**Both empty** → do not prompt.
 
-Each user-selected item runs:
+Each selected item runs:
 ```bash
 lit code add <url> --paper <current-id>      # clone (--depth 1) + bind, atomic
 ```
-This creates `codes/<repo-name>/{repo/, repo-meta.yaml, notes.md}` and bidirectionally binds the paper's `code-clones` ↔ repo-meta's `papers`. **Tier 3** (git clone = remote IO). Binding one paper to multiple repos is not batch ingest — ingest is still one paper.
+**Tier 3** (git clone = remote IO). Binding one paper to multiple repos is not batch ingest — ingest is still one paper.
 
 Inspect with `lit code list --paper <paper-id>` (tier-1 read). Pull updates with `lit code update <name>`.
 
