@@ -20,6 +20,18 @@ whole vault, or hand the directory tree to an AI agent. The CLI exists
 to make routine edits atomic and to keep cross-references consistent,
 not to gate access to your data.
 
+## Know before you use
+
+Two current limitations worth knowing up front:
+
+1. **Don't move a vault or project folder by hand.** Links (symlinks, project
+   bridges, the registry) are path-based and will break. If you must move one,
+   run `lit health-check` afterwards to find and repair what broke.
+2. **Figure/table reading needs a multimodal model.** A text-only model falls
+   back to plain-text extraction (pypdf) and cannot see figures or
+   image-based tables — don't ask it "what does Fig./Table N show?" without a
+   vision or OCR backend attached.
+
 ## What makes litman tick
 
 Five design choices, in priority order:
@@ -172,20 +184,6 @@ no configuration. Beyond that:
   Likewise, if a linked project's directory moves, the next command offers
   to re-point it to a new path and rebuild its `litman_reflib/` (blank to
   skip; it never auto-deletes a project). `lit health-check` reports both.
-
----
-
-## Good to know
-
-- **Moving a vault or project folder breaks its links.** Symlinks, project
-  bridges, and the vault registry are path-based; relocate one outside the CLI
-  and cross-references go stale. If you do move something, run
-  `lit health-check` to see what broke and how to repair it.
-- **Reading help is only as good as your model.** A multimodal model (e.g.
-  Claude) reads the PDF directly, figures and tables included. A text-only
-  model falls back to plain-text extraction (pypdf), which cannot interpret
-  figures or image-based tables — don't lean on it for "what does Fig./Table N
-  show?" unless you have attached a vision or OCR backend.
 
 ---
 
