@@ -117,20 +117,13 @@ git pull
 pipx install --force .
 ```
 
-Note: `pipx reinstall .` does **not** work — `reinstall` takes the package
-name (`litman`), not a path. Use `pipx reinstall litman` if you prefer that
-form.
-
-**For development** (so `git pull` alone is enough — no reinstall needed):
+**For development** (`git pull` alone takes effect):
 
 ```bash
 cd litman
 pipx uninstall litman
 pipx install -e .
 ```
-
-After this one-time switch to an editable install, every future `git pull`
-takes effect immediately.
 
 ## Quick start
 
