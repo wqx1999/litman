@@ -175,6 +175,20 @@ no configuration. Beyond that:
 
 ---
 
+## Good to know
+
+- **Moving a vault or project folder breaks its links.** Symlinks, project
+  bridges, and the vault registry are path-based; relocate one outside the CLI
+  and cross-references go stale. If you do move something, run
+  `lit health-check` to see what broke and how to repair it.
+- **Reading help is only as good as your model.** A multimodal model (e.g.
+  Claude) reads the PDF directly, figures and tables included. A text-only
+  model falls back to plain-text extraction (pypdf), which cannot interpret
+  figures or image-based tables — don't lean on it for "what does Fig./Table N
+  show?" unless you have attached a vision or OCR backend.
+
+---
+
 ## Documentation
 
 Full reference lives under [`docs/`](docs/):
