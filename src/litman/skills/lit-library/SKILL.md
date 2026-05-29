@@ -107,8 +107,8 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
 
    1. **Claude Code `Read` tool** (default): `Read(pdf_path, pages="1-3")`. PDFs are natively handled via CC's multimodal pipeline.
    2. **PDF-related MCP tool** (for non-multimodal backends): scan your `available tools` for any whose description mentions PDF / document / extract.
-   3. **System CLI fallback** (probe with `command -v` first): `pdftotext -layout <pdf> -`, `mutool draw -F txt <pdf> -`, or `python -c "from pypdf import PdfReader; print(PdfReader('<pdf>').pages[N].extract_text())"`.
-   4. **Tell the user what's missing — with concrete install commands for their OS** (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`), or suggest switching to a vision-capable model. Name the rung that failed and the exact gap.
+   3. **`lit pdf-text` — deterministic fallback, no model / network / system tool**: `lit pdf-text <pdf> --pages 1-3` (omit `--pages` for the whole doc). litman ships pypdf as a hard dependency, so this works wherever `lit` runs — it does NOT need poppler / pdftoppm. Exit code 3 means "no extractable text layer" (scanned / image-only PDF): go back up to a multimodal reader or OCR, don't retry here.
+   4. **Only if every rung above failed** (no multimodal read, no PDF MCP, and `lit pdf-text` returned no text): name the rung that failed and the exact gap, then **surface** OS-appropriate install commands for the user to run (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`) or suggest a vision-capable model. **Show these commands — never execute an install yourself.**
 
    Extract: title (page 1 header), authors (page 1 list — preserve "Family, Given" order), year, DOI (search first 1-2 pages), journal / venue, abstract.
 
@@ -441,6 +441,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit init [--name <vault>]` | Create a new vault skeleton |
 | `lit add <pdf> --doi <doi>` | Add via CrossRef ([B]) |
 | `lit add <pdf> --from-llm-json <json>` | Add via LLM-extracted JSON ([A]) |
+| `lit pdf-text <pdf> [--pages 1-3]` | Dump PDF text layer (deterministic read fallback, [A] step 1) |
 | `lit list [filters] [--format json]` | Browse ([D]) |
 | `lit show <id-or-substring>` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported) |
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields / tag ([E]) |

@@ -171,8 +171,8 @@ Then, once you have an id, load just enough paper context. Read in this order, s
 
 1. **Claude Code `Read` tool** (default): `Read(pdf_path, pages="1-10")`. PDFs are natively handled via CC's multimodal pipeline.
 2. **PDF-related MCP tool** (for non-multimodal backends): scan your `available tools` for any whose description mentions PDF / document / extract.
-3. **System CLI fallback** (probe with `command -v` first): `pdftotext -layout <pdf> -`, `mutool draw -F txt <pdf> -`, or `python -c "from pypdf import PdfReader; print(PdfReader('<pdf>').pages[N].extract_text())"`.
-4. **Tell the user what's missing — with concrete install commands for their OS** (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`), or suggest switching to a vision-capable model. Name the rung that failed and the exact gap.
+3. **`lit pdf-text` — deterministic fallback, no model / network / system tool**: `lit pdf-text <pdf> --pages 1-10` (omit `--pages` for the whole doc). litman ships pypdf as a hard dependency, so this works wherever `lit` runs — it does NOT need poppler / pdftoppm. Exit code 3 means "no extractable text layer" (scanned / image-only PDF): go back up to a multimodal reader or OCR, don't retry here.
+4. **Only if every rung above failed** (no multimodal read, no PDF MCP, and `lit pdf-text` returned no text): name the rung that failed and the exact gap, then **surface** OS-appropriate install commands for the user to run (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`) or suggest a vision-capable model. **Show these commands — never execute an install yourself.**
 
 **Forbidden**: stopping at rung 1's failure without trying 2/3/4; summarizing from the paper's title / training data without reading; batching all 20 pages into a single Read call when the user only needs §3.
 

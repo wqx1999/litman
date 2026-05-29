@@ -41,6 +41,7 @@ JSON file. The CLI refuses both at once.
 | `lit add <pdf> --from-llm-json <path>` | Same, but read metadata from a JSON file (used by the `lit-library` skill). |
 | `lit add <pdf> --doi <doi> --id <id>` | Override the auto-derived id. |
 | `lit add <pdf> --doi <doi> --auto-suffix` | On id collision, auto-append `_b` / `_c`. Required for batch (non-TTY) mode. |
+| `lit pdf-text <pdf> [--pages 1-3]` | Print a PDF's embedded text layer to stdout (deterministic pypdf read; no model / network / system tool). Exit 3 = no text layer (scanned PDF). |
 
 `lit add` refuses on duplicate DOI (checked against `unique_keys` in
 `lit-config.yaml`) and auto-creates `paper.pdf`, `metadata.yaml`,
