@@ -30,7 +30,7 @@ from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
 from litman.core import views
 
-__all__ = ["regen", "resolve", "annotate"]
+__all__ = ["regen", "regen_index_drop_ids", "resolve", "annotate"]
 
 
 # ---------------------------------------------------------------------------
@@ -39,16 +39,28 @@ __all__ = ["regen", "resolve", "annotate"]
 
 
 def regen(vault: Path, issues: list[Issue] | None = None) -> dict[str, int]:
-    """Recompute the derived artifacts (``INDEX.json`` + ``views/by-*/``) from TRUTH.
+    """Recompute the derived artifacts (INDEX.json + views/ + project refs) from TRUTH.
 
     The derived artifacts are a pure function of the per-paper ``metadata.yaml``
     truth, so the correct repair for any klass-A drift is to drop them and
-    rebuild wholesale. Lossless: nothing in INDEX/views is not also in metadata.
+    rebuild wholesale. Lossless: nothing in INDEX/views/project-refs is not also
+    in metadata. Covers all three klass-A pairs (ledger #1/#2/#3):
+
+    * ``INDEX.json`` (#1) — ``write_index``.
+    * ``views/by-*/`` (#2) — ``rebuild_views``.
+    * project ``litman_reflib/`` symlinks + ``REFERENCES.md`` (#3) —
+      ``rebuild_all_project_links`` + ``rebuild_all_project_refs``, but only for
+      projects whose directory is reachable on this machine (unreachable ones
+      are skipped, not an error — see ``project_path_exists`` / ADR-014).
 
     ``issues`` is accepted for a uniform corrector signature but unused —
     regen always rebuilds the full derived set rather than patching per-issue
     (cheaper to reason about and idempotent). Returns
-    ``{"index": 1, "views": <n_symlinks>}`` for caller-side reporting.
+    ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>}``.
+
+    This is Tier-2 only: it calls ``list_papers`` (reads every metadata.yaml),
+    so it MUST NOT run inside the Tier-1 hook (invariant #15). The hook uses
+    :func:`regen_index_drop_ids` instead.
     """
     # Local import: document.list_papers pulls the heavier ruamel-typ machinery
     # that views/notes don't need, and keeps correctors importable without a
@@ -58,7 +70,63 @@ def regen(vault: Path, issues: list[Issue] | None = None) -> dict[str, int]:
     papers = list_papers(vault)
     views.write_index(vault, papers)
     view_counts = views.rebuild_views(vault, papers)
-    return {"index": 1, "views": sum(view_counts.values())}
+
+    # Project-side derived artifacts (#3). Only when projects are configured;
+    # rebuild_all_* skip unreachable project dirs internally.
+    from litman.core.config import load_config
+    from litman.core.project_link import rebuild_all_project_links
+    from litman.core.project_refs import rebuild_all_project_refs
+    from litman.exceptions import ConfigError
+
+    n_projects = 0
+    # ONLY the config load is swallowed: a broken / unreadable lit-config.yaml
+    # surfaces via `lit config show`, and check_project_references already
+    # returns [] on a broken config — so there is no #3 drift to repair and we
+    # skip the project-side rebuild entirely. The rebuild calls themselves are
+    # NOT in this try: a genuine filesystem failure (permission error writing
+    # REFERENCES.md, symlink failure on a reachable project dir) must propagate
+    # so health.py:_apply_fixes does not falsely report "project_references: 1"
+    # for a repair that actually failed (invariant #14 — no silent-skip).
+    try:
+        config = load_config(vault)
+    except ConfigError:
+        config = None
+    if config is not None:
+        projects = dict(config.projects)
+        if projects:
+            rebuild_all_project_links(vault, projects)
+            rebuild_all_project_refs(vault, projects)
+            n_projects = len(projects)
+
+    return {
+        "index": 1,
+        "views": sum(view_counts.values()),
+        "project_refs": n_projects,
+    }
+
+
+def regen_index_drop_ids(vault: Path, dead_ids: list[str]) -> int:
+    """Metadata-free klass-A INDEX repair: drop vanished ids from ``INDEX.json``.
+
+    The Tier-1 per-command hook (spec §6) repairs an ``INDEX.json`` ↔
+    ``papers/`` drift caused by a manual ``rm`` of a paper directory. The full
+    :func:`regen` rebuilds INDEX from every ``metadata.yaml`` via
+    ``list_papers`` — that violates invariant #15 (Tier 1 never reads per-paper
+    metadata). This helper instead edits the existing INDEX in place: it reads
+    only ``INDEX.json``, removes the entries whose id is in ``dead_ids``, and
+    rewrites the file (delegating to
+    :func:`litman.core.views.rewrite_index_dropping_ids`). No ``metadata.yaml``
+    is opened, no ``list_papers`` call — safe on the hot path.
+
+    Lossless: INDEX is a derived projection, so dropping a dead entry can only
+    over-prune if the paper actually still exists, and the next full scan
+    (``lit health-check`` / a write command's regen) re-adds it from truth.
+
+    Returns the number of INDEX entries dropped.
+    """
+    if not dead_ids:
+        return 0
+    return views.rewrite_index_dropping_ids(vault, set(dead_ids))
 
 
 # ---------------------------------------------------------------------------
@@ -163,12 +231,17 @@ def annotate(
     Args:
         vault: Vault root.
         deleted_ids: Paper ids whose links should be tagged ``(deleted)``.
-        targeted: Phase-1 flag for the Tier-1 vanished-id path (§6). When the
-            id set is small the annotate is the same in-place rewrite either
-            way; the flag is accepted so the Tier-1 hook can pass it
-            explicitly. (A true grep-narrowed scan is a Phase-3 optimization;
-            in Phase 1 both branches enumerate the same scope, and the wikilink
-            rewrite is a no-op on files that don't mention the id.)
+        targeted: Tier-1 vanished-id path (§6). When ``True``, the scan is
+            grep-narrowed: a note's full ``annotate_deleted_wikilinks`` rewrite
+            (parse every ``[[...]]``, resolve each target) only runs on files
+            whose raw text contains at least one of the ids as a substring.
+            Files that never mention any vanished id are skipped after a single
+            cheap ``in`` test, so the Tier-1 hook does not pay the full wikilink
+            parse over every note in the vault for a one-paper deletion. The
+            untargeted path (``False``, used by ``lit health-check``) runs the
+            full rewrite on every note, which is equivalent (the rewrite is a
+            no-op on files that don't mention the id) but does the parse work
+            unconditionally.
     """
     if not deleted_ids:
         return 0
@@ -178,6 +251,10 @@ def annotate(
         try:
             original = md_path.read_text(encoding="utf-8")
         except OSError:
+            continue
+        if targeted and not any(did in original for did in deleted_ids):
+            # Grep-narrow: no vanished id appears as a substring, so no
+            # ``[[id]]`` can resolve to one — skip the full parse entirely.
             continue
         updated = original
         for deleted_id in deleted_ids:

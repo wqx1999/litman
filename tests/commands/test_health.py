@@ -25,9 +25,8 @@ from litman.core.checks import (
     check_code_clone_integrity,
     check_dangling_refs,
     check_dangling_wikilinks,
-    check_id_consistency,
     check_inbox_staleness,
-    check_invalid_paper_dirs,
+    check_paper_dir_validity,
     check_pdf_viewer,
     check_project_config_consistency,
     check_project_path_exists,
@@ -95,6 +94,11 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     notes = fields.get("notes")
     if notes is not None:
         (paper_dir / "notes.md").write_text(notes, encoding="utf-8")
+    # The M30 paper_dir_validity check requires paper.pdf; write a stub so a
+    # complete fixture paper does not trip a structural error (tests that want
+    # to assert the missing-pdf finding can delete it).
+    if not fields.get("no_pdf"):
+        (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
 
 
 @pytest.fixture
@@ -137,55 +141,308 @@ def test_schema_invalid_priority(vault: Path) -> None:
     assert any(i.category == "schema" and "'priority'" in i.message for i in issues)
 
 
-# --- id_consistency ---------------------------------------------------------
+# --- paper_dir_validity (merged id_consistency + invalid_paper_dirs, M30) ---
 
 
-def test_id_consistency_clean(vault: Path) -> None:
+def test_paper_dir_validity_clean(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar")
-    assert check_id_consistency(vault, list_papers(vault)) == []
+    assert check_paper_dir_validity(vault, list_papers(vault)) == []
 
 
-def test_id_consistency_dir_vs_metadata_mismatch(vault: Path) -> None:
+def test_paper_dir_validity_dir_vs_metadata_mismatch(vault: Path) -> None:
     # Directory is "2024_Foo_Bar" but metadata.id is "2024_Foo_Baz" — looks
     # like a half-finished rename: file content updated, dir not yet renamed.
     _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
-    issues = check_id_consistency(vault, list_papers(vault))
-    assert len(issues) == 1
-    assert issues[0].category == "id_consistency"
-    assert issues[0].severity == "error"
-    assert "2024_Foo_Bar" in issues[0].message
-    assert "2024_Foo_Baz" in issues[0].message
+    issues = check_paper_dir_validity(vault, list_papers(vault))
+    mismatch = [i for i in issues if "metadata id" in i.message]
+    assert len(mismatch) == 1
+    assert mismatch[0].category == "paper_dir_validity"
+    assert mismatch[0].severity == "error"
+    assert "2024_Foo_Bar" in mismatch[0].message
+    assert "2024_Foo_Baz" in mismatch[0].message
 
 
-# --- invalid_paper_dirs -----------------------------------------------------
-
-
-def test_invalid_dir_no_metadata(vault: Path) -> None:
+def test_paper_dir_validity_no_metadata(vault: Path) -> None:
     (vault / "papers" / "2024_Foo_Bar").mkdir(parents=True)
-    issues = check_invalid_paper_dirs(vault, [])
+    issues = check_paper_dir_validity(vault, [])
     assert any(
-        i.category == "invalid_paper_dirs" and "no metadata.yaml" in i.message
+        i.category == "paper_dir_validity" and "no metadata.yaml" in i.message
         for i in issues
     )
 
 
-def test_invalid_dir_bad_id_name(vault: Path) -> None:
+def test_paper_dir_validity_bad_id_name(vault: Path) -> None:
     # Spaces are not allowed in paper ids — surfaces as invalid.
     (vault / "papers" / "Bad Dir Name").mkdir(parents=True, exist_ok=True)
-    issues = check_invalid_paper_dirs(vault, [])
+    issues = check_paper_dir_validity(vault, [])
     assert any(
-        i.category == "invalid_paper_dirs" and "valid paper id" in i.message
+        i.category == "paper_dir_validity" and "valid paper id" in i.message
         for i in issues
     )
 
 
-def test_invalid_dir_non_directory_file(vault: Path) -> None:
+def test_paper_dir_validity_non_directory_file(vault: Path) -> None:
     (vault / "papers" / "stray.txt").write_text("oops")
-    issues = check_invalid_paper_dirs(vault, [])
+    issues = check_paper_dir_validity(vault, [])
     assert any(
-        i.category == "invalid_paper_dirs" and "non-directory" in i.message
+        i.category == "paper_dir_validity" and "non-directory" in i.message
         for i in issues
     )
+
+
+def test_paper_dir_validity_unparseable_metadata_is_an_error(vault: Path) -> None:
+    """A corrupt metadata.yaml is an EMITTED error, not a silent drop (#14)."""
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    # Invalid YAML (unterminated flow mapping) — read_metadata would raise.
+    (paper_dir / "metadata.yaml").write_text("id: {oops\n", encoding="utf-8")
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    issues = check_paper_dir_validity(vault, list_papers(vault))
+    corrupt = [i for i in issues if "unparseable" in i.message]
+    assert len(corrupt) == 1
+    assert corrupt[0].severity == "error"
+    assert corrupt[0].paper_id == "2024_Foo_Bar"
+
+
+def test_paper_dir_validity_empty_metadata_is_an_error(vault: Path) -> None:
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text("# only a comment\n", encoding="utf-8")
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    issues = check_paper_dir_validity(vault, list_papers(vault))
+    assert any(
+        i.category == "paper_dir_validity"
+        and "empty" in i.message
+        and i.severity == "error"
+        for i in issues
+    )
+
+
+def test_paper_dir_validity_missing_pdf_is_an_error(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar", no_pdf=True)
+    issues = check_paper_dir_validity(vault, list_papers(vault))
+    pdf = [i for i in issues if "paper.pdf" in i.message]
+    assert len(pdf) == 1
+    assert pdf[0].severity == "error"
+    assert pdf[0].paper_id == "2024_Foo_Bar"
+
+
+def test_paper_dir_validity_notes_discussion_absence_not_flagged(vault: Path) -> None:
+    """notes.md / discussion.md absence is a legitimate state — not flagged."""
+    _write_paper(vault, "2024_Foo_Bar")  # writes metadata + pdf, no notes
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    assert not (paper_dir / "notes.md").exists()
+    assert not (paper_dir / "discussion.md").exists()
+    assert check_paper_dir_validity(vault, list_papers(vault)) == []
+
+
+# --- index_vs_disk (M30 #1) -------------------------------------------------
+
+
+def _build_index(vault: Path) -> None:
+    """Build INDEX.json + views from the on-disk paper set (regen path)."""
+    from litman.core.correctors import regen
+
+    regen(vault)
+
+
+def test_index_vs_disk_clean(vault: Path) -> None:
+    from litman.core.checks import check_index_vs_disk
+
+    _write_paper(vault, "2024_Foo_Bar")
+    _build_index(vault)
+    assert check_index_vs_disk(vault, []) == []
+
+
+def test_index_vs_disk_vanished_id_is_error(vault: Path) -> None:
+    """An id in INDEX whose papers/<id>/ is gone → error (manual rm)."""
+    from litman.core.checks import check_index_vs_disk
+
+    _write_paper(vault, "2024_Foo_Bar")
+    _build_index(vault)
+    # Manual rm of the paper dir, INDEX not rebuilt.
+    import shutil
+
+    shutil.rmtree(vault / "papers" / "2024_Foo_Bar")
+    issues = check_index_vs_disk(vault, [])
+    vanished = [i for i in issues if i.severity == "error"]
+    assert len(vanished) == 1
+    assert vanished[0].category == "index_vs_disk"
+    assert vanished[0].paper_id == "2024_Foo_Bar"
+
+
+def test_index_vs_disk_unindexed_dir_is_warning(vault: Path) -> None:
+    """A dir present but not in INDEX → warning (corrupt metadata / interrupted add)."""
+    from litman.core.checks import check_index_vs_disk
+
+    _write_paper(vault, "2024_Foo_Bar")
+    _build_index(vault)
+    # Add a second paper dir on disk WITHOUT rebuilding INDEX.
+    _write_paper(vault, "2025_New_Paper")
+    issues = check_index_vs_disk(vault, [])
+    warnings = [i for i in issues if i.severity == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0].category == "index_vs_disk"
+    assert warnings[0].paper_id == "2025_New_Paper"
+    assert "not indexed" in warnings[0].message
+
+
+def test_index_vs_disk_no_index_yet_is_clean(vault: Path) -> None:
+    """A fresh vault (paper on disk, no INDEX) is not reconcilable → no vanished."""
+    from litman.core.checks import check_index_vs_disk
+
+    _write_paper(vault, "2024_Foo_Bar")
+    (vault / "INDEX.json").unlink(missing_ok=True)
+    issues = check_index_vs_disk(vault, [])
+    # Only an un-indexed-dir warning (INDEX empty), no vanished error.
+    assert all(i.severity == "warning" for i in issues)
+
+
+def test_index_vs_disk_does_not_read_metadata(vault: Path, monkeypatch) -> None:
+    """Invariant #15: the cheap INDEX↔disk check reads no per-paper metadata."""
+    from litman.core.checks import check_index_vs_disk
+
+    _write_paper(vault, "2024_Foo_Bar")
+    _build_index(vault)
+
+    real_read_text = Path.read_text
+
+    def _guard(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+        if self.name == "metadata.yaml":
+            raise AssertionError(
+                f"index_vs_disk read per-paper metadata (invariant #15): {self}"
+            )
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _guard)
+    assert check_index_vs_disk(vault, []) == []
+
+
+# --- views_vs_metadata (M30 #2) ---------------------------------------------
+
+
+def test_views_vs_metadata_clean(vault: Path) -> None:
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    _build_index(vault)
+    assert check_views_vs_metadata(vault, list_papers(vault)) == []
+
+
+def test_views_vs_metadata_missing_symlink_is_error(vault: Path) -> None:
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    # views/ hub exists (create_vault lays it down) but no symlink was built →
+    # metadata implies a missing views/by-topic/amp/2024_Foo_Bar symlink.
+    (vault / "views" / "by-topic").mkdir(parents=True, exist_ok=True)
+    issues = check_views_vs_metadata(vault, list_papers(vault))
+    missing = [i for i in issues if "missing" in i.message]
+    assert any(i.category == "views_vs_metadata" for i in missing)
+
+
+def test_views_vs_metadata_stale_symlink_is_error(vault: Path) -> None:
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    _build_index(vault)
+    # Hand-edit metadata to drop the topic, but leave the view symlink behind.
+    import shutil
+
+    # Simulate: a stale symlink in a bucket the paper no longer belongs to.
+    stale_bucket = vault / "views" / "by-topic" / "ghost-topic"
+    stale_bucket.mkdir(parents=True, exist_ok=True)
+    (stale_bucket / "2024_Foo_Bar").symlink_to(vault / "papers" / "2024_Foo_Bar")
+    issues = check_views_vs_metadata(vault, list_papers(vault))
+    stale = [i for i in issues if "no matching metadata tag" in i.message]
+    assert len(stale) == 1
+    assert stale[0].category == "views_vs_metadata"
+    del shutil  # keep import used
+
+
+# --- relevance_orphan (M30 #11) ---------------------------------------------
+
+
+def test_relevance_orphan_clean(vault: Path) -> None:
+    from litman.core.checks import check_relevance_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects:\n  - pep\nrelevance-pep: useful\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    assert check_relevance_orphan(vault, list_papers(vault)) == []
+
+
+def test_relevance_orphan_detected_report_only(vault: Path) -> None:
+    from litman.core.checks import check_relevance_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    # relevance-pep present but projects does NOT contain pep → orphan.
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects: []\nrelevance-pep: stale note\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    issues = check_relevance_orphan(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "relevance_orphan"
+    assert issues[0].severity == "warning"  # report-only, never auto-delete
+    assert issues[0].paper_id == "2024_Foo_Bar"
+    assert "relevance-pep" in issues[0].message
+
+
+# --- project_references (M30 #3) --------------------------------------------
+
+
+def _configure_project(vault: Path, name: str, project_dir: Path) -> None:
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  {name}: {project_dir}\n",
+        encoding="utf-8",
+    )
+
+
+def test_project_references_clean(vault: Path, tmp_path: Path) -> None:
+    from litman.core.checks import check_project_references
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)  # builds litman_reflib + REFERENCES.md
+    assert check_project_references(vault, list_papers(vault)) == []
+
+
+def test_project_references_missing_symlink_is_error(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.checks import check_project_references
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    # No reflib built → membership implies a missing symlink + missing REFS.
+    issues = check_project_references(vault, list_papers(vault))
+    assert any(
+        i.category == "project_references" and i.severity == "error"
+        for i in issues
+    )
+
+
+def test_project_references_unreachable_dir_skipped(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A project dir that does not exist is left to project_path_exists, not flagged here."""
+    from litman.core.checks import check_project_references
+
+    _configure_project(vault, "gone", tmp_path / "nonexistent")
+    _write_paper(vault, "2024_Foo_Bar", projects=["gone"])
+    assert check_project_references(vault, list_papers(vault)) == []
 
 
 # --- dangling_refs ----------------------------------------------------------
@@ -696,6 +953,10 @@ def _write_repo_meta(vault: Path, repo_name: str, papers: list[str]) -> None:
     """
     repo_dir = vault / "codes" / repo_name
     repo_dir.mkdir(parents=True, exist_ok=True)
+    # Real clones always have codes/<name>/repo/; create it so the M30 #6b
+    # check (repo-meta present but repo/ checkout missing) does not fire for
+    # tests targeting the other failure modes.
+    (repo_dir / "repo").mkdir(exist_ok=True)
     with (repo_dir / "repo-meta.yaml").open("w", encoding="utf-8") as f:
         _yaml_dump.dump({"name": repo_name, "papers": list(papers)}, f)
 
@@ -799,6 +1060,59 @@ def test_code_clone_integrity_skips_non_directory_in_codes(vault: Path) -> None:
     assert issues == []
 
 
+def test_code_clone_integrity_6b_missing_repo_checkout(vault: Path) -> None:
+    """#6b: repo-meta.yaml present but codes/<name>/repo/ checkout missing → warning."""
+    _write_paper(vault, "P_p_p", code_clones=["R"])
+    _write_repo_meta(vault, "R", papers=["P_p_p"])
+    # Remove the repo/ checkout left behind by _write_repo_meta.
+    (vault / "codes" / "R" / "repo").rmdir()
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    missing_checkout = [i for i in issues if "checkout" in i.message]
+    assert len(missing_checkout) == 1
+    assert missing_checkout[0].category == "code_clone_integrity"
+    assert missing_checkout[0].severity == "warning"
+    assert "R" in missing_checkout[0].message
+
+
+def test_code_clone_integrity_6c_repo_meta_references_missing_paper(
+    vault: Path,
+) -> None:
+    """#6c: repo-meta.papers lists a paper whose papers/<id>/ is gone → error."""
+    _write_paper(vault, "P_p_p", code_clones=["R"])
+    # repo-meta back-references P_p_p (exists) AND Q_q_q (does NOT exist).
+    _write_repo_meta(vault, "R", papers=["P_p_p", "Q_q_q"])
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    dangling_back = [i for i in issues if i.paper_id == "Q_q_q"]
+    assert len(dangling_back) == 1
+    assert dangling_back[0].category == "code_clone_integrity"
+    assert dangling_back[0].severity == "error"
+    assert "Q_q_q" in dangling_back[0].message
+
+
+# --- dangling_wikilinks no-silent-skip (M30 #14) ----------------------------
+
+
+def test_dangling_wikilinks_unreadable_notes_is_a_finding(
+    vault: Path, monkeypatch
+) -> None:
+    """An unreadable notes file is reported, not silently skipped (invariant #14)."""
+    _write_paper(vault, "2024_Foo_Bar", notes="see [[ghost]]\n")
+
+    real_read_text = Path.read_text
+
+    def _fail(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+        if self.name == "notes.md":
+            raise OSError("permission denied")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _fail)
+    issues = check_dangling_wikilinks(vault, list_papers(vault))
+    unreadable = [i for i in issues if "could not read" in i.message]
+    assert len(unreadable) == 1
+    assert unreadable[0].category == "dangling_wikilinks"
+    assert unreadable[0].severity == "warning"
+
+
 # ===========================================================================
 # Orchestration + autofix
 # ===========================================================================
@@ -859,6 +1173,14 @@ def test_health_check_clean_vault_exits_zero(
     # regardless of the host's DISPLAY / xdg-open state (CI may be headless).
     monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
     _write_paper(vault, "2024_Foo_Bar")
+    # A truly clean vault has its derived artifacts (INDEX.json + views/) built;
+    # `lit add` does this automatically, but the fixture writes papers directly,
+    # so regen here so the M30 index_vs_disk / views_vs_metadata klass-A checks
+    # see a vault in sync (otherwise they correctly report the un-built derived
+    # state).
+    from litman.core.correctors import regen
+
+    regen(vault)
     runner = CliRunner()
     result = runner.invoke(
         cli, ["health-check", "--library", str(vault)]
@@ -991,6 +1313,48 @@ def test_apply_fixes_does_not_regen_for_klass_b_only(
 
     assert called["regen"] is False
     assert "taxonomy_drift" not in counts
+
+
+def test_apply_fixes_propagates_project_refs_rebuild_failure(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real project-refs rebuild failure must NOT be reported as a fix.
+
+    Reviewer fix (M30 Phase 3): with regen's except narrowed to the config load
+    only, a genuine rebuild failure (permission error / symlink failure)
+    propagates out of regen → ``_apply_fixes`` → the caller, instead of being
+    swallowed and falsely surfaced as "project_references: 1". This test uses
+    the REAL ``regen`` (not a fake) so it pins the swallow narrowing end-to-end.
+    """
+    from litman.commands import health
+    from litman.core.checks import Issue
+    import litman.core.project_refs as project_refs
+
+    _write_paper(vault, "2024_A_Foo", title="Foo", projects=["pep"])
+    proj_dir = tmp_path / "pep_project"
+    proj_dir.mkdir()
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  pep: {proj_dir}\n",
+        encoding="utf-8",
+    )
+
+    def _boom(*a: object, **kw: object) -> None:
+        raise PermissionError("cannot write REFERENCES.md")
+
+    monkeypatch.setattr(project_refs, "rebuild_all_project_refs", _boom)
+    # Treat project_references as the fired klass-A category so _apply_fixes
+    # routes through the real regen (which now must propagate the failure).
+    monkeypatch.setattr(
+        health, "_KLASS_A_CATEGORIES", frozenset({"project_references"})
+    )
+
+    issues = [
+        Issue("project_references", "error", None, "REFERENCES.md is stale"),
+    ]
+
+    # The failure surfaces (no false "project_references: 1" success claim).
+    with pytest.raises(PermissionError, match="cannot write REFERENCES.md"):
+        health._apply_fixes(vault, issues)
 
 
 def test_health_check_help() -> None:

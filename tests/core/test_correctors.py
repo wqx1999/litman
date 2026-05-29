@@ -86,6 +86,137 @@ def test_regen_drops_dead_index_entry(vault: Path) -> None:
     assert ids == {"2024_A_Foo"}
 
 
+def test_regen_index_drop_ids_removes_dead_entry(vault: Path) -> None:
+    """The metadata-free Tier-1 helper drops the dead id from INDEX in place."""
+    _write_paper(vault, "2024_A_Foo", title="Foo")
+    correctors.regen(vault)  # build a real INDEX with one entry
+    # Seed a second (dead) entry directly into INDEX without a paper dir.
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    index["papers"].append({"id": "2099_Z_Ghost", "title": "Ghost", "doi": "x"})
+    index["by_doi"]["x"] = "2099_Z_Ghost"
+    index["n_papers"] = len(index["papers"])
+    (vault / "INDEX.json").write_text(json.dumps(index), encoding="utf-8")
+
+    n = correctors.regen_index_drop_ids(vault, ["2099_Z_Ghost"])
+
+    assert n == 1
+    after = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in after["papers"]}
+    assert ids == {"2024_A_Foo"}
+    assert after["n_papers"] == 1
+    # by_doi entry for the dropped paper is gone too.
+    assert "x" not in after["by_doi"]
+
+
+def test_regen_index_drop_ids_reads_no_metadata(vault: Path, monkeypatch) -> None:
+    """Invariant #15: the Tier-1 INDEX repair never opens a metadata.yaml."""
+    _write_paper(vault, "2024_A_Foo", title="Foo")
+    correctors.regen(vault)
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    index["papers"].append({"id": "2099_Z_Ghost"})
+    (vault / "INDEX.json").write_text(json.dumps(index), encoding="utf-8")
+
+    real_read_text = Path.read_text
+
+    def _guard(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+        if self.name == "metadata.yaml":
+            raise AssertionError(
+                f"regen_index_drop_ids read per-paper metadata (#15): {self}"
+            )
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _guard)
+    n = correctors.regen_index_drop_ids(vault, ["2099_Z_Ghost"])
+    assert n == 1
+
+
+def test_regen_index_drop_ids_noop_when_absent(vault: Path) -> None:
+    _write_paper(vault, "2024_A_Foo", title="Foo")
+    correctors.regen(vault)
+    assert correctors.regen_index_drop_ids(vault, ["2099_Z_Ghost"]) == 0
+    assert correctors.regen_index_drop_ids(vault, []) == 0
+
+
+def test_annotate_targeted_skips_unmentioned_files(vault: Path) -> None:
+    """Targeted annotate grep-narrows: a note with no mention is left alone."""
+    a = vault / "papers" / "2024_A_Foo"
+    a.mkdir(parents=True)
+    (a / "notes.md").write_text("See [[2099_Z_Ghost]] here.\n", encoding="utf-8")
+    b = vault / "papers" / "2024_B_Bar"
+    b.mkdir(parents=True)
+    (b / "notes.md").write_text("Nothing relevant.\n", encoding="utf-8")
+
+    n = correctors.annotate(vault, ["2099_Z_Ghost"], targeted=True)
+
+    assert n == 1
+    assert (a / "notes.md").read_text(encoding="utf-8") == (
+        "See [[2099_Z_Ghost]] (deleted) here.\n"
+    )
+    assert (b / "notes.md").read_text(encoding="utf-8") == "Nothing relevant.\n"
+
+
+def test_regen_skips_project_rebuild_on_broken_config(
+    vault: Path, monkeypatch
+) -> None:
+    """A broken lit-config.yaml skips the project-side rebuild (not an error).
+
+    check_project_references already returns [] on a broken config, so there is
+    no #3 drift to repair. The narrowed except swallows ONLY the config load;
+    regen still rebuilds INDEX + views and reports project_refs == 0.
+    """
+    _write_paper(vault, "2024_A_Foo", title="Foo")
+    (vault / "lit-config.yaml").write_text(
+        "library_name: x\nbogus_key: 1\n", encoding="utf-8"
+    )
+
+    # If the config error were NOT swallowed, this would raise; if a rebuild
+    # were reachable it would be called — guard that it is not.
+    import litman.core.project_refs as project_refs
+
+    def _boom(*a, **kw):  # type: ignore[no-untyped-def]
+        raise AssertionError("rebuild must not run when config is broken")
+
+    monkeypatch.setattr(project_refs, "rebuild_all_project_refs", _boom)
+
+    counts = correctors.regen(vault)
+
+    assert counts["project_refs"] == 0
+    assert counts["index"] == 1
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert {p["id"] for p in index["papers"]} == {"2024_A_Foo"}
+
+
+def test_regen_propagates_project_refs_rebuild_failure(
+    vault: Path, monkeypatch
+) -> None:
+    """A genuine project-refs rebuild failure must propagate, not be swallowed.
+
+    Reviewer fix (M30 Phase 3): the old broad ``except Exception: pass`` hid a
+    real filesystem failure (permission error / symlink failure) on a reachable
+    project dir, after which health.py:_apply_fixes still printed a false
+    "project_references: 1". With the except narrowed to the config load only,
+    the rebuild exception escapes regen — so the caller cannot claim success
+    for a repair that failed (invariant #14).
+    """
+    _write_paper(vault, "2024_A_Foo", title="Foo", projects=["pep"])
+    proj_dir = vault.parent / "pep_project"
+    proj_dir.mkdir()
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  pep: {proj_dir}\n",
+        encoding="utf-8",
+    )
+
+    import litman.core.project_refs as project_refs
+
+    def _boom(*a, **kw):  # type: ignore[no-untyped-def]
+        raise PermissionError("cannot write REFERENCES.md")
+
+    monkeypatch.setattr(project_refs, "rebuild_all_project_refs", _boom)
+
+    with pytest.raises(PermissionError, match="cannot write REFERENCES.md"):
+        correctors.regen(vault)
+
+
 def test_regen_rebuilds_views(vault: Path) -> None:
     _write_paper(vault, "2024_A_Foo", title="Foo", topics=["amp"])
     counts = correctors.regen(vault)

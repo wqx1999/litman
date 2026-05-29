@@ -69,10 +69,15 @@ _SEVERITY_STYLE = {
 # get a header here too — fall back to the raw category name otherwise.
 _CATEGORY_HEADERS: dict[str, str] = {
     "schema": "Schema (required fields + fixed enums)",
-    "id_consistency": "ID consistency (dir name vs metadata id)",
-    "invalid_paper_dirs": "Invalid paper directories",
+    "paper_dir_validity": (
+        "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
+    ),
+    "index_vs_disk": "INDEX.json vs papers/ on disk",
+    "views_vs_metadata": "Views (by-*/) vs metadata",
+    "project_references": "Project REFERENCES.md / litman_reflib vs membership",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
+    "relevance_orphan": "Orphan relevance-<project> annotations",
     "taxonomy_drift": "Taxonomy drift (unregistered values)",
     "project_config_consistency": (
         "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"

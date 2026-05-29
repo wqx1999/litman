@@ -23,10 +23,11 @@ Cross-references:
 * M2.3 added ``.litman-staging/``. M2.8 surfaces leftovers.
 * M2.6 ``lit rename`` is two-phase (file content via staged_write, then
   ``os.rename`` of the dir). A failure between phases leaves dir name and
-  metadata id out of sync — caught by :func:`check_id_consistency`.
+  metadata id out of sync — caught by :func:`check_paper_dir_validity`.
 * M2.7 ``lit rm`` is also two-phase; orphan paper dirs (file commit
-  succeeded but ``move_to_trash`` failed) surface as INDEX-vs-disk
-  mismatch detected by :func:`check_invalid_paper_dirs`.
+  succeeded but ``move_to_trash`` failed) surface via
+  :func:`check_paper_dir_validity` (structural) and
+  :func:`check_index_vs_disk` (the INDEX↔papers cheap diff).
 * M2.7+ added ``.trash/`` with sidecar ``<entry>.meta.yaml``. M2.8 surfaces
   orphan sidecars (sidecar without entry dir) and trash bloat.
 * invariant #12 bidirectional duality is enforced via
@@ -45,7 +46,7 @@ from typing import Any, Callable, Iterable, Literal
 from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
-from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
+from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
@@ -240,50 +241,33 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
     return out
 
 
-def check_id_consistency(
+def check_paper_dir_validity(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Directory name must equal ``metadata.yaml`` ``id`` field."""
-    out: list[Issue] = []
-    papers_dir = vault / "papers"
-    if not papers_dir.is_dir():
-        return out
-    for child in sorted(papers_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        meta_file = child / "metadata.yaml"
-        if not meta_file.is_file():
-            continue
-        try:
-            data = _yaml.load(meta_file.read_text(encoding="utf-8"))
-        except (OSError, YAMLError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        meta_id = data.get("id")
-        if meta_id and meta_id != child.name:
-            out.append(
-                Issue(
-                    category="id_consistency",
-                    severity="error",
-                    paper_id=child.name,
-                    message=(
-                        f"directory name {child.name!r} != metadata id "
-                        f"{meta_id!r} (likely a half-finished rename)"
-                    ),
-                    hint=(
-                        f"reconcile manually: rename dir or "
-                        f"`lit modify {child.name} --set id={child.name}`"
-                    ),
-                )
-            )
-    return out
+    """Per-``papers/<dir>`` structural integrity (M30; klass=validity, report).
 
+    Truth side is the ``papers/`` directory enumeration — NOT ``list_papers``,
+    which silently drops a paper with unparseable YAML (invariant: detection
+    truth-side = directory enumeration). Merges and replaces the old
+    ``check_invalid_paper_dirs`` + ``check_id_consistency`` so a single pass
+    over ``papers/`` reports every structural fault and the
+    ``except: continue`` silent skip of corrupt metadata is gone (invariant
+    #14, no-silent-skip).
 
-def check_invalid_paper_dirs(
-    vault: Path, papers: list[dict[str, Any]]
-) -> list[Issue]:
-    """Folders under ``papers/`` that aren't valid paper ids or lack metadata."""
+    Per directory child, emits ``error`` for:
+
+    * a non-directory entry under ``papers/`` (``warning``);
+    * a directory name that is not a valid paper id;
+    * ``metadata.yaml`` missing (orphan from a failed rm / interrupted add);
+    * ``metadata.yaml`` present but **unparseable or empty** — the paper is
+      invisible to ``list_papers``, ``INDEX``, and every metadata-keyed check,
+      so it is reported here instead of vanishing silently;
+    * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename);
+    * ``paper.pdf`` missing (``lit open`` depends on it; irreplaceable).
+
+    ``notes.md`` / ``discussion.md`` absence is NOT checked — empty/deleted is
+    a legitimate state (nothing in the system depends on them existing).
+    """
     out: list[Issue] = []
     papers_dir = vault / "papers"
     if not papers_dir.is_dir():
@@ -292,7 +276,7 @@ def check_invalid_paper_dirs(
         if not child.is_dir():
             out.append(
                 Issue(
-                    category="invalid_paper_dirs",
+                    category="paper_dir_validity",
                     severity="warning",
                     paper_id=None,
                     message=f"non-directory entry under papers/: {child.name}",
@@ -303,7 +287,7 @@ def check_invalid_paper_dirs(
         if not is_valid_id(child.name):
             out.append(
                 Issue(
-                    category="invalid_paper_dirs",
+                    category="paper_dir_validity",
                     severity="error",
                     paper_id=child.name,
                     message=(
@@ -313,10 +297,12 @@ def check_invalid_paper_dirs(
                 )
             )
             continue
-        if not (child / "metadata.yaml").is_file():
+
+        meta_file = child / "metadata.yaml"
+        if not meta_file.is_file():
             out.append(
                 Issue(
-                    category="invalid_paper_dirs",
+                    category="paper_dir_validity",
                     severity="error",
                     paper_id=child.name,
                     message=(
@@ -329,6 +315,170 @@ def check_invalid_paper_dirs(
                     ),
                 )
             )
+        else:
+            # No silent-skip: a parse failure / empty metadata is itself a
+            # finding. A corrupt metadata.yaml drops the paper out of
+            # list_papers / INDEX / every metadata-keyed check, so the
+            # structural check (which reads the file directly here) is the
+            # only surface that can report it.
+            parse_failed = False
+            try:
+                data = _yaml.load(meta_file.read_text(encoding="utf-8"))
+            except (OSError, YAMLError) as exc:
+                out.append(
+                    Issue(
+                        category="paper_dir_validity",
+                        severity="error",
+                        paper_id=child.name,
+                        message=(
+                            f"papers/{child.name}/metadata.yaml is unparseable "
+                            f"({exc.__class__.__name__}) — paper invisible to "
+                            "all checks/INDEX"
+                        ),
+                        hint=(
+                            "fix the YAML syntax by hand; until then this paper "
+                            "is silently dropped from list/INDEX"
+                        ),
+                    )
+                )
+                data = None
+                parse_failed = True
+            if parse_failed:
+                pass  # already reported above
+            elif data is None or data == {}:
+                # Empty / comment-only YAML loads to None (or {}). list_papers
+                # drops it, so report it here instead of letting it vanish.
+                out.append(
+                    Issue(
+                        category="paper_dir_validity",
+                        severity="error",
+                        paper_id=child.name,
+                        message=(
+                            f"papers/{child.name}/metadata.yaml is empty — "
+                            "paper invisible to all checks/INDEX"
+                        ),
+                        hint="populate metadata.yaml (at least id/title/year)",
+                    )
+                )
+            elif not isinstance(data, dict):
+                # Non-mapping top level (e.g. a bare list/scalar) is as broken
+                # as a syntax error for our purposes.
+                out.append(
+                    Issue(
+                        category="paper_dir_validity",
+                        severity="error",
+                        paper_id=child.name,
+                        message=(
+                            f"papers/{child.name}/metadata.yaml is not a mapping "
+                            "— paper invisible to all checks/INDEX"
+                        ),
+                        hint="rewrite metadata.yaml as a key: value mapping",
+                    )
+                )
+            elif isinstance(data, dict):
+                meta_id = data.get("id")
+                if meta_id and meta_id != child.name:
+                    out.append(
+                        Issue(
+                            category="paper_dir_validity",
+                            severity="error",
+                            paper_id=child.name,
+                            message=(
+                                f"directory name {child.name!r} != metadata id "
+                                f"{meta_id!r} (likely a half-finished rename)"
+                            ),
+                            hint=(
+                                f"reconcile manually: rename dir or "
+                                f"`lit modify {child.name} --set id={child.name}`"
+                            ),
+                        )
+                    )
+
+        if not (child / "paper.pdf").is_file():
+            out.append(
+                Issue(
+                    category="paper_dir_validity",
+                    severity="error",
+                    paper_id=child.name,
+                    message=(
+                        f"papers/{child.name}/paper.pdf is missing — "
+                        "`lit open` cannot show it and the file is irreplaceable"
+                    ),
+                    hint="restore the PDF into the paper folder",
+                )
+            )
+    return out
+
+
+def check_index_vs_disk(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``INDEX.json`` ↔ ``papers/`` reconciliation (ledger #1; cheap, klass A).
+
+    The most fundamental drift pair, previously checked nowhere (spec §1.2): a
+    manual ``rm -rf papers/<id>/`` leaves a dead INDEX entry forever. Reads
+    ONLY the INDEX id set (:func:`views.load_index_ids`) + the ``papers/``
+    directory listing (invariant #15: no per-paper ``metadata.yaml``), so it is
+    safe in the Tier-1 hot path.
+
+    Two directions:
+
+    * **vanished id** (in INDEX, dir absent) — ``error``. Repairable by the
+      klass-A regen (the Tier-1 hook drops it metadata-free; ``health-check
+      --fix`` rebuilds INDEX from truth). The ``paper_id`` is set so the hook
+      can collect the vanished ids for targeted wikilink annotation.
+    * **un-indexed dir** (dir present, not in INDEX) — ``warning``. Adding it
+      to INDEX needs the paper's metadata → Tier-2; the cheap path can only
+      warn. Typically a corrupt ``metadata.yaml`` (dropped by ``list_papers``
+      so the last write command never indexed it) or an interrupted ``add``.
+
+    The ``papers`` argument is ignored — using it would route detection through
+    ``list_papers`` (the corrupt-paper blind spot). Directory enumeration is
+    the uncorrupted truth side (spec §4).
+    """
+    from litman.core import views
+
+    index_ids = views.load_index_ids(vault)
+    if index_ids is None:
+        # No INDEX.json yet (or unparseable): nothing to reconcile against. A
+        # fresh vault has no INDEX until the first write command; a corrupt
+        # INDEX is a Tier-2 concern (the next regen rewrites it).
+        index_ids = set()
+
+    papers_dir = vault / "papers"
+    disk_ids: set[str] = set()
+    if papers_dir.is_dir():
+        for child in papers_dir.iterdir():
+            if child.is_dir() and is_valid_id(child.name):
+                disk_ids.add(child.name)
+
+    out: list[Issue] = []
+    for vanished in sorted(index_ids - disk_ids):
+        out.append(
+            Issue(
+                category="index_vs_disk",
+                severity="error",
+                paper_id=vanished,
+                message=(
+                    f"INDEX.json lists {vanished!r} but papers/{vanished}/ "
+                    "no longer exists (manual delete or corrupt metadata)"
+                ),
+                hint="run `lit health-check --fix` (or any write command) to regen INDEX",
+            )
+        )
+    for unindexed in sorted(disk_ids - index_ids):
+        out.append(
+            Issue(
+                category="index_vs_disk",
+                severity="warning",
+                paper_id=unindexed,
+                message=(
+                    f"papers/{unindexed}/ exists but is not in INDEX.json — "
+                    "not indexed (corrupt metadata / interrupted add)"
+                ),
+                hint="run `lit health-check` to see the structural fault",
+            )
+        )
     return out
 
 
@@ -528,11 +678,25 @@ def check_dangling_wikilinks(
     target_ids_cache: dict[str, set[str] | None] = {}
 
     for md_path in enumerate_markdown_files(vault):
+        rel = md_path.relative_to(vault)
         try:
             text = md_path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
+            # No silent-skip (M30 / invariant #14): a notes file we cannot read
+            # means its wikilinks go unchecked, which is itself a finding.
+            out.append(
+                Issue(
+                    category="dangling_wikilinks",
+                    severity="warning",
+                    paper_id=None,
+                    message=(
+                        f"could not read notes file {rel} "
+                        f"({exc.__class__.__name__}) — skipped"
+                    ),
+                    hint="check file permissions / encoding",
+                )
+            )
             continue
-        rel = md_path.relative_to(vault)
         # Same-vault dedup must account for per-occurrence tag state: the
         # same ``[[X]]`` can appear both ``(deleted)``-tagged and bare in
         # one file, and only the bare one is a missing-tag drift. Keying on
@@ -680,6 +844,100 @@ def check_dangling_wikilinks(
                         ),
                     )
                 )
+    return out
+
+
+def check_views_vs_metadata(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``views/by-*/`` symlink hubs ↔ metadata (ledger #2; full, klass A).
+
+    The ``views/by-{project,topic,method,status}/`` symlink hubs are a derived
+    projection of each paper's list/scalar tag fields (see ``core/views.py``).
+    Out-of-band edits (manual ``rm`` of a paper, hand-edited tags) leave them
+    disagreeing with metadata. Full-tier because the "missing symlink"
+    direction needs the per-paper tag values (not in the thin INDEX
+    projection). Repair is the shared klass-A regen (``rebuild_views``).
+
+    Two directions, both ``error`` (a wrong view misleads the agent's
+    bucket-based retrieval):
+
+    * **dangling / extra symlink** — a ``views/<view>/<bucket>/<id>`` entry
+      whose owning paper no longer carries that tag value (or no longer
+      exists). The symlink claims a membership metadata does not.
+    * **missing symlink** — a paper's tag value implies a
+      ``views/<view>/<value>/<id>`` symlink that is absent on disk.
+
+    Uses the same ``LIST_VIEW_FIELDS`` / ``SCALAR_VIEW_FIELDS`` /
+    ``_safe_name`` mapping as the builder so detection and repair cannot drift.
+    """
+    from litman.core.views import (
+        LIST_VIEW_FIELDS,
+        SCALAR_VIEW_FIELDS,
+        _safe_name,
+    )
+
+    views_dir = vault / "views"
+    if not views_dir.is_dir():
+        # No views hub yet — nothing derived to disagree. A first write
+        # command / regen creates it.
+        return []
+
+    # Expected membership per view: {view_name: {(bucket, paper_id)}}.
+    expected: dict[str, set[tuple[str, str]]] = {
+        v: set() for v in (*LIST_VIEW_FIELDS, *SCALAR_VIEW_FIELDS)
+    }
+    for p in papers:
+        pid = p.get("id")
+        if not pid:
+            continue
+        pid = str(pid)
+        for view_name, field_name in LIST_VIEW_FIELDS.items():
+            for value in p.get(field_name) or []:
+                expected[view_name].add((_safe_name(str(value)), pid))
+        for view_name, field_name in SCALAR_VIEW_FIELDS.items():
+            value = p.get(field_name)
+            if value:
+                expected[view_name].add((_safe_name(str(value)), pid))
+
+    out: list[Issue] = []
+    for view_name in (*LIST_VIEW_FIELDS, *SCALAR_VIEW_FIELDS):
+        view_dir = views_dir / view_name
+        on_disk: set[tuple[str, str]] = set()
+        if view_dir.is_dir():
+            for bucket in view_dir.iterdir():
+                if not bucket.is_dir():
+                    continue
+                for entry in bucket.iterdir():
+                    if entry.is_symlink():
+                        on_disk.add((bucket.name, entry.name))
+
+        for bucket, pid in sorted(on_disk - expected[view_name]):
+            out.append(
+                Issue(
+                    category="views_vs_metadata",
+                    severity="error",
+                    paper_id=pid,
+                    message=(
+                        f"views/{view_name}/{bucket}/{pid} symlink has no "
+                        "matching metadata tag (stale derived view)"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild views from metadata",
+                )
+            )
+        for bucket, pid in sorted(expected[view_name] - on_disk):
+            out.append(
+                Issue(
+                    category="views_vs_metadata",
+                    severity="error",
+                    paper_id=pid,
+                    message=(
+                        f"metadata implies views/{view_name}/{bucket}/{pid} "
+                        "but the symlink is missing (derived view out of date)"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild views from metadata",
+                )
+            )
     return out
 
 
@@ -855,21 +1113,29 @@ def check_vault_registry_drift(
     vault. Reading the registry + bounded-stat is invariant-#15-safe (no
     per-paper ``metadata.yaml`` read).
 
-    A corrupt registry is currently swallowed (return ``[]``), matching both the
-    deleted ``health.py:_vault_registry_drift_issues`` behavior and the Tier-1
-    hook corrector's silent return. Phase 2 is a pure de-dup, so this preserves
-    byte-for-byte behavior rather than introducing a new finding on one side.
+    A corrupt registry is now an emitted finding (M30 Phase 3 / invariant #14
+    no-silent-skip): "I cannot read the registry" is itself drift, not a clean
+    state. The Tier-1 hook's ``check_and_prompt_registry_drift`` surfaces the
+    same case to stderr, so both sides are consistent.
     """
     from litman.commands._drift import _exists_bounded
     from litman.core.vault_registry import load_registry
 
     try:
         reg = load_registry()
-    except VaultRegistryError:
-        # Phase 3 (M30 no-silent-skip) will emit a corrupt-registry finding here
-        # AND fix the hook corrector's silent return in _drift.py together — kept
-        # silent in Phase 2 to preserve byte-for-byte behavior (de-dup only).
-        return []
+    except VaultRegistryError as exc:
+        return [
+            Issue(
+                category="vault_registry_drift",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"vault registry is unreadable ({exc.__class__.__name__}): "
+                    "drift cannot be checked"
+                ),
+                hint="inspect / repair vaults.yaml (see `lit vault list`)",
+            )
+        ]
 
     if not reg.vaults:
         return []
@@ -963,6 +1229,220 @@ def check_project_path_exists(
                     ),
                 )
             )
+    return out
+
+
+def check_project_references(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Project ``REFERENCES.md`` / ``litman_reflib/`` ↔ membership (ledger #3).
+
+    For each configured project whose directory is reachable (bounded-stat),
+    compare the derived ``<project_dir>/litman_reflib/`` against the project's
+    membership set (papers whose ``projects`` field contains the name):
+
+    * the generated ``REFERENCES.md`` content vs the freshly rendered content;
+    * the ``litman_reflib/<id>`` symlink set vs the membership ids.
+
+    Either mismatch is a klass-A drift (the derived artifact is a pure function
+    of metadata). Full-tier: needs per-paper ``projects`` + ``relevance``
+    (REFERENCES.md embeds the relevance annotation). Repair is the shared regen
+    (``rebuild_all_project_refs`` + ``rebuild_all_project_links``). Only checked
+    when the project dir is definitely present — an unreachable / not-yet-
+    mounted dir is left to ``project_path_exists`` (ledger #5), not flagged as
+    content drift here.
+    """
+    from litman.commands._drift import _exists_bounded
+    from litman.core.config import load_config
+    from litman.core.project_refs import (
+        LITERATURE_SUBDIR,
+        REFERENCES_FILENAME,
+        _papers_for_project,
+        render_references_md,
+    )
+
+    try:
+        config = load_config(vault)
+    except Exception:
+        return []
+    if not config.projects:
+        return []
+
+    paths = {
+        name: str(Path(path_str).expanduser())
+        for name, path_str in config.projects.items()
+    }
+    status = _exists_bounded(list(paths.values()))
+
+    out: list[Issue] = []
+    for name in sorted(config.projects):
+        project_dir = Path(paths[name])
+        if status.get(str(project_dir)) is not True:
+            # Unreachable / unknown — project_path_exists owns that case.
+            continue
+        if not project_dir.is_dir():
+            continue
+
+        reflib = project_dir / LITERATURE_SUBDIR
+        member_ids = {
+            str(p.get("id"))
+            for p in _papers_for_project(papers, name)
+            if p.get("id")
+        }
+
+        # 1) REFERENCES.md content vs freshly rendered (banner timestamp is the
+        #    only volatile line; compare with the timestamp pinned so a stale
+        #    body — not just a clock difference — is what we report).
+        refs_file = reflib / REFERENCES_FILENAME
+        existing = None
+        if refs_file.is_file():
+            try:
+                existing = refs_file.read_text(encoding="utf-8")
+            except OSError as exc:
+                out.append(
+                    Issue(
+                        category="project_references",
+                        severity="warning",
+                        paper_id=None,
+                        message=(
+                            f"could not read {refs_file} "
+                            f"({exc.__class__.__name__}) — skipped"
+                        ),
+                        hint="check file permissions; run `lit refresh-views`",
+                    )
+                )
+                continue
+        if existing is not None:
+            pinned_now = _references_banner_timestamp(existing)
+            expected = render_references_md(
+                vault, name, now=pinned_now, papers=papers
+            )
+            if _strip_references_banner(existing) != _strip_references_banner(
+                expected
+            ):
+                out.append(
+                    Issue(
+                        category="project_references",
+                        severity="error",
+                        paper_id=None,
+                        message=(
+                            f"project {name!r} REFERENCES.md is out of date "
+                            "with the membership set (derived content drift)"
+                        ),
+                        hint="run `lit health-check --fix` to regenerate it",
+                    )
+                )
+        elif member_ids:
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} has {len(member_ids)} member paper(s) "
+                        "but no litman_reflib/REFERENCES.md"
+                    ),
+                    hint="run `lit health-check --fix` to generate it",
+                )
+            )
+
+        # 2) litman_reflib/<id> symlink set vs membership.
+        link_ids: set[str] = set()
+        if reflib.is_dir():
+            for entry in reflib.iterdir():
+                if entry.is_symlink():
+                    link_ids.add(entry.name)
+        for extra in sorted(link_ids - member_ids):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=extra,
+                    message=(
+                        f"{project_dir / LITERATURE_SUBDIR / extra} symlink has "
+                        f"no matching membership in project {name!r}"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+        for missing in sorted(member_ids - link_ids):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=missing,
+                    message=(
+                        f"project {name!r} membership implies a litman_reflib "
+                        f"symlink for {missing!r} but it is missing"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+    return out
+
+
+def _references_banner_timestamp(text: str) -> str:
+    """Extract the ``<!-- Last updated: ... -->`` timestamp from a REFERENCES.md.
+
+    Returns the embedded timestamp so the freshly rendered comparison body uses
+    the same banner line (the timestamp is the only legitimately-volatile part;
+    we want to flag a stale *body*, not a clock difference). Falls back to an
+    empty string when no banner is present.
+    """
+    m = re.search(r"<!-- Last updated: (.*?) -->", text)
+    return m.group(1) if m else ""
+
+
+def _strip_references_banner(text: str) -> str:
+    """Drop the auto-generated banner comment lines for body-only comparison."""
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not line.startswith("<!-- ")
+    )
+
+
+def check_relevance_orphan(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``relevance-<project>`` field whose paper is not in that project (ledger #11).
+
+    A ``relevance-<project>`` annotation on a paper whose ``projects`` list does
+    NOT contain ``<project>`` is an orphan (e.g. the paper was unlinked without
+    purging relevance, or a ``project rm``/``rename`` did not cascade). klass
+    B-auth: the relevance text is hand-authored, so this is **report-only** —
+    never auto-deleted. Full-tier (the ``relevance-*`` fields are not in the
+    INDEX projection).
+    """
+    out: list[Issue] = []
+    for p in papers:
+        pid = p.get("id")
+        if not pid:
+            continue
+        member_projects = set(p.get("projects") or [])
+        for key in p:
+            if not isinstance(key, str) or not key.startswith("relevance-"):
+                continue
+            project = key[len("relevance-"):]
+            if not project:
+                continue
+            if project not in member_projects:
+                out.append(
+                    Issue(
+                        category="relevance_orphan",
+                        severity="warning",
+                        paper_id=str(pid),
+                        message=(
+                            f"{pid!r} has a {key!r} annotation but its projects "
+                            f"list does not contain {project!r} (orphan relevance)"
+                        ),
+                        hint=(
+                            f"`lit modify {pid} --add-tag projects={project}` to "
+                            f"re-link, or remove the {key} field by hand "
+                            "(authored text — never auto-deleted)"
+                        ),
+                    )
+                )
     return out
 
 
@@ -1379,6 +1859,80 @@ def check_code_clone_integrity(
             )
         )
 
+    # #6b: repo-meta.yaml present but the actual codes/<name>/repo/ checkout is
+    # missing. The metadata wrapper survived but the git clone did not (e.g. a
+    # synced vault that excludes the bulky repo/, or an interrupted clone).
+    # `lit code restore-all` re-clones from the recorded upstream.
+    for repo_name in sorted(disk_repos):
+        if not (codes_dir / repo_name / REPO_DIRNAME).is_dir():
+            out.append(
+                Issue(
+                    category="code_clone_integrity",
+                    severity="warning",
+                    paper_id=None,
+                    message=(
+                        f"codes/{repo_name}/ has {REPO_META_FILENAME} but no "
+                        f"{REPO_DIRNAME}/ checkout (clone missing)"
+                    ),
+                    hint=(
+                        f"`lit code restore-all` to re-clone {repo_name} from "
+                        "its recorded upstream, or `lit code rm "
+                        f"{repo_name}` to drop the metadata"
+                    ),
+                )
+            )
+
+    # #6c: repo-meta.yaml's reverse ``papers:`` list ↔ those papers actually
+    # exist on disk. A paper id recorded in the back-reference but with no
+    # papers/<id>/ directory is a dangling reverse edge (the paper was rm'd
+    # without updating the repo's reverse list). Directory enumeration is the
+    # truth side (no per-paper metadata read needed for existence).
+    existing_paper_dirs = set()
+    papers_root = vault / "papers"
+    if papers_root.is_dir():
+        existing_paper_dirs = {
+            c.name for c in papers_root.iterdir() if c.is_dir()
+        }
+    for repo_name in sorted(disk_repos):
+        meta_file = codes_dir / repo_name / REPO_META_FILENAME
+        try:
+            meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
+        except (OSError, YAMLError) as exc:
+            out.append(
+                Issue(
+                    category="code_clone_integrity",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"codes/{repo_name}/{REPO_META_FILENAME} is unparseable "
+                        f"({exc.__class__.__name__}) — cannot verify its papers"
+                    ),
+                    hint="fix the YAML by hand or `lit code rm` + re-clone",
+                )
+            )
+            continue
+        if not isinstance(meta, dict):
+            continue
+        for back_ref in meta.get("papers") or []:
+            if not isinstance(back_ref, str) or not back_ref:
+                continue
+            if back_ref not in existing_paper_dirs:
+                out.append(
+                    Issue(
+                        category="code_clone_integrity",
+                        severity="error",
+                        paper_id=back_ref,
+                        message=(
+                            f"codes/{repo_name}/{REPO_META_FILENAME} lists paper "
+                            f"{back_ref!r} but papers/{back_ref}/ does not exist"
+                        ),
+                        hint=(
+                            f"`lit code unlink {repo_name} --paper {back_ref}` "
+                            "to drop the stale reverse edge"
+                        ),
+                    )
+                )
+
     return out
 
 
@@ -1392,16 +1946,28 @@ def check_code_clone_integrity(
 # read naturally because severity is re-sorted per-category in health.py).
 #
 # Tag rationale (mapped from spec §3 ledger + §3 non-drift-diagnostics table):
-#   schema / id_consistency / invalid_paper_dirs — truth-internal integrity →
-#       klass=validity, correction=report (Phase 3 merges the latter two into a
-#       single structural-integrity check; Phase 1 only tags them).
+#   schema — fixed-enum validity, truth-internal → klass=validity, report.
+#   paper_dir_validity — truth-internal structural integrity (dir name / parseable
+#       metadata / id match / paper.pdf), directory-enumeration truth side →
+#       klass=validity, report. (M30 Phase 3: merges + replaces the old
+#       id_consistency + invalid_paper_dirs and kills their except: continue
+#       silent skips, invariant #14.)
+#   index_vs_disk (#1) — INDEX.json (derived) ↔ papers/ dir → klass=A, regen.
+#       Cheap: reads only INDEX ids + papers/ listing, no per-paper metadata
+#       (invariant #15) → tier=cheap. Tier-1 repairs it metadata-free.
+#   views_vs_metadata (#2) — views/by-*/ (derived) ↔ metadata → klass=A, regen.
+#       Full: the missing-symlink direction needs per-paper tag values.
+#   project_references (#3) — project REFERENCES.md / litman_reflib (derived) ↔
+#       membership → klass=A, regen. Full (reads projects + relevance).
 #   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
 #       the user/CLI to re-sync → klass=B-auth, correction=report.
 #   dangling_wikilinks — authored prose marked in place (`(deleted)`) →
 #       klass=B-auth, correction=annotate.
+#   relevance_orphan (#11) — authored relevance-<project> annotation orphaned
+#       from membership → klass=B-auth, report (never auto-delete authored text).
 #   taxonomy_drift (#10) / project_config_consistency (#8) /
-#       code_clone_integrity (#6a) — truth↔external/controlled-dict, litman
-#       cannot pick a side → klass=B-ext, correction=resolve.
+#       code_clone_integrity (#6a/#6b/#6c) — truth↔external/controlled-dict,
+#       litman cannot pick a side → klass=B-ext, correction=resolve.
 #   vault_registry_drift (#4) — truth↔external dir, machine-level (registry ↔
 #       vault dir), bounded-stat only, no per-paper metadata → tier=cheap,
 #       klass=B-ext, resolve. (M30 Phase 2: detection moved here from the two
@@ -1413,13 +1979,20 @@ def check_code_clone_integrity(
 #       diagnostics, surface only → klass=validity, correction=report.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
-    CheckSpec("id_consistency", check_id_consistency, "full", "validity", "report"),
     CheckSpec(
-        "invalid_paper_dirs", check_invalid_paper_dirs, "full", "validity", "report"
+        "paper_dir_validity", check_paper_dir_validity, "full", "validity", "report"
+    ),
+    CheckSpec("index_vs_disk", check_index_vs_disk, "cheap", "A", "regen"),
+    CheckSpec("views_vs_metadata", check_views_vs_metadata, "full", "A", "regen"),
+    CheckSpec(
+        "project_references", check_project_references, "full", "A", "regen"
     ),
     CheckSpec("dangling_refs", check_dangling_refs, "full", "B-auth", "report"),
     CheckSpec(
         "dangling_wikilinks", check_dangling_wikilinks, "full", "B-auth", "annotate"
+    ),
+    CheckSpec(
+        "relevance_orphan", check_relevance_orphan, "full", "B-auth", "report"
     ),
     CheckSpec("taxonomy_drift", check_taxonomy_drift, "full", "B-ext", "resolve"),
     CheckSpec(

@@ -201,27 +201,25 @@ def test_drift_prompt_clean_registry_silent(
     assert [v.name for v in remaining] == ["real"]
 
 
-def test_drift_prompt_corrupt_registry_silent(
+def test_drift_prompt_corrupt_registry_reports_to_stderr(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Write a malformed registry: top-level YAML is a string, not a mapping —
-    # ``load_registry`` raises ``VaultRegistryError`` which the drift function
-    # must swallow silently (the real diagnostic surfaces from `lit vault *`).
+    # ``load_registry`` raises ``VaultRegistryError``. M30 Phase 3 (no
+    # silent-skip, invariant #14): the drift function now surfaces this to
+    # stderr instead of swallowing it (a registry it cannot parse means drift
+    # detection is blind, which is itself a finding). It still does NOT mutate
+    # the file and does NOT prompt.
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not a mapping\n", encoding="utf-8")
     original_bytes = path.read_bytes()
 
-    # Sanity check: confirm the corrupt content actually triggers a
-    # VaultRegistryError on direct load. Without this, the test silently
-    # passes if load_registry() ever stops raising on bad input — the
-    # drift function would be exercising the "clean registry" path
-    # instead of the swallow-the-exception path we mean to assert.
     with pytest.raises(VaultRegistryError):
         load_registry()
 
-    # TTY is irrelevant — the function should bail before even probing.
+    # TTY is irrelevant — the function should report before any probe/prompt.
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
     # Must not raise.
@@ -229,8 +227,8 @@ def test_drift_prompt_corrupt_registry_silent(
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == ""
-    # File unchanged.
+    assert "unreadable" in captured.err
+    # File unchanged (no mutation).
     assert path.read_bytes() == original_bytes
 
 

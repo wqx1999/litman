@@ -221,9 +221,14 @@ def test_cli_health_check_with_vault_runs_against_chosen(
     monkeypatch.setenv("DISPLAY", ":0")
     vault_a, _ = registry_with_two_vaults
     _seed_paper(vault_a, "PAPER1")
+    # Build derived artifacts so the M30 klass-A checks (index_vs_disk /
+    # views_vs_metadata) see a vault in sync (a real vault has these after add).
+    from litman.core.correctors import regen
+
+    regen(vault_a)
     runner = CliRunner()
     result = runner.invoke(cli, ["health-check", "--vault", "main"])
-    # Empty / freshly-seeded vault should be clean.
+    # Freshly-seeded vault with derived artifacts built should be clean.
     assert result.exit_code == 0, result.output
 
 

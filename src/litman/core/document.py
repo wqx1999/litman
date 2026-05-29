@@ -50,6 +50,14 @@ def list_papers(vault: Path) -> list[dict[str, Any]]:
         try:
             metadata = read_metadata(meta_file)
         except (OSError, YAMLError):
+            # Stays read-only + tolerant by design (M30 OQ4): `list_papers`
+            # backs `lit list` / `lit show`, which must never crash on one
+            # corrupt paper. This is NOT a silent-skip violation — the
+            # corrupt-paper finding is OWNED by
+            # `checks.check_paper_dir_validity`, which enumerates `papers/`
+            # directly (not via this function) and emits an error for an
+            # unparseable / empty metadata.yaml. So a paper dropped here is
+            # still reported by `lit health-check`.
             continue
         if not metadata:
             continue

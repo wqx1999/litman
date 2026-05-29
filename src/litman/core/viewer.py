@@ -43,7 +43,7 @@ def resolve_paper_id(vault: Path, query: str) -> str:
     Order:
         1. Exact match against ``<vault>/papers/<query>/`` (which equals
            the metadata.yaml ``id`` field — enforced by
-           ``check_id_consistency``).
+           ``check_paper_dir_validity``).
         2. Case-insensitive substring match against every paper id; unique
            match wins.
         3. Otherwise raise.

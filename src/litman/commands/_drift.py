@@ -126,10 +126,18 @@ def check_and_prompt_registry_drift(
     probe = stdin_is_tty or _default_tty_probe
     try:
         reg = load_registry()
-    except VaultRegistryError:
-        # Corrupt registry. Surfacing it here would double-warn the user
-        # (they'll see the parse error when they hit a vault-using command);
-        # prefer one clear diagnostic over two.
+    except VaultRegistryError as exc:
+        # No silent-skip (M30 Phase 3 / invariant #14): a registry we cannot
+        # parse means drift detection is blind, which is itself a finding. Emit
+        # one stderr line — consistent with the unified
+        # ``check_vault_registry_drift`` finding that ``lit health-check``
+        # surfaces. (We do not prompt; the user must repair the file by hand.)
+        err = Console(stderr=True)
+        err.print(
+            f"[red]error:[/] vault registry is unreadable "
+            f"({exc.__class__.__name__}): drift cannot be checked. "
+            "Inspect / repair vaults.yaml."
+        )
         return
 
     # Bounded-stat instead of vault_registry.find_dangling (a bare stat that

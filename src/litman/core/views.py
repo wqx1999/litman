@@ -143,6 +143,86 @@ def write_index(vault: Path, papers: list[dict[str, Any]]) -> Path:
     return target
 
 
+def load_index_ids(vault: Path) -> set[str] | None:
+    """Return the set of paper ids recorded in ``<vault>/INDEX.json``.
+
+    Reads ONLY ``INDEX.json`` — never per-paper ``metadata.yaml`` (invariant
+    #15), so it is safe in the Tier-1 hot path. Returns ``None`` when the file
+    is absent or unparseable (the caller decides how to surface that — the
+    Tier-1 ``index_vs_disk`` check treats a missing INDEX as "nothing to
+    reconcile yet", while a corrupt one would be surfaced by the full-tier
+    structural check).
+    """
+    target = vault / "INDEX.json"
+    if not target.is_file():
+        return None
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    papers = payload.get("papers") or []
+    return {
+        str(p.get("id"))
+        for p in papers
+        if isinstance(p, dict) and p.get("id")
+    }
+
+
+def rewrite_index_dropping_ids(vault: Path, dead_ids: set[str]) -> int:
+    """Remove ``dead_ids`` from the existing ``INDEX.json`` without reading metadata.
+
+    Operates purely on the on-disk ``INDEX.json`` (the ``papers`` projection
+    list + the ``by_doi`` reverse map), filtering out every entry whose ``id``
+    is in ``dead_ids`` and re-deriving ``by_doi`` from the surviving entries.
+    This is the metadata-free klass-A INDEX repair the Tier-1 hook needs
+    (invariant #15: the hook MUST NOT call ``list_papers`` / open any
+    ``metadata.yaml``).
+
+    Returns the number of entries actually dropped (0 when INDEX is absent /
+    unparseable or none of ``dead_ids`` were present).
+    """
+    target = vault / "INDEX.json"
+    if not target.is_file():
+        return 0
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+    papers = payload.get("papers") or []
+    if not isinstance(papers, list):
+        return 0
+
+    kept = [
+        p
+        for p in papers
+        if not (isinstance(p, dict) and str(p.get("id")) in dead_ids)
+    ]
+    n_dropped = len(papers) - len(kept)
+    if n_dropped == 0:
+        return 0
+
+    # Re-derive by_doi from the surviving entries so a dropped paper's DOI does
+    # not linger in the reverse map. Cheap (operates on the already-thin
+    # projection, no metadata read).
+    kept_ids = {str(p.get("id")) for p in kept if isinstance(p, dict)}
+    by_doi = payload.get("by_doi") or {}
+    if isinstance(by_doi, dict):
+        by_doi = {k: v for k, v in by_doi.items() if str(v) in kept_ids}
+    else:
+        by_doi = {}
+
+    payload["papers"] = kept
+    payload["n_papers"] = len(kept)
+    payload["by_doi"] = by_doi
+    payload["generated_at"] = _now_iso()
+    target.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return n_dropped
+
+
 def _clear_view_subdir(view_dir: Path) -> None:
     """Empty (or create) a view bucket directory.
 

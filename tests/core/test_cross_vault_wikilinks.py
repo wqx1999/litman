@@ -127,6 +127,9 @@ def _seed_paper(
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         _yaml.dump(meta, f)
     (paper_dir / "notes.md").write_text(notes_body, encoding="utf-8")
+    # M30 paper_dir_validity requires paper.pdf; write a stub so the clean-vault
+    # cases stay clean.
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
 
 
 def _write_index(vault: Path) -> None:
@@ -425,8 +428,14 @@ def test_cli_health_check_clean_with_resolved_cross_vault_link(
     save_registry(reg)
 
     _seed_paper(vault_b, "p1")
-    _write_index(vault_b)
     _seed_paper(vault_a, "n1", notes_body="see [[second:p1]]\n")
+    # Build derived artifacts (INDEX.json + views/) for both vaults so the M30
+    # klass-A checks (index_vs_disk / views_vs_metadata) see them in sync — a
+    # real vault has these after `lit add`.
+    from litman.core.correctors import regen
+
+    regen(vault_a)
+    regen(vault_b)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["health-check", "--vault", "main"])

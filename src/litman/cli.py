@@ -134,7 +134,7 @@ class LitGroup(click.Group):
         skip and the cold-path ``lit health-check`` catches the drift later.
         """
         try:
-            from litman.core.checks import cheap_checks, klass_a_checks
+            from litman.core.checks import cheap_checks
 
             vault = self._cheap_active_vault()
 
@@ -167,25 +167,74 @@ class LitGroup(click.Group):
                 except Exception:
                     pass
 
-            # klass-A cheap regen (none fire yet in Phase 2; Phase 3 wiring).
-            if vault is not None:
-                klass_a_cheap = {
-                    spec.category
-                    for spec in klass_a_checks()
-                    if spec.tier == "cheap"
-                }
-                if categories & klass_a_cheap:
-                    # Phase 3 WARNING: regen() calls list_papers() which reads every
-                    # metadata.yaml — that violates invariant #15 inside the Tier-1
-                    # hook. When Phase 3 registers a cheap klass-A check
-                    # (index_vs_disk), the hook MUST use a metadata-free INDEX regen
-                    # (spec §6: INDEX-regen + targeted annotate), NOT this full
-                    # regen(). Do not let a cheap klass-A issue reach regen() here.
-                    from litman.core.correctors import regen
-
-                    regen(vault, issues)
+            # klass-A cheap repair: INDEX.json ↔ papers/ vanished ids (#1).
+            # MUST stay metadata-free (invariant #15) — never call regen() /
+            # list_papers() here. Spec §6: TTY → metadata-free INDEX regen +
+            # targeted (or bulk-deferred) wikilink annotate; non-TTY →
+            # report-only, no mutate.
+            if vault is not None and "index_vs_disk" in categories:
+                self._repair_index_vs_disk(vault, issues)
         except Exception:
             pass
+
+    @staticmethod
+    def _repair_index_vs_disk(vault: "Path", issues: list[Any]) -> None:
+        """Tier-1 vanished-id repair (spec §6). Metadata-free (invariant #15).
+
+        Collects the vanished ids (``index_vs_disk`` errors — present in INDEX,
+        absent on disk; the un-indexed-dir warnings carry no INDEX entry to drop
+        and need Tier-2). Then:
+
+        * **non-TTY** (agent / automation): report-only to stderr, NO mutation
+          (spec §6 — even lossless A-class regen does not auto-mutate without
+          consent in automation). The user/agent runs an explicit fix.
+        * **TTY, > 5 vanished** (bulk manual delete / restored backup): drop all
+          dead ids from INDEX once (metadata-free) and print ONE line deferring
+          all wikilink annotation to ``lit health-check``; do NOT per-id
+          annotate.
+        * **TTY, ≤ 5 vanished**: metadata-free INDEX drop + per-id targeted
+          wikilink annotate (``[[id]] (deleted)``, grep-narrowed).
+        """
+        from litman.commands._drift import _default_tty_probe
+        from litman.core.correctors import annotate, regen_index_drop_ids
+
+        vanished = sorted(
+            {
+                i.paper_id
+                for i in issues
+                if i.category == "index_vs_disk"
+                and i.severity == "error"
+                and i.paper_id
+            }
+        )
+        if not vanished:
+            return
+
+        if not _default_tty_probe():
+            # Automation: report-only, never mutate without consent.
+            err = Console(stderr=True)
+            joined = ", ".join(vanished)
+            err.print(
+                f"[yellow]warning:[/] INDEX.json lists {len(vanished)} paper(s) "
+                f"no longer on disk: {joined}. Run "
+                f"[bold]lit health-check --fix[/] to reconcile."
+            )
+            return
+
+        # TTY: metadata-free INDEX repair (lossless klass-A regen).
+        regen_index_drop_ids(vault, vanished)
+
+        if len(vanished) > 5:
+            # Bulk: defer all wikilink annotation to health-check's single full
+            # pass instead of per-id targeted annotate.
+            console.print(
+                f"[dim]library changed substantially ({len(vanished)} papers "
+                f"vanished), run `lit health-check`[/]"
+            )
+            return
+
+        # ≤ 5: per-id targeted wikilink annotate.
+        annotate(vault, vanished, targeted=True)
 
     @staticmethod
     def _cheap_active_vault() -> "Path | None":

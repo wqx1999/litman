@@ -30,10 +30,13 @@ from litman.core.checks import (
 # loudly (Phase 3 will ADD more; this list is updated deliberately).
 _EXPECTED_CATEGORIES = (
     "schema",
-    "id_consistency",
-    "invalid_paper_dirs",
+    "paper_dir_validity",
+    "index_vs_disk",
+    "views_vs_metadata",
+    "project_references",
     "dangling_refs",
     "dangling_wikilinks",
+    "relevance_orphan",
     "taxonomy_drift",
     "project_config_consistency",
     "vault_registry_drift",
@@ -48,7 +51,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 15
+    assert len(_CHECK_REGISTRY) == 18
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -82,19 +85,35 @@ def test_cheap_checks_returns_only_cheap_tier() -> None:
     assert all(spec.tier == "cheap" for spec in cheap)
 
 
-def test_cheap_set_is_the_two_b_ext_drifts() -> None:
+def test_cheap_set_is_the_two_b_ext_drifts_plus_index() -> None:
     """Invariant #15: Tier-1 reads only INDEX/registry/listing/bounded-stat.
 
-    After Phase 2 the cheap set is exactly the two B-external drifts that the
-    per-command hook resolves: ``vault_registry_drift`` (#4, registry ↔ dir,
-    bounded-stat) and ``project_path_exists`` (#5, config path ↔ dir,
-    bounded-stat). Neither reads per-paper metadata. Phase 3 adds
-    ``index_vs_disk`` + the cheap paper-dir signal; until then this set is
-    pinned so no ``full`` check is mistakenly promoted into the hot path.
+    After Phase 3 the cheap set is the two B-external drifts the per-command
+    hook resolves — ``vault_registry_drift`` (#4) + ``project_path_exists``
+    (#5), both bounded-stat — plus ``index_vs_disk`` (#1, klass-A), which reads
+    only the INDEX id set + the ``papers/`` directory listing. None of the three
+    reads per-paper ``metadata.yaml``. Pinned so no ``full`` check is mistakenly
+    promoted into the hot path.
     """
     assert {spec.category for spec in cheap_checks()} == {
         "vault_registry_drift",
         "project_path_exists",
+        "index_vs_disk",
+    }
+
+
+def test_index_vs_disk_is_cheap_klass_a_regen() -> None:
+    """Ledger #1: INDEX↔papers is a cheap / klass-A / regen check."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "index_vs_disk")
+    assert (spec.tier, spec.klass, spec.correction) == ("cheap", "A", "regen")
+
+
+def test_klass_a_set_is_the_three_derived_pairs() -> None:
+    """klass-A = the derived↔truth pairs: INDEX, views, project refs."""
+    assert {spec.category for spec in klass_a_checks()} == {
+        "index_vs_disk",
+        "views_vs_metadata",
+        "project_references",
     }
 
 
@@ -243,15 +262,14 @@ def test_vault_registry_drift_uses_bounded_stat_not_find_dangling(
     assert checks.check_vault_registry_drift(tmp_path, []) == []
 
 
-def test_vault_registry_drift_corrupt_registry_returns_empty(
+def test_vault_registry_drift_corrupt_registry_emits_finding(
     tmp_path, monkeypatch
 ) -> None:
-    """Phase 2 preserve-behavior: a corrupt registry is swallowed (return []).
+    """Phase 3 no-silent-skip (invariant #14): a corrupt registry is a finding.
 
-    This matches the deleted ``health.py:_vault_registry_drift_issues`` and the
-    Tier-1 hook corrector's silent return. Phase 3 (M30 no-silent-skip,
-    invariant #14) will flip this to emit a corrupt-registry finding on BOTH
-    sides consistently.
+    "I cannot read the registry" means drift detection is blind, which is
+    itself reported (not swallowed). The Tier-1 hook surfaces the same case to
+    stderr; both sides are consistent now.
     """
     from litman.core.vault_registry import registry_path
 
@@ -260,7 +278,11 @@ def test_vault_registry_drift_corrupt_registry_returns_empty(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not a mapping\n", encoding="utf-8")
 
-    assert checks.check_vault_registry_drift(tmp_path, []) == []
+    issues = checks.check_vault_registry_drift(tmp_path, [])
+    assert len(issues) == 1
+    assert issues[0].category == "vault_registry_drift"
+    assert issues[0].severity == "error"
+    assert "unreadable" in issues[0].message
 
 
 def test_health_check_no_longer_has_bare_find_dangling_path() -> None:

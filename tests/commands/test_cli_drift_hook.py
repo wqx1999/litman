@@ -294,3 +294,288 @@ def test_hook_project_drift_non_tty_no_mutation(
     # ... but the project drift is surfaced.
     assert "ghostproj" in result.output
     assert "lit project set-path" in result.output
+
+
+# ---------------------------------------------------------------------------
+# M30 Phase 3: Tier-1 INDEX↔papers vanished-id repair (spec §6)
+# ---------------------------------------------------------------------------
+
+
+def _seed_active_vault_with_papers(tmp_path: Path, n: int) -> Path:
+    """Register one active vault, seed ``n`` papers, and build INDEX + views.
+
+    Returns the active vault path. No dangling registry entry / project drift,
+    so the only cheap check that can fire is ``index_vs_disk`` once a paper dir
+    is removed out of band.
+    """
+    from litman.core.correctors import regen
+
+    parent = tmp_path / "real_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="real", path=str(vault), is_active=True)]
+        )
+    )
+    for i in range(n):
+        pid = f"2024_P{i}_Foo"
+        pdir = vault / "papers" / pid
+        pdir.mkdir(parents=True)
+        (pdir / "metadata.yaml").write_text(
+            f"id: {pid}\ntitle: Foo {i}\nstatus: inbox\n", encoding="utf-8"
+        )
+        (pdir / "paper.pdf").write_bytes(b"%PDF stub\n")
+        (pdir / "notes.md").write_text("", encoding="utf-8")
+    regen(vault)
+    return vault
+
+
+def test_hook_vanished_id_tty_regens_index_and_annotates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manual rm of one paper → next command (TTY) drops it from INDEX (metadata-
+    free) and annotates ``[[id]] (deleted)`` in notes (targeted)."""
+    import json
+    import shutil
+
+    vault = _seed_active_vault_with_papers(tmp_path, 2)
+    # A note in the surviving paper references the soon-to-be-deleted one.
+    (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
+        "see [[2024_P1_Foo]]\n", encoding="utf-8"
+    )
+    shutil.rmtree(vault / "papers" / "2024_P1_Foo")
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+
+    # INDEX no longer lists the vanished paper.
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in index["papers"]}
+    assert ids == {"2024_P0_Foo"}
+    # The surviving note's wikilink is annotated (deleted).
+    note = (vault / "papers" / "2024_P0_Foo" / "notes.md").read_text(
+        encoding="utf-8"
+    )
+    assert note == "see [[2024_P1_Foo]] (deleted)\n"
+
+
+def test_hook_vanished_id_reads_no_per_paper_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invariant #15 guard: the Tier-1 hook's INDEX repair opens no metadata.yaml.
+
+    Reviewer suggestion 2: assert the dead id was actually dropped from
+    INDEX.json after the hook ran. Without this post-condition the test would
+    pass even if the repair did nothing (no metadata read while doing nothing),
+    or if the hook's outer ``except Exception: pass`` swallowed a failure — so
+    we verify the metadata-free repair path both ran AND completed.
+    """
+    import json
+    import shutil
+
+    vault = _seed_active_vault_with_papers(tmp_path, 2)
+    shutil.rmtree(vault / "papers" / "2024_P1_Foo")
+    # Pre-condition: the dead id is still in INDEX before the hook runs.
+    before = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert "2024_P1_Foo" in {p["id"] for p in before["papers"]}
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    real_read_text = Path.read_text
+
+    def _guard(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+        if self.name == "metadata.yaml":
+            raise AssertionError(
+                f"Tier-1 hook read per-paper metadata (invariant #15): {self}"
+            )
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _guard)
+
+    runner = CliRunner()
+    # `lit list` itself reads metadata; restrict the guard to the hook by
+    # invoking a command whose own logic does NOT read metadata. `vault list`
+    # is registry-only. The hook still runs the cheap checks + repair.
+    result = runner.invoke(cli, ["vault", "list"])
+    assert result.exit_code == 0, result.output
+
+    # Post-condition: the metadata-free repair actually completed — the dead id
+    # is gone from INDEX (not merely "no metadata read while doing nothing").
+    after = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert {p["id"] for p in after["papers"]} == {"2024_P0_Foo"}
+
+
+def test_hook_vanished_id_bulk_defers_to_health_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """> 5 vanished ids → single 'run health-check' line + INDEX regen, NO per-id
+    annotate."""
+    import json
+    import shutil
+
+    vault = _seed_active_vault_with_papers(tmp_path, 7)
+    # A note referencing one of the bulk-deleted papers.
+    (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
+        "see [[2024_P6_Foo]]\n", encoding="utf-8"
+    )
+    # Remove 6 papers (> 5) out of band.
+    for i in range(1, 7):
+        shutil.rmtree(vault / "papers" / f"2024_P{i}_Foo")
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+
+    # INDEX regenerated once (all 6 dead ids dropped).
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in index["papers"]}
+    assert ids == {"2024_P0_Foo"}
+    # Single deferral line, and NO per-id wikilink annotation happened.
+    assert "run `lit health-check`" in result.output
+    note = (vault / "papers" / "2024_P0_Foo" / "notes.md").read_text(
+        encoding="utf-8"
+    )
+    assert note == "see [[2024_P6_Foo]]\n"  # NOT annotated
+
+
+def test_hook_vanished_id_exactly_5_uses_per_id_annotate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boundary (suggestion 1): exactly 5 vanished → per-id targeted annotate.
+
+    Pins ``len(vanished) > 5`` against an accidental ``>= 5`` regression: 5 is
+    NOT bulk, so the surviving note's wikilink IS annotated and the bulk
+    deferral line does NOT appear.
+    """
+    import shutil
+
+    vault = _seed_active_vault_with_papers(tmp_path, 6)
+    (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
+        "see [[2024_P5_Foo]]\n", encoding="utf-8"
+    )
+    # Remove exactly 5 papers (== threshold, NOT > 5).
+    for i in range(1, 6):
+        shutil.rmtree(vault / "papers" / f"2024_P{i}_Foo")
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+
+    # Per-id targeted annotate ran (5 is the per-id path, not bulk).
+    note = (vault / "papers" / "2024_P0_Foo" / "notes.md").read_text(
+        encoding="utf-8"
+    )
+    assert note == "see [[2024_P5_Foo]] (deleted)\n"
+    # And the bulk deferral line is absent.
+    assert "run `lit health-check`" not in result.output
+
+
+def test_hook_vanished_id_exactly_6_uses_bulk_defer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boundary (suggestion 1): exactly 6 vanished → bulk path, no per-id annotate.
+
+    6 is the first value satisfying ``len(vanished) > 5``: a single
+    'run health-check' line and NO per-id wikilink annotation.
+    """
+    import shutil
+
+    vault = _seed_active_vault_with_papers(tmp_path, 7)
+    (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
+        "see [[2024_P6_Foo]]\n", encoding="utf-8"
+    )
+    # Remove exactly 6 papers (> 5 → bulk).
+    for i in range(1, 7):
+        shutil.rmtree(vault / "papers" / f"2024_P{i}_Foo")
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+
+    # Single deferral line, NO per-id annotation.
+    assert "run `lit health-check`" in result.output
+    note = (vault / "papers" / "2024_P0_Foo" / "notes.md").read_text(
+        encoding="utf-8"
+    )
+    assert note == "see [[2024_P6_Foo]]\n"  # NOT annotated
+
+
+def test_hook_vanished_id_non_tty_report_only(
+    tmp_path: Path,
+) -> None:
+    """Non-TTY (agent): vanished-id drift is reported, INDEX is NOT mutated."""
+    import json
+    import shutil
+
+    vault = _seed_active_vault_with_papers(tmp_path, 2)
+    shutil.rmtree(vault / "papers" / "2024_P1_Foo")
+    index_before = (vault / "INDEX.json").read_bytes()
+
+    runner = CliRunner()  # non-TTY by default
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+
+    # No mutation in automation ...
+    assert (vault / "INDEX.json").read_bytes() == index_before
+    # ... but the drift is surfaced with the explicit fix command. Rich may
+    # wrap the line, so normalize whitespace before matching the command.
+    assert "2024_P1_Foo" in result.output
+    assert "health-check --fix" in " ".join(result.output.split())
+
+
+def test_hook_unindexed_dir_does_not_mutate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An un-indexed dir (warning, no vanished id) triggers no INDEX rewrite."""
+    import json
+
+    vault = _seed_active_vault_with_papers(tmp_path, 1)
+    # Add a paper dir on disk WITHOUT rebuilding INDEX → un-indexed warning only.
+    extra = vault / "papers" / "2025_New_Paper"
+    extra.mkdir(parents=True)
+    (extra / "metadata.yaml").write_text(
+        "id: 2025_New_Paper\ntitle: New\n", encoding="utf-8"
+    )
+    (extra / "paper.pdf").write_bytes(b"%PDF stub\n")
+    index_before = (vault / "INDEX.json").read_bytes()
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+    # No vanished id → the hook must not rewrite INDEX (the un-indexed dir needs
+    # metadata → Tier-2).
+    assert (vault / "INDEX.json").read_bytes() == index_before
+
+
+def test_hook_corrupt_registry_surfaces_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt registry surfaces a finding via the hook (no silent-skip, #14).
+
+    The unified ``check_vault_registry_drift`` emits a ``vault_registry_drift``
+    error for an unreadable registry, which dispatches
+    ``check_and_prompt_registry_drift`` — now printing a stderr line instead of
+    swallowing the parse error (Phase-2 deferral resolved)."""
+    from litman.core.vault_registry import registry_path
+
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not a mapping\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    # The command still runs (no vault resolves, list degrades), and the hook
+    # surfaced the unreadable registry.
+    assert "unreadable" in " ".join(result.output.split())
