@@ -232,8 +232,33 @@ def help_cmd(ctx: click.Context, command_path: tuple[str, ...]) -> None:
     click.echo(current_cmd.get_help(current_ctx))
 
 
+def _force_utf8_output() -> None:
+    """Make stdout/stderr encode UTF-8 so Rich glyphs survive everywhere.
+
+    litman prints non-ASCII output (``✓``/``→``/``—``/``•`` and Rich table
+    box-drawing characters). On a legacy-codepage console (most commonly a
+    Chinese Windows host, where the default is GBK/cp936) the encoder cannot
+    represent these and Python raises ``UnicodeEncodeError`` *after* the data
+    has already been committed, leaving a scary traceback on every command.
+    The failure also surfaces when stdout is piped (e.g. captured by an
+    agent), because Python then falls back to the locale encoding instead of
+    the terminal's. Reconfiguring both streams to UTF-8 here fixes both paths;
+    the already-constructed ``Console`` objects read ``sys.stdout.encoding``
+    lazily at print time, so doing this once before ``cli()`` is enough.
+    POSIX hosts are UTF-8 by default and unaffected.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
+
+
 def main() -> None:
     """Entry point invoked by the ``lit`` console script."""
+    _force_utf8_output()
     try:
         cli()
     except LitmanError as e:
