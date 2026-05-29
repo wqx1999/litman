@@ -100,9 +100,20 @@ class LitGroup(click.Group):
             # Local import keeps cli.py's import graph shallow at module load
             # (commands/_drift.py pulls in vault_registry + rich), and avoids
             # a circular import if _drift ever needs to reference cli.
-            from litman.commands._drift import check_and_prompt_registry_drift
+            from litman.commands._drift import (
+                check_and_prompt_project_drift,
+                check_and_prompt_registry_drift,
+            )
 
             check_and_prompt_registry_drift()
+            # Project-path drift heals via staged_write + rebuild, which touch
+            # the filesystem from inside the pre-dispatch hook. A failure there
+            # must never crash the user's actual command — degrade to silent
+            # skip and let the cold-path `lit health-check` catch it later.
+            try:
+                check_and_prompt_project_drift()
+            except Exception:
+                pass
         return super().invoke(ctx)
 
     def format_commands(

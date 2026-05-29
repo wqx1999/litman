@@ -107,6 +107,81 @@ def test_lit_help_skips_drift_prompt(tmp_path: Path) -> None:
     assert "dangling" not in result.output.lower()
 
 
+def test_hook_calls_registry_then_project_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-skipped subcommand fires BOTH drift segments, registry first
+    then project, in that order (registry-drift owns the missing-vault case,
+    so project-drift must run after it)."""
+    _seed_dangling_plus_active(tmp_path)
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_registry_drift",
+        lambda *a, **kw: order.append("registry"),
+    )
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_project_drift",
+        lambda *a, **kw: order.append("project"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert order == ["registry", "project"]
+
+
+def test_hook_project_drift_exception_does_not_crash_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raise inside project-drift heal must not crash the user's command —
+    the hook wraps it defensively and the actual subcommand still runs."""
+    _seed_dangling_plus_active(tmp_path)
+
+    monkeypatch.setattr(
+        _drift, "check_and_prompt_registry_drift", lambda *a, **kw: None
+    )
+
+    def _boom(*a: object, **kw: object) -> None:
+        raise RuntimeError("heal blew up")
+
+    monkeypatch.setattr(_drift, "check_and_prompt_project_drift", _boom)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_hook_help_skips_both_drift_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC7: ``lit help`` skips BOTH drift segments (neither fires)."""
+    _seed_dangling_plus_active(tmp_path)
+
+    fired: list[str] = []
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_registry_drift",
+        lambda *a, **kw: fired.append("registry"),
+    )
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_project_drift",
+        lambda *a, **kw: fired.append("project"),
+    )
+
+    runner = CliRunner()
+    for argv in (["help"], ["hello"], []):
+        fired.clear()
+        result = runner.invoke(cli, argv)
+        assert result.exit_code in (0, 2), result.output
+        assert fired == [], f"{argv!r} should skip the drift hook"
+
+
 def test_lit_no_args_skips_drift_prompt(tmp_path: Path) -> None:
     """``lit`` with no subcommand has ``invoked_subcommand is None`` — also
     in the skip list (the user is about to see the help message; don't
