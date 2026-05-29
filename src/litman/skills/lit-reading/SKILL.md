@@ -176,6 +176,8 @@ Then, once you have an id, load just enough paper context. Read in this order, s
 
 **Forbidden**: stopping at rung 1's failure without trying 2/3/4; summarizing from the paper's title / training data without reading; batching all 20 pages into a single Read call when the user only needs §3.
 
+**Text-only backend asked about a figure / table image ("what does Fig./Table N show?").** When the active model has no native vision (rung 1 unavailable) AND no vision-capable PDF MCP (rung 2), `lit pdf-text` is the only reader and it returns the *text layer only* — it cannot see images. Do this, in order: (1) pull the figure/table **caption** and the **body sentences that reference it** via `lit pdf-text`, and answer strictly from that text; (2) state plainly that you **cannot see the figure/table image itself**; (3) tell the user that reading the actual visual (curve shapes, bar heights, numbers inside an image-table) needs a multimodal model or an explicitly attached vision MCP. **Never infer or fabricate the visual content from the caption or surrounding prose** — caption text is not the figure. This is the highest-risk hallucination point in the whole skill.
+
 `notes.md` = STATE (single latest snapshot, overwrite-regenerated at B10 step 1). `discussion.md` = LOG (each session appends a distilled conclusion at Phase 5). If notes drift, they can be rebuilt from the discussion trail.
 
 When loading a paper, if you see a `⚠` / "not verified" item in `discussion.md` (a past agent inference never confirmed), ask the user about it in passing.
