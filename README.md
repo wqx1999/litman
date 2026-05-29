@@ -168,7 +168,9 @@ no configuration. Beyond that:
 - **Drift is surfaced automatically**: if you delete or move a registered
   vault directory by hand, the next `lit *` command offers to drop the
   stale entry (TTY: `[Y/n]` default Y; non-TTY: one-line stderr warning).
-  `lit health-check` also reports it.
+  Likewise, if a linked project's directory moves, the next command offers
+  to re-point it to a new path and rebuild its `litman_reflib/` (blank to
+  skip; it never auto-deletes a project). `lit health-check` reports both.
 
 ---
 

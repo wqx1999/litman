@@ -153,6 +153,14 @@ When unlinking, code symlinks under the project are only removed if no
 (shared-utility-library case). The atomic guarantee covers all four
 side effects.
 
+If a registered project's directory is later moved or deleted, the next
+`lit *` command surfaces it. In a TTY it prompts for the new path; a
+non-empty answer re-points the project (`lit project set-path`) and
+rebuilds its `litman_reflib/` symlinks + `REFERENCES.md`, while a blank
+answer skips. It never auto-removes the project (use `lit project rm`
+for that). In a non-TTY context it prints a one-line stderr warning.
+`lit health-check` also reports a missing project directory.
+
 ## Scenario 8 — Bind papers to code
 
 Code clones live under `<vault>/codes/<repo-name>/`. The binding is
@@ -237,7 +245,7 @@ lit link --rebuild-all               # rebuild every project's symlinks + REFERE
 
 | Command | What it does |
 |---|---|
-| `lit health-check` | Scan the vault for dangling refs, schema gaps, stale staging dirs, missing PDFs, dangling wikilinks, dangling vault-registry entries. Exits 1 if any issue is found. |
+| `lit health-check` | Scan the vault for dangling refs, schema gaps, stale staging dirs, missing PDFs, dangling wikilinks, dangling vault-registry entries, missing project directories. Exits 1 if any issue is found. |
 | `lit health-check --fix` | Auto-clean fixable categories (orphan trash sidecars, stale staging). Exits 0 if every remaining issue is fixable. |
 | `lit refresh-views` | Rebuild `INDEX.json`, `views/by-*/` symlink hubs, and every project's `REFERENCES.md` from each paper's `metadata.yaml`. |
 
