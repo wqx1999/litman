@@ -1,6 +1,6 @@
 ---
 name: lit-library
-description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry, govern the TAXONOMY, or restore a deleted paper. Triggers: 'add to lit library', '加到文献库', 'lit add', 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
+description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry, govern the TAXONOMY, or restore a deleted paper. Triggers: 'add to lit library', '加到文献库', '入库', 'lit add', 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
 ---
 
 # lit-library — Global Literature Vault Skill
@@ -10,7 +10,7 @@ Write side of litman. Read-side companion: **lit-reading**.
 ## Architecture you must respect
 
 1. **Two-root layout.** Vault and code repo live in different filesystem locations. Discover the vault via `$LIT_LIBRARY` env var or `lit-config.yaml` walk-up — never assume a relative path.
-2. **LLM never writes data files directly.** Extract metadata as JSON to a temp file, then call `lit add --from-llm-json <path>`. The CLI writes `papers/<id>/metadata.yaml`. Never write yaml/markdown into the vault yourself.
+2. **LLM never writes data files directly.** Extract metadata as JSON and pipe it into `lit add --from-llm-json -` over stdin (no temp file; a file path also works). The CLI validates and writes `papers/<id>/metadata.yaml`. Never write yaml/markdown into the vault yourself.
 3. **TAXONOMY is mutated only via `lit taxonomy {add,rename,merge,rm}`** (and `lit project` for the `projects` dict). Never hand-edit `TAXONOMY.md`.
 4. **Vault is NOT git-tracked.** The CLI handles atomicity — don't try to use git to roll back.
 5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append) only.** Every other file in `papers/<id>/` and `codes/<name>/` is CLI-mediated. Drive only the **forward** paper-to-paper relation fields (`related` / `extends` / `contradicts`); the CLI auto-maintains the reverse pair (`extended-by` / `contradicted-by`) — never set a reverse field by hand.
@@ -116,10 +116,11 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
 
 2. **Verify, do NOT hallucinate.** If you cannot find a field, leave it as `null` rather than guessing.
 
-3. **Write metadata to a temp JSON file**:
+3. **Pipe the metadata JSON straight into `lit add` over stdin — no temp file.** `--from-llm-json -` reads the candidate from stdin, so the JSON never lands on disk.
+
+   bash (heredoc):
    ```bash
-   TMP_META=$(mktemp --suffix=.json /tmp/lit-llm-XXXX.json)
-   cat > $TMP_META <<'EOF'
+   lit add <pdf-path> --from-llm-json - <<'EOF'
    {
      "title": "<exact title from page 1>",
      "authors": ["Family1, Given1", "Family2, Given2"],
@@ -132,12 +133,14 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
    EOF
    ```
 
-4. **Call the CLI**:
-   ```bash
-   lit add <pdf-path> --from-llm-json $TMP_META
+   PowerShell (pipe):
+   ```powershell
+   '{"title":"<exact title>","authors":["Family1, Given1"],"year":<int or null>,"doi":"<10.xxx/yyy or null>","journal":"<venue or null>","arxiv-id":"<2401.12345 or null>","abstract":"<abstract or null>"}' | lit add <pdf-path> --from-llm-json -
    ```
 
-5. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. **Read out the derived `id` and the `title`, then stop and wait for the user to confirm the source metadata is right.** Surface only id + title — do not self-judge title correctness. After the user confirms:
+   *Fallback:* if you must inspect / re-feed the JSON, write it to a temp file and pass the path instead (`lit add <pdf-path> --from-llm-json <path>`) — then delete the file afterward.
+
+4. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. **Read out the derived `id` and the `title`, then stop and wait for the user to confirm the source metadata is right.** Surface only id + title — do not self-judge title correctness. After the user confirms:
    - if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]);
    - otherwise stop. Do **NOT** proactively enumerate tag / project / status / priority offers (SOP-1).
 
@@ -440,7 +443,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 |---------|-------------|
 | `lit init [--name <vault>]` | Create a new vault skeleton |
 | `lit add <pdf> --doi <doi>` | Add via CrossRef ([B]) |
-| `lit add <pdf> --from-llm-json <json>` | Add via LLM-extracted JSON ([A]) |
+| `lit add <pdf> --from-llm-json <json>\|-` | Add via LLM-extracted JSON ([A]); `-` = read JSON from stdin (no temp file) |
 | `lit pdf-text <pdf> [--pages 1-3]` | Dump PDF text layer (deterministic read fallback, [A] step 1) |
 | `lit list [filters] [--format json]` | Browse ([D]) |
 | `lit show <id-or-substring>` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported) |

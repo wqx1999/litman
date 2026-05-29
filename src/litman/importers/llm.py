@@ -7,13 +7,19 @@ does NOT call any LLM API. The agent runs separately (in the user's chat
 session), reads the PDF, drafts metadata as a JSON file, and the CLI reads
 that file.
 
-Why a file and not stdin/argv:
-- JSON in a file survives the round-trip past Click's argv parsing
-  (avoiding shell-quoting headaches around titles with quotes / commas).
-- The same file can be inspected, edited, and re-fed if the first attempt
-  was wrong.
-- The skill workflow produces a temp file naturally (``/tmp/lit-llm-<id>.json``)
-  and points ``lit add --from-llm-json`` at it.
+Two input channels, same validation:
+- **stdin** (skill default): the agent pipes the JSON straight into
+  ``lit add ... --from-llm-json -`` so nothing touches disk. Parsed via
+  :func:`parse_llm_json_text`.
+- **file** (inspectable / re-feedable): the agent writes the JSON to a path
+  and points ``lit add --from-llm-json <path>`` at it. A file survives the
+  round-trip past Click's argv parsing (no shell-quoting headaches around
+  titles with quotes / commas) and can be inspected, edited, and re-fed if
+  the first attempt was wrong. Parsed via :func:`parse_llm_json`, a thin
+  file-reading wrapper around :func:`parse_llm_json_text`.
+
+Both channels run the identical json.loads -> isinstance(dict) -> pydantic
+validate -> normalize pipeline; only error-message labelling differs.
 
 Schema (validated via pydantic ``extra='forbid'`` so typos surface):
 
@@ -129,54 +135,13 @@ class LLMCandidateMeta(BaseModel):
     )
 
 
-def parse_llm_json(json_path: Path) -> dict[str, Any]:
-    """Load + validate an LLM metadata JSON file.
+def _normalize_meta(meta: LLMCandidateMeta) -> dict[str, Any]:
+    """Project a validated ``LLMCandidateMeta`` onto ``parse_crossref``'s shape.
 
-    Returns a dict shaped like ``parse_crossref``'s output (``title``,
-    ``authors``, ``year``, ``journal``, ``doi``) so callers don't need to
-    branch on importer source.
-
-    Args:
-        json_path: Path to a JSON file the agent has prepared.
-
-    Returns:
-        Dict with the same shape ``parse_crossref`` produces.
-
-    Raises:
-        ImporterError: file missing, unreadable, malformed JSON, top-level
-            not a mapping, schema validation failure (missing required
-            field, unknown key, wrong type, empty title / authors).
+    Single source of truth for the normalized output, shared by both the
+    stdin and the file input channels. The 6 M12.0 fields default to ``""``
+    (not None) to match parse_crossref's shape.
     """
-    if not json_path.is_file():
-        raise ImporterError(
-            f"No LLM metadata JSON at {json_path}. "
-            "Pass a path that the agent has written."
-        )
-    try:
-        raw = json.loads(json_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise ImporterError(
-            f"Failed to parse {json_path} as JSON: {e.msg} "
-            f"(line {e.lineno}, col {e.colno})"
-        ) from e
-    if not isinstance(raw, dict):
-        raise ImporterError(
-            f"{json_path} must contain a JSON object at the top level, "
-            f"got {type(raw).__name__}."
-        )
-    try:
-        meta = LLMCandidateMeta.model_validate(raw)
-    except ValidationError as e:
-        first = e.errors()[0]
-        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
-        raise ImporterError(
-            f"Invalid LLM metadata JSON at {json_path}: "
-            f"field {loc!r}: {first['msg']}"
-        ) from e
-
-    # Normalize to the parse_crossref output shape so downstream add.py
-    # logic does not branch on importer. The 6 M12.0 fields default to
-    # "" (not None) to match parse_crossref's shape.
     return {
         "title": meta.title,
         "authors": list(meta.authors),
@@ -195,3 +160,79 @@ def parse_llm_json(json_path: Path) -> dict[str, Any]:
         "arxiv-id": meta.arxiv_id,
         "abstract": meta.abstract,
     }
+
+
+def parse_llm_json_text(
+    raw_text: str, *, source: str = "<stdin>"
+) -> dict[str, Any]:
+    """Parse + validate LLM metadata JSON held in a string.
+
+    Runs the json.loads -> isinstance(dict) -> pydantic validate -> normalize
+    pipeline. Used directly for the stdin channel and by
+    :func:`parse_llm_json` for the file channel.
+
+    Args:
+        raw_text: The raw JSON text (e.g. read from stdin or a file).
+        source: A label for error messages identifying where the text came
+            from (``"<stdin>"`` for piped input, or the file path string).
+
+    Returns:
+        Dict with the same shape ``parse_crossref`` produces.
+
+    Raises:
+        ImporterError: malformed JSON, top-level not a mapping, or schema
+            validation failure (missing required field, unknown key, wrong
+            type, empty title / authors).
+    """
+    try:
+        raw = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        raise ImporterError(
+            f"Failed to parse {source} as JSON: {e.msg} "
+            f"(line {e.lineno}, col {e.colno})"
+        ) from e
+    if not isinstance(raw, dict):
+        raise ImporterError(
+            f"{source} must contain a JSON object at the top level, "
+            f"got {type(raw).__name__}."
+        )
+    try:
+        meta = LLMCandidateMeta.model_validate(raw)
+    except ValidationError as e:
+        first = e.errors()[0]
+        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
+        raise ImporterError(
+            f"Invalid LLM metadata JSON at {source}: "
+            f"field {loc!r}: {first['msg']}"
+        ) from e
+
+    return _normalize_meta(meta)
+
+
+def parse_llm_json(json_path: Path) -> dict[str, Any]:
+    """Load + validate an LLM metadata JSON file.
+
+    Thin wrapper around :func:`parse_llm_json_text`: checks the file exists,
+    reads it as UTF-8, and delegates parsing. Returns a dict shaped like
+    ``parse_crossref``'s output (``title``, ``authors``, ``year``,
+    ``journal``, ``doi``) so callers don't need to branch on importer source.
+
+    Args:
+        json_path: Path to a JSON file the agent has prepared.
+
+    Returns:
+        Dict with the same shape ``parse_crossref`` produces.
+
+    Raises:
+        ImporterError: file missing, unreadable, malformed JSON, top-level
+            not a mapping, schema validation failure (missing required
+            field, unknown key, wrong type, empty title / authors).
+    """
+    if not json_path.is_file():
+        raise ImporterError(
+            f"No LLM metadata JSON at {json_path}. "
+            "Pass a path that the agent has written."
+        )
+    return parse_llm_json_text(
+        json_path.read_text(encoding="utf-8"), source=str(json_path)
+    )

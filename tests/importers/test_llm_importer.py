@@ -12,7 +12,11 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core.library import create_vault
 from litman.exceptions import AddError, ImporterError
-from litman.importers.llm import LLMCandidateMeta, parse_llm_json
+from litman.importers.llm import (
+    LLMCandidateMeta,
+    parse_llm_json,
+    parse_llm_json_text,
+)
 
 _yaml = YAML(typ="safe")
 
@@ -283,6 +287,53 @@ def test_parse_llm_json_doi_stripped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# parse_llm_json_text (stdin / in-memory channel)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_llm_json_text_full() -> None:
+    parsed = parse_llm_json_text(json.dumps(_FULL_LLM_PAYLOAD))
+    assert parsed["title"] == _FULL_LLM_PAYLOAD["title"]
+    assert parsed["authors"] == _FULL_LLM_PAYLOAD["authors"]
+    assert parsed["year"] == 2024
+    assert parsed["doi"] == "10.1093/bioinformatics/btae364"
+    assert parsed["journal"] == "Bioinformatics"
+
+
+def test_parse_llm_json_text_minimal() -> None:
+    parsed = parse_llm_json_text(json.dumps({
+        "title": "Minimal",
+        "authors": ["Doe, J."],
+    }))
+    assert parsed["year"] is None
+    assert parsed["doi"] == ""
+    assert parsed["journal"] == ""
+    for key in ("volume", "issue", "pages", "publisher", "venue-type", "booktitle"):
+        assert parsed[key] == ""
+
+
+def test_parse_llm_json_text_malformed() -> None:
+    with pytest.raises(ImporterError, match="Failed to parse"):
+        parse_llm_json_text("{not valid json")
+
+
+def test_parse_llm_json_text_non_object_root() -> None:
+    with pytest.raises(ImporterError, match="JSON object"):
+        parse_llm_json_text(json.dumps(["not", "an", "object"]))
+
+
+def test_parse_llm_json_text_validation_error_message() -> None:
+    with pytest.raises(ImporterError, match="title"):
+        parse_llm_json_text(json.dumps({"authors": ["x"]}))
+
+
+def test_parse_llm_json_text_default_source_label() -> None:
+    """Error message defaults to the <stdin> label when no source is given."""
+    with pytest.raises(ImporterError, match="<stdin>"):
+        parse_llm_json_text("{not valid json")
+
+
+# ---------------------------------------------------------------------------
 # CLI: lit add --from-llm-json
 # ---------------------------------------------------------------------------
 
@@ -503,3 +554,137 @@ def test_cli_add_from_llm_json_path_must_exist(
     assert result.exit_code != 0
     assert "does not exist" in result.output.lower() or \
            "no such file" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit add --from-llm-json - (stdin channel, no temp file)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_add_from_llm_json_stdin_creates_paper(
+    vault: Path, fake_pdf: Path
+) -> None:
+    """Piping JSON over stdin (`--from-llm-json -`) creates the paper."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", "-",
+            "--library", str(vault),
+        ],
+        input=json.dumps(_FULL_LLM_PAYLOAD),
+    )
+    assert result.exit_code == 0, result.output
+
+    paper_id = "2024_Chen_De-novo-macrocyclic"
+    paper_dir = vault / "papers" / paper_id
+    assert paper_dir.is_dir()
+    assert (paper_dir / "paper.pdf").is_file()
+    assert (paper_dir / "metadata.yaml").is_file()
+
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text())
+    assert meta["title"] == _FULL_LLM_PAYLOAD["title"]
+    assert meta["authors"] == _FULL_LLM_PAYLOAD["authors"]
+    assert meta["doi"] == _FULL_LLM_PAYLOAD["doi"]
+    assert meta["journal"] == "Bioinformatics"
+
+
+def test_cli_add_from_llm_json_stdin_non_ascii(
+    vault: Path, fake_pdf: Path
+) -> None:
+    """CJK title / authors piped via stdin are written without mojibake."""
+    payload = {
+        "title": "环肽的从头设计",
+        "authors": ["陈, 一", "王, 琳"],
+        "year": 2024,
+        "doi": None,
+    }
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", "-",
+            "--id", "2024_Chen_CJK",
+            "--library", str(vault),
+        ],
+        input=json.dumps(payload, ensure_ascii=False),
+    )
+    assert result.exit_code == 0, result.output
+
+    paper_dir = vault / "papers" / "2024_Chen_CJK"
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text())
+    assert meta["title"] == "环肽的从头设计"
+    assert meta["authors"] == ["陈, 一", "王, 琳"]
+
+
+def test_cli_add_from_llm_json_stdin_malformed(
+    vault: Path, fake_pdf: Path
+) -> None:
+    """Malformed stdin JSON is rejected with the <stdin> source label."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", "-",
+            "--library", str(vault),
+        ],
+        input="{not valid json",
+    )
+    assert result.exit_code != 0
+    assert result.exception is not None
+    assert "Failed to parse" in str(result.exception)
+
+
+def test_cli_add_from_llm_json_stdin_tty_no_pipe_errors(
+    vault: Path, fake_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--from-llm-json -` with stdin a TTY (nothing piped) errors instead of
+    blocking forever on read()."""
+
+    class _TtyStream:
+        def isatty(self) -> bool:
+            return True
+
+        def read(self) -> str:  # pragma: no cover - guard must short-circuit
+            raise AssertionError("read() called despite TTY guard")
+
+    monkeypatch.setattr(
+        "litman.commands.add.click.get_text_stream",
+        lambda *a, **k: _TtyStream(),
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", "-",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, AddError)
+    assert "stdin is a terminal" in str(result.exception)
+
+
+def test_cli_add_from_llm_json_stdin_mutually_exclusive_with_doi(
+    vault: Path, fake_pdf: Path
+) -> None:
+    """The `-` stdin form is still mutually exclusive with --doi; the XOR
+    fires before any stdin read."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1/x",
+            "--from-llm-json", "-",
+            "--library", str(vault),
+        ],
+        input='{"title": "x", "authors": ["Doe, J."]}',
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, AddError)
+    assert "mutually exclusive" in str(result.exception)

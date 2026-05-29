@@ -45,7 +45,7 @@ from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
-from litman.importers.llm import parse_llm_json
+from litman.importers.llm import parse_llm_json, parse_llm_json_text
 
 console = Console()
 
@@ -220,11 +220,14 @@ def _resolve_collision(
 @click.option(
     "--from-llm-json",
     "from_llm_json",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path),
+    type=click.Path(
+        exists=True, file_okay=True, dir_okay=False, allow_dash=True, path_type=Path
+    ),
     default=None,
     help=(
-        "Path to an LLM-prepared metadata JSON file (see "
-        "litman.importers.llm.LLMCandidateMeta for the schema). Used by "
+        "LLM-prepared metadata JSON (see "
+        "litman.importers.llm.LLMCandidateMeta for the schema). Pass a file "
+        "path, or '-' to read the JSON from stdin (no temp file). Used by "
         "the lit-library Claude Code skill. Mutually exclusive with --doi."
     ),
 )
@@ -284,8 +287,27 @@ def add_cmd(
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
+    from_stdin = from_llm_json is not None and str(from_llm_json) == "-"
     if from_llm_json is not None:
-        parsed = parse_llm_json(from_llm_json)
+        if from_stdin:
+            # click.get_text_stream forces UTF-8 regardless of the Windows
+            # legacy code page, and is CliRunner-aware for tests. Pairs with
+            # the existing UTF-8 stdout/stderr forcing.
+            stdin_stream = click.get_text_stream("stdin", encoding="utf-8")
+            # Guard the human-misuse case: `--from-llm-json -` with nothing
+            # piped would block forever on .read() waiting for EOF. The skill
+            # always pipes, so a TTY here means someone typed the flag by hand.
+            if stdin_stream.isatty():
+                raise AddError(
+                    "--from-llm-json - expects the metadata JSON piped on "
+                    "stdin, but stdin is a terminal (nothing piped). Pipe the "
+                    "JSON in (e.g. '{...}' | lit add ... --from-llm-json -) "
+                    "or pass a file path instead."
+                )
+            raw_text = stdin_stream.read()
+            parsed = parse_llm_json_text(raw_text, source="<stdin>")
+        else:
+            parsed = parse_llm_json(from_llm_json)
         # The DOI used for dedup precheck and user-facing error messages
         # comes from the JSON; an LLM-imported paper without a DOI just
         # skips the precheck (id collision is still enforced below).
@@ -307,6 +329,7 @@ def add_cmd(
 
     source_label = (
         f"DOI {doi!r}" if doi is not None
+        else "LLM JSON (stdin)" if from_stdin
         else f"LLM JSON {str(from_llm_json)!r}"
     )
 
