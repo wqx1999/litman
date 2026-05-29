@@ -1,6 +1,6 @@
 ---
 name: lit-library
-description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry, govern the TAXONOMY, or restore a deleted paper. Triggers: 'add to lit library', '加到文献库', '入库', 'lit add', 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
+description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry, govern the TAXONOMY, or restore a deleted paper. Triggers: 'add to lit library', '加到文献库', 'lit add', 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
 ---
 
 # lit-library — Global Literature Vault Skill
@@ -10,7 +10,7 @@ Write side of litman. Read-side companion: **lit-reading**.
 ## Architecture you must respect
 
 1. **Two-root layout.** Vault and code repo live in different filesystem locations. Discover the vault via `$LIT_LIBRARY` env var or `lit-config.yaml` walk-up — never assume a relative path.
-2. **LLM never writes data files directly.** Extract metadata as JSON and pipe it into `lit add --from-llm-json -` over stdin (no temp file; a file path also works). The CLI validates and writes `papers/<id>/metadata.yaml`. Never write yaml/markdown into the vault yourself.
+2. **LLM never writes data files directly.** Extract metadata as JSON to a temp file, then call `lit add --from-llm-json <path>`. The CLI writes `papers/<id>/metadata.yaml`. Never write yaml/markdown into the vault yourself.
 3. **TAXONOMY is mutated only via `lit taxonomy {add,rename,merge,rm}`** (and `lit project` for the `projects` dict). Never hand-edit `TAXONOMY.md`.
 4. **Vault is NOT git-tracked.** The CLI handles atomicity — don't try to use git to roll back.
 5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append) only.** Every other file in `papers/<id>/` and `codes/<name>/` is CLI-mediated. Drive only the **forward** paper-to-paper relation fields (`related` / `extends` / `contradicts`); the CLI auto-maintains the reverse pair (`extended-by` / `contradicted-by`) — never set a reverse field by hand.
@@ -38,6 +38,18 @@ The CLI hard-rejects unregistered controlled-vocabulary values, so your job is t
 ## A2. Chain hand-off contract
 
 **Inbound from lit-reading:** when summoned mid-discussion, do the **one** write you were handed, report the result, and hand control back. Do **NOT** start a fresh interactive `lit add` session or swallow the conversation with a multi-step ingest. The hand-off carries: paper id, exact intent (e.g. "add `extends=<other-id>`"), any user instruction already given.
+
+## A2-out. Outbound hand-off to lit-reading
+
+The chain is **bidirectional**: lit-reading hands writes *in* (A2), and lit-library hands *reading/evaluation* back *out*. lit-library owns the write surface but NOT the reading verdict — the moment the conversation shifts from "change the library" to "read / discuss / evaluate this paper", **switch to lit-reading** and resume at its Phase 2 (with the paper id already in context).
+
+**Outbound triggers** (most common right after an `lit add`, but any time mid-session):
+
+- read-finished verdict — "读完了" / "这篇一般" / "没价值" / "done with this paper"
+- discussion / comprehension — "它讲了啥" / "这篇关于 X 怎么说" / "compare it to <other>" / "有没有类似的"
+- resume reading / inbox triage / library health — all lit-reading triggers
+
+**What to pass:** paper id, PDF path, and whatever the user just said. **Resume point:** lit-reading Phase 2 (loaded context) → B10 verdict ritual if the cue was read-finished. Do **NOT** try to run the status verdict, `read-date` stamp, or metadata self-check inside lit-library — those are lit-reading B10's, by design (SOP-1). The failure mode this prevents: staying parked in lit-library after add, so a "读完了，一般" never reaches the verdict ritual and the paper rots at `status: inbox`.
 
 ## A3. Scope discipline — SOP vs maintenance, reversibility, active-vault confinement
 
@@ -81,8 +93,8 @@ If the user has both a project `References/` and a global vault, ask which one t
 
 ## Operation Routing
 
-- **[A] Add paper from a PDF (LLM-augmented)** — PDF in hand, no DOI or DOI fetch failed.
-- **[B] Add paper from a DOI (direct CrossRef)** — DOI given; no LLM extraction.
+- **[A] Add paper from a PDF (LLM-augmented)** — PDF in hand and **no DOI anywhere** (not user-supplied AND none printed in the PDF), or the `--doi` CrossRef fetch failed.
+- **[B] Add paper from a DOI (direct CrossRef)** — a DOI is available **from any source** (user-supplied OR read off the PDF); no LLM extraction. Preferred whenever a DOI exists.
 - **[C] Code repositories** — bind new clone, bind existing repo (1:N), retire/unbind.
 - **[D] Browse / search / inspect** — find a paper, list by filter, show metadata.
 - **[E] Modify metadata, tag, or apply an edge** — fields, Flow A/B tagging, confirmed edge.
@@ -112,15 +124,16 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
 
    Extract: title (page 1 header), authors (page 1 list — preserve "Family, Given" order), year, DOI (search first 1-2 pages), journal / venue, abstract.
 
-   **Also harvest code-repo URLs into a side-buffer** (NOT part of the metadata JSON — feeds [C.1]). Look in: `Code Availability` / `Data Availability` blocks (often near the END of the body, not page 1), Acknowledgments, footnotes, first-page footer, and inline "we release at https://…" / "available at https://github.com/…" phrasing. For each URL note one short context cue ("we present X" / "we use X" / "see also").
+   **DOI-found reroute (do this the moment a DOI surfaces).** If you read a DOI off the PDF, **abort the LLM-extraction path and switch to [B]** — run `lit add <pdf> --doi <doi>` instead. CrossRef returns authoritative metadata plus `volume` / `issue` / `pages` / `publisher` / `venue-type`, which the LLM-json schema cannot carry. Stay on [A] only when (a) no DOI appears anywhere in the PDF, or (b) the `--doi` CrossRef fetch fails — then fall back here with the fields you already extracted. The up-front [A]/[B] split keys off "did the user hand a DOI"; this rule covers the other case ("a DOI turned up while reading the PDF").
+
+   **Also harvest code-repo URLs into a side-buffer** (NOT part of the metadata JSON — feeds [C.1]). This is **best-effort over the pages you already read** — do NOT read the whole PDF just to collect URLs. Full-text code-URL discovery is the CLI's job: `lit add` runs a full-text scan and emits the `[code_candidates]` block ([C.1] source 1). So harvest opportunistically from whatever pages you opened for metadata (`Code Availability` / `Data Availability` blocks, Acknowledgments, footnotes, first-page footer, inline "we release at https://…" / "available at https://github.com/…"); for each URL note one short context cue ("we present X" / "we use X" / "see also"). An empty side-buffer is expected and fine — the CLI scan is the safety net.
 
 2. **Verify, do NOT hallucinate.** If you cannot find a field, leave it as `null` rather than guessing.
 
-3. **Pipe the metadata JSON straight into `lit add` over stdin — no temp file.** `--from-llm-json -` reads the candidate from stdin, so the JSON never lands on disk.
-
-   bash (heredoc):
+3. **Write metadata to a temp JSON file**:
    ```bash
-   lit add <pdf-path> --from-llm-json - <<'EOF'
+   TMP_META=$(mktemp --suffix=.json /tmp/lit-llm-XXXX.json)
+   cat > $TMP_META <<'EOF'
    {
      "title": "<exact title from page 1>",
      "authors": ["Family1, Given1", "Family2, Given2"],
@@ -133,16 +146,19 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
    EOF
    ```
 
-   PowerShell (pipe):
-   ```powershell
-   '{"title":"<exact title>","authors":["Family1, Given1"],"year":<int or null>,"doi":"<10.xxx/yyy or null>","journal":"<venue or null>","arxiv-id":"<2401.12345 or null>","abstract":"<abstract or null>"}' | lit add <pdf-path> --from-llm-json -
+4. **Call the CLI, then delete the temp file**:
+   ```bash
+   lit add <pdf-path> --from-llm-json "$TMP_META"
+   rm -f "$TMP_META"                 # clean up — the JSON was a one-shot bridge, not a kept artifact
    ```
+   On a platform without `mktemp` (e.g. Windows), you still wrote a JSON somewhere — delete that exact path afterward. Never leave the extracted-metadata JSON lying in a temp dir.
 
-   *Fallback:* if you must inspect / re-feed the JSON, write it to a temp file and pass the path instead (`lit add <pdf-path> --from-llm-json <path>`) — then delete the file afterward.
+5. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. Run this as **two separate messages — never bundle them**:
 
-4. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. **Read out the derived `id` and the `title`, then stop and wait for the user to confirm the source metadata is right.** Surface only id + title — do not self-judge title correctness. After the user confirms:
-   - if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]);
-   - otherwise stop. Do **NOT** proactively enumerate tag / project / status / priority offers (SOP-1).
+   - **5a — STOP and confirm the source.** Report ONLY the derived `id` and the `title`, then **stop and wait** for the user to confirm the source metadata is right. Surface only id + title — do not self-judge title correctness. Do **NOT** attach the code-candidate table, a status offer, or anything else to this message. This is a hard gate: the next move waits on the user's word.
+   - **5b — after the user confirms, in a fresh message:** if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]). A single CLI-only candidate **still goes through the [C.1] three-state table** — no shortcut. If both are empty, stop here. Do **NOT** proactively enumerate tag / project / status / priority offers (SOP-1).
+
+   **Post-ingest curation is lit-reading's, not yours.** Status verdict (`deep-read` / `skim` / `dropped`), `read-date`, and the metadata completeness self-check all live in **lit-reading B10** — lit-library deliberately does not run them after add (SOP-1). If, right after confirming, the user starts reading or evaluating the paper ("读完了" / "这篇一般" / "done with this" / "what does it say about X"), **hand off to lit-reading** (see A2-out) — do not stop dead and do not absorb the reading verdict here.
 
 **Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id).
 
@@ -178,13 +194,15 @@ Unknown keys are rejected. Topics/methods/data are **NOT** in this schema — cl
 
 ## [B] Add Paper from a DOI (direct, no LLM extraction)
 
-If the user gives a DOI (or arxiv id resolvable to a DOI), skip extraction:
+Entered two ways: (1) the user hands a DOI up front, or (2) the [A] DOI-found reroute fired because a DOI surfaced while reading the PDF. Either way, skip LLM extraction:
 
 ```bash
 lit add <pdf-path> --doi 10.1093/bioinformatics/btae364
 ```
 
 Pipeline identical from id derivation onward; only the metadata source differs. Preferred whenever a DOI is available. PDF-required precondition still holds ([A]).
+
+**No `--arxiv` flag — `lit add` accepts only `--doi` / `--from-llm-json`.** If the user gives only an arxiv id, do NOT fabricate a DOI from it. A published/preprint PDF almost always prints its DOI on page 1 — read it off the PDF and use `--doi`. If no DOI is printed anywhere, stay on [A] (LLM extraction) and leave `doi: null`; the `arxiv-id` goes into the [A] JSON's `arxiv-id` field. Never resolve an arxiv id to a DOI by guessing or by an unprompted external lookup.
 
 **Confirm gate.** Title is authoritative on this path — no re-confirm. But the door-plate keyword is still derived locally and can be unsatisfying. **Read out the derived `id` and stop**; if the user is unhappy with it, branch 2 of [A]'s rollback (`lit rename`).
 
@@ -443,7 +461,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 |---------|-------------|
 | `lit init [--name <vault>]` | Create a new vault skeleton |
 | `lit add <pdf> --doi <doi>` | Add via CrossRef ([B]) |
-| `lit add <pdf> --from-llm-json <json>\|-` | Add via LLM-extracted JSON ([A]); `-` = read JSON from stdin (no temp file) |
+| `lit add <pdf> --from-llm-json <json>` | Add via LLM-extracted JSON ([A]) |
 | `lit pdf-text <pdf> [--pages 1-3]` | Dump PDF text layer (deterministic read fallback, [A] step 1) |
 | `lit list [filters] [--format json]` | Browse ([D]) |
 | `lit show <id-or-substring>` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported) |

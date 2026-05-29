@@ -40,7 +40,7 @@ Classify every action before you take it.
 | 2 | **Write, reversible, single-paper** | Do it, then report | the evaluation stamps `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit`, and `lit modify --set priority=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (ingest), `lit code add` (git clone), `lit taxonomy add` / `lit project add`, `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` (governance) |
 
-**Execution ownership — what lit-reading runs INLINE.** Only the single-paper evaluation stamps that ARE the reading verdict: `lit read`, `lit promote` / `lit skim` / `lit drop`, `lit revisit`, `lit modify --set priority=`. (Note: `type` is also a fixed-enum classification field but is **NOT** inline — it chains to lit-library [E].)
+**Execution ownership — what lit-reading runs INLINE.** The single-paper evaluation stamps that ARE the reading verdict: `lit read`, `lit promote` / `lit skim` / `lit drop`, `lit revisit`, `lit modify --set priority=`, and `lit modify --set type=`. (`type` and `priority` are both single-paper, reversible, fixed-enum verdict stamps surfaced together in the B10 self-check — same inline posture. Controlled-vocabulary tags, edges, and project links still chain to lit-library.)
 
 **Every other Tier-2 write CHAINS to lit-library** (A2):
 - `lit modify --add-tag topics/methods/data=` (controlled vocabulary)
@@ -332,7 +332,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit trash list` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
 | `lit health-check` | translate the report + propose per-finding fixes (B12) | 1 (read) |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
-| `lit modify --set priority=` | the priority verdict — evaluation stamp lit-reading owns | 2 (inline) |
+| `lit modify --set priority=` / `lit modify --set type=` | the priority / type verdicts — fixed-enum evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit open <id>` | suggest by default; run only on explicit request (B14) | — |
 
 **Chains to lit-library** (do NOT run here): `lit add` / `lit code add` / `lit code link` (ingest/clone), `lit modify --add-tag topics/methods/data=` (controlled-vocab tagging), `lit modify --add-tag extends/related/contradicts=` (edges), `lit link --project` / `lit modify --set relevance-<P>=` (project binding), `lit trash restore` (restore), `lit taxonomy merge/rename/rm` / `lit project rename/rm` (governance). When the discussion produces such a write, end the read phase and chain: "let me chain to lit-library to run `lit modify <id> --add-tag …`".
