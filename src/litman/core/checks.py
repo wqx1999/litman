@@ -40,7 +40,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Literal
 
 from ruamel.yaml import YAML, YAMLError
 
@@ -80,7 +80,52 @@ class Issue:
     hint: str | None = None
 
 
+# Tag value vocabularies. Kept as module constants so tests can assert a
+# CheckSpec's tags are drawn from these exact sets without re-deriving them.
+TIERS: frozenset[str] = frozenset({"cheap", "full"})
+KLASSES: frozenset[str] = frozenset({"A", "B-ext", "B-auth", "validity"})
+CORRECTIONS: frozenset[str] = frozenset(
+    {"regen", "resolve", "annotate", "report"}
+)
+
+_CheckFn = Callable[[Path, list[dict[str, Any]]], list["Issue"]]
+
+
+@dataclass(frozen=True)
+class CheckSpec:
+    """A registered health check plus its drift-ledger metadata (M30).
+
+    Per invariant #14, every registered check declares which drift class it
+    covers, which tier it runs in, and how it is corrected. Bundling the
+    metadata onto the check function (rather than a parallel frozenset) makes
+    the ledger a single source of truth and turns "is this check tagged"
+    into a mechanical, testable property.
+
+    Attributes:
+        category: Stable category id (matches the ``Issue.category`` strings
+            the function emits, used for grouping + report headers).
+        fn: The pure ``check_*(vault, papers) -> list[Issue]`` probe.
+        tier: ``"cheap"`` (eligible for the Tier-1 per-command hook —
+            INDEX/registry/listing/bounded-stat only, invariant #15) or
+            ``"full"`` (Tier-2 ``health-check`` only).
+        klass: drift class — ``"A"`` (derived↔truth), ``"B-ext"``
+            (truth↔external dir), ``"B-auth"`` (truth↔authored truth), or
+            ``"validity"`` (truth-internal integrity, not a drift).
+        correction: ``"regen"`` / ``"resolve"`` / ``"annotate"`` /
+            ``"report"`` — the correction mode this check's findings map to.
+    """
+
+    category: str
+    fn: _CheckFn
+    tier: Literal["cheap", "full"]
+    klass: Literal["A", "B-ext", "B-auth", "validity"]
+    correction: Literal["regen", "resolve", "annotate", "report"]
+
+
 # Issue categories that ``--fix`` will auto-clean. See :func:`apply_autofix`.
+# Phase 1 keeps this exactly as the historical set (stale_staging +
+# orphan_trash_sidecar). Broadening ``--fix`` to all klass-A regen is Phase 2;
+# until then this stays a literal so external ``--fix`` behavior is unchanged.
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {"stale_staging", "orphan_trash_sidecar"}
 )
@@ -1264,23 +1309,80 @@ def check_code_clone_integrity(
 # ---------------------------------------------------------------------------
 
 
-# Stable ordering for report output. Errors first, then warnings, then info.
-_CHECK_REGISTRY: tuple[tuple[str, Callable[[Path, list[dict[str, Any]]], list[Issue]]], ...] = (
-    ("schema", check_schema),
-    ("id_consistency", check_id_consistency),
-    ("invalid_paper_dirs", check_invalid_paper_dirs),
-    ("dangling_refs", check_dangling_refs),
-    ("dangling_wikilinks", check_dangling_wikilinks),
-    ("taxonomy_drift", check_taxonomy_drift),
-    ("project_config_consistency", check_project_config_consistency),
-    ("project_path_exists", check_project_path_exists),
-    ("bidirectional_refs", check_bidirectional_refs),
-    ("inbox_staleness", check_inbox_staleness),
-    ("stale_staging", check_stale_staging),
-    ("trash_health", check_trash_health),
-    ("pdf_viewer", check_pdf_viewer),
-    ("code_clone_integrity", check_code_clone_integrity),
+# The drift ledger (M30 / invariant #14): every check carries its tier, drift
+# class, and correction mode. Registry order is the report order (errors first
+# read naturally because severity is re-sorted per-category in health.py).
+#
+# Tag rationale (mapped from spec §3 ledger + §3 non-drift-diagnostics table):
+#   schema / id_consistency / invalid_paper_dirs — truth-internal integrity →
+#       klass=validity, correction=report (Phase 3 merges the latter two into a
+#       single structural-integrity check; Phase 1 only tags them).
+#   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
+#       the user/CLI to re-sync → klass=B-auth, correction=report.
+#   dangling_wikilinks — authored prose marked in place (`(deleted)`) →
+#       klass=B-auth, correction=annotate.
+#   taxonomy_drift (#10) / project_config_consistency (#8) /
+#       code_clone_integrity (#6a) — truth↔external/controlled-dict, litman
+#       cannot pick a side → klass=B-ext, correction=resolve.
+#   project_path_exists (#5) — truth↔external dir, cheap (config-path stat
+#       only, no per-paper metadata) → tier=cheap, klass=B-ext, resolve.
+#   inbox_staleness / stale_staging / trash_health / pdf_viewer — non-drift
+#       diagnostics, surface only → klass=validity, correction=report.
+_CHECK_REGISTRY: tuple[CheckSpec, ...] = (
+    CheckSpec("schema", check_schema, "full", "validity", "report"),
+    CheckSpec("id_consistency", check_id_consistency, "full", "validity", "report"),
+    CheckSpec(
+        "invalid_paper_dirs", check_invalid_paper_dirs, "full", "validity", "report"
+    ),
+    CheckSpec("dangling_refs", check_dangling_refs, "full", "B-auth", "report"),
+    CheckSpec(
+        "dangling_wikilinks", check_dangling_wikilinks, "full", "B-auth", "annotate"
+    ),
+    CheckSpec("taxonomy_drift", check_taxonomy_drift, "full", "B-ext", "resolve"),
+    CheckSpec(
+        "project_config_consistency",
+        check_project_config_consistency,
+        "full",
+        "B-ext",
+        "resolve",
+    ),
+    CheckSpec(
+        "project_path_exists", check_project_path_exists, "cheap", "B-ext", "resolve"
+    ),
+    CheckSpec(
+        "bidirectional_refs", check_bidirectional_refs, "full", "B-auth", "report"
+    ),
+    CheckSpec("inbox_staleness", check_inbox_staleness, "full", "validity", "report"),
+    CheckSpec("stale_staging", check_stale_staging, "full", "validity", "report"),
+    CheckSpec("trash_health", check_trash_health, "full", "validity", "report"),
+    CheckSpec("pdf_viewer", check_pdf_viewer, "full", "validity", "report"),
+    CheckSpec(
+        "code_clone_integrity",
+        check_code_clone_integrity,
+        "full",
+        "B-ext",
+        "resolve",
+    ),
 )
+
+
+def cheap_checks() -> tuple[CheckSpec, ...]:
+    """Registered checks eligible for the Tier-1 per-command hook.
+
+    Every returned spec has ``tier == "cheap"`` and (per invariant #15) reads
+    only INDEX/registry/directory-listings/bounded-stat — never per-paper
+    ``metadata.yaml``. Phase 2 wires this into ``LitGroup.invoke``.
+    """
+    return tuple(spec for spec in _CHECK_REGISTRY if spec.tier == "cheap")
+
+
+def klass_a_checks() -> tuple[CheckSpec, ...]:
+    """Registered derived↔truth checks (klass A), correctable by regen.
+
+    Phase 2's ``health-check --fix`` auto-regens this set (lossless); Phase 1
+    only exposes the accessor.
+    """
+    return tuple(spec for spec in _CHECK_REGISTRY if spec.klass == "A")
 
 
 def run_all_checks(
@@ -1288,8 +1390,8 @@ def run_all_checks(
 ) -> list[Issue]:
     """Run every check in registry order; return the flat list of issues."""
     out: list[Issue] = []
-    for _, fn in _CHECK_REGISTRY:
-        out.extend(fn(vault, papers))
+    for spec in _CHECK_REGISTRY:
+        out.extend(spec.fn(vault, papers))
     return out
 
 
