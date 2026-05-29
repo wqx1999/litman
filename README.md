@@ -92,14 +92,15 @@ Dependencies (auto-installed): `click`, `ruamel.yaml`, `httpx`, `pypdf`,
 
 ### Platform notes
 
-- **Linux / macOS**: install directly (the steps above).
-- **Windows**: run litman inside **WSL** (recommended — it's a Linux
-  environment, so everything including the symlink-based browsing views and
-  project bridges works with zero extra setup). Native PowerShell / cmd also
-  work for all core commands (add / list / show / modify / taxonomy / export);
-  the symlink-based convenience features need the terminal to be launched with
-  "Run as administrator" (otherwise they're skipped with a one-line notice and
-  everything else keeps working).
+- **Linux / macOS / WSL**: install directly (the steps above). WSL counts as
+  Linux — full feature support, no extra setup.
+- **Windows**: use WSL (recommended). Native PowerShell / cmd also work, with
+  two caveats:
+  - Symlink-based browsing views and project bridges are skipped unless the
+    terminal is launched "Run as administrator" (a one-line notice is printed;
+    all other commands keep working).
+  - Core commands (add / list / show / modify / taxonomy / export) work
+    regardless.
 
 ## Upgrade
 
