@@ -914,12 +914,93 @@ def test_health_check_fix_does_not_touch_unfixable(vault: Path) -> None:
     assert not (vault / ".litman-staging" / "op-crashed").exists()
 
 
+def test_health_check_fix_leaves_klass_b_reported(vault: Path) -> None:
+    """M30 Phase 2: --fix never resolves klass-B drift (it needs user judgment).
+
+    A taxonomy_drift finding (klass B-ext, correction=resolve) must survive
+    --fix and keep the command at exit 1."""
+    _write_paper(vault, "A_a_a", topics=["unregistered-topic"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert result.exit_code == 1
+    assert "unregistered-topic" in result.output
+
+
+def test_apply_fixes_regens_klass_a_and_skips_klass_b(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_apply_fixes`` routes klass-A categories through regen, klass-B never.
+
+    Phase 2 registers no klass-A check yet, so we inject a synthetic klass-A
+    category into the module's frozenset to exercise the regen branch, and pass
+    a klass-B (taxonomy_drift) issue alongside to prove it is left untouched.
+    """
+    from litman.commands import health
+    from litman.core.checks import Issue
+
+    called = {"regen": False}
+
+    def _fake_regen(v: Path, issues: list[Issue]) -> dict[str, int]:
+        called["regen"] = True
+        return {"index": 1, "views": 0}
+
+    monkeypatch.setattr(health, "regen", _fake_regen)
+    monkeypatch.setattr(
+        health, "_KLASS_A_CATEGORIES", frozenset({"index_vs_disk"})
+    )
+
+    issues = [
+        Issue("index_vs_disk", "warning", None, "INDEX has a dead entry"),
+        Issue("taxonomy_drift", "warning", "A_a_a", "unregistered topic"),
+    ]
+    counts = health._apply_fixes(vault, issues)
+
+    # klass-A regen ran and is reported; klass-B (taxonomy_drift) is not.
+    assert called["regen"] is True
+    assert counts.get("index_vs_disk") == 1
+    assert "taxonomy_drift" not in counts
+
+
+def test_apply_fixes_does_not_regen_for_klass_b_only(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative branch (reviewer Suggestion 1): klass-B-only issues never regen.
+
+    Pins the gate directly — with a known klass-A set that the issue does not
+    match, a lone klass-B (taxonomy_drift) finding must leave ``regen``
+    uncalled and the klass-B issue left reported (not in the fixed counts).
+    """
+    from litman.commands import health
+    from litman.core.checks import Issue
+
+    called = {"regen": False}
+
+    def _fake_regen(v: Path, issues: list[Issue]) -> dict[str, int]:
+        called["regen"] = True
+        return {"index": 1, "views": 0}
+
+    monkeypatch.setattr(health, "regen", _fake_regen)
+    monkeypatch.setattr(
+        health, "_KLASS_A_CATEGORIES", frozenset({"index_vs_disk"})
+    )
+
+    issues = [Issue("taxonomy_drift", "warning", "A_a_a", "unregistered topic")]
+    counts = health._apply_fixes(vault, issues)
+
+    assert called["regen"] is False
+    assert "taxonomy_drift" not in counts
+
+
 def test_health_check_help() -> None:
     runner = CliRunner()
     result = runner.invoke(cli, ["health-check", "--help"])
     assert result.exit_code == 0
     assert "--fix" in result.output
-    assert "stale_staging" in result.output
+    # M30 Phase 2: --fix help describes the klass-A regen / klass-B report-only
+    # policy (it no longer enumerates the two legacy validity categories).
+    assert "report-only" in result.output
 
 
 # ===========================================================================

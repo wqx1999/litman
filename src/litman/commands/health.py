@@ -5,9 +5,11 @@ rename`` / ``lit rm`` flow can leave behind: schema gaps, dangling references,
 half-finished renames, stale staging dirs, etc. See :mod:`litman.core.checks`
 for the per-check semantics.
 
-The CLI is read-only by default. ``--fix`` applies the auto-fixable subset
-(stale staging dirs + orphan trash sidecars). Other categories print a hint
-pointing at the manual remediation command.
+The CLI is read-only by default. ``--fix`` auto-regenerates every derived
+(klass-A) artifact — lossless recompute from TRUTH — plus the legacy
+validity auto-fixes (stale staging dirs + orphan trash sidecars). klass-B
+drift (registry / project / taxonomy / code-clone) needs per-case user
+judgment and stays report-only — ``--fix`` never picks a side (ADR-015).
 
 Exit code: ``1`` if any issue is found (so CI / cron can gate on it),
 ``0`` if the vault is clean.
@@ -27,14 +29,33 @@ from litman.core.checks import (
     Issue,
     apply_autofix,
     group_by_category,
+    klass_a_checks,
     run_all_checks,
 )
+from litman.core.correctors import regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.vault_registry import find_dangling, load_registry
-from litman.exceptions import VaultRegistryError
 
 console = Console()
+
+# Categories whose findings ``--fix`` auto-regenerates (klass A, lossless).
+# Derived from the tagged registry so it cannot drift from the ledger; the
+# legacy validity auto-fixes (stale_staging, orphan_trash_sidecar) are added
+# in ``_fixable_categories`` below.
+_KLASS_A_CATEGORIES: frozenset[str] = frozenset(
+    spec.category for spec in klass_a_checks()
+)
+
+
+def _fixable_categories() -> frozenset[str]:
+    """All categories ``--fix`` will clean: klass-A regen + legacy validity.
+
+    ``AUTO_FIXABLE_CATEGORIES`` keeps the two historical validity fixes
+    (stale_staging roll-back/forward + orphan_trash_sidecar removal) wired
+    through :func:`apply_autofix`; the klass-A set is the M30 broadening to
+    lossless regen of every derived artifact.
+    """
+    return _KLASS_A_CATEGORIES | AUTO_FIXABLE_CATEGORIES
 
 # Severity ordering for sort within a category and visual styling.
 _SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2}
@@ -68,34 +89,6 @@ _CATEGORY_HEADERS: dict[str, str] = {
 }
 
 
-def _vault_registry_drift_issues() -> list[Issue]:
-    """Compute Issues for any dangling vault registration entries.
-
-    Registry drift is a user-level concern (not vault-scoped), so it lives
-    outside ``_CHECK_REGISTRY``. We still surface it through the same
-    ``Issue`` pipeline so ``health-check`` stays the canonical "everything
-    I should know" report. The day-to-day surfacing path is the root-group
-    hook (M28); this is the cron / "I want a full audit" path.
-    """
-    try:
-        reg = load_registry()
-    except VaultRegistryError:
-        return []
-    return [
-        Issue(
-            category="vault_registry_drift",
-            severity="warning",
-            paper_id=None,
-            message=(
-                f"registered vault {entry.name!r} points at "
-                f"{entry.path} but that path no longer exists"
-            ),
-            hint=f"lit vault remove {entry.name}",
-        )
-        for entry in find_dangling(reg)
-    ]
-
-
 def _render_issue_line(issue: Issue, max_msg_width: int = 100) -> str:
     style = _SEVERITY_STYLE.get(issue.severity, "white")
     badge = f"[{style}]{issue.severity:>7}[/]"
@@ -111,12 +104,13 @@ def _render_report(issues: list[Issue]) -> None:
     if not issues:
         return
     grouped = group_by_category(issues)
+    fixable = _fixable_categories()
     for category, items in grouped.items():
         header = _CATEGORY_HEADERS.get(category, category)
         n = len(items)
         fixable_marker = (
             " [dim](fixable via --fix)[/]"
-            if category in AUTO_FIXABLE_CATEGORIES
+            if category in fixable
             else ""
         )
         console.print(
@@ -147,9 +141,8 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     n_err = sum(1 for i in issues if i.severity == "error")
     n_warn = sum(1 for i in issues if i.severity == "warning")
     n_info = sum(1 for i in issues if i.severity == "info")
-    n_fixable = sum(
-        1 for i in issues if i.category in AUTO_FIXABLE_CATEGORIES
-    )
+    fixable = _fixable_categories()
+    n_fixable = sum(1 for i in issues if i.category in fixable)
     console.print(
         f"\n[bold]Summary:[/] "
         f"{len(issues)} issue{'s' if len(issues) != 1 else ''} across "
@@ -171,9 +164,10 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     is_flag=True,
     default=False,
     help=(
-        f"Auto-clean fixable categories: "
-        f"{', '.join(sorted(AUTO_FIXABLE_CATEGORIES))}. "
-        "Other issues stay report-only."
+        "Auto-regenerate all derived (klass-A) artifacts (lossless recompute "
+        "from metadata) plus clean stale staging dirs / orphan trash sidecars. "
+        "Registry / project / taxonomy / code-clone drift stays report-only "
+        "(it needs a per-case decision; --fix never picks a side)."
     ),
 )
 @click.option(
@@ -211,14 +205,13 @@ def health_check_cmd(
     )
 
     issues = run_all_checks(vault, papers)
-    issues.extend(_vault_registry_drift_issues())
     _render_report(issues)
 
     if do_fix and issues:
-        fix_counts = apply_autofix(vault, issues)
-        if fix_counts:
+        applied = _apply_fixes(vault, issues)
+        if applied:
             console.print("\n[bold]Auto-fix:[/]")
-            for cat, n in fix_counts.items():
+            for cat, n in applied.items():
                 if n > 0:
                     console.print(
                         f"  [green]✓[/] {escape(cat)}: cleaned {n} item"
@@ -227,10 +220,41 @@ def health_check_cmd(
             # Re-run checks so the post-fix summary is honest.
             papers = list_papers(vault)
             issues = run_all_checks(vault, papers)
-            issues.extend(_vault_registry_drift_issues())
             n_papers = len(papers)
 
     _summarize(issues, n_papers)
 
     if issues:
         sys.exit(1)
+
+
+def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, int]:
+    """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
+
+    Two correction paths, both lossless (ADR-015):
+
+    * **klass-A regen** — any klass-A category present (derived↔truth drift)
+      triggers a single full ``regen`` (drop INDEX.json + views, recompute from
+      metadata). Reported under each fired klass-A category for transparency.
+    * **legacy validity** — ``stale_staging`` roll-back/forward and
+      ``orphan_trash_sidecar`` removal stay routed through
+      :func:`apply_autofix`, unchanged.
+
+    klass-B drift (registry / project / taxonomy / code-clone) is never fixed
+    here — it needs a per-case user decision (the Tier-1 ``resolve`` prompt or
+    an explicit ``lit`` command). Returns ``{category: n_fixed}``.
+    """
+    counts: dict[str, int] = {}
+
+    klass_a_present = {
+        i.category for i in issues if i.category in _KLASS_A_CATEGORIES
+    }
+    if klass_a_present:
+        regen(vault, issues)
+        # A regen is a single wholesale rebuild; attribute one cleaned unit to
+        # each fired klass-A category so the report names what was healed.
+        for cat in klass_a_present:
+            counts[cat] = 1
+
+    counts.update(apply_autofix(vault, issues))
+    return counts

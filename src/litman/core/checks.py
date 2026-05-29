@@ -835,6 +835,62 @@ def check_project_config_consistency(
     return out
 
 
+def check_vault_registry_drift(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Registered vault entries whose on-disk directory has gone missing.
+
+    Machine-level drift (registry ↔ vault dir, ledger #4). The ``vault`` /
+    ``papers`` arguments are ignored — the registry is a user-level truth
+    source, not vault-scoped — but the ``(vault, papers)`` signature is kept
+    so the check slots into ``_CHECK_REGISTRY`` like any other.
+
+    Uses the mount-safe **bounded-stat** probe (:func:`_drift._exists_bounded`,
+    ADR-014) rather than ``vault_registry.find_dangling``'s bare ``stat()``,
+    which hangs or false-reports on a dropped HPC mount. This is the
+    single-detection-core fix for the M30 §1.1 divergence: registry drift now
+    uses bounded-stat in **both** the per-command hook AND ``health-check``.
+    Only a definite ``False`` counts as drift; ``None`` (timeout / OSError) is
+    "unknown" and never flagged — a slow mount must not look like a deleted
+    vault. Reading the registry + bounded-stat is invariant-#15-safe (no
+    per-paper ``metadata.yaml`` read).
+
+    A corrupt registry is currently swallowed (return ``[]``), matching both the
+    deleted ``health.py:_vault_registry_drift_issues`` behavior and the Tier-1
+    hook corrector's silent return. Phase 2 is a pure de-dup, so this preserves
+    byte-for-byte behavior rather than introducing a new finding on one side.
+    """
+    from litman.commands._drift import _exists_bounded
+    from litman.core.vault_registry import load_registry
+
+    try:
+        reg = load_registry()
+    except VaultRegistryError:
+        # Phase 3 (M30 no-silent-skip) will emit a corrupt-registry finding here
+        # AND fix the hook corrector's silent return in _drift.py together — kept
+        # silent in Phase 2 to preserve byte-for-byte behavior (de-dup only).
+        return []
+
+    if not reg.vaults:
+        return []
+
+    status = _exists_bounded([v.path for v in reg.vaults])
+    return [
+        Issue(
+            category="vault_registry_drift",
+            severity="warning",
+            paper_id=None,
+            message=(
+                f"registered vault {entry.name!r} points at "
+                f"{entry.path} but that path no longer exists"
+            ),
+            hint=f"lit vault remove {entry.name}",
+        )
+        for entry in reg.vaults
+        if status.get(entry.path) is False
+    ]
+
+
 def check_project_path_exists(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -844,7 +900,16 @@ def check_project_path_exists(
     travels but the project working directories live at different absolute
     paths per machine. Warning (not error) + NOT auto-fixable: only the
     user knows the correct path on this machine.
+
+    Mount-safe (ADR-014): each configured path is probed with the bounded-stat
+    (:func:`_drift._exists_bounded`) so a dropped HPC mount yields ``None``
+    (unknown, never flagged) instead of hanging on a bare ``stat()``. This
+    keeps the divergence-free guarantee in the ``health-check`` path too, not
+    just the hook. A definite ``False`` is "does not exist"; a ``True`` that is
+    not a directory is still surfaced via a direct ``is_dir`` check (the path
+    is reachable, so the extra stat is cheap and cannot hang).
     """
+    from litman.commands._drift import _exists_bounded
     from litman.core.config import load_config
 
     try:
@@ -852,10 +917,23 @@ def check_project_path_exists(
     except Exception:
         return []
 
+    if not config.projects:
+        return []
+
+    paths = {
+        name: str(Path(path_str).expanduser())
+        for name, path_str in config.projects.items()
+    }
+    status = _exists_bounded(list(paths.values()))
+
     out: list[Issue] = []
     for name, path_str in sorted(config.projects.items()):
         project_dir = Path(path_str).expanduser()
-        if not project_dir.exists():
+        present = status.get(str(project_dir))
+        if present is None:
+            # Unknown (slow / dropped mount) — never flag (ADR-014).
+            continue
+        if present is False:
             out.append(
                 Issue(
                     category="project_path_exists",
@@ -1324,6 +1402,11 @@ def check_code_clone_integrity(
 #   taxonomy_drift (#10) / project_config_consistency (#8) /
 #       code_clone_integrity (#6a) — truth↔external/controlled-dict, litman
 #       cannot pick a side → klass=B-ext, correction=resolve.
+#   vault_registry_drift (#4) — truth↔external dir, machine-level (registry ↔
+#       vault dir), bounded-stat only, no per-paper metadata → tier=cheap,
+#       klass=B-ext, resolve. (M30 Phase 2: detection moved here from the two
+#       divergent copies in _drift.py + health.py so registry drift uses
+#       bounded-stat in every path.)
 #   project_path_exists (#5) — truth↔external dir, cheap (config-path stat
 #       only, no per-paper metadata) → tier=cheap, klass=B-ext, resolve.
 #   inbox_staleness / stale_staging / trash_health / pdf_viewer — non-drift
@@ -1343,6 +1426,13 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "project_config_consistency",
         check_project_config_consistency,
         "full",
+        "B-ext",
+        "resolve",
+    ),
+    CheckSpec(
+        "vault_registry_drift",
+        check_vault_registry_drift,
+        "cheap",
         "B-ext",
         "resolve",
     ),

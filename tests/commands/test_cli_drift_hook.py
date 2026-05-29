@@ -57,6 +57,20 @@ def _seed_dangling_plus_active(tmp_path: Path) -> Path:
     return real_vault
 
 
+def _add_missing_project(vault: Path, tmp_path: Path) -> None:
+    """Configure the active vault with one project whose dir does not exist.
+
+    Makes the unified ``project_path_exists`` cheap check fire so the hook's
+    project-drift corrector is dispatched (M30 Phase 2: correctors run only
+    when their category is detected).
+    """
+    missing = tmp_path / "gone_project"  # never created
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  ghostproj: {missing}\n",
+        encoding="utf-8",
+    )
+
+
 def test_lit_list_triggers_drift_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -110,10 +124,17 @@ def test_lit_help_skips_drift_prompt(tmp_path: Path) -> None:
 def test_hook_calls_registry_then_project_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A non-skipped subcommand fires BOTH drift segments, registry first
+    """A non-skipped subcommand fires BOTH drift correctors, registry first
     then project, in that order (registry-drift owns the missing-vault case,
-    so project-drift must run after it)."""
-    _seed_dangling_plus_active(tmp_path)
+    so project-drift must run after it).
+
+    M30 Phase 2: the hook runs the cheap detection subset, then dispatches a
+    corrector only for a category that fired. We seed a dangling registry entry
+    (fires ``vault_registry_drift``) AND a missing project dir (fires
+    ``project_path_exists``) so both correctors are dispatched.
+    """
+    real_vault = _seed_dangling_plus_active(tmp_path)
+    _add_missing_project(real_vault, tmp_path)
 
     order: list[str] = []
     monkeypatch.setattr(
@@ -134,12 +155,41 @@ def test_hook_calls_registry_then_project_drift(
     assert order == ["registry", "project"]
 
 
+def test_hook_dispatches_only_fired_correctors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook gates each corrector on its unified check firing (Phase 2).
+
+    With a dangling registry entry but NO project drift, only the registry
+    corrector is dispatched; the project corrector is not called."""
+    _seed_dangling_plus_active(tmp_path)  # registry drift only, no project map
+
+    fired: list[str] = []
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_registry_drift",
+        lambda *a, **kw: fired.append("registry"),
+    )
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_project_drift",
+        lambda *a, **kw: fired.append("project"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert fired == ["registry"]
+
+
 def test_hook_project_drift_exception_does_not_crash_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A raise inside project-drift heal must not crash the user's command —
     the hook wraps it defensively and the actual subcommand still runs."""
-    _seed_dangling_plus_active(tmp_path)
+    real_vault = _seed_dangling_plus_active(tmp_path)
+    _add_missing_project(real_vault, tmp_path)  # makes project_path_exists fire
 
     monkeypatch.setattr(
         _drift, "check_and_prompt_registry_drift", lambda *a, **kw: None
@@ -202,3 +252,45 @@ def test_lit_no_args_skips_drift_prompt(tmp_path: Path) -> None:
     # that lets the hook fire and emit the non-TTY warning.
     assert "lit vault remove" not in result.output
     assert "dangling" not in result.output.lower()
+
+
+def test_hook_non_tty_reports_registry_drift_without_mutating(
+    tmp_path: Path,
+) -> None:
+    """Non-TTY (CliRunner default): the hook surfaces registry drift as a
+    stderr warning and does NOT prune (spec §6: agent / non-TTY = report-only,
+    no auto-mutate). Preserves the M28 behavior through the Phase-2 rewire."""
+    _seed_dangling_plus_active(tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    # The registry is untouched — non-TTY never mutates without consent.
+    remaining = load_registry().vaults
+    assert sorted(v.name for v in remaining) == ["ghost", "real"]
+    # ...but the drift IS surfaced (one warning naming the entry + the fix).
+    assert "ghost" in result.output
+    assert "lit vault remove" in result.output
+
+
+def test_hook_project_drift_non_tty_no_mutation(
+    tmp_path: Path,
+) -> None:
+    """Non-TTY project drift via the hook: warn, never rewrite lit-config.yaml.
+
+    Preserves the non-destructive, no-auto-mutate default for project-path
+    drift through the unified-detection rewire (spec §6)."""
+    real_vault = _seed_dangling_plus_active(tmp_path)
+    _add_missing_project(real_vault, tmp_path)
+    config_before = (real_vault / "lit-config.yaml").read_bytes()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    # Config untouched (no heal in non-TTY) ...
+    assert (real_vault / "lit-config.yaml").read_bytes() == config_before
+    # ... but the project drift is surfaced.
+    assert "ghostproj" in result.output
+    assert "lit project set-path" in result.output

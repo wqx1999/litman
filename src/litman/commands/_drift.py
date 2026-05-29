@@ -1,19 +1,36 @@
-"""Registry drift surfacing (M28).
+"""Registry / project drift resolve-corrector machinery (M28; de-duped M30).
 
 litman's design premise is that users are lazy and forgetful — any drift
 between data sources must be surfaced at the user's next interaction, not
 deferred to a manual ``lit health-check`` they have to remember to run.
-This module implements that principle for vault registry drift: a vault is
-registered but its on-disk directory has been removed.
 
-The hook fires in ``LitGroup.invoke`` (cli.py) before every non-trivial
-subcommand. In a TTY it asks ``[Y/n]`` (default Y) and prunes on Y. In
-non-TTY contexts (scripts / CI / agents) it prints a single stderr warning
-and does not block. Saying N keeps the entry; the next ``lit *`` invocation
-will prompt again — we deliberately do NOT add an ``acknowledged_missing``
-persistent ignore flag, because that would train a lazy ``N`` reflex into
-permanent drift (see ``feedback_surface_drift_eagerly.md`` for the
-anti-pattern list).
+**M30 Phase 2:** the *detection* of these two B-external drifts (registry ↔
+vault dir, ledger #4; config project path ↔ project dir, #5) now lives in the
+single tagged check core ``core/checks.py`` (``check_vault_registry_drift`` /
+``check_project_path_exists``), both using the mount-safe bounded-stat below.
+This module keeps the ``[Y/n]`` **prompt + repair** machinery — it is the
+``resolve`` corrector for those two checks. ``LitGroup.invoke`` runs the
+``tier=cheap`` check subset, and when either category fires it calls the
+matching function here to prompt + repair (TTY) or report (non-TTY).
+
+The two functions still own their own bounded-stat re-probe: the cheap check
+established *that* there is drift; the corrector re-derives *which* entries /
+project paths to prune / heal (the ``Issue`` records carry only messages, not
+the registry entries / project map the mutation needs). The single 0.5s budget
+(spec §7) caps the worst case.
+
+Behavior contract (preserved byte-for-byte across the de-dup):
+
+* Registry drift — TTY asks ``[Y/n]`` (default Y) and prunes dangling entries
+  on Y. Non-TTY prints one stderr warning and does not block / mutate.
+* Project drift — non-destructive default: TTY prompts for a NEW path (blank =
+  skip), never offers removal (``lit project rm`` stays the explicit cascade).
+  Non-TTY prints one stderr warning, zero mutation.
+
+Saying N / blank keeps the drift; the next ``lit *`` invocation will prompt
+again — we deliberately do NOT add an ``acknowledged_missing`` persistent
+ignore flag, because that would train a lazy ``N`` reflex into permanent drift
+(see ``feedback_surface_drift_eagerly.md`` for the anti-pattern list).
 """
 
 from __future__ import annotations

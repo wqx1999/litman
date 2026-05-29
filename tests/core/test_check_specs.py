@@ -24,9 +24,10 @@ from litman.core.checks import (
     klass_a_checks,
 )
 
-# The 14 checks present at the start of M30 Phase 1. Pinned so a dropped or
-# accidentally-renamed check fails loudly (Phase 3 will ADD more; this list is
-# updated deliberately, not by accident).
+# The checks present after M30 Phase 2. Phase 1 had 14; Phase 2 added
+# ``vault_registry_drift`` (#4) — de-duped out of _drift.py + health.py into the
+# single tagged core. Pinned so a dropped or accidentally-renamed check fails
+# loudly (Phase 3 will ADD more; this list is updated deliberately).
 _EXPECTED_CATEGORIES = (
     "schema",
     "id_consistency",
@@ -35,6 +36,7 @@ _EXPECTED_CATEGORIES = (
     "dangling_wikilinks",
     "taxonomy_drift",
     "project_config_consistency",
+    "vault_registry_drift",
     "project_path_exists",
     "bidirectional_refs",
     "inbox_staleness",
@@ -45,8 +47,8 @@ _EXPECTED_CATEGORIES = (
 )
 
 
-def test_registry_has_all_fourteen_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 14
+def test_registry_has_all_checks() -> None:
+    assert len(_CHECK_REGISTRY) == 15
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -80,15 +82,20 @@ def test_cheap_checks_returns_only_cheap_tier() -> None:
     assert all(spec.tier == "cheap" for spec in cheap)
 
 
-def test_cheap_set_is_exactly_project_path_exists() -> None:
+def test_cheap_set_is_the_two_b_ext_drifts() -> None:
     """Invariant #15: Tier-1 reads only INDEX/registry/listing/bounded-stat.
 
-    In Phase 1 the only cheap check is ``project_path_exists`` (it stats the
-    config project paths, no per-paper metadata). Phase 3 adds ``index_vs_disk``
-    + the cheap paper-dir signal; until then this set is pinned so no ``full``
-    check is mistakenly promoted into the per-command hot path.
+    After Phase 2 the cheap set is exactly the two B-external drifts that the
+    per-command hook resolves: ``vault_registry_drift`` (#4, registry ↔ dir,
+    bounded-stat) and ``project_path_exists`` (#5, config path ↔ dir,
+    bounded-stat). Neither reads per-paper metadata. Phase 3 adds
+    ``index_vs_disk`` + the cheap paper-dir signal; until then this set is
+    pinned so no ``full`` check is mistakenly promoted into the hot path.
     """
-    assert {spec.category for spec in cheap_checks()} == {"project_path_exists"}
+    assert {spec.category for spec in cheap_checks()} == {
+        "vault_registry_drift",
+        "project_path_exists",
+    }
 
 
 def test_project_path_exists_does_not_read_per_paper_metadata(
@@ -155,3 +162,115 @@ def test_klass_a_checks_returns_only_klass_a() -> None:
     # Vacuous (klass_a_checks() is empty) until Phase 3 registers a klass-A
     # check (e.g. index_vs_disk); kept now to pin the accessor's contract.
     assert all(spec.klass == "A" for spec in klass_a_checks())
+
+
+# ---------------------------------------------------------------------------
+# M30 Phase 2: vault_registry_drift de-duped into the tagged core
+# ---------------------------------------------------------------------------
+
+
+def _fake_home(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
+def test_vault_registry_drift_is_registered_cheap_b_ext_resolve() -> None:
+    """Ledger #4: registry drift is a registered cheap / B-ext / resolve check."""
+    spec = next(
+        s for s in _CHECK_REGISTRY if s.category == "vault_registry_drift"
+    )
+    assert (spec.tier, spec.klass, spec.correction) == ("cheap", "B-ext", "resolve")
+
+
+def test_vault_registry_drift_detects_dangling_entry(tmp_path, monkeypatch) -> None:
+    """A definite-absent registered path is reported as a warning."""
+    from litman.core.vault_registry import (
+        VaultEntry,
+        VaultRegistry,
+        save_registry,
+    )
+
+    _fake_home(tmp_path, monkeypatch)
+    real = tmp_path / "real"
+    real.mkdir()
+    ghost = tmp_path / "ghost"  # never created
+    save_registry(
+        VaultRegistry(
+            vaults=[
+                VaultEntry(name="real", path=str(real), is_active=True),
+                VaultEntry(name="ghost", path=str(ghost), is_active=False),
+            ]
+        )
+    )
+    issues = checks.check_vault_registry_drift(tmp_path, [])
+    assert len(issues) == 1
+    assert issues[0].category == "vault_registry_drift"
+    assert issues[0].severity == "warning"
+    assert "ghost" in issues[0].message
+    assert issues[0].hint == "lit vault remove ghost"
+
+
+def test_vault_registry_drift_uses_bounded_stat_not_find_dangling(
+    tmp_path, monkeypatch
+) -> None:
+    """§1.1 divergence gone: detection goes through the mount-safe bounded-stat.
+
+    A None (slow / dropped mount) verdict must NOT be reported as drift —
+    which is exactly the behavior a bare ``find_dangling`` stat cannot provide.
+    We force the bounded-stat to return None for the dangling entry and assert
+    nothing is flagged.
+    """
+    from litman.commands import _drift
+    from litman.core.vault_registry import (
+        VaultEntry,
+        VaultRegistry,
+        save_registry,
+    )
+
+    _fake_home(tmp_path, monkeypatch)
+    ghost = tmp_path / "ghost"
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="ghost", path=str(ghost), is_active=False)]
+        )
+    )
+    monkeypatch.setattr(
+        _drift, "_exists_bounded", lambda paths, budget_s=0.5: {p: None for p in paths}
+    )
+    assert checks.check_vault_registry_drift(tmp_path, []) == []
+
+
+def test_vault_registry_drift_corrupt_registry_returns_empty(
+    tmp_path, monkeypatch
+) -> None:
+    """Phase 2 preserve-behavior: a corrupt registry is swallowed (return []).
+
+    This matches the deleted ``health.py:_vault_registry_drift_issues`` and the
+    Tier-1 hook corrector's silent return. Phase 3 (M30 no-silent-skip,
+    invariant #14) will flip this to emit a corrupt-registry finding on BOTH
+    sides consistently.
+    """
+    from litman.core.vault_registry import registry_path
+
+    _fake_home(tmp_path, monkeypatch)
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not a mapping\n", encoding="utf-8")
+
+    assert checks.check_vault_registry_drift(tmp_path, []) == []
+
+
+def test_health_check_no_longer_has_bare_find_dangling_path() -> None:
+    """health.py must not import / call the bare-stat ``find_dangling``.
+
+    Phase 2 deletes ``_vault_registry_drift_issues``; the registry drift now
+    comes from the unified bounded-stat check. Assert the hang-risk symbol is
+    gone from the module namespace.
+    """
+    from litman.commands import health
+
+    assert not hasattr(health, "_vault_registry_drift_issues")
+    assert not hasattr(health, "find_dangling")

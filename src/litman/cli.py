@@ -12,6 +12,7 @@ normal Python tracebacks (they indicate bugs, not user errors).
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
@@ -98,24 +99,124 @@ class LitGroup(click.Group):
         protected = getattr(ctx, "_protected_args", None) or []
         cmd_name: str | None = protected[0] if protected else None
         if cmd_name not in self._DRIFT_SKIP:
-            # Local import keeps cli.py's import graph shallow at module load
-            # (commands/_drift.py pulls in vault_registry + rich), and avoids
-            # a circular import if _drift ever needs to reference cli.
-            from litman.commands._drift import (
-                check_and_prompt_project_drift,
-                check_and_prompt_registry_drift,
-            )
-
-            check_and_prompt_registry_drift()
-            # Project-path drift heals via staged_write + rebuild, which touch
-            # the filesystem from inside the pre-dispatch hook. A failure there
-            # must never crash the user's actual command — degrade to silent
-            # skip and let the cold-path `lit health-check` catch it later.
-            try:
-                check_and_prompt_project_drift()
-            except Exception:
-                pass
+            self._run_drift_hook()
         return super().invoke(ctx)
+
+    def _run_drift_hook(self) -> None:
+        """Tier-1 pre-dispatch drift hook (M28; unified detection M30 Phase 2).
+
+        Runs the ``tier=cheap`` check subset (``cheap_checks()`` — registry /
+        config / bounded-stat only, invariant #15) as the single detection
+        core, then dispatches each fired category to its corrector:
+
+        * klass-B-ext cheap issues (registry #4, project #5) → the ``resolve``
+          corrector: the bespoke ``[Y/n]`` prompt + repair in ``_drift.py``,
+          which preserves the M28 UX (registry prune default Y; project
+          non-destructive default; non-TTY → stderr report, no mutate).
+        * klass-A cheap issues → ``regen``. None are registered yet in Phase 2;
+          the dispatch below is wired so Phase 3's ``index_vs_disk`` lands
+          without re-touching the hook.
+
+        ``cheap_checks()`` is the same detection core that feeds ``health-check``
+        (Tier 2) — registry drift uses the same bounded-stat in both paths,
+        closing the §1.1 divergence. We resolve the active vault *cheaply* (read
+        the registry active entry + bounded-stat it — never ``find_vault``,
+        which bare-``stat()``s the active vault dir and would re-introduce the
+        hung-mount risk on the hot path). ``check_vault_registry_drift`` ignores
+        the vault entirely, so it runs even when no vault resolves. Once a
+        category fires, the matching ``resolve`` corrector self-detects which
+        entries / paths to repair (``Issue`` records carry only messages, not
+        the registry entries / config map the mutation needs); the cheap check
+        having fired is the gate.
+
+        The whole hook is wrapped so a failure (hung mount, FS error inside a
+        heal) never crashes the user's actual command — it degrades to a silent
+        skip and the cold-path ``lit health-check`` catches the drift later.
+        """
+        try:
+            from litman.core.checks import cheap_checks, klass_a_checks
+
+            vault = self._cheap_active_vault()
+
+            # Detection: run every cheap check. Vault-scoped checks need a vault
+            # dir; the registry check ignores it. Collect the fired categories.
+            issues: list[Any] = []
+            for spec in cheap_checks():
+                if vault is None and spec.category != "vault_registry_drift":
+                    continue
+                issues.extend(spec.fn(vault or Path("/nonexistent"), []))
+            categories = {i.category for i in issues}
+
+            # Correction dispatch, keyed on the unified detection categories.
+            # Registry first: it owns the missing-active-vault case, so project
+            # drift must run after it (M28 ordering preserved).
+            if "vault_registry_drift" in categories:
+                from litman.commands._drift import check_and_prompt_registry_drift
+
+                check_and_prompt_registry_drift()
+
+            if "project_path_exists" in categories:
+                # Project-path drift heals via staged_write + rebuild, which
+                # touch the filesystem from inside the pre-dispatch hook. A
+                # failure there must never crash the user's actual command —
+                # degrade to silent skip and let `lit health-check` catch it.
+                from litman.commands._drift import check_and_prompt_project_drift
+
+                try:
+                    check_and_prompt_project_drift()
+                except Exception:
+                    pass
+
+            # klass-A cheap regen (none fire yet in Phase 2; Phase 3 wiring).
+            if vault is not None:
+                klass_a_cheap = {
+                    spec.category
+                    for spec in klass_a_checks()
+                    if spec.tier == "cheap"
+                }
+                if categories & klass_a_cheap:
+                    # Phase 3 WARNING: regen() calls list_papers() which reads every
+                    # metadata.yaml — that violates invariant #15 inside the Tier-1
+                    # hook. When Phase 3 registers a cheap klass-A check
+                    # (index_vs_disk), the hook MUST use a metadata-free INDEX regen
+                    # (spec §6: INDEX-regen + targeted annotate), NOT this full
+                    # regen(). Do not let a cheap klass-A issue reach regen() here.
+                    from litman.core.correctors import regen
+
+                    regen(vault, issues)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _cheap_active_vault() -> "Path | None":
+        """Resolve the active vault path without ``find_vault``'s bare stat.
+
+        Reads the registry active entry and bounded-stats it (invariant #15:
+        no per-paper metadata; ADR-014: a dropped mount must not hang). Returns
+        the path only when it is definitely present AND holds a
+        ``lit-config.yaml``; otherwise ``None`` (the registry-drift check owns
+        the missing-vault case, and a ``None``/unknown stat is never actioned).
+        """
+        from litman.commands._drift import _exists_bounded
+        from litman.core.vault_registry import (
+            VaultRegistryError,
+            find_active,
+            load_registry,
+        )
+
+        try:
+            reg = load_registry()
+        except VaultRegistryError:
+            return None
+        active = find_active(reg)
+        if active is None:
+            return None
+        if _exists_bounded([active.path]).get(active.path) is not True:
+            return None
+        candidate = Path(active.path)
+        if not (candidate / "lit-config.yaml").is_file():
+            return None
+        return candidate
 
     def format_commands(
         self, ctx: click.Context, formatter: click.HelpFormatter
