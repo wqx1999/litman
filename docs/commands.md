@@ -228,6 +228,12 @@ never travel between machines.
 | `lit sync pull --dry-run` | Preview only. |
 | `lit sync status` | Show last-push / last-pull timestamps and any pending diff. |
 
+Once a remote is configured, `lit` appends a one-line reminder after any
+command when the vault has not been pushed in 7+ days
+(`tip: no lit sync push in 7+ days...`). It reappears every command until
+the next successful `lit sync push`, and cannot be disabled. Vaults without
+a configured remote are never reminded.
+
 A full cross-machine restore looks like:
 
 ```bash
@@ -254,6 +260,11 @@ lit link --rebuild-all               # rebuild every project's symlinks + REFERE
 from `papers/*/metadata.yaml` and can be regenerated wholesale.
 Per-project failures (e.g. the project's directory doesn't exist on
 this machine) are skipped, not aborted.
+
+`lit` also appends a one-line reminder after any command when the active
+vault has not been health-checked in 14+ days
+(`tip: no lit health-check in 14+ days...`), reappearing until the next
+`lit health-check`. Like the sync reminder it cannot be disabled.
 
 ## Scenario 12 — Read a paper
 

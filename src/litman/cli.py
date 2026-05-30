@@ -52,8 +52,11 @@ from litman.exceptions import LitmanError
 console = Console()
 
 
-def _health_check_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
+def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
     """Return True if ``ts`` is older than ``stale_days`` days before ``now``.
+
+    Generic staleness test shared by the post-dispatch nudges (health-check
+    ``last_health_check_at`` and sync ``last_push``).
 
     Defensive parse (M30 §5 / human decision 3): a None / missing / unparseable
     timestamp counts as STALE so the nudge fires. A legacy *naive* ISO string
@@ -359,20 +362,34 @@ class LitGroup(click.Group):
 
     @staticmethod
     def _emit_staleness_nudge() -> None:
-        """Post-dispatch Tier-2 staleness nudge (M30 §5).
+        """Post-dispatch staleness nudges (M30 §5).
 
-        If the **active registered** vault's ``last_health_check_at`` is more
-        than :data:`HEALTH_CHECK_STALE_DAYS` days old (or None / missing /
-        unparseable → treated as stale), emit a one-line dim reminder to run
-        ``lit health-check``. Active vault only: an unregistered ``--library``
-        override has no entry → no nudge.
+        Two independent, condition-driven reminders for the **active
+        registered** vault (an unregistered ``--library`` override has no entry
+        → no nudge). Each fires when its tracked timestamp is older than its
+        threshold, or None / missing / unparseable (treated as stale):
 
-        Metadata-free (invariant #15): reads only the registry. Always emits
-        (invariant #5 / ADR-007: the agent is the primary consumer and routinely
-        drives ``lit`` non-interactively, so suppressing in non-TTY would silence
-        the reminder for the primary consumer). Only the *destination* is TTY-
-        gated: TTY → stdout tail; non-TTY → stderr (keeps stdout clean for pipes).
-        Non-disableable: no env var / config read can suppress it.
+        * health-check: ``last_health_check_at`` (registry) >
+          :data:`HEALTH_CHECK_STALE_DAYS` → "run ``lit health-check``".
+        * sync push: ``.litman-sync-state.yaml`` ``last_push`` >
+          :data:`SYNC_STALE_DAYS`, AND only when a remote is configured
+          (``lit-config.yaml`` ``sync`` set) → "run ``lit sync push``".
+
+        Both are stateless (recomputed every command, no "already shown" flag),
+        so an ignored tip re-appears on the next command and only clears once
+        the user runs the action that refreshes the timestamp.
+
+        Always emits (invariant #5 / ADR-007: the agent is the primary consumer
+        and routinely drives ``lit`` non-interactively, so suppressing in
+        non-TTY would silence the reminder for the primary consumer). Only the
+        *destination* is TTY-gated: TTY → stdout tail; non-TTY → stderr (keeps
+        stdout clean for pipes). Non-disableable: no env var / config read can
+        suppress it.
+
+        Reads only the registry plus, for the sync arm, two bounded vault-root
+        files (``lit-config.yaml`` + ``.litman-sync-state.yaml``) gated behind
+        the hung-mount-safe :meth:`_cheap_active_vault` resolver — never
+        per-paper metadata (invariant #15).
 
         Wrapped so a failure never crashes the user's command (dual to the
         pre-dispatch drift hook's defensive wrapper).
@@ -381,7 +398,10 @@ class LitGroup(click.Group):
             from datetime import datetime, timezone
 
             from litman.commands._drift import _default_tty_probe
-            from litman.core.checks import HEALTH_CHECK_STALE_DAYS
+            from litman.core.checks import (
+                HEALTH_CHECK_STALE_DAYS,
+                SYNC_STALE_DAYS,
+            )
             from litman.core.vault_registry import (
                 VaultRegistryError,
                 find_active,
@@ -396,21 +416,52 @@ class LitGroup(click.Group):
             if active is None:
                 return
 
-            if not _health_check_is_stale(
+            now = datetime.now(timezone.utc)
+            tty = _default_tty_probe()
+
+            def _emit(line: str) -> None:
+                if tty:
+                    console.print(line)
+                else:
+                    Console(stderr=True).print(line)
+
+            # 1. Health-check staleness — registry-only.
+            if _timestamp_is_stale(
                 active.last_health_check_at,
-                now=datetime.now(timezone.utc),
+                now=now,
                 stale_days=HEALTH_CHECK_STALE_DAYS,
             ):
-                return
+                _emit(
+                    f"[dim]tip: no `lit health-check` in "
+                    f"{HEALTH_CHECK_STALE_DAYS}+ days. "
+                    "Run it to catch silent drift.[/dim]"
+                )
 
-            line = (
-                "[dim]tip: no `lit health-check` in 14+ days. "
-                "Run it to catch silent drift.[/dim]"
-            )
-            if _default_tty_probe():
-                console.print(line)
-            else:
-                Console(stderr=True).print(line)
+            # 2. Sync-push staleness — only when a remote is configured. The
+            # _cheap_active_vault resolver has already bounded-stat'd the vault
+            # root and confirmed lit-config.yaml exists, so the two small
+            # root-file reads below share that hung-mount-safe envelope. A
+            # read failure degrades to no nudge (the explicit `lit sync status`
+            # / health-check own the real config-corruption finding).
+            vault = LitGroup._cheap_active_vault()
+            if vault is not None:
+                try:
+                    from litman.core.config import load_config
+                    from litman.core.sync import read_sync_state
+
+                    if load_config(vault).sync is not None and _timestamp_is_stale(
+                        read_sync_state(vault).last_push,
+                        now=now,
+                        stale_days=SYNC_STALE_DAYS,
+                    ):
+                        _emit(
+                            f"[dim]tip: no `lit sync push` in "
+                            f"{SYNC_STALE_DAYS}+ days. "
+                            "Run it to back up your vault to the configured "
+                            "remote.[/dim]"
+                        )
+                except Exception:
+                    pass
         except Exception:
             pass
 

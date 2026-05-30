@@ -305,7 +305,7 @@ At a natural moment (occasionally at session start / after a batch of operations
 
 **Red line: health-check only reports, never auto-fixes** — each fix runs only on the user's nod; never self-correct. Running health-check is Tier 1 (just do it); each proposed fix follows its own tier (e.g. unlinking a dangling clone = Tier 3, ask once).
 
-**Staleness nudge.** When `lit` output ends with the line `tip: no lit health-check in 14+ days. Run it to catch silent drift.`, relay it to the user and offer to run `lit health-check` — never auto-run it.
+**Staleness nudges.** `lit` may append a dim `tip:` line after a command. Relay it and offer to run the named command — never auto-run. Two variants: (1) `tip: no lit health-check in 14+ days...` → offer `lit health-check`; (2) `tip: no lit sync push in 7+ days...` → offer `lit sync push` (backs the vault up to the configured remote; appears only when a remote is configured).
 
 ## B13 — Mis-deletion recovery (find → confirm → restore)
 

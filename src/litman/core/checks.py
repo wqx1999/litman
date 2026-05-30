@@ -141,6 +141,15 @@ INBOX_STALE_DAYS = 14
 # diverge later. Non-configurable (a configurable interval is a stealth disable).
 HEALTH_CHECK_STALE_DAYS = 14
 
+# Threshold (days) since the last successful ``lit sync push`` before the
+# post-dispatch nudge reminds the user to back the vault up to its configured
+# remote (M30 Phase 5, sync arm). Only fires when a remote is configured
+# (``lit-config.yaml`` ``sync`` set). Shorter than HEALTH_CHECK_STALE_DAYS: an
+# un-pushed vault is unbacked-up data at risk, a more time-sensitive concern
+# than un-inspected drift. Non-configurable (a configurable interval is a
+# stealth disable).
+SYNC_STALE_DAYS = 7
+
 # Trash-health warning threshold. Half of the count-based eviction cap
 # (TRASH_MAX_ENTRIES=100, see core/trash.py) — the "approaching limit"
 # midpoint that forms a "50 heads-up → 100 auto-evict" ladder.
