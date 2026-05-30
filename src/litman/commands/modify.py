@@ -34,12 +34,13 @@ from rich.markup import escape
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
-from litman.core.views import rebuild_views, render_index
+from litman.core.views import render_index
 from litman.exceptions import ModifyError, PaperNotFoundError
 
 console = Console()
@@ -425,11 +426,16 @@ def _apply_modify(
             )
         stage.write_text("INDEX.json", index_json)
 
-    # views/ rebuild is filesystem-mutating but not text-file-atomic; do it
-    # after the staged commit so a failure here leaves the metadata + index
-    # consistent and only views/ stale (recoverable via `lit refresh-views`).
+    # Post-commit derived rebuild through the single shared funnel
+    # (M30 Phase 4): INDEX + views are recomputed together so they can never
+    # drift apart. The staged INDEX.json above is the crash-safety layer (it
+    # matches metadata atomically even if this rebuild is interrupted); this
+    # call re-derives the identical INDEX plus the views/ hubs, which are
+    # filesystem-mutating but not text-file-atomic. project_refs=False keeps
+    # behavior identical to the pre-funnel command (modify never rebuilt
+    # project REFERENCES.md / symlinks).
     fresh_papers = list_papers(vault)
-    rebuild_views(vault, fresh_papers)
+    reconcile_derived(vault, papers=fresh_papers, project_refs=False)
 
     # ----- Output -----
     console.print(f"[bold green]✓ Modified[/] {paper_id}")

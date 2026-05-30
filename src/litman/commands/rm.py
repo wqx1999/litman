@@ -70,6 +70,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.config import load_config
+from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -86,7 +87,7 @@ from litman.core.project_link import (
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
-from litman.core.views import rebuild_views, render_index
+from litman.core.views import render_index
 from litman.exceptions import PaperNotFoundError, RmError
 
 console = Console()
@@ -487,8 +488,12 @@ def rm_cmd(
             vault, target_meta, paper_id, registry, list_papers(vault)
         )
 
-    # ----- Phase 3c: views/ rebuild (best-effort, recoverable) -----
-    rebuild_views(vault, list_papers(vault))
+    # ----- Phase 3c: post-commit derived rebuild via the shared funnel -----
+    # INDEX + views recomputed together (M30 Phase 4); the staged INDEX.json
+    # above is the crash-safety layer. project_refs=False: the removed paper's
+    # project side was already torn down by _teardown_project_links above —
+    # behavior unchanged from the pre-funnel command.
+    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
 
     # ----- Output -----
     if purge:

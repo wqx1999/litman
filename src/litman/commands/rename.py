@@ -43,13 +43,14 @@ from rich.markup import escape
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.relations import ALL_REF_FIELDS
-from litman.core.views import rebuild_views, render_index
+from litman.core.views import render_index
 from litman.exceptions import PaperNotFoundError, RenameError
 
 console = Console()
@@ -265,8 +266,11 @@ def rename_cmd(
     # `lit health-check` (M2.8) flags this mismatch.
     os.rename(old_dir, new_dir)
 
-    # ----- views/ rebuild (best-effort; recoverable via refresh-views) -----
-    rebuild_views(vault, list_papers(vault))
+    # ----- Post-commit derived rebuild through the shared funnel (M30 Phase 4) -----
+    # INDEX + views recomputed together; the staged INDEX.json above remains
+    # the crash-safety layer. project_refs=False keeps behavior identical
+    # (rename never rebuilt project REFERENCES.md / symlinks).
+    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
 
     # ----- Output -----
     console.print(

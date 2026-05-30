@@ -201,6 +201,15 @@ def link_paper_to_project(
         with staged_write(vault, op_id=f"link-{paper_id}-{project}") as stage:
             stage.write_text(rel_meta, _dump_yaml_to_string(metadata))
             stage.write_text("INDEX.json", index_json)
+        # M30 W3: rebuild INDEX + views/ together through the shared funnel so a
+        # link can never leave views/by-project/ stale (the membership change
+        # must propagate to the by-project view, not only to INDEX + the
+        # project-side litman_reflib). project_refs=False — link does its own
+        # symlinks + REFERENCES.md below. Local import avoids any core->commands
+        # import-cycle at module load (correctors pulls commands._drift).
+        from litman.core.correctors import reconcile_derived
+
+        reconcile_derived(vault, papers=all_papers, project_refs=False)
 
     # 6) Symlinks. Created (or refreshed) regardless of metadata change so
     #    that a partial earlier state (e.g. yaml updated by hand without
@@ -301,6 +310,14 @@ def unlink_paper_from_project(
         with staged_write(vault, op_id=f"unlink-{paper_id}-{project}") as stage:
             stage.write_text(rel_meta, _dump_yaml_to_string(metadata))
             stage.write_text("INDEX.json", index_json)
+        # M30 W3: rebuild INDEX + views/ together through the shared funnel so
+        # an unlink drops the stale views/by-project/<name>/<id> symlink, not
+        # only the INDEX entry + project-side litman_reflib. project_refs=False
+        # — unlink does its own symlink teardown + REFERENCES.md below. Local
+        # import avoids a core->commands import-cycle at module load.
+        from litman.core.correctors import reconcile_derived
+
+        reconcile_derived(vault, papers=all_papers, project_refs=False)
 
     # 6) Paper symlink
     paper_link_path = project_dir / LITERATURE_SUBDIR / paper_id

@@ -36,6 +36,7 @@ from rich.panel import Panel
 from ruamel.yaml import YAML
 
 from litman.core.code_scan import scan_code_urls
+from litman.core.correctors import reconcile_derived
 from litman.core.dedup import (
     auto_suffix_id,
     find_paper_by_doi,
@@ -421,9 +422,23 @@ def add_cmd(
             shutil.rmtree(paper_dir, ignore_errors=True)
         raise
 
-    # Vault is consistent. Remove the source PDF (mv semantics). Tolerate
-    # failure: a successful ingest must not be reported as failure just
-    # because the source could not be removed (e.g. read-only source dir).
+    # Vault is consistent: the new paper dir is fully committed (the rollback
+    # try/except above either finished cleanly or rmtree'd a half-built dir).
+    # Reconcile the derived artifacts through the single shared funnel (M30
+    # Phase 4) so the paper is in INDEX.json + views/ immediately — `add`
+    # previously indexed NOTHING (a pre-existing lag bug: a freshly-added paper
+    # was absent from INDEX until the next write command or `lit refresh`).
+    # Placed OUTSIDE the rollback try: the paper is a valid, committed truth, so
+    # a derived-rebuild failure must NOT rmtree it — INDEX merely lags and is
+    # recoverable via `lit refresh` (same post-commit best-effort semantics as
+    # modify/rename). project_refs=False: a freshly-added paper has an empty
+    # `projects` list, so there are no project symlinks / REFERENCES.md to
+    # rebuild.
+    reconcile_derived(vault, project_refs=False)
+
+    # Remove the source PDF (mv semantics). Tolerate failure: a successful
+    # ingest must not be reported as failure just because the source could not
+    # be removed (e.g. read-only source dir).
     try:
         pdf_path.unlink()
     except OSError as exc:

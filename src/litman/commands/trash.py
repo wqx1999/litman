@@ -32,6 +32,7 @@ from litman.core.code import (
     write_repo_meta,
 )
 from litman.core.config import load_config
+from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.trash import (
@@ -41,7 +42,6 @@ from litman.core.trash import (
     resolve_trash_entry,
     restore_from_trash,
 )
-from litman.core.views import rebuild_views, write_index
 from litman.exceptions import CodeError, TrashError
 
 console = Console()
@@ -260,10 +260,12 @@ def trash_restore_cmd(
     # (all atomic). Raises TrashError on a live-id collision (step 0).
     result = restore_from_trash(vault, entry, registry=registry)
 
-    # Refresh INDEX and views from the post-restore paper list.
+    # Refresh INDEX + views from the post-restore paper list via the shared
+    # funnel (M30 Phase 4): the two are recomputed together. project_refs=False:
+    # restore_from_trash already rebuilt the restored paper's project symlinks +
+    # REFERENCES.md (result.projects_rebuilt) — behavior unchanged.
     fresh_papers = list_papers(vault)
-    write_index(vault, fresh_papers)
-    rebuild_views(vault, fresh_papers)
+    reconcile_derived(vault, papers=fresh_papers, project_refs=False)
 
     console.print(
         f"[bold green]✓ Restored[/] {escape(entry.paper_id)} "

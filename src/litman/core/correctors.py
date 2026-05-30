@@ -30,7 +30,108 @@ from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
 from litman.core import views
 
-__all__ = ["regen", "regen_index_drop_ids", "resolve", "annotate"]
+__all__ = [
+    "reconcile_derived",
+    "regen",
+    "regen_index_drop_ids",
+    "resolve",
+    "annotate",
+]
+
+
+# ---------------------------------------------------------------------------
+# reconcile_derived — the single TRUTH→DERIVED rebuild path (M30 Phase 4)
+# ---------------------------------------------------------------------------
+
+
+def reconcile_derived(
+    vault: Path,
+    *,
+    papers: list[dict] | None = None,
+    project_refs: bool = True,
+) -> dict[str, int]:
+    """Recompute the derived artifacts (INDEX.json + views/ [+ project refs]) from TRUTH.
+
+    **The one shared rebuild path** (M30 Phase 4 / ADR-015 §Decision). Both the
+    klass-A ``regen`` corrector (``lit health-check --fix``, ledger #1/#2/#3)
+    and every write command's post-commit derived rebuild funnel through here,
+    so INDEX and views are *always* regenerated together — a command can never
+    rewrite one and forget the other.
+
+    The derived artifacts are a pure function of the per-paper ``metadata.yaml``
+    truth, so the correct rebuild is to recompute them wholesale. Lossless:
+    nothing in INDEX/views/project-refs is not also in metadata.
+
+    * ``INDEX.json`` (#1) — ``write_index`` (always).
+    * ``views/by-*/`` (#2) — ``rebuild_views`` (always; coupled to INDEX so the
+      two never diverge).
+    * project ``litman_reflib/`` symlinks + ``REFERENCES.md`` (#3) — rebuilt
+      only when ``project_refs=True`` (the full klass-A set). Write commands
+      that already own a narrower project-side update (``project rm``'s targeted
+      teardown) or do not touch the ``projects`` field at all pass
+      ``project_refs=False`` to stay behavior-preserving — the funnel unifies
+      the INDEX↔views coupling without widening what each command does.
+
+    Args:
+        vault: Vault root.
+        papers: Already-loaded paper list to reuse (perf: a write command that
+            spliced its in-memory diff into ``list_papers`` output passes it in
+            to avoid a redundant re-read). ``None`` → load fresh from disk
+            (the ``--fix`` / corrector path, which always rebuilds from truth).
+        project_refs: When ``True`` (default), also rebuild every configured
+            project's symlinks + ``REFERENCES.md``.
+
+    Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>}``.
+
+    Tier-2 only when ``papers is None``: it calls ``list_papers`` (reads every
+    metadata.yaml), so it MUST NOT run inside the Tier-1 hook (invariant #15).
+    The hook uses :func:`regen_index_drop_ids` instead.
+    """
+    # Local import: document.list_papers pulls the heavier ruamel-typ machinery
+    # that views/notes don't need, and keeps correctors importable without a
+    # cycle through commands/.
+    if papers is None:
+        from litman.core.document import list_papers
+
+        papers = list_papers(vault)
+
+    views.write_index(vault, papers)
+    view_counts = views.rebuild_views(vault, papers)
+
+    n_projects = 0
+    if project_refs:
+        # Project-side derived artifacts (#3). Only when projects are
+        # configured; rebuild_all_* skip unreachable project dirs internally.
+        from litman.core.config import load_config
+        from litman.core.project_link import rebuild_all_project_links
+        from litman.core.project_refs import rebuild_all_project_refs
+        from litman.exceptions import ConfigError
+
+        # ONLY the config load is swallowed: a broken / unreadable
+        # lit-config.yaml surfaces via `lit config show`, and
+        # check_project_references already returns [] on a broken config — so
+        # there is no #3 drift to repair and we skip the project-side rebuild
+        # entirely. The rebuild calls themselves are NOT in this try: a genuine
+        # filesystem failure (permission error writing REFERENCES.md, symlink
+        # failure on a reachable project dir) must propagate so
+        # health.py:_apply_fixes does not falsely report "project_references: 1"
+        # for a repair that actually failed (invariant #14 — no silent-skip).
+        try:
+            config = load_config(vault)
+        except ConfigError:
+            config = None
+        if config is not None:
+            projects = dict(config.projects)
+            if projects:
+                rebuild_all_project_links(vault, projects)
+                rebuild_all_project_refs(vault, projects)
+                n_projects = len(projects)
+
+    return {
+        "index": 1,
+        "views": sum(view_counts.values()),
+        "project_refs": n_projects,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -39,70 +140,19 @@ __all__ = ["regen", "regen_index_drop_ids", "resolve", "annotate"]
 
 
 def regen(vault: Path, issues: list[Issue] | None = None) -> dict[str, int]:
-    """Recompute the derived artifacts (INDEX.json + views/ + project refs) from TRUTH.
+    """Recompute the full derived set (INDEX + views + project refs) from TRUTH.
 
-    The derived artifacts are a pure function of the per-paper ``metadata.yaml``
-    truth, so the correct repair for any klass-A drift is to drop them and
-    rebuild wholesale. Lossless: nothing in INDEX/views/project-refs is not also
-    in metadata. Covers all three klass-A pairs (ledger #1/#2/#3):
+    The ``lit health-check --fix`` klass-A corrector (ledger #1/#2/#3). A thin
+    wrapper over :func:`reconcile_derived` (the shared rebuild path) so the
+    ``--fix`` corrector and write commands can never diverge on how a derived
+    artifact is rebuilt — that single-path guarantee is the whole point of
+    M30 Phase 4.
 
-    * ``INDEX.json`` (#1) — ``write_index``.
-    * ``views/by-*/`` (#2) — ``rebuild_views``.
-    * project ``litman_reflib/`` symlinks + ``REFERENCES.md`` (#3) —
-      ``rebuild_all_project_links`` + ``rebuild_all_project_refs``, but only for
-      projects whose directory is reachable on this machine (unreachable ones
-      are skipped, not an error — see ``project_path_exists`` / ADR-014).
-
-    ``issues`` is accepted for a uniform corrector signature but unused —
-    regen always rebuilds the full derived set rather than patching per-issue
-    (cheaper to reason about and idempotent). Returns
-    ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>}``.
-
-    This is Tier-2 only: it calls ``list_papers`` (reads every metadata.yaml),
-    so it MUST NOT run inside the Tier-1 hook (invariant #15). The hook uses
-    :func:`regen_index_drop_ids` instead.
+    ``issues`` is accepted for a uniform corrector signature but unused — regen
+    always rebuilds the full derived set rather than patching per-issue (cheaper
+    to reason about and idempotent).
     """
-    # Local import: document.list_papers pulls the heavier ruamel-typ machinery
-    # that views/notes don't need, and keeps correctors importable without a
-    # cycle through commands/.
-    from litman.core.document import list_papers
-
-    papers = list_papers(vault)
-    views.write_index(vault, papers)
-    view_counts = views.rebuild_views(vault, papers)
-
-    # Project-side derived artifacts (#3). Only when projects are configured;
-    # rebuild_all_* skip unreachable project dirs internally.
-    from litman.core.config import load_config
-    from litman.core.project_link import rebuild_all_project_links
-    from litman.core.project_refs import rebuild_all_project_refs
-    from litman.exceptions import ConfigError
-
-    n_projects = 0
-    # ONLY the config load is swallowed: a broken / unreadable lit-config.yaml
-    # surfaces via `lit config show`, and check_project_references already
-    # returns [] on a broken config — so there is no #3 drift to repair and we
-    # skip the project-side rebuild entirely. The rebuild calls themselves are
-    # NOT in this try: a genuine filesystem failure (permission error writing
-    # REFERENCES.md, symlink failure on a reachable project dir) must propagate
-    # so health.py:_apply_fixes does not falsely report "project_references: 1"
-    # for a repair that actually failed (invariant #14 — no silent-skip).
-    try:
-        config = load_config(vault)
-    except ConfigError:
-        config = None
-    if config is not None:
-        projects = dict(config.projects)
-        if projects:
-            rebuild_all_project_links(vault, projects)
-            rebuild_all_project_refs(vault, projects)
-            n_projects = len(projects)
-
-    return {
-        "index": 1,
-        "views": sum(view_counts.values()),
-        "project_refs": n_projects,
-    }
+    return reconcile_derived(vault, project_refs=True)
 
 
 def regen_index_drop_ids(vault: Path, dead_ids: list[str]) -> int:

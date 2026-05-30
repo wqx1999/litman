@@ -40,20 +40,19 @@ from litman.commands.taxonomy import _ripple_removals, _ripple_replacements
 from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.config import config_to_yaml_dict, load_config
+from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.project_link import rebuild_all_project_links
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
-    rebuild_all_project_refs,
 )
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
     update_user_dict_section,
 )
-from litman.core.views import rebuild_views, render_index
+from litman.core.views import render_index
 from litman.exceptions import TaxonomyError
 
 console = Console()
@@ -346,7 +345,7 @@ def project_rename_cmd(
     new_config_text = _config_with_projects(vault, new_projects)
 
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, _PROJECTS_DICT, {old: new}
+        vault, _PROJECTS_DICT, {old: new}, rename_relevance=True
     )
     fresh_index = render_index(all_papers, _now_iso())
 
@@ -357,17 +356,14 @@ def project_rename_cmd(
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", fresh_index)
 
-    # Rebuild vault-internal views so views/by-project/ shows the new name
-    # and drops the old one (mirrors taxonomy rename; project rename
-    # previously skipped this and left the old name in by-project).
-    if n_changed > 0:
-        rebuild_views(vault, list_papers(vault))
-
-    # Post-commit: rebuild symlinks + REFERENCES.md so the old project name
-    # no longer appears and the new one is materialized. Best-effort per
-    # invariant #9 (filesystem mutation, recoverable via --rebuild-all).
-    rebuild_all_project_links(vault, new_projects)
-    rebuild_all_project_refs(vault, new_projects)
+    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
+    # INDEX + views/by-project/ (new name in, old name out) + every project's
+    # symlinks + REFERENCES.md, all recomputed together from the committed
+    # TRUTH. project_refs=True because a rename touches the project side
+    # (mirrors the pre-funnel command's rebuild_all_project_{links,refs}).
+    # The staged INDEX.json above is the crash-safety layer; the funnel
+    # reloads config (= the just-committed new_projects) for the project side.
+    reconcile_derived(vault, project_refs=True)
 
     console.print(
         f"[bold green]✓ Renamed[/] project {escape(old)} → {escape(new)}"
@@ -546,7 +542,7 @@ def project_rm_cmd(
     new_config_text = _config_with_projects(vault, new_projects)
 
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
-        vault, _PROJECTS_DICT, name
+        vault, _PROJECTS_DICT, name, drop_relevance=True
     )
     fresh_index = render_index(all_papers, _now_iso())
 
@@ -557,11 +553,12 @@ def project_rm_cmd(
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", fresh_index)
 
-    # Rebuild vault-internal views so views/by-project/<name>/ no longer
-    # carries the removed project (mirrors taxonomy rm; project rm previously
-    # skipped this and left a stale by-project tree).
-    if n_changed > 0:
-        rebuild_views(vault, list_papers(vault))
+    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
+    # INDEX + views/by-project/ (the removed project drops out) recomputed
+    # together. project_refs=False: the removed project's own symlinks +
+    # REFERENCES.md are torn down explicitly below, and no other project's
+    # membership changed — behavior identical to the pre-funnel command.
+    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
 
     # Post-commit teardown of the project's on-disk artifacts. Mirrors the
     # unlink pattern: filesystem-mutating, cheap to redo, recoverable.
