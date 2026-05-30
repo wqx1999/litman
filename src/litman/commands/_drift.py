@@ -140,8 +140,8 @@ def check_and_prompt_registry_drift(
         )
         return
 
-    # Bounded-stat instead of vault_registry.find_dangling (a bare stat that
-    # can hang on a dropped HPC mount). Only a definite False counts as
+    # Bounded-stat instead of a bare stat (which can hang on a dropped HPC
+    # mount). Only a definite False counts as
     # dangling; None (timeout / OSError) is "unknown" and never prompts to
     # prune (ADR-014: a slow mount must not look like a deleted vault).
     status = _exists_bounded([v.path for v in reg.vaults])

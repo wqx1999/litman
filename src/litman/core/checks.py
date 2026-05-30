@@ -1114,8 +1114,8 @@ def check_vault_registry_drift(
     so the check slots into ``_CHECK_REGISTRY`` like any other.
 
     Uses the mount-safe **bounded-stat** probe (:func:`_drift._exists_bounded`,
-    ADR-014) rather than ``vault_registry.find_dangling``'s bare ``stat()``,
-    which hangs or false-reports on a dropped HPC mount. This is the
+    ADR-014) rather than a bare ``stat()``, which hangs or false-reports on a
+    dropped HPC mount. This is the
     single-detection-core fix for the M30 §1.1 divergence: registry drift now
     uses bounded-stat in **both** the per-command hook AND ``health-check``.
     Only a definite ``False`` counts as drift; ``None`` (timeout / OSError) is

@@ -1,13 +1,10 @@
 """Tests for the M28 vault registry drift surfacing hook.
 
-Two layers exercised:
-
-1. ``find_dangling`` — pure function over ``VaultRegistry`` (no I/O).
-2. ``check_and_prompt_registry_drift`` — TTY vs non-TTY branches, clean
-   state silence, corrupt-registry silence. The function reads/writes the
-   user-level registry via ``load_registry`` / ``save_registry``, so every
-   test runs under a ``fake_home`` autouse fixture that redirects HOME +
-   clears ``LITMAN_REGISTRY_DIR`` / ``XDG_CONFIG_HOME`` to a tmp dir.
+``check_and_prompt_registry_drift`` — TTY vs non-TTY branches, clean
+state silence, corrupt-registry silence. The function reads/writes the
+user-level registry via ``load_registry`` / ``save_registry``, so every
+test runs under a ``fake_home`` autouse fixture that redirects HOME +
+clears ``LITMAN_REGISTRY_DIR`` / ``XDG_CONFIG_HOME`` to a tmp dir.
 """
 
 from __future__ import annotations
@@ -24,7 +21,6 @@ from litman.core.vault_registry import (
     VaultEntry,
     VaultRegistry,
     VaultRegistryError,
-    find_dangling,
     load_registry,
     registry_path,
     save_registry,
@@ -50,44 +46,6 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return home
-
-
-# ---------------------------------------------------------------------------
-# find_dangling
-# ---------------------------------------------------------------------------
-
-
-def test_find_dangling_empty_registry() -> None:
-    assert find_dangling(VaultRegistry()) == []
-
-
-def test_find_dangling_all_exist(tmp_path: Path) -> None:
-    a = tmp_path / "a"
-    b = tmp_path / "b"
-    a.mkdir()
-    b.mkdir()
-    reg = VaultRegistry(
-        vaults=[
-            VaultEntry(name="a", path=str(a), is_active=True),
-            VaultEntry(name="b", path=str(b), is_active=False),
-        ]
-    )
-    assert find_dangling(reg) == []
-
-
-def test_find_dangling_mixed(tmp_path: Path) -> None:
-    real = tmp_path / "real"
-    real.mkdir()
-    ghost = tmp_path / "ghost"  # not created
-    reg = VaultRegistry(
-        vaults=[
-            VaultEntry(name="real", path=str(real), is_active=True),
-            VaultEntry(name="ghost", path=str(ghost), is_active=False),
-        ]
-    )
-    dangling = find_dangling(reg)
-    assert len(dangling) == 1
-    assert dangling[0].name == "ghost"
 
 
 # ---------------------------------------------------------------------------
