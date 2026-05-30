@@ -52,6 +52,27 @@ from litman.exceptions import LitmanError
 console = Console()
 
 
+def _health_check_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
+    """Return True if ``ts`` is older than ``stale_days`` days before ``now``.
+
+    Defensive parse (M30 §5 / human decision 3): a None / missing / unparseable
+    timestamp counts as STALE so the nudge fires. A legacy *naive* ISO string
+    must not crash — we assume UTC for it rather than raising. ``now`` is passed
+    in (tz-aware) so callers / tests control the clock.
+    """
+    from datetime import datetime, timezone
+
+    if not ts:
+        return True
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (now - parsed).total_seconds() > stale_days * 86400
+
+
 # Workflow-ordered command groups for `lit --help` / `lit help`. Any command
 # not listed here still appears under "Other" (so a newly added command is
 # never silently hidden) — add it to the right section when you add it.
@@ -100,7 +121,16 @@ class LitGroup(click.Group):
         cmd_name: str | None = protected[0] if protected else None
         if cmd_name not in self._DRIFT_SKIP:
             self._run_drift_hook()
-        return super().invoke(ctx)
+        result = super().invoke(ctx)
+        # Post-dispatch staleness nudge (M30 Phase 5), dual to the pre-dispatch
+        # drift hook. Fires on the normal return path; same skip gate as the
+        # drift hook (bare `lit` / `lit --help` / `lit help` / `lit hello` do
+        # not nudge). A command that raises SystemExit (Click's normal exit
+        # path, e.g. `health-check` exit 1) bypasses this — accepted limitation;
+        # the nudge is a passive reminder, not a guarantee on every exit path.
+        if cmd_name not in self._DRIFT_SKIP:
+            self._emit_staleness_nudge()
+        return result
 
     def _run_drift_hook(self) -> None:
         """Tier-1 pre-dispatch drift hook (M28; unified detection M30 Phase 2).
@@ -138,13 +168,31 @@ class LitGroup(click.Group):
 
             vault = self._cheap_active_vault()
 
+            # Single shared bounded-stat budget (spec §7 / verification task 3):
+            # gather every path the cheap bounded-stat checks need (registry
+            # vault paths + active-vault project map paths) and probe them with
+            # ONE _exists_bounded call. The two checks that would otherwise each
+            # probe (vault_registry_drift, project_path_exists) get the result
+            # threaded in via exists_status. Worst-case hung-mount cost is one
+            # 0.5s budget, not two.
+            shared_status = self._cheap_shared_exists(vault)
+
             # Detection: run every cheap check. Vault-scoped checks need a vault
             # dir; the registry check ignores it. Collect the fired categories.
             issues: list[Any] = []
             for spec in cheap_checks():
                 if vault is None and spec.category != "vault_registry_drift":
                     continue
-                issues.extend(spec.fn(vault or Path("/nonexistent"), []))
+                if spec.category in ("vault_registry_drift", "project_path_exists"):
+                    issues.extend(
+                        spec.fn(
+                            vault or Path("/nonexistent"),
+                            [],
+                            exists_status=shared_status,
+                        )
+                    )
+                else:
+                    issues.extend(spec.fn(vault or Path("/nonexistent"), []))
             categories = {i.category for i in issues}
 
             # Correction dispatch, keyed on the unified detection categories.
@@ -237,6 +285,48 @@ class LitGroup(click.Group):
         annotate(vault, vanished, targeted=True)
 
     @staticmethod
+    def _cheap_shared_exists(vault: "Path | None") -> dict[str, "bool | None"]:
+        """Single bounded-stat over every path the cheap checks need (task 3).
+
+        Gathers the registry vault paths plus (when an active vault resolves)
+        its ``lit-config.yaml`` project map paths — expanded with the SAME
+        ``Path(...).expanduser()`` normalization that
+        ``check_project_path_exists`` uses for its lookups — then probes them in
+        ONE :func:`_exists_bounded` call sharing a single 0.5s budget. Returns
+        the ``{path: bool|None}`` map; an empty dict if nothing to probe. Best-
+        effort: a registry / config read failure resolves to whatever paths it
+        could gather (the individual checks fall back to None = unknown for the
+        rest).
+        """
+        from litman.commands._drift import _exists_bounded
+        from litman.core.vault_registry import (
+            VaultRegistryError,
+            load_registry,
+        )
+
+        paths: set[str] = set()
+        try:
+            reg = load_registry()
+            paths.update(v.path for v in reg.vaults)
+        except VaultRegistryError:
+            pass
+
+        if vault is not None:
+            try:
+                from litman.core.config import load_config
+
+                config = load_config(vault)
+                paths.update(
+                    str(Path(p).expanduser()) for p in config.projects.values()
+                )
+            except Exception:
+                pass
+
+        if not paths:
+            return {}
+        return _exists_bounded(sorted(paths))
+
+    @staticmethod
     def _cheap_active_vault() -> "Path | None":
         """Resolve the active vault path without ``find_vault``'s bare stat.
 
@@ -266,6 +356,63 @@ class LitGroup(click.Group):
         if not (candidate / "lit-config.yaml").is_file():
             return None
         return candidate
+
+    @staticmethod
+    def _emit_staleness_nudge() -> None:
+        """Post-dispatch Tier-2 staleness nudge (M30 §5).
+
+        If the **active registered** vault's ``last_health_check_at`` is more
+        than :data:`HEALTH_CHECK_STALE_DAYS` days old (or None / missing /
+        unparseable → treated as stale), emit a one-line dim reminder to run
+        ``lit health-check``. Active vault only: an unregistered ``--library``
+        override has no entry → no nudge.
+
+        Metadata-free (invariant #15): reads only the registry. Always emits
+        (invariant #5 / ADR-007: the agent is the primary consumer and routinely
+        drives ``lit`` non-interactively, so suppressing in non-TTY would silence
+        the reminder for the primary consumer). Only the *destination* is TTY-
+        gated: TTY → stdout tail; non-TTY → stderr (keeps stdout clean for pipes).
+        Non-disableable: no env var / config read can suppress it.
+
+        Wrapped so a failure never crashes the user's command (dual to the
+        pre-dispatch drift hook's defensive wrapper).
+        """
+        try:
+            from datetime import datetime, timezone
+
+            from litman.commands._drift import _default_tty_probe
+            from litman.core.checks import HEALTH_CHECK_STALE_DAYS
+            from litman.core.vault_registry import (
+                VaultRegistryError,
+                find_active,
+                load_registry,
+            )
+
+            try:
+                reg = load_registry()
+            except VaultRegistryError:
+                return
+            active = find_active(reg)
+            if active is None:
+                return
+
+            if not _health_check_is_stale(
+                active.last_health_check_at,
+                now=datetime.now(timezone.utc),
+                stale_days=HEALTH_CHECK_STALE_DAYS,
+            ):
+                return
+
+            line = (
+                "[dim]tip: no `lit health-check` in 14+ days. "
+                "Run it to catch silent drift.[/dim]"
+            )
+            if _default_tty_probe():
+                console.print(line)
+            else:
+                Console(stderr=True).print(line)
+        except Exception:
+            pass
 
     def format_commands(
         self, ctx: click.Context, formatter: click.HelpFormatter

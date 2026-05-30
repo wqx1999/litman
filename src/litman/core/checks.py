@@ -134,6 +134,13 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
 INBOX_STALE_DAYS = 14
 
+# Threshold (days) since the last successful ``lit health-check`` before the
+# Tier-2 staleness nudge fires (M30 Phase 5). Deliberately a SEPARATE constant
+# from :data:`INBOX_STALE_DAYS` — they answer different questions ("you haven't
+# *looked* in 2 weeks" vs "this paper has sat in the inbox 2 weeks") and may
+# diverge later. Non-configurable (a configurable interval is a stealth disable).
+HEALTH_CHECK_STALE_DAYS = 14
+
 # Trash-health warning threshold. Half of the count-based eviction cap
 # (TRASH_MAX_ENTRIES=100, see core/trash.py) — the "approaching limit"
 # midpoint that forms a "50 heads-up → 100 auto-evict" ladder.
@@ -1094,7 +1101,10 @@ def check_project_config_consistency(
 
 
 def check_vault_registry_drift(
-    vault: Path, papers: list[dict[str, Any]]
+    vault: Path,
+    papers: list[dict[str, Any]],
+    *,
+    exists_status: dict[str, bool | None] | None = None,
 ) -> list[Issue]:
     """Registered vault entries whose on-disk directory has gone missing.
 
@@ -1117,6 +1127,12 @@ def check_vault_registry_drift(
     no-silent-skip): "I cannot read the registry" is itself drift, not a clean
     state. The Tier-1 hook's ``check_and_prompt_registry_drift`` surfaces the
     same case to stderr, so both sides are consistent.
+
+    ``exists_status`` (M30 Phase 5 / verification task 3): when the Tier-1 cheap
+    hook has already bounded-stat'd these paths as part of a single shared 0.5s
+    budget, it threads the pre-resolved ``{path: bool|None}`` map in so this
+    check does not re-probe. Tier-2 (``run_all_checks``) passes ``None`` →
+    falls back to its own :func:`_exists_bounded`, byte-unchanged.
     """
     from litman.commands._drift import _exists_bounded
     from litman.core.vault_registry import load_registry
@@ -1140,7 +1156,13 @@ def check_vault_registry_drift(
     if not reg.vaults:
         return []
 
-    status = _exists_bounded([v.path for v in reg.vaults])
+    paths = [v.path for v in reg.vaults]
+    if exists_status is None:
+        status = _exists_bounded(paths)
+    else:
+        # Pre-resolved by the shared cheap-hook budget; any path the hook did
+        # not include resolves to None (= unknown, never flagged).
+        status = {p: exists_status.get(p) for p in paths}
     return [
         Issue(
             category="vault_registry_drift",
@@ -1158,7 +1180,10 @@ def check_vault_registry_drift(
 
 
 def check_project_path_exists(
-    vault: Path, papers: list[dict[str, Any]]
+    vault: Path,
+    papers: list[dict[str, Any]],
+    *,
+    exists_status: dict[str, bool | None] | None = None,
 ) -> list[Issue]:
     """Every lit-config.yaml ``projects:`` path exists and is a directory.
 
@@ -1174,6 +1199,10 @@ def check_project_path_exists(
     just the hook. A definite ``False`` is "does not exist"; a ``True`` that is
     not a directory is still surfaced via a direct ``is_dir`` check (the path
     is reachable, so the extra stat is cheap and cannot hang).
+
+    ``exists_status`` (M30 Phase 5 / verification task 3): the Tier-1 cheap hook
+    threads in its single shared bounded-stat result so this check does not
+    re-probe. Tier-2 passes ``None`` → falls back to its own probe, unchanged.
     """
     from litman.commands._drift import _exists_bounded
     from litman.core.config import load_config
@@ -1190,7 +1219,10 @@ def check_project_path_exists(
         name: str(Path(path_str).expanduser())
         for name, path_str in config.projects.items()
     }
-    status = _exists_bounded(list(paths.values()))
+    if exists_status is None:
+        status = _exists_bounded(list(paths.values()))
+    else:
+        status = {p: exists_status.get(p) for p in paths.values()}
 
     out: list[Issue] = []
     for name, path_str in sorted(config.projects.items()):

@@ -67,10 +67,22 @@ def test_every_spec_tags_are_in_valid_sets() -> None:
 
 
 def test_every_spec_fn_has_check_signature() -> None:
-    """Each spec.fn is callable with the ``check_*(vault, papers)`` shape."""
+    """Each spec.fn is callable with the ``check_*(vault, papers)`` shape.
+
+    The first two parameters are the positional ``(vault, papers)`` contract
+    every spec must honor (``run_all_checks`` calls them that way). Any extra
+    parameters MUST be keyword-only WITH a default, so the positional call site
+    is unaffected (M30 Phase 5 added an optional ``exists_status`` keyword to the
+    two bounded-stat cheap checks to thread the shared probe result).
+    """
     for spec in _CHECK_REGISTRY:
         sig = inspect.signature(spec.fn)
-        assert len(sig.parameters) == 2, spec.category
+        params = list(sig.parameters.values())
+        assert len(params) >= 2, spec.category
+        assert [p.name for p in params[:2]] == ["vault", "papers"], spec.category
+        for extra in params[2:]:
+            assert extra.kind == inspect.Parameter.KEYWORD_ONLY, spec.category
+            assert extra.default is not inspect.Parameter.empty, spec.category
 
 
 def test_auto_fixable_categories_unchanged() -> None:

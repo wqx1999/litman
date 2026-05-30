@@ -180,6 +180,15 @@ class VaultEntry(BaseModel):
             "--vault / --library / $LIT_LIBRARY is given."
         ),
     )
+    last_health_check_at: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 timestamp of the last successful `lit health-check` on "
+            "this vault (tz-aware, written via datetime.now(timezone.utc)). "
+            "None when never run — drives the Tier-2 staleness nudge (M30 "
+            "Phase 5), which treats None / unparseable as stale."
+        ),
+    )
 
     @field_validator("name")
     @classmethod
@@ -424,6 +433,29 @@ def set_active(reg: VaultRegistry, name: str) -> VaultRegistry:
         )
     updated = [
         v.model_copy(update={"is_active": (v.name == name)}) for v in reg.vaults
+    ]
+    return VaultRegistry(vaults=updated)
+
+
+def mark_health_checked(reg: VaultRegistry, name: str, ts: str) -> VaultRegistry:
+    """Return a new registry with ``name``'s ``last_health_check_at`` set to ``ts``.
+
+    Pure (mirrors :func:`set_active`): the caller persists via
+    :func:`save_registry`. ``ts`` should be a tz-aware ISO 8601 string
+    (``datetime.now(timezone.utc).isoformat()``) so the M30 staleness nudge can
+    parse it without ambiguity.
+
+    Raises:
+        VaultRegistryError: ``name`` is not in the registry.
+    """
+    if not any(v.name == name for v in reg.vaults):
+        raise VaultRegistryError(
+            f"No vault named {name!r} in the registry. Run `lit vault list` "
+            "to see what's registered."
+        )
+    updated = [
+        v.model_copy(update={"last_health_check_at": ts}) if v.name == name else v
+        for v in reg.vaults
     ]
     return VaultRegistry(vaults=updated)
 

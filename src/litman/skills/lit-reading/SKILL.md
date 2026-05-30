@@ -305,6 +305,8 @@ At a natural moment (occasionally at session start / after a batch of operations
 
 **Red line: health-check only reports, never auto-fixes** — each fix runs only on the user's nod; never self-correct. Running health-check is Tier 1 (just do it); each proposed fix follows its own tier (e.g. unlinking a dangling clone = Tier 3, ask once).
 
+**Staleness nudge.** When `lit` output ends with the line `tip: no lit health-check in 14+ days. Run it to catch silent drift.`, relay it to the user and offer to run `lit health-check` — never auto-run it.
+
 ## B13 — Mis-deletion recovery (find → confirm → restore)
 
 When the user signals a mis-deletion ("我之前好像误删了那篇关于…的文献", "把删掉的 X 找回来", "I think I deleted that paper by mistake"), run a **find → confirm → restore** flow. lit-reading owns find + confirm; the actual restore chains to lit-library [I].

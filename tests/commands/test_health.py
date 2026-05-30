@@ -1526,3 +1526,111 @@ def test_health_check_reports_vault_registry_drift(
     assert "Vault registry drift" in result.output
     assert "ghost" in result.output
     assert "lit vault remove ghost" in result.output
+
+
+# ===========================================================================
+# last_health_check_at refresh (M30 Phase 5)
+# ===========================================================================
+
+
+def _isolate_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Redirect $HOME so the registry lands in tmp; return the home dir."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return home
+
+
+def test_health_check_refreshes_timestamp_clean_vault(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful health-check on the ACTIVE vault advances its
+    ``last_health_check_at`` even when the vault is clean (exit 0)."""
+    from litman.core.correctors import regen
+    from litman.core.vault_registry import (
+        VaultRegistry,
+        add_vault,
+        find_active,
+        load_registry,
+        save_registry,
+    )
+
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    _isolate_registry(tmp_path, monkeypatch)
+    save_registry(add_vault(VaultRegistry(), "main", vault))
+    assert find_active(load_registry()).last_health_check_at is None
+
+    _write_paper(vault, "2024_Foo_Bar")
+    regen(vault)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+
+    stamped = find_active(load_registry()).last_health_check_at
+    assert stamped is not None
+
+
+def test_health_check_refreshes_timestamp_dirty_vault(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with findings (exit 1), the timestamp refreshes — the nudge means
+    'you haven't looked', not 'your library is clean' (M30 §5)."""
+    from litman.core.vault_registry import (
+        VaultRegistry,
+        add_vault,
+        find_active,
+        load_registry,
+        save_registry,
+    )
+
+    _isolate_registry(tmp_path, monkeypatch)
+    save_registry(add_vault(VaultRegistry(), "main", vault))
+
+    _write_paper(vault, "A_a_a", related=["GHOST"])  # dangling ref → exit 1
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 1, result.output
+
+    stamped = find_active(load_registry()).last_health_check_at
+    assert stamped is not None
+
+
+def test_health_check_unregistered_library_does_not_refresh(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A --library override pointing at a vault that is NOT the active
+    registered entry must not refresh the active entry, and must not crash."""
+    from litman.core.library import create_vault
+    from litman.core.vault_registry import (
+        VaultRegistry,
+        add_vault,
+        find_active,
+        load_registry,
+        save_registry,
+    )
+
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    _isolate_registry(tmp_path, monkeypatch)
+    # Active registered vault is a DIFFERENT directory than the --library target.
+    reg_parent = tmp_path / "registered_parent"
+    reg_parent.mkdir()
+    registered = create_vault(reg_parent)
+    save_registry(add_vault(VaultRegistry(), "main", registered))
+
+    from litman.core.correctors import regen
+
+    _write_paper(vault, "2024_Foo_Bar")
+    regen(vault)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+
+    # The active entry (pointing at `registered`, not `vault`) is untouched.
+    assert find_active(load_registry()).last_health_check_at is None

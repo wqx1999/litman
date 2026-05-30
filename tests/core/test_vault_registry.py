@@ -24,6 +24,7 @@ from litman.core.vault_registry import (
     find_by_name,
     is_valid_vault_name,
     load_registry,
+    mark_health_checked,
     registry_path,
     remove_vault,
     resolve_vault_param,
@@ -481,6 +482,81 @@ def test_set_active_missing_name_raises(vault_a: Path) -> None:
     reg = add_vault(VaultRegistry(), "main", vault_a)
     with pytest.raises(VaultRegistryError, match="No vault named"):
         set_active(reg, "ghost")
+
+
+# ---------------------------------------------------------------------------
+# mark_health_checked (M30 Phase 5)
+# ---------------------------------------------------------------------------
+
+
+def test_vault_entry_last_health_check_defaults_none(vault_a: Path) -> None:
+    """A freshly added vault has never been health-checked."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    assert find_by_name(reg, "main").last_health_check_at is None
+
+
+def test_mark_health_checked_round_trips_iso_string(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """The ISO timestamp survives save + load unchanged."""
+    from datetime import datetime, timezone
+
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    ts = datetime.now(timezone.utc).isoformat()
+    save_registry(mark_health_checked(reg, "main", ts))
+
+    loaded = load_registry()
+    assert find_by_name(loaded, "main").last_health_check_at == ts
+
+
+def test_mark_health_checked_only_targets_named_entry(
+    vault_a: Path, vault_b: Path
+) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    reg = add_vault(reg, "second", vault_b)
+    out = mark_health_checked(reg, "second", "2026-05-30T00:00:00+00:00")
+    assert find_by_name(out, "second").last_health_check_at == (
+        "2026-05-30T00:00:00+00:00"
+    )
+    assert find_by_name(out, "main").last_health_check_at is None
+
+
+def test_mark_health_checked_preserves_at_most_one_active(
+    vault_a: Path, vault_b: Path
+) -> None:
+    """Stamping a timestamp must not disturb the active flag (the model
+    invariant still validates)."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    reg = add_vault(reg, "second", vault_b)
+    out = mark_health_checked(reg, "main", "2026-05-30T00:00:00+00:00")
+    actives = [v.name for v in out.vaults if v.is_active]
+    assert actives == ["main"]
+
+
+def test_mark_health_checked_missing_name_raises(vault_a: Path) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError, match="No vault named"):
+        mark_health_checked(reg, "ghost", "2026-05-30T00:00:00+00:00")
+
+
+def test_extra_forbid_rejects_unknown_key_with_new_field(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """``extra='forbid'`` still rejects an unknown key after adding the new
+    ``last_health_check_at`` field — the schema did not loosen."""
+    p = registry_path()
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        f"vaults:\n"
+        f"  - name: main\n"
+        f"    path: {vault_a}\n"
+        f"    is_active: true\n"
+        f"    last_health_check_at: '2026-05-30T00:00:00+00:00'\n"
+        f"    bogus_key: 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(VaultRegistryError):
+        load_registry()
 
 
 # ---------------------------------------------------------------------------

@@ -453,6 +453,8 @@ Rules:
 
 If unsure whether an operation respects these, run `lit health-check` after — it surfaces vault drift and the user inspects before acting.
 
+**Staleness nudge.** When `lit` output ends with the line `tip: no lit health-check in 14+ days. Run it to catch silent drift.`, relay it to the user and offer to run `lit health-check` — never auto-run it.
+
 ---
 
 ## Quick Reference

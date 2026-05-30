@@ -229,8 +229,45 @@ def health_check_cmd(
 
     _summarize(issues, n_papers)
 
+    # Refresh the active vault's last_health_check_at ON SUCCESS, REGARDLESS of
+    # findings (M30 §5: the nudge means "you haven't *looked* in 2 weeks", not
+    # "your library is dirty"). Only when the resolved vault IS the active
+    # registered vault — a `--library` / `--vault` override to an unregistered
+    # path must NOT refresh (and has no registry entry to refresh anyway).
+    _refresh_active_health_check_timestamp(vault)
+
     if issues:
         sys.exit(1)
+
+
+def _refresh_active_health_check_timestamp(vault: Path) -> None:
+    """Stamp ``last_health_check_at`` on the active registry entry if it matches.
+
+    Best-effort: a registry write failure must not turn a successful
+    health-check into a crash. If it cannot write, the next run simply nudges
+    again — nothing silently wrong (no state was claimed to change).
+    """
+    from datetime import datetime, timezone
+
+    from litman.core.vault_registry import (
+        VaultRegistryError,
+        find_active,
+        load_registry,
+        mark_health_checked,
+        save_registry,
+    )
+
+    try:
+        reg = load_registry()
+        active = find_active(reg)
+        if active is None:
+            return
+        if Path(active.path).resolve() != Path(vault).resolve():
+            return
+        ts = datetime.now(timezone.utc).isoformat()
+        save_registry(mark_health_checked(reg, active.name, ts))
+    except (VaultRegistryError, OSError):
+        pass
 
 
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, int]:
