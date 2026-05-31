@@ -2099,6 +2099,56 @@ def run_all_checks(
     return out
 
 
+# Checks whose findings must NOT block a cloud push: they do not mean the
+# vault *content being mirrored* is corrupt.
+#   - klass A (index / views / project-refs) is excluded structurally below
+#     (derived from TRUTH, fixable by a lossless regen).
+#   - vault_registry_drift: the per-machine registry lives outside the vault
+#     and is never pushed; its only error case is "registry unreadable", a
+#     config problem, not corrupt vault content (and find_vault already
+#     succeeded to reach the gate). Blocking a backup on it is a false stop.
+#   - dangling_wikilinks: its only *error* cases are cross-vault links
+#     ([[other-vault:id]]) — unregistered / unreadable / id-not-found all
+#     depend on this machine's registry + sibling vaults (external state, e.g.
+#     a fresh machine that pulled vault A but has not yet registered sibling
+#     B), and the malformed-link error is a minor authored typo (annotate
+#     class), below the bar for blocking a whole-vault backup. Same-vault
+#     dangling links are warnings and never block regardless.
+_PUSH_GATE_EXCLUDED_CATEGORIES: frozenset[str] = frozenset(
+    {"vault_registry_drift", "dangling_wikilinks"}
+)
+
+
+def run_push_integrity_errors(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Error-severity findings that should block a cloud push (C-ops1).
+
+    ``lit sync push`` mirrors the vault over its only cloud backup
+    (invariant #9: the vault is not git-tracked), so a corrupted local state
+    must not be pushed. This runs every registered check EXCEPT those that do
+    not reflect corruption of the *vault content being mirrored*: the klass-A
+    derived<->truth checks (index / views / project-refs — pure functions of
+    TRUTH, fixable by a lossless regen) and the categories in
+    ``_PUSH_GATE_EXCLUDED_CATEGORIES``. Excluding them matters because blocking
+    a backup on regen-fixable drift would only depress how often the user backs
+    up, which is itself less safe. Only ``error``-severity findings from the
+    remaining checks (TRUTH validity, authored refs, governance) are returned;
+    ``warning`` / ``info`` never block.
+
+    This is a different layer from atomic crash-safety: a torn atomic op
+    (F3) is recovered at vault-open time and may leave no trace here, while
+    this gate catches damage atomic recovery cannot (hand-edited broken
+    schema, half-finished paper dirs). The two are complementary.
+    """
+    out: list[Issue] = []
+    for spec in _CHECK_REGISTRY:
+        if spec.klass == "A" or spec.category in _PUSH_GATE_EXCLUDED_CATEGORIES:
+            continue
+        out.extend(i for i in spec.fn(vault, papers) if i.severity == "error")
+    return out
+
+
 def group_by_category(issues: Iterable[Issue]) -> dict[str, list[Issue]]:
     """Group issues by ``category`` while preserving registry-defined order."""
     grouped: dict[str, list[Issue]] = {}

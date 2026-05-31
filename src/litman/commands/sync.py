@@ -19,6 +19,7 @@ being exercised.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import click
@@ -27,7 +28,9 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.core.checks import run_push_integrity_errors
 from litman.core.config import CONFIG_FILENAME, load_config
+from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.sync import (
     DEFAULT_EXCLUDES,
@@ -306,6 +309,80 @@ def _render_size_preview(
 # ---------------------------------------------------------------------------
 
 
+def _preflight_integrity_gate(
+    vault: Path, *, force: bool, dry_run: bool
+) -> None:
+    """Block a push that would mirror a corrupted vault over the cloud backup.
+
+    ``rclone sync`` overwrites the remote, and the remote is the vault's only
+    version history (invariant #9: the vault is not git-tracked). Pushing a
+    damaged local state (broken metadata, half-restore, hand-edited corruption)
+    would clobber the good cloud copy, so any ``error``-severity finding from a
+    TRUTH-integrity check aborts the push. Derived drift (INDEX / views /
+    project-refs — klass A, fixable by a lossless regen) is deliberately
+    excluded: it must never block a backup. ``warning`` / ``info`` findings
+    never block either.
+
+    ``--force`` overrides the gate ("I know I'm pushing a damaged state").
+    ``--yes`` does NOT — it only skips the size confirmation, so an unattended
+    cron push still refuses to mirror a broken vault. On ``--dry-run`` the gate
+    reports the errors but never aborts (nothing is transferred either way).
+    """
+    errors = run_push_integrity_errors(vault, list_papers(vault))
+    if not errors:
+        return
+
+    shown = errors[:20]
+    lines = [
+        f"[red]•[/] {escape(i.category)}"
+        + (f" [dim]({escape(i.paper_id)})[/]" if i.paper_id else "")
+        + f": {escape(i.message)}"
+        for i in shown
+    ]
+    if len(errors) > len(shown):
+        lines.append(f"[dim]... and {len(errors) - len(shown)} more[/]")
+    body = "\n".join(lines)
+    n = len(errors)
+    plural = "s" if n != 1 else ""
+
+    if dry_run:
+        console.print(
+            Panel.fit(
+                f"{body}\n\n"
+                f"[yellow]{n} integrity error{plural} — a real push would be "
+                f"blocked here. Run [bold]lit health-check --fix[/] first.[/]",
+                title="integrity gate (dry-run)",
+                border_style="yellow",
+            )
+        )
+        return
+
+    if force:
+        console.print(
+            Panel.fit(
+                f"{body}\n\n"
+                f"[bold red]--force:[/] pushing over {n} integrity error{plural}. "
+                f"The cloud backup will be overwritten with this state.",
+                title="integrity gate bypassed",
+                border_style="red",
+            )
+        )
+        return
+
+    console.print(
+        Panel.fit(
+            f"{body}\n\n"
+            f"[bold]Push aborted:[/] {n} integrity error{plural} would be "
+            f"mirrored over your cloud backup.\n"
+            f"Fix with [bold]lit health-check --fix[/], then retry. "
+            f"To push anyway, pass [bold]--force[/].",
+            title="integrity gate",
+            border_style="red",
+        )
+    )
+    sys.exit(1)
+
+
 @sync_group.command("push")
 @click.option(
     "--exclude-repos/--include-repos",
@@ -334,6 +411,14 @@ def _render_size_preview(
     help="Skip the first-push size confirmation prompt (use in scripts).",
 )
 @click.option(
+    "--force", "-f",
+    is_flag=True,
+    default=False,
+    help="Bypass the pre-push integrity gate and mirror the vault even if "
+    "health-check reports errors. --yes does NOT bypass the gate (it only "
+    "skips the size confirmation); only --force does.",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -353,6 +438,7 @@ def sync_push_cmd(
     exclude_repos_flag: bool | None,
     dry_run: bool,
     yes: bool,
+    force: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -363,6 +449,11 @@ def sync_push_cmd(
     .litman-sync-state.yaml and .litman-staging/ paths are
     unconditionally excluded.
 
+    Before transferring, a full health check runs as an integrity gate: any
+    error-severity finding aborts the push so a corrupted local state never
+    overwrites the cloud backup (the vault's only version history). Pass
+    --force to bypass the gate; --yes does NOT bypass it.
+
     On the FIRST push (last-push blank in the sync-state file), prints
     a size preview + top-5 largest files and confirms before transferring.
     Subsequent pushes go straight through; pass --yes to skip the
@@ -371,6 +462,7 @@ def sync_push_cmd(
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    _preflight_integrity_gate(vault, force=force, dry_run=dry_run)
     exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
     extra_excludes = (
         codes_ignore_patterns_to_rclone(codes_patterns) if exclude_repos else ()

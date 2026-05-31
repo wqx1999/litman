@@ -114,13 +114,39 @@ def configured_vault(
 
 
 def _seed_paper(vault: Path, paper_id: str, body: str = "content\n") -> None:
-    """Drop a minimal paper folder + file so push has something to transfer."""
+    """Drop a health-check-clean paper folder so push has something to transfer.
+
+    Carries the schema-required fields (created-at / updated-at / status) and a
+    paper.pdf so the pre-push integrity gate (C-ops1) sees a clean vault. Tests
+    that want the gate to fire seed a *broken* paper explicitly.
+    """
     paper = vault / "papers" / paper_id
     paper.mkdir(parents=True, exist_ok=True)
     (paper / "metadata.yaml").write_text(
-        f"id: {paper_id}\ntitle: Test\nyear: 2024\n", encoding="utf-8"
+        f"id: {paper_id}\n"
+        "title: Test\n"
+        "year: 2024\n"
+        "status: inbox\n"
+        "created-at: '2024-01-01T00:00:00+00:00'\n"
+        "updated-at: '2024-01-01T00:00:00+00:00'\n",
+        encoding="utf-8",
     )
     (paper / "summary.md").write_text(body, encoding="utf-8")
+    (paper / "paper.pdf").write_bytes(b"%PDF-1.4\n%minimal\n")
+
+
+def _seed_broken_paper(vault: Path, paper_id: str) -> None:
+    """A paper missing schema-required fields + paper.pdf.
+
+    Trips the pre-push integrity gate (schema + paper_dir_validity errors),
+    both klass=validity, so the C-ops1 gate must abort the push.
+    """
+    paper = vault / "papers" / paper_id
+    paper.mkdir(parents=True, exist_ok=True)
+    (paper / "metadata.yaml").write_text(
+        f"id: {paper_id}\ntitle: Broken\nyear: 2024\n", encoding="utf-8"
+    )
+    (paper / "summary.md").write_text("broken\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +953,75 @@ def test_cli_sync_push_dry_run_skips_preview_and_transfer(
     assert "Dry-run complete" in result.output
     assert not (fake_rclone_env / "papers" / "p1").exists()
     assert read_sync_state(vault).last_push is None
+
+
+def test_cli_sync_push_integrity_gate_blocks_corrupt_vault(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """A schema-broken paper aborts the push (exit 1) before any transfer."""
+    vault, target = configured_vault
+    _seed_paper(vault, "ok")
+    _seed_broken_paper(vault, "bad")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 1, result.output
+    assert "integrity gate" in result.output.lower()
+    # Nothing transferred; no stamp.
+    assert not (fake_rclone_env / "papers" / "ok" / "summary.md").exists()
+    assert read_sync_state(vault).last_push is None
+
+
+def test_cli_sync_push_yes_does_not_bypass_integrity_gate(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """--yes only skips the size confirm; it must NOT bypass the gate.
+
+    This is the core of C-ops1: an unattended cron push (`--yes`) must still
+    refuse to mirror a broken vault over the cloud backup.
+    """
+    vault, target = configured_vault
+    _seed_broken_paper(vault, "bad")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 1, result.output
+    assert not (fake_rclone_env / "papers" / "bad").exists()
+
+
+def test_cli_sync_push_force_bypasses_integrity_gate(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """--force mirrors the vault even with integrity errors (escape hatch);
+    --yes here only skips the first-push size confirm."""
+    vault, target = configured_vault
+    _seed_broken_paper(vault, "bad")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--force", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "bypassed" in result.output.lower()
+    assert (fake_rclone_env / "papers" / "bad" / "metadata.yaml").is_file()
+    assert read_sync_state(vault).last_push is not None
+
+
+def test_cli_sync_push_dry_run_reports_gate_but_does_not_abort(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """--dry-run surfaces the gate errors but never aborts, and (being a
+    dry-run) transfers nothing."""
+    vault, target = configured_vault
+    _seed_broken_paper(vault, "bad")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["sync", "push", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "integrity gate (dry-run)" in result.output.lower()
+    assert not (fake_rclone_env / "papers" / "bad").exists()
 
 
 def test_cli_sync_push_exclude_repos_flag(
