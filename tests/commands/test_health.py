@@ -597,6 +597,22 @@ def test_dangling_wikilinks_dedupes_per_file(vault: Path) -> None:
     assert len(issues) == 1
 
 
+def test_dangling_wikilinks_present_but_corrupt_paper_not_flagged(
+    vault: Path,
+) -> None:
+    # Review F8: a [[X]] whose papers/X/ exists but has corrupt metadata.yaml
+    # (so list_papers drops it) must NOT be flagged as an absent paper —
+    # directory presence is the truth (ADR-013). The corrupt paper itself is
+    # owned by check_paper_dir_validity, not double-reported here as a dangling
+    # link.
+    _write_paper(vault, "X_x_x")
+    (vault / "papers" / "X_x_x" / "metadata.yaml").write_text(
+        ": : [bad yaml", encoding="utf-8"
+    )
+    _write_paper(vault, "A_a_a", notes="See [[X_x_x]] for context.")
+    assert check_dangling_wikilinks(vault, list_papers(vault)) == []
+
+
 def test_health_missing_deleted_tag(vault: Path) -> None:
     # M24.2 / AC90 missing-tag: [[X]] at an absent paper with no (deleted)
     # marker → warning (hallucination risk).

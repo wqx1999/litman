@@ -740,7 +740,9 @@ def check_dangling_wikilinks(
     """
     from litman.core.vault_registry import find_by_name, load_registry
 
-    known_ids = {str(p.get("id")) for p in papers if p.get("id")}
+    # Same-vault existence is reconciled against papers/<id>/ directory presence
+    # (ADR-013 / review F8), not the list_papers projection, so no id set is
+    # precomputed here; cross-vault refs resolve against the target's INDEX.json.
     out: list[Issue] = []
 
     # Lazy-load the registry once: we don't want to pay the file IO when
@@ -796,9 +798,16 @@ def check_dangling_wikilinks(
             vault_prefix, paper_id = parse_wikilink_target(raw)
 
             if vault_prefix is None:
-                # Same-vault form: reconcile against the filesystem truth
-                # (paper present ⇔ in known_ids). Two M24 drift warnings.
-                exists = paper_id in known_ids
+                # Same-vault form: reconcile against the filesystem truth —
+                # ``papers/<id>/`` directory presence (ADR-013), NOT list_papers
+                # membership. A paper with corrupt / empty metadata.yaml is
+                # dropped by list_papers but its directory still exists, so
+                # keying on known_ids would falsely flag a live [[X]] as
+                # "not in the vault" (review F8). The corrupt paper itself is
+                # owned by check_paper_dir_validity. Two M24 drift warnings.
+                exists = is_valid_id(paper_id) and (
+                    vault / "papers" / paper_id
+                ).is_dir()
                 if not exists and not has_deleted_tag:
                     # Missing-tag: link to an absent paper with no marker.
                     out.append(
@@ -2092,8 +2101,14 @@ def check_code_clone_integrity(
                             f"{back_ref!r} but papers/{back_ref}/ does not exist"
                         ),
                         hint=(
-                            f"`lit code unlink {repo_name} --paper {back_ref}` "
-                            "to drop the stale reverse edge"
+                            # review F30: there is no `lit code unlink`. The
+                            # stale reverse edge lives in repo-meta.papers;
+                            # clear it by hand, or restore the paper if it was
+                            # mis-deleted.
+                            f"remove {back_ref!r} from the papers: list in "
+                            f"codes/{repo_name}/{REPO_META_FILENAME}, or "
+                            f"`lit trash restore {back_ref}` if it was "
+                            "mis-deleted"
                         ),
                     )
                 )

@@ -226,7 +226,29 @@ def test_link_skips_code_symlink_when_repo_missing_locally(
     )
     assert result["code_links"] == []
     assert result["code_links_skipped_missing_repo"] == ["GhostRepo"]
+    assert result["code_links_skipped_symlink_unsupported"] == []
     assert not (project_dir / "litman_code" / "GhostRepo").exists()
+
+
+def test_link_symlink_unsupported_not_reported_as_missing_repo(
+    vault: Path, project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Review F31: the repo IS present but the platform refuses symlinks
+    # (make_relative_symlink -> False). It must be bucketed as
+    # "symlink unsupported", NOT "missing repo" — the latter dead-ends the
+    # user at `lit code restore-all`, which would not help.
+    import litman.core.project_link as pl
+
+    _make_fake_repo(vault, "PresentRepo")
+    _make_paper(vault, "p1", code_clones=["PresentRepo"])
+    monkeypatch.setattr(pl, "make_relative_symlink", lambda *a, **k: False)
+
+    result = link_paper_to_project(
+        vault, "p1", "pepforge", {"pepforge": str(project_dir)}
+    )
+    assert result["code_links"] == []
+    assert result["code_links_skipped_missing_repo"] == []
+    assert result["code_links_skipped_symlink_unsupported"] == ["PresentRepo"]
 
 
 # ---------------------------------------------------------------------------

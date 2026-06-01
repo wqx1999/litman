@@ -220,15 +220,24 @@ def link_paper_to_project(
     make_relative_symlink(
         paper_link_path, (vault / "papers" / paper_id).resolve()
     )
-    code_links_created = []
+    code_links_created: list[str] = []
+    code_links_missing_repo: list[str] = []
+    code_links_symlink_unsupported: list[str] = []
     for repo_name, link_path in zip(code_clones, code_link_paths, strict=True):
         repo_target = (vault / "codes" / repo_name / "repo").resolve()
         if not repo_target.exists():
-            # Repo bound on paper side but not present locally — skip the
-            # symlink. The user can rerun after `lit code restore-all`.
+            # Repo bound on paper side but not present locally — re-clone via
+            # `lit code restore-all`, then `lit link --rebuild-all`.
+            code_links_missing_repo.append(repo_name)
             continue
         if make_relative_symlink(link_path, repo_target):
             code_links_created.append(repo_name)
+        else:
+            # review F31: the repo IS present; the platform refused the symlink
+            # (Windows w/o Developer Mode, FAT32/exFAT, ...). This is NOT a
+            # missing repo — directing the user to `restore-all` would be a
+            # dead end. Track it separately so the CLI gives accurate guidance.
+            code_links_symlink_unsupported.append(repo_name)
 
     # 7) REFERENCES.md
     refs_path = write_references_md(vault, project, project_dir)
@@ -242,9 +251,8 @@ def link_paper_to_project(
         "metadata_changed": metadata_changed,
         "paper_link": paper_link_path,
         "code_links": code_links_created,
-        "code_links_skipped_missing_repo": [
-            r for r in code_clones if r not in code_links_created
-        ],
+        "code_links_skipped_missing_repo": code_links_missing_repo,
+        "code_links_skipped_symlink_unsupported": code_links_symlink_unsupported,
         "references_md": refs_path,
     }
 

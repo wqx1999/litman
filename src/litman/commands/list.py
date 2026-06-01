@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -91,8 +91,16 @@ def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
     try:
         if isinstance(raw, datetime):
             updated = raw.timestamp()
+        elif isinstance(raw, date):
+            # A bare date (YAML safe-loader parses "2026-05-30" into a
+            # datetime.date, NOT a string) has no .timestamp() and is not a
+            # valid fromisoformat() argument — treat it as that day's midnight
+            # instead of sinking the paper to 0.0 (review F29). datetime is a
+            # date subclass, so this branch only catches pure dates (the
+            # datetime check above already handled the common case).
+            updated = datetime(raw.year, raw.month, raw.day).timestamp()
         elif raw:
-            updated = datetime.fromisoformat(raw).timestamp()
+            updated = datetime.fromisoformat(str(raw)).timestamp()
         else:
             updated = 0.0
     except (ValueError, TypeError, OSError, OverflowError):

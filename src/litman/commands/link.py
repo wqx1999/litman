@@ -201,6 +201,15 @@ def link_cmd(
             f"{', '.join(escape(r) for r in result['code_links_skipped_missing_repo'])} "
             "[dim](run `lit code restore-all` then `lit link --rebuild-all`)[/]"
         )
+    if result.get("code_links_skipped_symlink_unsupported"):
+        # review F31: repo present, but this platform refuses symlinks — the
+        # binding holds; restore-all would NOT help here.
+        body_lines.append(
+            f"[yellow]Code symlinks skipped (symlinks unsupported here):[/] "
+            f"{', '.join(escape(r) for r in result['code_links_skipped_symlink_unsupported'])} "
+            "[dim](binding kept; symlinks need Developer Mode / a POSIX "
+            "filesystem)[/]"
+        )
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     if result["added_to_projects"] and not result["set_relevance"]:
         body_lines.append("")

@@ -10,6 +10,7 @@ variable to set. ``--no-register`` opts out.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -23,6 +24,7 @@ from litman.core.vault_registry import (
     ensure_name_registrable,
     find_by_name,
     load_registry,
+    mark_health_checked,
     save_registry,
 )
 from litman.exceptions import VaultRegistryError
@@ -114,6 +116,16 @@ def init_cmd(
         )
     else:
         updated = add_vault(reg, register_name, vault)
+        # review F17: a freshly created vault is in a known-good state
+        # (create_vault writes a valid skeleton), so start its health-check
+        # staleness clock at creation. Otherwise last_health_check_at=None reads
+        # as "never checked == stale" and the post-command nudge fires
+        # immediately on a brand-new library.
+        updated = mark_health_checked(
+            updated,
+            register_name,
+            datetime.now(timezone.utc).isoformat(),
+        )
         save_registry(updated)
         entry = find_by_name(updated, register_name)
         assert entry is not None  # just added
