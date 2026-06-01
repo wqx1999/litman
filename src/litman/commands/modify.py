@@ -34,6 +34,7 @@ from rich.markup import escape
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -146,6 +147,25 @@ def _apply_set(metadata: dict[str, Any], key: str, raw_value: str) -> tuple[Any,
         )
     before = metadata.get(key)
     after = _coerce_scalar(raw_value)
+    # Fixed-enum gate (review F37): status / type / priority accept only their
+    # controlled values, mirroring the read-side check_schema. Without this a
+    # hallucinated `--set status=foo` wrote straight through (invariant #1) and
+    # only surfaced at the next health-check. priority / type may be unset to
+    # None ("not yet evaluated", M29); status may not (its unevaluated state is
+    # the explicit value "inbox").
+    allowed = fixed_enum_values(key)
+    if allowed is not None:
+        if after is None:
+            if not fixed_enum_allows_none(key):
+                raise ModifyError(
+                    f"Cannot unset {key!r}: required field. Allowed values: "
+                    f"{', '.join(sorted(allowed))}."
+                )
+        elif after not in allowed:
+            raise ModifyError(
+                f"Invalid {key} {after!r}. Allowed values: "
+                f"{', '.join(sorted(allowed))}."
+            )
     metadata[key] = after
     return before, after
 

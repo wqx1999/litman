@@ -39,6 +39,7 @@ from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
 from litman.core.dedup import (
     auto_suffix_id,
+    canonicalize_doi,
     find_paper_by_doi,
     suggest_alternative_ids,
 )
@@ -338,6 +339,10 @@ def add_cmd(
         doi_for_dedup = parsed.get("doi") or ""
     else:
         assert doi is not None  # type narrowing for mypy
+        # Canonicalize before the CrossRef fetch: a URL-form / `doi:` DOI in
+        # the path segment 404s (review F11), and the bare form is what we
+        # want for the dedup fallback below (review F10).
+        doi = canonicalize_doi(doi)
         raw = fetch_crossref(doi)
         parsed = parse_crossref(raw)
         doi_for_dedup = parsed.get("doi") or doi

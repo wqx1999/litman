@@ -25,6 +25,7 @@ cost. Each layer is independently testable and called from
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,15 +36,39 @@ from litman.exceptions import AddError
 
 _yaml_safe = YAML(typ="safe")
 
+# Resolver-URL / scheme prefixes that wrap an otherwise-bare DOI. Matched
+# case-insensitively; the DOI body after the prefix is preserved as-is.
+_DOI_PREFIX_RE = re.compile(
+    r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)",
+    re.IGNORECASE,
+)
+
+
+def canonicalize_doi(doi: str) -> str:
+    """Strip a resolver-URL or ``doi:`` prefix, returning the bare DOI.
+
+    The same paper is written as ``https://doi.org/10.1/x``, ``doi:10.1/x``,
+    or the bare ``10.1/x``. Only the bare form works as a CrossRef path
+    segment (review F11), and only consistent canonicalization lets dedup
+    treat the three as equal (review F10). The DOI body and its case are
+    preserved (the prefix match is case-insensitive); use :func:`normalize_doi`
+    for the case-folded *comparison* key. Empty / whitespace input returns ``""``.
+    """
+    stripped = doi.strip()
+    if not stripped:
+        return ""
+    return _DOI_PREFIX_RE.sub("", stripped).strip()
+
 
 def normalize_doi(doi: str) -> str:
-    """Lowercase + strip whitespace.
+    """Canonical (prefix-stripped) + case-folded comparison key for a DOI.
 
-    DOIs are case-insensitive per the DOI Handbook; downstream comparisons
-    must normalize both sides. Public so ``views.render_index`` can use the
-    same form for the ``by_doi`` map and tests can assert byte-equality.
+    DOIs are case-insensitive per the DOI Handbook, and may carry a resolver
+    URL / ``doi:`` prefix; both sides of any comparison must be reduced to the
+    same form. Public so ``views.render_index`` can key the ``by_doi`` map the
+    same way and tests can assert byte-equality.
     """
-    return doi.strip().lower()
+    return canonicalize_doi(doi).lower()
 
 
 def find_paper_by_doi(

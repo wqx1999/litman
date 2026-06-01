@@ -86,3 +86,23 @@ def test_revisit_with_explicit_date_override(
 
     meta = _read_meta(vault, paper_id)
     assert meta["last-revisited"] == "2026-05-11"
+
+
+@pytest.mark.parametrize(
+    "bad_date", ["foo", "2026-5-11", "20260530", "2026-W22-1"]
+)
+def test_revisit_rejects_malformed_and_relaxed_dates(
+    vault_with_paper: tuple[Path, str], bad_date: str
+) -> None:
+    # Review F28: --date must be strict YYYY-MM-DD. Mirrors lit read; both
+    # share core.dates.validate_iso_date.
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["revisit", paper_id, "--date", bad_date, "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    meta = _read_meta(vault, paper_id)
+    assert meta["last-revisited"] is None
+    assert meta["updated-at"] == meta["created-at"]

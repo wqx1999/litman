@@ -188,6 +188,25 @@ _FIXED_ENUM_VALUES: dict[str, frozenset[str]] = {
 # "inbox", not None).
 _OPTIONAL_FIXED_ENUMS: frozenset[str] = frozenset({"priority", "type"})
 
+
+def fixed_enum_values(field: str) -> frozenset[str] | None:
+    """Allowed values for a fixed-enum metadata field, or ``None`` if ``field``
+    is not a fixed enum.
+
+    Read-only accessor so write commands (``lit modify --set``) can enforce the
+    same enum the read-side ``check_schema`` enforces, without reaching into
+    this module's private table. ``None`` is *additionally* a legal value for
+    the fields reported by :func:`fixed_enum_allows_none`.
+    """
+    return _FIXED_ENUM_VALUES.get(field)
+
+
+def fixed_enum_allows_none(field: str) -> bool:
+    """Whether ``field`` is a fixed enum for which ``None`` ("not yet
+    evaluated") is legal (``priority`` / ``type``; M29). ``status`` is not —
+    its unevaluated state is the explicit value ``inbox``."""
+    return field in _OPTIONAL_FIXED_ENUMS
+
 # Forward + reverse relation fields (ADR-012). Sourced from the shared
 # RELATION_PAIRS map so dangling-ref scans cover reverse fields too.
 _REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS

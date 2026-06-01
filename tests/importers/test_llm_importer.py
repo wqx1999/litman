@@ -250,6 +250,17 @@ def test_parse_llm_json_minimal(tmp_path: Path) -> None:
     assert parsed["journal"] == ""
 
 
+def test_parse_llm_json_canonicalizes_url_form_doi(tmp_path: Path) -> None:
+    # Review F10: an LLM that emits a resolver-URL DOI must be stored as the
+    # bare DOI, so a later add of the bare form is recognized as a duplicate.
+    p = _write_json(tmp_path / "meta.json", {
+        **_FULL_LLM_PAYLOAD,
+        "doi": "https://doi.org/10.1093/bioinformatics/btae364",
+    })
+    parsed = parse_llm_json(p)
+    assert parsed["doi"] == "10.1093/bioinformatics/btae364"
+
+
 def test_parse_llm_json_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(ImporterError, match="No LLM metadata JSON"):
         parse_llm_json(tmp_path / "does_not_exist.json")

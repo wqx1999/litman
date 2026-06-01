@@ -228,6 +228,74 @@ def test_modify_set_on_list_field_rejected(
 
 
 # ---------------------------------------------------------------------------
+# --set fixed-enum validation (review F37)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["status=foo", "type=bogus", "priority=Z", "priority=1"],
+)
+def test_modify_set_rejects_invalid_fixed_enum(
+    vault_with_paper: tuple[Path, str], spec: str
+) -> None:
+    # --set on a fixed-enum field must reject values outside the controlled
+    # set, mirroring read-side check_schema (invariant #1).
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", paper_id, "--set", spec, "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "Allowed values" in str(result.exception)
+    # Nothing was written — the original value is preserved.
+    assert _read_meta(vault, paper_id)["status"] == "inbox"
+
+
+@pytest.mark.parametrize("field", ["priority", "type"])
+def test_modify_set_optional_enum_may_be_unset(
+    vault_with_paper: tuple[Path, str], field: str
+) -> None:
+    # priority / type are "not yet evaluated" until the user fills them, so
+    # --set field= (empty → None) is legal (M29).
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", paper_id, "--set", f"{field}=", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)[field] is None
+
+
+def test_modify_set_status_may_not_be_unset(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    # status is required: its unevaluated state is the explicit value "inbox",
+    # so clearing it to None is rejected.
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", paper_id, "--set", "status=", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "required" in str(result.exception)
+
+
+def test_modify_set_valid_fixed_enum_succeeds(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", paper_id, "--set", "status=skim", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["status"] == "skim"
+
+
+# ---------------------------------------------------------------------------
 # --add-tag
 # ---------------------------------------------------------------------------
 

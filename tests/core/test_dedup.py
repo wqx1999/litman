@@ -10,6 +10,7 @@ from ruamel.yaml import YAML
 
 from litman.core.dedup import (
     auto_suffix_id,
+    canonicalize_doi,
     find_paper_by_doi,
     normalize_doi,
     suggest_alternative_ids,
@@ -65,6 +66,52 @@ def test_normalize_doi_lowercases_and_strips() -> None:
 def test_normalize_doi_empty_string_stays_empty() -> None:
     assert normalize_doi("") == ""
     assert normalize_doi("   ") == ""
+
+
+# ---------------------------------------------------------------------------
+# canonicalize_doi (review F10/F11)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "10.1093/bioinformatics/btae364",
+        "https://doi.org/10.1093/bioinformatics/btae364",
+        "http://doi.org/10.1093/bioinformatics/btae364",
+        "https://dx.doi.org/10.1093/bioinformatics/btae364",
+        "doi:10.1093/bioinformatics/btae364",
+        "DOI: 10.1093/bioinformatics/btae364",
+        "  https://doi.org/10.1093/bioinformatics/btae364  ",
+    ],
+)
+def test_canonicalize_doi_strips_all_prefix_forms(raw: str) -> None:
+    assert canonicalize_doi(raw) == "10.1093/bioinformatics/btae364"
+
+
+def test_canonicalize_doi_preserves_body_case() -> None:
+    # Prefix match is case-insensitive, but the DOI body is untouched.
+    assert canonicalize_doi("https://doi.org/10.1/ABC") == "10.1/ABC"
+
+
+def test_canonicalize_doi_empty() -> None:
+    assert canonicalize_doi("") == ""
+    assert canonicalize_doi("   ") == ""
+
+
+def test_find_paper_by_doi_matches_across_prefix_forms(vault: Path) -> None:
+    # F10: a paper stored with a bare DOI must be found when the query carries
+    # a resolver-URL / doi: prefix (and vice versa) — otherwise the same paper
+    # is added twice.
+    _write_paper(vault, "2024_Chen_HELM", doi="10.1093/bioinformatics/btae364")
+    for query in (
+        "https://doi.org/10.1093/bioinformatics/btae364",
+        "doi:10.1093/bioinformatics/btae364",
+        "https://dx.doi.org/10.1093/BIOINFORMATICS/BTAE364",
+    ):
+        hit = find_paper_by_doi(vault, query)
+        assert hit is not None, query
+        assert hit[0] == "2024_Chen_HELM"
 
 
 # ---------------------------------------------------------------------------

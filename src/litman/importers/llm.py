@@ -60,6 +60,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from litman.core.dedup import canonicalize_doi
 from litman.exceptions import ImporterError
 
 
@@ -147,7 +148,7 @@ def _normalize_meta(meta: LLMCandidateMeta) -> dict[str, Any]:
         "authors": list(meta.authors),
         "year": meta.year,
         "journal": meta.journal or "",
-        "doi": (meta.doi or "").strip(),
+        "doi": canonicalize_doi(meta.doi or ""),
         # M12.0 bib-oriented fields.
         "volume": meta.volume or "",
         "issue": meta.issue or "",

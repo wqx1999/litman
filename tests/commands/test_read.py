@@ -173,3 +173,22 @@ def test_read_rejects_non_zero_padded_date(
     meta = _read_meta(vault, paper_id)
     assert meta["read-date"] is None
     assert meta["updated-at"] == meta["created-at"]
+
+
+@pytest.mark.parametrize("bad_date", ["20260530", "2026-W22-1", "2026W221"])
+def test_read_rejects_relaxed_iso_forms(
+    vault_with_paper: tuple[Path, str], bad_date: str
+) -> None:
+    """Review F28: Python 3.11+ relaxed date.fromisoformat to accept ISO basic
+    (20260530) and week dates (2026-W22-1). Those parse to a real date but sort
+    wrong stored as a string, so the shape gate must reject them."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["read", paper_id, "--date", bad_date, "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    meta = _read_meta(vault, paper_id)
+    assert meta["read-date"] is None
+    assert meta["updated-at"] == meta["created-at"]

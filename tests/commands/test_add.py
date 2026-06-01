@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -303,6 +304,51 @@ def test_add_duplicate_doi_case_insensitive(
             "--doi", "10.1093/BIOINFORMATICS/BTAE364",
             "--library", str(vault),
         ],
+    )
+    assert second.exit_code != 0
+    assert isinstance(second.exception, DuplicateDOIError)
+
+
+def test_add_llm_url_form_doi_dedupes_against_bare(
+    vault: Path,
+    fake_pdf: Path,
+    tmp_path: Path,
+) -> None:
+    # Review F10: add a paper via the LLM path with a bare DOI, then try to add
+    # the same paper with a resolver-URL DOI. Without canonicalization the two
+    # forms compared unequal and the paper was ingested twice; now the second
+    # add is refused as a duplicate. (LLM path, so no network mock needed.)
+    runner = CliRunner()
+    j1 = tmp_path / "m1.json"
+    j1.write_text(
+        json.dumps({
+            "title": "Macrocyclic peptide design",
+            "authors": ["Chen, Yi"],
+            "year": 2024,
+            "doi": "10.1093/bioinformatics/btae364",
+        }),
+        encoding="utf-8",
+    )
+    first = runner.invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j1), "--library", str(vault)],
+    )
+    assert first.exit_code == 0, first.output
+
+    _restore_fake_pdf(fake_pdf)
+    j2 = tmp_path / "m2.json"
+    j2.write_text(
+        json.dumps({
+            "title": "Macrocyclic peptide design",
+            "authors": ["Chen, Yi"],
+            "year": 2024,
+            "doi": "https://doi.org/10.1093/bioinformatics/btae364",
+        }),
+        encoding="utf-8",
+    )
+    second = runner.invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j2), "--library", str(vault)],
     )
     assert second.exit_code != 0
     assert isinstance(second.exception, DuplicateDOIError)
