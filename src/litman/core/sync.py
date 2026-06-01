@@ -39,15 +39,25 @@ from litman.exceptions import SyncError
 RCLONE_BIN = "rclone"
 SYNC_STATE_FILENAME = ".litman-sync-state.yaml"
 
-# Filters applied to every push / pull regardless of user config. Both paths
-# are unconditionally machine-local: the staging dir holds in-flight atomic
-# writes (must never leak across machines) and the sync-state file records
-# per-machine timestamps (machine A's last-push time has no meaning on B).
+# Filters applied to every push / pull regardless of user config. All three
+# are unconditionally machine-local or derived:
+#   - ``.litman-staging/`` holds in-flight atomic writes (must never leak
+#     across machines);
+#   - ``views/`` is a pure derived projection of metadata, rebuilt on any
+#     machine with ``lit refresh-views`` — ADR-003 mandates it in the hard
+#     exclude set (review F33). It also holds the vault's only symlinks, so
+#     excluding it keeps ``local_vault_size`` counting exactly what rclone
+#     transfers, killing the permanent false "not in sync" delta (review F35);
+#   - the sync-state file records per-machine timestamps (machine A's
+#     last-push time has no meaning on B).
+# (``.trash/`` is deliberately NOT excluded — ADR-003 keeps the soft-delete
+# buffer backed up to the cloud during its recovery window.)
 #
 # rclone glob syntax: ``**`` matches across path separators; the bare
 # filename matches at any depth (rclone's default behavior for ``--exclude``).
 DEFAULT_EXCLUDES: tuple[str, ...] = (
     ".litman-staging/**",
+    "views/**",
     SYNC_STATE_FILENAME,
 )
 

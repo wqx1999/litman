@@ -243,6 +243,25 @@ def test_local_vault_size_excludes_staging_dir(vault: Path) -> None:
     assert after.bytes == baseline.bytes
 
 
+def test_default_excludes_contains_views() -> None:
+    # Review F33: ADR-003 mandates views/** in the hard exclude set (it is a
+    # derived projection, rebuilt by `lit refresh-views`).
+    assert "views/**" in DEFAULT_EXCLUDES
+
+
+def test_local_vault_size_excludes_views(vault: Path) -> None:
+    """Review F33/F35: the derived views/ tree (the vault's only symlinks) is
+    excluded from the size walk, so the count matches what rclone transfers and
+    there is no permanent false "not in sync" delta."""
+    baseline = local_vault_size(vault)
+    bucket = vault / "views" / "by-topic" / "peptide"
+    bucket.mkdir(parents=True)
+    (bucket / "garbage").write_text("y" * 999, encoding="utf-8")
+    after = local_vault_size(vault)
+    assert after.count == baseline.count
+    assert after.bytes == baseline.bytes
+
+
 # ---------------------------------------------------------------------------
 # SyncState round-trip
 # ---------------------------------------------------------------------------
