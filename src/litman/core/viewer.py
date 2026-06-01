@@ -174,7 +174,19 @@ def launch_pdf(
 
     if viewer == WINDOWS_STARTFILE_SENTINEL:
         # os.startfile is Windows-only; mypy can't see it on other platforms.
-        os.startfile(str(pdf_path))  # type: ignore[attr-defined]
+        try:
+            os.startfile(str(pdf_path))  # type: ignore[attr-defined]
+        except OSError as e:
+            # No application is associated with .pdf (WinError 1155), or the
+            # shell refused the launch. Map to FileNotFoundError so open.py
+            # prints the path + exits 2 (the documented "no usable viewer"
+            # behavior) instead of dumping a raw traceback — matching the
+            # Popen branches below.
+            raise FileNotFoundError(
+                f"Windows could not open {pdf_path}: no associated PDF "
+                "application, or the launch was refused. Set "
+                "default_pdf_viewer in lit-config.yaml to a specific viewer."
+            ) from e
         return ("os.startfile", "platform")
 
     if viewer == "xdg-open" and is_headless():

@@ -343,7 +343,14 @@ def _apply_modify(
     for spec in set_ops:
         key, value = _parse_kv(spec, "--set")
         before, after = _apply_set(metadata, key, value)
-        if skip_set_noop and before == after:
+        # Compare as strings: ruamel round-trips an unquoted YAML date
+        # (read-date / last-revisited) into a datetime.date, while
+        # _coerce_scalar always returns str / int / None. date(2026,6,1) ==
+        # "2026-06-01" is False, so a genuine no-op would otherwise slip
+        # through and bump updated-at on every repeated `lit read` / `lit
+        # revisit`. str() on both sides is safe — _coerce_scalar never returns
+        # a container, and None stringifies identically on both sides.
+        if skip_set_noop and str(before) == str(after):
             # Sugar-command path (lit read / drop / etc.): same-value set
             # is treated as a true no-op so a repeated `lit read X`
             # doesn't bump updated-at. The default `lit modify --set`

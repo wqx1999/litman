@@ -511,7 +511,13 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
         Ordered list of paper ids whose metadata.yaml was rewritten.
     """
     affected: list[tuple[str, dict[str, Any]]] = []
-    for paper_dir in sorted((vault / "papers").iterdir()):
+    papers_root = vault / "papers"
+    if not papers_root.is_dir():
+        # `papers/` may not exist yet (e.g. `lit code add` ran before any
+        # `lit add`). iterdir() on a missing dir raises FileNotFoundError;
+        # guard it the same way every other papers/ walker does.
+        return []
+    for paper_dir in sorted(papers_root.iterdir()):
         if not paper_dir.is_dir():
             continue
         meta_file = paper_dir / "metadata.yaml"
@@ -646,6 +652,7 @@ def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
         )
     before_sha = before.stdout.strip()
 
+    did_unshallow = False
     if unshallow:
         # `--unshallow` is a no-op (with a non-zero exit) on already-full
         # clones; tolerate that case so the user can re-run safely.
@@ -657,6 +664,7 @@ def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
                 raise CodeError(
                     f"git fetch --unshallow failed: {r.stderr.strip()}"
                 )
+            did_unshallow = True
 
     pull = _run(["pull", "--ff-only"])
     if pull.returncode != 0:
@@ -671,7 +679,10 @@ def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
         "before_sha": before_sha,
         "after_sha": after_sha,
         "changed": before_sha != after_sha,
-        "unshallowed": unshallow,
+        # Reflect whether a shallow→full fetch ACTUALLY ran, not merely whether
+        # the user passed --unshallow. Passing it to an already-full clone is a
+        # no-op and must not bump updated-at or print "full history fetched".
+        "unshallowed": did_unshallow,
     }
 
 

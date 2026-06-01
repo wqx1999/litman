@@ -2327,7 +2327,15 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
                 ):
                     entry_name = child.name[: -len(".meta.yaml")]
                     if entry_name not in entry_dirs:
-                        child.unlink()
+                        try:
+                            child.unlink()
+                        except OSError:
+                            # Best-effort: a locked / unremovable sidecar must
+                            # not abort the whole `--fix` run and discard the
+                            # fixes already applied. It stays an orphan and is
+                            # re-detected (and re-offered for fixing) on the
+                            # next health-check.
+                            continue
                         n += 1
         counts["orphan_trash_sidecar"] = n
 

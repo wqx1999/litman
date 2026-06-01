@@ -103,7 +103,7 @@ def open_cmd(
             resolved_id = resolve_paper_id(vault, paper_id)
         except AmbiguousPaperIdError as e:
             console.print(
-                f"[bold yellow]Ambiguous id[/] {escape(paper_id)!r} — "
+                f"[bold yellow]Ambiguous id[/] '{escape(paper_id)}' — "
                 f"{len(e.candidates)} matches:"
             )
             for candidate in e.candidates:

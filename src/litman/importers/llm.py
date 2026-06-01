@@ -234,6 +234,15 @@ def parse_llm_json(json_path: Path) -> dict[str, Any]:
             f"No LLM metadata JSON at {json_path}. "
             "Pass a path that the agent has written."
         )
-    return parse_llm_json_text(
-        json_path.read_text(encoding="utf-8"), source=str(json_path)
-    )
+    try:
+        text = json_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        # is_file() above covers "missing"; the file can still be unreadable
+        # (permissions) or not valid UTF-8. The docstring promises every such
+        # case surfaces as ImporterError, so callers only need to catch one
+        # exception type — honour that contract instead of leaking the raw
+        # OSError / UnicodeDecodeError.
+        raise ImporterError(
+            f"Cannot read LLM metadata JSON at {json_path}: {e}"
+        ) from e
+    return parse_llm_json_text(text, source=str(json_path))

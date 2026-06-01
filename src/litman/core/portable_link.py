@@ -65,18 +65,24 @@ def make_relative_symlink(link_path: Path, target_path: Path) -> bool:
     """
     rel = os.path.relpath(target_path, link_path.parent)
     link_path.parent.mkdir(parents=True, exist_ok=True)
+    obstruction: OSError | None = None
     if link_path.is_symlink() or link_path.exists():
         try:
             link_path.unlink()
-        except OSError:
+        except OSError as err:
             # Pre-existing entry is a non-empty directory or otherwise
-            # un-removable: leave it alone and let symlink_to fail below.
-            pass
+            # un-removable: remember why. If symlink_to fails below, the real
+            # cause is this stale entry, NOT a platform lacking symlink
+            # support — don't misdirect the user to WSL / admin shell.
+            obstruction = err
     try:
         link_path.symlink_to(rel)
         return True
     except OSError as err:
-        _warn_symlink_unsupported(link_path, err)
+        if obstruction is not None:
+            _warn_link_obstructed(link_path, obstruction)
+        else:
+            _warn_symlink_unsupported(link_path, err)
         return False
 
 
@@ -107,6 +113,24 @@ def reset_warning_state() -> None:
     """
     global _WARNED_THIS_PROCESS
     _WARNED_THIS_PROCESS = False
+
+
+def _warn_link_obstructed(link_path: Path, err: OSError) -> None:
+    """Warn that a stale entry blocked the symlink upsert.
+
+    Distinct from :func:`_warn_symlink_unsupported`: here the platform DOES
+    support symlinks, but the existing entry at ``link_path`` could not be
+    removed first (locked file, non-empty directory), so the fix is to clear
+    that entry — not to switch to WSL / enable Developer Mode. Always printed
+    (no once-per-process latch): it is a specific, actionable, per-link
+    condition the user needs to see.
+    """
+    _console.print(
+        f"[yellow]warning:[/] could not replace existing entry at "
+        f"{link_path}: {err}.\n"
+        "[dim]    The symlink was not created. Remove that entry manually "
+        "and re-run; this is NOT a symlink-support problem.[/]"
+    )
 
 
 def _warn_symlink_unsupported(link_path: Path, err: OSError) -> None:

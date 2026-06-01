@@ -651,7 +651,15 @@ def restore_from_trash(
 
     # Drop sidecar now that the restore is committed; a stray sidecar is
     # harmless if this fails (health-check surfaces it).
-    _sidecar_path(entry.entry_path).unlink(missing_ok=True)
+    try:
+        _sidecar_path(entry.entry_path).unlink(missing_ok=True)
+    except OSError:
+        # missing_ok=True only suppresses FileNotFoundError; a locked sidecar
+        # (Windows indexer / antivirus) still raises PermissionError. The
+        # restore already succeeded (folder moved back + INDEX written), so
+        # tolerate the stray sidecar rather than crash a successful restore —
+        # matching the comment above. health-check re-surfaces it later.
+        pass
 
     # Post-stage filesystem rebuild: project symlinks + REFERENCES.md.
     projects_rebuilt = _rebuild_project_links(
@@ -671,18 +679,29 @@ def restore_from_trash(
 
 
 def empty_trash(vault: Path) -> int:
-    """Permanently delete every trash entry and sidecar. Returns count."""
+    """Permanently delete every trash entry and sidecar. Returns count.
+
+    Best-effort per entry (mirrors :func:`enforce_cap`): an entry that cannot
+    be removed (Windows file lock, permissions) is skipped instead of aborting
+    the whole sweep midway, so the returned count reflects what was *actually*
+    deleted rather than diverging from a confirmation prompt. A skipped entry
+    stays in ``.trash/`` and is retried on the next ``lit trash empty``.
+    """
     trash_root = _trash_dir(vault)
     if not trash_root.is_dir():
         return 0
     n = 0
     for child in trash_root.iterdir():
-        if child.is_symlink() or child.is_file():
-            child.unlink()
+        try:
+            if child.is_symlink() or child.is_file():
+                child.unlink()
+            elif child.is_dir():
+                shutil.rmtree(child)
+            else:
+                continue
             n += 1
-        elif child.is_dir():
-            shutil.rmtree(child)
-            n += 1
+        except OSError:
+            continue
     return n
 
 

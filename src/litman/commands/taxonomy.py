@@ -554,7 +554,7 @@ def taxonomy_rm_cmd(
     referencing = find_referencing_papers(papers, dict_name, value)
     if referencing:
         warning_lines = [
-            f"[yellow]⚠[/] Removing {escape(value)!r} from "
+            f"[yellow]⚠[/] Removing '{escape(value)}' from "
             f"{escape(dict_name)} will untag "
             f"[bold]{len(referencing)}[/] paper(s):",
         ]

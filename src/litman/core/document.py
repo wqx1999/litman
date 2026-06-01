@@ -77,7 +77,11 @@ def list_papers(vault: Path) -> list[dict[str, Any]]:
             continue
         try:
             metadata = read_metadata(meta_file)
-        except (OSError, YAMLError):
+        except (OSError, YAMLError, UnicodeDecodeError):
+            # UnicodeDecodeError (a ValueError subclass, NOT an OSError) is
+            # raised by read_text on a metadata.yaml with invalid UTF-8 bytes
+            # (cloud-sync conflict copy, external editor). Without it here a
+            # single bad file would crash the whole `lit list` / `lit show`.
             # Stays read-only + tolerant by design (M30 OQ4): `list_papers`
             # backs `lit list` / `lit show`, which must never crash on one
             # corrupt paper. This is NOT a silent-skip violation — the

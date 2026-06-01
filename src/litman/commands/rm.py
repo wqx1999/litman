@@ -471,16 +471,42 @@ def rm_cmd(
     # ----- Phase 2: paper-folder removal (purge or trash) -----
     # If this fails partway, INDEX has already been updated; health-check
     # will flag the orphan dir.
-    if purge:
-        shutil.rmtree(paper_dir)
-    else:
-        move_to_trash(vault, paper_id, orphan_repos=orphan_repos)
+    try:
+        if purge:
+            shutil.rmtree(paper_dir)
+        else:
+            move_to_trash(vault, paper_id, orphan_repos=orphan_repos)
+    except OSError as e:
+        # The staged metadata + INDEX write already committed above: the
+        # library now considers the paper gone. A filesystem failure here
+        # (Windows file lock, permissions) leaves the folder on disk as an
+        # orphan — no data loss, but a brief inconsistency. Surface it
+        # (invariant #1: never silent) and point at the repair tool instead
+        # of crashing with a raw traceback.
+        console.print(
+            f"[yellow]warning:[/] could not remove "
+            f"{escape(str(paper_dir))}: {escape(str(e))}\n"
+            "  Metadata + INDEX are already updated; run "
+            "`lit health-check --fix` to clear the orphan folder."
+        )
 
     # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
     for repo_name in orphan_repos:
         repo_root = vault / CODES_DIRNAME / repo_name
         if repo_root.is_dir():
-            shutil.rmtree(repo_root)
+            try:
+                shutil.rmtree(repo_root)
+            except OSError as e:
+                # Best-effort, post-commit: the repo's binding was already
+                # cleared in the staged write. A locked / unremovable repo dir
+                # (Windows .git packfiles, antivirus) must not crash a delete
+                # that already succeeded on the metadata side (invariant #1).
+                console.print(
+                    f"[yellow]warning:[/] could not remove orphan repo "
+                    f"{escape(str(repo_root))}: {escape(str(e))}\n"
+                    "  Its binding is already cleared; run "
+                    "`lit health-check --fix` to finish the cleanup."
+                )
 
     # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
     if projects:

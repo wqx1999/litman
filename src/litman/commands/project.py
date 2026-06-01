@@ -502,7 +502,7 @@ def project_rm_cmd(
 
     if referencing:
         warning_lines = [
-            f"[yellow]⚠[/] {escape(name)!r} is referenced by "
+            f"[yellow]⚠[/] '{escape(name)}' is referenced by "
             f"[bold]{len(referencing)}[/] paper(s):",
         ]
         for pid in referencing[:10]:
@@ -515,7 +515,7 @@ def project_rm_cmd(
         warning_lines.append("Removing will:")
         warning_lines.append(
             f"  • Untag these {len(referencing)} paper(s): drop "
-            f"{escape(name)!r} from their projects field"
+            f"'{escape(name)}' from their projects field"
         )
         warning_lines.append(
             "  • Remove from TAXONOMY.md and lit-config.yaml"

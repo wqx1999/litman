@@ -182,7 +182,7 @@ def link_cmd(
     if result["metadata_changed"]:
         if result["added_to_projects"]:
             body_lines.append(
-                f"[dim]Metadata:[/] added {escape(project)!r} to `projects`"
+                f"[dim]Metadata:[/] added '{escape(project)}' to `projects`"
             )
         if result["set_relevance"]:
             body_lines.append(
@@ -301,7 +301,7 @@ def unlink_cmd(
     if result["metadata_changed"]:
         if result["was_in_projects"]:
             body_lines.append(
-                f"[dim]Metadata:[/] removed {escape(project)!r} from `projects`"
+                f"[dim]Metadata:[/] removed '{escape(project)}' from `projects`"
             )
         if result["removed_relevance"]:
             body_lines.append(
