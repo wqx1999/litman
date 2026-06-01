@@ -451,11 +451,16 @@ def _apply_modify(
     # drift apart. The staged INDEX.json above is the crash-safety layer (it
     # matches metadata atomically even if this rebuild is interrupted); this
     # call re-derives the identical INDEX plus the views/ hubs, which are
-    # filesystem-mutating but not text-file-atomic. project_refs=False keeps
-    # behavior identical to the pre-funnel command (modify never rebuilt
-    # project REFERENCES.md / symlinks).
+    # filesystem-mutating but not text-file-atomic.
+    #
+    # review F15: when a `projects` membership tag changed, the project-side
+    # derived artifacts (litman_reflib/<id> symlink + REFERENCES.md) must be
+    # rebuilt too — otherwise `--add-tag projects=X` writes member TRUTH while
+    # the project dir stays stale. Gate on the projects diff so an unrelated
+    # modify (e.g. `--set priority=A`) does not pay the rebuild-all cost.
+    projects_changed = any(key == "projects" for key, _, _ in diffs)
     fresh_papers = list_papers(vault)
-    reconcile_derived(vault, papers=fresh_papers, project_refs=False)
+    reconcile_derived(vault, papers=fresh_papers, project_refs=projects_changed)
 
     # ----- Output -----
     console.print(f"[bold green]✓ Modified[/] {paper_id}")
@@ -474,7 +479,13 @@ def _apply_modify(
         console.print(
             f"  [dim]↔ paired reverse field written on[/] {escape(opposite_id)}"
         )
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    if projects_changed:
+        console.print(
+            "[dim]INDEX.json + views/ + project litman_reflib/REFERENCES.md "
+            "refreshed.[/]"
+        )
+    else:
+        console.print("[dim]INDEX.json + views/ refreshed.[/]")
     return True
 
 

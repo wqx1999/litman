@@ -268,9 +268,19 @@ def rename_cmd(
 
     # ----- Post-commit derived rebuild through the shared funnel (M30 Phase 4) -----
     # INDEX + views recomputed together; the staged INDEX.json above remains
-    # the crash-safety layer. project_refs=False keeps behavior identical
-    # (rename never rebuilt project REFERENCES.md / symlinks).
-    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+    # the crash-safety layer.
+    #
+    # review F14: a project-linked paper's id is embedded in the project's
+    # litman_reflib/<id> symlink and REFERENCES.md, so renaming it leaves a
+    # dangling <old> symlink + a stale REFERENCES.md unless the project side is
+    # rebuilt. Gate on the renamed paper's own membership (rename never changes
+    # any OTHER paper's projects field) so an unlinked paper skips the cost.
+    renamed_is_project_member = bool(renamed_meta.get("projects"))
+    reconcile_derived(
+        vault,
+        papers=list_papers(vault),
+        project_refs=renamed_is_project_member,
+    )
 
     # ----- Output -----
     console.print(

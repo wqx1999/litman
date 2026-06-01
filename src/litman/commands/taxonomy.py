@@ -403,6 +403,10 @@ def taxonomy_merge_cmd(
     sources (in which case the others are removed) or a new value (in
     which case it is added).
     """
+    # review F12: 'projects' carries a lit-config.yaml path binding, so a merge
+    # through the generic taxonomy path would change TAXONOMY.md without the
+    # config map — the same half-update footgun add/rename/rm already reject.
+    _reject_projects_write(dict_name)
     _validate_user_dict(dict_name)
     if not dest.strip():
         raise TaxonomyError("--into value cannot be empty.")

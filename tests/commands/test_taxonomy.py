@@ -572,6 +572,21 @@ def test_taxonomy_rm_projects_hard_error(vault: Path) -> None:
     assert "lit project rm" in str(result.exception)
 
 
+def test_taxonomy_merge_projects_hard_error(vault: Path) -> None:
+    # Review F12: merge was the one writer missing the projects guard, so
+    # `lit taxonomy merge projects ...` would drift TAXONOMY.md away from the
+    # lit-config.yaml projects map. It must reject like add/rename/rm.
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["taxonomy", "merge", "projects", "a", "--into", "b",
+         "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, TaxonomyError)
+    assert "path binding" in str(result.exception)
+
+
 def test_taxonomy_list_projects_still_works(vault: Path) -> None:
     """list is read-only — must NOT be deprecated."""
     runner = CliRunner()

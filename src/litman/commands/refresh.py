@@ -11,6 +11,7 @@ from rich.markup import escape
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.project_link import rebuild_all_project_links
 from litman.core.project_refs import rebuild_all_project_refs
 from litman.core.views import rebuild_views, write_index
 
@@ -45,9 +46,9 @@ def refresh_views_cmd(
     1. INDEX.json — global paper summary + by-doi reverse map.
     2. views/by-*/ symlink hubs — wiped and rebuilt; stale tag buckets
        disappear.
-    3. <project_dir>/litman_reflib/REFERENCES.md for each project in
-       lit-config.yaml's projects map. Per-project failures (missing
-       project dir on this machine) are skipped, not aborted.
+    3. <project_dir>/litman_reflib/ symlinks AND REFERENCES.md for each
+       project in lit-config.yaml's projects map. Per-project failures
+       (missing project dir on this machine) are skipped, not aborted.
 
     The metadata files are the single source of truth; every output here
     is derived and can be regenerated wholesale.
@@ -58,6 +59,11 @@ def refresh_views_cmd(
 
     write_index(vault, papers)
     counts = rebuild_views(vault, papers)
+    # review F16: rebuild the litman_reflib/<id> symlinks too, not just
+    # REFERENCES.md — otherwise a `refresh-views` left dangling/missing project
+    # symlinks while only the text index was current. Links first, then refs
+    # (same order as the shared reconcile_derived funnel).
+    rebuild_all_project_links(vault, config.projects)
     project_results = rebuild_all_project_refs(vault, config.projects)
 
     n = len(papers)

@@ -504,3 +504,123 @@ def test_taxonomy_rm_does_not_touch_relevance(vault: Path) -> None:
     # The relevance-diffusion key is NOT a project relevance annotation; the
     # taxonomy path leaves it untouched.
     assert meta["relevance-diffusion"] == "should survive"
+
+
+# ---------------------------------------------------------------------------
+# Project-side derived rebuild on write commands (review F14/F15/F16)
+# ---------------------------------------------------------------------------
+
+
+def _reflib(proj_dir: Path) -> Path:
+    return proj_dir / "litman_reflib"
+
+
+def test_modify_add_project_tag_builds_project_side(
+    vault: Path, proj_dir: Path
+) -> None:
+    """F15: `lit modify --add-tag projects=X` writes member TRUTH AND builds the
+    project's litman_reflib/<id> symlink + REFERENCES.md (pre-fix it changed
+    only the paper's metadata, leaving the project dir stale)."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=[])
+    correctors.reconcile_derived(vault, project_refs=False)
+
+    result = runner.invoke(
+        cli,
+        ["modify", "2024_A", "--add-tag", "projects=pepforge",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    refs = (_reflib(proj_dir) / "REFERENCES.md").read_text(encoding="utf-8")
+    assert "2024_A" in refs
+
+
+def test_modify_rm_project_tag_clears_project_side(
+    vault: Path, proj_dir: Path
+) -> None:
+    """F15 (symmetric): `--rm-tag projects=X` drops the symlink too."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=[])
+    runner.invoke(
+        cli,
+        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+    )
+    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+
+    result = runner.invoke(
+        cli,
+        ["modify", "2024_A", "--rm-tag", "projects=pepforge",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert not (_reflib(proj_dir) / "2024_A").exists()
+
+
+def test_rename_project_linked_paper_rebuilds_project_side(
+    vault: Path, proj_dir: Path
+) -> None:
+    """F14: renaming a project-linked paper moves its litman_reflib/<id> symlink
+    and re-renders REFERENCES.md (pre-fix it left a dangling <old> symlink)."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=[])
+    runner.invoke(
+        cli,
+        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+    )
+    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+
+    result = runner.invoke(
+        cli,
+        ["rename", "2024_A", "2024_B", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert not (_reflib(proj_dir) / "2024_A").exists()
+    assert (_reflib(proj_dir) / "2024_B").is_symlink()
+    refs = (_reflib(proj_dir) / "REFERENCES.md").read_text(encoding="utf-8")
+    assert "2024_B" in refs
+
+
+def test_refresh_views_rebuilds_litman_reflib_symlinks(
+    vault: Path, proj_dir: Path
+) -> None:
+    """F16: refresh-views rebuilds the litman_reflib/<id> symlinks, not just
+    REFERENCES.md (pre-fix a deleted symlink stayed missing)."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=[])
+    runner.invoke(
+        cli,
+        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+    )
+    link = _reflib(proj_dir) / "2024_A"
+    assert link.is_symlink()
+
+    # Simulate drift: the symlink is gone but membership TRUTH remains.
+    link.unlink()
+    assert not link.exists()
+
+    result = runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert link.is_symlink()
