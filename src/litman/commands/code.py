@@ -242,9 +242,7 @@ def code_add_cmd(
             meta = make_repo_meta(name=repo_name, upstream=clone_url)
         else:
             assert src_path is not None  # mypy/pyright narrowing
-            meta = import_local_repo(
-                src_path, repo_root / REPO_DIRNAME, move=move_src
-            )
+            meta = import_local_repo(src_path, repo_root / REPO_DIRNAME)
         write_repo_meta(repo_root, meta)
         write_notes(repo_root, name=repo_name, upstream=meta.get("upstream"))
         bound_now = False
@@ -254,6 +252,22 @@ def code_add_cmd(
         if repo_root.exists():
             shutil.rmtree(repo_root, ignore_errors=True)
         raise
+
+    # `--move` consumes the source — but only HERE, after the import fully
+    # committed (clone/copy + repo-meta + notes + bind all succeeded). The copy
+    # above is non-destructive, so the except clause can safely rmtree a
+    # half-built vault dir without risking the user's only copy. Deleting the
+    # source last is what closes the data-loss window (bug-report 2026-06-01 #7).
+    if move_src and not use_url and src_path is not None:
+        try:
+            shutil.rmtree(src_path)
+        except OSError as e:
+            console.print(
+                f"[yellow]warning:[/] imported into the vault, but could not "
+                f"remove the original source {escape(str(src_path))}: "
+                f"{escape(str(e))}\n  Delete it manually if you no longer "
+                "need it."
+            )
 
     binding_line = ""
     if paper_id is not None:

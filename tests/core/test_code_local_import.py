@@ -226,6 +226,46 @@ def test_local_git_repo_move_consumes_source(
     assert not local_git_repo.exists()
 
 
+def test_local_move_failure_preserves_source(
+    vault: Path, local_non_git_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (bug-report 2026-06-01 #7): a failure AFTER the copy must
+    not destroy the source under --move.
+
+    Pre-fix, `import_local_repo(move=True)` destroyed the source up front and
+    the except handler then rmtree'd the half-built vault copy — losing BOTH.
+    Now the import copies first and the source is deleted only after the whole
+    add commits, so a mid-import failure leaves the source fully intact.
+    """
+    import litman.commands.code as code_cmd
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise CodeError("simulated post-copy failure")
+
+    # write_repo_meta runs after the copy but before the source would be
+    # consumed — the exact window that used to lose data.
+    monkeypatch.setattr(code_cmd, "write_repo_meta", _boom)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "add", str(local_non_git_dir),
+            "--name", "Moved",
+            "--move",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+
+    # Half-built vault dir is rolled back...
+    assert not (vault / "codes" / "Moved").exists()
+    # ...and the source survives intact — no data loss.
+    assert local_non_git_dir.exists()
+    assert (local_non_git_dir / "main.py").is_file()
+    assert (local_non_git_dir / "README.md").is_file()
+
+
 # ---------------------------------------------------------------------------
 # Non-git directory — auto `git init` + commit
 # ---------------------------------------------------------------------------

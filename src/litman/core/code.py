@@ -257,21 +257,26 @@ def _init_git_repo_at(target_dir: Path, orig_path: Path) -> None:
 def import_local_repo(
     src_path: Path,
     target_repo_root: Path,
-    *,
-    move: bool = False,
 ) -> dict[str, Any]:
     """Import a local directory into ``<vault>/codes/<name>/repo/``.
 
     Three cases, all converging on a ``.git/``-bearing ``target_repo_root``:
 
     1. ``src_path`` is a git repo (``.git/`` exists, file or dir form) →
-       copy / move it whole. ``upstream`` is taken from ``remote.origin.url``
+       copy it whole. ``upstream`` is taken from ``remote.origin.url``
        if set; otherwise ``None``.
-    2. ``src_path`` is a non-empty directory without ``.git/`` → copy / move,
-       then ``git init && add -A && commit`` inside the target so the result
-       is still a normal-looking checkout. ``upstream`` becomes
+    2. ``src_path`` is a non-empty directory without ``.git/`` → copy, then
+       ``git init && add -A && commit`` inside the target so the result is
+       still a normal-looking checkout. ``upstream`` becomes
        ``"local:<absolute-src-path>"`` for provenance tracing.
     3. Anything else (does not exist, is a file, is an empty dir) → raise.
+
+    This import is **always a non-destructive copy**, even for ``lit code add
+    --move``. The source is never touched here: ``--move`` is implemented by
+    the caller deleting the source only AFTER the whole import (repo-meta +
+    notes + paper binding) has committed. Copying first means a failure at any
+    later step can never destroy the user's only copy — the half-built vault
+    dir is rolled back while the source stays intact (bug-report 2026-06-01 #7).
 
     Args:
         src_path: User-supplied path. Already resolved / expanded by the
@@ -279,10 +284,6 @@ def import_local_repo(
         target_repo_root: Destination ``codes/<name>/repo/`` directory. Must
             NOT exist (caller verifies the surrounding ``codes/<name>/`` is
             free of collisions before invoking).
-        move: When ``True``, ``shutil.move`` the source instead of ``cp -r``.
-            Caller's responsibility to wrap in try/except and clean up the
-            half-built target on failure; this function does not own
-            rollback of the surrounding ``codes/<name>/`` directory.
 
     Returns:
         A dict suitable for ``write_repo_meta``: the same shape ``make_repo_meta``
@@ -322,10 +323,11 @@ def import_local_repo(
 
     target_repo_root.parent.mkdir(parents=True, exist_ok=True)
 
-    if move:
-        shutil.move(str(src_path), str(target_repo_root))
-    else:
-        shutil.copytree(src_path, target_repo_root, symlinks=True)
+    # Always a non-destructive copy — see the docstring. `--move` source
+    # removal is owned by the caller and happens only after the full import
+    # commits, so a mid-import failure can never leave the user with neither
+    # the source nor the vault copy.
+    shutil.copytree(src_path, target_repo_root, symlinks=True)
 
     name = target_repo_root.parent.name
     if is_git:
