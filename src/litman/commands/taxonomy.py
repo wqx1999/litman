@@ -35,7 +35,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
-from litman.core.document import list_papers
+from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.taxonomy import (
     ALL_DICTS,
@@ -655,7 +655,7 @@ def _ripple_replacements(
         if not (sources & set(values)) and not has_relevance_key:
             continue
         meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
-        rt_metadata = _yaml.load(meta_path.read_text(encoding="utf-8"))
+        rt_metadata = load_yaml_or_raise(meta_path, _yaml)
         if rt_metadata is None:
             continue
         changed = replace_value_in_field(rt_metadata, field, replacements)
@@ -731,7 +731,7 @@ def _ripple_removals(
         if not is_member and not has_stray_relevance:
             continue
         meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
-        rt_metadata = _yaml.load(meta_path.read_text(encoding="utf-8"))
+        rt_metadata = load_yaml_or_raise(meta_path, _yaml)
         if rt_metadata is None:
             continue
         changed = False

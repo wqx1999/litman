@@ -31,7 +31,7 @@ from typing import Any, Literal
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
-from litman.core.document import list_papers
+from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.views import render_index
 from litman.exceptions import CodeError, PaperNotFoundError
 
@@ -443,13 +443,13 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
             "Run `lit code list` to see available repos."
         )
 
-    paper_meta = _yaml.load(paper_meta_file.read_text(encoding="utf-8"))
+    paper_meta = load_yaml_or_raise(paper_meta_file, _yaml)
     if paper_meta is None:
         raise CodeError(
             f"metadata.yaml at {paper_meta_file} is empty — refusing to bind. "
             "Restore the file or re-run `lit add`."
         )
-    repo_meta = _yaml.load(repo_meta_file.read_text(encoding="utf-8"))
+    repo_meta = load_yaml_or_raise(repo_meta_file, _yaml)
     if repo_meta is None:
         raise CodeError(
             f"repo-meta.yaml at {repo_meta_file} is empty — refusing to bind. "
@@ -680,7 +680,7 @@ def bump_repo_updated_at(vault: Path, repo_name: str) -> None:
     meta_file = vault / CODES_DIRNAME / repo_name / REPO_META_FILENAME
     if not meta_file.is_file():
         raise CodeError(f"No repo-meta.yaml at {meta_file}.")
-    meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
+    meta = load_yaml_or_raise(meta_file, _yaml)
     if meta is None:
         raise CodeError(f"repo-meta.yaml at {meta_file} is empty.")
     meta["updated-at"] = _now_iso()

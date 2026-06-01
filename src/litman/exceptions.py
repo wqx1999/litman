@@ -49,6 +49,31 @@ class PaperNotFoundError(LitmanError):
     """No paper with the given id exists in the vault."""
 
 
+class CorruptMetadataError(LitmanError):
+    """A metadata.yaml / repo-meta.yaml / sidecar exists but cannot be read
+    or parsed as YAML.
+
+    Raised by ``litman.core.document.load_yaml_or_raise`` so a single corrupt
+    or unreadable file surfaces as a friendly, path-naming error at the CLI
+    top level instead of a raw ``YAMLError`` / ``OSError`` traceback. The
+    distinction that motivates a dedicated type: write commands
+    (``lit rename`` / ``lit modify`` / ``lit taxonomy`` / ``lit rm`` /
+    ``lit code``) round-trip-load *other* papers reached through reverse
+    references, so an unrelated corrupt file must not crash the operation
+    on a paper the user never touched.
+
+    Distinct from ``ConfigError`` (which is about ``lit-config.yaml``).
+    """
+
+    def __init__(self, path: object, cause: Exception | None = None) -> None:
+        self.path = path
+        detail = f" ({cause})" if cause is not None else ""
+        super().__init__(
+            f"Cannot read YAML file {path}{detail}. "
+            "Fix the file (invalid YAML or non-UTF-8 encoding), then retry."
+        )
+
+
 class AmbiguousPaperIdError(LitmanError):
     """Partial id supplied to a resolve step matches multiple papers.
 

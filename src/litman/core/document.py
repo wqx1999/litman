@@ -12,9 +12,37 @@ from typing import Any
 from ruamel.yaml import YAML, YAMLError
 
 from litman.core.id import is_valid_id
-from litman.exceptions import PaperNotFoundError
+from litman.exceptions import CorruptMetadataError, PaperNotFoundError
 
 _yaml_safe = YAML(typ="safe")
+
+
+def load_yaml_or_raise(path: Path, loader: YAML) -> Any:
+    """Load a YAML file with ``loader``, converting read / parse failure into
+    a path-carrying :class:`CorruptMetadataError` instead of a raw ``OSError``
+    / ``UnicodeDecodeError`` / ruamel ``YAMLError`` traceback.
+
+    Used by the write commands (rename / modify / taxonomy / rm / code) that
+    round-trip-load a ``metadata.yaml`` or ``repo-meta.yaml`` before rewriting
+    it. A single corrupt or unreadable file — even an *unrelated* one reached
+    through a reverse reference — must surface as a friendly error naming the
+    file, not abort the command with a traceback. Pass the caller's own
+    round-trip ``YAML()`` instance as ``loader`` so comment/quote preservation
+    on the subsequent write-back is unchanged.
+
+    Returns the parsed value, which may be ``None`` for an empty /
+    comment-only file. Callers that distinguish "empty" from "corrupt" keep
+    their existing ``if data is None`` handling — this helper only intercepts
+    the *unreadable* / *unparseable* cases.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CorruptMetadataError(path, exc) from exc
+    try:
+        return loader.load(text)
+    except YAMLError as exc:
+        raise CorruptMetadataError(path, exc) from exc
 
 
 def read_metadata(metadata_path: Path) -> dict[str, Any]:

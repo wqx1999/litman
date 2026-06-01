@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
@@ -393,10 +393,16 @@ def _build_restore_ref_updates(
         if not meta_path.is_file():
             dead.add(opposite_id)
             continue
-        rt = _yaml_rt.load(meta_path.read_text(encoding="utf-8"))
+        try:
+            rt = _yaml_rt.load(meta_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, YAMLError):
+            rt = None
         if rt is None:
-            # Opposite present but empty/corrupt: treat as a dead edge so the
-            # restored paper does not keep a ref into an unreadable target.
+            # Opposite present but empty/corrupt/unreadable: treat as a dead
+            # edge so the restored paper does not keep a ref into an
+            # unusable target (and an unrelated corrupt opposite never aborts
+            # the restore). The one-directional residual is reported later by
+            # check_bidirectional_refs.
             dead.add(opposite_id)
             continue
         changed = False
@@ -456,8 +462,15 @@ def _build_restore_code_updates(
             if repo_name in orphan_repos:
                 missing[repo_name] = orphan_repos[repo_name]
             continue
-        rt = _yaml_rt.load(repo_meta_path.read_text(encoding="utf-8"))
+        try:
+            rt = _yaml_rt.load(repo_meta_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, YAMLError):
+            rt = None
         if rt is None:
+            # Corrupt / unreadable repo-meta: skip the rebind rather than abort
+            # the restore. The forward `code-clones` ref survives on the paper;
+            # the repo→paper asymmetry is surfaced by the code-clone health
+            # check (invariant #12).
             continue
         papers = list(rt.get("papers") or [])
         if paper_id not in papers:

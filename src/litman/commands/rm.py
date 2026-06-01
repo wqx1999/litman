@@ -71,7 +71,7 @@ from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
-from litman.core.document import list_papers
+from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import (
@@ -166,7 +166,7 @@ def _build_cascade_ref_updates(
             # Opposite already gone: nothing to clear. The dangling
             # forward edge rides into trash inside A's own fields.
             continue
-        rt = _yaml.load(meta_path.read_text(encoding="utf-8"))
+        rt = load_yaml_or_raise(meta_path, _yaml)
         if rt is None:
             continue
         changed = False
@@ -227,7 +227,7 @@ def _build_cascade_code_updates(
             # Binding present on the paper side but repo-meta is missing.
             # Nothing to unbind; health-check surfaces the orphan ref.
             continue
-        rt = _yaml.load(repo_meta_path.read_text(encoding="utf-8"))
+        rt = load_yaml_or_raise(repo_meta_path, _yaml)
         if rt is None:
             continue
         papers = rt.get("papers") or []
@@ -385,7 +385,7 @@ def rm_cmd(
             f"Paper folder {paper_dir} has no metadata.yaml — cannot rm "
             "safely. Inspect the directory and remove manually if needed."
         )
-    target_meta = _yaml.load(meta_path.read_text(encoding="utf-8"))
+    target_meta = load_yaml_or_raise(meta_path, _yaml)
     if target_meta is None:
         target_meta = {}
 

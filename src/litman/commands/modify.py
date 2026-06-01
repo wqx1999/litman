@@ -35,7 +35,7 @@ from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.correctors import reconcile_derived
-from litman.core.document import list_papers, read_metadata
+from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
@@ -307,7 +307,7 @@ def _apply_modify(
         )
 
     # Roundtrip-load preserves comments and quoting in the metadata file.
-    metadata = _yaml.load(meta_file.read_text(encoding="utf-8"))
+    metadata = load_yaml_or_raise(meta_file, _yaml)
     if metadata is None:
         raise ModifyError(
             f"metadata.yaml at {meta_file} is empty — refusing to modify. "
@@ -373,7 +373,7 @@ def _apply_modify(
             continue
         opp_meta = opposite_writes.get(opposite_id)
         if opp_meta is None:
-            opp_meta = _yaml.load(opp_file.read_text(encoding="utf-8"))
+            opp_meta = load_yaml_or_raise(opp_file, _yaml)
             if opp_meta is None:
                 continue
         if op_kind == "add":

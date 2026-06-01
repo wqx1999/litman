@@ -13,7 +13,11 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
-from litman.exceptions import ModifyError, PaperNotFoundError
+from litman.exceptions import (
+    CorruptMetadataError,
+    ModifyError,
+    PaperNotFoundError,
+)
 
 _yaml = YAML(typ="safe")
 
@@ -755,6 +759,26 @@ def test_modify_extends_double_writes_reverse(
     assert _read_meta(vault, b)["extended-by"] == [a]
     # opposite paper's updated-at also bumped.
     assert _read_meta(vault, b)["updated-at"] != "2026-04-28T10:00:00+02:00"
+
+
+def test_modify_relation_corrupt_opposite_friendly_error(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    # Review A1: `lit modify A --add-tag extends=B` round-trip-loads B to
+    # mirror the reverse edge. A corrupt B must raise a friendly,
+    # path-naming CorruptMetadataError, not a raw ruamel YAMLError — modifying
+    # A should not crash on an *unrelated* paper's bad YAML.
+    vault, a, b = vault_two_papers
+    (vault / "papers" / b / "metadata.yaml").write_text(
+        "extended-by: [unterminated\n: : :\n", encoding="utf-8"
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CorruptMetadataError)
+    assert b in str(result.exception)
 
 
 def test_modify_extends_rm_double_removes_reverse(

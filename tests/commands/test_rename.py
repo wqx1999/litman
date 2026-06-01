@@ -17,7 +17,11 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
-from litman.exceptions import PaperNotFoundError, RenameError
+from litman.exceptions import (
+    CorruptMetadataError,
+    PaperNotFoundError,
+    RenameError,
+)
 
 _yaml = YAML(typ="safe")
 
@@ -345,6 +349,29 @@ def test_rename_unknown_old_id(vault: Path) -> None:
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, PaperNotFoundError)
+
+
+def test_rename_corrupt_metadata_friendly_error(vault: Path) -> None:
+    # Review A1: renaming a paper whose own metadata.yaml is corrupt must
+    # surface a friendly, path-naming CorruptMetadataError instead of a raw
+    # ruamel YAMLError traceback. resolve_paper_id matches by directory name
+    # (no YAML parse), so the corrupt file is first read at the round-trip
+    # load — exactly the site the shared helper now guards.
+    _write_paper(vault, "2024_Foo_Bar")
+    bad = vault / "papers/2024_Foo_Bar/metadata.yaml"
+    bad.write_text("title: [unterminated\n: : :\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CorruptMetadataError)
+    assert "2024_Foo_Bar" in str(result.exception)
+    # No partial state — the folder is not renamed.
+    assert (vault / "papers/2024_Foo_Bar").is_dir()
+    assert not (vault / "papers/2024_Foo_Baz").exists()
 
 
 def test_rename_target_already_taken(vault: Path) -> None:

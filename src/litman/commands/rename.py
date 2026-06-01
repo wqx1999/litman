@@ -44,7 +44,7 @@ from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.correctors import reconcile_derived
-from litman.core.document import list_papers
+from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
@@ -187,7 +187,7 @@ def rename_cmd(
             f"Renamed paper has no metadata.yaml at {renamed_meta_path}. "
             "Restore the file or remove the directory."
         )
-    renamed_meta = _yaml.load(renamed_meta_path.read_text(encoding="utf-8"))
+    renamed_meta = load_yaml_or_raise(renamed_meta_path, _yaml)
     if renamed_meta is None:
         raise RenameError(
             f"metadata.yaml at {renamed_meta_path} is empty — cannot rename."
@@ -208,7 +208,7 @@ def rename_cmd(
         if not any(old in (paper.get(f) or []) for f in REF_FIELDS):
             continue
         meta_path = vault / "papers" / str(pid) / "metadata.yaml"
-        rt = _yaml.load(meta_path.read_text(encoding="utf-8"))
+        rt = load_yaml_or_raise(meta_path, _yaml)
         if rt is None:
             continue
         if _replace_in_ref_lists(rt, old, new):

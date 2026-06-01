@@ -6,9 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from litman.core.document import find_paper, list_papers, read_metadata
+from ruamel.yaml import YAML
+
+from litman.core.document import (
+    find_paper,
+    list_papers,
+    load_yaml_or_raise,
+    read_metadata,
+)
 from litman.core.library import create_vault
-from litman.exceptions import PaperNotFoundError
+from litman.exceptions import CorruptMetadataError, PaperNotFoundError
 
 
 def _write_paper(vault: Path, paper_id: str, **fields: object) -> Path:
@@ -149,3 +156,41 @@ def test_find_paper_rejects_leading_dot(vault: Path) -> None:
 def test_find_paper_rejects_empty(vault: Path) -> None:
     with pytest.raises(PaperNotFoundError, match="Invalid paper id"):
         find_paper(vault, "")
+
+
+# ---------------------------------------------------------------------------
+# load_yaml_or_raise — corrupt-YAML guard (review A1)
+# ---------------------------------------------------------------------------
+
+
+def test_load_yaml_or_raise_returns_parsed_value(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.yaml"
+    path.write_text("id: 2024_X_Foo\ntitle: Foo\n", encoding="utf-8")
+    data = load_yaml_or_raise(path, YAML())
+    assert data["id"] == "2024_X_Foo"
+    assert data["title"] == "Foo"
+
+
+def test_load_yaml_or_raise_passes_through_empty(tmp_path: Path) -> None:
+    # An empty / comment-only file is *valid* YAML (None), not corrupt — the
+    # helper returns None so callers keep their own "empty file" handling.
+    path = tmp_path / "metadata.yaml"
+    path.write_text("# only a comment\n", encoding="utf-8")
+    assert load_yaml_or_raise(path, YAML()) is None
+
+
+def test_load_yaml_or_raise_on_malformed_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.yaml"
+    path.write_text("id: [unterminated\n  : : :\n", encoding="utf-8")
+    with pytest.raises(CorruptMetadataError) as exc:
+        load_yaml_or_raise(path, YAML())
+    # The friendly message names the offending file.
+    assert str(path) in str(exc.value)
+    assert exc.value.path == path
+
+
+def test_load_yaml_or_raise_on_non_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.yaml"
+    path.write_bytes(b"id: \xff\xfe not utf-8\n")
+    with pytest.raises(CorruptMetadataError):
+        load_yaml_or_raise(path, YAML())
