@@ -59,23 +59,46 @@ JSON file. The CLI refuses both at once.
 | `lit list --read-since 2026-05-01` | Papers with `read-date` on/after the date. |
 | `lit list --added-since 2026-05-01` | Papers with `created-at` on/after the date. |
 | `lit list --unread --sort recent` | Unread papers (empty `read-date`), most-recently-engaged first — the "continue reading" primitive. |
+| `lit list --title attention` | Case-insensitive substring against the title (comma = OR). |
+| `lit list --topic transformer --limit 5` | Keep only the first N papers after filtering + sorting. |
 | `lit show <id>` | Print one paper's full metadata + file paths. |
+| `lit show <id> --format json` | Emit the full metadata dict (every field, not the INDEX projection) for agents. |
+| `lit search attention` | Search your `notes.md` + `discussion.md` for a substring; one hit per matched line. |
+| `lit search attention --in notes` | Narrow the search to notes only (or `--in discussion`). |
+| `lit related <id>` | Find related papers: explicit relation edges first, then shared topics/methods. |
+| `lit related <id> --by edges` | Narrow to author-asserted relation edges only (or `--by taxonomy`). |
+| `lit related <id> --min-shared 2 --limit 10` | Tighten taxonomy neighbours to ≥2 shared keys, cap at 10. |
 
 Available `lit list` filters: `--year`, `--type`, `--status`,
 `--priority`, `--topic`, `--method`, `--project`, `--data`, `--author`,
-`--read-since`, `--added-since`, `--unread`. Multi-valued fields use list
-intersection; `--author` uses substring; `--year`/`--type`/`--status`/
-`--priority` match by exact value. Within any one of those flags,
-comma-separated values are OR-combined (e.g. `--status deep-read,skim`);
-across flags they are AND-combined. `--read-since` filters by `read-date
->= DATE`, `--added-since` by `created-at >= DATE` (strict `YYYY-MM-DD`).
-`--unread` keeps only papers whose `read-date` is empty
-(None/missing/empty string).
+`--title`, `--read-since`, `--added-since`, `--unread`. Multi-valued fields
+use list intersection; `--author` / `--title` use substring;
+`--year`/`--type`/`--status`/`--priority` match by exact value. Within any
+one of those flags, comma-separated values are OR-combined (e.g.
+`--status deep-read,skim`); across flags they are AND-combined.
+`--read-since` filters by `read-date >= DATE`, `--added-since` by
+`created-at >= DATE` (strict `YYYY-MM-DD`). `--unread` keeps only papers
+whose `read-date` is empty (None/missing/empty string). `--limit N` keeps
+the first N papers after filtering + sorting (both table and json).
 
 `--sort [id|recent]` controls order (default `id`, ascending, matches
 `INDEX.json`). `--sort recent` orders most-recently-engaged first, by
 `max(paper.pdf mtime, updated-at)`. Both options apply to `--format json`
 as well as the default table.
+
+`lit search <query>` is a deterministic case-insensitive substring search
+over the per-paper `notes.md` + `discussion.md` only (not the PDF full text,
+not trashed papers, not the `views/` symlinks). It defaults to `--format
+json` (an array of `{id, file, line, snippet}`, agent-facing); pass
+`--format table` for a human view.
+
+`lit related <id>` traverses the emergent knowledge graph: it merges
+author-asserted relation edges (`related` / `extends` / `extended-by` /
+`contradicts` / `contradicted-by`, listed first) with papers sharing
+`topics` / `methods` keys (ranked by shared-key count, no hard threshold).
+Each neighbour carries a `via` annotation (`{via: edge, edge: <field>}` or
+`{via: taxonomy, shared: [...]}`). Defaults to `--format json`; narrow with
+`--by`, tighten with `--min-shared N`, cap with `--limit K`.
 
 ## Scenario 4 — Edit a paper's metadata
 
@@ -121,9 +144,11 @@ through `lit taxonomy` and require a code release to extend.
 | `lit rm <id>` | Move `papers/<id>/` to `<vault>/.trash/`, atomically tearing down all external links to it (other papers' relation fields, repo bindings, project symlinks). Reports the relationship count + a `lit show` pointer, then confirms (default N). |
 | `lit rm <id> --purge` | Permanently delete instead of moving to `.trash/`. |
 | `lit rm <id> -y` | Non-interactive force-delete: skip the prompt and tear down in one step (script / agent path). |
+| `lit rm <id> --dry-run` | Preview only: list the paper + every link that would be cleared / unbound / orphaned, then exit without deleting. |
 | `lit trash list` | Show trash entries, newest first. |
 | `lit trash restore <id>` | Restore a trashed paper to `papers/<id>/`. |
 | `lit trash empty` | Permanently delete every trash entry. |
+| `lit trash empty --dry-run` | Preview only: list every entry that would be permanently removed, then exit without emptying. |
 
 `lit rm` is a single unified flow: it tears down the *external→A* half of
 the relationship network (drops the paper from opposite papers' paired

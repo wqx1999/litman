@@ -1,6 +1,6 @@
 ---
 name: lit-reading
-description: "Read-side companion to the litman vault. Use when the user discusses, compares, or asks about a paper they are reading, looks for related work across their vault, or wants to connect a paper to one of their own projects. Triggers: '这篇文章...', '这篇论文里关于...', '刚才那篇...', '<paper-id> 里...', 'how does it compare to <other>', 'who else does this', 'have I read anything similar', 'connect this to my <project>', '把这个观点和...联系起来', '记下这次讨论'. Also: resume reading ('继续读', '接着上次', '上次读到哪', '我在读哪篇来着', 'continue reading', 'what was I reading'); mis-deletion recovery ('误删了那篇...', '把删掉的 X 找回来', 'restore that paper I deleted'); read-finished verdict ('读完了', '这篇一般/没价值', 'done with this paper'); inbox triage ('清一下 inbox', 'triage my inbox'); library health ('我的库还干净吗', 'is my library still clean'); reading roundup ('最近读了啥', '我这周读了哪些', '汇总我库里关于 X 的', 'what did I read recently', 'summarize my library on X'). NOT for adding/modifying papers — that's the lit-library skill. Drives only reads of the vault (INDEX.json, metadata.yaml, notes.md, discussion.md, the PDF, project dev_docs); regenerates notes.md and appends discussion.md only when the user explicitly asks."
+description: "Read-side companion to the litman vault. Use when the user discusses, compares, or asks about a paper they are reading, looks for related work across their vault, or wants to connect a paper to one of their own projects. Triggers: '这篇文章...', '这篇论文里关于...', '刚才那篇...', '<paper-id> 里...', 'how does it compare to <other>', 'who else does this', 'have I read anything similar', 'connect this to my <project>', '把这个观点和...联系起来', '记下这次讨论'. Also: search my own notes/discussion ('我在 notes 里写过 X 吗', 'where did I note X', 'search my notes'); find related papers ('跟这篇相关的还有哪些', 'related work', 'what builds on this'); resume reading ('继续读', '接着上次', '上次读到哪', '我在读哪篇来着', 'continue reading', 'what was I reading'); mis-deletion recovery ('误删了那篇...', '把删掉的 X 找回来', 'restore that paper I deleted'); read-finished verdict ('读完了', '这篇一般/没价值', 'done with this paper'); inbox triage ('清一下 inbox', 'triage my inbox'); library health ('我的库还干净吗', 'is my library still clean'); reading roundup ('最近读了啥', '我这周读了哪些', '汇总我库里关于 X 的', 'what did I read recently', 'summarize my library on X'). NOT for adding/modifying papers — that's the lit-library skill. Drives only reads of the vault (INDEX.json, metadata.yaml, notes.md, discussion.md, the PDF, project dev_docs); regenerates notes.md and appends discussion.md only when the user explicitly asks."
 ---
 
 # lit-reading — Vault-aware Reading Companion
@@ -36,7 +36,7 @@ Classify every action before you take it.
 
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
-| 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, scan a PDF, query INDEX via `lit list --format json`, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit health-check` |
+| 1 | **Read** | Just do it, don't ask | `lit list` (incl. `--title` / `--limit` / `--format json`), `lit show` (incl. `--format json` for the full field set), `lit search` (notes/discussion content), `lit related` (knowledge-graph neighbours), scan a PDF, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit health-check`. All retrieval is high-autonomy and freely composable (`search` → `show --format json` → `related`). |
 | 2 | **Write, reversible, single-paper** | Do it, then report | the evaluation stamps `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit`, and `lit modify --set priority=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (ingest), `lit code add` (git clone), `lit taxonomy add` / `lit project add`, `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` (governance) |
 
@@ -90,7 +90,7 @@ The CLI hard-rejects unregistered controlled-vocabulary values, so your job is t
 
 When the user drops a **raw PDF path** into the conversation and wants to discuss it, the first job is to find out whether it's already in the vault. A bare PDF has no metadata, no TAXONOMY, no notes, no project binding — chain to lit-library to ingest first, then discuss.
 
-1. **Defensively check in-vault by title.** Grep the `title` field of `lit list --format json` for the PDF's title. If you can read a DOI off the PDF, `lit show --paper-doi <doi>` is the exact check.
+1. **Defensively check in-vault by title.** `lit list --title <substr>` (a distinctive word or two from the PDF's title) does the filtering file-side — do NOT pull `lit list --format json` whole and grep the title yourself. If you can read a DOI off the PDF, `lit show --paper-doi <doi>` is the exact check.
 2. **If not in vault → propose-confirm:** "this isn't in your vault — want me to `lit add` it?" On the user's **yes**, chain to lit-library [A] (LLM-augmented) or [B] (DOI path); pass the PDF path + any DOI. Then **resume at lit-reading Phase 2** with the new id.
 3. **A bare DOI / URL with no local file is NOT a raw-PDF entry trigger.** `lit add` ingests from a local PDF. If the user gives only a DOI/URL, do not treat it as an entry PDF — lit-library [B] will explain the precondition and ask for the file path.
 
@@ -122,15 +122,24 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 ### Locate-by-cue (the user names a paper)
 
-**Rule:** never grep INDEX for a field the projection doesn't carry. The projection is id / title / year / type / priority / status / topics / projects / methods / data / doi / read-date — `authors` is NOT in it.
+**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / year / type / priority / status / topics / projects / methods / data / doi / read-date; for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
 
-1. **Direct id given** → `lit show <id>` (or read `<vault>/papers/<id>/metadata.yaml`) to confirm it exists. If missing, ask the user; do not silently substitute another paper.
+| Cue | Command |
+|---|---|
+| Direct id | `lit show <id>` (or `--format json` for the full field set, all authors, every edge) |
+| Author ("Pandi 那篇") | `lit list --author <cue> --format json` |
+| Title ("标题里带 X 的") | `lit list --title <substr> --format json` |
+| Topic / method ("the GAT one") | Tier-2 discovery below (`lit list --topic X --format json`) |
+| Something I wrote in notes ("我之前在 notes 里写过关于 X 的看法吗") | `lit search <query>` (searches `notes.md` + `discussion.md`) |
+
+1. **Direct id given** → `lit show <id>` to confirm it exists (add `--format json` when you need the full metadata dict, not just the projection — see Phase 2). If missing, ask the user; do not silently substitute another paper.
 2. **Author cue** ("Pandi 那篇") → `lit list --author <cue> --format json`. The `--author` filter matches file-side; the returned rows don't echo the author, but **being *in* the result is the hit**.
-3. **Title cue** → grep the `title` field of `lit list --format json` (title IS in the projection).
+3. **Title cue** → `lit list --title <substr> --format json` (case-insensitive substring, comma = OR). The CLI does the filtering file-side — do NOT pull `lit list --format json` whole and grep the title yourself.
    - 1 candidate → use it; confirm to the user "I'm reading `2023_Pandi_Cell-free`, Pandi et al. 2023 — *Cell-free …*" so they can correct.
    - 2–5 → list and ask which one.
    - >5 → ask the user to narrow the cue; do not list 30 rows.
 4. **Topic cue** ("the GAT one", "anything on peptide hemolysis") → Tier-2 discovery below (`lit list --topic X --format json`).
+5. **Notes-content cue** ("我之前在 notes / discussion 里写过关于 X 的看法吗", "where did I note that idea") → `lit search <query>`. This is the ONLY path to your own free-form notes; it returns `{id, file, line, snippet}` per matched line. Narrow with `--in notes` / `--in discussion`. **The PDF full text is NOT searched** (that's `lit open` / the PDF ladder).
 
 ### Bounded-retrieval ladder (in-vault; reuse in Phase 3)
 
@@ -139,11 +148,13 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 | Tier | Trigger | How | Reads INDEX into context? |
 |---|---|---|---|
 | 0 focus paper | already in Phase 2 | the loaded focus metadata + notes + discussion | no |
-| 1 explicit edges (preferred) | "related to this", "what does it extend", "what builds on / disputes this" | the focus metadata's `related` / `extends` / `extended-by` / `contradicts` / `contradicted-by` ids (the CLI stores **inbound** edges too) + ids named in `discussion.md` → `lit show <id>` | no |
-| 2 bounded discovery (fallback) | "anything similar", "what's in my library about X" | `lit list --topic X --format json` (CLI filters file-side, returns only matching rows) | file read by CLI, NOT into context |
-| never | — | `cat INDEX.json` whole | ❌ |
+| 1 neighbours (preferred) | "跟这篇相关的还有哪些", "related to this", "what does it extend", "what builds on / disputes this", "anything similar to this one" | `lit related <id>` — one command returns explicit edges first (`related` / `extends` / `extended-by` / `contradicts` / `contradicted-by`, both inbound + outbound), then shared-topic/method neighbours ranked by overlap. Each row carries a `via` annotation (`edge:<field>` or `taxonomy:` + the shared keys) so you can read *why* / how strong. Narrow with `--by edges` / `--by taxonomy`; tighten taxonomy noise with `--min-shared 2`. | no |
+| 2 bounded discovery (fallback) | "what's in my library about X" (no focus paper) | `lit list --topic X --format json` (CLI filters file-side, returns only matching rows) | file read by CLI, NOT into context |
+| never | — | `cat INDEX.json` whole; pulling all rows to compute shared keys by hand | ❌ |
 
-`lit list --format json` is the **Tier-2 primary path**. `data` is in the projection — no `lit list --data X` workaround needed.
+`lit related <id>` replaces the old hand-walk of the focus paper's edge fields + manual shared-key counting — do NOT reconstruct the graph yourself by pulling `lit list --format json` and intersecting topics. `lit list --format json` is the **Tier-2 primary path** (no focus paper). `data` is in the projection — no `lit list --data X` workaround needed.
+
+**Composable read-only chain (high autonomy — self-invoke, don't ask):** all of `lit search`, `lit show --format json`, `lit related`, and `lit list` filters are read-only retrieval. Chain them freely without confirmation: `lit search <term>` to find the paper id that mentions a thing → `lit show <id> --format json` to load its full record → `lit related <id>` to fan out to neighbours. Only a *write* (modify / link / append) needs the user gate.
 
 **Cross-vault:** this ladder operates within the active vault. If a paper id isn't in the active vault, cross-vault lookup goes through `[[<vault>:<id>]]` wikilinks + `lit vault list`.
 
@@ -152,8 +163,9 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 - **"What did I read recently"** → `lit list --sort recent --format json`. **Summarize the returned rows, do NOT re-sort.** **Honesty constraint:** recency is a *proxy* for engagement — phrase it "your most-recently-touched papers, probably what you read lately", never a precise "you read these this week". Use `--sort recent` for fuzzy "what did I touch lately" queries.
 - **"What did I read / add since a date"** → for a precise date lower-bound, `lit list --read-since YYYY-MM-DD --format json` (papers I read on/after that date) or `lit list --added-since YYYY-MM-DD --format json` (papers I added to the vault on/after it). `--read-since` reads `read-date`, `--added-since` reads `created-at` — they never cross.
 - **"Summarize my library on X"** → Tier 2 (`lit list --topic` / `--method` / `--project X --format json`).
+- **"What did I write / note about X"** → `lit search X` (notes + discussion). This is the dedicated retrieval path for your own free-form prose; never `grep papers/*/notes.md` by hand.
 
-Both stay read-only — never `grep` the vault or `cat` INDEX.json; no per-paper load unless the user drills into one.
+All stay read-only — never `grep` the vault or `cat` INDEX.json; route notes/discussion content queries through `lit search` and metadata queries through `lit list` / `lit show`; no per-paper load unless the user drills into one.
 
 ## Phase 2 — Load paper context (lazy)
 
@@ -187,13 +199,14 @@ If `notes.md` is empty or absent (a paper still in `inbox`), say so, then offer 
 
 ## Phase 3 — Cross-paper / cross-vault retrieval (on demand)
 
-Only run when the user asks for comparison, related work, or "anything similar". Use the bounded-retrieval ladder (Phase 1): prefer the focus paper's explicit edges (Tier 1), fall back to a controlled-vocab discovery slice (Tier 2). Do **not** deep-load all candidates — only after the user picks one or two does it pay to read their metadata + notes.
+Only run when the user asks for comparison, related work, or "anything similar". With a focus paper in hand, **`lit related <id>` is the one command for this** (Tier 1 of the Phase-1 ladder): it returns explicit edges first, then shared-topic/method neighbours ranked by overlap, each tagged with a `via` annotation. Fall back to a controlled-vocab discovery slice (`lit list --topic`, Tier 2) only when there is no focus paper. Do **not** deep-load all candidates — only after the user picks one or two does it pay to read their metadata + notes.
 
 **Neighbor output — signpost discipline (do NOT auto-expand):**
 
+- Run `lit related <id>` and read its `via` field; **do not** recompute shared keys by hand.
 - Emit **one signpost line**, not a fan-out.
-- **Threshold = the neighbor shares ≥2 TAXONOMY keys** with the focus paper.
-- **List at most 3**, ranked by overlap size, citing the *actual* shared TAXONOMY values as the "why" (never invented reasons). Beyond 3, just say "N more related".
+- **Filter taxonomy noise with `--min-shared 2`** when the user wants only strong neighbours (a single shared generic topic is weak). Explicit-edge neighbours are always strong regardless of shared count.
+- **List at most 3**, in the command's returned order (edges first, then overlap-ranked), citing the *actual* `via` reason as the "why" (the `edge:<field>` label or the shared TAXONOMY values — never invented reasons). Beyond 3, just say "N more related".
 - Deep-load stays **on-demand** — only after the user picks one.
 
 **Cross-vault references:** notes and discussion files may contain `[[<vault>:<paper-id>]]` wikilinks pointing at another registered vault. If the focus paper has such a link, resolve the target via `lit vault list` and use that vault's index exactly as in Phase 1. Surface the source vault explicitly: "From the *peptide-design* vault — `2024_Foo_Bar` …".
@@ -328,8 +341,10 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 
 | Command | Why this skill calls it | Tier |
 |---|---|---|
-| `lit list [--format json] [--topic/--author/--status/--project ...] [--unread] [--sort recent]` | locate / bounded retrieval / resume / triage / roundup | 1 (read) |
-| `lit show <id>` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud | 1 (read) |
+| `lit list [--format json] [--topic/--author/--title/--status/--project ...] [--unread] [--sort recent] [--limit N]` | locate / bounded retrieval / resume / triage / roundup; `--title` = title-substring cue, `--limit` = top-N | 1 (read) |
+| `lit show <id> [--format json]` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud; `--format json` returns the FULL field set (all authors, every edge), beyond the INDEX projection | 1 (read) |
+| `lit search <query> [--in notes,discussion]` | the ONLY path to your own free-form notes / discussion ("我在 notes 里写过 X 吗"); returns `{id,file,line,snippet}` per matched line | 1 (read) |
+| `lit related <id> [--by edges|taxonomy] [--min-shared N]` | knowledge-graph neighbours ("跟这篇相关的还有哪些"): explicit edges first, then shared-topic/method, each with a `via` reason | 1 (read) |
 | `lit vault list` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
 | `lit project list` | canonical source for the registered project set AND each project's path | 1 (read) |
 | `lit trash list` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |

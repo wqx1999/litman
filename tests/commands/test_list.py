@@ -568,3 +568,101 @@ def test_list_displays_dash_for_none_priority_and_type(tmp_path: Path) -> None:
     assert "2024_Unset_Paper" in result.output
     # The literal string "None" must not appear (would mean str(None) leaked).
     assert "None" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# --title (M33)
+# ---------------------------------------------------------------------------
+
+
+def test_list_title_substring(vault: Path) -> None:
+    result = _invoke(vault, "--title", "BERT")
+    assert result.exit_code == 0
+    assert "2024_Smith_BERT" in result.output
+    assert "2023_Pandi_Cellfree" not in result.output
+    assert "1 of 3" in result.output
+
+
+def test_list_title_case_insensitive(vault: Path) -> None:
+    result = _invoke(vault, "--title", "bert")
+    assert result.exit_code == 0
+    assert "2024_Smith_BERT" in result.output
+
+
+def test_list_title_or_within_field(vault: Path) -> None:
+    result = _invoke(vault, "--title", "bert,gnn")
+    assert result.exit_code == 0
+    assert "2024_Smith_BERT" in result.output
+    assert "2024_Doe_GNN" in result.output
+    assert "2 of 3" in result.output
+
+
+def test_list_title_combines_with_other_filters(vault: Path) -> None:
+    # AND across flags: title contains "review" AND year 2024.
+    result = _invoke(vault, "--title", "review", "--year", "2024")
+    assert result.exit_code == 0
+    assert "2024_Smith_BERT" in result.output
+    assert "1 of 3" in result.output
+
+
+def test_list_title_json(vault: Path) -> None:
+    result = _invoke(vault, "--title", "gnn", "--format", "json")
+    payload = json.loads(result.output)
+    assert [p["id"] for p in payload] == ["2024_Doe_GNN"]
+
+
+# ---------------------------------------------------------------------------
+# --limit (M33)
+# ---------------------------------------------------------------------------
+
+
+def test_list_limit_slices_table(vault: Path) -> None:
+    result = _invoke(vault, "--limit", "1")
+    assert result.exit_code == 0
+    # id-asc order: 2023_Pandi_Cellfree is first.
+    assert "2023_Pandi_Cellfree" in result.output
+    assert "2024_Smith_BERT" not in result.output
+
+
+def test_list_limit_slices_json(vault: Path) -> None:
+    result = _invoke(vault, "--limit", "2", "--format", "json")
+    payload = json.loads(result.output)
+    assert len(payload) == 2
+    assert [p["id"] for p in payload] == [
+        "2023_Pandi_Cellfree",
+        "2024_Doe_GNN",
+    ]
+
+
+def test_list_limit_with_sort_recent(vault: Path) -> None:
+    """--limit applies after the recency sort, honored by json output."""
+    result = _invoke(vault, "--sort", "recent", "--limit", "1", "--format", "json")
+    payload = json.loads(result.output)
+    assert len(payload) == 1
+
+
+def test_list_limit_larger_than_count(vault: Path) -> None:
+    result = _invoke(vault, "--limit", "99", "--format", "json")
+    payload = json.loads(result.output)
+    assert len(payload) == 3
+
+
+def test_list_limit_table_title_reports_matched_count(vault: Path) -> None:
+    # Regression: --limit truncates the displayed rows but the title's count
+    # must stay the TRUE match count, not the limited/shown count masquerading
+    # as it. All three papers are research/review across 2024+2023; --year
+    # 2024 matches two of them, --limit 1 shows one — the title must say the
+    # matched count (2), distinguished as a limit.
+    result = _invoke(vault, "--year", "2024", "--limit", "1")
+    assert result.exit_code == 0
+    # True match count surfaces; the shown "1" never poses as the match count.
+    assert "of 2" in result.output
+    assert "Papers (1 of 3)" not in result.output
+
+
+def test_list_limit_json_unaffected_by_title_fix(vault: Path) -> None:
+    # The title fix must not change json behavior: --limit 1 still returns
+    # exactly one item.
+    result = _invoke(vault, "--year", "2024", "--limit", "1", "--format", "json")
+    payload = json.loads(result.output)
+    assert len(payload) == 1

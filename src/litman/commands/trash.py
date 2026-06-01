@@ -325,6 +325,13 @@ def trash_restore_cmd(
     help="Skip the y/N confirmation prompt.",
 )
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview only — list every trash entry that would be permanently "
+    "removed, then exit without emptying the trash.",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -342,14 +349,35 @@ def trash_restore_cmd(
 )
 def trash_empty_cmd(
     skip_confirm: bool,
+    dry_run: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Permanently delete every trash entry."""
+    """Permanently delete every trash entry.
+
+    --dry-run lists every entry that would be removed (no truncation) and
+    exits without emptying the trash.
+    """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
     if not entries:
         console.print("[dim](trash is already empty)[/]")
+        return
+
+    if dry_run:
+        console.print(
+            f"[bold]Would permanently delete[/] "
+            f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'} "
+            "[dim](dry-run)[/]"
+        )
+        for e in entries:
+            console.print(
+                f"  - {escape(e.paper_id)} [dim]({escape(e.deleted_at)})[/]"
+            )
+        console.print(
+            "[dim]Dry-run only — nothing deleted. "
+            "Drop --dry-run to empty the trash for real.[/]"
+        )
         return
 
     if not skip_confirm:

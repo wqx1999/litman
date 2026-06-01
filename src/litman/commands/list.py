@@ -163,6 +163,12 @@ def _as_date(raw: Any) -> date | None:
          "Comma-separated = OR.",
 )
 @click.option(
+    "--title",
+    "title_filter",
+    help="Case-insensitive substring match against the title. "
+         "Comma-separated = OR.",
+)
+@click.option(
     "--read-since",
     "read_since",
     default=None,
@@ -189,6 +195,11 @@ def _as_date(raw: Any) -> date | None:
          "matches INDEX.json). 'recent' = most-recently-engaged first "
          "(max of paper.pdf mtime and updated-at); the table view shows "
          "only the top 10, use --format json for the full ranked list.",
+)
+@click.option(
+    "--limit", type=int, default=None,
+    help="Keep only the first N papers after filtering + sorting. Applies to "
+         "both --format table and json (bounded retrieval / top-N).",
 )
 @click.option(
     "--format", "output_format",
@@ -223,10 +234,12 @@ def list_cmd(
     project: str | None,
     data_filter: str | None,
     author: str | None,
+    title_filter: str | None,
     read_since: date | None,
     added_since: date | None,
     unread: bool,
     sort_by: str,
+    limit: int | None,
     output_format: str,
     library: Path | None,
     vault_name: str | None,
@@ -235,9 +248,10 @@ def list_cmd(
 
     Filters are AND-combined; within one flag, comma-separated values are
     OR-combined. Multi-valued fields (topics/methods/projects/data) use list
-    intersection; --author uses case-insensitive substring; year/type/status/
-    priority match by exact value. --read-since / --added-since filter by a
-    date lower-bound on read-date / created-at respectively.
+    intersection; --author / --title use case-insensitive substring;
+    year/type/status/priority match by exact value. --read-since /
+    --added-since filter by a date lower-bound on read-date / created-at
+    respectively. --limit N keeps the first N after filtering + sorting.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     all_papers = list_papers(vault)
@@ -252,6 +266,7 @@ def list_cmd(
         "project": split_csv(project),
         "data": split_csv(data_filter),
         "author": split_csv(author),
+        "title": split_csv(title_filter),
     }
     filtered = [p for p in all_papers if matches_filters(p, filters)]
 
@@ -280,6 +295,17 @@ def list_cmd(
         # tie-break is needed — equal-recency ties stay deterministic.
         filtered.sort(key=lambda p: _recency_key(vault, p), reverse=True)
 
+    # True match count, captured BEFORE the --limit slice so the table title
+    # can report matched-vs-shown honestly. Slicing first would lose it.
+    n_matched = len(filtered)
+
+    # User-facing top-N slice, applied after filter + sort so both output
+    # formats honor it. Distinct from the table-only _RECENT_TABLE_CAP below
+    # (which caps the recency *display* but leaves json full-length); --limit
+    # is explicit and binds both branches.
+    if limit is not None:
+        filtered = filtered[:limit]
+
     if output_format == "json":
         click.echo(json.dumps([project_paper(p) for p in filtered],
                                ensure_ascii=False))
@@ -301,13 +327,16 @@ def list_cmd(
     # Truncate to the top-N for table display when sorted by recency. The
     # underlying ``filtered`` list is mutated *after* the JSON branch has
     # already returned, so JSON output stays full-length for agents.
-    matched_count = len(filtered)
-    truncated = sort_by == "recent" and matched_count > _RECENT_TABLE_CAP
+    truncated = sort_by == "recent" and n_matched > _RECENT_TABLE_CAP
     if truncated:
         filtered = filtered[:_RECENT_TABLE_CAP]
-        title = f"Papers (recent {_RECENT_TABLE_CAP} of {matched_count})"
+        title = f"Papers (recent {_RECENT_TABLE_CAP} of {n_matched})"
+    elif limit is not None and limit < n_matched:
+        # --limit cut the result short: distinguish shown count from the true
+        # match count so the "1" of `--limit 1` never masquerades as the match.
+        title = f"Papers (limit {len(filtered)} of {n_matched})"
     else:
-        title = f"Papers ({matched_count} of {len(all_papers)})"
+        title = f"Papers ({n_matched} of {len(all_papers)})"
 
     table = Table(title=title, show_lines=False)
     table.add_column("id", style="cyan", no_wrap=True)

@@ -75,6 +75,9 @@ def matches_filters(
       tokens.
     - author: any author entry *contains* any wanted token (case-insensitive
       substring).
+    - title: the title string *contains* any wanted token (case-insensitive
+      substring). title is a scalar, so unlike author there is no list to
+      iterate.
     """
     for filter_name, field_name in _LIST_FILTERS:
         wanted = filters.get(filter_name)
@@ -102,6 +105,12 @@ def matches_filters(
             for entry in haystack
             for token in wanted_authors
         ):
+            return False
+
+    wanted_titles = filters.get("title")
+    if wanted_titles is not None:
+        haystack_title = (paper.get("title") or "").lower()
+        if not any(token.lower() in haystack_title for token in wanted_titles):
             return False
 
     return True

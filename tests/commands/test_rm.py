@@ -807,3 +807,56 @@ def test_rm_eviction_failure_still_exits_zero(
     # The failed-to-evict entry is still present (swallowed, skipped).
     remaining = {e.paper_id for e in list_trash(vault)}
     assert "2020_Old000" in remaining
+
+
+# ===========================================================================
+# --dry-run (M33)
+# ===========================================================================
+
+
+def test_rm_dry_run_makes_no_change(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    _write_paper(vault, "2024_Other")
+    # Build INDEX so we can confirm it stays unchanged.
+    runner = CliRunner()
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    index_before = (vault / "INDEX.json").read_text()
+
+    result = runner.invoke(
+        cli, ["rm", "2024_Foo_Bar", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Paper folder is still on disk.
+    assert (vault / "papers" / "2024_Foo_Bar").is_dir()
+    # Nothing moved into trash.
+    assert list_trash(vault) == []
+    # INDEX unchanged.
+    assert (vault / "INDEX.json").read_text() == index_before
+    # The preview names the paper id.
+    assert "2024_Foo_Bar" in result.output
+    assert "dry-run" in result.output.lower()
+
+
+def test_rm_dry_run_lists_cascade_impact(vault: Path) -> None:
+    _write_paper(vault, "2024_Target", related=["2024_Neighbor"])
+    _write_paper(vault, "2024_Neighbor", related=["2024_Target"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "2024_Neighbor" in result.output
+    # The neighbor's metadata is untouched.
+    assert "2024_Target" in _read_meta(vault, "2024_Neighbor").get("related", [])
+
+
+def test_rm_dry_run_no_prompt(vault: Path) -> None:
+    """--dry-run skips the destructive confirmation (it is a preview)."""
+    _write_paper(vault, "2024_Foo_Bar")
+    runner = CliRunner()
+    # No input supplied; if a prompt were issued the command would hang / abort.
+    result = runner.invoke(
+        cli, ["rm", "2024_Foo_Bar", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (vault / "papers" / "2024_Foo_Bar").is_dir()

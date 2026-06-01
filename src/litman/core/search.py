@@ -1,0 +1,75 @@
+"""Deterministic substring search over per-paper notes / discussion (M33).
+
+``lit search`` is the spine of M33: the content a user hand-writes into
+``papers/<id>/notes.md`` and ``papers/<id>/discussion.md`` is the highest-value
+context for an agent (identity §"agent 优先用户视角") yet, before this module,
+was invisible to every CLI query — agents had to fall back to
+``grep papers/*/notes.md``, the exact "bypass the CLI, read vault files
+directly" pattern ADR-007 exists to close.
+
+Pure Layer-2 business logic: no CLI rendering, no LLM. The match is a fixed
+case-insensitive substring (invariant #5: weak / no LLM still works), not a
+vector or semantic search. ``paper.pdf`` full text, ``.trash/``, and the
+``views/`` symlink hubs are out of scope — the search corpus is exactly the
+two authored markdown files per paper.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from litman.core.notes import enumerate_markdown_files
+
+
+def search_notes(
+    vault: Path,
+    query: str,
+    *,
+    in_files: tuple[str, ...] = ("notes", "discussion"),
+    case_insensitive: bool = True,
+) -> list[dict[str, Any]]:
+    """Substring-search ``notes.md`` / ``discussion.md`` across the vault.
+
+    Walks the wikilink scope via :func:`enumerate_markdown_files`, which yields
+    only ``papers/<id>/{notes,discussion}.md`` — so ``.trash/`` and ``views/``
+    are naturally excluded (they are not under ``papers/``). Each line that
+    contains ``query`` becomes one hit.
+
+    Args:
+        vault: the vault root.
+        query: the substring to find. Matched verbatim (no regex).
+        in_files: which file stems to search. ``("notes",)`` narrows to
+            notes only; ``("discussion",)`` to discussion only. A stem not in
+            this tuple is skipped.
+        case_insensitive: lowercase both sides before comparing (default).
+
+    Returns:
+        A list of ``{id, file, line, snippet}`` dicts, where ``id`` is the
+        paper id, ``file`` is the file stem (``"notes"`` / ``"discussion"``),
+        ``line`` is the 1-based line number, and ``snippet`` is the WHOLE
+        matched line with its trailing newline stripped (no truncation — the
+        caller / agent decides how much to keep). Ordered by paper id then
+        file then line number (the deterministic order
+        :func:`enumerate_markdown_files` yields).
+    """
+    needle = query.lower() if case_insensitive else query
+    hits: list[dict[str, Any]] = []
+    for md_path in enumerate_markdown_files(vault):
+        file_stem = md_path.stem
+        if file_stem not in in_files:
+            continue
+        paper_id = md_path.parent.name
+        text = md_path.read_text(encoding="utf-8")
+        for lineno, raw_line in enumerate(text.splitlines(), start=1):
+            haystack = raw_line.lower() if case_insensitive else raw_line
+            if needle in haystack:
+                hits.append(
+                    {
+                        "id": paper_id,
+                        "file": file_stem,
+                        "line": lineno,
+                        "snippet": raw_line,
+                    }
+                )
+    return hits

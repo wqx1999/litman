@@ -326,6 +326,13 @@ def _teardown_project_links(
     ),
 )
 @click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Preview only — list the paper plus every external link that would "
+    "be cleared / unbound / orphaned, then exit without deleting anything.",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -346,6 +353,7 @@ def rm_cmd(
     paper_doi: str | None,
     purge: bool,
     skip_confirm: bool,
+    dry_run: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -362,7 +370,8 @@ def rm_cmd(
     bindings, project symlinks) are torn down atomically; the paper's own
     fields ride into trash so a later lit trash restore can rebuild them.
     A y/N confirmation guards the delete (default N); pass -y to force it
-    non-interactively.
+    non-interactively. --dry-run previews the full impact set (the paper plus
+    every link that would be cleared / unbound / orphaned) without deleting.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
@@ -398,8 +407,10 @@ def rm_cmd(
     n_relations = len(ref_opposites) + len(code_clones) + len(projects)
 
     # ----- Confirmation -----
+    # --dry-run is a preview: skip the destructive confirmation entirely (we
+    # print the impact set + exit below before any write).
     title = target_meta.get("title") or "(no title)"
-    if not skip_confirm:
+    if not skip_confirm and not dry_run:
         action = "permanently delete" if purge else "move to .trash/"
         if n_relations:
             console.print(
@@ -457,6 +468,45 @@ def rm_cmd(
         annotated = annotate_deleted_wikilinks(text, paper_id)
         if annotated != text:
             note_updates[str(md_path.relative_to(vault))] = annotated
+
+    # ----- Dry-run: print the full impact set, then exit without writing -----
+    if dry_run:
+        verb = "permanently delete" if purge else "move to .trash/"
+        console.print(
+            f"[bold]Would {verb}:[/] {escape(paper_id)} "
+            "[dim](dry-run)[/]"
+        )
+        console.print(f"  title  : {escape(str(title))}")
+        if touched_ref_ids:
+            console.print(
+                "  Would clear references in: "
+                f"[dim]{escape(', '.join(sorted(touched_ref_ids)))}[/]"
+            )
+        if cascade_repo_updates:
+            console.print(
+                "  Would unbind from repos (still bound by others): "
+                f"[dim]{escape(', '.join(sorted(cascade_repo_updates)))}[/]"
+            )
+        if orphan_repos:
+            console.print(
+                "  Would remove orphan repos: "
+                f"[dim]{escape(', '.join(sorted(orphan_repos)))}[/]"
+            )
+        if projects:
+            console.print(
+                "  Would unlink from projects: "
+                f"[dim]{escape(', '.join(sorted(projects)))}[/]"
+            )
+        if note_updates:
+            console.print(
+                "  Would tag referencing notes: "
+                f"[dim]{escape(', '.join(sorted(note_updates)))}[/]"
+            )
+        console.print(
+            "[dim]Dry-run only — nothing deleted. "
+            "Drop --dry-run to remove for real.[/]"
+        )
+        return
 
     # ----- Phase 1: staged commit of all file content updates -----
     with staged_write(vault, op_id=f"rm-{paper_id}") as stage:

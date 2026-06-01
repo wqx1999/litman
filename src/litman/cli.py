@@ -37,9 +37,11 @@ from litman.commands.project import project_group
 from litman.commands.promote import promote_cmd
 from litman.commands.read import read_cmd
 from litman.commands.refresh import refresh_views_cmd
+from litman.commands.related import related_cmd
 from litman.commands.rename import rename_cmd
 from litman.commands.revisit import revisit_cmd
 from litman.commands.rm import rm_cmd
+from litman.commands.search import search_cmd
 from litman.commands.setup import setup_cmd
 from litman.commands.show import show_cmd
 from litman.commands.skim import skim_cmd
@@ -83,7 +85,8 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & vaults",
      ("setup", "init", "vault", "install-completion", "install-skill", "help")),
     ("Papers",
-     ("add", "list", "show", "open", "pdf-text", "modify", "rename", "rm")),
+     ("add", "list", "show", "search", "related", "open", "pdf-text",
+      "modify", "rename", "rm")),
     ("Reading status",
      ("read", "skim", "promote", "revisit", "drop")),
     ("Linking & organization",
@@ -526,6 +529,8 @@ cli.add_command(init_cmd)
 cli.add_command(add_cmd)
 cli.add_command(list_cmd)
 cli.add_command(show_cmd)
+cli.add_command(search_cmd)
+cli.add_command(related_cmd)
 cli.add_command(open_cmd)
 cli.add_command(pdf_text_cmd)
 cli.add_command(refresh_views_cmd)

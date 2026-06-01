@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -30,6 +31,15 @@ console = Console()
     ),
 )
 @click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format. 'table' (default) renders a Panel of metadata.yaml + "
+    "file paths; 'json' emits the FULL metadata dict (every field, not the "
+    "INDEX projection) for agent bounded retrieval.",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -48,18 +58,30 @@ console = Console()
 def show_cmd(
     paper_id: str | None,
     paper_doi: str | None,
+    output_format: str,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
     """Show one paper's metadata.yaml plus PDF / notes paths.
 
     The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass --paper-doi <DOI> instead.
+    or omit it and pass --paper-doi <DOI> instead. --format json emits the
+    full metadata dict (all fields) for agents.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
 
-    find_paper(vault, paper_id)
+    meta = find_paper(vault, paper_id)
+
+    if output_format == "json":
+        # default=str bridges the YAML safe-loader's datetime (created-at /
+        # updated-at) and date (read-date / last-revisited) values, which
+        # json.dumps cannot serialize natively — without it a paper WITH a
+        # read-date raises TypeError (the M25/M31 trap, spec §9).
+        click.echo(
+            json.dumps(meta, default=str, ensure_ascii=False, indent=2)
+        )
+        return
 
     paper_dir = vault / "papers" / paper_id
     meta_file = paper_dir / "metadata.yaml"

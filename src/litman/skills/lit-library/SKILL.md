@@ -61,7 +61,7 @@ The chain is **bidirectional**: lit-reading hands writes *in* (A2), and lit-libr
 **Destructive operations by reversibility:**
 
 - **Soft-delete `lit rm`** (default → moves `papers/<id>/` into `.trash/`, recoverable via `lit trash restore`; [I]). **Never initiate.** May execute on explicit, confirmed request, and must **relay `lit rm`'s cascade report verbatim** ("This paper is linked with N entries…") — never silently delete, never summarize the link count away.
-- **Irreversible removal** (`lit rm --purge`, `lit trash empty`): **NEVER execute these, even on explicit request.** Surface the exact command and let the user run it.
+- **Irreversible removal** (`lit rm --purge`, `lit trash empty`): **NEVER execute these, even on explicit request.** Surface the exact command and let the user run it. **Delete-safety preview (read-only, you MAY run it):** before surfacing a destructive command you may run `lit rm <id> --dry-run` (lists the paper + every link that would be cleared / unbound / orphaned) or `lit trash empty --dry-run` (lists every entry that would be permanently removed). The `--dry-run` flag writes nothing — it belongs to the delete-safety family, NOT to retrieval; do not reach for `rm --dry-run` as a way to inspect a paper's links (use `lit show` / `lit related` for that).
 - **`lit code rm`** stays governed by [C.3] (confirm before execute; clone is re-cloneable).
 
 **(2) Write only in the active (primary) vault.** Every write — ingest, modify, link, code add, taxonomy, appends to `notes.md` / `discussion.md` — targets the **currently-active vault only**. Cross-vault reading is fine; cross-vault writing is forbidden. If the user's intent requires writing into a different vault, **tell the user to switch first** (`lit vault use <name>`) and only then operate.
@@ -465,8 +465,10 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit add <pdf> --doi <doi>` | Add via CrossRef ([B]) |
 | `lit add <pdf> --from-llm-json <json>` | Add via LLM-extracted JSON ([A]) |
 | `lit pdf-text <pdf> [--pages 1-3]` | Dump PDF text layer (deterministic read fallback, [A] step 1) |
-| `lit list [filters] [--format json]` | Browse ([D]) |
-| `lit show <id-or-substring>` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported) |
+| `lit list [filters] [--title <substr>] [--limit N] [--format json]` | Browse ([D]); `--title` = title substring, `--limit` = top-N |
+| `lit show <id-or-substring> [--format json]` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported); `--format json` = full field set |
+| `lit search <query> [--in notes,discussion]` | Search free-form notes / discussion (read-only); routes to lit-reading territory but usable here |
+| `lit related <id> [--by edges\|taxonomy]` | Knowledge-graph neighbours (read-only); routes to lit-reading territory but usable here |
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields / tag ([E]) |
 | `lit read / revisit / drop / promote / skim <id>` | Status & date sugar ([E]) |
 | `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Topics/methods/data vocab; merge/rm prompt — pass `--yes` non-interactively ([J]) |

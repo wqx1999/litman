@@ -534,3 +534,70 @@ def test_enforce_cap_default_cap_is_100(vault: Path) -> None:
     # Under default cap with a handful of entries → no-op.
     _make_entries(vault, 4)
     assert enforce_cap(vault) == []
+
+
+# ===========================================================================
+# lit trash empty --dry-run (M33)
+# ===========================================================================
+
+
+def test_trash_empty_dry_run_lists_without_emptying(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo")
+    _write_paper(vault, "2024_Bar")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+    runner.invoke(cli, ["rm", "2024_Bar", "--yes", "--library", str(vault)])
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Both entries listed.
+    assert "2024_Foo" in result.output
+    assert "2024_Bar" in result.output
+    assert "dry-run" in result.output.lower()
+    # Nothing was actually removed.
+    assert len(list_trash(vault)) == 2
+
+
+def test_trash_empty_dry_run_does_not_call_empty_trash(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_paper(vault, "2024_Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+
+    called = {"n": 0}
+
+    import litman.commands.trash as trash_cmd_mod
+
+    def _spy(vault_arg):  # type: ignore[no-untyped-def]
+        called["n"] += 1
+        return 0
+
+    monkeypatch.setattr(trash_cmd_mod, "empty_trash", _spy)
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert called["n"] == 0
+
+
+def test_trash_empty_dry_run_lists_full_entries(vault: Path) -> None:
+    """Dry-run prints every entry (no [:10] truncation)."""
+    for i in range(12):
+        pid = f"2024_P{i:02d}"
+        _write_paper(vault, pid)
+        runner = CliRunner()
+        runner.invoke(cli, ["rm", pid, "--yes", "--library", str(vault)])
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["trash", "empty", "--dry-run", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # No "... and N more" truncation line.
+    assert "more" not in result.output
+    for i in range(12):
+        assert f"2024_P{i:02d}" in result.output

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -121,6 +122,78 @@ def test_show_neither_id_nor_doi_errors(vault: Path) -> None:
     result = runner.invoke(cli, ["show", "--library", str(vault)])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
+
+
+# ---------------------------------------------------------------------------
+# --format json (M33)
+# ---------------------------------------------------------------------------
+
+
+def test_show_json_emits_full_metadata(vault: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "json", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    meta = json.loads(result.output)
+    assert meta["id"] == "2024_X_Foo"
+    assert meta["title"] == "Foo paper"
+    assert meta["doi"] == "10.1234/test-foo"
+    assert meta["authors"] == ["Smith, J"]
+    # Full metadata, not the INDEX projection: `doi` + `authors` are present
+    # together (authors is NOT in the INDEX projection).
+
+
+def test_show_json_serializes_date_and_datetime(vault: Path) -> None:
+    """The §9 trap: a paper WITH read-date / created-at must not raise.
+
+    The YAML safe-loader parses created-at into a datetime and read-date into a
+    date; json.dumps cannot serialize either natively, so default=str must
+    bridge them.
+    """
+    paper_dir = vault / "papers" / "2024_X_Foo"
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_X_Foo\n"
+        "year: 2024\n"
+        "title: Foo paper\n"
+        "created-at: 2026-05-26T10:00:00+02:00\n"
+        "updated-at: 2026-05-27T11:00:00+02:00\n"
+        "read-date: 2026-05-28\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "json", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.exception is None
+    meta = json.loads(result.output)
+    assert meta["read-date"] == "2026-05-28"
+    assert meta["created-at"].startswith("2026-05-26")
+
+
+def test_show_json_tolerates_missing_fields(vault: Path) -> None:
+    """A minimal metadata file (only identity fields) serializes fine."""
+    paper_dir = vault / "papers" / "2024_X_Foo"
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_X_Foo\nyear: 2024\ntitle: Foo\n", encoding="utf-8"
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "json", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    meta = json.loads(result.output)
+    assert meta == {"id": "2024_X_Foo", "year": 2024, "title": "Foo"}
+
+
+def test_show_table_is_default(vault: Path) -> None:
+    """Default (no --format) renders the Panel view, not JSON."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "PDF:" in result.output
+    assert "Notes:" in result.output
 
 
 def test_show_ambiguous_substring_lists_candidates(vault: Path) -> None:
