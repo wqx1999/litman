@@ -15,14 +15,14 @@ a markdown notes file, and the original PDF. The same vault can be
 shared across multiple projects: one paper, many project bindings.
 
 Everything is plain text on your filesystem. No cloud database, no
-proprietary container format. You can edit any file by hand, `grep` the
-whole vault, or hand the directory tree to an AI agent. The CLI exists
-to make routine edits atomic and to keep cross-references consistent,
-not to gate access to your data.
+proprietary container format. You can read every file as plain text,
+`grep` the whole vault, or hand the directory tree to an AI agent. The
+CLI exists to make routine edits atomic and to keep cross-references
+consistent, not to gate access to your data.
 
 ## Know before you use
 
-Two current limitations worth knowing up front:
+A few things worth knowing up front:
 
 1. **Don't move a vault or project folder by hand.** Links (symlinks, project
    bridges, the registry) are path-based and will break. If you must move one,
@@ -31,6 +31,10 @@ Two current limitations worth knowing up front:
    back to plain-text extraction (pypdf) and cannot see figures or
    image-based tables — don't ask it "what does Fig./Table N show?" without a
    vision or OCR backend attached.
+3. **Three files are kept read-only; change them through `lit`, not your editor.**
+   Each paper's `metadata.yaml` and `paper.pdf`, plus `TAXONOMY.md`, are
+   locked — edit them via `lit modify`, `lit taxonomy`, `lit add`, etc.
+   `notes.md`, `discussion.md`, and `lit-config.yaml` stay freely editable.
 
 ## What makes litman tick
 
@@ -38,7 +42,7 @@ Five design choices, in priority order:
 
 1. **Local-first storage.** Everything is plain text on your
    filesystem — YAML metadata, markdown notes, original PDFs. You can
-   edit any file by hand, `grep` the whole library, back it up
+   read every file as plain text, `grep` the whole library, back it up
    anywhere. No cloud database, no proprietary container format.
 
 2. **Controlled vocabulary with atomic operations.** Topics, methods,

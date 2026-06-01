@@ -299,17 +299,31 @@ vault has not been health-checked in 14+ days
 (`tip: no lit health-check in 14+ days...`), reappearing until the next
 `lit health-check`. Like the sync reminder it cannot be disabled.
 
-## Scenario 12 — Read a paper
+## Scenario 12 — Read a paper and track reading progress
 
 | Command | What it does |
 |---|---|
 | `lit open <id>` | Open `papers/<id>/paper.pdf` in the configured viewer (or platform default). |
 | `lit open <substring>` | Fuzzy id match — case-insensitive substring. Multiple matches print the candidate list and exit. |
+| `lit read <id>` | Stamp `read-date` with today's date (local timezone). |
+| `lit read <id> --date 2026-05-01` | Backdate the `read-date` to a specific day. |
+| `lit revisit <id>` | Stamp `last-revisited` with today's date — the re-read marker, kept distinct from `read-date`. |
+| `lit skim <id>` | Set `status=skim`. |
+| `lit promote <id>` | Set `status=deep-read` (leaves `read-date` untouched). |
+| `lit drop <id>` | Set `status=dropped`. |
 
 Viewer is set via `default_pdf_viewer` in
 [`lit-config.yaml`](config-schema.md#default_pdf_viewer); `null`
 falls back to `xdg-open` / `open` / `os.startfile` / `wslview`
 depending on platform.
+
+`lit read` / `revisit` / `skim` / `promote` / `drop` are one-keystroke
+shorthands for the equivalent `lit modify <id> --set` on the
+reading-workflow fields. Each accepts a full id, a unique case-insensitive
+id substring, or `--paper-doi <DOI>` instead of the id. `read` and
+`revisit` stamp the two date fields and accept `--date` to backdate;
+`skim` / `promote` / `drop` set `status`. To reverse a status, use
+`lit modify <id> --set status=<value>`.
 
 ## Scenario 13 — Export references for LaTeX writing
 
