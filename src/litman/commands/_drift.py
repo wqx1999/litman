@@ -162,10 +162,16 @@ def check_and_prompt_registry_drift(
         # automation is a foot-gun even with default Y).
         err = Console(stderr=True)
         joined = ", ".join(f"{n} ({p})" for n, p in zip(names, paths))
+        # soft_wrap so Rich never hard-wraps mid-line: the message embeds a
+        # copy-paste command (`lit vault remove <name>`) and a vault path, and a
+        # default 80-col wrap would split the command across lines (breaking a
+        # user's copy-paste, and breaking substring assertions in tests that run
+        # with long tmp paths).
         err.print(
             f"[yellow]warning:[/] vault registry has {len(dangling)} dangling "
             f"registration(s): {joined}. Run "
-            f"[bold]lit vault remove <name>[/] to clean up."
+            f"[bold]lit vault remove <name>[/] to clean up.",
+            soft_wrap=True,
         )
         return
 
@@ -285,11 +291,14 @@ def check_and_prompt_project_drift(
     if not probe():
         err = Console(stderr=True)
         joined = ", ".join(f"{n} ({projects[n]})" for n in missing)
+        # soft_wrap so the embedded copy-paste commands + paths are never
+        # hard-wrapped mid-line (see the registry-drift warning above).
         err.print(
             f"[yellow]warning:[/] {len(missing)} project director"
             f"{'y' if len(missing) == 1 else 'ies'} not found: {joined}. "
             f"Run [bold]lit project set-path <name> <new-path>[/] to fix "
-            f"(or [bold]lit project rm <name>[/] to drop)."
+            f"(or [bold]lit project rm <name>[/] to drop).",
+            soft_wrap=True,
         )
         return
 
