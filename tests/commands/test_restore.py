@@ -392,6 +392,36 @@ def test_restore_reclone_failure_keeps_binding(vault: Path) -> None:
     assert not (vault / "codes" / "RepoZ").exists()
     assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoZ"]
     assert "failed" in result.output.lower()
+    # Review F20: the upstream URL must be echoed on failure (the sidecar — its
+    # only on-disk record — is already gone), or it is lost for good.
+    assert "/nonexistent/path/to/repo.git" in result.output
+
+
+def test_restore_tolerates_non_utf8_note_elsewhere(vault: Path) -> None:
+    # Review F22: a non-UTF-8 note anywhere in the vault must not abort restore
+    # between the folder move and the rollback try (which left a half-restored
+    # paper). The de-annotation read now lives inside the transaction and skips
+    # an unreadable note rather than crashing.
+    _write_paper(vault, "2024_Target")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+    # An unrelated active paper carrying a non-UTF-8 notes.md.
+    _write_paper(vault, "2024_Other")
+    (vault / "papers" / "2024_Other" / "notes.md").write_bytes(b"\xff\xfe bad\n")
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    # Fully restored, not a half-restore: paper back on disk, trash drained.
+    assert (vault / "papers" / "2024_Target" / "metadata.yaml").is_file()
+    from litman.core.trash import list_trash
+
+    assert list_trash(vault) == []
+    # The unreadable note was left untouched.
+    assert (vault / "papers" / "2024_Other" / "notes.md").read_bytes() == (
+        b"\xff\xfe bad\n"
+    )
 
 
 # ===========================================================================

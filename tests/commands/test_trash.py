@@ -276,6 +276,38 @@ def test_trash_restore_by_full_entry_name(vault: Path) -> None:
     assert restored_meta["title"] == "v1"
 
 
+def test_trash_same_second_collision_entries_remain_listable(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Review F19: a sub-second double-rm of the same id appends a -hex4
+    # disambiguator to the entry dir. The entry-name regex must still match it,
+    # else the suffixed entry is invisible to list / restore / enforce_cap —
+    # only empty_trash could find (and destroy) an otherwise-recoverable paper.
+    monkeypatch.setattr(
+        trash_mod, "_utc_compact_now", lambda: "20260510T184612Z"
+    )
+
+    _write_paper(vault, "2024_Foo", title="v1")
+    move_to_trash(vault, "2024_Foo")
+    _write_paper(vault, "2024_Foo", title="v2")
+    second = move_to_trash(vault, "2024_Foo")
+    # Collision path tacked on a hex suffix.
+    assert second.name.startswith("2024_Foo-20260510T184612Z-")
+    assert second.name != "2024_Foo-20260510T184612Z"
+
+    entries = list_trash(vault)
+    assert len(entries) == 2
+    assert all(e.paper_id == "2024_Foo" for e in entries)
+
+    # The collision-suffixed entry is restorable by its full name.
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["trash", "restore", second.name, "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (vault / "papers" / "2024_Foo" / "metadata.yaml").is_file()
+
+
 def test_trash_restore_unknown_id(vault: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(

@@ -177,6 +177,12 @@ def _handle_missing_repos(
     code ref.
     """
     for repo_name, upstream in sorted(result.missing_repos.items()):
+        # The trash sidecar (sole on-disk record of this 1:1 orphan's upstream
+        # URL) is already gone by now, and it is auto-fix-deletable anyway, so
+        # the URL must be echoed on every non-success path or it is lost for
+        # good (review F20). `upstream` is carried in result.missing_repos, so
+        # we always have it here even with -y (no prompt shown).
+        url_note = f" [dim](upstream: {escape(upstream)})[/]" if upstream else ""
         if not skip_confirm:
             do_clone = click.confirm(
                 f"Repo '{repo_name}' was hard-deleted; re-clone from "
@@ -186,7 +192,8 @@ def _handle_missing_repos(
             if not do_clone:
                 console.print(
                     f"  [yellow]Kept binding to '{escape(repo_name)}' "
-                    "without re-clone[/] [dim](run `lit health-check`)[/]"
+                    f"without re-clone[/]{url_note} [dim](run "
+                    "`lit health-check`)[/]"
                 )
                 continue
         try:
@@ -197,7 +204,7 @@ def _handle_missing_repos(
             first_line = str(e).splitlines()[0] if str(e) else "clone failed"
             console.print(
                 f"  [yellow]Re-clone of '{escape(repo_name)}' failed[/] "
-                f"[dim]({escape(first_line)})[/]; binding kept, "
+                f"[dim]({escape(first_line)})[/]; binding kept{url_note}, "
                 "run `lit health-check`."
             )
             continue

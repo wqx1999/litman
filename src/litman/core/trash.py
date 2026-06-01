@@ -91,7 +91,13 @@ def _dump_rt_to_string(data: dict[str, Any]) -> str:
 
 # Entry name format: <paper_id>-<UTC-timestamp>
 # Timestamp is YYYYMMDDTHHMMSSZ (compact ISO 8601 basic).
-_ENTRY_NAME_RE = re.compile(r"^(.+?)-(\d{8}T\d{6}Z)$")
+# entry dir name: "<paper_id>-<UTC timestamp>" with an optional "-<hex4>"
+# disambiguator appended on a sub-second double-rm collision (see
+# move_to_trash). The optional group is REQUIRED here (review F19): without
+# it a collision-suffixed entry failed this match and became invisible to
+# list / restore / enforce_cap — recoverable papers silently un-listable, only
+# empty_trash could still find (and destroy) them.
+_ENTRY_NAME_RE = re.compile(r"^(.+?)-(\d{8}T\d{6}Z)(?:-[0-9a-f]{4})?$")
 
 
 @dataclass
@@ -607,17 +613,6 @@ def restore_from_trash(
     surviving.append(dict(sealed_meta))
     new_index = render_index(surviving, now)
 
-    # De-annotate `[[A]] (deleted)` → `[[A]]` across all tracked notes now
-    # that A is back on disk (M24). A's own restored notes are scanned too
-    # (the folder is already at papers/A/). Stage only files whose text
-    # changed; best-effort — a missed stale tag is left to health-check.
-    note_updates: dict[str, str] = {}
-    for md_path in enumerate_markdown_files(vault):
-        text = md_path.read_text(encoding="utf-8")
-        cleaned = deannotate_deleted_wikilinks(text, paper_id)
-        if cleaned != text:
-            note_updates[str(md_path.relative_to(vault))] = cleaned
-
     try:
         with staged_write(vault, op_id=f"restore-{paper_id}") as stage:
             if pruned_meta_text is not None:
@@ -628,8 +623,24 @@ def restore_from_trash(
                 stage.write_text(f"papers/{oid}/metadata.yaml", content)
             for relpath, content in code_writes.items():
                 stage.write_text(relpath, content)
-            for relpath, content in note_updates.items():
-                stage.write_text(relpath, content)
+            # De-annotate `[[A]] (deleted)` → `[[A]]` across all tracked notes
+            # now that A is back on disk (M24). A's own restored notes are
+            # scanned too (the folder is already at papers/A/). This read loop
+            # lives INSIDE the transaction (review F22): an unreadable note must
+            # not escape between the folder move and the rollback try, which
+            # would leave a half-restored paper. A non-UTF-8 / unreadable note
+            # is skipped (best-effort — a missed stale tag is left to
+            # health-check), exactly as before, just without the half-restore.
+            for md_path in enumerate_markdown_files(vault):
+                try:
+                    text = md_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                cleaned = deannotate_deleted_wikilinks(text, paper_id)
+                if cleaned != text:
+                    stage.write_text(
+                        str(md_path.relative_to(vault)), cleaned
+                    )
             stage.write_text("INDEX.json", new_index)
     except Exception:
         # Roll the folder back into trash so a failed transaction leaves no

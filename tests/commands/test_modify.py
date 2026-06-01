@@ -849,6 +849,55 @@ def test_modify_relation_corrupt_opposite_friendly_error(
     assert b in str(result.exception)
 
 
+def test_modify_directed_self_reference_rejected(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    # Review F21: `--add-tag extends=A` on A creates a permanent asymmetry
+    # (the paired extended-by self-edge cannot be represented). Reject up-front.
+    vault, a, _ = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={a}", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "self-reference" in str(result.exception)
+    # Nothing was written — no half-edge persisted.
+    assert _read_meta(vault, a)["extends"] == []
+
+
+def test_modify_symmetric_self_reference_allowed(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    # `related` is symmetric (self-paired), so a self-loop is consistent and
+    # must still be allowed (only directed relations are rejected).
+    vault, a, _ = vault_two_papers
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"related={a}", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, a)["related"] == [a]
+
+
+def test_modify_relation_to_empty_opposite_rejected(
+    vault_two_papers: tuple[Path, str, str],
+) -> None:
+    # Review A4: adding a relation to a paper whose metadata.yaml is empty
+    # would write an invisible one-directional edge (list_papers drops the
+    # empty paper, so check_bidirectional_refs never sees the missing reverse).
+    vault, a, b = vault_two_papers
+    (vault / "papers" / b / "metadata.yaml").write_text("", encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["modify", a, "--add-tag", f"extends={b}", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "empty" in str(result.exception)
+    assert _read_meta(vault, a)["extends"] == []
+
+
 def test_modify_extends_rm_double_removes_reverse(
     vault_two_papers: tuple[Path, str, str],
 ) -> None:

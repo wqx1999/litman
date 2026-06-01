@@ -384,7 +384,24 @@ def _apply_modify(
     for op_kind, forward, opposite_id in relation_ops:
         reverse = RELATION_PAIRS[forward]
         if opposite_id == paper_id:
-            continue  # self-reference: no separate opposite to write
+            # Self-reference. Symmetric (related↔related) is consistent — the
+            # forward already wrote the self-loop into the single field. A
+            # *directed* self-reference (extends / contradicts) is not: the
+            # paired reverse edge would have to live on the same paper, which
+            # is semantically nonsense, so the forward field carries the id
+            # while the reverse never can — a permanent asymmetry that
+            # check_bidirectional_refs flags forever and a re-add can't repair
+            # (review F21). Reject the add up-front; an rm of a pre-existing
+            # one is allowed through (it just clears the forward side).
+            if op_kind == "add" and reverse != forward:
+                raise ModifyError(
+                    f"Cannot add a self-reference on directed relation "
+                    f"{forward!r} ({paper_id} → itself): its paired "
+                    f"{reverse!r} edge cannot be represented, which would "
+                    "leave a permanent one-directional inconsistency. "
+                    "Directed relations connect two distinct papers."
+                )
+            continue
         opp_file = vault / "papers" / opposite_id / "metadata.yaml"
         if not opp_file.is_file():
             # Opposite paper missing: write the originating side only. The
@@ -395,6 +412,19 @@ def _apply_modify(
         if opp_meta is None:
             opp_meta = load_yaml_or_raise(opp_file, _yaml)
             if opp_meta is None:
+                # Opposite's metadata.yaml is empty / comment-only, so
+                # list_papers drops it and check_bidirectional_refs can never
+                # enumerate it — a silently invisible one-directional edge
+                # (review A4). Refuse to ADD such an edge; an rm just clears
+                # our own forward side and is harmless.
+                if op_kind == "add":
+                    raise ModifyError(
+                        f"Cannot add relation {forward!r} to {opposite_id!r}: "
+                        "its metadata.yaml is empty, so the paired reverse "
+                        "edge cannot be written and the inconsistency would "
+                        f"be invisible to health-check. Restore {opposite_id!r}"
+                        " first."
+                    )
                 continue
         if op_kind == "add":
             # Reuse the dedup primitive: already present → no change.
