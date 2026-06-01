@@ -43,6 +43,7 @@ from rich.markup import escape
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import is_valid_id
@@ -235,6 +236,43 @@ def rename_cmd(
             paper["updated-at"] = now
             break
 
+    # ----- Cascade the id change into bound repos' repo-meta.yaml -----
+    # A paper id is mirrored in codes/<repo>/repo-meta.yaml::papers for every
+    # repo the paper binds (invariant #12 bidirectional binding). Renaming the
+    # paper must rewrite that back-reference too, else `lit code list` /
+    # health-check sees a dangling <old> id. Only the renamed paper's own bound
+    # repos are touched — code-clones holds repo names, so no OTHER paper's
+    # bindings change. repo-meta.yaml is not part of INDEX, so this just adds a
+    # few transactional writes; no extra derived rebuild is needed.
+    repo_meta_updates: dict[str, str] = {}  # vault-relative path → new yaml
+    repo_binders: list[str] = []
+    for repo_name in renamed_meta.get("code-clones") or []:
+        repo_name = str(repo_name)
+        repo_meta_path = vault / CODES_DIRNAME / repo_name / REPO_META_FILENAME
+        if not repo_meta_path.is_file():
+            # Binding present on the paper side but repo-meta missing: an
+            # orphan ref, surfaced by health-check. Nothing to rewrite here.
+            continue
+        rt = load_yaml_or_raise(repo_meta_path, _yaml)
+        if rt is None:
+            continue
+        papers = rt.get("papers") or []
+        if old not in papers:
+            continue
+        seen: set[str] = set()
+        new_papers: list[str] = []
+        for p in papers:
+            replaced = new if p == old else p
+            if replaced not in seen:  # de-dup, preserve order (as REF_FIELDS)
+                new_papers.append(replaced)
+                seen.add(replaced)
+        rt["papers"] = new_papers
+        rt["updated-at"] = now
+        repo_meta_updates[
+            f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
+        ] = _dump_yaml_to_string(rt)
+        repo_binders.append(repo_name)
+
     # ----- Notes.md wikilink rewrites -----
     needle = f"[[{old}]]"
     replacement = f"[[{new}]]"
@@ -255,6 +293,8 @@ def rename_cmd(
         stage.write_text(rel_renamed_meta, renamed_yaml)
         for pid, content in other_updates.items():
             stage.write_text(f"papers/{pid}/metadata.yaml", content)
+        for relpath, content in repo_meta_updates.items():
+            stage.write_text(relpath, content)
         for relpath, content in note_updates.items():
             stage.write_text(relpath, content)
         stage.write_text("INDEX.json", new_index)
@@ -291,6 +331,12 @@ def rename_cmd(
             f"  Updated [bold]{len(ref_holders)}[/] back-referencing "
             f"paper{'s' if len(ref_holders) != 1 else ''} "
             f"[dim]({escape(_format_id_list(sorted(ref_holders)))})[/]"
+        )
+    if repo_binders:
+        n = len(repo_binders)
+        console.print(
+            f"  Updated [bold]{n}[/] repo binding{'s' if n != 1 else ''} "
+            f"[dim]({escape(_format_id_list(sorted(repo_binders)))})[/]"
         )
     if note_updates:
         n = len(note_updates)

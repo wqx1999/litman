@@ -470,3 +470,52 @@ def test_rename_accepts_fuzzy_old(vault: Path) -> None:
     assert result.exit_code == 0, result.output
     assert (vault / "papers" / "2024_Pandi_CellfreeV2").is_dir()
     assert not (vault / "papers" / "2024_Pandi_Cellfree").exists()
+
+
+def test_rename_cascades_into_repo_meta(vault: Path) -> None:
+    """Renaming a paper rewrites its id inside every bound repo's
+    repo-meta.yaml::papers (invariant #12 bidirectional binding), not just
+    other papers' ref lists. Regression for bug-report 2026-06-01 #3.
+    """
+    old, new = "2023_Pandi_Protein", "2024_Pandi_Folding"
+    _write_paper(vault, old)
+
+    rt = YAML()
+    rt.indent(mapping=2, sequence=4, offset=2)
+    rt.default_flow_style = False
+
+    # Paper side: bind to repo "myrepo" via code-clones.
+    meta_path = vault / "papers" / old / "metadata.yaml"
+    meta = rt.load(meta_path.read_text())
+    meta["code-clones"] = ["myrepo"]
+    with meta_path.open("w", encoding="utf-8") as f:
+        rt.dump(meta, f)
+
+    # Repo side: codes/myrepo/repo-meta.yaml mirrors the binding (papers=[old]).
+    repo_dir = vault / "codes" / "myrepo"
+    repo_dir.mkdir(parents=True)
+    stale_ts = "2026-04-28T10:00:00+02:00"
+    repo_meta = {
+        "name": "myrepo",
+        "upstream": "https://example.com/myrepo.git",
+        "created-at": stale_ts,
+        "updated-at": stale_ts,
+        "papers": [old],
+        "framework": None,
+        "runs-on": None,
+        "status": None,
+    }
+    with (repo_dir / "repo-meta.yaml").open("w", encoding="utf-8") as f:
+        rt.dump(repo_meta, f)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["rename", old, new, "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "repo binding" in result.output
+
+    # repo-meta back-reference rewritten old -> new, updated-at bumped.
+    after = _yaml.load((repo_dir / "repo-meta.yaml").read_text())
+    assert after["papers"] == [new]
+    assert after["updated-at"] != stale_ts
+    # Paper-side binding preserved (repo name is unchanged by a paper rename).
+    assert _read_meta(vault, new)["code-clones"] == ["myrepo"]
