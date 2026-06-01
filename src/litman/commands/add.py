@@ -205,6 +205,28 @@ def _resolve_collision(
     raise AddError("Cancelled by user.")
 
 
+def _validate_id_override(
+    ctx: click.Context, param: click.Parameter, value: str | None
+) -> str | None:
+    """Click callback: reject a malformed ``--id`` during argument parsing.
+
+    Review F23: ``--id ../../escape`` (or any value with a slash / ``..`` /
+    leading dot) used to be written verbatim as the paper folder, escaping the
+    vault and then deleting the source PDF. The interactive custom-id branch
+    already validated; the flag did not. A callback fails before the command
+    body runs, so the bad id can never reach the materialize-and-delete path.
+    """
+    if value is not None and not is_valid_id(value):
+        raise click.BadParameter(
+            f"Invalid id {value!r}. Ids contain only ASCII letters, digits, "
+            "dots, underscores, and hyphens; no leading dot, no slashes, "
+            "no '..'.",
+            ctx=ctx,
+            param=param,
+        )
+    return value
+
+
 @click.command("add")
 @click.argument(
     "pdf_path",
@@ -236,6 +258,7 @@ def _resolve_collision(
     "--id",
     "id_override",
     default=None,
+    callback=_validate_id_override,
     help="Override the auto-derived id (format: <year>_<Family>_<Keyword>).",
 )
 @click.option(
@@ -335,6 +358,8 @@ def add_cmd(
     )
 
     if id_override:
+        # Already shape-validated by the _validate_id_override callback during
+        # parsing (review F23), so it is a safe single-segment folder name here.
         paper_id = id_override
         year = parsed.get("year")
         family = _first_author_family(parsed.get("authors", []))

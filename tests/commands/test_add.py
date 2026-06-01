@@ -182,6 +182,38 @@ def test_add_id_override(
     assert not (vault / "papers" / _PAPER_ID).exists()
 
 
+@pytest.mark.parametrize(
+    "bad_id",
+    ["../../escape", "../escape", "foo/bar", "..", ".hidden", "a\\b"],
+)
+def test_add_id_override_rejects_path_traversal(
+    vault: Path,
+    fake_pdf: Path,
+    bad_id: str,
+) -> None:
+    # Review F23: a malformed --id (path traversal, slash, leading dot) must
+    # be rejected during parsing — before the command body reads or, fatally,
+    # *deletes* the source PDF. The _validate_id_override callback guarantees
+    # this. No CrossRef mock is needed: the body never runs.
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--id", bad_id,
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Invalid id" in result.output
+    # The source PDF is untouched (never reached the move-and-delete path).
+    assert fake_pdf.is_file()
+    assert fake_pdf.read_bytes() == _FAKE_PDF_BYTES
+    # Nothing was written anywhere under papers/.
+    assert list((vault / "papers").iterdir()) == []
+
+
 def test_add_uses_lit_library_env(
     vault: Path,
     fake_pdf: Path,
