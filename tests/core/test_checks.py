@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 from litman.core.checks import (
+    check_config_readable,
     check_schema,
+    check_taxonomy_drift,
     run_all_checks,
     run_push_integrity_errors,
 )
@@ -91,6 +93,96 @@ def test_schema_type_invalid_value_still_errors(vault: Path) -> None:
     assert issue.severity == "error"
     assert issue.category == "schema"
     assert "'position-paper'" in issue.message
+
+
+# ---------------------------------------------------------------------------
+# F9: timestamp format validation in check_schema (invariant #11)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["created-at", "updated-at"])
+def test_schema_malformed_datetime_errors(vault: Path, field: str) -> None:
+    paper = _minimal_paper(**{field: "not-a-date"})
+    issues = check_schema(vault, [paper])
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].category == "schema"
+    assert field in issues[0].message
+    assert "ISO 8601 datetime" in issues[0].message
+
+
+@pytest.mark.parametrize("field", ["read-date", "last-revisited"])
+@pytest.mark.parametrize("bad", ["20260530", "2026-W22-1", "2026-5-3", 20260530])
+def test_schema_malformed_semantic_date_errors(
+    vault: Path, field: str, bad: object
+) -> None:
+    paper = _minimal_paper(**{field: bad})
+    issues = check_schema(vault, [paper])
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "YYYY-MM-DD" in issues[0].message
+
+
+@pytest.mark.parametrize("field", ["read-date", "last-revisited"])
+def test_schema_semantic_date_none_and_valid_ok(vault: Path, field: str) -> None:
+    # None (not yet read/revisited) and a strict date both pass.
+    assert check_schema(vault, [_minimal_paper(**{field: None})]) == []
+    assert check_schema(vault, [_minimal_paper(**{field: "2026-05-30"})]) == []
+
+
+# ---------------------------------------------------------------------------
+# F6/F27: check_config_readable surfaces unparseable lit-config.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_config_readable_clean_vault_ok(vault: Path) -> None:
+    assert check_config_readable(vault, []) == []
+
+
+def test_config_readable_corrupt_config_emits_error(vault: Path) -> None:
+    (vault / "lit-config.yaml").write_text(": : not: valid: [", encoding="utf-8")
+    issues = check_config_readable(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].category == "config_unreadable"
+    assert "unreadable" in issues[0].message
+
+
+def test_run_all_checks_reports_corrupt_config_once(vault: Path) -> None:
+    # F6: a corrupt config must not let health-check report a clean vault, and
+    # exactly one check (config_unreadable) owns the finding — the config-keyed
+    # checks defer rather than each re-reporting.
+    (vault / "lit-config.yaml").write_text("nope: [", encoding="utf-8")
+    issues = run_all_checks(vault, [])
+    unreadable = [i for i in issues if i.category == "config_unreadable"]
+    assert len(unreadable) == 1
+    assert unreadable[0].severity == "error"
+
+
+# ---------------------------------------------------------------------------
+# F7/F13: unreadable TAXONOMY.md is a finding, not a clean report
+# ---------------------------------------------------------------------------
+
+
+def test_taxonomy_drift_unreadable_file_emits_error(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TAXONOMY.md exists (is_file() True) but read raises OSError (permissions,
+    # non-UTF-8, dropped mount). Must emit an error, mirroring the missing-file
+    # branch — not swallow it and report clean (review F7/F13).
+    real_read_text = Path.read_text
+
+    def _raise_for_taxonomy(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "TAXONOMY.md":
+            raise PermissionError("simulated unreadable TAXONOMY.md")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", _raise_for_taxonomy)
+    issues = check_taxonomy_drift(vault, [])
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].category == "taxonomy_drift"
+    assert "unreadable" in issues[0].message
 
 
 # ---------------------------------------------------------------------------

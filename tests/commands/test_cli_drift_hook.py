@@ -579,3 +579,30 @@ def test_hook_corrupt_registry_surfaces_finding(
     # The command still runs (no vault resolves, list degrades), and the hook
     # surfaced the unreadable registry.
     assert "unreadable" in " ".join(result.output.split())
+
+
+def test_hook_corrupt_config_surfaces_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present-but-unparseable lit-config.yaml surfaces via the hook
+    (review F6/F27, no silent-skip #14).
+
+    The cheap-tier ``check_config_readable`` emits a ``config_unreadable``
+    error, which the hook prints to stderr — consistent with the corrupt-
+    registry line — instead of the config-keyed checks each reporting clean.
+    """
+    real_parent = tmp_path / "real_parent"
+    real_parent.mkdir()
+    vault = create_vault(real_parent)
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="real", path=str(vault), is_active=True)]
+        )
+    )
+    # Corrupt the active vault's config (file present, unparseable YAML).
+    (vault / "lit-config.yaml").write_text(": : [bad", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+    flat = " ".join(result.output.split())
+    assert "lit-config.yaml is unreadable" in flat

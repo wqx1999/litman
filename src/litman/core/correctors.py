@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 import click
+from rich.console import Console
 
 from litman.commands._drift import _default_tty_probe
 from litman.core.checks import Issue
@@ -297,10 +298,18 @@ def annotate(
         return 0
 
     n_touched = 0
+    skipped: list[Path] = []
     for md_path in enumerate_markdown_files(vault):
         try:
             original = md_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # No silent-skip (invariant #14 / review A2): a note we cannot read
+            # (permissions, or non-UTF-8 — a UnicodeDecodeError that the old
+            # `except OSError` did not even catch, so it crashed the hook) may
+            # still hold a [[deleted_id]] that check_dangling_wikilinks flagged.
+            # Dropping it quietly would let the caller claim every dangling link
+            # was annotated. Record + warn so the user knows this file was not.
+            skipped.append(md_path)
             continue
         if targeted and not any(did in original for did in deleted_ids):
             # Grep-narrow: no vanished id appears as a substring, so no
@@ -312,4 +321,12 @@ def annotate(
         if updated != original:
             md_path.write_text(updated, encoding="utf-8")
             n_touched += 1
+    if skipped:
+        err = Console(stderr=True)
+        joined = ", ".join(str(p) for p in skipped)
+        err.print(
+            f"[yellow]warning:[/] could not read {len(skipped)} note file(s) "
+            f"while annotating deleted links — left unchanged (a [[id]] (deleted)"
+            f" tag may be missing there): {joined}"
+        )
     return n_touched

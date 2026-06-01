@@ -47,12 +47,13 @@ from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.dates import is_iso_date, is_iso_datetime
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
-from litman.exceptions import VaultRegistryError
+from litman.exceptions import ConfigError, VaultRegistryError
 
 _yaml = YAML(typ="safe")
 
@@ -271,6 +272,46 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                             f"not in {sorted(allowed)}"
                         ),
                         hint=f"correct via `lit modify {pid} --set {field}=<value>`",
+                    )
+                )
+        # Timestamp format (invariant #11 + review F9). The two technical
+        # audit stamps must parse as ISO 8601 datetimes; the two semantic
+        # date fields (None = not yet) must be strict YYYY-MM-DD. A malformed
+        # value used to be invisible: check_schema never validated format and
+        # check_inbox_staleness silently skipped an unparseable created-at, so
+        # garbage could sit forever unreported.
+        for field in ("created-at", "updated-at"):
+            value = p.get(field)
+            if value is None:
+                continue  # missing already flagged by the required-field loop
+            if not is_iso_datetime(value):
+                out.append(
+                    Issue(
+                        category="schema",
+                        severity="error",
+                        paper_id=pid,
+                        message=(
+                            f"field {field!r} value {value!r} is not an "
+                            "ISO 8601 datetime"
+                        ),
+                        hint="machine-maintained audit field; restore a valid timestamp",
+                    )
+                )
+        for field in ("read-date", "last-revisited"):
+            value = p.get(field)
+            if value is None:
+                continue  # not yet read / revisited — legitimate
+            if not is_iso_date(value):
+                out.append(
+                    Issue(
+                        category="schema",
+                        severity="error",
+                        paper_id=pid,
+                        message=(
+                            f"field {field!r} value {value!r} is not a "
+                            "YYYY-MM-DD date"
+                        ),
+                        hint=f"correct via `lit modify {pid} --set {field}=<YYYY-MM-DD>`",
                     )
                 )
     return out
@@ -993,8 +1034,24 @@ def check_taxonomy_drift(
         ]
     try:
         registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
-    except OSError:
-        return []
+    except OSError as exc:
+        # No silent-skip (invariant #14): the file is present but unreadable
+        # (permissions, non-UTF-8, dropped mount). Swallowing it would report a
+        # clean vault while taxonomy governance is actually un-checkable — and
+        # would contradict the missing-file branch above, which DOES emit.
+        return [
+            Issue(
+                category="taxonomy_drift",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"TAXONOMY.md is present but unreadable "
+                    f"({exc.__class__.__name__}): taxonomy drift cannot be "
+                    "checked"
+                ),
+                hint="fix the file's permissions / encoding, then re-run",
+            )
+        ]
     out: list[Issue] = []
     for p in papers:
         pid = p.get("id") or "(unknown)"
@@ -1060,6 +1117,43 @@ def check_inbox_staleness(
     return out
 
 
+def check_config_readable(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``lit-config.yaml`` parses (invariant #14 no-silent-skip; review F6/F27).
+
+    Owns the "config is present but unparseable" finding so the config-dependent
+    checks (project consistency / path-exists / references / pdf-viewer) can
+    narrow their guard to ``except ConfigError: return []`` and defer here
+    instead of each reporting a clean vault while config-keyed governance is
+    actually blind. Emitting it once, from a dedicated cheap-tier check, mirrors
+    ``check_vault_registry_drift``'s corrupt-registry finding and keeps the
+    Tier-1 per-command hook and Tier-2 ``health-check`` consistent.
+
+    Cheap-tier safe (invariant #15): reads only the single ``lit-config.yaml``
+    file (the same bounded read ``check_project_path_exists`` already does),
+    never per-paper ``metadata.yaml``.
+    """
+    from litman.core.config import load_config
+
+    try:
+        load_config(vault)
+    except ConfigError as exc:
+        return [
+            Issue(
+                category="config_unreadable",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"lit-config.yaml is unreadable ({exc.__class__.__name__}): "
+                    "config-dependent checks cannot run"
+                ),
+                hint="inspect / repair lit-config.yaml (see `lit config show`)",
+            )
+        ]
+    return []
+
+
 def check_project_config_consistency(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -1078,14 +1172,20 @@ def check_project_config_consistency(
     try:
         registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
     except OSError:
+        # Unreadable TAXONOMY.md is OWNED by check_taxonomy_drift (it emits the
+        # error); deferring here keeps it a single report (invariant #14 is
+        # satisfied by the other check, not violated by this return []).
         return []
 
     from litman.core.config import load_config
 
     try:
         config = load_config(vault)
-    except Exception:
-        # ConfigError surfaces via `lit config show`; don't double-report.
+    except ConfigError:
+        # Unparseable config is OWNED by check_config_readable (it emits the
+        # error); deferring keeps it a single report. Narrowed from
+        # `except Exception` (review F6) so a genuine bug in this check now
+        # propagates instead of masquerading as a clean vault.
         return []
 
     taxonomy_names = set(registered.get("projects", []))
@@ -1237,7 +1337,10 @@ def check_project_path_exists(
 
     try:
         config = load_config(vault)
-    except Exception:
+    except ConfigError:
+        # Owned by check_config_readable (also cheap-tier, so it fires in the
+        # same Tier-1 hook). Narrowed from `except Exception` (review F6/F27)
+        # so a real bug propagates instead of reporting a clean vault.
         return []
 
     if not config.projects:
@@ -1323,7 +1426,9 @@ def check_project_references(
 
     try:
         config = load_config(vault)
-    except Exception:
+    except ConfigError:
+        # Owned by check_config_readable; narrowed from `except Exception`
+        # (review F6) so real bugs propagate.
         return []
     if not config.projects:
         return []
@@ -1692,9 +1797,9 @@ def check_pdf_viewer(
 
     try:
         config = load_config(vault)
-    except Exception:
-        # ConfigError is surfaced by `lit config show` / any command that
-        # loads config; suppress here to avoid double-reporting.
+    except ConfigError:
+        # Owned by check_config_readable; narrowed from `except Exception`
+        # (review F6) so real bugs propagate rather than reading as clean.
         return []
 
     out: list[Issue] = []
@@ -2061,6 +2166,9 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "full",
         "B-ext",
         "resolve",
+    ),
+    CheckSpec(
+        "config_unreadable", check_config_readable, "cheap", "validity", "report"
     ),
     CheckSpec(
         "vault_registry_drift",

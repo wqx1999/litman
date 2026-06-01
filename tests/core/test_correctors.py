@@ -272,6 +272,35 @@ def test_annotate_empty_ids_is_noop(vault: Path) -> None:
     assert correctors.annotate(vault, []) == 0
 
 
+def test_annotate_surfaces_unreadable_note(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Review A2: a non-UTF-8 note must not crash annotate (the old
+    # `except OSError` did not catch UnicodeDecodeError) and must not be
+    # silently skipped — the user has to know a [[id]] (deleted) tag may be
+    # missing there. A readable note is still annotated in the same pass.
+    good_dir = vault / "papers" / "2024_A_Good"
+    good_dir.mkdir(parents=True)
+    (good_dir / "notes.md").write_text(
+        "See [[2099_Z_Ghost]] here.\n", encoding="utf-8"
+    )
+    bad_dir = vault / "papers" / "2024_B_Bad"
+    bad_dir.mkdir(parents=True)
+    # Invalid UTF-8 bytes — read_text(encoding="utf-8") raises UnicodeDecodeError.
+    (bad_dir / "notes.md").write_bytes(b"[[2099_Z_Ghost]] \xff\xfe ctx\n")
+
+    n = correctors.annotate(vault, ["2099_Z_Ghost"])
+
+    # The readable note was annotated; the unreadable one was not (and did
+    # not crash the pass).
+    assert n == 1
+    assert "(deleted)" in (good_dir / "notes.md").read_text(encoding="utf-8")
+    # The skip is surfaced on stderr, naming the unreadable file.
+    err = capsys.readouterr().err
+    assert "could not read" in err
+    assert "2024_B_Bad" in err
+
+
 # ---------------------------------------------------------------------------
 # resolve
 # ---------------------------------------------------------------------------

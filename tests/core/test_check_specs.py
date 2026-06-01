@@ -39,6 +39,7 @@ _EXPECTED_CATEGORIES = (
     "relevance_orphan",
     "taxonomy_drift",
     "project_config_consistency",
+    "config_unreadable",
     "vault_registry_drift",
     "project_path_exists",
     "bidirectional_refs",
@@ -51,7 +52,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 18
+    assert len(_CHECK_REGISTRY) == 19
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -97,20 +98,23 @@ def test_cheap_checks_returns_only_cheap_tier() -> None:
     assert all(spec.tier == "cheap" for spec in cheap)
 
 
-def test_cheap_set_is_the_two_b_ext_drifts_plus_index() -> None:
-    """Invariant #15: Tier-1 reads only INDEX/registry/listing/bounded-stat.
+def test_cheap_set_is_the_two_b_ext_drifts_plus_index_and_config() -> None:
+    """Invariant #15: Tier-1 reads only INDEX/registry/listing/bounded-stat
+    plus the single bounded ``lit-config.yaml`` — never per-paper metadata.
 
-    After Phase 3 the cheap set is the two B-external drifts the per-command
-    hook resolves — ``vault_registry_drift`` (#4) + ``project_path_exists``
-    (#5), both bounded-stat — plus ``index_vs_disk`` (#1, klass-A), which reads
-    only the INDEX id set + the ``papers/`` directory listing. None of the three
-    reads per-paper ``metadata.yaml``. Pinned so no ``full`` check is mistakenly
-    promoted into the hot path.
+    The cheap set is the two B-external drifts the per-command hook resolves —
+    ``vault_registry_drift`` (#4) + ``project_path_exists`` (#5), both
+    bounded-stat — plus ``index_vs_disk`` (#1, klass-A, reads only the INDEX id
+    set + the ``papers/`` directory listing) plus ``config_unreadable`` (review
+    F6/F27, reads only the one ``lit-config.yaml`` file — the same bounded read
+    ``project_path_exists`` already does). None reads per-paper ``metadata.yaml``.
+    Pinned so no ``full`` check is mistakenly promoted into the hot path.
     """
     assert {spec.category for spec in cheap_checks()} == {
         "vault_registry_drift",
         "project_path_exists",
         "index_vs_disk",
+        "config_unreadable",
     }
 
 

@@ -199,7 +199,19 @@ class LitGroup(click.Group):
             categories = {i.category for i in issues}
 
             # Correction dispatch, keyed on the unified detection categories.
-            # Registry first: it owns the missing-active-vault case, so project
+            # config_unreadable first: a present-but-unparseable lit-config.yaml
+            # blinds the config-keyed drift checks below, so surface it once to
+            # stderr (invariant #14 / review F27) — consistent with the corrupt-
+            # registry line. Not a prompt: nothing here can auto-repair a
+            # hand-broken config; the user must fix the YAML.
+            if "config_unreadable" in categories:
+                Console(stderr=True).print(
+                    "[red]error:[/] lit-config.yaml is unreadable: "
+                    "config-dependent drift checks cannot run. Inspect / "
+                    "repair it (`lit config show`)."
+                )
+
+            # Registry next: it owns the missing-active-vault case, so project
             # drift must run after it (M28 ordering preserved).
             if "vault_registry_drift" in categories:
                 from litman.commands._drift import check_and_prompt_registry_drift
