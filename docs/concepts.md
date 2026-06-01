@@ -237,6 +237,29 @@ under git. Mid-operation crashes leave only an abandoned staging dir,
 not corrupt data. Compare this to hand-editing TAXONOMY.md, which gives
 no such guarantee — see the warning in [TAXONOMY](#taxonomy-controlled-vocabulary).
 
+## Read-only TRUTH files
+
+Three files are kept read-only so they are not changed by hand:
+
+```
+papers/<id>/metadata.yaml
+papers/<id>/paper.pdf
+TAXONOMY.md
+```
+
+Change them through `lit` commands (`lit modify`, `lit taxonomy ...`,
+`lit add`, `lit rm`), which keep working — they write a new file and
+rename it into place, then re-lock. A manual `vim`-save or editor write
+to one of these files is refused; deleting one prompts for confirmation
+(on Windows the read-only attribute only triggers a confirm, it does not
+hard-block). `notes.md`, `discussion.md`, `lit-config.yaml`, and
+`INDEX.json` stay writable.
+
+This is a speed-bump, not a wall: as the same user you can still
+`chmod u+w` (or clear the read-only attribute) to override it. After
+`lit sync pull` the lock is re-applied locally, because cloud sync does
+not carry file permissions.
+
 ## INDEX.json
 
 `<vault>/INDEX.json` is an auto-generated digest of every paper's

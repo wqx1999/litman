@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -113,6 +115,39 @@ def test_add_creates_paper_folder(
     # Original PDF moved into the vault (mv semantics, not cp): the source
     # disappearing is the user-visible "ingest succeeded" signal.
     assert not fake_pdf.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_add_locks_truth_files_readonly(
+    vault: Path,
+    fake_pdf: Path,
+    mock_crossref: dict[str, Any],
+) -> None:
+    """After `lit add`: metadata.yaml + paper.pdf read-only, notes.md writable.
+
+    Also TAXONOMY.md (seeded + locked at create_vault) stays read-only. (AC#1)
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    paper_dir = vault / "papers" / _PAPER_ID
+    assert not os.access(paper_dir / "metadata.yaml", os.W_OK)
+    assert not os.access(paper_dir / "paper.pdf", os.W_OK)
+    assert not os.access(vault / "TAXONOMY.md", os.W_OK)
+    # Not locked, by design.
+    assert os.access(paper_dir / "notes.md", os.W_OK)
+    assert os.access(vault / "lit-config.yaml", os.W_OK)
+    assert os.access(vault / "INDEX.json", os.W_OK)
 
 
 def test_add_writes_metadata_yaml_correctly(

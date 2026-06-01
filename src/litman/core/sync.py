@@ -34,6 +34,7 @@ from typing import Any
 
 from ruamel.yaml import YAML
 
+from litman.core.locking import ensure_truth_locked
 from litman.exceptions import SyncError
 
 RCLONE_BIN = "rclone"
@@ -510,6 +511,11 @@ def pull(
     result = run_rclone(args, capture=False)
     if not dry_run:
         stamp_pull(vault)
+        # rclone does not round-trip Unix permissions, so pulled TRUTH files
+        # land writable (default 0o644). Re-assert the read-only lock locally
+        # (M32). Only the pull path needs this — push is unaffected (0o444 is
+        # readable, uploads fine).
+        ensure_truth_locked(vault)
     return result
 
 

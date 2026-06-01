@@ -190,6 +190,8 @@ def test_cleanup_stale_staging_empty_dir(vault: Path) -> None:
 # ===========================================================================
 
 import json as _json
+import os as _os
+import sys as _sys
 
 from litman.core import atomic as _atomic
 from litman.core.atomic import RecoveryResult, recover_staging
@@ -406,6 +408,42 @@ def test_T5b_torn_promote_via_context_manager_preserves_evidence(
     assert results[0].kind == "rolled_forward"
     assert not op_dir.exists()
     assert _snapshot(vault) == ref
+
+
+# --- T13: roll-forward re-locks a promoted TRUTH file (M32) ---------------
+# _recover_one_op must call lock_truth_file on a metadata.yaml / TAXONOMY.md /
+# paper.pdf promoted *during crash recovery*, mirroring _promote's re-lock, so
+# a target promoted by the roll-forward path ends up read-only just as it would
+# on a clean commit.
+
+
+@pytest.mark.skipif(
+    _sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_T13_recovery_relocks_truth_file(
+    vault: Path, tmp_path: Path
+) -> None:
+    ref = _committed_reference(tmp_path)
+    truth_target = vault / "papers" / "2024_A_b" / "metadata.yaml"
+
+    sw = _stage_payload(vault, "op-T13")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._write_sentinel()
+    op_dir = vault / ".litman-staging" / "op-T13"
+    assert (op_dir / "COMMITTED").exists()
+    # crash here (before _promote) → recovery rolls the op forward
+
+    results = recover_staging(vault)
+    assert len(results) == 1
+    assert results[0].kind == "rolled_forward"
+    assert not op_dir.exists()
+    assert _snapshot(vault) == ref
+
+    # The TRUTH file promoted *during recovery* must be read-only.
+    assert truth_target.exists()
+    assert truth_target.read_text() == _PAYLOAD["papers/2024_A_b/metadata.yaml"]
+    assert not _os.access(truth_target, _os.W_OK)
 
 
 # --- T6: all promoted, crash before op-dir rmtree ------------------------

@@ -35,6 +35,7 @@ from litman.core.checks import (
 from litman.core.correctors import regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import ensure_truth_locked
 
 console = Console()
 
@@ -208,6 +209,19 @@ def health_check_cmd(
         f"[dim]Running health checks on vault:[/] {escape(str(vault))} "
         f"[dim]({n_papers} paper{'s' if n_papers != 1 else ''})[/]"
     )
+
+    # Tier-2 re-lock backstop (M32, ADR-015 prevention arm): re-assert the
+    # read-only lock on any TRUTH file found writable (legacy-vault first run /
+    # post-crash / post-pull bypass). Regen-style validity correction — runs
+    # unconditionally (not gated on --fix; over-locking is lossless and never
+    # touches content). Stat-only sweep, so it respects invariant #15.
+    n_relocked = ensure_truth_locked(vault)
+    if n_relocked:
+        console.print(
+            f"[green]✓[/] Re-locked {n_relocked} TRUTH file"
+            f"{'s' if n_relocked != 1 else ''} "
+            f"[dim](metadata.yaml / TAXONOMY.md / paper.pdf made read-only)[/]"
+        )
 
     issues = run_all_checks(vault, papers)
     _render_report(issues)

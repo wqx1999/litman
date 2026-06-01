@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -55,6 +57,28 @@ def test_create_vault_default_name(tmp_path: Path) -> None:
     # vault is deliberately NOT a git repo: cloud sync (M5) handles version
     # history and multi-file atomicity uses filesystem staging instead.
     assert not (vault / ".git").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_create_vault_locks_taxonomy_readonly(tmp_path: Path) -> None:
+    """The seeded TAXONOMY.md is read-only; lit-config.yaml / INDEX.json are not (AC#1)."""
+    vault = create_vault(tmp_path)
+    assert not os.access(vault / "TAXONOMY.md", os.W_OK)
+    assert os.access(vault / "lit-config.yaml", os.W_OK)
+    assert os.access(vault / "INDEX.json", os.W_OK)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_init_cli_locks_taxonomy_readonly(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    vault = tmp_path / "literature_vault"
+    assert not os.access(vault / "TAXONOMY.md", os.W_OK)
 
 
 def test_create_vault_custom_name(tmp_path: Path) -> None:

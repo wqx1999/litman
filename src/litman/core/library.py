@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 from click.core import ParameterSource
 
+from litman.core.locking import lock_truth_file
 from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
 from litman.core.views import write_index
 from litman.exceptions import (
@@ -79,6 +80,10 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
             (vault / sub).mkdir(parents=True, exist_ok=True)
 
         (vault / "TAXONOMY.md").write_text(TAXONOMY_SEED, encoding="utf-8")
+        # Read-only lock the seeded TAXONOMY.md (M32). lit-config.yaml stays
+        # writable: it has no `lit config set`, so hand-editing is its only
+        # mutation path.
+        lock_truth_file(vault / "TAXONOMY.md")
         (vault / "lit-config.yaml").write_text(
             render_lit_config_seed(library_name=name), encoding="utf-8"
         )

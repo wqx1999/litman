@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.locking import lock_truth_file
 from litman.exceptions import (
     CorruptMetadataError,
     ModifyError,
@@ -80,6 +83,31 @@ def _read_index(vault: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # --set: scalar fields
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_modify_penetrates_locked_metadata(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """On a locked vault, `lit modify` succeeds (rename penetrates 0o444)
+    and metadata stays read-only afterward (AC#2)."""
+    vault, paper_id = vault_with_paper
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    lock_truth_file(meta)
+    assert not os.access(meta, os.W_OK)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert _read_meta(vault, paper_id)["priority"] == "A"
+    # Re-locked after the staged-write promote.
+    assert not os.access(meta, os.W_OK)
 
 
 def test_modify_set_scalar(vault_with_paper: tuple[Path, str]) -> None:

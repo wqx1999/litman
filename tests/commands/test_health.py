@@ -7,6 +7,8 @@ code, and ``--fix`` round-trip.
 
 from __future__ import annotations
 
+import os
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -674,6 +676,7 @@ def test_taxonomy_drift_clean(vault: Path) -> None:
     # Register topic first.
     tax = vault / "TAXONOMY.md"
     text = tax.read_text()
+    os.chmod(tax, 0o644)  # unlock for hand-edit (M32 locks it at create_vault)
     tax.write_text(text.replace("## topics\n\n(empty)", "## topics\n\n- AMP"))
     _write_paper(vault, "A_a_a", topics=["AMP"])
     assert check_taxonomy_drift(vault, list_papers(vault)) == []
@@ -1216,6 +1219,53 @@ def test_health_check_with_issues_exits_one(vault: Path) -> None:
     assert "GHOST" in result.output
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_health_check_relocks_writable_truth_and_reports(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """health-check re-locks a TRUTH file made writable and reports the count (AC#4)."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    _write_paper(vault, "2024_Foo_Bar")
+    from litman.core.correctors import regen
+
+    regen(vault)
+    # _write_paper writes metadata.yaml writable (bypasses the lock); simulate a
+    # writable TRUTH file (post-pull / hand-edit). TAXONOMY.md is also unlocked.
+    meta = vault / "papers" / "2024_Foo_Bar" / "metadata.yaml"
+    assert os.access(meta, os.W_OK)
+    os.chmod(vault / "TAXONOMY.md", 0o644)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "Re-locked" in result.output
+    assert not os.access(meta, os.W_OK)
+    assert not os.access(vault / "TAXONOMY.md", os.W_OK)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_health_check_no_relock_noise_when_clean(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When every TRUTH file is already locked, health-check prints no re-lock line."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    _write_paper(vault, "2024_Foo_Bar")
+    from litman.core.correctors import regen
+    from litman.core.locking import ensure_truth_locked
+
+    regen(vault)
+    ensure_truth_locked(vault)  # lock everything up front
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "Re-locked" not in result.output
+
+
 def test_health_check_fix_clears_staging(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1391,8 +1441,13 @@ def test_health_check_help() -> None:
 def _set_taxonomy_projects(vault: Path, names: list[str]) -> None:
     from litman.core.taxonomy import update_user_dict_section
 
-    txt = (vault / "TAXONOMY.md").read_text()
-    (vault / "TAXONOMY.md").write_text(
+    tax = vault / "TAXONOMY.md"
+    txt = tax.read_text()
+    # TAXONOMY.md is locked read-only by create_vault (M32); this helper
+    # hand-edits it for test setup, which is exactly the out-of-band write the
+    # lock guards, so unlock before writing.
+    os.chmod(tax, 0o644)
+    tax.write_text(
         update_user_dict_section(txt, "projects", names), encoding="utf-8"
     )
 

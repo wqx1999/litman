@@ -54,6 +54,8 @@ from typing import Literal
 
 from rich.console import Console
 
+from litman.core.locking import is_truth_lockable, lock_truth_file
+
 _STAGING_DIRNAME = ".litman-staging"
 _MANIFEST_FILENAME = "MANIFEST.json"
 _SENTINEL_FILENAME = "COMMITTED"
@@ -420,11 +422,21 @@ class StagedWrite:
         self._committed = True
 
     def _promote(self) -> None:
-        """Promote staged files to targets in manifest (insertion) order."""
+        """Promote staged files to targets in manifest (insertion) order.
+
+        After each rename, re-assert the read-only lock on any TRUTH file we
+        just overwrote (M32). ``os.replace`` ignores the read-only bit on the
+        *overwritten* target, so the new file lands writable; re-locking here
+        keeps the prevention arm consistent across every `lit` write command
+        that funnels through staged_write (modify / taxonomy / rm / rename /
+        project / trash-restore).
+        """
         for staging_path, target_path in self._staged.values():
             target_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staging_path, target_path)
             _fsync_dir(target_path.parent)
+            if is_truth_lockable(self.vault, target_path):
+                lock_truth_file(target_path)
         # All targets in place: the staging dir is now a spent shell that
         # _cleanup may safely remove.
         self._promoted = True
@@ -507,6 +519,8 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(staging_path, target_path)
                 _fsync_dir(target_path.parent)
+                if is_truth_lockable(vault, target_path):
+                    lock_truth_file(target_path)
             except OSError:
                 # The promotion itself failed — typically the storage that
                 # tore the original commit is still unwritable. NEVER let this

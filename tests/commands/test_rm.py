@@ -12,6 +12,8 @@ refresh, and removal of ``--cascade``.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core import trash as trash_mod
 from litman.core.library import create_vault
+from litman.core.locking import lock_truth_file
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES, list_trash
 from litman.exceptions import PaperNotFoundError
 
@@ -133,6 +136,25 @@ def test_rm_simple(vault: Path) -> None:
     assert result.exit_code == 0, result.output
     assert not (vault / "papers" / "2024_Foo_Bar").exists()
     assert "Trashed 2024_Foo_Bar" in result.output
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_rm_succeeds_on_locked_paper(vault: Path) -> None:
+    """`lit rm` whole-dir renames into .trash and ignores file read-only bits (AC#2)."""
+    _write_paper(vault, "2024_Foo_Bar")
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    lock_truth_file(paper_dir / "metadata.yaml")
+    lock_truth_file(paper_dir / "paper.pdf")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Foo_Bar", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert not paper_dir.exists()
 
 
 def test_rm_refreshes_index(vault: Path) -> None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -207,6 +209,67 @@ def test_taxonomy_add_single(vault: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert _read_taxonomy(vault)["topics"] == ["peptide"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_taxonomy_writes_penetrate_locked_taxonomy(vault: Path) -> None:
+    """add / rename / merge succeed on a locked TAXONOMY.md and re-lock it (AC#2)."""
+    tax = vault / "TAXONOMY.md"
+    # create_vault already locked it.
+    assert not os.access(tax, os.W_OK)
+    runner = CliRunner()
+
+    r = runner.invoke(
+        cli,
+        ["taxonomy", "add", "topics", "alpha", "beta", "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+    assert _read_taxonomy(vault)["topics"] == ["alpha", "beta"]
+    assert not os.access(tax, os.W_OK)
+
+    r = runner.invoke(
+        cli,
+        ["taxonomy", "rename", "topics", "alpha", "gamma",
+         "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+    assert "gamma" in _read_taxonomy(vault)["topics"]
+    assert not os.access(tax, os.W_OK)
+
+    r = runner.invoke(
+        cli,
+        ["taxonomy", "merge", "topics", "gamma", "beta",
+         "--into", "delta", "--yes", "--library", str(vault)],
+    )
+    assert r.exit_code == 0, r.output
+    assert "delta" in _read_taxonomy(vault)["topics"]
+    assert not os.access(tax, os.W_OK)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_taxonomy_rm_penetrates_locked_taxonomy(vault: Path) -> None:
+    """rm of an unreferenced value succeeds on a locked TAXONOMY.md and re-locks it (AC#2)."""
+    tax = vault / "TAXONOMY.md"
+    # create_vault already locked it.
+    assert not os.access(tax, os.W_OK)
+    runner = CliRunner()
+
+    runner.invoke(
+        cli,
+        ["taxonomy", "add", "topics", "alpha", "beta", "--library", str(vault)],
+    )
+    assert not os.access(tax, os.W_OK)
+
+    r = runner.invoke(
+        cli, ["taxonomy", "rm", "topics", "alpha", "--library", str(vault)]
+    )
+    assert r.exit_code == 0, r.output
+    assert _read_taxonomy(vault)["topics"] == ["beta"]
+    assert not os.access(tax, os.W_OK)
 
 
 def test_taxonomy_add_multiple(vault: Path) -> None:

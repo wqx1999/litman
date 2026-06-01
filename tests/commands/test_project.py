@@ -8,6 +8,7 @@ atomicity.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -215,6 +216,7 @@ def test_project_list_drift_path_missing(
     from litman.core.taxonomy import update_user_dict_section
 
     txt = (vault / "TAXONOMY.md").read_text()
+    os.chmod(vault / "TAXONOMY.md", 0o644)  # unlock for hand-edit (M32)
     (vault / "TAXONOMY.md").write_text(
         update_user_dict_section(txt, "projects", ["p"])
     )

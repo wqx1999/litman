@@ -19,7 +19,9 @@ as a regular filesystem path.
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -515,6 +517,51 @@ def test_pull_stamps_last_pull(
     assert read_sync_state(vault).last_pull is None
     pull(vault, target)
     assert read_sync_state(vault).last_pull is not None
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_pull_relocks_truth_files(
+    configured_vault: tuple[Path, str],
+) -> None:
+    """rclone drops Unix perms, so pull re-locks TRUTH files locally (M32)."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target)
+
+    # Simulate the post-pull state: a TRUTH file arrives writable.
+    meta = vault / "papers" / "p1" / "metadata.yaml"
+    pdf = vault / "papers" / "p1" / "paper.pdf"
+    tax = vault / "TAXONOMY.md"
+    os.chmod(meta, 0o644)
+    os.chmod(pdf, 0o644)
+    os.chmod(tax, 0o644)
+    assert os.access(meta, os.W_OK)
+
+    pull(vault, target)
+
+    assert not os.access(meta, os.W_OK)
+    assert not os.access(pdf, os.W_OK)
+    assert not os.access(tax, os.W_OK)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_pull_dry_run_does_not_relock(
+    configured_vault: tuple[Path, str],
+) -> None:
+    """A dry-run pull must not touch local file modes."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    push(vault, target)
+    meta = vault / "papers" / "p1" / "metadata.yaml"
+    os.chmod(meta, 0o644)
+
+    pull(vault, target, dry_run=True)
+
+    assert os.access(meta, os.W_OK)
 
 
 # ---------------------------------------------------------------------------

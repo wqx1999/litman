@@ -46,6 +46,7 @@ from litman.core.dedup import (
 )
 from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import lock_truth_file
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
 from litman.importers.llm import parse_llm_json, parse_llm_json_text
@@ -448,6 +449,12 @@ def add_cmd(
             encoding="utf-8",
         )
         shutil.copy2(pdf_path, paper_dir / "paper.pdf")
+        # Read-only lock the two new TRUTH files (M32). These are fresh
+        # creates (the dir did not pre-exist) so the writes above succeed; we
+        # only chmod after. notes.md is intentionally left writable. Inside the
+        # rollback try so a later failure still rmtree's the whole dir.
+        lock_truth_file(paper_dir / "metadata.yaml")
+        lock_truth_file(paper_dir / "paper.pdf")
     except Exception:
         if paper_dir.exists():
             shutil.rmtree(paper_dir, ignore_errors=True)
