@@ -133,10 +133,24 @@ def emit_entry(meta: dict[str, Any]) -> str:
     if publisher:
         fields.append(("publisher", escape_bibtex(publisher)))
 
-    # --- doi (always carries a useful URL into LaTeX styles that show it) ---
+    # --- locators: doi + arXiv eprint/url ---
+    # A DOI is the canonical locator when present. For an arXiv preprint
+    # (arxiv-id, often no DOI) the entry must still carry a locator or it
+    # exports as an unresolvable @misc (review F1): emit the biblatex-native
+    # eprint/archivePrefix pair, plus a plain abs URL when there's no DOI so
+    # even bibtex styles that ignore eprint still have a clickable link.
     doi = (meta.get("doi") or "").strip()
     if doi:
         fields.append(("doi", escape_bibtex(doi)))
+
+    arxiv_id = (meta.get("arxiv-id") or "").strip()
+    if arxiv_id:
+        fields.append(("eprint", escape_bibtex(arxiv_id)))
+        fields.append(("archivePrefix", "arXiv"))
+        if not doi:
+            fields.append(
+                ("url", f"https://arxiv.org/abs/{escape_bibtex(arxiv_id)}")
+            )
 
     return _format_entry(entry_type, cite_key, fields)
 
@@ -150,8 +164,14 @@ def emit_bib(entries: list[dict[str, Any]], sentinel: str) -> str:
 
     The order of entries is preserved — callers (the export command)
     decide the sort order; the exporter does not impose one.
+
+    An entry with no ``id`` (cite key) is skipped rather than aborting the
+    whole file (review F2): one hand-broken / id-less paper must not make
+    ``lit export`` all-or-nothing. The export command reports the count it
+    actually wrote and warns about any skipped paper, so the drop is surfaced
+    (it filters on the same ``id`` predicate).
     """
-    body = "\n\n".join(emit_entry(m) for m in entries)
+    body = "\n\n".join(emit_entry(m) for m in entries if m.get("id"))
     if body:
         return f"{sentinel}\n\n{body}\n"
     return f"{sentinel}\n"

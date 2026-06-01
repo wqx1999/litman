@@ -261,12 +261,23 @@ def export_cmd(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
 
+    # emit_bib skips id-less papers (no cite key) rather than crash the whole
+    # export (review F2); surface the drop so it is never silent.
+    exported = [m for m in selected if m.get("id")]
+    skipped_no_id = len(selected) - len(exported)
+
     scope = f"project={project!r}" if project else "all papers"
     console.print(
-        f"[green]✓[/] Exported {len(selected)} paper"
-        f"{'s' if len(selected) != 1 else ''} ({scope}) → "
+        f"[green]✓[/] Exported {len(exported)} paper"
+        f"{'s' if len(exported) != 1 else ''} ({scope}) → "
         f"[bold]{target}[/]"
     )
+    if skipped_no_id:
+        console.print(
+            f"[yellow]warning:[/] skipped {skipped_no_id} paper"
+            f"{'s' if skipped_no_id != 1 else ''} with no id field "
+            "(no bibtex cite key) — run `lit health-check`."
+        )
     if not selected:
         # Not an error — an empty bib is a valid state (e.g. brand-new
         # project with no linked papers yet). Hint the user, though.

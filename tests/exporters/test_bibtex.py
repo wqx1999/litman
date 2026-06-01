@@ -180,6 +180,41 @@ def test_emit_entry_missing_id_raises() -> None:
         emit_entry({"title": "x", "authors": ["Doe, J."]})
 
 
+def test_emit_entry_arxiv_preprint_emits_eprint_and_url() -> None:
+    # Review F1: an arXiv preprint (arxiv-id, no DOI) must carry a locator,
+    # not export as an unresolvable @misc.
+    meta = {
+        "id": "2024_Doe_Diffusion",
+        "title": "Diffusion Models",
+        "authors": ["Doe, Jane"],
+        "year": 2024,
+        "venue-type": "preprint",
+        "arxiv-id": "2401.12345",
+    }
+    out = emit_entry(meta)
+    assert "eprint = {2401.12345}," in out
+    assert "archivePrefix = {arXiv}," in out
+    assert "url = {https://arxiv.org/abs/2401.12345}," in out
+
+
+def test_emit_entry_arxiv_with_doi_skips_redundant_url() -> None:
+    # When a DOI is present it is the canonical locator; eprint is still
+    # emitted (useful for arXiv) but the redundant abs URL is not.
+    meta = {
+        "id": "2024_Doe_Published",
+        "title": "Published Later",
+        "authors": ["Doe, Jane"],
+        "year": 2024,
+        "venue-type": "journal-article",
+        "doi": "10.1/x",
+        "arxiv-id": "2401.99999",
+    }
+    out = emit_entry(meta)
+    assert "doi = {10.1/x}," in out
+    assert "eprint = {2401.99999}," in out
+    assert "url = " not in out
+
+
 def test_emit_entry_pages_single_value_passes_through() -> None:
     """A non-range pages value (e.g. 'e12345') is left alone, just escaped."""
     meta = {
@@ -272,6 +307,17 @@ def test_emit_bib_preserves_input_order() -> None:
     out_ba = emit_bib([b, a], _SENTINEL)
     assert out_ab.index("2024_A_x") < out_ab.index("2020_Z_y")
     assert out_ba.index("2020_Z_y") < out_ba.index("2024_A_x")
+
+
+def test_emit_bib_skips_id_less_entry_not_all_or_nothing() -> None:
+    # Review F2: a single id-less paper must not crash the whole export. It is
+    # skipped; the valid entries still render.
+    good = {"id": "2024_Good_X", "title": "Good", "authors": ["A, B"],
+            "year": 2024, "venue-type": "journal-article"}
+    bad = {"title": "No Id", "authors": ["C, D"], "year": 2024}
+    out = emit_bib([good, bad], _SENTINEL)
+    assert "@article{2024_Good_X," in out
+    assert "No Id" not in out
 
 
 # ---------------------------------------------------------------------------
