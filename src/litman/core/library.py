@@ -10,6 +10,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import click
+from click.core import ParameterSource
+
 from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
 from litman.core.views import write_index
 from litman.exceptions import (
@@ -180,6 +183,21 @@ def find_vault(explicit: Path | None = None) -> Path:
     )
 
 
+def _library_is_env_sourced() -> bool:
+    """Whether the active command's ``library`` parameter came from the
+    ``LIT_LIBRARY`` environment variable rather than an explicit ``--library``.
+
+    Uses Click's parameter-source tracking on the current context. Returns
+    ``False`` when there is no active Click context (e.g. a direct unit-test
+    call), which keeps the conservative "raise on conflict" behaviour for
+    non-CLI callers that pass both arguments by hand.
+    """
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return False
+    return ctx.get_parameter_source("library") == ParameterSource.ENVIRONMENT
+
+
 def resolve_library_or_vault(
     library: Path | None,
     vault_name: str | None,
@@ -203,14 +221,25 @@ def resolve_library_or_vault(
         through to its own discovery chain: registry active → cwd-walk).
 
     Raises:
-        VaultRegistryError: both options were passed, or ``vault_name``
-            is not registered in ``~/.config/litman/vaults.yaml``.
+        VaultRegistryError: both options were passed *explicitly on the
+            command line*, or ``vault_name`` is not registered in
+            ``~/.config/litman/vaults.yaml``.
     """
     if library is not None and vault_name is not None:
-        raise VaultRegistryError(
-            "--library and --vault are mutually exclusive. Pass one or "
-            "the other, not both."
-        )
+        # ``--library`` carries ``envvar="LIT_LIBRARY"``, so the standard
+        # setup (which exports ``$LIT_LIBRARY``; see CLAUDE.md §1.1) fills
+        # ``library`` from the environment on *every* command. An explicit
+        # ``--vault NAME`` must override that env-sourced default rather than
+        # collide with it — otherwise ``lit list --vault foo`` raises for
+        # anyone who has $LIT_LIBRARY set. Only a ``--library`` value the user
+        # typed on *this* command line is a genuine conflict with ``--vault``.
+        if _library_is_env_sourced():
+            library = None  # env-only library yields to the explicit --vault
+        else:
+            raise VaultRegistryError(
+                "--library and --vault are mutually exclusive. Pass one or "
+                "the other, not both."
+            )
     if vault_name is not None:
         # Local import keeps the module-load graph identical to find_vault's
         # registry-active branch and avoids a circular import in any future

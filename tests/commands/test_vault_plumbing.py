@@ -161,6 +161,48 @@ def test_cli_list_vault_and_library_mutually_exclusive(
     assert "mutually exclusive" in str(result.exception)
 
 
+def test_cli_list_vault_overrides_env_lit_library(
+    registry_with_two_vaults: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review F26 + M-test smoke: the standard setup exports $LIT_LIBRARY,
+    # which Click surfaces as the `library` parameter on *every* command. An
+    # explicit --vault NAME must win over that env-sourced default instead of
+    # raising a spurious "mutually exclusive" error. (Most tests delenv
+    # LIT_LIBRARY, which is exactly why this bug stayed hidden — so this test
+    # deliberately re-sets it after the fixture cleared it.)
+    vault_a, vault_b = registry_with_two_vaults
+    _seed_paper(vault_a, "PAPER_IN_MAIN", title="Main vault paper")
+    _seed_paper(vault_b, "PAPER_IN_SECOND", title="Second vault paper")
+    # $LIT_LIBRARY points at 'second'; --vault main must still win.
+    monkeypatch.setenv("LIT_LIBRARY", str(vault_b))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list", "--vault", "main"])
+    assert result.exit_code == 0, result.output
+    assert "PAPER_IN_MAIN" in result.output
+    assert "PAPER_IN_SECOND" not in result.output
+
+
+def test_cli_list_explicit_library_still_conflicts_with_env_set(
+    registry_with_two_vaults: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The env-override carve-out must be narrow: a --library typed on the
+    # command line is still a genuine conflict with --vault, even when
+    # $LIT_LIBRARY also happens to be set. Only an *env-sourced* library yields.
+    vault_a, vault_b = registry_with_two_vaults
+    monkeypatch.setenv("LIT_LIBRARY", str(vault_b))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["list", "--vault", "main", "--library", str(vault_a)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    assert "mutually exclusive" in str(result.exception)
+
+
 def test_cli_list_without_vault_uses_active_default(
     registry_with_two_vaults: tuple[Path, Path],
 ) -> None:
