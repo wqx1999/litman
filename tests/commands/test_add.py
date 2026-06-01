@@ -354,6 +354,64 @@ def test_add_llm_url_form_doi_dedupes_against_bare(
     assert isinstance(second.exception, DuplicateDOIError)
 
 
+def test_add_title_with_rich_markup_does_not_crash(
+    vault: Path, fake_pdf: Path, tmp_path: Path
+) -> None:
+    # Review F24: a title carrying Rich markup ("[/]" / "[red]") must not crash
+    # the final success Panel, which renders AFTER the paper is ingested and
+    # the source PDF deleted (so a crash there looks like a failed add).
+    j = tmp_path / "m.json"
+    j.write_text(
+        json.dumps({
+            "title": "Weird [/] [red]Title",
+            "authors": ["Doe, Jane"],
+            "year": 2024,
+            "doi": "10.9/markup",
+        }),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j), "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert list((vault / "papers").iterdir())  # paper actually ingested
+
+
+def test_add_reconcile_failure_warns_not_crash(
+    vault: Path,
+    fake_pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Review F25: a post-commit derived-rebuild failure must not crash lit add
+    # or skip the source-PDF cleanup — the paper is committed, INDEX just lags.
+    def _boom(*a: object, **k: object) -> dict[str, int]:
+        raise OSError("simulated views rebuild failure")
+
+    monkeypatch.setattr("litman.commands.add.reconcile_derived", _boom)
+    j = tmp_path / "m.json"
+    j.write_text(
+        json.dumps({
+            "title": "Fine Paper",
+            "authors": ["Doe, Jane"],
+            "year": 2024,
+            "doi": "10.9/ok",
+        }),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j), "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "rebuild failed" in result.output.lower()
+    assert list((vault / "papers").iterdir())  # paper committed
+    assert not fake_pdf.exists()  # source PDF still removed (mv semantics)
+
+
 def test_add_id_collision_with_auto_suffix(
     vault: Path,
     fake_pdf: Path,

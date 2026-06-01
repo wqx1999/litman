@@ -32,6 +32,7 @@ from typing import Any
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from ruamel.yaml import YAML
 
@@ -464,7 +465,21 @@ def add_cmd(
     # modify/rename). project_refs=False: a freshly-added paper has an empty
     # `projects` list, so there are no project symlinks / REFERENCES.md to
     # rebuild.
-    reconcile_derived(vault, project_refs=False)
+    #
+    # The call is wrapped (review F25): a rebuild failure (e.g. an OSError
+    # writing views/ on a flaky mount) must not crash `lit add` with a raw
+    # traceback after the paper is already committed, nor skip the source-PDF
+    # cleanup below — that would strand the source (mv semantics broken) AND
+    # leave INDEX lagging with no warning. Treat it as the same best-effort the
+    # comment already promised.
+    try:
+        reconcile_derived(vault, project_refs=False)
+    except Exception as exc:
+        console.print(
+            f"[yellow]Warning:[/] INDEX/views rebuild failed "
+            f"({exc.__class__.__name__}); the paper was ingested but is not "
+            "yet in INDEX.json. Run `lit refresh-views` to reconcile."
+        )
 
     # Remove the source PDF (mv semantics). Tolerate failure: a successful
     # ingest must not be reported as failure just because the source could not
@@ -515,7 +530,7 @@ def add_cmd(
     # as an unknown style tag and stripped, breaking the agent-parseable
     # contract).
     candidate_lines = [
-        f"{c['url']} (p{c['page']}, ×{c['count']})"
+        f"{escape(str(c['url']))} (p{c['page']}, ×{c['count']})"
         for c in code_candidates
     ]
     body = (
@@ -530,14 +545,19 @@ def add_cmd(
         "\\[/code_candidates]"
     )
 
+    # Escape every interpolated metadata value (review F24): a title / journal
+    # / author / url carrying Rich markup like "[/]" or "[red]" would otherwise
+    # raise MarkupError here — AFTER the paper is ingested and the source PDF
+    # deleted — making a successful add look like a failure. The literal markup
+    # tags and the \[code_candidates] fences are author-controlled and stay.
     console.print(
         Panel.fit(
-            f"[bold green]Paper added:[/] {paper_id}\n"
-            f"[dim]Folder:[/] {paper_dir}\n\n"
-            f"[bold]Title:[/] {parsed['title']}\n"
-            f"[bold]Year:[/] {parsed['year']}    "
-            f"[bold]Journal:[/] {parsed['journal']}\n"
-            f"[bold]Authors:[/] {author_summary}"
+            f"[bold green]Paper added:[/] {escape(paper_id)}\n"
+            f"[dim]Folder:[/] {escape(str(paper_dir))}\n\n"
+            f"[bold]Title:[/] {escape(str(parsed['title']))}\n"
+            f"[bold]Year:[/] {escape(str(parsed['year']))}    "
+            f"[bold]Journal:[/] {escape(str(parsed['journal']))}\n"
+            f"[bold]Authors:[/] {escape(author_summary)}"
             f"{code_block}",
             title="lit add",
             border_style="green",
