@@ -235,6 +235,30 @@ def _unrecoverable_message(
     )
 
 
+def _promote_failed_message(
+    op_id: str, failed: list[str], recovered: int
+) -> str:
+    """User-facing line for a torn op whose promotion failed *this pass*.
+
+    Distinct from :func:`_unrecoverable_message`: the staged copies are still
+    present (no data lost), the underlying ``os.replace`` simply failed —
+    typically the storage that tore the original commit is still unwritable
+    (network-mount EIO/ESTALE, mount gone read-only). recover_staging swallows
+    the error instead of letting it escape the vault-open hook (F4), preserves
+    the evidence, and the next ``lit`` command retries.
+    """
+    recovered_clause = (
+        f"（本次已成功 roll-forward {recovered} 个）" if recovered else ""
+    )
+    return (
+        f"撕裂的提交 {op_id} 本次未能补完："
+        f"{len(failed)} 个文件 promote 失败 "
+        f"({', '.join(failed)})，可能是底层存储暂时不可写；"
+        f"已保留 .litman-staging/{op_id}/ 与暂存副本，"
+        f"下次任意 lit 命令会自动重试{recovered_clause}"
+    )
+
+
 def _read_manifest_relpaths(op_dir: Path) -> list[str] | None:
     """Read the promotion-order relpath list from an op's MANIFEST.json.
 
@@ -269,8 +293,11 @@ class StagedWrite:
     Files are staged under ``<vault>/.litman-staging/<op_id>/`` and
     promoted to their final paths via ``os.replace()`` only after a
     durable manifest + sentinel commit record exists. An exception during
-    the body skips promotion (rollback). Either way the staging directory
-    is removed on exit.
+    the body skips promotion (rollback). The staging directory is removed on
+    exit, EXCEPT when the commit passed its atomic decision point (the
+    COMMITTED sentinel is durable) but ``_promote`` failed partway: then the
+    staging dir is preserved as the only roll-forward evidence for the next
+    :func:`recover_staging` pass (F3).
     """
 
     def __init__(self, vault: Path, op_id: str | None = None) -> None:
@@ -283,6 +310,13 @@ class StagedWrite:
         # last because views/ symlinks pointing into papers/ rely on the
         # papers/<id>/ trees already being in place.
         self._staged: dict[str, tuple[Path, Path]] = {}
+        # Commit-phase progress flags consulted by _cleanup so it never
+        # destroys roll-forward evidence (F3). _committed flips once the
+        # COMMITTED sentinel is durable (the op is decided); _promoted flips
+        # once every file is promoted. If _promote fails between the two, the
+        # staging dir is the sole recovery record and must survive cleanup.
+        self._committed = False
+        self._promoted = False
 
     def __enter__(self) -> "StagedWrite":
         # exist_ok=False: a collision means another op already grabbed this
@@ -381,6 +415,9 @@ class StagedWrite:
         sentinel_path.write_bytes(b"")
         _fsync_file(sentinel_path)
         _fsync_dir(self.staging_root)
+        # Decision point passed: from here a failure must roll FORWARD, so
+        # _cleanup must not destroy the staging dir until _promote finishes.
+        self._committed = True
 
     def _promote(self) -> None:
         """Promote staged files to targets in manifest (insertion) order."""
@@ -388,14 +425,25 @@ class StagedWrite:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staging_path, target_path)
             _fsync_dir(target_path.parent)
+        # All targets in place: the staging dir is now a spent shell that
+        # _cleanup may safely remove.
+        self._promoted = True
 
     def _cleanup(self) -> None:
-        """Remove this op's staging directory.
+        """Remove this op's staging directory, unless it is recovery evidence.
 
-        Errors are swallowed: a leftover staging dir is harmless and the
-        next ``recover_staging`` pass (vault-open hook or health-check)
-        idempotently re-processes and removes it.
+        A torn promotion (COMMITTED sentinel durable but ``_promote`` did not
+        finish) leaves the staging dir as the ONLY roll-forward record;
+        destroying it would strand the vault in a silent, unrecoverable torn
+        state (F3). So rmtree only on a clean rollback (sentinel never
+        written) or a fully completed promotion; otherwise preserve the dir
+        for the next ``recover_staging`` pass (vault-open hook / health-check).
+
+        Errors are swallowed: a leftover staging dir is harmless and the next
+        recovery pass idempotently re-processes and removes it.
         """
+        if self._committed and not self._promoted:
+            return
         if self.staging_root.exists():
             shutil.rmtree(self.staging_root, ignore_errors=True)
 
@@ -450,13 +498,25 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
 
     promoted = 0
     unrecoverable: list[str] = []
+    promote_failed: list[str] = []
     for relpath in relpaths:
         staging_path = op_dir / relpath
         target_path = vault / relpath
         if staging_path.exists():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staging_path, target_path)
-            _fsync_dir(target_path.parent)
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staging_path, target_path)
+                _fsync_dir(target_path.parent)
+            except OSError:
+                # The promotion itself failed — typically the storage that
+                # tore the original commit is still unwritable. NEVER let this
+                # escape: recover_staging runs at the vault-open chokepoint, so
+                # an exception here would crash every subsequent lit command,
+                # `lit health-check` included, turning a recoverable tear into
+                # a whole-vault DoS (F4). Keep the staged copy + evidence and
+                # let the next vault-open retry.
+                promote_failed.append(relpath)
+                continue
             promoted += 1
         elif target_path.exists():
             # Already promoted before the crash — idempotent skip.
@@ -466,11 +526,24 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
             unrecoverable.append(relpath)
 
     if unrecoverable:
+        # Genuine data loss (both sides gone) is the headline even if other
+        # files also failed to promote this pass. Evidence preserved.
         return RecoveryResult(
             op_id=op_id,
             kind="unrecoverable",
             n_files=promoted,
             message=_unrecoverable_message(op_id, unrecoverable, promoted),
+        )
+
+    if promote_failed:
+        # No data lost, but this pass could not finish promoting. Report and
+        # preserve (kind="unrecoverable" so it surfaces as an error and the op
+        # dir is NOT deleted); the next vault-open retries automatically.
+        return RecoveryResult(
+            op_id=op_id,
+            kind="unrecoverable",
+            n_files=promoted,
+            message=_promote_failed_message(op_id, promote_failed, promoted),
         )
 
     shutil.rmtree(op_dir, ignore_errors=True)

@@ -357,6 +357,57 @@ def test_T5_crash_mid_promote(
     assert _snapshot(vault) == ref
 
 
+# --- T5b (F3): torn promote through the REAL context manager ------------
+# T5 above drives the commit steps by hand to mimic a *hard kill* (process
+# killed → no __exit__, no _cleanup), so the staging dir survives naturally.
+# But every real caller uses `with staged_write(...)`, so __exit__ → _commit
+# → _promote always runs, and a mid-promote OSError propagates through
+# __exit__'s `finally: self._cleanup()`. The F3 bug: that _cleanup
+# unconditionally rmtree'd the staging dir, destroying the COMMITTED sentinel
+# + MANIFEST + still-staged files, so a later recover_staging saw an empty
+# dir → the tear became permanent and invisible. Once the sentinel is durable
+# but promotion is unfinished, _cleanup must PRESERVE the evidence.
+
+
+def test_T5b_torn_promote_via_context_manager_preserves_evidence(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = _committed_reference(tmp_path)
+
+    real_replace = _atomic.os.replace
+    state = {"n": 0}
+
+    def flaky_replace(src, dst):
+        state["n"] += 1
+        if state["n"] == 2:
+            # e.g. transient EIO / ESTALE on a network mount mid-promote.
+            raise OSError("injected crash on 2nd os.replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(_atomic.os, "replace", flaky_replace)
+
+    # Real caller shape: body completes cleanly; __exit__ runs _commit;
+    # _promote raises on the 2nd file; the OSError escapes __exit__.
+    with pytest.raises(OSError, match="2nd os.replace"):
+        with staged_write(vault, op_id="op-T5b") as stage:
+            for rel, content in _PAYLOAD.items():
+                stage.write_text(rel, content)
+    monkeypatch.undo()
+
+    op_dir = vault / ".litman-staging" / "op-T5b"
+    # Decision point passed (sentinel durable) but promotion is torn: the
+    # staging dir is the only roll-forward evidence and must survive.
+    assert op_dir.exists(), "F3: _cleanup destroyed the torn-op evidence"
+    assert (op_dir / "COMMITTED").exists()
+
+    # The existing, tested recovery path finishes the half-done promotion.
+    results = recover_staging(vault)
+    assert len(results) == 1
+    assert results[0].kind == "rolled_forward"
+    assert not op_dir.exists()
+    assert _snapshot(vault) == ref
+
+
 # --- T6: all promoted, crash before op-dir rmtree ------------------------
 
 
@@ -630,6 +681,71 @@ def test_T12_mixed_leftover_ops(vault: Path, tmp_path: Path) -> None:
     ).read_text() == "id: 2024_B_x\n"
     # A's payload to INDEX.json was rolled back (seed INDEX preserved).
     assert '"never"' not in (vault / "INDEX.json").read_text()
+
+
+# --- T13/T14 (F4): recovery's own os.replace failure must not escape -----
+# recover_staging runs at the vault-open chokepoint (library.find_vault), so
+# an exception escaping it crashes EVERY lit command — `lit health-check`
+# included, since it resolves the vault the same way. A torn op whose promote
+# keeps failing (storage still flapping) must degrade to "preserved, retry
+# next time", never raise. Mirrors the try/except already guarding the drift
+# hook in cli.py.
+
+
+def test_T13_recovery_replace_failure_is_contained(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sw = _stage_payload(vault, "op-T13")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._write_sentinel()
+    op_dir = vault / ".litman-staging" / "op-T13"
+
+    def always_fail_replace(src, dst):
+        raise OSError("storage still down")
+
+    monkeypatch.setattr(_atomic.os, "replace", always_fail_replace)
+    # Must NOT raise — before the F4 fix this OSError escaped recover_staging.
+    results = recover_staging(vault)
+    monkeypatch.undo()
+
+    assert len(results) == 1
+    assert results[0].kind == "unrecoverable"
+    assert results[0].n_files == 0
+    # Evidence preserved for the next vault-open retry; nothing half-promoted.
+    assert op_dir.exists()
+    assert (op_dir / "COMMITTED").exists()
+    assert not (vault / "papers/2024_A_b/metadata.yaml").exists()
+
+
+def test_T14_recovery_failure_does_not_dos_other_commands(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from litman.cli import cli
+
+    sw = _stage_payload(vault, "op-T14")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._write_sentinel()
+
+    real_replace = _atomic.os.replace
+
+    def fail_staging_replace(src, dst):
+        # Only the recovery promotion (src under .litman-staging) fails;
+        # leave any unrelated replace alone.
+        if ".litman-staging" in str(src):
+            raise OSError("storage still down")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(_atomic.os, "replace", fail_staging_replace)
+    runner = CliRunner()
+    # Before the F4 fix: recovery escapes find_vault → command crashes (exit≠0).
+    result = runner.invoke(cli, ["list", "--library", str(vault)])
+    monkeypatch.undo()
+
+    assert result.exit_code == 0, result.output
 
 
 # --- Fast-path: empty .litman-staging never iterdirs --------------------
