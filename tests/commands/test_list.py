@@ -374,6 +374,172 @@ def test_list_default_still_renders_rich_table(vault: Path) -> None:
         json.loads(result.output)
 
 
+# ---------------------------------------------------------------------------
+# OR-within-field (M31)
+# ---------------------------------------------------------------------------
+
+
+def test_list_status_or_within_field(vault: Path) -> None:
+    result = _invoke(vault, "--status", "deep-read,skim")
+    assert result.exit_code == 0
+    assert "2024_Smith_BERT" in result.output  # deep-read
+    assert "2024_Doe_GNN" in result.output     # skim
+    assert "2023_Pandi_Cellfree" not in result.output  # inbox
+    assert "2 of 3" in result.output
+
+
+def test_list_topic_or_within_field(vault: Path) -> None:
+    # transformer hits 2024_Smith_BERT; GNN hits 2024_Doe_GNN.
+    result = _invoke(vault, "--topic", "transformer,GNN")
+    assert result.exit_code == 0
+    assert "2024_Smith_BERT" in result.output
+    assert "2024_Doe_GNN" in result.output
+    assert "2023_Pandi_Cellfree" not in result.output
+    assert "2 of 3" in result.output
+
+
+def test_list_year_or_within_field(vault: Path) -> None:
+    result = _invoke(vault, "--year", "2023,2024")
+    assert result.exit_code == 0
+    assert "3 of 3" in result.output
+
+
+def test_list_author_or_within_field(vault: Path) -> None:
+    # "pandi" hits only Pandi; "jane" (lowercase) hits the two Doe papers.
+    result = _invoke(vault, "--author", "pandi,jane")
+    assert result.exit_code == 0
+    assert "2023_Pandi_Cellfree" in result.output
+    assert "2024_Smith_BERT" in result.output  # Doe, Jane is 2nd author
+    assert "2024_Doe_GNN" in result.output
+    assert "3 of 3" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Time queries: --read-since / --added-since (M31)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def time_vault(tmp_path: Path) -> Path:
+    """A vault whose papers carry real read-date / created-at values.
+
+    Seeded on disk so list_papers' ruamel safe-loader produces genuine
+    datetime.date / datetime.datetime objects (the M25 false-green trap was
+    hand-building dicts that skipped that path).
+    """
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2024_Early",
+        year=2024, title="Read in April, added in March",
+        **{"read-date": "2026-04-15",
+           "created-at": "2026-03-10T09:00:00+08:00"},
+    )
+    _seed_paper(
+        v, "2024_Boundary",
+        year=2024, title="Read exactly on the boundary date",
+        **{"read-date": "2026-05-01",
+           "created-at": "2026-05-01T09:00:00+08:00"},
+    )
+    _seed_paper(
+        v, "2024_Late",
+        year=2024, title="Read in May, added in May",
+        **{"read-date": "2026-05-20",
+           "created-at": "2026-05-18T09:00:00+08:00"},
+    )
+    _seed_paper(
+        v, "2024_Unread",
+        year=2024, title="Never read, no read-date",
+        **{"created-at": "2026-05-25T09:00:00+08:00"},
+    )
+    return v
+
+
+def test_read_since_filters_by_read_date_with_boundary(time_vault: Path) -> None:
+    result = _invoke(time_vault, "--read-since", "2026-05-01")
+    assert result.exit_code == 0
+    # Boundary (== date) included via >=, Late included, Early excluded,
+    # Unread (no read-date) excluded.
+    assert "2024_Boundary" in result.output
+    assert "2024_Late" in result.output
+    assert "2024_Early" not in result.output
+    assert "2024_Unread" not in result.output
+    assert "2 of 4" in result.output
+
+
+def test_added_since_filters_by_created_at(time_vault: Path) -> None:
+    result = _invoke(time_vault, "--added-since", "2026-05-01")
+    assert result.exit_code == 0
+    # created-at boundary 2026-05-01 included, Late (05-18) + Unread (05-25)
+    # included, Early (03-10) excluded.
+    assert "2024_Boundary" in result.output
+    assert "2024_Late" in result.output
+    assert "2024_Unread" in result.output
+    assert "2024_Early" not in result.output
+    assert "3 of 4" in result.output
+
+
+def test_read_since_and_added_since_read_only_own_field(time_vault: Path) -> None:
+    # invariant #11: --read-since must NOT see created-at and vice versa.
+    # Early was added 2026-03-10 (before) but read 2026-04-15; with
+    # --read-since 2026-04-01 it is included, proving read-since ignores
+    # created-at.
+    result = _invoke(time_vault, "--read-since", "2026-04-01")
+    assert result.exit_code == 0
+    assert "2024_Early" in result.output
+    assert "3 of 4" in result.output  # Early + Boundary + Late, not Unread
+
+
+def test_read_since_does_not_raise_on_date_objects(time_vault: Path) -> None:
+    # Regression for the M25 trap: read-date safe-loads to a datetime.date;
+    # the filter must compare cleanly, not crash.
+    result = _invoke(time_vault, "--read-since", "2026-01-01", "--format", "json")
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    ids = {e["id"] for e in payload}
+    assert ids == {"2024_Early", "2024_Boundary", "2024_Late"}
+
+
+def test_read_since_excludes_bad_and_missing_values(tmp_path: Path) -> None:
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2024_Good", year=2024, title="Valid read-date",
+        **{"read-date": "2026-05-10"},
+    )
+    _seed_paper(
+        v, "2024_Bad", year=2024, title="Unparseable read-date",
+        **{"read-date": "not-a-date"},
+    )
+    _seed_paper(
+        v, "2024_Missing", year=2024, title="No read-date at all",
+    )
+    result = _invoke(v, "--read-since", "2026-01-01")
+    assert result.exit_code == 0  # bad/missing excluded, never raises
+    assert "2024_Good" in result.output
+    assert "2024_Bad" not in result.output
+    assert "2024_Missing" not in result.output
+    assert "1 of 3" in result.output
+
+
+def test_read_since_rejects_non_zero_padded_date(time_vault: Path) -> None:
+    result = _invoke(time_vault, "--read-since", "2026-5-1")
+    assert result.exit_code != 0
+    assert "2026-5-1" in result.output or "YYYY-MM-DD" in result.output
+
+
+def test_added_since_rejects_iso_week_form(time_vault: Path) -> None:
+    result = _invoke(time_vault, "--added-since", "2026-W22-1")
+    assert result.exit_code != 0
+
+
+def test_read_since_coexists_with_unread(time_vault: Path) -> None:
+    # Both touch read-date but with independent semantics; combining them is
+    # a natural AND that yields the empty set (no read-date can be both
+    # >= a date AND empty), and must not error.
+    result = _invoke(time_vault, "--read-since", "2026-01-01", "--unread")
+    assert result.exit_code == 0
+    assert "No papers match" in result.output
+
+
 def test_list_displays_dash_for_none_priority_and_type(tmp_path: Path) -> None:
     # M29: lit add writes priority/type as None by default; the table must
     # render them as "-", never the literal "None".

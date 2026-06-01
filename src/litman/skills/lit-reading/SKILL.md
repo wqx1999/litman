@@ -122,7 +122,7 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 ### Locate-by-cue (the user names a paper)
 
-**Rule:** never grep INDEX for a field the projection doesn't carry. The projection is id / title / year / type / priority / status / topics / projects / methods / data / doi — `authors` is NOT in it.
+**Rule:** never grep INDEX for a field the projection doesn't carry. The projection is id / title / year / type / priority / status / topics / projects / methods / data / doi / read-date — `authors` is NOT in it.
 
 1. **Direct id given** → `lit show <id>` (or read `<vault>/papers/<id>/metadata.yaml`) to confirm it exists. If missing, ask the user; do not silently substitute another paper.
 2. **Author cue** ("Pandi 那篇") → `lit list --author <cue> --format json`. The `--author` filter matches file-side; the returned rows don't echo the author, but **being *in* the result is the hit**.
@@ -149,7 +149,8 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 ### Retrospective / summary queries (route here, never to a vault grep)
 
-- **"What did I read recently"** → `lit list --sort recent --format json`. **Summarize the returned rows, do NOT re-sort.** **Honesty constraint:** recency is a *proxy* for engagement — phrase it "your most-recently-touched papers, probably what you read lately", never a precise "you read these this week". There is **no `--since` flag** — a precise calendar-week filter is not answerable; offer the recency proxy instead.
+- **"What did I read recently"** → `lit list --sort recent --format json`. **Summarize the returned rows, do NOT re-sort.** **Honesty constraint:** recency is a *proxy* for engagement — phrase it "your most-recently-touched papers, probably what you read lately", never a precise "you read these this week". Use `--sort recent` for fuzzy "what did I touch lately" queries.
+- **"What did I read / add since a date"** → for a precise date lower-bound, `lit list --read-since YYYY-MM-DD --format json` (papers I read on/after that date) or `lit list --added-since YYYY-MM-DD --format json` (papers I added to the vault on/after it). `--read-since` reads `read-date`, `--added-since` reads `created-at` — they never cross.
 - **"Summarize my library on X"** → Tier 2 (`lit list --topic` / `--method` / `--project X --format json`).
 
 Both stay read-only — never `grep` the vault or `cat` INDEX.json; no per-paper load unless the user drills into one.

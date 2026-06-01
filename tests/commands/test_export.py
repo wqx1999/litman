@@ -273,6 +273,92 @@ def test_project_plus_priority_and_combined(vault: Path, tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Filters: topic / method / data / author (M31 — parity with `lit list`)
+# ---------------------------------------------------------------------------
+
+
+def test_export_topic_filter(vault: Path, tmp_path: Path) -> None:
+    target = tmp_path / "refs.bib"
+    result = _invoke(vault, "--all", "--topic", "NLP", "-o", str(target))
+    assert result.exit_code == 0, result.output
+    content = target.read_text(encoding="utf-8")
+    assert "2024_Smith_BERT" in content      # topics=[NLP]
+    assert "2023_Pandi_Cellfree" not in content
+    assert "2024_Doe_GNN" not in content
+
+
+def test_export_topic_or_within_field(vault: Path, tmp_path: Path) -> None:
+    target = tmp_path / "refs.bib"
+    result = _invoke(vault, "--all", "--topic", "NLP,GNN", "-o", str(target))
+    assert result.exit_code == 0, result.output
+    content = target.read_text(encoding="utf-8")
+    assert "2024_Smith_BERT" in content      # NLP
+    assert "2024_Doe_GNN" in content         # GNN
+    assert "2023_Pandi_Cellfree" not in content  # AMP
+
+
+def test_export_method_filter(vault: Path, tmp_path: Path) -> None:
+    target = tmp_path / "refs.bib"
+    result = _invoke(vault, "--all", "--method", "cell-free", "-o", str(target))
+    assert result.exit_code == 0, result.output
+    content = target.read_text(encoding="utf-8")
+    assert "2023_Pandi_Cellfree" in content
+    assert "2024_Smith_BERT" not in content
+    assert "2024_Doe_GNN" not in content
+
+
+def test_export_data_filter(vault: Path, tmp_path: Path) -> None:
+    # All fixture papers seed data=[]; add one with a real dataset value.
+    _seed_paper(
+        vault, "2024_With_Data",
+        title="Declares a dataset",
+        authors=["Set, Data"],
+        year=2024,
+        journal="J",
+        doi="10.1/data",
+        type="research",
+        status="inbox",
+        priority="B",
+        projects=["pepforge"],
+        topics=["AMP"],
+        methods=["x"],
+        data=["GDP-2"],
+        related=[],
+        contradicts=[],
+        extends=[],
+    )
+    target = tmp_path / "refs.bib"
+    result = _invoke(vault, "--all", "--data", "GDP-2", "-o", str(target))
+    assert result.exit_code == 0, result.output
+    content = target.read_text(encoding="utf-8")
+    assert "2024_With_Data" in content
+    assert "2024_Smith_BERT" not in content
+
+
+def test_export_author_substring_case_insensitive(vault: Path, tmp_path: Path) -> None:
+    target = tmp_path / "refs.bib"
+    result = _invoke(vault, "--all", "--author", "smith", "-o", str(target))
+    assert result.exit_code == 0, result.output
+    content = target.read_text(encoding="utf-8")
+    # "Smith, John" appears in Pandi (2nd author) and Smith_BERT.
+    assert "2023_Pandi_Cellfree" in content
+    assert "2024_Smith_BERT" in content
+    assert "2024_Doe_GNN" not in content
+
+
+def test_export_topic_and_author_combined(vault: Path, tmp_path: Path) -> None:
+    target = tmp_path / "refs.bib"
+    result = _invoke(
+        vault, "--all", "--topic", "NLP", "--author", "smith", "-o", str(target)
+    )
+    assert result.exit_code == 0, result.output
+    content = target.read_text(encoding="utf-8")
+    # Only Smith_BERT is both NLP and authored by Smith.
+    assert "2024_Smith_BERT" in content
+    assert "2023_Pandi_Cellfree" not in content
+
+
 def test_overwrite_existing_sentinel_file(vault: Path, tmp_path: Path) -> None:
     """Re-running export overwrites a previously-generated .bib."""
     target = tmp_path / "refs.bib"

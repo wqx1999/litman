@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,11 +53,31 @@ INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "methods",
     "data",
     "doi",
+    "read-date",
 )
 
 # Fields stored as lists in metadata.yaml — emitted as `[]` when absent so
 # downstream consumers don't have to special-case None.
 _LIST_FIELDS = {"topics", "projects", "methods", "data"}
+
+# Date-typed scalar fields. The YAML safe-loader parses "2026-05-26" into a
+# datetime.date (not a string), which json.dumps cannot serialize — coerce
+# to the canonical YYYY-MM-DD string so INDEX.json / `lit list --format json`
+# stay JSON-clean and string-comparable.
+_DATE_FIELDS = {"read-date"}
+
+
+def _date_to_iso(value: Any) -> Any:
+    """Normalize a date/datetime field to a YYYY-MM-DD string.
+
+    A datetime.date (datetime is a date subclass) becomes its ISO calendar
+    date. Everything else (already a string, or None) passes through.
+    """
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 def _now_iso() -> str:
@@ -89,6 +109,8 @@ def project_paper(p: dict[str, Any]) -> dict[str, Any]:
         value = p.get(field)
         if field in _LIST_FIELDS:
             out[field] = list(value) if value else []
+        elif field in _DATE_FIELDS:
+            out[field] = _date_to_iso(value)
         else:
             out[field] = value
     return out

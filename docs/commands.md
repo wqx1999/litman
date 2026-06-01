@@ -53,16 +53,24 @@ JSON file. The CLI refuses both at once.
 |---|---|
 | `lit list` | List every paper, sorted by id. |
 | `lit list --year 2024 --status deep-read` | AND-combined filters. |
-| `lit list --topic transformer` | Match papers whose `topics` list contains exactly this value. |
+| `lit list --status deep-read,skim` | OR within a field: comma-separated values match any. |
+| `lit list --topic transformer` | Match papers whose `topics` list contains this value. |
 | `lit list --author wang` | Case-insensitive substring against any author entry. |
+| `lit list --read-since 2026-05-01` | Papers with `read-date` on/after the date. |
+| `lit list --added-since 2026-05-01` | Papers with `created-at` on/after the date. |
 | `lit list --unread --sort recent` | Unread papers (empty `read-date`), most-recently-engaged first — the "continue reading" primitive. |
 | `lit show <id>` | Print one paper's full metadata + file paths. |
 
 Available `lit list` filters: `--year`, `--type`, `--status`,
 `--priority`, `--topic`, `--method`, `--project`, `--data`, `--author`,
-`--unread`. Multi-valued fields use exact list-membership; `--author` uses
-substring; all other filters use exact equality. `--unread` keeps only
-papers whose `read-date` is empty (None/missing/empty string).
+`--read-since`, `--added-since`, `--unread`. Multi-valued fields use list
+intersection; `--author` uses substring; `--year`/`--type`/`--status`/
+`--priority` match by exact value. Within any one of those flags,
+comma-separated values are OR-combined (e.g. `--status deep-read,skim`);
+across flags they are AND-combined. `--read-since` filters by `read-date
+>= DATE`, `--added-since` by `created-at >= DATE` (strict `YYYY-MM-DD`).
+`--unread` keeps only papers whose `read-date` is empty
+(None/missing/empty string).
 
 `--sort [id|recent]` controls order (default `id`, ascending, matches
 `INDEX.json`). `--sort recent` orders most-recently-engaged first, by
@@ -292,6 +300,7 @@ Re-running the command on the same file is the supported update path.
 | `lit export --project <name> -o path/to/refs.bib` | Override the output path. |
 | `lit export --project <name> --priority A,B` | OR within a field: include priorities A *or* B. |
 | `lit export --project <name> --status deep-read --year 2024` | AND across fields. |
+| `lit export --all --topic transformer --author wang` | Same filter set as `lit list` (`--topic`/`--method`/`--data`/`--author` added). |
 | `lit export --project <name> --force` | Overwrite even a hand-edited target file (default refusal protects unsentinel'd files). |
 | `lit export --vault <name> --project <name>` | Run against a non-active vault. |
 

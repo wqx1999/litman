@@ -279,7 +279,7 @@ Before unbinding, `cat <vault>/codes/<repo>/repo-meta.yaml` and read the `papers
 
 ```bash
 lit list                                     # full vault
-lit list --topic transformer --year ">=2023" # filter
+lit list --topic transformer --year 2023,2024 # filter (comma = OR; no range syntax)
 lit list --status deep-read --priority A     # by personal evaluation
 lit list --project pepforge --format json    # papers bound to a project
 lit show Pandi                               # fuzzy: unique substring of id
@@ -289,7 +289,7 @@ lit show --paper-doi 10.1038/...             # DOI reverse-lookup
 
 Every `lit` command that takes a paper id (`show`, `open`, `modify`, `rm`, `rename`, `link`, `unlink`, `code link`, `code add --paper`, `code list --paper`) accepts (a) the full id, (b) a unique case-insensitive substring, or (c) `--paper-doi <DOI>` (mutually exclusive with positional / `--paper`). Ambiguous substrings (2+ matches) print the candidate list and exit non-zero. `lit rename <old> <new>` is the one exception: no `--paper-doi` (two positionals would be ambiguous).
 
-For "find a paper I read last month about X", scan `lit list --format json` and grep semantically. For large vaults filter via `--topic` / `--project` first. For **author** cues use `lit list --author <cue>` — the JSON rows don't include `authors`.
+For "find a paper I read last month about X", filter by date with `lit list --read-since YYYY-MM-DD` (read-date lower-bound) or `--added-since YYYY-MM-DD` (created-at lower-bound), combined with `--topic` / `--project`. For large vaults filter via `--topic` / `--project` first. For **author** cues use `lit list --author <cue>` — the JSON rows don't include `authors`.
 
 ---
 
@@ -370,7 +370,7 @@ The user expresses *intent*; you translate it to `lit export` flags.
 | "给 PepCodec 准备 bib" | `lit export --project pepcodec` (canonicalize the project token first — Flow B / [H]) |
 | "更新一下 refs.bib" | infer current project → `lit export --project <inferred>`; if not inferrable, ask |
 
-Flags: `--project` XOR `--all` (exactly one required), `-o/--output` (default `./refs.bib`), `--priority` / `--status` / `--year` / `--type` (comma-separated; within one flag OR, across flags AND), `--force`, `--vault`. Cite keys equal paper ids — output drops into `\cite{<paper-id>}` directly. Re-running on the same file is the supported update path.
+Flags: `--project` XOR `--all` (exactly one required), `-o/--output` (default `./refs.bib`), `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` (comma-separated; within one flag OR, across flags AND), `--force`, `--vault`. Cite keys equal paper ids — output drops into `\cite{<paper-id>}` directly. Re-running on the same file is the supported update path.
 
 Three hard rules:
 

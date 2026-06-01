@@ -11,11 +11,27 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.query import matches_filters, split_csv
 from litman.core.views import project_paper
 
 console = Console()
+
+
+def _iso_date_option(ctx: object, param: object, value: str | None) -> date | None:
+    """Click callback for --read-since / --added-since.
+
+    Reuses the strict ``validate_iso_date`` (the same gate ``lit read`` /
+    ``lit revisit`` use) so non-zero-padded forms like ``2026-5-1`` and ISO
+    basic / week dates are rejected with a clear error, then converts the
+    validated string to a ``date`` for the ``>=`` comparison. ``click.DateTime``
+    is NOT used because its strptime-based parsing accepts ``2026-5-1``.
+    """
+    if value is None:
+        return None
+    return date.fromisoformat(validate_iso_date(value))
 
 # Title column display cap. Beyond this, an ellipsis is appended.
 _TITLE_MAX = 60
@@ -34,35 +50,6 @@ def _format_cell(value: Any) -> str:
     through to ``str()``.
     """
     return "-" if value is None else str(value)
-
-
-def _matches_filters(paper: dict[str, Any], filters: dict[str, Any]) -> bool:
-    """Return True if the paper matches every non-None filter."""
-    # List-membership filters (exact value-in-list).
-    for filter_name, field_name in (
-        ("topic", "topics"),
-        ("method", "methods"),
-        ("project", "projects"),
-        ("data", "data"),
-    ):
-        wanted = filters.get(filter_name)
-        if wanted is not None and wanted not in (paper.get(field_name) or []):
-            return False
-
-    # Author: case-insensitive substring against any author entry.
-    author_q = filters.get("author")
-    if author_q is not None:
-        haystack = paper.get("authors") or []
-        if not any(author_q.lower() in (a or "").lower() for a in haystack):
-            return False
-
-    # Equality filters.
-    for name in ("year", "type", "status", "priority"):
-        wanted = filters.get(name)
-        if wanted is not None and paper.get(name) != wanted:
-            return False
-
-    return True
 
 
 def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
@@ -108,24 +95,88 @@ def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
     return max(pdf_mtime, updated)
 
 
+def _as_date(raw: Any) -> date | None:
+    """Coerce a metadata date/timestamp field to a ``datetime.date``.
+
+    The YAML safe-loader parses ``read-date: 2026-05-26`` into a
+    ``datetime.date`` and ``created-at: ...T...+08:00`` into a
+    ``datetime.datetime`` (M25 lesson), but a non-roundtripped value can
+    still arrive as a plain string. Normalizes all four states to a bare
+    ``date`` and returns ``None`` for missing / empty / unparseable values,
+    so the time filter excludes such papers instead of raising. ``datetime``
+    is a ``date`` subclass, so it is checked first.
+    """
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw)).date()
+        except ValueError:
+            return None
+    return None
+
+
 @click.command("list")
-@click.option("--year", type=int, help="Filter by exact publication year.")
+@click.option(
+    "--year", type=str,
+    help="Filter by publication year. Comma-separated = OR (e.g. 2023,2024).",
+)
 @click.option(
     "--type", "type_filter",
-    help="Filter by paper type (research/review/position/...).",
+    help="Filter by paper type (research/review/position/...). "
+         "Comma-separated = OR.",
 )
-@click.option("--status", help="Filter by status (deep-read/skim/inbox/dropped).")
-@click.option("--priority", help="Filter by priority (A/B/C).")
-@click.option("--topic", help="Match papers whose topics list contains this value.")
-@click.option("--method", help="Match papers whose methods list contains this value.")
-@click.option("--project", help="Match papers whose projects list contains this value.")
+@click.option(
+    "--status",
+    help="Filter by status (deep-read/skim/inbox/dropped). "
+         "Comma-separated = OR (e.g. deep-read,skim).",
+)
+@click.option(
+    "--priority",
+    help="Filter by priority (A/B/C). Comma-separated = OR (e.g. A,B).",
+)
+@click.option(
+    "--topic",
+    help="Match papers whose topics list contains this value. "
+         "Comma-separated = OR.",
+)
+@click.option(
+    "--method",
+    help="Match papers whose methods list contains this value. "
+         "Comma-separated = OR.",
+)
+@click.option(
+    "--project",
+    help="Match papers whose projects list contains this value. "
+         "Comma-separated = OR.",
+)
 @click.option(
     "--data", "data_filter",
-    help="Match papers whose data list contains this value.",
+    help="Match papers whose data list contains this value. "
+         "Comma-separated = OR.",
 )
 @click.option(
     "--author",
-    help="Case-insensitive substring match against any author entry.",
+    help="Case-insensitive substring match against any author entry. "
+         "Comma-separated = OR.",
+)
+@click.option(
+    "--read-since",
+    "read_since",
+    default=None,
+    callback=_iso_date_option,
+    metavar="YYYY-MM-DD",
+    help="Only papers with read-date on or after this date (read-date >= DATE).",
+)
+@click.option(
+    "--added-since",
+    "added_since",
+    default=None,
+    callback=_iso_date_option,
+    metavar="YYYY-MM-DD",
+    help="Only papers added on or after this date (created-at >= DATE).",
 )
 @click.option(
     "--unread", is_flag=True, default=False,
@@ -163,7 +214,7 @@ def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
     ),
 )
 def list_cmd(
-    year: int | None,
+    year: str | None,
     type_filter: str | None,
     status: str | None,
     priority: str | None,
@@ -172,6 +223,8 @@ def list_cmd(
     project: str | None,
     data_filter: str | None,
     author: str | None,
+    read_since: date | None,
+    added_since: date | None,
     unread: bool,
     sort_by: str,
     output_format: str,
@@ -180,25 +233,43 @@ def list_cmd(
 ) -> None:
     """List papers in the vault, optionally filtered.
 
-    Filters are AND-combined. Multi-valued fields (topics/methods/projects/data)
-    use exact list-membership; --author uses case-insensitive substring;
-    other filters use exact equality.
+    Filters are AND-combined; within one flag, comma-separated values are
+    OR-combined. Multi-valued fields (topics/methods/projects/data) use list
+    intersection; --author uses case-insensitive substring; year/type/status/
+    priority match by exact value. --read-since / --added-since filter by a
+    date lower-bound on read-date / created-at respectively.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     all_papers = list_papers(vault)
 
     filters = {
-        "year": year,
-        "type": type_filter,
-        "status": status,
-        "priority": priority,
-        "topic": topic,
-        "method": method,
-        "project": project,
-        "data": data_filter,
-        "author": author,
+        "year": split_csv(year),
+        "type": split_csv(type_filter),
+        "status": split_csv(status),
+        "priority": split_csv(priority),
+        "topic": split_csv(topic),
+        "method": split_csv(method),
+        "project": split_csv(project),
+        "data": split_csv(data_filter),
+        "author": split_csv(author),
     }
-    filtered = [p for p in all_papers if _matches_filters(p, filters)]
+    filtered = [p for p in all_papers if matches_filters(p, filters)]
+
+    # Time filtering: a date lower-bound (>=), kept out of matches_filters
+    # because its semantics differ from set-membership. --read-since reads
+    # ONLY read-date, --added-since ONLY created-at (invariant #11). A
+    # missing / None / unparseable value coerces to None and excludes the
+    # paper rather than raising.
+    if read_since is not None:
+        filtered = [
+            p for p in filtered
+            if (d := _as_date(p.get("read-date"))) is not None and d >= read_since
+        ]
+    if added_since is not None:
+        filtered = [
+            p for p in filtered
+            if (d := _as_date(p.get("created-at"))) is not None and d >= added_since
+        ]
 
     if unread:
         filtered = [p for p in filtered if not p.get("read-date")]
