@@ -146,7 +146,12 @@ def clone_repo(
     cmd: list[str] = ["git", "clone"]
     if depth >= 1:
         cmd += ["--depth", str(depth)]
-    cmd += [url, str(target_path)]
+    # `--` terminates option parsing so a url beginning with `-` is treated as
+    # the repository positional, not an injected git flag (review A5). `lit
+    # code add` whitelists url prefixes, but restore_missing_repos clones from
+    # the repo-meta.yaml upstream, which is NOT whitelisted — a cloud-sync
+    # conflict copy could leave it starting with `-`.
+    cmd += ["--", url, str(target_path)]
     try:
         result = subprocess.run(
             cmd,

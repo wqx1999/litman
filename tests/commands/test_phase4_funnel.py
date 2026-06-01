@@ -624,3 +624,19 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
     result = runner.invoke(cli, ["refresh-views", "--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert link.is_symlink()
+
+
+def test_rebuild_views_neutralizes_dotdot_tag(vault: Path) -> None:
+    # Review A3: a tag value ".." must not make views/by-topic/.. resolve to
+    # views/ itself — _safe_name neutralizes it to a single, non-traversing
+    # path segment ("_..").
+    from litman.core.document import list_papers
+    from litman.core.views import rebuild_views
+
+    _write_paper(vault, "2024_A", topics=[".."])
+    rebuild_views(vault, list_papers(vault))
+
+    assert (vault / "views" / "by-topic" / "_..").is_dir()
+    assert (vault / "views" / "by-topic" / "_.." / "2024_A").is_symlink()
+    # The symlink did NOT escape up into views/ (the pre-fix ".." bucket).
+    assert not (vault / "views" / "2024_A").exists()

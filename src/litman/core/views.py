@@ -66,7 +66,15 @@ def _now_iso() -> str:
 
 
 def _safe_name(value: str) -> str:
-    return value.replace("/", "_").replace("\\", "_").strip()
+    name = value.replace("/", "_").replace("\\", "_").strip()
+    # Neutralize path-traversal / current-dir names (review A3): after slashes
+    # are gone, the only way a value can still escape its bucket is by being a
+    # bare "." or "..", which would make views/by-X/<name> resolve to
+    # views/by-X/ or views/ itself. Prefix them (and the empty string) so the
+    # result is always a single, non-traversing path segment.
+    if name in ("", ".", ".."):
+        return "_" + name
+    return name
 
 
 def project_paper(p: dict[str, Any]) -> dict[str, Any]:

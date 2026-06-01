@@ -1467,3 +1467,29 @@ def test_cli_code_restore_all_help() -> None:
     assert "Cross-machine recovery" in result.output
     assert "--depth" in result.output
     assert "--dry-run" in result.output
+
+
+def test_clone_repo_inserts_double_dash_before_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Review A5: a url beginning with '-' must be passed as a positional after
+    # '--', never interpreted as an injected git flag. restore_missing_repos
+    # clones from the (unwhitelisted) repo-meta upstream, so a cloud-sync
+    # conflict copy could begin with '-'.
+    from litman.core.code import clone_repo
+
+    captured: dict[str, list[str]] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clone_repo("--upload-pack=evil", tmp_path / "dest")
+
+    cmd = captured["cmd"]
+    assert "--" in cmd
+    sep = cmd.index("--")
+    # The url is the positional immediately after '--' (so git never parses it
+    # as an option), and nothing option-like precedes it unterminated.
+    assert cmd[sep + 1] == "--upload-pack=evil"
