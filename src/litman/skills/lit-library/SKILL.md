@@ -28,7 +28,7 @@ Classify every action before you take it.
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
 | 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, scan a PDF, query INDEX via `lit list --format json`, `lit project list`, `lit code list`, `lit trash list`, `lit health-check` |
-| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit modify --set relevance-<P>=` |
+| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm — [A]/[B]), `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]) |
 
 The CLI hard-rejects unregistered controlled-vocabulary values, so your job is to **not invent values**.
@@ -267,11 +267,12 @@ Before unbinding, `cat <vault>/codes/<repo>/repo-meta.yaml` and read the `papers
   Directory removal is destructive → **ask the user before running.**
 - **Reverse list still non-empty** → unbind this paper only, keep the directory:
   ```bash
-  lit modify <id> --rm-tag code-clones=<repo>     # drops the field, keeps the directory
+  lit code unlink <repo> --paper <id>     # drops BOTH sides, keeps the directory
   ```
-  **Tier 2** (single-paper field edit, reversible).
-- **Never** `lit code rm --cascade` while other papers still cite the repo; **never** leave a `--rm-tag` orphan directory when unbinding the last citer.
-- `lit unlink` is paper↔project ([H]), not for code.
+  **Tier 2** (single-paper binding edit, reversible). `lit code unlink` is the inverse of `lit code link`: it removes the repo from the paper's code-clones AND the paper from the repo's reverse `papers:` list, atomically.
+- **Never** `lit code rm --cascade` while other papers still cite the repo.
+- Do NOT use `lit modify --rm-tag code-clones=<repo>` — modify rejects it, because writing only the paper side would strand the repo's reverse edge.
+- `lit unlink` (no `code`) is paper↔project ([H]), not for code.
 
 ---
 
@@ -333,7 +334,7 @@ After the user registers, **re-read `TAXONOMY.md`** and then apply.
 
 `projects` / `topics` / `methods` / `data` are **controlled vocabularies**. `lit modify --add-tag <dict>=<value>` HARD-REJECTS an unregistered value (no `--register` escape hatch). `projects` has its own group `lit project {add,list,rename,set-path,rm}` ([H]); **`lit taxonomy {add,rename,rm} projects` is hard-deprecated** — it errors and redirects. (`lit taxonomy list projects` still works.) Never hand-edit `lit-config.yaml`'s `projects:` map.
 
-**Not register-first checked**: schemaless scalar fields (`read-date`, `doi`, `year`, custom scalars), reference fields (`authors`, `related`, `contradicts`, `extends`, `code-clones`), fixed enums (`type`, `status`, `priority`). `--rm-tag` is never register-checked.
+**Not register-first checked**: schemaless scalar fields (`read-date`, `doi`, `year`, custom scalars), reference fields (`authors`, `related`, `contradicts`, `extends`), fixed enums (`type`, `status`, `priority`). `--rm-tag` is never register-checked. (`code-clones` is not a tag target at all — modify rejects it; bind/unbind via `lit code link` / `lit code unlink`.)
 
 ### Sugar commands — prefer over `lit modify --set` for known semantic fields
 
@@ -477,6 +478,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit export (--project <p> \| --all) [filters] [-o file]` | Project vault → `.bib` ([G]) |
 | `lit code add <url> --paper <id>` | Clone + bind a code repo ([C.1]) |
 | `lit code link <repo> --paper <id>` | Bind an existing vault repo (1:N — [C.2]) |
+| `lit code unlink <repo> --paper <id>` | Unbind one paper, keep the clone ([C.3]) |
 | `lit code list [--paper <id>]` | Browse code repos |
 | `lit code rm <repo> --cascade` | Retire a repo (last citer only — [C.3]) |
 | `lit health-check` | Vault consistency report |

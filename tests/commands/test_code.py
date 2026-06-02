@@ -28,6 +28,7 @@ from litman.core.code import (
     make_repo_meta,
     read_repo_meta,
     restore_missing_repos,
+    unbind_paper_from_repo,
     unbind_repo_from_all_papers,
     write_notes,
     write_repo_meta,
@@ -361,6 +362,69 @@ def test_bind_missing_repo_raises(vault: Path) -> None:
     _make_paper(vault, "2024_Smith_X")
     with pytest.raises(CodeError, match="No repo"):
         bind_paper_to_repo(vault, "2024_Smith_X", "NoSuchRepo")
+
+
+# ---------------------------------------------------------------------------
+# unbind_paper_from_repo (single-edge unbind, inverse of bind)
+# ---------------------------------------------------------------------------
+
+
+def test_unbind_drops_both_sides_keeps_other_referrers(vault: Path) -> None:
+    # Repo shared by A and B (1:N). Unbinding A clears A<->repo on BOTH sides
+    # and leaves B's binding (and the clone directory) intact.
+    _make_paper(vault, "2024_A", **{"code-clones": ["MyRepo"]})
+    _make_paper(vault, "2024_B", **{"code-clones": ["MyRepo"]})
+    _make_repo(vault, "MyRepo", papers=["2024_A", "2024_B"])
+
+    changed = unbind_paper_from_repo(vault, "2024_A", "MyRepo")
+    assert changed is True
+
+    a_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_A" / "metadata.yaml").read_text()
+    )
+    assert a_meta["code-clones"] == []
+    repo_meta = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
+    )
+    assert repo_meta["papers"] == ["2024_B"]
+    b_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_B" / "metadata.yaml").read_text()
+    )
+    assert b_meta["code-clones"] == ["MyRepo"]
+    assert (vault / "codes" / "MyRepo").is_dir()  # clone kept
+
+
+def test_unbind_idempotent_returns_false(vault: Path) -> None:
+    _make_paper(vault, "2024_A")  # code-clones: []
+    _make_repo(vault, "MyRepo")   # papers: []
+    seed = _yaml_safe.load(
+        (vault / "papers" / "2024_A" / "metadata.yaml").read_text()
+    )["updated-at"]
+    changed = unbind_paper_from_repo(vault, "2024_A", "MyRepo")
+    assert changed is False
+    after = _yaml_safe.load(
+        (vault / "papers" / "2024_A" / "metadata.yaml").read_text()
+    )["updated-at"]
+    assert after == seed
+
+
+def test_unbind_tolerates_missing_repo_cleans_paper_side(vault: Path) -> None:
+    # Dangling forward edge: paper lists a repo whose codes/<name>/ is gone.
+    # unbind still cleans the paper side, repairing the dangling reference.
+    _make_paper(vault, "2024_A", **{"code-clones": ["GoneRepo"]})
+    # No _make_repo → codes/GoneRepo/ does not exist.
+    changed = unbind_paper_from_repo(vault, "2024_A", "GoneRepo")
+    assert changed is True
+    a_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_A" / "metadata.yaml").read_text()
+    )
+    assert a_meta["code-clones"] == []
+
+
+def test_unbind_missing_paper_raises(vault: Path) -> None:
+    _make_repo(vault, "MyRepo", papers=["2024_A"])
+    with pytest.raises(PaperNotFoundError):
+        unbind_paper_from_repo(vault, "2024_Nope_X", "MyRepo")
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +896,54 @@ def test_cli_code_link_missing_repo(vault: Path) -> None:
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, CodeError)
+
+
+# ---------------------------------------------------------------------------
+# CLI: lit code unlink
+# ---------------------------------------------------------------------------
+
+
+def test_cli_code_unlink_drops_both_sides(vault: Path) -> None:
+    _make_paper(vault, "2024_A", **{"code-clones": ["MyRepo"]})
+    _make_paper(vault, "2024_B", **{"code-clones": ["MyRepo"]})
+    _make_repo(vault, "MyRepo", papers=["2024_A", "2024_B"])
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "unlink", "MyRepo",
+            "--paper", "2024_A",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Unlinked" in result.output
+
+    a_meta = _yaml_safe.load(
+        (vault / "papers" / "2024_A" / "metadata.yaml").read_text()
+    )
+    assert a_meta["code-clones"] == []
+    repo_meta = _yaml_safe.load(
+        (vault / "codes" / "MyRepo" / "repo-meta.yaml").read_text()
+    )
+    assert repo_meta["papers"] == ["2024_B"]
+    assert (vault / "codes" / "MyRepo").is_dir()  # clone kept
+
+
+def test_cli_code_unlink_idempotent(vault: Path) -> None:
+    _make_paper(vault, "2024_A")
+    _make_repo(vault, "MyRepo")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "code", "unlink", "MyRepo",
+            "--paper", "2024_A",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "No-op" in result.output
 
 
 def test_cli_code_link_accepts_fuzzy_paper(vault: Path) -> None:

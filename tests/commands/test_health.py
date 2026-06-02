@@ -1021,7 +1021,28 @@ def test_code_clone_integrity_dangling_ref(vault: Path) -> None:
     assert issues[0].paper_id == "2024_Foo_Bar"
     assert "Y" in issues[0].message
     assert issues[0].hint is not None
-    assert "--rm-tag code-clones=Y" in issues[0].hint
+    assert "lit code unlink Y --paper 2024_Foo_Bar" in issues[0].hint
+
+
+def test_code_clone_integrity_asymmetric_forward_missing(vault: Path) -> None:
+    """repo-meta names a live paper that does NOT list the repo back → 1 error.
+
+    The #6d symmetric check: A is a healthy both-sides binding (so R is not a
+    dangling clone), but B exists and loads while its code-clones omits R, yet
+    R's reverse ``papers:`` names B. Older checks (dangling ref / dangling
+    reverse) miss this one-sided binding.
+    """
+    _write_paper(vault, "2024_A", code_clones=["R"])
+    _write_paper(vault, "2024_B", code_clones=[])
+    _write_repo_meta(vault, "R", papers=["2024_A", "2024_B"])
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "code_clone_integrity"
+    assert issues[0].severity == "error"
+    assert issues[0].paper_id == "2024_B"
+    assert "one-sided" in issues[0].message
+    assert issues[0].hint is not None
+    assert "lit code unlink R --paper 2024_B" in issues[0].hint
 
 
 def test_code_clone_integrity_missing_repo_meta(vault: Path) -> None:

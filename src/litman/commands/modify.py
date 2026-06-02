@@ -91,9 +91,18 @@ LIST_FIELDS: frozenset[str] = frozenset({
 # of these triggers the paired reverse write on the opposite paper.
 RELATION_TAG_FIELDS: frozenset[str] = frozenset(RELATION_PAIRS) - REVERSE_REF_FIELDS
 
-# Fields a user may name in --add-tag / --rm-tag: every list field except
-# the reverse relation fields.
-USER_TAG_FIELDS: frozenset[str] = LIST_FIELDS - REVERSE_REF_FIELDS
+# code-clones is a 1:N binding owned by the `lit code` commands: its two sides
+# (paper.code-clones <-> codes/<repo>/repo-meta.yaml papers) must move together.
+# Editing it through --add-tag / --rm-tag writes only the paper side, silently
+# stranding the reverse edge, so it is excluded from the user-tag surface and
+# routed to `lit code link` / `lit code unlink` (both double-write atomically).
+CODE_MANAGED_FIELDS: frozenset[str] = frozenset({"code-clones"})
+
+# Fields a user may name in --add-tag / --rm-tag: every list field except the
+# reverse relation fields and the code-managed binding fields.
+USER_TAG_FIELDS: frozenset[str] = (
+    LIST_FIELDS - REVERSE_REF_FIELDS - CODE_MANAGED_FIELDS
+)
 
 
 def _parse_kv(spec: str, flag_name: str) -> tuple[str, str]:
@@ -249,6 +258,24 @@ def _reject_reverse_field(key: str, flag_name: str) -> None:
         )
 
 
+def _reject_code_managed_field(key: str, flag_name: str) -> None:
+    """Forbid editing code-clones through the generic tag flags.
+
+    code-clones is a 1:N binding whose two sides (paper.code-clones <->
+    codes/<repo>/repo-meta.yaml papers) must stay in sync. Editing it via
+    --add-tag / --rm-tag writes only the paper side, stranding the reverse
+    edge. Bind/unbind go through `lit code link` / `lit code unlink`, which
+    double-write both sides atomically.
+    """
+    if key in CODE_MANAGED_FIELDS:
+        raise ModifyError(
+            f"{flag_name} {key!r} is not allowed: {key!r} is maintained by the "
+            "`lit code` commands so both the paper and the repo's reverse "
+            "list stay in sync. Use `lit code link <repo> --paper <id>` to "
+            "bind, `lit code unlink <repo> --paper <id>` to unbind."
+        )
+
+
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
     buf = io.StringIO()
     _yaml.dump(data, buf)
@@ -358,6 +385,7 @@ def _apply_modify(
     for spec in add_tag_ops:
         key, value = _parse_kv(spec, "--add-tag")
         _reject_reverse_field(key, "--add-tag")
+        _reject_code_managed_field(key, "--add-tag")
         change = _apply_add_tag(vault, metadata, key, value)
         if change is not None:
             before, after = change
@@ -368,6 +396,7 @@ def _apply_modify(
     for spec in rm_tag_ops:
         key, value = _parse_kv(spec, "--rm-tag")
         _reject_reverse_field(key, "--rm-tag")
+        _reject_code_managed_field(key, "--rm-tag")
         change = _apply_rm_tag(metadata, key, value)
         if change is not None:
             before, after = change

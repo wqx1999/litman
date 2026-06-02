@@ -1974,6 +1974,13 @@ def check_code_clone_integrity(
             references.setdefault(name, []).append(str(pid))
     referenced_repos = set(references.keys())
 
+    # Ids of papers whose metadata actually loaded. Used by the #6c symmetric
+    # check to distinguish "paper exists but does not list the repo" (a real
+    # one-sided binding) from "paper exists but its metadata failed to load"
+    # (a corruption already owned by check_paper_dir_validity / check_schema —
+    # flagging it here too would be a duplicate, not a silent skip).
+    loaded_paper_ids = {str(p.get("id")) for p in papers if p.get("id")}
+
     out: list[Issue] = []
 
     # Dangling refs: emit one Issue per (paper, missing repo) pair.
@@ -1989,7 +1996,7 @@ def check_code_clone_integrity(
                         f"but no codes/{repo_name}/repo-meta.yaml exists"
                     ),
                     hint=(
-                        f"`lit modify {pid} --rm-tag code-clones={repo_name}` "
+                        f"`lit code unlink {repo_name} --paper {pid}` "
                         "to drop the broken edge, or `lit code restore-all` "
                         "to re-clone if upstream metadata is recoverable"
                     ),
@@ -2101,14 +2108,41 @@ def check_code_clone_integrity(
                             f"{back_ref!r} but papers/{back_ref}/ does not exist"
                         ),
                         hint=(
-                            # review F30: there is no `lit code unlink`. The
-                            # stale reverse edge lives in repo-meta.papers;
-                            # clear it by hand, or restore the paper if it was
-                            # mis-deleted.
+                            # The paper is gone, so `lit code unlink` (which
+                            # needs an existing paper) cannot clear this stale
+                            # reverse edge. Remove it by hand, or restore the
+                            # paper if it was mis-deleted.
                             f"remove {back_ref!r} from the papers: list in "
                             f"codes/{repo_name}/{REPO_META_FILENAME}, or "
                             f"`lit trash restore {back_ref}` if it was "
                             "mis-deleted"
+                        ),
+                    )
+                )
+            elif (
+                back_ref in loaded_paper_ids
+                and back_ref not in references.get(repo_name, [])
+            ):
+                # Symmetric drift: the repo's reverse list names a paper that
+                # exists and loaded, but that paper's code-clones does NOT
+                # include this repo. The forward edge was dropped one-sidedly
+                # (e.g. a hand-edit) while the reverse survived. Neither the
+                # dangling-ref nor the dangling-reverse check above catches it.
+                out.append(
+                    Issue(
+                        category="code_clone_integrity",
+                        severity="error",
+                        paper_id=back_ref,
+                        message=(
+                            f"codes/{repo_name}/{REPO_META_FILENAME} lists paper "
+                            f"{back_ref!r} but {back_ref!r}.code-clones does not "
+                            f"include {repo_name!r} (one-sided binding)"
+                        ),
+                        hint=(
+                            f"`lit code link {repo_name} --paper {back_ref}` to "
+                            f"restore the forward edge, or `lit code unlink "
+                            f"{repo_name} --paper {back_ref}` to drop the "
+                            "reverse edge"
                         ),
                     )
                 )
@@ -2146,8 +2180,10 @@ def check_code_clone_integrity(
 #   relevance_orphan (#11) — authored relevance-<project> annotation orphaned
 #       from membership → klass=B-auth, report (never auto-delete authored text).
 #   taxonomy_drift (#10) / project_config_consistency (#8) /
-#       code_clone_integrity (#6a/#6b/#6c) — truth↔external/controlled-dict,
-#       litman cannot pick a side → klass=B-ext, correction=resolve.
+#       code_clone_integrity (#6a/#6b/#6c/#6d) — truth↔external/controlled-dict,
+#       litman cannot pick a side → klass=B-ext, correction=resolve. #6d is the
+#       symmetric forward check: repo-meta.papers names a live paper whose
+#       code-clones does not list the repo back (one-sided binding).
 #   vault_registry_drift (#4) — truth↔external dir, machine-level (registry ↔
 #       vault dir), bounded-stat only, no per-paper metadata → tier=cheap,
 #       klass=B-ext, resolve. (M30 Phase 2: detection moved here from the two

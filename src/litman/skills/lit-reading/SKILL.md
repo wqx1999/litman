@@ -65,7 +65,7 @@ The CLI hard-rejects unregistered controlled-vocabulary values, so your job is t
 1. Controlled-vocabulary tagging `lit modify --add-tag topics/methods/data=` → lit-library [E] (Flow A/B).
 2. A cross-paper edge `lit modify --add-tag extends/related/contradicts=` → lit-library [E] (forward direction only — see B7).
 3. Project binding `lit link --project` / `lit modify --set relevance-<P>=` → lit-library [H].
-4. Ingest / clone / code-binding `lit add` / `lit code add` / `lit code link`, plus code unbind / retire (`lit modify --rm-tag code-clones=` or `lit code rm`) → lit-library [A]/[B]/[C].
+4. Ingest / clone / code-binding `lit add` / `lit code add` / `lit code link`, plus code unbind / retire (`lit code unlink` or `lit code rm`) → lit-library [A]/[B]/[C].
 5. Restore a trashed paper `lit trash restore` → lit-library [I].
 6. TAXONOMY / project governance → lit-library [J]/[H].
 

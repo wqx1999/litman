@@ -498,6 +498,94 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     return True
 
 
+def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
+    """Atomically drop a single paper ↔ repo binding from BOTH sides.
+
+    The inverse of :func:`bind_paper_to_repo`: removes ``<repo_name>`` from the
+    paper's ``code-clones`` AND ``<paper_id>`` from the repo's
+    ``repo-meta.yaml`` ``papers`` list, inside one ``staged_write`` so the two
+    sides cannot drift apart. ``INDEX.json`` is re-rendered when the paper side
+    changed. Each side's ``updated-at`` is bumped only when that side actually
+    changed.
+
+    Tolerant of a missing repo: if ``codes/<repo_name>/repo-meta.yaml`` is gone
+    (e.g. the clone was deleted out of band), only the paper side is cleaned.
+    This makes ``lit code unlink`` the single tool for dropping a binding
+    whether or not the clone still exists, including repairing a dangling
+    forward edge (``code-clones`` lists a repo that no longer exists).
+
+    Idempotent on both sides: if the paper does not list the repo AND the
+    repo-meta (when present) does not list the paper, returns ``False`` and no
+    file is touched.
+
+    Raises:
+        PaperNotFoundError: paper missing.
+        CodeError: repo-meta.yaml present but empty / unreadable.
+    """
+    paper_meta_file = vault / "papers" / paper_id / "metadata.yaml"
+    if not paper_meta_file.is_file():
+        raise PaperNotFoundError(
+            f"No paper with id {paper_id!r} in vault {vault}. "
+            "Run `lit list` to see available ids."
+        )
+    paper_meta = load_yaml_or_raise(paper_meta_file, _yaml)
+    if paper_meta is None:
+        raise CodeError(
+            f"metadata.yaml at {paper_meta_file} is empty — refusing to "
+            "unbind. Restore the file or re-run `lit add`."
+        )
+
+    # Repo side is optional: a dangling forward edge (paper lists a repo whose
+    # codes/<name>/ is gone) is cleaned paper-side only.
+    repo_meta_file = vault / CODES_DIRNAME / repo_name / REPO_META_FILENAME
+    repo_meta: dict[str, Any] | None = None
+    if repo_meta_file.is_file():
+        repo_meta = load_yaml_or_raise(repo_meta_file, _yaml)
+        if repo_meta is None:
+            raise CodeError(
+                f"repo-meta.yaml at {repo_meta_file} is empty — refusing to "
+                "unbind. Restore the file or `lit code rm` + re-clone."
+            )
+
+    now = now_iso()
+    paper_changed = False
+    repo_changed = False
+
+    paper_clones = paper_meta.get("code-clones") or []
+    if repo_name in paper_clones:
+        paper_meta["code-clones"] = [c for c in paper_clones if c != repo_name]
+        paper_meta["updated-at"] = now
+        paper_changed = True
+
+    if repo_meta is not None:
+        repo_papers = repo_meta.get("papers") or []
+        if paper_id in repo_papers:
+            repo_meta["papers"] = [p for p in repo_papers if p != paper_id]
+            repo_meta["updated-at"] = now
+            repo_changed = True
+
+    if not (paper_changed or repo_changed):
+        return False
+
+    rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
+    rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
+
+    with staged_write(
+        vault, op_id=f"code-unbind-{paper_id}-{repo_name}"
+    ) as stage:
+        if paper_changed:
+            stage.write_text(rel_paper_meta, _dump_yaml_to_string(paper_meta))
+            all_papers = list_papers(vault)
+            all_papers = [p for p in all_papers if p.get("id") != paper_id]
+            all_papers.append(dict(paper_meta))
+            stage.write_text(
+                "INDEX.json", render_index(all_papers, now_iso())
+            )
+        if repo_changed:
+            stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
+    return True
+
+
 def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
     """Remove ``<repo_name>`` from every paper's ``code-clones`` list.
 

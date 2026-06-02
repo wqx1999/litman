@@ -496,6 +496,38 @@ def test_modify_rm_tag_on_scalar_rejected(
     assert isinstance(result.exception, ModifyError)
 
 
+def test_modify_add_tag_code_clones_rejected(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    # code-clones is owned by the `lit code` commands (atomic double-write);
+    # modify must refuse it so the repo's reverse edge can't be stranded.
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--add-tag", "code-clones=SomeRepo",
+         "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "lit code link" in str(result.exception)
+
+
+def test_modify_rm_tag_code_clones_rejected(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--rm-tag", "code-clones=SomeRepo",
+         "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "lit code unlink" in str(result.exception)
+
+
 # ---------------------------------------------------------------------------
 # Side effects: updated-at, INDEX.json, views/
 # ---------------------------------------------------------------------------

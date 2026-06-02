@@ -37,6 +37,7 @@ from litman.core.code import (
     make_repo_meta,
     read_repo_meta,
     restore_missing_repos,
+    unbind_paper_from_repo,
     unbind_repo_from_all_papers,
     write_notes,
     write_repo_meta,
@@ -503,6 +504,79 @@ def code_link_cmd(
 
 
 # ---------------------------------------------------------------------------
+# lit code unlink
+# ---------------------------------------------------------------------------
+
+
+@code_group.command("unlink")
+@click.argument("repo_name")
+@click.option(
+    "--paper",
+    "paper_id",
+    default=None,
+    shell_complete=complete_paper_id,
+    help=(
+        "Paper id to unbind <repo-name> from (full or unique case-insensitive "
+        "substring). Required unless --paper-doi is given."
+    ),
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying --paper. "
+        "Mutually exclusive with --paper."
+    ),
+)
+@click.option(
+    "--library",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    envvar="LIT_LIBRARY",
+    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
+)
+@click.option(
+    "--vault",
+    "vault_name",
+    default=None,
+    help=(
+        "Vault name from ~/.config/litman/vaults.yaml. "
+        "Mutually exclusive with --library."
+    ),
+)
+def code_unlink_cmd(
+    repo_name: str,
+    paper_id: str | None,
+    paper_doi: str | None,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
+    """Unbind a repo from a paper without deleting the clone.
+
+    The inverse of `lit code link`. Removes <repo-name> from the paper's
+    code-clones list AND <paper-id> from the repo's repo-meta.yaml's papers
+    list, both atomically. The clone directory is kept (use `lit code rm` to
+    delete it). For a 1:N repo shared by several papers this drops only the
+    named paper's edge. Tolerant of an already-deleted clone: it still cleans
+    the paper side, so it also repairs a dangling code-clones reference.
+    Idempotent: a no-op if the binding is already absent on both sides.
+    """
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
+    changed = unbind_paper_from_repo(vault, paper_id, repo_name)
+    if changed:
+        console.print(
+            f"[bold green]Unlinked:[/] {escape(paper_id)} ✕ {escape(repo_name)}"
+        )
+    else:
+        console.print(
+            f"[yellow]No-op:[/] {escape(paper_id)} ✕ {escape(repo_name)} "
+            "already unbound on both sides."
+        )
+
+
+# ---------------------------------------------------------------------------
 # lit code update
 # ---------------------------------------------------------------------------
 
@@ -650,8 +724,8 @@ def code_rm_cmd(
             f"{repo_name!r} is still bound to {len(bound_papers)} paper(s):\n"
             f"{bullet}\n\n"
             "Re-run with --cascade to auto-strip these bindings, or unbind "
-            "manually with `lit modify <id> --rm-tag code-clones="
-            f"{repo_name}` first."
+            f"individually with `lit code unlink {repo_name} --paper <id>` "
+            "first."
         )
 
     if not yes:
@@ -793,7 +867,7 @@ def code_restore_all_cmd(
             )
         console.print(
             "\n[dim]Restore the missing repo-meta.yaml from backup, or run "
-            "`lit modify <paper-id> --rm-tag code-clones=<repo-name>` to drop "
+            "`lit code unlink <repo-name> --paper <paper-id>` to drop "
             "the dangling reference.[/]"
         )
 
