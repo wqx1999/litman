@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -435,6 +436,51 @@ def test_delete_repo_removes_tree(vault: Path) -> None:
 def test_delete_repo_missing_raises(vault: Path) -> None:
     with pytest.raises(CodeError, match="No repo"):
         delete_repo(vault, "DoesNotExist")
+
+
+def test_delete_repo_wraps_rmtree_failure_in_codeerror(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A torn rmtree must surface as a CodeError pointing at health-check.
+
+    The caller strips the paper-side code-clones bindings (atomically,
+    committed) *before* delete_repo runs, so a silently half-deleted
+    directory would leave a dangling clone (invariant #12). Assert the
+    failure is reported with a health-check hint, not swallowed.
+    """
+    _make_repo(vault, "ToDelete")
+
+    def boom_rmtree(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("file locked")
+
+    monkeypatch.setattr("litman.core.code.shutil.rmtree", boom_rmtree)
+    with pytest.raises(CodeError, match="health-check"):
+        delete_repo(vault, "ToDelete")
+
+
+def test_clear_readonly_clears_bit_and_retries(tmp_path: Path) -> None:
+    """The rmtree onexc handler chmods the path writable, then retries.
+
+    Locks the cross-platform contract: on Windows a read-only ``.git``
+    object makes ``os.unlink`` raise, and the handler must clear the write
+    bit and re-invoke the failed op rather than give up.
+    """
+    from litman.core.code import _clear_readonly
+
+    target = tmp_path / "ro.txt"
+    target.write_text("x")
+    target.chmod(stat.S_IREAD)
+
+    retried: list[Path] = []
+
+    def retry(p: Path) -> None:
+        retried.append(p)
+        p.unlink()
+
+    _clear_readonly(retry, target, None)
+
+    assert retried == [target]
+    assert not target.exists()
 
 
 # ---------------------------------------------------------------------------

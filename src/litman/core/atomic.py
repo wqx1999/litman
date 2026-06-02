@@ -599,7 +599,15 @@ def recover_staging(vault: Path) -> list[RecoveryResult]:
             # A stray file directly under .litman-staging/ (not an op
             # dir): leftover from the old cleanup semantics or manual
             # tampering. Drop it; not an anomaly worth reporting.
-            child.unlink()
+            try:
+                child.unlink()
+            except OSError:
+                # Best-effort removal. recover_staging runs at the
+                # vault-open chokepoint, so an exception escaping here
+                # would crash every subsequent lit command (the same
+                # whole-vault DoS the promote path guards against above).
+                # A stray file we cannot delete is not worth that.
+                pass
             result = None
         if result is not None and result.kind != "rolled_back":
             results.append(result)

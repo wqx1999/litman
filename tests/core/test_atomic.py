@@ -819,3 +819,23 @@ def test_recovery_result_is_frozen() -> None:
     r = RecoveryResult(op_id="x", kind="rolled_forward", n_files=1)
     with pytest.raises(Exception):
         r.op_id = "y"  # type: ignore[misc]
+
+
+def test_recover_staging_swallows_stray_file_unlink_failure(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stray file we cannot delete must not crash recover_staging.
+
+    recover_staging runs at the vault-open chokepoint (every lit command),
+    so an OSError escaping the stray-file ``unlink`` would turn one locked
+    / read-only-mount file into a whole-vault DoS. Simulate the failure and
+    assert the call returns normally instead of propagating.
+    """
+    staging = vault / ".litman-staging"
+    (staging / "stray.lock").write_text("x")
+
+    def boom_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        raise PermissionError("locked by antivirus / read-only mount")
+
+    monkeypatch.setattr(Path, "unlink", boom_unlink)
+    assert recover_staging(vault) == []
