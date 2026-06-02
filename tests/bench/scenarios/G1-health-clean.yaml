@@ -1,0 +1,18 @@
+id: G1-health-clean
+title: 干净库跑健康检查应全绿
+layer: maintenance
+source: 列
+fixtures: [1, 4]
+needs_pty: false
+invariants: [14, 15]
+routing_label: lit-reading            # "库还干净吗" → library health
+seed: seed-2papers-peptide
+precondition: |
+  库经正常操作（add / link / tag），无注入腐坏。
+intent: |
+  "检查一下我的库现在干不干净。"
+expected_end_state:
+  - "ran: health-check"
+  - "health: clean"                      # 退出 0，零 finding
+auto_fail:
+  - health-check 报 finding（正常操作就把库搞脏 = litman bug，不是 agent 的错）

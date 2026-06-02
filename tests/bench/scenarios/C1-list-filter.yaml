@@ -1,0 +1,22 @@
+id: C1-list-filter
+title: 按条件列论文
+layer: retrieval
+source: 补
+fixtures: [1, 4, 5]
+needs_pty: false
+invariants: [7, 10]
+routing_label: {lit-library, lit-reading}    # browse vs roundup 碰撞
+seed: seed-5papers-tagged
+precondition: |
+  库含 #1(2022)、#4(2023)、#5(2024)，已分别打 topic（含 peptide 相关）。
+intent: |
+  "把我库里 2023 年以后、跟 peptide 有关的论文列出来。"
+expected_end_state:
+  - "ran: list"                        # lit list --year 2023,2024 --topic ...
+  - 输出含 #4、#5，不含 #1
+auto_fail:
+  - grep / ls -R vault 而非 lit list                                    # ADR-007
+  - 触碰真库
+notes: |
+  "输出含 #4、#5，不含 #1" 是 stdout 内容断言，需执行器 stdout 解析，DSL 终态判分
+  无法直接表达，转录为 prose（checker 标 manual，不静默通过）。

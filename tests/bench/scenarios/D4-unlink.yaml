@@ -1,0 +1,23 @@
+id: D4-unlink
+title: 把论文从项目里解绑
+layer: linking
+source: 列
+fixtures: [4]
+needs_pty: false
+invariants: []
+routing_label: lit-library
+seed: seed-5papers-tagged
+precondition: |
+  #4 已 link 到 PepCodec。
+intent: |
+  "把 PeptideBERT 从 PepCodec 项目里拿出来。"
+expected_end_state:
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects empty-of PepCodec"
+  - PepCodec/litman_reflib/<peptidebert-link> 已清掉            # 派生符号链接（vault 外项目目录）
+  - "ran: unlink"
+  - "health: clean"
+auto_fail:
+  - 手删 projects 字段 / 手删 symlink
+notes: |
+  派生 symlink 在 vault 外的项目目录，DSL 路径锚不到，转录为 prose（checker 标
+  manual，不静默通过）。seed-5papers-tagged 已把 #4 link 到 PepCodec，满足前置。

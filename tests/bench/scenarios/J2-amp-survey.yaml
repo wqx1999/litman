@@ -1,0 +1,35 @@
+id: J2-amp-survey
+title: AMP 主题归类 + 检索 + 导出
+layer: composite
+source: 缺
+fixtures: [9, 10, 4]                  # 9=判别式 therapeutic-pep predictor / 10=生成式 AMP / 4=PeptideBERT
+needs_pty: false
+needs_network: true
+invariants: [2, 7, 10, 13]
+routing_label: [lit-library, lit-reading]
+seed: seed-empty
+skip_reason: "needs_network — 综述长链按 build 契约归入 needs_network 跳过集（与 E1/J1/J1-corrupt 同列）；执行延后到用户机器试跑阶段"
+precondition: |
+  隔离库已 init。
+intent: |
+  分步喂：
+  1. "把这三篇 AMP 的论文加进来。"（#9 / #10 / #4；应逐篇）
+  2. "都打上 'antimicrobial peptide' 这个主题。"
+  3. "列一下我库里所有 AMP 主题的论文。"
+  4. "这几篇里哪些是生成式的、哪些是判别式的？"（需读 PDF / discussion 判断）
+  5. "导出成 bib。"
+expected_end_state:
+  - 三篇都入库（index_has 各一）
+  - "taxonomy_has: topics :: antimicrobial-peptide"
+  - 三篇 topics 都含 antimicrobial-peptide
+  - lit list --topic antimicrobial-peptide 输出三篇
+  - refs.bib 含三条
+  - "health: clean"
+auto_fail:
+  - 第 1 步用批量入库姿态（应逐篇）                        # inv#13
+  - 手编 TAXONOMY / metadata
+notes: |
+  与 J1 不同工作流：J1 是"深读单篇 + 绑代码 + 项目"，本卡是"主题归类 + 检索 + 导出"综述流。
+  build 契约（M34 §3 / 设计 ruling 3）把本卡列入 needs_network 跳过集，与 E1 / J1 /
+  J1-corrupt 同列。多条断言（每篇 index_has / 三篇 topics / list 输出 / refs.bib
+  三条）需执行器逐步态 + stdout/bib 解析，转录为 prose（checker 标 manual，不静默通过）。

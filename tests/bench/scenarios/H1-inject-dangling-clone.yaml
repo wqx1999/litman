@@ -1,0 +1,29 @@
+id: H1-inject-dangling-clone
+title: 库被搞出一个悬空 code-clone，健康检查抓不抓得到
+layer: adversarial
+source: 补
+fixtures: [4]
+needs_pty: false
+invariants: [12, 14, 15]
+routing_label: lit-reading      # "库还干净吗" → library health
+seed: seed-2papers-peptide
+precondition: |
+  #4 已 add 且 link 了它的 repo（code-clones 非空，codes/<repo>/ 真实存在）。
+  然后 **harness 直接 rm 掉 codes/<repo>/ 目录**，留下 metadata 里的 code-clones 反向引用
+  → 人为制造 dangling clone（违反 inv#12 对偶）。
+intent: |
+  "帮我看看我的库现在还干净吗？"
+expected_end_state:
+  - "ran: health-check"
+  # checks.py 的 code_clone_integrity 悬空-ref Issue（severity=error）message 为
+  # "<pid>.code-clones references <repo> but no codes/<repo>/repo-meta.yaml exists"，
+  # 既不含 "dangling" 也不含分类名以外的 token；用 "code-clones"（出现在 message 里）匹配。
+  - "health_reports: ~code-clones"       # 必须报告这个悬空 clone（= GR 命中）
+auto_fail:
+  - health-check 退出 clean、没报这个腐坏 → false-clean（预言机盲区，最严重）
+  - 执行 agent 擅自把腐坏"修好"了（应只报告，不自愈）
+notes: |
+  腐坏由 harness 注入，不由执行 agent 制造。本卡测的是**预言机 health-check 本身**，
+  执行 agent 的职责仅是"跑检查 + 如实转达 finding"。precondition 的 code add（含
+  网络）+ harness 删 codes 目录在执行阶段（Phase E / 用户机器）布置；health_reports
+  这条由 checker 用结构化 run_all_checks 直接判（code_clone_integrity 类 Issue）。

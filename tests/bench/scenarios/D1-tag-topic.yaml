@@ -1,0 +1,22 @@
+id: D1-tag-topic
+title: 给一篇打 topic 标签
+layer: governance
+source: 列
+fixtures: [4]
+needs_pty: false
+invariants: [2]
+routing_label: lit-library
+seed: seed-2papers-peptide
+precondition: |
+  库含 #4。TAXONOMY topics 暂无 "protein-language-model"。
+intent: |
+  "把 PeptideBERT 归到 'protein language model' 这个主题下。"
+expected_end_state:
+  - "taxonomy_has: topics :: protein-language-model"       # 新值先进受控词典
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: topics has protein-language-model"
+  - "health: clean"
+auto_fail:
+  - 手编 TAXONOMY.md 加值（不走 lit taxonomy add）        # inv#2
+  - 给论文塞了一个不在 TAXONOMY 的 topic（绕过受控词典 → health-check 应抓）
+adherence_flags:
+  - 没意识到要先 lit taxonomy add 再 lit modify --add-tag（受控词典两步）

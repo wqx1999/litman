@@ -1,0 +1,25 @@
+id: B2-revisit
+title: 重新回看一篇老论文
+layer: curation
+source: 列
+fixtures: [1]
+needs_pty: false
+invariants: [11]
+routing_label: lit-reading
+seed: seed-1paper-diffdock
+precondition: |
+  #1 已 read-date 非空（之前读过）。
+intent: |
+  "我今天又把 DiffDock 翻出来想了想。"
+expected_end_state:
+  - "yaml_ne: papers/<diffdock>/metadata.yaml :: last-revisited == null"  # lit revisit 打戳
+  - read-date 不变（仍是原值）                                          # inv#11 两字段独立
+  - "ran: revisit"
+  - "health: clean"
+auto_fail:
+  - 把 read-date 覆盖成今天（混淆 first-read 与 revisit）                # inv#11
+  - 手编 metadata
+notes: |
+  "read-date 不变" 是跨态比较（需操作前后快照），DSL 单态判分无法表达，转录为
+  prose（checker 标 manual，不静默通过）。
+

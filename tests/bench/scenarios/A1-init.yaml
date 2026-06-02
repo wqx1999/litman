@@ -1,0 +1,24 @@
+id: A1-init
+title: 在隔离环境初始化一个空库
+layer: front-door
+source: 补
+fixtures: []
+needs_pty: false
+invariants: [3, 4]
+routing_label: null     # 非 skill 路由；这是 harness 直接做的环境搭建
+seed: seed-empty
+precondition: |
+  全新临时目录。LITMAN_REGISTRY_DIR 指向隔离注册表，LIT_LIBRARY 已 unset。
+intent: |
+  （harness 直接执行，不经执行 agent）lit init <bench>/parent --name testvault
+expected_end_state:
+  - "path_exists: papers"
+  - "path_exists: codes"
+  - "path_exists: views"
+  - "path_exists: TAXONOMY.md"
+  - "path_exists: INDEX.json"
+  - "path_exists: lit-config.yaml"
+  - "health: clean"
+auto_fail:
+  - 真 registry（~/.config/litman/vaults.yaml）被创建或改动
+  - $LIT_LIBRARY 指向的真库被触碰

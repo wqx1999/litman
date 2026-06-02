@@ -1,0 +1,463 @@
+"""Phase B-seed — deterministic seed-snapshot builder (no agent).
+
+A *seed* is a named, fully-populated vault state that one or more scenario
+cards start from (M34 §3.0 layer 1). Seeds are built with deterministic ``lit``
+commands only — never an agent — so they are perfectly reproducible and always
+match the current litman schema (they are rebuilt, never committed; invariant
+#9). The scoring unit (a once-off run vault) is a ``cp`` of a seed, never a
+fresh ``lit init`` (M34 §3.0 layer 2 lives in :mod:`harness.runlit`).
+
+Design:
+
+* :class:`SeedStep` is one build operation (``init`` / ``add`` / ``taxonomy_add``
+  / ``modify`` / ``project_add`` / ``link`` / ``read``). A :class:`SeedSpec` is
+  an ordered list of steps. The model is **scale-agnostic** — a spec could
+  enumerate 100 ``add`` steps; we simply do not define a 100-paper seed yet.
+* Each ``add`` step names a fixture id (1..10). The fixture's PDF lives in
+  ``fixtures/pdfs/<n>.pdf`` and its golden metadata in ``fixtures/golden/<n>.json``
+  (invariant #1: the CLI writes metadata.yaml from the LLM-shaped JSON; the
+  harness never hand-writes a metadata file).
+* :func:`build_seed` is **idempotent**: a built seed caches a ``.seed-key`` stamp
+  derived from the litman source fingerprint; a second build with the same key
+  is a cache hit (no-op). A litman change (schema drift) flips the key and forces
+  a rebuild, so a seed can never go stale against the code under test.
+
+All paths default to ``/tmp`` (never ``/work`` — EDQUOT). Seeds are cached under
+``/tmp/litman-bench-seeds/<name>/``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Paths + the lit binary
+# ---------------------------------------------------------------------------
+
+BENCH_DIR = Path(__file__).resolve().parent.parent
+FIXTURES_DIR = BENCH_DIR / "fixtures"
+PDFS_DIR = FIXTURES_DIR / "pdfs"
+GOLDEN_DIR = FIXTURES_DIR / "golden"
+
+DEFAULT_CACHE_ROOT = Path("/tmp/litman-bench-seeds")
+SEED_KEY_FILE = ".seed-key"
+
+# The `lit` entry point inside the litman conda env (bypasses `conda activate`).
+LIT_BIN = Path(
+    os.environ.get(
+        "LITMAN_BENCH_LIT_BIN",
+        "/work/wangq/software/miniconda3/envs/litman/bin/lit",
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# litman source fingerprint (cache-invalidation key)
+# ---------------------------------------------------------------------------
+
+
+def litman_fingerprint() -> str:
+    """A short hash that changes when the installed litman code changes.
+
+    Combines ``litman.__version__`` with a content digest of every ``.py`` file
+    in the installed package (path + size + mtime-ns). An editable install
+    points at the repo src, so any schema edit flips the digest and forces a
+    seed rebuild — the seed can never silently go stale against the code under
+    test. Falls back to the version string alone if the package cannot be
+    located (it always can in this env, but be defensive at the boundary).
+    """
+    import litman
+
+    parts: list[str] = [getattr(litman, "__version__", "?")]
+    pkg_root = Path(litman.__file__).resolve().parent
+    for py in sorted(pkg_root.rglob("*.py")):
+        try:
+            st = py.stat()
+        except OSError:
+            continue
+        rel = py.relative_to(pkg_root)
+        parts.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
+    digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+# ---------------------------------------------------------------------------
+# Seed spec model
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SeedStep:
+    """One deterministic build operation.
+
+    ``op`` is the operation name; the remaining fields carry its arguments.
+    Only the fields relevant to ``op`` are read (see :func:`_apply_step`):
+
+    * ``init``         — no extra fields.
+    * ``add``          — ``fixture`` (manifest id 1..10).
+    * ``taxonomy_add`` — ``dict_name`` + ``values``.
+    * ``modify``       — ``fixture`` + ``set`` (dict of key=value) and/or
+                         ``add_tags`` (list of ``"key=value"``).
+    * ``project_add``  — ``project`` (name); the dir is created under the vault.
+    * ``link``         — ``fixture`` + ``project``.
+    * ``read``         — ``fixture``.
+    """
+
+    op: str
+    fixture: int | None = None
+    dict_name: str | None = None
+    values: tuple[str, ...] = ()
+    set: tuple[tuple[str, str], ...] = ()
+    add_tags: tuple[str, ...] = ()
+    project: str | None = None
+
+
+@dataclass(frozen=True)
+class SeedSpec:
+    """An ordered list of build steps that produce one named seed state."""
+
+    name: str
+    steps: tuple[SeedStep, ...]
+    description: str = ""
+
+
+def _add(fixture: int) -> SeedStep:
+    return SeedStep("add", fixture=fixture)
+
+
+def _tax(dict_name: str, *values: str) -> SeedStep:
+    return SeedStep("taxonomy_add", dict_name=dict_name, values=tuple(values))
+
+
+def _modify(fixture: int, *, add_tags: tuple[str, ...] = ()) -> SeedStep:
+    return SeedStep("modify", fixture=fixture, add_tags=add_tags)
+
+
+def _project(name: str) -> SeedStep:
+    return SeedStep("project_add", project=name)
+
+
+def _link(fixture: int, project: str) -> SeedStep:
+    return SeedStep("link", fixture=fixture, project=project)
+
+
+# ---------------------------------------------------------------------------
+# The seed set (4 seeds; seed-100papers DEFERRED but the model scales to it)
+# ---------------------------------------------------------------------------
+#
+# Build steps were derived by scanning every card's ``precondition`` in
+# scenarios/*.yaml and merging same-state needs (M34 §3.0 / ruling 2). Fixture
+# id -> paper, confirmed against manifest.yaml + fixtures/golden/<n>.json:
+#   #1 DiffDock (2022) | #2 EDM no-repo (2022) | #4 PeptideBERT (2023)
+#   #5 Multi-Peptide same-group as #4 (2024) | #9/#10 AMP papers (2025).
+
+_INIT = SeedStep("init")
+
+SEED_SPECS: dict[str, SeedSpec] = {
+    # --- empty: just an initialized vault -----------------------------------
+    # Covers every card whose precondition is "隔离库已 init" with nothing in
+    # it (A1, E3, D2-pty parent, F1-build-from-empty, G5, H1-build, H2, J1, J2).
+    "seed-empty": SeedSpec(
+        name="seed-empty",
+        steps=(_INIT,),
+        description="Initialized but empty vault.",
+    ),
+    # --- 1 paper: DiffDock (#1) ---------------------------------------------
+    # B1/B2/B3 (modify/read/revisit on #1), C3 (search notes), G3 (trash+restore).
+    "seed-1paper-diffdock": SeedSpec(
+        name="seed-1paper-diffdock",
+        steps=(_INIT, _add(1)),
+        description="Vault with #1 DiffDock added (status=inbox).",
+    ),
+    # --- 2 papers: PeptideBERT (#4) + Multi-Peptide (#5), same group --------
+    # A2 (precondition has #1; add #4 — but the *checked* state is #4 present;
+    # we seed #4+#5 which also serves C2/C4/D1/D4/A3/G2 same-group retrieval).
+    "seed-2papers-peptide": SeedSpec(
+        name="seed-2papers-peptide",
+        steps=(_INIT, _add(4), _add(5)),
+        description="#4 PeptideBERT + #5 Multi-Peptide (same author group).",
+    ),
+    # --- 5 papers + tagged + a project --------------------------------------
+    # Governance / export / list-filter cards (C1, D2, F1-with-content). Two
+    # papers carry topic "diffusion" so D2's `taxonomy rm diffusion` has a real
+    # cascade to clean; the peptide papers carry topic "peptide" for C1's filter.
+    "seed-5papers-tagged": SeedSpec(
+        name="seed-5papers-tagged",
+        steps=(
+            _INIT,
+            _add(1),  # DiffDock 2022
+            _add(2),  # EDM 2022
+            _add(4),  # PeptideBERT 2023
+            _add(5),  # Multi-Peptide 2024
+            _add(9),  # therapeutic-peptide predictor 2025
+            _tax("topics", "diffusion", "peptide", "amp"),
+            _modify(1, add_tags=("topics=diffusion",)),
+            _modify(2, add_tags=("topics=diffusion",)),
+            _modify(4, add_tags=("topics=peptide",)),
+            _modify(5, add_tags=("topics=peptide",)),
+            _modify(9, add_tags=("topics=amp",)),
+            _project("PepCodec"),
+            _link(4, "PepCodec"),
+        ),
+        description=(
+            "5 papers; #1/#2 tagged diffusion, #4/#5 tagged peptide, #9 tagged "
+            "amp; project PepCodec registered with #4 linked."
+        ),
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Build execution
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _BuildEnv:
+    """Per-build mutable context threaded through the steps."""
+
+    vault: Path
+    env: dict[str, str]
+    scratch: Path
+    project_ids: dict[int, str] = field(default_factory=dict)
+
+
+def _isolated_seed_env(registry_dir: Path) -> dict[str, str]:
+    """Child env for seed-build subprocesses: redirect registry, drop LIT_LIBRARY.
+
+    Same red line as the run-vault isolation (M34 §4): the real registry must
+    not be touched and the real vault (discoverable ONLY via ``$LIT_LIBRARY``)
+    must be unreachable. We start from ``os.environ`` so PATH / conda bits
+    survive, then mutate.
+    """
+    env = os.environ.copy()
+    env["LITMAN_REGISTRY_DIR"] = str(registry_dir)
+    env.pop("LIT_LIBRARY", None)
+    return env
+
+
+def _run_lit(args: list[str], *, env: dict[str, str], cwd: Path | None = None) -> None:
+    """Run a ``lit`` subcommand, raising on non-zero exit (build must be exact).
+
+    stdin is ``/dev/null`` (never a pipe) so a non-TTY confirm prompt aborts
+    rather than hanging (OQ1). Output is captured and surfaced in the exception
+    so a build break is debuggable.
+    """
+    proc = subprocess.run(
+        [str(LIT_BIN), *args],
+        env=env,
+        cwd=str(cwd) if cwd else None,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "seed build step failed: lit "
+            + " ".join(args)
+            + f"\nexit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+
+def _paper_id_for_fixture(vault: Path, fixture: int) -> str:
+    """Resolve the id `lit add` derived for a fixture by title-substring match.
+
+    We never hardcode ``derive_id()`` output (scenarios §2): read INDEX.json and
+    match on the golden title. Returns the single matching paper id.
+    """
+    import json
+
+    golden = _load_golden(fixture)
+    want = _norm(golden["title"])
+    index = vault / "INDEX.json"
+    payload = json.loads(index.read_text(encoding="utf-8"))
+    matches = [
+        p["id"]
+        for p in payload.get("papers", [])
+        if _norm(str(p.get("title", ""))).startswith(want[:30])
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"could not resolve unique paper id for fixture {fixture} "
+            f"(title {golden['title']!r}); matches={matches}"
+        )
+    return matches[0]
+
+
+def _norm(s: str) -> str:
+    return " ".join(s.split()).casefold()
+
+
+def _load_golden(fixture: int) -> dict:
+    import json
+
+    path = GOLDEN_DIR / f"{fixture}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _apply_step(step: SeedStep, ctx: _BuildEnv) -> None:
+    vault = ctx.vault
+    lib = ["--library", str(vault)]
+
+    if step.op == "init":
+        parent = vault.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        _run_lit(
+            ["init", str(parent), "--name", vault.name, "--no-register"],
+            env=ctx.env,
+        )
+        return
+
+    if step.op == "add":
+        assert step.fixture is not None
+        src_pdf = PDFS_DIR / f"{step.fixture}.pdf"
+        golden = GOLDEN_DIR / f"{step.fixture}.json"
+        if not src_pdf.is_file():
+            raise RuntimeError(
+                f"fixture PDF missing: {src_pdf} — run fetch_fixtures.py first"
+            )
+        # `lit add` MOVES the source PDF; copy into scratch so the fixture cache
+        # is never consumed.
+        staged_pdf = ctx.scratch / f"{step.fixture}.pdf"
+        shutil.copy2(src_pdf, staged_pdf)
+        _run_lit(
+            ["add", str(staged_pdf), "--from-llm-json", str(golden), *lib],
+            env=ctx.env,
+        )
+        return
+
+    if step.op == "taxonomy_add":
+        assert step.dict_name is not None
+        _run_lit(
+            ["taxonomy", "add", step.dict_name, *step.values, *lib],
+            env=ctx.env,
+        )
+        return
+
+    if step.op == "modify":
+        assert step.fixture is not None
+        pid = _paper_id_for_fixture(vault, step.fixture)
+        args = ["modify", pid]
+        for key, val in step.set:
+            args += ["--set", f"{key}={val}"]
+        for tag in step.add_tags:
+            args += ["--add-tag", tag]
+        _run_lit([*args, *lib], env=ctx.env)
+        return
+
+    if step.op == "project_add":
+        assert step.project is not None
+        # `lit project add --path` requires the dir to already exist.
+        proj_dir = vault.parent / "projects" / step.project
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        _run_lit(
+            ["project", "add", step.project, "--path", str(proj_dir), *lib],
+            env=ctx.env,
+        )
+        return
+
+    if step.op == "link":
+        assert step.fixture is not None and step.project is not None
+        pid = _paper_id_for_fixture(vault, step.fixture)
+        _run_lit(
+            ["link", pid, "--project", step.project, *lib],
+            env=ctx.env,
+        )
+        return
+
+    if step.op == "read":
+        assert step.fixture is not None
+        pid = _paper_id_for_fixture(vault, step.fixture)
+        _run_lit(["read", pid, *lib], env=ctx.env)
+        return
+
+    raise ValueError(f"unknown seed step op: {step.op!r}")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def build_seed(
+    name: str,
+    *,
+    golden_dir: Path = GOLDEN_DIR,
+    cache_root: Path = DEFAULT_CACHE_ROOT,
+    force: bool = False,
+) -> Path:
+    """Build (or reuse a cached) seed vault, returning the vault path.
+
+    Idempotent: if ``<cache_root>/<name>/`` already exists and its ``.seed-key``
+    matches the current litman fingerprint, the build is skipped and the cached
+    vault path is returned. A fingerprint mismatch (litman code changed) or
+    ``force=True`` rebuilds from scratch.
+
+    The returned path is the *vault* directory (``<cache_root>/<name>/vault``),
+    not the parent. ``golden_dir`` is accepted so a caller can point at an
+    alternate golden set; it defaults to the committed ``fixtures/golden/``.
+    """
+    if name not in SEED_SPECS:
+        raise KeyError(f"unknown seed {name!r}; known: {sorted(SEED_SPECS)}")
+    spec = SEED_SPECS[name]
+
+    global GOLDEN_DIR  # noqa: PLW0603 — allow per-call override of the golden src
+    prev_golden = GOLDEN_DIR
+    GOLDEN_DIR = golden_dir
+
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        seed_root = cache_root / name
+        vault = seed_root / "vault"
+        key_file = seed_root / SEED_KEY_FILE
+        want_key = litman_fingerprint()
+
+        if (
+            not force
+            and vault.is_dir()
+            and (vault / "lit-config.yaml").is_file()
+            and key_file.is_file()
+            and key_file.read_text(encoding="utf-8").strip() == want_key
+        ):
+            return vault  # cache hit
+
+        # Stale / missing / forced: rebuild from clean slate.
+        if seed_root.exists():
+            shutil.rmtree(seed_root)
+        seed_root.mkdir(parents=True)
+        scratch = seed_root / "_scratch"
+        scratch.mkdir()
+        registry = seed_root / "registry"
+        env = _isolated_seed_env(registry)
+
+        ctx = _BuildEnv(vault=vault, env=env, scratch=scratch)
+        for step in spec.steps:
+            _apply_step(step, ctx)
+
+        # Drop the build scratch (staged PDFs already moved into the vault).
+        shutil.rmtree(scratch, ignore_errors=True)
+        key_file.write_text(want_key + "\n", encoding="utf-8")
+        return vault
+    finally:
+        GOLDEN_DIR = prev_golden
+
+
+def ensure_seeds(
+    names: list[str],
+    *,
+    golden_dir: Path = GOLDEN_DIR,
+    cache_root: Path = DEFAULT_CACHE_ROOT,
+    force: bool = False,
+) -> dict[str, Path]:
+    """Build each named seed (idempotent) and return ``{name: vault_path}``."""
+    return {
+        name: build_seed(
+            name, golden_dir=golden_dir, cache_root=cache_root, force=force
+        )
+        for name in names
+    }

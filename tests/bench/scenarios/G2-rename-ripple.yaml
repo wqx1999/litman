@@ -1,0 +1,30 @@
+id: G2-rename-ripple
+title: 改 paper id，看引用是否全跟着更新
+layer: maintenance
+source: 缺
+fixtures: [4, 5]
+needs_pty: false
+invariants: [14]
+routing_label: lit-library
+seed: seed-2papers-peptide
+precondition: |
+  #4、#5 已入库；#4 的 related 含 #5，#5 的 notes.md 有 [[<#4 old-id>]] wikilink，
+  #4 已 link 到 PepCodec。
+intent: |
+  "把 PeptideBERT 的 id 改成 2023_Guntuboina_PeptideBERT-v2。"
+expected_end_state:
+  - "path_exists: papers/2023_Guntuboina_PeptideBERT-v2"
+  - "path_absent: papers/<old-peptidebert-id>"
+  - "#5 的 related 指向新 id（不悬空）"
+  - "#5 notes.md 的 [[...]] wikilink 更新为新 id"
+  - PepCodec 的 litman_reflib symlink 指向新路径
+  - "ran: rename"
+  - "health: clean"
+auto_fail:
+  - 改目录名但反向引用（related / wikilink / symlink）悬空 → 没走 lit rename 原子涟漪
+  - 手 mv 目录
+notes: |
+  逐条反向引用更新（related / wikilink / 项目 symlink）的内容断言需深读散文 + 项目
+  目录（vault 外），DSL 单态路径覆盖不到，转录为 prose（checker 标 manual，不静默
+  通过）；health: clean 兜底"无悬空引用"。precondition 的 related/wikilink 增量由
+  harness 在 cp 种子后注入（执行阶段 Phase E）。

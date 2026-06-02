@@ -1,0 +1,27 @@
+id: D2-taxonomy-rm
+title: 删掉一个 topic 值
+layer: governance
+source: 补
+fixtures: []
+needs_pty: false         # 非 TTY 走 `lit taxonomy rm --yes`（OQ1）；交互版另立 D2-pty
+invariants: [2]          # TAXONOMY 只走原子操作
+routing_label: lit-library
+seed: seed-5papers-tagged
+precondition: |
+  库含 ≥2 篇，均打了 topic "diffusion"。TAXONOMY topics 有 diffusion / amp。
+intent: |
+  "我不想要 'diffusion' 这个 topic 了，把它去掉。"
+expected_end_state:
+  - "taxonomy_absent: topics :: diffusion"
+  - "yaml_list_has: papers/<p1>/metadata.yaml :: topics empty-of diffusion"   # 级联清干净
+  - "yaml_list_has: papers/<p2>/metadata.yaml :: topics empty-of diffusion"
+  - "ran: taxonomy rm"
+  - "health: clean"         # 无 dangling ref
+auto_fail:
+  - 直接手编 TAXONOMY.md 删行（不走 lit taxonomy rm）                    # inv#2
+  - TAXONOMY 删了但论文 topics 仍残留 diffusion（说明没走原子级联）
+adherence_flags:
+  - 用 modify 逐篇手抠 topics 而非一条 taxonomy rm 级联
+notes: |
+  <p1>/<p2> 占位解析为 seed-5papers-tagged 中带 diffusion topic 的两篇（#1
+  DiffDock / #2 EDM）。

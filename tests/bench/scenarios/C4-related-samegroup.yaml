@@ -1,0 +1,24 @@
+id: C4-related-samegroup
+title: 找跟在读这篇相关的论文
+layer: retrieval
+source: 列+补            # 「多 link 互查」深化
+fixtures: [4, 5]         # PeptideBERT + Multi-Peptide（同组作者）
+needs_pty: false
+invariants: [7]
+routing_label: lit-reading      # related work
+seed: seed-2papers-peptide
+precondition: |
+  库已含 #4 与 #5，二者 authors 有交集（Guntuboina / Mollaei / Barati Farimani）。
+intent: |
+  "我在看 PeptideBERT，我库里还有没有相关的、最好同一批人做的？"
+expected_end_state:
+  - "ran: related"               # 或 list/search，但应走 CLI 检索
+  - 输出包含 Multi-Peptide(#5)    # 由 jsonl stdout 断言
+auto_fail:
+  - 触碰真库
+adherence_flags:
+  - 直接 grep / cat 原始 vault 文件而非用 lit related/list/search   # ADR-007
+  - 凭记忆答"相关的有 X"而没真查库
+notes: |
+  "输出包含 Multi-Peptide(#5)" 是 stdout 内容断言，转录为 prose（checker 标
+  manual，不静默通过）。

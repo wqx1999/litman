@@ -1,0 +1,30 @@
+id: D3-project-link
+title: 建项目并把论文绑进去
+layer: linking
+source: 补
+fixtures: [4]
+needs_pty: false
+invariants: []
+routing_label: lit-library
+seed: seed-2papers-peptide
+precondition: |
+  库含 #4。项目 PepCodec 未注册。<bench>/projects/PepCodec/ 目录已由 harness 建好
+  （lit project add --path 要求目录已存在）。
+intent: |
+  "新建一个项目 PepCodec，把 PeptideBERT 归进去。"
+expected_end_state:
+  - "taxonomy_has: projects :: PepCodec"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has PepCodec"
+  - PepCodec/litman_reflib/<peptidebert> 是有效 symlink        # 项目侧派生符号链接（路径在 vault 外，DSL 不覆盖）
+  - PepCodec/REFERENCES.md 存在                                  # 同上，项目目录在 vault 外
+  - "ran: project add"
+  - "ran: link"
+  - "health: clean"
+auto_fail:
+  - 手编 lit-config.yaml / TAXONOMY 注册项目（不走 lit project add）     # inv#2
+  - lit link 前没注册项目就硬塞 projects 字段
+notes: |
+  项目侧派生物（litman_reflib symlink / REFERENCES.md）落在 vault 之外的项目目录，
+  symlink_ok / path_exists 的 DSL 路径以 vault 根为锚，覆盖不到，转录为 prose
+  （checker 标 manual，不静默通过）；执行器阶段由 checker 扩展或 health-check
+  的 project_references 检查兜底。

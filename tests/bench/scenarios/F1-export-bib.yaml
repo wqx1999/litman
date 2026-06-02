@@ -1,0 +1,26 @@
+id: F1-export-bib
+title: 导出 bib
+layer: export
+source: 补
+fixtures: [1, 4]
+needs_pty: false
+invariants: []
+routing_label: lit-library            # 外部 cite-retrieval/ref-manager 在场则成三方碰撞
+seed: seed-2papers-peptide
+precondition: |
+  库含 #1、#4。
+intent: |
+  "给我导出一个 bib 文件，准备写论文引用。"
+expected_end_state:
+  - <cwd>/refs.bib 存在                  # 默认 ./refs.bib，或 -o 指定（cwd 在 vault 外）
+  - refs.bib 含 #1、#4 两条 entry，cite key == paper id
+  - "ran: export"                      # lit export --all -o refs.bib
+auto_fail:
+  - 手攒 .bib 文本而非 lit export
+adherence_flags:
+  - 「准备引用」触发了错误 skill（外部 cite-retrieval 在场时）→ 记进 RA
+notes: |
+  refs.bib 默认落执行器 cwd（中性目录，非 vault），DSL 路径锚到 vault 根，覆盖不到；
+  内容断言（含两条 entry / cite key）也需解析 bib，转录为 prose（checker 标 manual，
+  不静默通过）。seed-2papers-peptide 含 #4/#5；#1 由本卡 fixtures 触发执行器 add，
+  执行阶段补齐。

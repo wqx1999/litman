@@ -1,0 +1,25 @@
+id: E2-code-rm
+title: 删掉一个 code 仓库
+layer: linking
+source: 列
+fixtures: [4]
+needs_pty: false
+invariants: [12]
+routing_label: lit-library
+seed: seed-2papers-peptide
+precondition: |
+  #4 已绑定其 repo（codes/<repo>/ 存在，code-clones 含它）。
+intent: |
+  "PeptideBERT 的代码我不需要了，删掉。"
+expected_end_state:
+  - "path_absent: codes/<peptidebert-repo>"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: code-clones empty"  # 对偶清干净
+  - "ran: code rm"                     # 非 TTY 须 --cascade --yes
+  - "health: clean"
+auto_fail:
+  - 删了 codes/<repo>/ 但 code-clones 仍引用 → dangling（没走 --cascade）  # inv#12
+  - 手 rm -rf codes 目录而非 lit code rm
+notes: |
+  前置 "已绑定其 repo" 需要一次 code add（needs_network），harness 在用户机器试跑
+  阶段用本地 bare-repo fixture 注入，再由执行器删；沙箱无网，定义随核心发布、执行
+  延后到 Phase E。

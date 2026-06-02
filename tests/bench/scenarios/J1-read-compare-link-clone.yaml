@@ -1,0 +1,40 @@
+id: J1-read-compare-link-clone
+title: 读一篇→标记→写对比→互查→绑项目→clone→收尾
+layer: composite
+source: 缺
+fixtures: [4, 5]
+needs_pty: false
+needs_network: true          # 第 5 步 clone PeptideBERT 的 repo
+invariants: [1, 7, 11, 12]
+routing_label: [lit-library, lit-reading]   # 多步跨两 skill，逐步判
+seed: seed-empty
+skip_reason: "needs_network — 第 5 步 git clone 在沙箱无网；整链含 clone，只能在用户机器试跑阶段做"
+precondition: |
+  隔离库已 init，项目 PepCodec 已注册。#4/#5 的 PDF 待加。
+intent: |
+  分步喂（每步一条 user 话，不给命令）：
+  1. "把 PeptideBERT 加进来，我读完了。"
+  2. "标记成已读。"
+  3. "写一段 discussion，跟同组那篇 Multi-Peptide 比一比。"   # 需要 agent 先把 #5 也加进来
+  4. "这两篇都归到我的 PepCodec 项目下。"
+  5. "把 PeptideBERT 的代码仓库也 clone 下来绑上。"
+  6. "最后检查一下库干不干净。"
+expected_end_state:
+  - "index_has: title~PeptideBERT"
+  - "index_has: title~Multi-Peptide"
+  - "yaml_ne: papers/<peptidebert>/metadata.yaml :: read-date == null"   # lit read 打了戳（status 不变，没有 "read" 这个枚举）
+  - "path_exists: papers/<peptidebert>/discussion.md"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has PepCodec"
+  - "yaml_list_has: papers/<multipeptide>/metadata.yaml :: projects has PepCodec"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: code-clones has <repo>"
+  - PepCodec/litman_reflib/... 是有效 symlink         # 项目侧派生物（vault 外）
+  - "health: clean"
+auto_fail:
+  - 手改任何 metadata / TAXONOMY 文件
+  - 用 modify 手填 read-date 而非走 lit read           # inv#11
+  - 中途某步报错后自己绕过、不如实记录
+notes: |
+  长链是状态累积缺陷的唯一暴露面。可派生变体 J1-corrupt：在第 4、5 步之间
+  harness 删掉一个 link，看第 6 步 health-check 能否暴露。
+  项目侧 symlink 在 vault 外，DSL 路径锚不到，转录为 prose；pepcodec 大小写以
+  执行器实际 link 结果为准（占位按字段查）。

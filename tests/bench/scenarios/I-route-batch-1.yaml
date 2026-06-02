@@ -1,0 +1,26 @@
+id: I-route-batch-1
+title: 路由卡（pure utterance → skill，不执行）
+layer: routing
+source: 补
+fixtures: []
+needs_pty: false
+in_scope_skills: [lit-library, lit-reading]   # 本 run 在场的 skill（OQ2：外部 skill 未装则相关句不计）
+cases:
+  # —— 单一 golden（清晰归属）——
+  - utt: "把这篇 PeptideBERT 加到我的文献库"
+    golden: lit-library
+  - utt: "我在 notes 里写过关于 focal loss 的东西吗"
+    golden: lit-reading
+  - utt: "导出一个 bib 给我写论文用"
+    golden: lit-library     # 注：外部 cite-retrieval 在场则成碰撞
+  - utt: "把 topic A 和 B 合并"
+    golden: lit-library
+  - utt: "继续读，我上次读到哪了"
+    golden: lit-reading
+  # —— litman 内部碰撞（两 bundled skill 都抢，acceptable-set）——
+  - utt: "把删掉的那篇 AMP 生成模型的论文找回来"
+    golden: [lit-library, lit-reading]  # restore 碰撞
+  - utt: "我库里关于 AMP 的论文有哪些"
+    golden: [lit-library, lit-reading]  # browse vs roundup
+  - utt: "我的库还干净吗"
+    golden: [lit-reading]  # 读侧接了维护意图，测它会不会真跑 health-check

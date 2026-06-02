@@ -1,0 +1,21 @@
+id: B3-modify-fields
+title: 改几个 metadata 字段
+layer: curation
+source: 列
+fixtures: [1]
+needs_pty: false
+invariants: [11]
+routing_label: lit-library
+seed: seed-1paper-diffdock
+precondition: |
+  #1 已入库。
+intent: |
+  "DiffDock 这篇优先级标成 A，类型是 research。"
+expected_end_state:
+  - "yaml_eq: papers/<diffdock>/metadata.yaml :: priority == A"
+  - "yaml_eq: papers/<diffdock>/metadata.yaml :: type == research"
+  - "ran: modify"
+  - "health: clean"
+auto_fail:
+  - 手编 metadata.yaml 而非 lit modify
+  - 顺手改 created-at / updated-at（技术字段工具维护，不该手动碰）        # inv#11

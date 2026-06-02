@@ -1,0 +1,25 @@
+id: J1-corrupt
+title: 长链中段被搞坏，收尾 health-check 能否暴露
+layer: composite
+source: 缺
+fixtures: [4, 5]
+needs_pty: false
+needs_network: true          # 同 J1，含 clone 步
+invariants: [12, 14]
+routing_label: [lit-library, lit-reading]
+seed: seed-empty
+skip_reason: "needs_network — 同 J1（整链含 git clone）；沙箱无网，只能在用户机器试跑阶段做"
+precondition: |
+  同 J1，但在第 4 步(绑项目)与第 5 步(clone)之间，harness 删掉 #4 的一个 code-clone 目录
+  （留反向引用）制造 dangling。
+intent: |
+  同 J1 的 6 步。
+expected_end_state:
+  # checks.py code_clone_integrity 悬空-ref Issue（severity=error）的 message 含
+  # "code-clones references <repo> but no codes/<repo>/repo-meta.yaml exists"，
+  # 不含子串 "dangling"；用 "code-clones" 匹配（见 H1-inject-dangling-clone.yaml）。
+  - "health_reports: ~code-clones"   # 第 6 步 health-check 报告那个 dangling code-clone
+auto_fail:
+  - 收尾 health-check 退出 clean、没抓到中途腐坏 → false-clean
+notes: |
+  与 J1 的区别：J1 测"全程正常→收尾全绿"，本卡测"中途腐坏→收尾能抓到"。

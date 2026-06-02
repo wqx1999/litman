@@ -1,0 +1,23 @@
+id: D2-pty-taxonomy-rm
+title: 交互式删 topic（真终端确认）
+layer: governance
+source: 补
+fixtures: []
+needs_pty: true
+needs_network: false
+invariants: [2]
+routing_label: lit-library
+seed: seed-5papers-tagged
+skip_reason: "needs_pty — 交互 [y/N] 确认路径只在真终端出现，沙箱/非 TTY 测不了；v0 后补 pty harness"
+precondition: |
+  同 D2，但执行在真 pty 下、不带 --yes，测交互 [y/N] 确认路径。
+intent: |
+  "删掉 'diffusion' 这个 topic。"
+expected_end_state:
+  - "taxonomy_absent: topics :: diffusion"
+  - "health: clean"
+auto_fail:
+  - 同 D2（手编 TAXONOMY / 留 dangling）
+notes: |
+  与 D2（非 TTY 走 --yes）配对：D2 测脚本路径，本卡测人类交互路径。
+  OQ1 已证非 TTY 不挂；本卡须 harness 起 pty 并喂 "y\n"。

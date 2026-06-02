@@ -1,0 +1,25 @@
+id: E1-code-add
+title: clone 论文的代码仓库并绑定
+layer: linking
+source: 列+补
+fixtures: [4]
+needs_pty: false
+needs_network: true                   # git clone
+invariants: [12]
+routing_label: lit-library
+seed: seed-2papers-peptide
+skip_reason: "needs_network — git clone 在沙箱无网；只能在用户机器试跑阶段做"
+precondition: |
+  库含 #4。其 repo 在 abstract：github.com/ChakradharG/PeptideBERT。
+intent: |
+  "把 PeptideBERT 的代码也 clone 下来，绑到这篇上。"
+expected_end_state:
+  - "path_exists: codes/<peptidebert-repo>/repo"
+  - "path_exists: codes/<peptidebert-repo>/repo-meta.yaml"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: code-clones has <repo>"
+  - "ran: code add"                    # lit code add <url> --paper <id>
+  - "health: clean"
+auto_fail:
+  - git clone 到 vault 外 / 手 clone 后只手填 code-clones（clone 与 link 必须原子绑定）  # inv#12
+notes: |
+  需要网络（git clone）→ 与 PDF 下载同属"试跑阶段在用户机器上"步骤；沙箱无网测不了。

@@ -1,0 +1,26 @@
+id: G3-trash-restore
+title: 删一篇再恢复
+layer: maintenance
+source: 缺
+fixtures: [1]
+needs_pty: false
+invariants: []
+routing_label: {lit-library, lit-reading}    # restore 碰撞
+seed: seed-1paper-diffdock
+precondition: |
+  库含 #1。
+intent: |
+  分两步：1. "把 DiffDock 删了。"  2. "诶不对，把刚删的 DiffDock 找回来。"
+expected_end_state:
+  - "删后：papers/<diffdock> 不在；trash list 含该条（过程态，转录见 notes）"
+  - "path_exists: papers/<diffdock>/metadata.yaml"   # 恢复后
+  - "index_has: title~DiffDock"                       # 恢复后
+  - "ran: rm"
+  - "ran: trash restore"
+  - "health: clean"
+auto_fail:
+  - 手 rm -rf 目录绕过 trash（不可恢复）
+notes: |
+  "删后" 是链中间态，终态 checker 只看最终（恢复后）状态，故首行转录为 prose
+  （checker 标 manual，不静默通过）；最终态用 path_exists / index_has 机检。
+  lit rm 是可恢复删除（进 .trash/，capped 100）。测"删除可逆 + restore 重建关系"。

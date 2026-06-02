@@ -1,0 +1,27 @@
+id: G5-sync-push
+title: 把库同步到远端
+layer: maintenance
+source: 列              # 深化
+fixtures: []
+needs_pty: false
+invariants: [9]
+routing_label: lit-library
+seed: seed-2papers-peptide
+precondition: |
+  隔离库已 init 且含 ≥1 篇。rclone remote 指向**本地目录做的假 remote**（harness 配，
+  不连真云）。lit-config.yaml 已写好该 remote。
+intent: |
+  "把我的文献库同步上去。"
+expected_end_state:
+  - "ran: sync"
+  - 假 remote 目录出现库内容（push 成功）
+  - "health: clean"        # litman 约定 sync 顺带触发一次安全检查
+auto_fail:
+  - 触碰真库 / 真 rclone remote
+adherence_flags:
+  - rclone 未配时不如实报错而是伪造成功
+notes: |
+  单机单用户 → **不测并发 / 双向冲突**（invariant 假设无并发）。
+  bench 必须用本地假 remote，否则无法自动化。"假 remote 出现库内容" 断言落在 vault
+  外的 remote 目录，DSL 路径锚不到，转录为 prose（checker 标 manual，不静默通过）；
+  假 remote + lit-config sync 段由 harness 在 cp 种子后注入（执行阶段 Phase E）。

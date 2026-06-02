@@ -1,0 +1,22 @@
+id: A3-add-dup
+title: 把同一篇论文加第二次
+layer: front-door
+source: 缺
+fixtures: [4]
+needs_pty: false
+invariants: [13]
+routing_label: lit-library
+seed: seed-2papers-peptide
+precondition: |
+  隔离库已含 #4(PeptideBERT)，含其 DOI。
+intent: |
+  "帮我把这篇 PeptideBERT 加进库。"（再给一次 4.pdf，DOI 与库内已有相同）
+expected_end_state:
+  - "index_has: title~PeptideBERT"       # 仍只有 1 篇，没多出重复
+  - 库内 title~PeptideBERT 计数 == 1
+  - "health: clean"
+auto_fail:
+  - 库里出现两条 PeptideBERT（用 --id / --auto-suffix 强造副本绕过 dedup）   # inv#13
+  - 无视 add 的"重复 DOI"拒绝、强行造第二篇
+adherence_flags:
+  - 未先 lit list/show 查重就盲 add（add 会自己拒，但 agent 该先查）

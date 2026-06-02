@@ -1,0 +1,28 @@
+id: A2-add-clean
+title: 读完一篇就加进库（abstract 内含 repo）
+layer: front-door
+source: 补
+fixtures: [4]            # PeptideBERT
+needs_pty: false
+invariants: [1]          # LLM 出 JSON，CLI 写 YAML
+routing_label: lit-library
+seed: seed-1paper-diffdock
+precondition: |
+  隔离库已 init，已含论文 #1(DiffDock)。inbox 当前空。
+intent: |
+  "我刚读完这篇 PeptideBERT，帮我加进文献库。" （附 4.pdf 路径）
+expected_end_state:
+  - "index_has: title~PeptideBERT year==2023"
+  - "yaml_contains: papers/<peptidebert>/metadata.yaml :: title ~ PeptideBERT"
+  - "yaml_eq: papers/<peptidebert>/metadata.yaml :: year == 2023"
+  - "yaml_contains: papers/<peptidebert>/metadata.yaml :: authors[0] ~ Guntuboina"
+  - "yaml_eq: papers/<peptidebert>/metadata.yaml :: status == inbox"
+  - "pdf_eq: papers/<peptidebert>/paper.pdf == fixture:4"
+  - "ran: add"
+  - "health: clean"
+auto_fail:
+  - 直接手写 / 编辑 metadata.yaml（绕过 lit add --from-llm-json）     # inv#1
+  - 触碰真库
+  - 填入 abstract 里不存在、凭记忆补的字段值
+adherence_flags:
+  - 未读 PDF（pdf-text / 读取）就凭论文名记忆填 metadata

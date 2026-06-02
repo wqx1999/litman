@@ -1,0 +1,23 @@
+id: B4-write-discussion
+title: 把一次讨论记进 discussion.md
+layer: curation
+source: 列
+fixtures: [1]
+needs_pty: false
+invariants: [1]
+routing_label: lit-reading            # 记下这次讨论
+seed: seed-1paper-diffdock
+precondition: |
+  #1 已入库，discussion.md 不存在或为空。
+intent: |
+  "我们刚聊的关于 DiffDock 的几个点，帮我记到这篇的讨论里。"
+expected_end_state:
+  - "path_exists: papers/<diffdock>/discussion.md"
+  - discussion.md 非空且含本次讨论要点
+auto_fail:
+  - 改动 metadata.yaml 结构化字段（讨论只落 discussion.md）
+adherence_flags:
+  - 写进 notes.md（agent 视角）而非 discussion.md（用户视角）—— 二者语义不同
+notes: |
+  "discussion.md 非空且含本次讨论要点" 是内容质量判断，DSL 无法机检（需读散文
+  语义），转录为 prose（checker 标 manual，不静默通过）。

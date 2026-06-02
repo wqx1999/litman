@@ -1,0 +1,24 @@
+id: I-route-batch-2
+title: 更多路由（含外部 skill 碰撞）
+layer: routing
+source: 补
+fixtures: []
+needs_pty: false
+in_scope_skills: [lit-library, lit-reading]   # 外部 ref-manager/cite-retrieval 在场时另标
+cases:
+  - utt: "把这篇加到我的 bib 里"
+    golden: lit-library    # cite-retrieval 在场 → 三方碰撞
+  - utt: "引用这篇"
+    golden: [lit-library, "cite-retrieval?"]  # 依在场 skill
+  - utt: "这篇文章讲了啥，跟我项目什么关系"
+    golden: lit-reading
+  - utt: "新建项目 X"
+    golden: lit-library
+  - utt: "合并 topic A 和 B"
+    golden: lit-library
+  - utt: "我最近读了哪些 AMP 的论文"
+    golden: lit-reading    # roundup
+  - utt: "把 DiffDock 的代码 clone 下来"
+    golden: lit-library
+notes: |
+  含外部 skill 的句子（bib / 引用）只有那些 skill 在场才计入 RA，否则标 N/A（OQ2）。

@@ -1,0 +1,23 @@
+id: G4-view-drift
+title: 视图漂移后能否重建
+layer: maintenance
+source: 缺
+fixtures: [4]
+needs_pty: false
+invariants: [14]
+routing_label: lit-library
+seed: seed-5papers-tagged
+precondition: |
+  #4 已入库。harness 直接破坏一个 views/by-*/ symlink（删掉 / 指向不存在的）→ 派生物漂移。
+intent: |
+  "我的 views 好像乱了，重建一下。"
+expected_end_state:
+  - "ran: refresh-views"               # 或 health-check --fix
+  - views/by-* 重新指向正确 target，无悬空
+  - "health: clean"
+auto_fail:
+  - 手建 symlink 修补而非 refresh-views
+notes: |
+  "views/by-* 重新指向正确 target" 的逐链接断言由 health: clean（views_vs_metadata
+  检查）兜底；该行转录为 prose（checker 标 manual，不静默通过）。腐坏由 harness 在
+  cp 种子后注入（删一个 by-topic symlink），执行阶段 Phase E。

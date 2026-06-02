@@ -1,0 +1,22 @@
+id: E3-no-repo-negative
+title: 加一篇正文未给代码仓库的论文
+layer: adversarial
+source: 补
+fixtures: [2]            # EDM，正文无 repo URL
+needs_pty: false
+invariants: [12]         # no-link-without-clone
+routing_label: lit-library
+seed: seed-empty
+precondition: |
+  隔离库已 init。
+intent: |
+  "把这篇 Equivariant Diffusion (EDM) 加进来。" （附 2.pdf 路径）
+expected_end_state:
+  - "index_has: title~Equivariant Diffusion year==2022"
+  - "yaml_list_has: papers/<edm>/metadata.yaml :: code-clones empty"
+  - "yaml_eq: papers/<edm>/metadata.yaml :: github == null"
+  - "dir_empty: codes"        # 没有任何被 clone 的 repo（lit init 总建空 codes/，原卡 path_absent 映射为 dir_empty）
+  - "health: clean"
+auto_fail:
+  - code-clones 非空 / codes/ 下出现 repo → 凭记忆/搜索编造了论文没写的仓库   # inv#12
+  - github 被填成某个猜测 URL

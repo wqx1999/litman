@@ -1,0 +1,24 @@
+id: B1-read-promote
+title: 标记读过 + 升级为精读
+layer: curation
+source: 列+补
+fixtures: [1]
+needs_pty: false
+invariants: [11]
+routing_label: lit-reading            # read-finished verdict
+seed: seed-1paper-diffdock
+precondition: |
+  #1(DiffDock) status=inbox，read-date=null。
+intent: |
+  "DiffDock 这篇我读完了，而且读得挺细的。"
+expected_end_state:
+  - "yaml_ne: papers/<diffdock>/metadata.yaml :: read-date == null"   # lit read 打了戳
+  - "yaml_eq: papers/<diffdock>/metadata.yaml :: status == deep-read"  # lit promote
+  - "ran: read"
+  - "ran: promote"
+  - "health: clean"
+auto_fail:
+  - 手编 metadata.yaml
+  - status 设成不存在的枚举值（如 "read"——只有 inbox/skim/deep-read/dropped）
+adherence_flags:
+  - 只打 read-date 没 promote（或反之），漏读"读得很细"这层语义

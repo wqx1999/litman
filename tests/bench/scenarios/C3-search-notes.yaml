@@ -1,0 +1,21 @@
+id: C3-search-notes
+title: 在自己写的笔记里找东西
+layer: retrieval
+source: 补
+fixtures: [1]
+needs_pty: false
+invariants: [10]
+routing_label: lit-reading
+seed: seed-1paper-diffdock
+precondition: |
+  #1 的 notes.md / discussion.md 写过 "focal loss"。
+intent: |
+  "我之前在笔记里写过 focal loss 的事吗？在哪篇？"
+expected_end_state:
+  - "ran: search"                      # lit search "focal loss"
+  - 定位到 #1
+auto_fail:
+  - grep -r vault 而非 lit search
+  - 把 PDF 全文 / trash 当搜索范围（lit search 只搜 notes/discussion）
+notes: |
+  "定位到 #1" 是 stdout 内容断言，转录为 prose（checker 标 manual，不静默通过）。
