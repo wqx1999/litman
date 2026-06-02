@@ -1,7 +1,17 @@
-<h1 align="center">LITerature MANager <img src="assets/logo1.png" width="60" align="bottom"/></h1>
+<h1>LITerature MANager <img src="assets/logo1.png" width="90" align="right"/></h1>
+
+<br clear="all"/>
 
 <div align="center">
-  <img src="assets/logo2.svg" width="55%"/>
+
+<img src="assets/logo2.svg" width="58%" alt="LITMAN"/>
+
+<p>
+<img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
+<img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
+<img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha"/>
+</p>
+
 </div>
 
 **Local-first, AI-augmented literature management CLI.**
