@@ -1,9 +1,7 @@
-<img align="right" src="assets/logo1.png" width="110"/>
-
-### LITerature MANager
-
 <div align="center">
-  <img src="assets/logo2.svg" width="60%"/>
+<img src="assets/logo1.png" width="90"/>&nbsp;&nbsp;<img src="assets/logo2.svg" width="55%"/>
+<br/><br/>
+<b>LITerature MANager</b>
 </div>
 
 **Local-first, AI-augmented literature management CLI.**
