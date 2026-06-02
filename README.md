@@ -1,3 +1,5 @@
+<img align="right" src="assets/logo1.png" width="160"/>
+
 # LITerature MANager
 
 <img src="assets/logo2.svg" width="100%"/>
@@ -9,8 +11,6 @@ disk. Papers link explicitly to projects, code repositories, and each other
 through structured metadata and symlinks. Bundled Claude Code skills let an
 AI agent operate the CLI on your behalf; every command works equally well
 typed by hand.
-
-<img align="right" src="assets/logo1.png" width="120"/>
 
 ---
 
