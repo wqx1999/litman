@@ -625,8 +625,14 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     timestamps. Output is a small table the user can eyeball at a glance.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    target, _patterns, _default_exclude = _require_sync_configured(vault)
-    report = compute_status(vault, target)
+    target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    # Mirror the push exclude set so the local count matches what rclone
+    # transfers. Without this, `exclude_repos` users see a permanent false
+    # "out of sync" delta: push excludes codes/*/repo/, status counted it.
+    extra_excludes = (
+        codes_ignore_patterns_to_rclone(codes_patterns) if default_exclude else ()
+    )
+    report = compute_status(vault, target, extra_excludes=extra_excludes)
 
     table = Table(
         title=f"lit sync status — {target}",

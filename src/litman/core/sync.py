@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -218,6 +220,60 @@ def remote_size(target_url: str) -> Size:
     )
 
 
+def _rclone_glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Translate one rclone ``--exclude`` glob into an anchored full-match regex.
+
+    Mirrors the subset of rclone filter syntax litman emits: ``**`` matches
+    across path separators (recursive); ``*`` and ``?`` stay within a single
+    path segment; everything else is matched literally. This is the precise
+    glob the earlier ``rel.parts[0]`` over-approximation failed to honour for
+    multi-segment patterns such as ``codes/*/repo/**`` (where the first
+    segment is always ``codes``, never the full glob).
+    """
+    out: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if pattern[i : i + 2] == "**":
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _compile_exclude_matcher(
+    excludes: tuple[str, ...],
+) -> Callable[[Path], bool]:
+    """Build a predicate `excluded(rel)` for a vault-relative path.
+
+    A bare basename (no ``/``) excludes a file of that name at any depth,
+    matching rclone's default ``--exclude`` behaviour. Any pattern containing
+    ``/`` is compiled to a full-path glob (via :func:`_rclone_glob_to_regex`)
+    so multi-segment globs like ``codes/*/repo/**`` actually match the files
+    rclone would skip, instead of silently passing through.
+    """
+    basenames = frozenset(p for p in excludes if "/" not in p)
+    regexes = [_rclone_glob_to_regex(p) for p in excludes if "/" in p]
+
+    def excluded(rel: Path) -> bool:
+        if rel.name in basenames:
+            return True
+        rel_posix = rel.as_posix()
+        return any(rx.match(rel_posix) for rx in regexes)
+
+    return excluded
+
+
 def local_vault_size(
     vault: Path,
     excludes: tuple[str, ...] = DEFAULT_EXCLUDES,
@@ -230,25 +286,12 @@ def local_vault_size(
             files to *count*; the actual transfer applies the same patterns
             via ``rclone --exclude``.
 
-    Excludes are matched naively against the relative POSIX path: a pattern
-    of the form ``X/**`` drops everything under ``X/``; a bare basename
-    (no ``/``) drops files at any depth matching that name. Good enough for
-    our two default patterns; more complex glob (e.g. ``codes/*/repo/**``)
-    is routed through rclone proper rather than re-implementing glob here.
+    Excludes are matched against the relative POSIX path with the same glob
+    semantics rclone uses (see :func:`_compile_exclude_matcher`), so the count
+    stays consistent with what ``rclone --exclude`` transfers — including
+    multi-segment globs like ``codes/*/repo/**``.
     """
-    drop_prefixes: list[str] = []
-    drop_basenames: list[str] = []
-    for pat in excludes:
-        if pat.endswith("/**"):
-            # Directory-recursive: take the literal directory name.
-            drop_prefixes.append(pat[:-3].rstrip("/"))
-        elif "/" in pat:
-            # Multi-segment pattern — drop on first-segment match (loose
-            # over-approximation; the precise filter is rclone's job).
-            drop_prefixes.append(pat.split("/", 1)[0])
-        else:
-            # Bare basename — match at any depth.
-            drop_basenames.append(pat)
+    excluded = _compile_exclude_matcher(excludes)
 
     count = 0
     total = 0
@@ -256,10 +299,7 @@ def local_vault_size(
         if not path.is_file():
             continue
         rel = path.relative_to(vault)
-        top = rel.parts[0] if rel.parts else ""
-        if top in drop_prefixes:
-            continue
-        if rel.name in drop_basenames:
+        if excluded(rel):
             continue
         try:
             total += path.stat().st_size
@@ -283,25 +323,14 @@ def largest_files(
     Walk + exclude semantics match ``local_vault_size`` to keep the two
     views consistent — what gets counted is exactly what gets transferred.
     """
-    drop_prefixes: list[str] = []
-    drop_basenames: list[str] = []
-    for pat in excludes:
-        if pat.endswith("/**"):
-            drop_prefixes.append(pat[:-3].rstrip("/"))
-        elif "/" in pat:
-            drop_prefixes.append(pat.split("/", 1)[0])
-        else:
-            drop_basenames.append(pat)
+    excluded = _compile_exclude_matcher(excludes)
 
     found: list[tuple[Path, int]] = []
     for path in vault.rglob("*"):
         if not path.is_file():
             continue
         rel = path.relative_to(vault)
-        top = rel.parts[0] if rel.parts else ""
-        if top in drop_prefixes:
-            continue
-        if rel.name in drop_basenames:
+        if excluded(rel):
             continue
         try:
             sz = path.stat().st_size

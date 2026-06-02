@@ -265,6 +265,94 @@ def test_local_vault_size_excludes_views(vault: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bug 5 — exclude-matching honours multi-segment globs (codes/*/repo/**)
+# ---------------------------------------------------------------------------
+
+
+def _seed_codes_repo_file(
+    vault: Path, repo: str = "foo", body: str = "B" * 999
+) -> Path:
+    """Drop a file inside ``codes/<repo>/repo/`` — the checkout directory that
+    ``sync.exclude_repos`` filters out. Returns the file path."""
+    repo_dir = vault / "codes" / repo / "repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    f = repo_dir / "big.bin"
+    f.write_text(body, encoding="utf-8")
+    return f
+
+
+def test_compile_exclude_matcher_codes_repo_glob() -> None:
+    """``codes/*/repo/**`` excludes everything under any checkout dir but not
+    the repo-meta.yaml / notes.md siblings — the precise match the old
+    ``rel.parts[0]`` over-approximation failed (top is always ``codes``)."""
+    from litman.core.sync import _compile_exclude_matcher
+
+    excluded = _compile_exclude_matcher(("codes/*/repo/**",))
+    assert excluded(Path("codes/foo/repo/main.py"))
+    assert excluded(Path("codes/foo/repo/src/deep/x.c"))
+    # siblings of the checkout must survive (they sync to the cloud)
+    assert not excluded(Path("codes/foo/repo-meta.yaml"))
+    assert not excluded(Path("codes/foo/notes.md"))
+    # the <name> segment is mandatory — codes/repo/x has none
+    assert not excluded(Path("codes/repo/x"))
+
+
+def test_compile_exclude_matcher_single_segment_wildcard() -> None:
+    """``*`` (no trailing ``/**``) stays within one path segment; only ``**``
+    crosses separators."""
+    from litman.core.sync import _compile_exclude_matcher
+
+    excluded = _compile_exclude_matcher(("codes/*/foo.cache",))
+    assert excluded(Path("codes/bar/foo.cache"))
+    assert not excluded(Path("codes/bar/baz/foo.cache"))
+
+
+def test_compile_exclude_matcher_bare_basename() -> None:
+    """A pattern without ``/`` matches a file of that name at any depth."""
+    from litman.core.sync import _compile_exclude_matcher
+
+    excluded = _compile_exclude_matcher((".litman-sync-state.yaml",))
+    assert excluded(Path(".litman-sync-state.yaml"))
+    assert excluded(Path("papers/p1/.litman-sync-state.yaml"))
+    assert not excluded(Path("papers/p1/metadata.yaml"))
+
+
+def test_local_vault_size_counts_codes_repo_without_glob(vault: Path) -> None:
+    """Guard: with only DEFAULT_EXCLUDES the checkout file IS counted. This is
+    exactly why a `lit sync status` that drops the codes glob reports a false
+    out-of-sync delta against an exclude_repos push."""
+    baseline = local_vault_size(vault)
+    _seed_codes_repo_file(vault)
+    after = local_vault_size(vault)
+    assert after.count == baseline.count + 1
+
+
+def test_local_vault_size_excludes_codes_repo_with_glob(vault: Path) -> None:
+    """Bug 5 (layer 2): ``codes/*/repo/**`` must actually drop the checkout
+    file from the walk so the count matches what rclone transfers."""
+    baseline = local_vault_size(vault)
+    _seed_codes_repo_file(vault, body="B" * 4096)
+    glob = codes_ignore_patterns_to_rclone(("repo/",))
+    after = local_vault_size(vault, excludes=(*DEFAULT_EXCLUDES, *glob))
+    assert after.count == baseline.count
+    assert after.bytes == baseline.bytes
+
+
+def test_largest_files_excludes_codes_repo_with_glob(vault: Path) -> None:
+    """The size preview must neither list nor total the excluded checkout
+    file when ``exclude_repos`` is in effect."""
+    _seed_paper(vault, "p1", body="small\n")
+    big = _seed_codes_repo_file(vault, body="B" * 5000)
+    rel_big = big.relative_to(vault)
+    glob = codes_ignore_patterns_to_rclone(("repo/",))
+    with_glob = largest_files(vault, n=5, excludes=(*DEFAULT_EXCLUDES, *glob))
+    assert all(rel != rel_big for rel, _ in with_glob)
+    # without the glob the same big file dominates the top-5
+    without = largest_files(vault, n=5)
+    assert any(rel == rel_big for rel, _ in without)
+
+
+# ---------------------------------------------------------------------------
 # SyncState round-trip
 # ---------------------------------------------------------------------------
 
@@ -614,6 +702,25 @@ def test_compute_status_before_push(
     assert report.state.last_push is None
 
 
+def test_compute_status_in_sync_with_exclude_repos(
+    configured_vault: tuple[Path, str],
+) -> None:
+    """Bug 5: a push that excludes codes/*/repo/ and a status that applies the
+    same exclude must agree — no permanent false out-of-sync delta. Without
+    the exclude the local walk would count the checkout file the remote lacks."""
+    vault, target = configured_vault
+    _seed_paper(vault, "p1")
+    _seed_codes_repo_file(vault, body="B" * 4096)
+    extra = codes_ignore_patterns_to_rclone(("repo/",))
+    push(vault, target, extra_excludes=extra)
+    report = compute_status(vault, target, extra_excludes=extra)
+    assert report.file_delta == 0
+    assert report.bytes_delta == 0
+    # cross-check: counting WITHOUT the exclude would (wrongly) show a delta
+    naive = compute_status(vault, target)
+    assert naive.file_delta != 0
+
+
 # ---------------------------------------------------------------------------
 # CLI: lit sync setup
 # ---------------------------------------------------------------------------
@@ -731,6 +838,30 @@ def test_cli_sync_status_reports_delta_when_unpushed(
     result = runner.invoke(cli, ["sync", "status", "--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert "local − remote" in result.output
+
+
+def test_cli_sync_status_exclude_repos_no_false_delta(
+    vault: Path, fake_rclone_env: Path
+) -> None:
+    """Bug 5 (layer 1): with ``sync.exclude_repos: true`` the status command
+    must reuse the push exclude set. Previously it dropped it and reported a
+    permanent ``local − remote`` delta right after a clean exclude_repos push."""
+    target_path = str(fake_rclone_env)
+    write_sync_to_config(
+        vault / "lit-config.yaml",
+        SetupPayload(remote="fake-cloud", path=target_path, exclude_repos=True),
+    )
+    target = f"fake-cloud:{target_path}"
+    _seed_paper(vault, "p1")
+    _seed_codes_repo_file(vault, body="B" * 4096)
+    # Mirror what `lit sync push` does under exclude_repos (core push bypasses
+    # the integrity gate, which is irrelevant to the status-side fix).
+    push(vault, target, extra_excludes=codes_ignore_patterns_to_rclone(("repo/",)))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["sync", "status", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "in sync" in result.output
+    assert "local − remote" not in result.output
 
 
 def test_cli_sync_push_without_setup_errors(
