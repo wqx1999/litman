@@ -35,5 +35,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# litman-bench downloaded fixture PDFs (copyrighted preprints — fetched, never committed)
-tests/bench/fixtures/
+# litman-bench downloaded fixture PDFs (copyrighted — fetched, never committed).
+# Only the PDFs are ignored; fixtures/golden/*.json (extraction ground truth) IS tracked.
+tests/bench/fixtures/pdfs/

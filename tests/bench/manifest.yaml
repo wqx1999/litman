@@ -119,9 +119,9 @@ papers:
     doi: "10.1371/journal.pcbi.1013622"
     title: "Multi-feature fusion network with marginal focal dice loss for multi-label therapeutic peptide prediction"
     year: 2025
-    first_author: "Mao Y"          # EuropePMC initial form; full given name read from the PDF at golden-JSON time
+    first_author: "Yijun Mao"
     n_authors: 9
-    code_repo: null                # verify against the paper's Data/Code Availability statement at golden-JSON time
+    code_repo: "https://github.com/CodeRookie6/MFTP_MFFP"   # stated in the Data availability statement
     url: "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1013622&type=printable"
     test_role: "doi-only (no arXiv id); many-author (9) list parsing; therapeutic-peptide predictor (user domain); PLOS printable = reliable single-GET fetch"
 
@@ -131,8 +131,8 @@ papers:
     doi: "10.1371/journal.pcbi.1013833"
     title: "A novel generative framework for designing pathogen-targeted antimicrobial peptides with programmable physicochemical properties"
     year: 2025
-    first_author: "Zhao W"         # EuropePMC initial form; full given name read from the PDF at golden-JSON time
+    first_author: "Weizhong Zhao"
     n_authors: 6
-    code_repo: null                # verify against the paper's Data/Code Availability statement at golden-JSON time
+    code_repo: null                # no code repo on page 1 (Data availability statement not visible there)
     url: "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1013833&type=printable"
     test_role: "doi-only (no arXiv id); generative AMP design (user domain); PLOS printable = reliable single-GET fetch"
