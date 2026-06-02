@@ -1,4 +1,4 @@
-<h1>LITerature MANager <img src="assets/logo1.png" width="90" align="right"/></h1>
+<h1>LITerature MANager <img src="assets/logo1.png" width="100" align="right"/></h1>
 
 <br clear="all"/>
 
@@ -9,7 +9,7 @@
 <p>
 <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
 <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
-<img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: Alpha"/>
+<img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WSL-lightgrey" alt="Platform: Linux | macOS | WSL"/>
 </p>
 
 </div>
