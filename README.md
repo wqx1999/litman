@@ -1,6 +1,6 @@
-# LITerature MANager
+<img align="right" src="assets/logo1.png" width="110"/>
 
-<img align="right" src="assets/logo1.png" width="180"/>
+# LITerature MANager
 
 <div align="center">
   <img src="assets/logo2.svg" width="60%"/>
