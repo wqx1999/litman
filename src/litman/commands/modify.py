@@ -24,7 +24,6 @@ lands in M2.5 — until then, --add-tag silently records arbitrary values.
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +35,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
 from litman.core.correctors import reconcile_derived
+from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
@@ -94,10 +94,6 @@ RELATION_TAG_FIELDS: frozenset[str] = frozenset(RELATION_PAIRS) - REVERSE_REF_FI
 # Fields a user may name in --add-tag / --rm-tag: every list field except
 # the reverse relation fields.
 USER_TAG_FIELDS: frozenset[str] = LIST_FIELDS - REVERSE_REF_FIELDS
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _parse_kv(spec: str, flag_name: str) -> tuple[str, str]:
@@ -453,7 +449,7 @@ def _apply_modify(
         )
         return False
 
-    new_updated_at = _now_iso()
+    new_updated_at = now_iso()
     old_updated_at = metadata.get("updated-at")
     metadata["updated-at"] = new_updated_at
 
@@ -471,7 +467,7 @@ def _apply_modify(
     all_papers.append(dict(metadata))
     for opp_meta in opposite_writes.values():
         all_papers.append(dict(opp_meta))
-    index_json = render_index(all_papers, _now_iso())
+    index_json = render_index(all_papers, now_iso())
 
     rel_meta = f"papers/{paper_id}/metadata.yaml"
     with staged_write(vault, op_id=f"modify-{paper_id}") as stage:

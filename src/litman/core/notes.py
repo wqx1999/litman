@@ -60,7 +60,11 @@ def enumerate_markdown_files(vault: Path) -> Iterable[Path]:
     """
     papers_dir = vault / "papers"
     if papers_dir.is_dir():
-        for child in papers_dir.iterdir():
+        # sorted() makes the yield order deterministic (paper id ascending,
+        # then notes.md before discussion.md). Every caller — search,
+        # rename, rm, trash, health-check — relies on a stable order for
+        # reproducible output; iterdir() alone yields arbitrary OS order.
+        for child in sorted(papers_dir.iterdir()):
             if child.is_dir():
                 for name in ("notes.md", "discussion.md"):
                     md = child / name

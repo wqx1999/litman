@@ -194,10 +194,11 @@ def _as_date(raw: Any) -> date | None:
     help="Sort order. 'id' = ascending by paper id (default, stable, "
          "matches INDEX.json). 'recent' = most-recently-engaged first "
          "(max of paper.pdf mtime and updated-at); the table view shows "
-         "only the top 10, use --format json for the full ranked list.",
+         "the top 10 by default (raise with --limit), use --format json "
+         "for the full ranked list.",
 )
 @click.option(
-    "--limit", type=int, default=None,
+    "--limit", type=click.IntRange(min=1), default=None,
     help="Keep only the first N papers after filtering + sorting. Applies to "
          "both --format table and json (bounded retrieval / top-N).",
 )
@@ -324,11 +325,15 @@ def list_cmd(
             )
         return
 
-    # Truncate to the top-N for table display when sorted by recency. The
-    # underlying ``filtered`` list is mutated *after* the JSON branch has
-    # already returned, so JSON output stays full-length for agents.
-    truncated = sort_by == "recent" and n_matched > _RECENT_TABLE_CAP
-    if truncated:
+    # Table display only: with --sort recent and NO explicit --limit, cap the
+    # visible rows at _RECENT_TABLE_CAP so the terminal isn't flooded (the JSON
+    # branch already returned full-length above). An explicit --limit is the
+    # user's own bound and takes precedence — never silently shrink it to the
+    # cap, and never label the title with the cap when --limit set the count.
+    recent_capped = (
+        sort_by == "recent" and limit is None and n_matched > _RECENT_TABLE_CAP
+    )
+    if recent_capped:
         filtered = filtered[:_RECENT_TABLE_CAP]
         title = f"Papers (recent {_RECENT_TABLE_CAP} of {n_matched})"
     elif limit is not None and limit < n_matched:

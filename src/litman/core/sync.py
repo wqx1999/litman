@@ -28,12 +28,12 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
 
+from litman.core.dates import now_iso
 from litman.core.locking import ensure_truth_locked
 from litman.exceptions import SyncError
 
@@ -65,11 +65,6 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.default_flow_style = False
-
-
-def _now_iso() -> str:
-    """Local-timezone ISO 8601 timestamp with seconds precision."""
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +419,7 @@ def stamp_push(vault: Path) -> None:
     state = read_sync_state(vault)
     write_sync_state(
         vault,
-        SyncState(last_push=_now_iso(), last_pull=state.last_pull),
+        SyncState(last_push=now_iso(), last_pull=state.last_pull),
     )
 
 
@@ -433,7 +428,7 @@ def stamp_pull(vault: Path) -> None:
     state = read_sync_state(vault)
     write_sync_state(
         vault,
-        SyncState(last_push=state.last_push, last_pull=_now_iso()),
+        SyncState(last_push=state.last_push, last_pull=now_iso()),
     )
 
 

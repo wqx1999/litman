@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import io
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +70,7 @@ from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
+from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -96,10 +96,6 @@ _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.preserve_quotes = True
 _yaml.default_flow_style = False
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -439,7 +435,7 @@ def rm_cmd(
             console.print("[dim]Aborted. No changes made.[/]")
             return
 
-    now = _now_iso()
+    now = now_iso()
     registry = load_config(vault).projects
 
     # ----- Build cascade updates (always; teardown is the default now) -----
@@ -483,9 +479,13 @@ def rm_cmd(
                 f"[dim]{escape(', '.join(sorted(touched_ref_ids)))}[/]"
             )
         if cascade_repo_updates:
+            # Keys are vault-relative paths (codes/<repo>/repo-meta.yaml);
+            # show the bare repo name to match the post-commit message and the
+            # orphan_repos line above.
+            repo_names = sorted(k.split("/")[1] for k in cascade_repo_updates)
             console.print(
                 "  Would unbind from repos (still bound by others): "
-                f"[dim]{escape(', '.join(sorted(cascade_repo_updates)))}[/]"
+                f"[dim]{escape(', '.join(repo_names))}[/]"
             )
         if orphan_repos:
             console.print(

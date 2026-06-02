@@ -27,6 +27,7 @@ half-update footgun); see ``commands/taxonomy.py``.
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.correctors import reconcile_derived
+from litman.core.dates import now_iso
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_refs import (
@@ -63,12 +65,6 @@ _yaml.preserve_quotes = True
 _yaml.default_flow_style = False
 
 _PROJECTS_DICT = "projects"
-
-
-def _now_iso() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _dump_config_yaml(config_map: dict[str, Any]) -> str:
@@ -113,7 +109,7 @@ def project_group() -> None:
 
 # Reused option blocks — keep the --library / --vault shape identical to
 # every other litman command.
-def _library_option(fn):
+def _library_option(fn: Callable[..., Any]) -> Callable[..., Any]:
     return click.option(
         "--library",
         type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
@@ -123,7 +119,7 @@ def _library_option(fn):
     )(fn)
 
 
-def _vault_option(fn):
+def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
     return click.option(
         "--vault",
         "vault_name",
@@ -347,7 +343,7 @@ def project_rename_cmd(
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
         vault, _PROJECTS_DICT, {old: new}, rename_relevance=True
     )
-    fresh_index = render_index(all_papers, _now_iso())
+    fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"project-rename-{old}") as stage:
         stage.write_text("TAXONOMY.md", new_taxonomy_text)
@@ -544,7 +540,7 @@ def project_rm_cmd(
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
         vault, _PROJECTS_DICT, name, drop_relevance=True
     )
-    fresh_index = render_index(all_papers, _now_iso())
+    fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"project-rm-{name}") as stage:
         stage.write_text("TAXONOMY.md", new_taxonomy_text)

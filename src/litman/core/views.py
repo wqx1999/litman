@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from litman.core.dates import now_iso
 from litman.core.portable_link import make_relative_symlink
 
 # Views whose tag values come from a list-typed metadata field.
@@ -78,11 +79,6 @@ def _date_to_iso(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     return value
-
-
-def _now_iso() -> str:
-    """Local-timezone ISO 8601 timestamp with seconds precision."""
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _safe_name(value: str) -> str:
@@ -167,9 +163,17 @@ def render_index(papers: list[dict[str, Any]], timestamp: str) -> str:
 
 
 def write_index(vault: Path, papers: list[dict[str, Any]]) -> Path:
-    """Write the rendered INDEX.json to ``<vault>/INDEX.json`` and return its path."""
+    """Write the rendered INDEX.json to ``<vault>/INDEX.json`` and return its path.
+
+    Uses a tmp-file + ``os.replace`` rename (same pattern as
+    ``sync.write_sync_state`` / ``vault_registry``) so a crash mid-write never
+    leaves a half-written INDEX.json behind — a corrupt INDEX would break
+    ``lit list`` / ``lit show`` / ``lit search`` and every agent workflow.
+    """
     target = vault / "INDEX.json"
-    target.write_text(render_index(papers, _now_iso()), encoding="utf-8")
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(render_index(papers, now_iso()), encoding="utf-8")
+    tmp.replace(target)
     return target
 
 
@@ -245,11 +249,15 @@ def rewrite_index_dropping_ids(vault: Path, dead_ids: set[str]) -> int:
     payload["papers"] = kept
     payload["n_papers"] = len(kept)
     payload["by_doi"] = by_doi
-    payload["generated_at"] = _now_iso()
-    target.write_text(
+    payload["generated_at"] = now_iso()
+    # tmp-file + rename: same crash-safety as write_index (a half-written
+    # INDEX would break every read path + the Tier-1 drift hook).
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    tmp.replace(target)
     return n_dropped
 
 

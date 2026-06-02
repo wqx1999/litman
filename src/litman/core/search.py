@@ -53,6 +53,12 @@ def search_notes(
         file then line number (the deterministic order
         :func:`enumerate_markdown_files` yields).
     """
+    # An empty / whitespace-only needle would match every line (``"" in s``
+    # is always True), turning ``lit search ""`` into a whole-vault dump and
+    # breaking the bounded-retrieval contract (ADR-007). Enumeration over the
+    # vault is the caller's job (``lit list``), not search's.
+    if not query.strip():
+        return []
     needle = query.lower() if case_insensitive else query
     hits: list[dict[str, Any]] = []
     for md_path in enumerate_markdown_files(vault):
@@ -60,7 +66,13 @@ def search_notes(
         if file_stem not in in_files:
             continue
         paper_id = md_path.parent.name
-        text = md_path.read_text(encoding="utf-8")
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # One corrupt / non-UTF-8 / vanished file must not abort the
+            # whole search — skip it, mirroring list_papers' tolerance. The
+            # corrupt-file finding is owned by `lit health-check`.
+            continue
         for lineno, raw_line in enumerate(text.splitlines(), start=1):
             haystack = raw_line.lower() if case_insensitive else raw_line
             if needle in haystack:

@@ -467,7 +467,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit pdf-text <pdf> [--pages 1-3]` | Dump PDF text layer (deterministic read fallback, [A] step 1) |
 | `lit list [filters] [--title <substr>] [--limit N] [--format json]` | Browse ([D]); `--title` = title substring, `--limit` = top-N |
 | `lit show <id-or-substring> [--format json]` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported); `--format json` = full field set |
-| `lit search <query> [--in notes,discussion]` | Search free-form notes / discussion (read-only); routes to lit-reading territory but usable here |
+| `lit search <query> [--in notes,discussion] [--limit N]` | Search free-form notes / discussion (read-only); `--limit` = first N hits; routes to lit-reading territory but usable here |
 | `lit related <id> [--by edges\|taxonomy]` | Knowledge-graph neighbours (read-only); routes to lit-reading territory but usable here |
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields / tag ([E]) |
 | `lit read / revisit / drop / promote / skim <id>` | Status & date sugar ([E]) |

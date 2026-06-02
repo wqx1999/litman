@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +37,7 @@ from ruamel.yaml import YAML
 
 from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
+from litman.core.dates import now_iso
 from litman.core.dedup import (
     auto_suffix_id,
     canonicalize_doi,
@@ -59,11 +59,6 @@ _yaml.default_flow_style = False
 _yaml.preserve_quotes = True
 
 
-def _now_iso() -> str:
-    """Local-timezone ISO 8601 timestamp with seconds precision."""
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
 def _build_metadata(
     parsed: dict[str, Any],
     paper_id: str,
@@ -78,7 +73,7 @@ def _build_metadata(
     maintained); ``read-date`` and ``last-revisited`` are semantic (user-set).
     Never merge the two.
     """
-    timestamp = now or _now_iso()
+    timestamp = now or now_iso()
     return {
         # === identity layer (auto from CrossRef) ===
         "id": paper_id,

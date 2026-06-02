@@ -30,6 +30,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import click
+
 from litman.core.dedup import find_paper_by_doi
 from litman.core.library import find_vault
 from litman.exceptions import LitmanError, PaperNotFoundError
@@ -162,7 +164,9 @@ def resolve_paper_input(
     return resolve_paper_id(vault, paper_id)
 
 
-def complete_paper_id(ctx, param, incomplete: str) -> list[str]:
+def complete_paper_id(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[str]:
     """Click ``shell_complete`` callback for paper-id inputs.
 
     Returns the list of paper ids in the active vault that start with

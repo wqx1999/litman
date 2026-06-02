@@ -49,6 +49,7 @@ from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.dates import now_iso
 from litman.core.document import list_papers
 from litman.core.notes import (
     deannotate_deleted_wikilinks,
@@ -148,11 +149,6 @@ def _utc_compact_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _now_iso() -> str:
-    """Local-timezone ISO 8601 with seconds precision (sidecar's deleted_at)."""
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
 def _trash_dir(vault: Path) -> Path:
     return vault / TRASH_DIRNAME
 
@@ -239,7 +235,7 @@ def move_to_trash(
     title = _read_paper_title(src)
     sidecar_payload: dict[str, Any] = {
         "paper_id": paper_id,
-        "deleted_at": _now_iso(),
+        "deleted_at": now_iso(),
         "title": title,
         "orphan_repos": dict(orphan_repos or {}),
     }
@@ -585,7 +581,7 @@ def restore_from_trash(
     # Read A's sealed metadata from the trash entry BEFORE moving, then prune
     # dead edges on this in-memory copy and re-stage it to the live path.
     sealed_meta = _read_paper_meta(entry.entry_path)
-    now = _now_iso()
+    now = now_iso()
 
     # Build the in-transaction writes while A is still in trash.
     ref_writes, reverse_rebuilt, dead_edges = _build_restore_ref_updates(
@@ -679,7 +675,13 @@ def restore_from_trash(
 
 
 def empty_trash(vault: Path) -> int:
-    """Permanently delete every trash entry and sidecar. Returns count.
+    """Permanently delete every trash entry and sidecar. Returns entry count.
+
+    Each trash entry is a paper folder plus its ``.meta.yaml`` sidecar (see
+    module docstring), so the directory walk sees two children per entry. The
+    returned count is the number of entry *folders* removed — NOT folders plus
+    sidecars — so it matches the ``len(list_trash(...))`` used in the
+    confirmation prompt rather than reporting double.
 
     Best-effort per entry (mirrors :func:`enforce_cap`): an entry that cannot
     be removed (Windows file lock, permissions) is skipped instead of aborting
@@ -697,9 +699,7 @@ def empty_trash(vault: Path) -> int:
                 child.unlink()
             elif child.is_dir():
                 shutil.rmtree(child)
-            else:
-                continue
-            n += 1
+                n += 1  # count only entry folders, never the sidecars
         except OSError:
             continue
     return n

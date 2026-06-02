@@ -9,7 +9,7 @@ Centralised here so the two commands cannot drift (review F28).
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import click
 
@@ -70,3 +70,15 @@ def validate_iso_date(date_str: str) -> str:
             f"{date_str!r} is not a valid ISO 8601 date (expected YYYY-MM-DD)."
         )
     return date_str
+
+
+def now_iso() -> str:
+    """Local-timezone ISO 8601 timestamp with seconds precision.
+
+    The single source for the machine-maintained ``created-at`` /
+    ``updated-at`` audit stamps and every command's metadata write-back
+    (invariant #11). Centralised here so the formerly per-module ``_now_iso``
+    copies cannot drift. Distinct from ``trash``'s compact
+    ``%Y%m%dT%H%M%SZ`` entry-name stamp, which stays local to that module.
+    """
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")

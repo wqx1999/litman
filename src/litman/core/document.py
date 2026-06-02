@@ -56,6 +56,22 @@ def read_metadata(metadata_path: Path) -> dict[str, Any]:
     return data if data is not None else {}
 
 
+def read_metadata_or_raise(metadata_path: Path) -> dict[str, Any]:
+    """Like :func:`read_metadata`, but turn a read / parse failure on a corrupt
+    or non-UTF-8 file into a path-naming :class:`CorruptMetadataError` instead
+    of a raw ``UnicodeDecodeError`` / ``YAMLError`` traceback.
+
+    For single-paper operations that target one known paper — ``find_paper``,
+    ``lit link`` / ``lit unlink`` — where a friendly, actionable error beats a
+    stack trace. The tolerant skip-and-continue path for enumerating *many*
+    papers stays in :func:`list_papers`, which must not raise on one bad file.
+    """
+    try:
+        return read_metadata(metadata_path)
+    except (OSError, UnicodeDecodeError, YAMLError) as exc:
+        raise CorruptMetadataError(metadata_path, exc) from exc
+
+
 def list_papers(vault: Path) -> list[dict[str, Any]]:
     """Enumerate all valid papers under ``vault/papers/``.
 
@@ -117,4 +133,4 @@ def find_paper(vault: Path, paper_id: str) -> dict[str, Any]:
             f"No paper with id {paper_id!r} in vault {vault}. "
             "Run `lit list` to see available ids."
         )
-    return read_metadata(meta_file)
+    return read_metadata_or_raise(meta_file)

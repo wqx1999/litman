@@ -29,7 +29,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 from litman.core.id import derive_keyword_alternatives
 from litman.exceptions import AddError
@@ -102,9 +102,11 @@ def find_paper_by_doi(
             continue
         try:
             meta = _yaml_safe.load(meta_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, UnicodeDecodeError, YAMLError):
             # Corrupt yaml — let health-check surface it; do not let it mask
-            # a duplicate elsewhere in the vault.
+            # a duplicate elsewhere in the vault. The try only reads + parses,
+            # so these are the only failures possible; any other (programming)
+            # error propagates.
             continue
         if not meta:
             continue

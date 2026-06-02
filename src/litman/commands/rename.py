@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import io
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +44,9 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.correctors import reconcile_derived
+from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
-from litman.core.id import is_valid_id
+from litman.core.id import find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
@@ -67,10 +67,6 @@ _yaml.default_flow_style = False
 # left behind. Wikilink-formatted refs ([[id]]) live in markdown only and
 # are handled separately.
 REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -179,7 +175,28 @@ def rename_cmd(
             "Pick a different id or remove the existing paper first."
         )
 
-    now = _now_iso()
+    # Case-fold collision (ADR-005 / mirrors add.py): two ids differing only
+    # in case coexist on Linux but collapse on Windows / default macOS, so the
+    # vault silently loses one paper when moved between OSes. ``old`` is
+    # excluded from the candidate set so that recasing a paper's own id
+    # (``2023_Pandi`` -> ``2023_pandi``) — a legitimate move, not a duplicate —
+    # is still allowed.
+    existing_ids = [
+        p.name
+        for p in (vault / "papers").iterdir()
+        if p.is_dir() and p.name != old
+    ]
+    case_clash = find_case_fold_collision(existing_ids, new)
+    if case_clash is not None:
+        raise RenameError(
+            f"New id {new!r} differs only in case from existing paper "
+            f"{case_clash!r}. Two ids that case-fold to the same string "
+            "collide on Windows / default macOS filesystems (case-insensitive) "
+            "and the vault loses data when moved between OSes. Pick a "
+            "substantially different id."
+        )
+
+    now = now_iso()
 
     # ----- Build the renamed paper's new metadata content -----
     renamed_meta_path = old_dir / "metadata.yaml"

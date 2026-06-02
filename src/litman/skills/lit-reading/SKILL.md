@@ -343,7 +343,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 |---|---|---|
 | `lit list [--format json] [--topic/--author/--title/--status/--project ...] [--unread] [--sort recent] [--limit N]` | locate / bounded retrieval / resume / triage / roundup; `--title` = title-substring cue, `--limit` = top-N | 1 (read) |
 | `lit show <id> [--format json]` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud; `--format json` returns the FULL field set (all authors, every edge), beyond the INDEX projection | 1 (read) |
-| `lit search <query> [--in notes,discussion]` | the ONLY path to your own free-form notes / discussion ("我在 notes 里写过 X 吗"); returns `{id,file,line,snippet}` per matched line | 1 (read) |
+| `lit search <query> [--in notes,discussion] [--limit N]` | the ONLY path to your own free-form notes / discussion ("我在 notes 里写过 X 吗"); returns `{id,file,line,snippet}` per matched line; `--limit` caps the hit count | 1 (read) |
 | `lit related <id> [--by edges|taxonomy] [--min-shared N]` | knowledge-graph neighbours ("跟这篇相关的还有哪些"): explicit edges first, then shared-topic/method, each with a `via` reason | 1 (read) |
 | `lit vault list` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
 | `lit project list` | canonical source for the registered project set AND each project's path | 1 (read) |

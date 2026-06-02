@@ -40,6 +40,12 @@ _IN_CHOICES = ("notes", "discussion")
     "{id,file,line,snippet}; 'table' renders a human-readable table.",
 )
 @click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Keep only the first N hits (bounded retrieval). Default: unbounded.",
+)
+@click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
     default=None,
@@ -59,6 +65,7 @@ def search_cmd(
     query: str,
     in_files_raw: str,
     output_format: str,
+    limit: int | None,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -67,7 +74,8 @@ def search_cmd(
     Searches only the markdown you author per paper — NOT the PDF full text,
     NOT trashed papers, NOT the views/ symlink hubs. Each hit is one matched
     line. Default output is JSON ({id,file,line,snippet}) for agent bounded
-    retrieval; pass --format table for a human view.
+    retrieval; pass --format table for a human view. --limit N caps the hit
+    count for bounded retrieval.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
@@ -80,6 +88,8 @@ def search_cmd(
         )
 
     hits = search_notes(vault, query, in_files=tuple(in_files))
+    if limit is not None:
+        hits = hits[:limit]
 
     if output_format == "json":
         click.echo(json.dumps(hits, ensure_ascii=False))

@@ -24,13 +24,13 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import staged_write
+from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.views import render_index
 from litman.exceptions import CodeError, PaperNotFoundError
@@ -54,11 +54,6 @@ _yaml.default_flow_style = False
 _yaml.preserve_quotes = True
 
 _yaml_safe = YAML(typ="safe")
-
-
-def _now_iso() -> str:
-    """Local-timezone ISO 8601 timestamp with seconds precision."""
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +353,7 @@ def make_repo_meta(
     remote — nothing fetchable to record). ``restore_missing_repos`` treats
     empty or absent upstream as "cannot restore" and reports it as failed.
     """
-    timestamp = now or _now_iso()
+    timestamp = now or now_iso()
     return {
         # === identity (machine-maintained) ===
         "name": name,
@@ -463,7 +458,7 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
             "Restore the file or re-run `lit code add`."
         )
 
-    now = _now_iso()
+    now = now_iso()
     paper_changed = False
     repo_changed = False
 
@@ -494,7 +489,7 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
             all_papers = [p for p in all_papers if p.get("id") != paper_id]
             all_papers.append(dict(paper_meta))
             stage.write_text(
-                "INDEX.json", render_index(all_papers, _now_iso())
+                "INDEX.json", render_index(all_papers, now_iso())
             )
         if repo_changed:
             stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
@@ -527,7 +522,9 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
             continue
         try:
             meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, UnicodeDecodeError, YAMLError):
+            # The try only reads + parses, so these are the only failures
+            # possible — let any other (programming) error propagate.
             continue
         if not meta:
             continue
@@ -535,7 +532,7 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
         if repo_name not in clones:
             continue
         meta["code-clones"] = [c for c in clones if c != repo_name]
-        meta["updated-at"] = _now_iso()
+        meta["updated-at"] = now_iso()
         affected.append((paper_dir.name, meta))
 
     if not affected:
@@ -546,7 +543,7 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
     all_papers = [p for p in all_papers if p.get("id") not in affected_ids]
     for _pid, m in affected:
         all_papers.append(dict(m))
-    index_json = render_index(all_papers, _now_iso())
+    index_json = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"code-unbind-{repo_name}") as stage:
         for pid, m in affected:
@@ -607,7 +604,9 @@ def list_repos(vault: Path) -> list[dict[str, Any]]:
             continue
         try:
             meta = _yaml_safe.load(meta_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, UnicodeDecodeError, YAMLError):
+            # The try only reads + parses, so these are the only failures
+            # possible — let any other (programming) error propagate.
             continue
         if not isinstance(meta, dict):
             continue
@@ -701,7 +700,7 @@ def bump_repo_updated_at(vault: Path, repo_name: str) -> None:
     meta = load_yaml_or_raise(meta_file, _yaml)
     if meta is None:
         raise CodeError(f"repo-meta.yaml at {meta_file} is empty.")
-    meta["updated-at"] = _now_iso()
+    meta["updated-at"] = now_iso()
     rel = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
     with staged_write(vault, op_id=f"code-update-{repo_name}") as stage:
         stage.write_text(rel, _dump_yaml_to_string(meta))

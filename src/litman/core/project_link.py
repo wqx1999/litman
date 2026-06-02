@@ -28,14 +28,14 @@ from __future__ import annotations
 
 import io
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
-from litman.core.document import list_papers, read_metadata
+from litman.core.dates import now_iso
+from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.portable_link import (
     make_relative_symlink,
     remove_link_if_present,
@@ -58,10 +58,6 @@ _yaml.default_flow_style = False
 class LinkError(LitmanError):
     """``lit link`` / ``lit unlink`` rejected: project not registered,
     project dir missing on disk, or an invariant was violated."""
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -165,7 +161,7 @@ def link_paper_to_project(
             "Run `lit list` to see available ids."
         )
 
-    metadata = read_metadata(paper_meta_path)
+    metadata = read_metadata_or_raise(paper_meta_path)
     projects_list = list(metadata.get("projects") or [])
     added_to_projects = project not in projects_list
     if added_to_projects:
@@ -189,7 +185,7 @@ def link_paper_to_project(
     metadata_changed = added_to_projects or set_relevance
 
     if metadata_changed:
-        metadata["updated-at"] = _now_iso()
+        metadata["updated-at"] = now_iso()
         rel_meta = f"papers/{paper_id}/metadata.yaml"
         # Splice the modified metadata into a fresh full paper list to
         # render INDEX.json without depending on disk state.
@@ -197,7 +193,7 @@ def link_paper_to_project(
             p for p in list_papers(vault) if p.get("id") != paper_id
         ]
         all_papers.append(dict(metadata))
-        index_json = render_index(all_papers, _now_iso())
+        index_json = render_index(all_papers, now_iso())
         with staged_write(vault, op_id=f"link-{paper_id}-{project}") as stage:
             stage.write_text(rel_meta, _dump_yaml_to_string(metadata))
             stage.write_text("INDEX.json", index_json)
@@ -289,7 +285,7 @@ def unlink_paper_from_project(
             "Run `lit list` to see available ids."
         )
 
-    metadata = read_metadata(paper_meta_path)
+    metadata = read_metadata_or_raise(paper_meta_path)
     projects_list = list(metadata.get("projects") or [])
     was_in_projects = project in projects_list
     if was_in_projects:
@@ -308,13 +304,13 @@ def unlink_paper_from_project(
     metadata_changed = was_in_projects or removed_relevance
 
     if metadata_changed:
-        metadata["updated-at"] = _now_iso()
+        metadata["updated-at"] = now_iso()
         rel_meta = f"papers/{paper_id}/metadata.yaml"
         all_papers = [
             p for p in list_papers(vault) if p.get("id") != paper_id
         ]
         all_papers.append(dict(metadata))
-        index_json = render_index(all_papers, _now_iso())
+        index_json = render_index(all_papers, now_iso())
         with staged_write(vault, op_id=f"unlink-{paper_id}-{project}") as stage:
             stage.write_text(rel_meta, _dump_yaml_to_string(metadata))
             stage.write_text("INDEX.json", index_json)

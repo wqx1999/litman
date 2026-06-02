@@ -22,7 +22,6 @@ INDEX.json refresh either all land or none do.
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +34,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
+from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.taxonomy import (
@@ -56,10 +56,6 @@ _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.preserve_quotes = True
 _yaml.default_flow_style = False
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -327,7 +323,7 @@ def taxonomy_rename_cmd(
         vault, field, {old: new}
     )
 
-    fresh_index = render_index(all_papers, _now_iso())
+    fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-rename-{dict_name}") as stage:
         stage.write_text("TAXONOMY.md", new_taxonomy_text)
@@ -469,7 +465,7 @@ def taxonomy_merge_cmd(
         vault, field, replacements
     )
 
-    fresh_index = render_index(all_papers, _now_iso())
+    fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-merge-{dict_name}") as stage:
         stage.write_text("TAXONOMY.md", new_taxonomy_text)
@@ -574,7 +570,7 @@ def taxonomy_rm_cmd(
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
         vault, USER_DICT_TO_METADATA_FIELD[dict_name], value
     )
-    fresh_index = render_index(all_papers, _now_iso())
+    fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-rm-{dict_name}") as stage:
         stage.write_text("TAXONOMY.md", new_text)
@@ -635,7 +631,7 @@ def _ripple_replacements(
     staged: list[tuple[str, str]] = []
     n_changed = 0
     sources = set(replacements.keys())
-    now = _now_iso()
+    now = now_iso()
     # relevance keys to carry over: relevance-<old> → relevance-<new>.
     relevance_renames = (
         {f"relevance-{old}": f"relevance-{new}" for old, new in replacements.items()}
@@ -716,7 +712,7 @@ def _ripple_removals(
     papers = list_papers(vault)
     staged: list[tuple[str, str]] = []
     n_changed = 0
-    now = _now_iso()
+    now = now_iso()
     relevance_key = f"relevance-{value}"
 
     for paper in papers:
