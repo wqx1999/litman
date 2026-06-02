@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Wangq", email = "qingxinwong1999@gmail.com" },
+    { name = "Qingxin Wang", email = "qingxinwong1999@gmail.com" },
 ]
 keywords = ["literature", "bibliography", "papers", "cli", "claude"]
 classifiers = [
