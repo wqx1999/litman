@@ -35,16 +35,3 @@ python fetch_fixtures.py
 so it is safe to re-run. `--check` verifies cached files without touching the
 network. A wrong URL or a silent bot-block HTML page is caught (non-`%PDF-`
 body → hard error; sha256 mismatch → hard error).
-
-## Why these 10, and why no ChemRxiv
-
-The papers are **input material, not the thing under test** — content is
-irrelevant. Each is picked for a test surface: code-repo vs no-repo vs ambiguous
-link, CJK author names, Greek glyphs / apostrophe / accented names in titles,
-single- vs many-author metadata, same-group related papers, cross-version
-title drift. See each entry's `test_role` in `manifest.yaml`.
-
-Sources are **arXiv (8) + bioRxiv (2)** only. ChemRxiv was dropped on purpose:
-its Cloudflare JS challenge cannot be cleared by a headless downloader, which
-would force a manual step and break full automation. arXiv has no bot wall;
-bioRxiv's 403 clears with a browser User-Agent (already set in the fetcher).
