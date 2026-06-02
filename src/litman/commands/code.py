@@ -629,13 +629,20 @@ def code_rm_cmd(
         )
 
     # Find back-references via repo-meta.yaml's papers field. If repo-meta is
-    # missing or unreadable, fall back to scanning papers for code-clones
-    # entries — defensive, since the repo dir is what we are about to delete.
+    # missing or unreadable we cannot know which papers still bind this repo,
+    # so refuse rather than delete blind: a blind delete would silently strand
+    # the paper-side code-clones entries (invariant #12a, no link without
+    # clone) exactly when the refusal guard below is needed most.
     try:
         meta = read_repo_meta(vault, repo_name)
         bound_papers: list[str] = list(meta.get("papers") or [])
-    except CodeError:
-        bound_papers = []
+    except CodeError as e:
+        raise CodeError(
+            f"Cannot read {repo_name!r}'s repo-meta.yaml ({e}). Refusing to "
+            "delete: its paper bindings are unknown and deleting blind would "
+            "leave dangling code-clones references. Fix the repo-meta.yaml "
+            "first, then re-run."
+        ) from e
 
     if bound_papers and not cascade:
         bullet = "\n".join(f"  - {p}" for p in bound_papers)

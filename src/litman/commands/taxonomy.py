@@ -675,8 +675,11 @@ def _ripple_replacements(
                 )
             )
             # Also mutate the safe-loaded copy so the INDEX render reflects
-            # the change without a re-read.
-            paper[field] = list(rt_metadata[field])
+            # the change without a re-read. Use get-or-[] (mirroring :738):
+            # a schema-less paper may carry a stray relevance-<proj> key and
+            # be touched via relevance_renames while never having a `projects`
+            # key, so a direct subscript would KeyError.
+            paper[field] = list(rt_metadata.get(field) or [])
             paper["updated-at"] = now
             n_changed += 1
 
@@ -752,7 +755,10 @@ def _ripple_removals(
                 _dump_yaml_to_string(rt_metadata),
             )
         )
-        paper[field] = list(rt_metadata[field])
+        # get-or-[] (mirroring :738): a stray relevance-<proj> drop touches a
+        # paper that may have no `projects` key, so a direct subscript would
+        # KeyError.
+        paper[field] = list(rt_metadata.get(field) or [])
         paper["updated-at"] = now
         n_changed += 1
 

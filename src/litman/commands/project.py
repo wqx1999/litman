@@ -45,6 +45,7 @@ from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.project_link import CODE_SUBDIR
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
@@ -567,6 +568,17 @@ def project_rm_cmd(
             refs = literature_dir / REFERENCES_FILENAME
             if refs.exists():
                 refs.unlink()
+        # Symmetric teardown of litman_code/ (parallel to rm.py's
+        # _teardown_project_links). The project is gone, so every
+        # litman_code/<repo> symlink is an orphan — no shared-lib retention
+        # judgment needed. Without this, those symlinks become permanent
+        # orphans that no later rebuild_all_project_links revisits (the project
+        # is already out of the registry), violating invariant #14.
+        code_dir = project_dir / CODE_SUBDIR
+        if code_dir.is_dir():
+            for child in code_dir.iterdir():
+                if child.is_symlink():
+                    child.unlink()
 
     console.print(
         f"[bold green]✓ Removed[/] project {escape(name)}."

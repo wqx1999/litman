@@ -65,6 +65,54 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         yaml.dump(payload, f)
 
 
+def _write_relevance_orphan(vault: Path, paper_id: str, project: str) -> None:
+    """Write a schema-less paper carrying a stray ``relevance-<project>`` key
+    but NO ``projects`` key at all.
+
+    This is the hand-edit / legacy-migration orphan that invariant #7 permits
+    (a missing field means "this dimension does not apply"). It reproduces the
+    ``KeyError: 'projects'`` that ``_ripple_removals`` / ``_ripple_replacements``
+    raised before the bug-report 2026-06-02_3 #4 fix: the paper is pulled into
+    the ripple loop by its stray relevance key, but the ``projects`` key is
+    never fabricated, so the post-change ``rt_metadata[field]`` subscript blew
+    up. Mirrors ``_write_paper`` minus the ``projects`` key, plus the relevance
+    annotation.
+    """
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "id": paper_id,
+        "title": paper_id,
+        "authors": ["Doe, Jane"],
+        "year": 2024,
+        "journal": "Test J.",
+        "doi": f"10.0/{paper_id}",
+        "arxiv-id": None,
+        "github": None,
+        "created-at": "2026-04-28T10:00:00+02:00",
+        "updated-at": "2026-04-28T10:00:00+02:00",
+        # NOTE: deliberately NO "projects" key — that is the whole point.
+        f"relevance-{project}": "high",
+        "topics": [],
+        "methods": [],
+        "data": [],
+        "type": "research",
+        "status": "inbox",
+        "priority": "B",
+        "read-date": None,
+        "last-revisited": None,
+        "related": [],
+        "contradicts": [],
+        "extends": [],
+        "code-clones": [],
+    }
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.default_flow_style = False
+    with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(payload, f)
+
+
 @pytest.fixture
 def vault(tmp_path: Path) -> Path:
     return create_vault(tmp_path)
@@ -659,3 +707,52 @@ def test_project_help_lists_five_subcommands() -> None:
     assert result.exit_code == 0
     for sub in ("add", "list", "rename", "set-path", "rm"):
         assert sub in result.output
+
+
+# ---------------------------------------------------------------------------
+# Regression: stray relevance key with no `projects` key (bug-report
+# 2026-06-02_3 #4) — project rm / rename must not KeyError on the orphan.
+# ---------------------------------------------------------------------------
+
+
+def test_project_rm_relevance_orphan_without_projects_key_no_crash(
+    vault: Path, proj_dir: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_relevance_orphan(vault, "2024_A", "pepforge")
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    # The stray relevance is dropped; no `projects` key was ever fabricated.
+    meta = _meta(vault, "2024_A")
+    assert "relevance-pepforge" not in meta
+
+
+def test_project_rename_relevance_orphan_without_projects_key_no_crash(
+    vault: Path, proj_dir: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_relevance_orphan(vault, "2024_A", "pepforge")
+
+    result = runner.invoke(
+        cli,
+        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    # The stray relevance is carried old -> new, never stranded.
+    meta = _meta(vault, "2024_A")
+    assert "relevance-pepforge" not in meta
+    assert meta.get("relevance-pepcodec") == "high"

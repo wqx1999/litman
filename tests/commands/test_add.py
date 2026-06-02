@@ -198,6 +198,43 @@ def test_add_writes_metadata_yaml_correctly(
     assert metadata["code-clones"] == []
 
 
+def test_add_llm_json_persists_arxiv_id(
+    vault: Path,
+    fake_pdf: Path,
+    tmp_path: Path,
+) -> None:
+    # Regression (bug-report 2026-06-02_3 #1): a no-DOI preprint added via the
+    # LLM-JSON path had its arxiv-id silently dropped at _build_metadata (the
+    # field was hardcoded None instead of read from the parsed dict), so the
+    # exported BibTeX entry lost its only locator. The arxiv-id the LLM
+    # extracts from the PDF must land in metadata.yaml. (LLM path, no mock.)
+    runner = CliRunner()
+    j = tmp_path / "preprint.json"
+    j.write_text(
+        json.dumps({
+            "title": "A peptide preprint",
+            "authors": ["Chen, Yi"],
+            "year": 2024,
+            "arxiv-id": "2401.12345",
+        }),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j),
+         "--id", "2024_preprint", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    yaml = YAML(typ="safe")
+    metadata = yaml.load(
+        (vault / "papers" / "2024_preprint" / "metadata.yaml").read_text()
+    )
+    assert metadata["arxiv-id"] == "2401.12345"
+    # No DOI on this preprint: arxiv-id is the sole locator.
+    assert metadata["doi"] in ("", None)
+
+
 def test_add_id_override(
     vault: Path,
     fake_pdf: Path,

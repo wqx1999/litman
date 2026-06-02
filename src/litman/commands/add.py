@@ -82,7 +82,7 @@ def _build_metadata(
         "year": parsed.get("year"),
         "journal": parsed.get("journal", ""),
         "doi": parsed.get("doi", ""),
-        "arxiv-id": None,
+        "arxiv-id": parsed.get("arxiv-id"),
         "github": None,
         # M12.0 bib-oriented fields. Schema-less: empty string = "not
         # applicable to this paper" (a preprint typically has no volume /
