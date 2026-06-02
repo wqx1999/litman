@@ -1,8 +1,8 @@
-<img align="right" src="assets/logo1.png" width="80"/>
+<img align="right" src="assets/logo1.png" width="200"/>
 
 # LITerature MANager
 
-<img src="assets/logo2.svg" width="360"/>
+<img src="assets/logo2.svg" width="100%"/>
 
 **Local-first, AI-augmented literature management CLI.**
 
@@ -11,8 +11,6 @@ disk. Papers link explicitly to projects, code repositories, and each other
 through structured metadata and symlinks. Bundled Claude Code skills let an
 AI agent operate the CLI on your behalf; every command works equally well
 typed by hand.
-
----
 
 ## Know before you use
 
