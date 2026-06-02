@@ -1,6 +1,6 @@
 # litman-bench fixture manifest (v0 draft)
 #
-# 10 open-access preprints used as INPUT material for the agent-driven scenario
+# 10 open-access papers used as INPUT material for the agent-driven scenario
 # suite. They are NOT the subject under test — litman is. Paper content is
 # irrelevant; each is chosen for the test surface it exercises (see test_role).
 #
@@ -10,9 +10,10 @@
 # Byte-level sha256 pins live in the sibling `fixtures.lock` (sha256sum format),
 # generated on the first `--write-lock` run and committed for reproducibility.
 #
-# Sources: 8 arXiv + 2 bioRxiv only. ChemRxiv deliberately excluded — its
-# Cloudflare JS challenge cannot be cleared by a headless downloader, which would
-# force a manual step and break full automation.
+# Sources: 8 arXiv + 2 PLOS Computational Biology (open-access, doi-only). Both
+# bioRxiv and ChemRxiv were excluded — their Cloudflare JS challenge cannot be
+# cleared by a headless downloader, which would force a manual step and break full
+# automation. PLOS serves a static printable PDF over a single GET (no challenge).
 
 papers:
   - id: 1
@@ -113,25 +114,25 @@ papers:
     test_role: "bare α/β glyphs + very long title + apostrophe + space-in-surname; off-domain (encoding stress fixture only)"
 
   - id: 9
-    short: lmpred
-    source: biorxiv
-    doi: "10.1101/2021.11.03.467066"
-    title: "LMPred: Predicting Antimicrobial Peptides Using Pre-Trained Language Models and Deep Learning"
-    year: 2021
-    first_author: "William Dee"
-    n_authors: 1
-    code_repo: "https://github.com/williamdee1/LMPred_AMP_Prediction"
-    url: "https://www.biorxiv.org/content/10.1101/2021.11.03.467066v1.full.pdf"
-    test_role: "single-author metadata; bioRxiv DOI; AMP prediction (user domain)"
+    short: mtl-pep
+    source: plos
+    doi: "10.1371/journal.pcbi.1013622"
+    title: "Multi-feature fusion network with marginal focal dice loss for multi-label therapeutic peptide prediction"
+    year: 2025
+    first_author: "Mao Y"          # EuropePMC initial form; full given name read from the PDF at golden-JSON time
+    n_authors: 9
+    code_repo: null                # verify against the paper's Data/Code Availability statement at golden-JSON time
+    url: "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1013622&type=printable"
+    test_role: "doi-only (no arXiv id); many-author (9) list parsing; therapeutic-peptide predictor (user domain); PLOS printable = reliable single-GET fetch"
 
   - id: 10
-    short: hydramp
-    source: biorxiv
-    doi: "10.1101/2022.01.27.478054"
-    title: "HydrAMP: a deep generative model for antimicrobial peptide discovery"
-    year: 2022
-    first_author: "Paweł Szymczak"
-    n_authors: 10             # v1; published version has 12
-    code_repo: "https://github.com/szczurek-lab/hydramp"
-    url: "https://www.biorxiv.org/content/10.1101/2022.01.27.478054v1.full.pdf"
-    test_role: "10–12 authors; title CHANGED between preprint and published version (title-drift case); AMP generative"
+    short: gen-amp
+    source: plos
+    doi: "10.1371/journal.pcbi.1013833"
+    title: "A novel generative framework for designing pathogen-targeted antimicrobial peptides with programmable physicochemical properties"
+    year: 2025
+    first_author: "Zhao W"         # EuropePMC initial form; full given name read from the PDF at golden-JSON time
+    n_authors: 6
+    code_repo: null                # verify against the paper's Data/Code Availability statement at golden-JSON time
+    url: "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1013833&type=printable"
+    test_role: "doi-only (no arXiv id); generative AMP design (user domain); PLOS printable = reliable single-GET fetch"
