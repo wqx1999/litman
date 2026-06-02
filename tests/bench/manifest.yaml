@@ -1,0 +1,137 @@
+# litman-bench fixture manifest (v0 draft)
+#
+# 10 open-access preprints used as INPUT material for the agent-driven scenario
+# suite. They are NOT the subject under test — litman is. Paper content is
+# irrelevant; each is chosen for the test surface it exercises (see test_role).
+#
+# Only `id`, `source` and `url` are consumed by fetch_fixtures.py. The rest is
+# documentation + golden values for metadata-extraction scenarios.
+#
+# Byte-level sha256 pins live in the sibling `fixtures.lock` (sha256sum format),
+# generated on the first `--write-lock` run and committed for reproducibility.
+#
+# Sources: 8 arXiv + 2 bioRxiv only. ChemRxiv deliberately excluded — its
+# Cloudflare JS challenge cannot be cleared by a headless downloader, which would
+# force a manual step and break full automation.
+
+papers:
+  - id: 1
+    short: diffdock
+    source: arxiv
+    arxiv_id: "2210.01776"
+    title: "DiffDock: Diffusion Steps, Twists, and Turns for Molecular Docking"
+    year: 2022
+    first_author: "Gabriele Corso"
+    n_authors: 5
+    code_repo: "https://github.com/gcorso/DiffDock"   # stated in BODY, not abstract
+    url: "https://arxiv.org/pdf/2210.01776"
+    test_role: "repo URL only in body (not abstract); author 'Stärk' carries ä"
+
+  - id: 2
+    short: edm
+    source: arxiv
+    arxiv_id: "2203.17003"
+    title: "Equivariant Diffusion for Molecule Generation in 3D"
+    year: 2022
+    first_author: "Emiel Hoogeboom"
+    n_authors: 4
+    code_repo: null            # no code URL stated in the paper text
+    url: "https://arxiv.org/pdf/2203.17003"
+    test_role: "negative case — no repo stated; agent must NOT invent a code-clone from memory"
+
+  - id: 3
+    short: chemberta
+    source: arxiv
+    arxiv_id: "2010.09885"
+    title: "ChemBERTa: Large-Scale Self-Supervised Pretraining for Molecular Property Prediction"
+    year: 2020
+    first_author: "Seyone Chithrananda"
+    n_authors: 3
+    code_repo: null            # only a DeepChem tutorial-notebook link — ambiguous, not a deliverable repo
+    url: "https://arxiv.org/pdf/2010.09885"
+    test_role: "earliest year (2020); 'is a tutorial link a code-clone?' judgment case"
+
+  - id: 4
+    short: peptidebert
+    source: arxiv
+    arxiv_id: "2309.03099"
+    title: "PeptideBERT: A Language Model based on Transformers for Peptide Property Prediction"
+    year: 2023
+    first_author: "Chakradhar Guntuboina"
+    n_authors: 5
+    code_repo: "https://github.com/ChakradharG/PeptideBERT"   # in abstract
+    url: "https://arxiv.org/pdf/2309.03099"
+    test_role: "clean link test (repo in abstract); peptide domain"
+
+  - id: 5
+    short: multi-peptide
+    source: arxiv
+    arxiv_id: "2407.03380"
+    title: "Multi-Peptide: Multimodality Leveraged Language-Graph Learning of Peptide Properties"
+    year: 2024
+    first_author: "Srivathsan Badrinarayanan"
+    n_authors: 4
+    code_repo: null
+    url: "https://arxiv.org/pdf/2407.03380"
+    test_role: "no repo; SAME group/authors as #4 (Guntuboina, Mollaei, Barati Farimani) -> related-paper / N:1 retrieval"
+
+  - id: 6
+    short: uni-mol-plus
+    source: arxiv
+    arxiv_id: "2303.16982"
+    title: "Highly Accurate Quantum Chemical Property Prediction with Uni-Mol+"
+    year: 2023
+    first_author: "Shuqi Lu"
+    n_authors: 5
+    cjk_authors: true          # DP Technology / 深势科技 — all-CJK author list
+    code_repo: "https://github.com/dptech-corp/Uni-Mol"   # in abstract
+    url: "https://arxiv.org/pdf/2303.16982"
+    test_role: "CJK author names (non-ASCII robustness) + clean link (repo in abstract)"
+
+  - id: 7
+    short: cond-beta-vae
+    source: arxiv
+    arxiv_id: "2205.01592"
+    title: "Conditional β-VAE for De Novo Molecular Generation"
+    year: 2022
+    first_author: "Ryan J Richards"
+    n_authors: 2
+    code_repo: null
+    url: "https://arxiv.org/pdf/2205.01592"
+    test_role: "Greek β (U+03B2) in title, arXiv renders it inside MathJax $...$; 2-author"
+
+  - id: 8
+    short: raman-tubulin
+    source: arxiv
+    arxiv_id: "2311.04165"
+    title: "Raman Spectroscopy Reveals Photobiomodulation-Induced α-Helix to β-Sheet Transition in Tubulins: Potential Implications for Alzheimer's and Other Neurodegenerative Diseases"
+    year: 2023
+    first_author: "Elisabetta Di Gregorio"
+    n_authors: 8
+    code_repo: null
+    url: "https://arxiv.org/pdf/2311.04165"
+    test_role: "bare α/β glyphs + very long title + apostrophe + space-in-surname; off-domain (encoding stress fixture only)"
+
+  - id: 9
+    short: lmpred
+    source: biorxiv
+    doi: "10.1101/2021.11.03.467066"
+    title: "LMPred: Predicting Antimicrobial Peptides Using Pre-Trained Language Models and Deep Learning"
+    year: 2021
+    first_author: "William Dee"
+    n_authors: 1
+    code_repo: "https://github.com/williamdee1/LMPred_AMP_Prediction"
+    url: "https://www.biorxiv.org/content/10.1101/2021.11.03.467066v1.full.pdf"
+    test_role: "single-author metadata; bioRxiv DOI; AMP prediction (user domain)"
+
+  - id: 10
+    short: hydramp
+    source: biorxiv
+    doi: "10.1101/2022.01.27.478054"
+    title: "HydrAMP: a deep generative model for antimicrobial peptide discovery"
+    year: 2022
+    first_author: "Paweł Szymczak"
+    n_authors: 10             # v1; published version has 12
+    code_repo: "https://github.com/szczurek-lab/hydramp"
+    url: "https://www.biorxiv.org/content/10.1101/2022.01.27.478054v1.full.pdf"
+    test_role: "10–12 authors; title CHANGED between preprint and published version (title-drift case); AMP generative"

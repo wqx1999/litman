@@ -34,3 +34,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# litman-bench downloaded fixture PDFs (copyrighted preprints — fetched, never committed)
+tests/bench/fixtures/
