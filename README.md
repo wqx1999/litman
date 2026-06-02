@@ -1,4 +1,4 @@
-# **lit**erature **man**ager
+# LITerature MANager
 
 **Local-first, AI-augmented literature management CLI.**
 
