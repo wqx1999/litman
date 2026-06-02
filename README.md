@@ -1,4 +1,8 @@
+<img align="right" src="assets/logo1.png" width="80"/>
+
 # LITerature MANager
+
+<img src="assets/logo2.svg" width="360"/>
 
 **Local-first, AI-augmented literature management CLI.**
 
