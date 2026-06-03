@@ -85,6 +85,17 @@ def litman_fingerprint() -> str:
             continue
         rel = py.relative_to(pkg_root)
         parts.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
+    # Fold in the seed-builder source itself (this file). The litman digest above
+    # only catches schema/behavior drift in the *package*; it does NOT see edits to
+    # the bench harness's own SEED_SPECS / step logic. Without this, adding a step
+    # (e.g. the `relate` edge for C4) would NOT invalidate a `/tmp` seed cached
+    # before the edit, so a run would silently reuse a stale seed and the card that
+    # needed the new precondition would fail. Same size+mtime scheme as above.
+    try:
+        st = Path(__file__).resolve().stat()
+        parts.append(f"__seedsrc__:{st.st_size}:{st.st_mtime_ns}")
+    except OSError:
+        pass
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
     return digest[:16]
 
