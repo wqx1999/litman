@@ -165,7 +165,7 @@ mkdocs serve
 
 ## Acknowledgments
 
-This tool was developed in the [Süssmuth Lab](https://www.tu.berlin/en/biochemie/research/research-in-suessmuth-group), Technische Universität Berlin. Computations and infrastructure were supported by the [TU Berlin HPC cluster](https://www.tu.berlin/en/hpc-cluster/introduction-slurm-version).
+This tool was developed in the [Süssmuth Lab](https://www.tu.berlin/en/biochemie/research/research-in-suessmuth-group), Technische Universität Berlin. Development was carried out with access to the [TU Berlin HPC cluster](https://www.tu.berlin/en/hpc-cluster/introduction-slurm-version).
 
 This project was built with the help of AI-powered development tools:
 
