@@ -113,10 +113,18 @@ class SeedStep:
                          ``notes.md``; emulates a user-authored note so cards like
                          C3 ``lit search`` have content to find — there is no CLI
                          notes-writer, notes.md is a plain authored TRUTH file).
+    * ``relate``       — ``fixture`` + ``fixture_b``: assert a symmetric
+                         ``related`` edge between the two papers (``lit modify
+                         <a> --add-tag related=<b>``; the CLI auto double-writes
+                         the reverse field). Satisfies cards whose precondition
+                         is "#a related to #b" (C4 ``lit related``, G2 rename
+                         ripple) — author overlap alone does NOT drive ``lit
+                         related``; it needs an explicit edge or a shared topic.
     """
 
     op: str
     fixture: int | None = None
+    fixture_b: int | None = None
     dict_name: str | None = None
     values: tuple[str, ...] = ()
     set: tuple[tuple[str, str], ...] = ()
@@ -156,6 +164,10 @@ def _link(fixture: int, project: str) -> SeedStep:
 
 def _notes(fixture: int, text: str) -> SeedStep:
     return SeedStep("notes", fixture=fixture, notes_text=text)
+
+
+def _relate(fixture_a: int, fixture_b: int) -> SeedStep:
+    return SeedStep("relate", fixture=fixture_a, fixture_b=fixture_b)
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +215,16 @@ SEED_SPECS: dict[str, SeedSpec] = {
     # we seed #4+#5 which also serves C2/C4/D1/D4/A3/G2 same-group retrieval).
     "seed-2papers-peptide": SeedSpec(
         name="seed-2papers-peptide",
-        steps=(_INIT, _add(4), _add(5)),
-        description="#4 PeptideBERT + #5 Multi-Peptide (same author group).",
+        # _relate(4, 5) asserts the #4↔#5 `related` edge (CLI double-writes the
+        # reverse side). Without it `lit related #4` returns empty — author
+        # overlap is NOT a `lit related` neighbour kind — so C4 was a guaranteed-0
+        # false negative; it also satisfies G2's "#4 related #5" rename-ripple
+        # precondition. Health stays clean (both papers exist; symmetric edge).
+        steps=(_INIT, _add(4), _add(5), _relate(4, 5)),
+        description=(
+            "#4 PeptideBERT + #5 Multi-Peptide (same author group), joined by a "
+            "symmetric `related` edge (C4 retrieval / G2 ripple precondition)."
+        ),
     ),
     # --- 5 papers + tagged + a project --------------------------------------
     # Governance / export / list-filter cards (C1, D2, F1-with-content). Two
@@ -413,6 +433,19 @@ def _apply_step(step: SeedStep, ctx: _BuildEnv) -> None:
         sep = "" if existing.endswith("\n") or not existing else "\n"
         notes_path.write_text(
             existing + sep + step.notes_text.rstrip("\n") + "\n", encoding="utf-8"
+        )
+        return
+
+    if step.op == "relate":
+        assert step.fixture is not None and step.fixture_b is not None
+        pid_a = _paper_id_for_fixture(vault, step.fixture)
+        pid_b = _paper_id_for_fixture(vault, step.fixture_b)
+        # `related` is symmetric/self-paired: this one call also writes the
+        # reverse edge on pid_b (core/relations.py double-write), so the seed
+        # need not relate both directions.
+        _run_lit(
+            ["modify", pid_a, "--add-tag", f"related={pid_b}", *lib],
+            env=ctx.env,
         )
         return
 

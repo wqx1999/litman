@@ -2,14 +2,15 @@ id: G2-rename-ripple
 title: 改 paper id，看引用是否全跟着更新
 layer: maintenance
 source: 缺
-fixtures: [4, 5]
+fixtures: []                          # 库操作卡：#4/#5 已在 seed 内，不递 PDF（防 re-add 陷阱）
 needs_pty: false
 invariants: [14]
 routing_label: lit-library
 seed: seed-2papers-peptide
 precondition: |
-  #4、#5 已入库；#4 的 related 含 #5，#5 的 notes.md 有 [[<#4 old-id>]] wikilink，
-  #4 已 link 到 PepCodec。
+  #4、#5 已入库；#4 的 related 含 #5（seed 已注入，rename 涟漪反向 related 边可机检）。
+  扩展前置（#5 notes.md 的 [[<#4 old-id>]] wikilink、#4 link 到 PepCodec）尚未注入，
+  对应断言仍是 prose（见 notes）。
 intent: |
   "把 PeptideBERT 的 id 改成 2023_Guntuboina_PeptideBERT-v2。"
 expected_end_state:
@@ -26,5 +27,7 @@ auto_fail:
 notes: |
   逐条反向引用更新（related / wikilink / 项目 symlink）的内容断言需深读散文 + 项目
   目录（vault 外），DSL 单态路径覆盖不到，转录为 prose（checker 标 manual，不静默
-  通过）；health: clean 兜底"无悬空引用"。precondition 的 related/wikilink 增量由
-  harness 在 cp 种子后注入（执行阶段 Phase E）。
+  通过）；health: clean 兜底"无悬空引用"。#4↔#5 的 related 边已在 seed build 时由
+  _relate(4, 5) 注入，故"#5 的 related 指向新 id（不悬空）"现已可经 health/rename
+  输出机检；wikilink / 项目 symlink 增量仍 deferred（seed-2papers 未给 #4 建
+  wikilink / 项目 link），待 harness cp 种子后注入（执行阶段 Phase E）。

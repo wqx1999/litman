@@ -88,6 +88,27 @@ def test_build_2paper_seed_clean() -> None:
     assert errs == [], [(i.category, i.message) for i in errs]
 
 
+def _related_of(paper_dir: Path) -> list[str]:
+    from ruamel.yaml import YAML
+
+    meta = YAML(typ="safe").load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
+    return list(meta.get("related") or [])
+
+
+def test_2paper_seed_relates_4_and_5() -> None:
+    """C4/G2 precondition: the `relate` step asserts a symmetric #4↔#5 `related`
+    edge so `lit related <#4>` surfaces #5 — author overlap alone does NOT drive
+    `lit related` (it walks explicit edges + shared topics). The CLI double-writes
+    the reverse side, so both metadata files carry the edge; health stays clean."""
+    vault = build_seed("seed-2papers-peptide")
+    papers = {p.name: p for p in (vault / "papers").iterdir() if p.is_dir()}
+    (pid4,) = [n for n in papers if "PeptideBERT" in n]
+    (pid5,) = [n for n in papers if "Multi-Peptide" in n]
+    assert pid5 in _related_of(papers[pid4]), "#4.related must list #5"
+    assert pid4 in _related_of(papers[pid5]), "#5.related (reverse double-write) must list #4"
+    assert _health_errors(vault) == []
+
+
 def test_seed_pdf_is_real_fixture() -> None:
     """The added paper.pdf is byte-identical to the committed fixture (#4)."""
     vault = build_seed("seed-2papers-peptide")

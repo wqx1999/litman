@@ -2,13 +2,15 @@ id: C4-related-samegroup
 title: 找跟在读这篇相关的论文
 layer: retrieval
 source: 列+补            # 「多 link 互查」深化
-fixtures: [4, 5]         # PeptideBERT + Multi-Peptide（同组作者）
+fixtures: []             # 纯检索卡：#4/#5 已在 seed 内（且 seed 注入 #4↔#5 related 边），不递 PDF
 needs_pty: false
 invariants: [7]
 routing_label: lit-reading      # related work
 seed: seed-2papers-peptide
 precondition: |
-  库已含 #4 与 #5，二者 authors 有交集（Guntuboina / Mollaei / Barati Farimani）。
+  库已含 #4 与 #5，且 seed 已建 #4↔#5 的 related 边（lit related 走显式关系边 / 共享
+  topic，不走 authors 交集）；二者 authors 实际也有交集（Guntuboina / Mollaei /
+  Barati Farimani），是用户口中"同一批人"的依据。
 intent: |
   "我在看 PeptideBERT，我库里还有没有相关的、最好同一批人做的？"
 expected_end_state:

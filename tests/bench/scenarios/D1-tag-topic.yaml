@@ -2,7 +2,7 @@ id: D1-tag-topic
 title: 给一篇打 topic 标签
 layer: governance
 source: 列
-fixtures: [4]
+fixtures: []                          # 库操作卡：#4 已在 seed 内，不递 PDF（防 re-add 陷阱）
 needs_pty: false
 invariants: [2]
 routing_label: lit-library

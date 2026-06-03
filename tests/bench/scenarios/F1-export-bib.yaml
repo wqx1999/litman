@@ -2,19 +2,19 @@ id: F1-export-bib
 title: 导出 bib
 layer: export
 source: 补
-fixtures: [1, 4]
+fixtures: []                          # 纯导出读操作：导出 seed 内已有论文，不递 PDF
 needs_pty: false
 invariants: []
 routing_label: lit-library            # 外部 cite-retrieval/ref-manager 在场则成三方碰撞
 seed: seed-2papers-peptide
 precondition: |
-  库含 #1、#4。
+  库含 #4、#5（seed-2papers-peptide 的两篇）。
 intent: |
   "给我导出一个 bib 文件，准备写论文引用。"
 expected_end_state:
   - "file_exists: refs.bib"               # <cwd>/refs.bib 存在（cwd 在 vault 外）
-  - "file_contains: refs.bib :: ~DiffDock"     # #1 entry（cite key == paper id 含此 token）
-  - "file_contains: refs.bib :: ~PeptideBERT"  # #4 entry
+  - "file_contains: refs.bib :: ~PeptideBERT"     # #4 entry（cite key == paper id 含此 token）
+  - "file_contains: refs.bib :: ~Multi-Peptide"   # #5 entry
   - "ran: export"                      # lit export --all -o refs.bib
 auto_fail:
   - 手攒 .bib 文本而非 lit export
@@ -23,5 +23,7 @@ adherence_flags:
 notes: |
   refs.bib 默认落执行器 cwd（中性目录，非 vault）；file_* 动词解析相对 cwd
   （执行阶段线程进 checker.resolve(cwd=...)）。两条 entry 的存在 + cite key 由
-  file_contains 对 paper-id token（DiffDock / PeptideBERT）机检，不静默通过。
-  seed-2papers-peptide 含 #4/#5；#1 由本卡 fixtures 触发执行器 add，执行阶段补齐。
+  file_contains 对 paper-id token（PeptideBERT / Multi-Peptide）机检，不静默通过。
+  两条 entry 都来自 seed-2papers-peptide 已有的 #4/#5，导出是纯读操作，无需 add 任何
+  论文（旧版断言含 #1 DiffDock，但 #1 不在该 seed 内 → 是 guaranteed-0 false negative，
+  已对齐到 seed 实际两篇）。

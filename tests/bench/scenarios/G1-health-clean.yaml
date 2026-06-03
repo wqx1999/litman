@@ -2,7 +2,7 @@ id: G1-health-clean
 title: 干净库跑健康检查应全绿
 layer: maintenance
 source: 列
-fixtures: [1, 4]
+fixtures: []                          # 纯 health-check 读操作：不需任何 PDF
 needs_pty: false
 invariants: [14, 15]
 routing_label: lit-reading            # "库还干净吗" → library health

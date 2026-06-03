@@ -107,6 +107,40 @@ def test_executor_view_resolves_fixture_paths() -> None:
     assert handoff.fixtures[0].name == "4.pdf"
 
 
+def test_no_card_stages_an_already_seeded_paper() -> None:
+    """Handoff discipline (Q2): a card may only stage fixtures the agent does NOT
+    already have in its seed vault.
+
+    Staging an already-seeded paper is the 'staged-PDF trap' — the agent is handed
+    a PDF that is already in the vault, so it may re-``lit add`` it (creating a
+    duplicate) instead of operating on the in-vault copy, polluting the end state.
+    Vault-operation cards must therefore carry ``fixtures: []``. A3-add-dup is the
+    sole sanctioned exception (it deliberately re-hands a seeded PDF to test that
+    ``lit add`` rejects the duplicate)."""
+    from harness.seeds import SEED_SPECS
+
+    DUP_EXEMPT = {"A3-add-dup"}
+    for c in _all_cards():
+        if c.is_routing or c.skip_reason or not c.fixtures or not c.seed:
+            continue
+        if c.id in DUP_EXEMPT:
+            continue
+        spec = SEED_SPECS.get(c.seed)
+        seeded: set[int] = set()
+        if spec:
+            for s in spec.steps:
+                if s.fixture is not None:
+                    seeded.add(s.fixture)
+                if s.fixture_b is not None:
+                    seeded.add(s.fixture_b)
+        trap = set(c.fixtures) & seeded
+        assert not trap, (
+            f"{c.id} stages already-seeded fixture(s) {sorted(trap)} from seed "
+            f"{c.seed!r} (staged-PDF trap — set fixtures: [] for a vault-op card, "
+            f"or add to DUP_EXEMPT if it deliberately tests dup rejection)"
+        )
+
+
 def test_load_card_rejects_missing_id(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text("title: no id here\nintent: x\n", encoding="utf-8")
