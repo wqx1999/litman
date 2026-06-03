@@ -172,8 +172,6 @@ This project was built with the help of AI-powered development tools:
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Anthropic-d4a574?logo=anthropic&logoColor=white)](https://claude.ai/code)
 [![Cursor](https://img.shields.io/badge/Cursor-AI_Editor-000000?logo=cursor&logoColor=white)](https://cursor.sh)
 
-Octopus mascot generated with [![Doubao](https://img.shields.io/badge/Doubao-AI_Image_Generation-6B4FE8?logoColor=white)](https://www.doubao.com/).
-
 Core dependencies that make litman possible:
 
 [![Click](https://img.shields.io/badge/Click-CLI_Framework-4B8BBE?logoColor=white)](https://click.palletsprojects.com/)
@@ -182,6 +180,9 @@ Core dependencies that make litman possible:
 [![Pydantic](https://img.shields.io/badge/Pydantic-Data_Validation-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
 [![Rich](https://img.shields.io/badge/Rich-Terminal_UI-FAD000?logoColor=black)](https://rich.readthedocs.io/)
 [![httpx](https://img.shields.io/badge/httpx-HTTP_Client-2D9CDB?logoColor=white)](https://www.python-httpx.org/)
+
+Octopus mascot generated with Doubao (AI image generation).
+[![Doubao](https://img.shields.io/badge/Doubao-AI_Image_Generation-6B4FE8?logoColor=white)](https://www.doubao.com/)
 
 ## License
 
