@@ -366,18 +366,20 @@ The user expresses *intent*; you translate it to `lit export` flags.
 
 | User says | Command |
 |---|---|
+| "给我导出一个 bib" / "导出文献库" / names no project | `lit export --all -o refs.bib` — no project scope ⇒ `--all` is the default; just run it (do not ask) |
 | "导出和 pepforge 有关的文献到这里" | `lit export --project pepforge` (defaults to `./refs.bib`) |
 | "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` |
 | "给 PepCodec 准备 bib" | `lit export --project pepcodec` (canonicalize the project token first — Flow B / [H]) |
-| "更新一下 refs.bib" | infer current project → `lit export --project <inferred>`; if not inferrable, ask |
+| "更新一下 refs.bib" | infer current project → `lit export --project <inferred>`; if not inferrable, `lit export --all` (do not ask) |
 
 Flags: `--project` XOR `--all` (exactly one required), `-o/--output` (default `./refs.bib`), `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` (comma-separated; within one flag OR, across flags AND), `--force`, `--vault`. Cite keys equal paper ids — output drops into `\cite{<paper-id>}` directly. Re-running on the same file is the supported update path.
 
-Three hard rules:
+Four hard rules:
 
 1. **Sentinel rejection → NEVER auto-add `--force`.** When the CLI refuses to overwrite a target lacking the litman sentinel (typically a hand-edited `references.bib`), relay verbatim and let the user decide — `--force` discards their hand edits.
 2. **Path inference**: "current dir" / "here" → default `./refs.bib`; a *named* directory ("thesis dir") → ask for the path, do not guess.
 3. **Project token**: unregistered `--project` gets deterministic canonicalization (case/whitespace) only, else present the registered set.
+4. **Bare export ⇒ `--all`, act don't ask.** When the request names no project and none is inferrable (common when no projects are registered), `lit export --all -o refs.bib` is the only sensible reading — run it. Reserve a clarifying question for a *named-but-unresolvable* project token (rule 3) or the `--force`-over-sentinel decision (rule 1), never for "which scope?" when there is only one.
 
 Tier: projection is **Tier 2**; `--force`-over-sentinel is a **Tier-3 ask**.
 
