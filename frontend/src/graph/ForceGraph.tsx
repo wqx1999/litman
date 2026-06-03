@@ -9,6 +9,7 @@ import {
   drawNodeShape,
   edgeColor,
   nodeColor,
+  nodeHasDriftRing,
   nodeRadius,
   seedXY,
 } from './encoding'
@@ -87,7 +88,16 @@ export function ForceGraph({
     const id = String(node.id)
     const dimmed = highlight !== null && !highlight.has(id)
     ctx.globalAlpha = dimmed ? 0.15 : 1
-    drawNodeShape(ctx, node.type, x, y, r, nodeColor(node), highlight?.has(id) ?? false)
+    drawNodeShape(
+      ctx,
+      node.type,
+      x,
+      y,
+      r,
+      nodeColor(node),
+      highlight?.has(id) ?? false,
+      nodeHasDriftRing(node),
+    )
 
     // Label only when zoomed in enough or the node is highlighted, to avoid
     // clutter on dense views. Never renders notes/discussion — label is the
@@ -95,7 +105,7 @@ export function ForceGraph({
     if (globalScale > 1.4 || (highlight !== null && highlight.has(id))) {
       const fontSize = Math.max(3, 11 / globalScale)
       ctx.font = `${fontSize}px Inter, Arial, sans-serif`
-      ctx.fillStyle = dimmed ? 'rgba(40,44,48,0.3)' : '#282c30'
+      ctx.fillStyle = dimmed ? 'rgba(74,64,56,0.3)' : '#4a4038'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'top'
       const label = node.label.length > 48 ? node.label.slice(0, 47) + '…' : node.label
@@ -121,10 +131,21 @@ export function ForceGraph({
     const s = edgeEndpointId(link.source)
     const t = edgeEndpointId(link.target)
     const dimmed = highlight !== null && !(highlight.has(s) && highlight.has(t))
-    const base = edgeColor(link as unknown as GraphEdge)
-    if (!dimmed) return base
-    return 'rgba(184,188,194,0.12)'
+    if (dimmed) return 'rgba(150,140,125,0.10)'
+    const e = link as unknown as GraphEdge
+    // Invalid (drift) edges fade back so 67 of them don't drown the structure;
+    // still visible (+ counted in the summary), just not shouting.
+    if (e.status === 'invalid') return 'rgba(168,73,58,0.40)'
+    return edgeColor(e)
   }
+
+  const linkWidth = (link: FGLink): number => {
+    if ((link as unknown as GraphEdge).status === 'invalid') return 1
+    return 1.6 + Math.min(4, (link.weight ?? 1) - 1) * 0.7
+  }
+
+  const linkDash = (link: FGLink): number[] | null =>
+    (link as unknown as GraphEdge).status === 'invalid' ? [3, 3] : null
 
   return (
     <ForceGraph2D
@@ -132,17 +153,18 @@ export function ForceGraph({
       graphData={data}
       width={width}
       height={height}
-      backgroundColor="#fafaf8"
+      backgroundColor="#f7f4ee"
       nodeRelSize={1}
       nodeVal={(n: FGNode) => nodeRadius(n.size)}
       nodeLabel={(n: FGNode) => `${n.type}: ${n.label}`}
       nodeCanvasObject={drawNode}
       nodePointerAreaPaint={drawNodePointerArea}
       linkColor={linkColor}
-      linkWidth={(l: FGLink) => 0.6 + Math.min(4, (l.weight ?? 1) - 1) * 0.6}
+      linkWidth={linkWidth}
+      linkLineDash={linkDash}
       linkCurvature={(l: FGLink) => l.__curvature ?? 0}
-      linkDirectionalArrowLength={(l: FGLink) => (l.directed ? 4 : 0)}
-      linkDirectionalArrowRelPos={1}
+      linkDirectionalArrowLength={(l: FGLink) => (l.directed ? 5 : 0)}
+      linkDirectionalArrowRelPos={0.5}
       cooldownTicks={COOLDOWN_TICKS}
       onEngineStop={() => {
         // Freeze: zoom-to-fit once, then the static cooldown keeps it still.

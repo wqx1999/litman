@@ -90,8 +90,8 @@ export default function App({ data }: { data: GraphData }) {
   }, [view])
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-stone-50 text-stone-800">
-      <header className="flex items-center justify-between border-b border-stone-200 bg-white px-5 py-3">
+    <div className="flex h-screen w-screen flex-col bg-[#f3efe8] text-stone-800">
+      <header className="flex items-center justify-between border-b border-[#e7e1d5] bg-[#faf8f3] px-5 py-3">
         <div>
           <h1 className="text-lg font-semibold tracking-tight">
             litman <span className="text-stone-400">·</span> knowledge graph
@@ -106,7 +106,7 @@ export default function App({ data }: { data: GraphData }) {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r border-stone-200 bg-stone-50 p-3">
+        <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r border-[#e7e1d5] bg-[#f3efe8] p-3">
           <Controls
             view={view}
             drilldownProjects={drilldownProjects}
@@ -118,7 +118,6 @@ export default function App({ data }: { data: GraphData }) {
             onResetGroups={() => setVisibleGroups(null)}
             onExportPng={exportPng}
           />
-          <Legend />
         </aside>
 
         <main ref={canvasWrapRef} className="relative min-w-0 flex-1">
@@ -131,6 +130,9 @@ export default function App({ data }: { data: GraphData }) {
             onNodeClick={handleNodeClick}
             graphRef={graphRef}
           />
+          <div className="absolute right-3 top-3 z-10 w-52">
+            <Legend />
+          </div>
           {subgraph.nodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-stone-400">
               No nodes in this view.

@@ -2,7 +2,7 @@
 // Corrupt and invalid get red emphasis when non-zero — the banner doubles as a
 // drift-diagnostic readout (invariant #14: nothing vanishes, counts surface).
 
-import { RED } from '../graph/encoding'
+import { CORRUPT_RED, GREY } from '../graph/encoding'
 import type { GraphSummary } from '../types'
 
 function Stat({
@@ -19,13 +19,13 @@ function Stat({
     <div className="flex flex-col items-center px-3">
       <span
         className="text-xl font-semibold tabular-nums"
-        style={{ color: danger ? RED : '#282c30' }}
+        style={{ color: danger ? CORRUPT_RED : '#4a4038' }}
       >
         {value}
       </span>
       <span
         className="text-xs uppercase tracking-wide"
-        style={{ color: danger ? RED : '#9aa0a6' }}
+        style={{ color: danger ? CORRUPT_RED : GREY }}
       >
         {label}
       </span>
