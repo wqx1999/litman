@@ -65,6 +65,11 @@ include = ["litman*"]
     "lit-library/*", "lit-library/**/*",
     "lit-reading/*", "lit-reading/**/*",
 ]
+# Vendored single-file knowledge-graph GUI (M35). Built from frontend/ by
+# frontend/build.sh; shipped in the wheel so `lit graph` works with no node/npm.
+"litman" = [
+    "assets/graph/*",
+]
 
 [tool.ruff]
 line-length = 100

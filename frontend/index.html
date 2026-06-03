@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>litman — knowledge graph</title>
+    <!--
+      Injection seam. graph.py finds the quoted placeholder token on the script
+      line below (the bare token name is __LIT_GRAPH_DATA__ but written here
+      unquoted on purpose, so this comment is NOT matched by graph.py's
+      quoted-token replace) and swaps that single quoted occurrence for a raw
+      JSON object literal, turning the line into
+      `window.__LIT_GRAPH_DATA__ = { ... };`. The token lives in a plain
+      (non-module) inline script the singlefile plugin copies verbatim, so it
+      survives vite/minify unaltered and is the ONLY quoted occurrence in the
+      built asset. In `npm run dev` the placeholder stays a string and main.tsx
+      falls back to sample-data.
+    -->
+    <script>window.__LIT_GRAPH_DATA__ = "__LIT_GRAPH_DATA__";</script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

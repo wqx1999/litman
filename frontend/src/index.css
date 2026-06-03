@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@theme {
+  /* Warm neutral palette mirrored from the PepForge design language so the two
+     litman/PepForge frontends read as one product. */
+  --color-stone-50: #fafaf8;
+  --color-stone-100: #f5f3f0;
+  --color-stone-200: #e8e4df;
+  --color-stone-300: #d6d0c8;
+  --color-stone-400: #9aa0a6;
+  --color-stone-500: #6e7378;
+  --color-stone-600: #565a5e;
+  --color-stone-700: #3d4044;
+  --color-stone-800: #282c30;
+  --color-stone-900: #16181a;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: Inter, -apple-system, "Segoe UI", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

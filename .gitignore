@@ -38,3 +38,9 @@ Thumbs.db
 # litman-bench downloaded fixture PDFs (copyrighted — fetched, never committed).
 # Only the PDFs are ignored; fixtures/golden/*.json (extraction ground truth) IS tracked.
 tests/bench/fixtures/pdfs/
+
+# M35 knowledge-graph frontend subproject (dev-only). The vite build product at
+# src/litman/assets/graph/ IS committed (vendored into the wheel); only the
+# node_modules and intermediate dist/ stay out of git.
+frontend/node_modules/
+frontend/dist/
