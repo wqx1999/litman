@@ -10,7 +10,7 @@ seed: seed-2papers-peptide
 precondition: |
   库含 #4。TAXONOMY topics 暂无 "protein-language-model"。
 intent: |
-  "把 PeptideBERT 归到 'protein language model' 这个主题下。"
+  "把 PeptideBERT 归到 'protein-language-model' 这个主题下。"
 expected_end_state:
   - "taxonomy_has: topics :: protein-language-model"       # 新值先进受控词典
   - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: topics has protein-language-model"
@@ -20,3 +20,10 @@ auto_fail:
   - 给论文塞了一个不在 TAXONOMY 的 topic（绕过受控词典 → health-check 应抓）
 adherence_flags:
   - 没意识到要先 lit taxonomy add 再 lit modify --add-tag（受控词典两步）
+notes: |
+  intent 直接引用规范 slug 'protein-language-model'（连字符），与 precondition / oracle
+  对齐。这张卡测的是 inv#2 的"受控词典两步流程"（taxonomy add → modify --add-tag），
+  不是"agent 会不会把自然短语 slug 化"——litman 本身不做 slug 规范化（taxonomy 存原样），
+  且 seed taxonomy 为空、无 in-vault 范例，casing 由任务无从决定。旧 intent 用空格短语
+  'protein language model' → agent 原样存空格、health 仍干净，但 oracle 钉死连字符 →
+  guaranteed-false-negative（强模型也会照用户原话用空格）。引用 slug 消除这个表面歧义。
