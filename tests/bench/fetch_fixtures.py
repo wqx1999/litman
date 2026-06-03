@@ -5,7 +5,7 @@ Fully automated, idempotent, sha256-verified. No manual steps for the
 arXiv / bioRxiv sources used here (ChemRxiv was deliberately excluded because
 its Cloudflare JS challenge cannot be cleared by a headless downloader).
 
-Run inside the `litman` conda env (uses ruamel.yaml; only the stdlib otherwise).
+Run in the benchmark venv (uses ruamel.yaml from litman; only the stdlib otherwise).
 
 Usage:
     python fetch_fixtures.py               # download missing PDFs, verify against fixtures.lock
