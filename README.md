@@ -172,6 +172,8 @@ This project was built with the help of AI-powered development tools:
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Anthropic-d4a574?logo=anthropic&logoColor=white)](https://claude.ai/code)
 [![Cursor](https://img.shields.io/badge/Cursor-AI_Editor-000000?logo=cursor&logoColor=white)](https://cursor.sh)
 
+Octopus mascot generated with [![Doubao](https://img.shields.io/badge/Doubao-AI_Image_Generation-6B4FE8?logoColor=white)](https://www.doubao.com/).
+
 Core dependencies that make litman possible:
 
 [![Click](https://img.shields.io/badge/Click-CLI_Framework-4B8BBE?logoColor=white)](https://click.palletsprojects.com/)
