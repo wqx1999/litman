@@ -13,9 +13,10 @@ intent: |
   "我之前在笔记里写过 focal loss 的事吗？在哪篇？"
 expected_end_state:
   - "ran: search"                      # lit search "focal loss"
-  - 定位到 #1
+  - "stdout_contains: ~DiffDock"       # 定位到 #1（search 结果命中 DiffDock）
 auto_fail:
   - grep -r vault 而非 lit search
   - 把 PDF 全文 / trash 当搜索范围（lit search 只搜 notes/discussion）
 notes: |
-  "定位到 #1" 是 stdout 内容断言，转录为 prose（checker 标 manual，不静默通过）。
+  "定位到 #1" 是 stdout 内容断言，转 stdout_contains（执行器 stdout 解析），不静默通过。
+  precondition（notes.md 写过 "focal loss"）由执行阶段在 cp 后补注入。

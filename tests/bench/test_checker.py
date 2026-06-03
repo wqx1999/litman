@@ -79,6 +79,13 @@ def _ck(spec, vault, jsonl=None):
     )
 
 
+def _ckc(spec, vault, cwd, jsonl=None):
+    """Like ``_ck`` but threads ``cwd`` for the file_* verbs."""
+    return check_assertion(
+        spec, vault=vault, jsonl=jsonl or [], golden_dir=GOLDEN_DIR, cwd=cwd
+    )
+
+
 # ---------------------------------------------------------------------------
 # Path verbs
 # ---------------------------------------------------------------------------
@@ -328,6 +335,189 @@ def test_health_reports_catches_code_clone_dangling(tmp_path: Path) -> None:
     assert not _ck("health_reports: ~dangling", vault).passed
     # (b) health: clean FAILS (an error-severity code_clone_integrity Issue).
     assert not _ck("health: clean", vault).passed
+
+
+# ---------------------------------------------------------------------------
+# file_* verbs (resolve against cwd — the executor's neutral output dir)
+# ---------------------------------------------------------------------------
+
+
+def test_file_exists_and_nonempty(synth_vault: Path, tmp_path: Path) -> None:
+    cwd = tmp_path / "out"
+    cwd.mkdir()
+    (cwd / "refs.bib").write_text("@article{x, title={T}}\n", encoding="utf-8")
+    (cwd / "empty.bib").write_text("", encoding="utf-8")
+    assert _ckc("file_exists: refs.bib", synth_vault, cwd).passed
+    assert not _ckc("file_exists: missing.bib", synth_vault, cwd).passed
+    assert _ckc("file_nonempty: refs.bib", synth_vault, cwd).passed
+    assert not _ckc("file_nonempty: empty.bib", synth_vault, cwd).passed
+
+
+def test_file_contains(synth_vault: Path, tmp_path: Path) -> None:
+    cwd = tmp_path / "out"
+    cwd.mkdir()
+    (cwd / "refs.bib").write_text(
+        "@article{2023_Guntuboina_PeptideBERT, title={PeptideBERT}}\n"
+        "@article{2022_X_DiffDock, title={DiffDock}}\n",
+        encoding="utf-8",
+    )
+    assert _ckc("file_contains: refs.bib :: ~PeptideBERT", synth_vault, cwd).passed
+    assert _ckc("file_contains: refs.bib :: ~DiffDock", synth_vault, cwd).passed
+    assert not _ckc("file_contains: refs.bib :: ~NotInBib", synth_vault, cwd).passed
+
+
+def test_file_verb_no_cwd_is_hard_fail_not_silent_pass(synth_vault: Path) -> None:
+    """cwd=None must FAIL, never silently pass (invariant #14 no-silent-skip)."""
+    r = _ck("file_exists: refs.bib", synth_vault)  # no cwd threaded
+    assert not r.passed
+    assert "no cwd threaded" in r.detail
+
+
+# ---------------------------------------------------------------------------
+# count verb (over INDEX.json papers)
+# ---------------------------------------------------------------------------
+
+
+def test_count(synth_vault: Path) -> None:
+    assert _ck("count: title~PeptideBERT == 1", synth_vault).passed
+    assert not _ck("count: title~PeptideBERT == 2", synth_vault).passed
+    assert _ck("count: title~NonexistentPaper == 0", synth_vault).passed
+    # malformed specs fail with detail, never silently pass.
+    assert not _ck("count: title~PeptideBERT", synth_vault).passed
+    assert not _ck("count: PeptideBERT == 1", synth_vault).passed  # missing title~
+
+
+def test_count_dedup_two_entries(synth_vault: Path) -> None:
+    """A3's failure mode: a second PeptideBERT slipped in -> count == 1 fails."""
+    _write_index(
+        synth_vault,
+        [
+            {"id": "a", "title": "PeptideBERT: A Language Model for Peptides", "year": 2023},
+            {"id": "b", "title": "PeptideBERT (duplicate)", "year": 2023},
+        ],
+    )
+    assert not _ck("count: title~PeptideBERT == 1", synth_vault).passed
+    assert _ck("count: title~PeptideBERT == 2", synth_vault).passed
+
+
+# ---------------------------------------------------------------------------
+# evidence verbs: stdout_contains (jsonl) / answer_contains (run)
+# ---------------------------------------------------------------------------
+
+
+def test_stdout_contains(synth_vault: Path) -> None:
+    jsonl = [
+        {"argv": ["list"], "stdout": "#4 PeptideBERT\n#5 Multi-Peptide"},
+        {"argv": ["show", "id"], "stdout": "year: 2023"},
+    ]
+    assert _ck("stdout_contains: ~Multi-Peptide", synth_vault, jsonl).passed
+    assert _ck("stdout_contains: ~2023", synth_vault, jsonl).passed
+    assert not _ck("stdout_contains: ~DiffDock", synth_vault, jsonl).passed
+    # records without a stdout key (legacy runlit records) -> empty, no crash.
+    legacy = [{"argv": ["list"]}]
+    assert not _ck("stdout_contains: ~PeptideBERT", synth_vault, legacy).passed
+
+
+def test_stdout_contains_falls_back_to_blob(synth_vault: Path) -> None:
+    """FIX 3: when the per-record stdout is empty (unmapped tool_result) but the
+    ExecutorResult blob holds the output, the run fallback finds it."""
+    from harness.executor import ExecutorResult, LitCall, ToolResult
+
+    # The lit call's tool_use_id does NOT match the result block -> as_jsonl_records
+    # leaves the record's stdout empty, but stdout_blob still holds the content.
+    run = ExecutorResult(
+        lit_calls=[LitCall(argv=["list"], raw="lit list", tool_use_id="b1")],
+        tool_results=[ToolResult(tool="Bash", content="#5 Multi-Peptide", tool_use_id="OTHER")],
+    )
+    jsonl = run.as_jsonl_records()
+    assert jsonl[0]["stdout"] == ""  # unmapped -> empty per-record stdout
+
+    # Without run: today's behavior — the empty per-record stdout misses.
+    no_run = check_assertion(
+        "stdout_contains: ~Multi-Peptide", vault=synth_vault, jsonl=jsonl, golden_dir=GOLDEN_DIR
+    )
+    assert not no_run.passed
+
+    # With run: the blob fallback recovers the substring (TRUE match made findable).
+    with_run = check_assertion(
+        "stdout_contains: ~Multi-Peptide",
+        vault=synth_vault,
+        jsonl=jsonl,
+        golden_dir=GOLDEN_DIR,
+        run=run,
+    )
+    assert with_run.passed, with_run.detail
+    # A substring in neither the records nor the blob still misses (no false pass).
+    miss = check_assertion(
+        "stdout_contains: ~DiffDock",
+        vault=synth_vault,
+        jsonl=jsonl,
+        golden_dir=GOLDEN_DIR,
+        run=run,
+    )
+    assert not miss.passed
+
+
+def test_answer_contains_no_run_is_hard_fail(synth_vault: Path) -> None:
+    """run=None must FAIL, never silently pass (invariant #14 no-silent-skip)."""
+    r = _ck("answer_contains: ~2023", synth_vault)  # no run threaded
+    assert not r.passed
+    assert "no run threaded" in r.detail
+
+
+def test_answer_contains_with_run(synth_vault: Path) -> None:
+    class _Run:
+        final_text = "PeptideBERT was published in 2023 by Guntuboina."
+
+    r = check_assertion(
+        "answer_contains: ~2023",
+        vault=synth_vault,
+        jsonl=[],
+        golden_dir=GOLDEN_DIR,
+        run=_Run(),
+    )
+    assert r.passed, r.detail
+    miss = check_assertion(
+        "answer_contains: ~9999",
+        vault=synth_vault,
+        jsonl=[],
+        golden_dir=GOLDEN_DIR,
+        run=_Run(),
+    )
+    assert not miss.passed
+
+
+# ---------------------------------------------------------------------------
+# resolve threads cwd + run through to the file_* / answer_contains verbs
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_threads_cwd_and_run(tmp_path: Path) -> None:
+    from litman.core.library import create_vault
+
+    parent = tmp_path / "vparent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    cwd = tmp_path / "out"
+    cwd.mkdir()
+    (cwd / "refs.bib").write_text("@article{x, title={DiffDock}}\n", encoding="utf-8")
+
+    class _Run:
+        final_text = "year is 2023"
+
+    card = {
+        "id": "F",
+        "expected_end_state": [
+            "file_exists: refs.bib",
+            "file_contains: refs.bib :: ~DiffDock",
+            "answer_contains: ~2023",
+            "health: clean",
+        ],
+    }
+    resolved, results = resolve(
+        card, vault=vault, jsonl=[], golden_dir=GOLDEN_DIR, cwd=cwd, run=_Run()
+    )
+    assert resolved == 1, [(r.verb, r.passed, r.detail) for r in results]
 
 
 # ---------------------------------------------------------------------------

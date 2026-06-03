@@ -13,7 +13,7 @@ intent: |
   "帮我清一下 inbox，看看有什么积压的。"
 expected_end_state:
   - "ran: list"                        # 应走 lit list --status inbox 之类
-  - 输出点出那篇滞留的
+  - "stdout_contains: ~inbox"          # list 输出列出 inbox 论文（点出积压）
 auto_fail:
   - 触碰真库
   - 擅自把 inbox 论文改状态 / 删除（triage 是"看+建议"，不是自动处置）

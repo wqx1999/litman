@@ -17,6 +17,28 @@ Two oracle concerns are kept deliberately separate (ruling 1):
   ``littest-run.jsonl`` argv (proving the agent actually invoked the CLI),
   independent of the health engine.
 
+Four further verbs read state the vault YAML does not own:
+
+* ``file_exists`` / ``file_contains`` / ``file_nonempty`` resolve their arg
+  against ``cwd`` — the executor's neutral output dir where ``lit export`` drops
+  ``refs.bib`` (M34 §3.5: F1). These need ``cwd`` threaded; when it is ``None``
+  the result is a *failed* assertion (``detail="no cwd threaded"``), NEVER a
+  silent pass (invariant #14 no-silent-skip).
+* ``count`` matches over INDEX.json papers (e.g. ``count: title~PeptideBERT == 1``
+  proves the dedup did not create a duplicate, M34 §3.5: A3).
+
+Two evidence verbs score the agent's observable output:
+
+* ``stdout_contains: ~substr`` greps the joined ``record["stdout"]`` of the
+  jsonl (works from the jsonl alone — the executor widens its records to carry
+  each lit call's captured stdout). When that misses and a ``run`` is threaded
+  it falls back to the executor's ``stdout_blob`` (every captured result block),
+  recovering output whose result block could not be paired to a call by id.
+* ``answer_contains: ~substr`` greps ``run.final_text`` (the agent's natural
+  language answer, e.g. C2 "year=2023"). Needs ``run`` threaded; when it is
+  ``None`` the result is a *failed* assertion (``detail="no run threaded"``),
+  same no-silent-skip rule.
+
 Placeholders: card paths use ``<peptidebert>``-style id placeholders. They are
 resolved by scanning the vault / INDEX.json for a paper whose title matches the
 placeholder's semantics (title-substring), never by hardcoding ``derive_id()``.
@@ -438,6 +460,132 @@ def _check_ran(jsonl: list[dict], arg: str, *, want: bool) -> AssertResult:
 
 
 # ---------------------------------------------------------------------------
+# File verbs (resolve against the executor's neutral output dir, ``cwd``)
+# ---------------------------------------------------------------------------
+
+
+def _check_file(cwd: Path | None, arg: str, verb: str) -> AssertResult:
+    """``file_exists`` / ``file_contains`` / ``file_nonempty``.
+
+    The path is resolved against ``cwd`` (the executor's neutral output dir,
+    e.g. where ``lit export`` drops ``refs.bib``). A ``None`` ``cwd`` is a hard
+    fail, never a silent pass (invariant #14 no-silent-skip): the harness simply
+    forgot to thread it.
+    """
+    if cwd is None:
+        return AssertResult(verb, arg, False, "no cwd threaded")
+
+    if verb == "file_contains":
+        rel, _, sub = arg.partition("::")
+        path = Path(cwd) / rel.strip()
+        sub = sub.strip().lstrip("~").strip()
+        if not path.is_file():
+            return AssertResult(verb, arg, False, f"{path} does not exist")
+        body = path.read_text(encoding="utf-8", errors="replace")
+        ok = _norm(sub) in _norm(body)
+        return AssertResult(
+            verb, arg, ok, "" if ok else f"{path} does not contain {sub!r}"
+        )
+
+    rel = arg.strip()
+    path = Path(cwd) / rel
+    if verb == "file_exists":
+        ok = path.exists()
+        return AssertResult(verb, arg, ok, "" if ok else f"{path} does not exist")
+    if verb == "file_nonempty":
+        if not path.is_file():
+            return AssertResult(verb, arg, False, f"{path} does not exist")
+        ok = path.stat().st_size > 0
+        return AssertResult(verb, arg, ok, "" if ok else f"{path} is empty")
+
+    return AssertResult(verb, arg, False, f"unknown file verb {verb!r}")
+
+
+# ---------------------------------------------------------------------------
+# count verb (over INDEX.json papers)
+# ---------------------------------------------------------------------------
+
+
+def _check_count(vault: Path, arg: str) -> AssertResult:
+    """``count: title~PeptideBERT == 1`` — count INDEX papers matching a field.
+
+    Proves a dedup did not create a duplicate (A3): exactly N papers whose title
+    contains the substring. Comparison is ``==`` only (the corpus needs no other).
+    """
+    verb = "count"
+    spec, sep, count_part = arg.partition("==")
+    if not sep:
+        return AssertResult(verb, arg, False, f"count needs '== N': {arg!r}")
+    try:
+        want = int(count_part.strip())
+    except ValueError:
+        return AssertResult(verb, arg, False, f"bad count target in {arg!r}")
+    spec = spec.strip()
+    if not spec.startswith("title~"):
+        return AssertResult(verb, arg, False, f"count needs title~: {arg!r}")
+    title_sub = _norm(spec[len("title~"):])
+    n = sum(
+        1
+        for p in _load_index(vault).get("papers", [])
+        if title_sub in _norm(p.get("title", ""))
+    )
+    ok = n == want
+    return AssertResult(
+        verb, arg, ok, "" if ok else f"count title~{spec[len('title~'):].strip()!r}={n}, wanted {want}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Evidence verbs (agent stdout / final answer)
+# ---------------------------------------------------------------------------
+
+
+def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> AssertResult:
+    """``stdout_contains: ~substr`` — grep the agent's captured lit-call stdout.
+
+    Greps ``record["stdout"]`` of every jsonl record first (the executor widens
+    its records to carry each lit call's captured stdout, paired by
+    ``tool_use_id``). This path works from a runlit jsonl alone, with no ``run``.
+
+    When that misses AND a ``run`` (:class:`harness.executor.ExecutorResult`) was
+    threaded, fall back to grepping :func:`harness.executor.stdout_blob` — the
+    join of every captured ``tool_result`` block. ``as_jsonl_records`` can leave a
+    record's ``stdout`` empty when its result block is unmappable by
+    ``tool_use_id`` (best-effort pairing), so the blob recovers the real output
+    that lives in an unpaired result block. This can only make a TRUE match more
+    findable; the blob holds only real agent output, never a fabricated pass.
+    """
+    sub = arg.strip().lstrip("~").strip()
+    blob = "\n".join(str(r.get("stdout", "")) for r in jsonl)
+    ok = _norm(sub) in _norm(blob)
+    if not ok and run is not None:
+        from harness.executor import stdout_blob
+
+        ok = _norm(sub) in _norm(stdout_blob(run))
+    return AssertResult(
+        "stdout_contains", arg, ok,
+        "" if ok else f"no lit-call stdout contains {sub!r}",
+    )
+
+
+def _check_answer_contains(run: Any, arg: str) -> AssertResult:
+    """``answer_contains: ~substr`` — grep the agent's final natural-language answer.
+
+    Reads ``run.final_text`` (an :class:`harness.executor.ExecutorResult`). A
+    ``None`` ``run`` is a hard fail, never a silent pass (invariant #14).
+    """
+    sub = arg.strip().lstrip("~").strip()
+    if run is None:
+        return AssertResult("answer_contains", arg, False, "no run threaded")
+    final = getattr(run, "final_text", "")
+    ok = _norm(sub) in _norm(str(final))
+    return AssertResult(
+        "answer_contains", arg, ok,
+        "" if ok else f"final answer does not contain {sub!r}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -451,6 +599,9 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "pdf_eq",
         "health", "health_reports",
         "ran", "not_ran",
+        "file_exists", "file_contains", "file_nonempty",
+        "count",
+        "stdout_contains", "answer_contains",
     }
 )
 
@@ -461,6 +612,8 @@ def check_assertion(
     vault: Path,
     jsonl: list[dict],
     golden_dir: Path,
+    cwd: Path | None = None,
+    run: Any = None,
 ) -> AssertResult:
     """Evaluate one assertion line.
 
@@ -468,6 +621,12 @@ def check_assertion(
     ``{"path_exists": "papers"}``) or a bare prose string (a free-form
     ``expected_end_state`` line the DSL cannot parse). A prose string is
     reported as a ``manual`` non-passing result — never silently passed.
+
+    ``cwd`` is the executor's neutral output dir (for the ``file_*`` verbs);
+    ``run`` is the :class:`harness.executor.ExecutorResult` (for
+    ``answer_contains``). Both default to ``None`` so the 30+ existing call sites
+    are untouched; a verb that needs one but gets ``None`` returns a *failed*
+    assertion, never a silent pass (invariant #14).
     """
     verb, arg = _split_assertion(spec)
     if verb is None:
@@ -505,6 +664,14 @@ def check_assertion(
         return _check_ran(jsonl, arg, want=True)
     if verb == "not_ran":
         return _check_ran(jsonl, arg, want=False)
+    if verb in ("file_exists", "file_contains", "file_nonempty"):
+        return _check_file(cwd, arg, verb)
+    if verb == "count":
+        return _check_count(vault, arg)
+    if verb == "stdout_contains":
+        return _check_stdout_contains(jsonl, arg, run)
+    if verb == "answer_contains":
+        return _check_answer_contains(run, arg)
 
     return AssertResult("manual", f"{verb}: {arg}", False, "unhandled verb")
 
@@ -542,6 +709,8 @@ def resolve(
     vault: Path,
     jsonl: list[dict],
     golden_dir: Path,
+    cwd: Path | None = None,
+    run: Any = None,
 ) -> tuple[int, list[AssertResult]]:
     """Compute ``resolved ∈ {0,1}`` for a finished run + the per-assertion trail.
 
@@ -569,7 +738,14 @@ def resolve(
     expected = _card_field(card, "expected_end_state") or []
     for line in expected:
         results.append(
-            check_assertion(line, vault=vault, jsonl=jsonl, golden_dir=golden_dir)
+            check_assertion(
+                line,
+                vault=vault,
+                jsonl=jsonl,
+                golden_dir=golden_dir,
+                cwd=cwd,
+                run=run,
+            )
         )
 
     # Implicit health gate: a run that left the vault with error-severity

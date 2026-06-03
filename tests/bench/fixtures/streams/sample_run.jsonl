@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "session_id": "bench-sample"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_skill_1", "name": "Skill", "input": {"skill": "lit-library"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_bash_1", "name": "Bash", "input": {"command": "lit list --year 2023,2024"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bash_1", "content": [{"type": "text", "text": "#4  PeptideBERT: A Language Model for Peptides (2023)\n#5  Multi-Peptide (2024)"}]}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_bash_2", "name": "Bash", "input": {"command": "cd /tmp/work && lit show 2023_Guntuboina_PeptideBERT && rm -f scratch.txt"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_bash_2", "content": "title: PeptideBERT\nyear: 2023\nauthors: Guntuboina, Chakradhar"}]}}
+{"type": "result", "subtype": "success", "result": "PeptideBERT was published in 2023; first author Guntuboina."}

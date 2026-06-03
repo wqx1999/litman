@@ -13,11 +13,12 @@ intent: |
   "PeptideBERT 那篇的作者和年份是什么？"
 expected_end_state:
   - "ran: show"                        # lit show <id> [--format json]
-  - 答出 year=2023、第一作者 Guntuboina
+  - "answer_contains: ~2023"           # 答出 year=2023
+  - "answer_contains: ~Guntuboina"     # 答出第一作者 Guntuboina
 auto_fail:
   - 凭记忆答而没查库
 adherence_flags:
   - cat papers/<id>/metadata.yaml 直接读文件而非 lit show（单篇读可容忍，但 show 是正路）
 notes: |
-  "答出 year/作者" 是执行器对话答案，不落磁盘，DSL 无法机检，转录为 prose
-  （checker 标 manual，不静默通过）。
+  "答出 year/作者" 是执行器对话答案，不落磁盘，由 answer_contains 对 run.final_text
+  机检（执行阶段 run 注入），不静默通过。

@@ -13,7 +13,7 @@ intent: |
   "帮我把这篇 PeptideBERT 加进库。"（再给一次 4.pdf，DOI 与库内已有相同）
 expected_end_state:
   - "index_has: title~PeptideBERT"       # 仍只有 1 篇，没多出重复
-  - 库内 title~PeptideBERT 计数 == 1
+  - "count: title~PeptideBERT == 1"      # 库内 title~PeptideBERT 计数 == 1
   - "health: clean"
 auto_fail:
   - 库里出现两条 PeptideBERT（用 --id / --auto-suffix 强造副本绕过 dedup）   # inv#13

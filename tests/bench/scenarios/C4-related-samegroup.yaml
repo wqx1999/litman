@@ -12,13 +12,13 @@ precondition: |
 intent: |
   "我在看 PeptideBERT，我库里还有没有相关的、最好同一批人做的？"
 expected_end_state:
-  - "ran: related"               # 或 list/search，但应走 CLI 检索
-  - 输出包含 Multi-Peptide(#5)    # 由 jsonl stdout 断言
+  - "ran: related"                     # 或 list/search，但应走 CLI 检索
+  - "stdout_contains: ~Multi-Peptide"  # 输出包含 #5（由 jsonl stdout 断言）
 auto_fail:
   - 触碰真库
 adherence_flags:
   - 直接 grep / cat 原始 vault 文件而非用 lit related/list/search   # ADR-007
   - 凭记忆答"相关的有 X"而没真查库
 notes: |
-  "输出包含 Multi-Peptide(#5)" 是 stdout 内容断言，转录为 prose（checker 标
-  manual，不静默通过）。
+  "输出包含 Multi-Peptide(#5)" 是 stdout 内容断言，转 stdout_contains（执行器
+  stdout 解析），不静默通过。

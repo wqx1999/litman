@@ -1,0 +1,656 @@
+"""Deterministic tests for the batch runner + aggregation (Phase G plumbing).
+
+NEVER spawns a live agent (M34 §3.5 hard boundary). ``run_card_fn`` is injected
+as a fake that returns a pre-computed score or a scoreable handle; the real
+aggregation / coverage / TRR math is what is under test.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from harness.batch import (
+    BenchReport,
+    CardScore,
+    build_live_routing_run_fn,
+    build_live_run_card_fn,
+    coverage_tag,
+    report_to_dict,
+    run_batch,
+)
+from harness.executor import ExecutorResult, LitCall, ToolResult
+from harness.scenarios import load_all_cards
+
+
+# ---------------------------------------------------------------------------
+# coverage_tag classification
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_tag_skipped() -> None:
+    assert coverage_tag({"id": "E1", "skip_reason": "needs_network"}) == "skipped"
+
+
+def test_coverage_tag_routing() -> None:
+    assert coverage_tag({"id": "I", "layer": "routing", "cases": []}) == "routing"
+
+
+def test_coverage_tag_auto_scored() -> None:
+    card = {
+        "id": "A1",
+        "layer": "front-door",
+        "expected_end_state": ["path_exists: papers", "health: clean"],
+    }
+    assert coverage_tag(card) == "auto-scored"
+
+
+def test_coverage_tag_prose_blocked() -> None:
+    card = {
+        "id": "B2",
+        "layer": "curation",
+        "expected_end_state": ["ran: revisit", "笔记内容质量足够好"],
+    }
+    assert coverage_tag(card) == "prose-blocked"
+
+
+# ---------------------------------------------------------------------------
+# run_batch aggregation with injected fakes (no live agent)
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_mean_and_trr() -> None:
+    """Per-card mean(resolved) + TRR over auto-scored cards only."""
+    # Card X resolves 2/3, card Y resolves 3/3; both auto-scored.
+    scores = {
+        ("X", 0): 1, ("X", 1): 0, ("X", 2): 1,
+        ("Y", 0): 1, ("Y", 1): 1, ("Y", 2): 1,
+    }
+
+    def fake_run(card, *, round, model, **_):
+        return scores[(card["id"], round)]
+
+    cards = [
+        {"id": "X", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+        {"id": "Y", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+    ]
+    report = run_batch(cards, model="m", rounds=3, run_card_fn=fake_run)
+    assert isinstance(report, BenchReport)
+    by_id = {c.card_id: c for c in report.cards}
+    assert by_id["X"].mean == 2 / 3
+    assert by_id["Y"].mean == 1.0
+    # TRR = mean of the two card means.
+    assert report.trr_mean == (2 / 3 + 1.0) / 2
+    assert report.trr_std > 0  # the two card means differ
+
+
+def test_run_batch_excludes_routing_and_skipped_from_trr() -> None:
+    """Routing + skipped + prose-blocked cards never fold into TRR."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1  # any auto-scored card resolves perfectly
+
+    cards = [
+        {"id": "AUTO", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+        {"id": "PROSE", "layer": "f", "expected_end_state": ["自由 prose 行"]},
+        {"id": "ROUTE", "layer": "routing", "cases": [{"utt": "x", "golden": "lit-library"}]},
+        {"id": "SKIP", "layer": "f", "skip_reason": "needs_network", "expected_end_state": []},
+    ]
+    report = run_batch(cards, model="m", rounds=2, run_card_fn=fake_run)
+    counts = report.coverage["counts"]
+    assert counts == {"auto-scored": 1, "prose-blocked": 1, "routing": 1, "skipped": 1}
+    # TRR denominator is only the single auto-scored card.
+    assert report.coverage["trr_denominator"] == 1
+    assert report.trr_mean == 1.0
+    assert report.trr_std == 0.0  # single sample, no spread
+    # Routing / skipped recorded with empty rounds (no agent invoked for them).
+    by_id = {c.card_id: c for c in report.cards}
+    assert by_id["ROUTE"].rounds == []
+    assert by_id["SKIP"].rounds == []
+    # The prose-blocked card was still RUN (it could be partially scored) but is
+    # excluded from TRR.
+    assert by_id["PROSE"].tag == "prose-blocked"
+    assert len(by_id["PROSE"].rounds) == 2
+
+
+def test_run_batch_handle_routes_through_score_fn() -> None:
+    """A dict handle from run_card_fn is folded by the injected score_fn."""
+    seen: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        return {"vault": "/tmp/v", "jsonl": [], "tag": card["id"]}
+
+    def fake_score(card, *, vault, jsonl, tag, **_):
+        seen.append(tag)
+        return (1, [])
+
+    cards = [{"id": "Z", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    report = run_batch(
+        cards, model="m", rounds=1, run_card_fn=fake_run, score_fn=fake_score
+    )
+    assert seen == ["Z"]
+    assert report.cards[0].mean == 1.0
+
+
+def test_run_batch_pre_scored_tuple_handle() -> None:
+    """run_card_fn may return a (resolved, trail) tuple already scored."""
+
+    def fake_run(card, *, round, model, **_):
+        return (0, [])
+
+    cards = [{"id": "W", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    report = run_batch(cards, model="m", rounds=2, run_card_fn=fake_run)
+    assert report.cards[0].mean == 0.0
+
+
+# ---------------------------------------------------------------------------
+# report serialization
+# ---------------------------------------------------------------------------
+
+
+def test_report_to_dict_round_trips() -> None:
+    report = BenchReport(
+        model="m",
+        rounds=2,
+        trr_mean=0.5,
+        trr_std=0.1,
+        cards=[CardScore("X", "auto-scored", [1, 0], 0.5)],
+        coverage={"counts": {"auto-scored": 1}},
+    )
+    import json
+
+    payload = report_to_dict(report)
+    text = json.dumps(payload)  # must be JSON-serializable
+    assert json.loads(text)["trr_mean"] == 0.5
+    assert payload["cards"][0]["card_id"] == "X"
+
+
+# ---------------------------------------------------------------------------
+# against the real corpus (every card classifies + a full dry batch runs)
+# ---------------------------------------------------------------------------
+
+
+def test_real_corpus_every_card_classifies() -> None:
+    """Every loaded card gets a known coverage tag (no card falls through)."""
+    cards = load_all_cards()
+    valid = {"auto-scored", "prose-blocked", "routing", "skipped"}
+    for c in cards:
+        assert coverage_tag(c) in valid, c.id
+
+
+def test_real_corpus_dry_batch_runs() -> None:
+    """A full dry batch over the real corpus runs with a fake (no live agent),
+    and the newly-converted cards are tagged auto-scored."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    cards = load_all_cards()
+    report = run_batch(cards, model="claude-sonnet-4-6", rounds=1, run_card_fn=fake_run)
+    auto = set(report.coverage["auto_scored_cards"])
+    # The conservative-7 conversion should land these as auto-scored.
+    for cid in ["A3-add-dup", "C2-show", "C3-search-notes", "C4-related-samegroup", "F1-export-bib"]:
+        assert cid in auto, f"{cid} not auto-scored; tags={[(c.card_id, c.tag) for c in report.cards]}"
+    # Routing + skipped cards present in coverage.
+    assert report.coverage["routing_cards"]
+    assert report.coverage["skipped_cards"]
+
+
+# ---------------------------------------------------------------------------
+# build_live_run_card_fn (FIX 1) — injected fakes, NEVER a live agent
+# ---------------------------------------------------------------------------
+
+
+def _fake_seed(tmp_path: Path):
+    """A fake ``ensure_seed_impl`` returning a real (copyable) seed dir.
+
+    ``RunVault`` copytree's the seed, so it must exist on disk; it carries a
+    ``lit-config.yaml`` marker so the result looks vault-shaped.
+    """
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    (seed / "lit-config.yaml").write_text("schema: 1\n", encoding="utf-8")
+    (seed / "papers").mkdir()
+
+    def ensure_seed_impl(name: str) -> Path:
+        ensure_seed_impl.seen = name  # type: ignore[attr-defined]
+        return seed
+
+    return ensure_seed_impl
+
+
+def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) -> None:
+    """The adapter calls run_card_impl with run_vault + model/base_url/auth_token,
+    and returns a {vault,jsonl,cwd,run,_cleanup} handle (no live agent)."""
+    captured: dict = {}
+
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+        captured["card"] = card
+        captured["run_vault"] = Path(run_vault)
+        captured["fixtures_pdfs_dir"] = Path(fixtures_pdfs_dir)
+        captured["model"] = model
+        captured["base_url"] = base_url
+        captured["auth_token"] = auth_token
+        return ExecutorResult(
+            lit_calls=[LitCall(argv=["list"], raw="lit list", tool_use_id="b1")],
+            tool_results=[ToolResult(tool="Bash", content="#4 PeptideBERT", tool_use_id="b1")],
+            final_text="done",
+        )
+
+    ensure_seed = _fake_seed(tmp_path)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        base_url="https://proxy.example/v1",
+        auth_token="tok-123",
+        run_card_impl=fake_run_card,
+        ensure_seed_impl=ensure_seed,
+    )
+
+    card = {"id": "A2", "seed": "seed-1paper-diffdock"}
+    handle = run_fn(card, round=0, model="some-model")
+
+    # (a) run_card_impl got the right kwargs, model + auth passed straight through.
+    assert captured["model"] == "some-model"
+    assert captured["base_url"] == "https://proxy.example/v1"
+    assert captured["auth_token"] == "tok-123"
+    assert captured["fixtures_pdfs_dir"] == tmp_path / "pdfs"
+    assert ensure_seed.seen == "seed-1paper-diffdock"  # type: ignore[attr-defined]
+
+    # (b) the handle shape the scorer consumes.
+    assert set(handle) == {"vault", "jsonl", "cwd", "run", "_cleanup"}
+    assert handle["vault"] == captured["run_vault"]
+    assert handle["vault"].is_dir()  # the cp landed
+    assert handle["cwd"] == handle["vault"].parent / "cwd"  # neutral_cwd convention
+    assert handle["jsonl"][0]["stdout"] == "#4 PeptideBERT"  # ExecutorResult folded
+    assert handle["run"].final_text == "done"
+
+
+def test_build_live_run_card_fn_cleanup_removes_run_dir(tmp_path: Path) -> None:
+    """The handle's _cleanup removes the whole disposable run dir."""
+
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+        return ExecutorResult()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        run_card_impl=fake_run_card,
+        ensure_seed_impl=_fake_seed(tmp_path),
+    )
+    (tmp_path / "work").mkdir(exist_ok=True)
+    handle = run_fn({"id": "A2", "seed": "s"}, round=0, model="m")
+    run_dir = handle["vault"].parent
+    assert run_dir.is_dir()
+    handle["_cleanup"]()
+    assert not run_dir.exists()
+
+
+def test_build_live_run_card_fn_defaults_anthropic_auth(tmp_path: Path) -> None:
+    """Default (no base_url/auth_token) passes None through — Anthropic mode."""
+    seen: dict = {}
+
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+        seen["base_url"] = base_url
+        seen["auth_token"] = auth_token
+        return ExecutorResult()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        run_card_impl=fake_run_card,
+        ensure_seed_impl=_fake_seed(tmp_path),
+    )
+    (tmp_path / "work").mkdir(exist_ok=True)
+    run_fn({"id": "A2", "seed": "s"}, round=0, model="m")
+    assert seen == {"base_url": None, "auth_token": None}
+
+
+def test_build_live_run_card_fn_missing_seed_errors(tmp_path: Path) -> None:
+    """A card with no seed is a real error (routing/skipped never reach here)."""
+
+    def fake_run_card(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("run_card_impl should not run when seed is missing")
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        run_card_impl=fake_run_card,
+        ensure_seed_impl=_fake_seed(tmp_path),
+    )
+    import pytest
+
+    with pytest.raises(ValueError, match="no seed"):
+        run_fn({"id": "X"}, round=0, model="m")
+
+
+# ---------------------------------------------------------------------------
+# run_batch lifecycle: _cleanup after scoring + _score_one strips reserved keys
+# ---------------------------------------------------------------------------
+
+
+def test_run_batch_calls_cleanup_after_scoring() -> None:
+    """run_batch invokes the handle's _cleanup after _score_one (try/finally)."""
+    order: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        def cleanup() -> None:
+            order.append("cleanup")
+
+        return {"vault": "/tmp/v", "jsonl": [], "_cleanup": cleanup}
+
+    def fake_score(card, *, vault, jsonl, **_):
+        order.append("score")
+        return (1, [])
+
+    cards = [{"id": "Z", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    run_batch(cards, model="m", rounds=1, run_card_fn=fake_run, score_fn=fake_score)
+    # Scoring happens first, cleanup strictly after.
+    assert order == ["score", "cleanup"]
+
+
+def test_run_batch_strips_reserved_keys_before_score_fn() -> None:
+    """_score_one must not spread _-prefixed keys (e.g. _cleanup) into score_fn."""
+    seen_kwargs: dict = {}
+
+    def fake_run(card, *, round, model, **_):
+        return {
+            "vault": "/tmp/v",
+            "jsonl": [],
+            "cwd": "/tmp/v/cwd",
+            "_cleanup": lambda: None,
+            "_internal": 7,
+        }
+
+    def fake_score(card, *, vault, jsonl, cwd, **extra):
+        seen_kwargs.update(extra)  # any leftover _-keys would land here
+        return (1, [])
+
+    cards = [{"id": "Z", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    run_batch(cards, model="m", rounds=1, run_card_fn=fake_run, score_fn=fake_score)
+    assert seen_kwargs == {}  # no _cleanup / _internal leaked through
+
+
+def test_run_batch_requires_explicit_run_card_fn() -> None:
+    """run_card_fn=None is a misuse now (live adapter built explicitly by caller)."""
+    import pytest
+
+    cards = [{"id": "Z", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    with pytest.raises(ValueError, match="run_card_fn"):
+        run_batch(cards, model="m", rounds=1, run_card_fn=None)
+
+
+# ---------------------------------------------------------------------------
+# FIX A — run_batch drives the REAL resolve (golden_dir threaded), no live agent
+# ---------------------------------------------------------------------------
+#
+# The coverage blind spot: EVERY test above returns an int / tuple / fake
+# score_fn, so resolve() is never actually called by run_batch. The live path
+# defaults score_fn=resolve, whose ``golden_dir`` is a REQUIRED kwarg the live
+# handle does not carry — so a real run raises TypeError on the first scored
+# card. These two tests close that gap by driving the DEFAULT score_fn (resolve)
+# over a real (clean) seed vault, scoring a load-bearing ``pdf_eq`` line that
+# dereferences ``golden_dir.parent/"pdfs"``. NEVER spawns: the run handle is a
+# canned ExecutorResult pointing at the prebuilt seed.
+
+
+def _peptidebert_auto_card() -> dict:
+    """An auto-scored card whose end-state needs the REAL resolve + golden_dir.
+
+    ``pdf_eq`` is load-bearing: its impl reads ``golden_dir.parent/"pdfs"/4.pdf``
+    and byte-compares it to the seed's ``paper.pdf`` (which ``lit add`` moved from
+    fixture 4), so a missing ``golden_dir`` raises before any check runs.
+    """
+    return {
+        "id": "A2-resolve",
+        "layer": "front-door",
+        "expected_end_state": [
+            "index_has: title~PeptideBERT year==2023",
+            "pdf_eq: papers/<peptidebert>/paper.pdf == fixture:4",
+            "health: clean",
+        ],
+    }
+
+
+def test_run_batch_real_resolve_missing_golden_dir_raises() -> None:
+    """REGRESSION (FIX A): without score_kwargs={'golden_dir': ...} the default
+    score_fn=resolve raises TypeError on the first scored card.
+
+    This is the exact crash the live path hit (golden_dir never threaded). It
+    must FAIL on the pre-fix code and is the guard that keeps run_bench.py honest.
+    """
+    import pytest
+    from harness.seeds import build_seed
+
+    seed_vault = build_seed("seed-2papers-peptide")
+
+    def fake_run(card, *, round, model, **_):
+        # The live-shaped handle: NO golden_dir, NO _cleanup (the real seed must
+        # survive). resolve() needs golden_dir as a required kwarg.
+        return {"vault": seed_vault, "jsonl": [], "cwd": None, "run": None}
+
+    cards = [_peptidebert_auto_card()]
+    with pytest.raises(TypeError, match="golden_dir"):
+        run_batch(cards, model="m", rounds=1, run_card_fn=fake_run)  # no score_kwargs
+
+
+def test_run_batch_real_resolve_with_golden_dir_scores() -> None:
+    """FIX A: threading score_kwargs={'golden_dir': GOLDEN_DIR} lets the REAL
+    resolve score the card with no TypeError; resolved is computed (here 1)."""
+    from harness.seeds import GOLDEN_DIR, build_seed
+
+    seed_vault = build_seed("seed-2papers-peptide")
+
+    def fake_run(card, *, round, model, **_):
+        return {"vault": seed_vault, "jsonl": [], "cwd": None, "run": None}
+
+    cards = [_peptidebert_auto_card()]
+    report = run_batch(
+        cards,
+        model="m",
+        rounds=1,
+        run_card_fn=fake_run,
+        score_kwargs={"golden_dir": GOLDEN_DIR},
+    )
+    # The card is auto-scored and resolves (real resolve ran end-to-end): the
+    # PeptideBERT seed has the #4 pdf, a matching INDEX entry, and a clean health.
+    assert report.cards[0].tag == "auto-scored"
+    assert report.cards[0].mean == 1.0
+    assert report.coverage["trr_denominator"] == 1
+    assert report.trr_mean == 1.0
+
+
+# ---------------------------------------------------------------------------
+# FIX B — the live run-vault adapter tears down on run_card_impl failure
+# ---------------------------------------------------------------------------
+
+
+def test_build_live_run_card_fn_cleans_up_when_run_card_impl_raises(tmp_path: Path) -> None:
+    """FIX B: if run_card_impl raises AFTER __enter__'s copytree but BEFORE the
+    handle returns, the adapter must rm the run dir (no /tmp leak) and re-raise.
+
+    The pre-fix code returned no handle, so run_batch never got a _cleanup and the
+    copied vault leaked once per round. NEVER spawns — the fake just raises.
+    """
+    import pytest
+
+    seen: dict = {}
+
+    def boom_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+        # __enter__ already copied the seed; capture the run dir, then fail like a
+        # real install_repo_skills RuntimeError / claude-bin FileNotFoundError.
+        seen["run_dir"] = Path(run_vault).parent
+        raise RuntimeError("install-skill failed")
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        run_card_impl=boom_run_card,
+        ensure_seed_impl=_fake_seed(tmp_path),
+    )
+    (tmp_path / "work").mkdir(exist_ok=True)
+
+    with pytest.raises(RuntimeError, match="install-skill failed"):
+        run_fn({"id": "A2", "seed": "s"}, round=0, model="m")
+
+    # The copytree landed (run dir existed) but was torn down on the exception.
+    assert "run_dir" in seen and not seen["run_dir"].exists()
+
+
+# ---------------------------------------------------------------------------
+# FIX C — routing accuracy wired into the report (fake routing_run_fn, no spawn)
+# ---------------------------------------------------------------------------
+
+
+def _routing_card() -> dict:
+    """A routing card with single + acceptable-set + absent-skill cases."""
+    return {
+        "id": "I-route",
+        "layer": "routing",
+        "in_scope_skills": ["lit-library", "lit-reading"],
+        # observed below: hit, miss (wrong skill), acceptable-set hit, na (absent).
+        "cases": [
+            {"utt": "把这篇加到库里", "golden": "lit-library"},
+            {"utt": "继续读", "golden": "lit-reading"},
+            {"utt": "browse or roundup", "golden": ["lit-library", "lit-reading"]},
+            {"utt": "引用这篇", "golden": "cite-retrieval"},
+        ],
+    }
+
+
+def test_run_batch_routing_run_fn_none_leaves_ra_unscored() -> None:
+    """Without routing_run_fn the routing card is tagged/counted but RA is None
+    (honest 'not scored', never a fake 0)."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    cards = [_routing_card()]
+    report = run_batch(cards, model="m", rounds=1, run_card_fn=fake_run)
+    assert report.coverage["counts"]["routing"] == 1
+    assert report.routing is None
+    assert report_to_dict(report)["routing"] is None
+
+
+def test_run_batch_scores_routing_with_fake_routing_run_fn() -> None:
+    """FIX C: a fake routing_run_fn returning canned observed skills makes
+    run_batch compute the RA section (hit/miss/acceptable-set/na) correctly."""
+    seen: dict = {}
+
+    def fake_run(card, *, round, model, **_):
+        return 1  # execution side not under test here
+
+    def fake_routing_run(card, *, model):
+        seen["model"] = model
+        # Observed per case, in card.cases order: hit, wrong route (miss+spurious),
+        # acceptable-set hit, and an observation for the absent-skill (na) case.
+        return ["lit-library", "lit-library", "lit-reading", "lit-library"]
+
+    cards = [_routing_card()]
+    report = run_batch(
+        cards, model="some-model", rounds=1, run_card_fn=fake_run, routing_run_fn=fake_routing_run
+    )
+
+    assert seen["model"] == "some-model"  # model passed straight through
+    routing = report.routing
+    assert routing is not None
+    # 2 hits (case 1 + case 3), 1 miss (case 2), 1 na (case 4, absent skill).
+    assert routing["hit"] == 2
+    assert routing["miss"] == 1
+    assert routing["na"] == 1
+    assert routing["spurious"] == 1  # case 2 fired a present-but-wrong skill
+    assert routing["scored"] == 3    # hits + misses (na excluded)
+    assert routing["ra"] == 2 / 3
+    assert routing["per_card"]["I-route"] == 2 / 3
+    # report_to_dict carries the routing section (JSON-serializable).
+    import json
+
+    payload = report_to_dict(report)
+    assert json.loads(json.dumps(payload))["routing"]["ra"] == 2 / 3
+
+
+def test_run_batch_aggregates_ra_across_two_routing_cards() -> None:
+    """Overall RA = total hits / (hits + misses) across all scored routing cards."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    def fake_routing_run(card, *, model):
+        # card A: 2/2 hits; card B: 0/2 (both miss).
+        return ["lit-library"] * 2 if card["id"] == "RA" else [None, None]
+
+    card_a = {
+        "id": "RA",
+        "layer": "routing",
+        "in_scope_skills": ["lit-library"],
+        "cases": [
+            {"utt": "u1", "golden": "lit-library"},
+            {"utt": "u2", "golden": "lit-library"},
+        ],
+    }
+    card_b = {
+        "id": "RB",
+        "layer": "routing",
+        "in_scope_skills": ["lit-library", "lit-reading"],
+        "cases": [
+            {"utt": "u3", "golden": "lit-reading"},
+            {"utt": "u4", "golden": "lit-library"},
+        ],
+    }
+    report = run_batch(
+        [card_a, card_b], model="m", rounds=1, run_card_fn=fake_run, routing_run_fn=fake_routing_run
+    )
+    routing = report.routing
+    assert routing["hit"] == 2
+    assert routing["miss"] == 2
+    assert routing["scored"] == 4
+    assert routing["ra"] == 0.5  # 2 hits / 4 scored
+    assert routing["per_card"] == {"RA": 1.0, "RB": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# FIX C — the live routing adapter delegates to the executor, never spawns here
+# ---------------------------------------------------------------------------
+
+
+def test_build_live_routing_run_fn_delegates_per_case(tmp_path: Path) -> None:
+    """The routing adapter calls observe_impl once per case (in cases order) with
+    model/auth passed through, and returns the observed skills. NEVER spawns —
+    observe_impl is a fake."""
+    calls: list[str] = []
+
+    def fake_observe(utt, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+        calls.append(str(utt))
+        # the run vault is a real cp of the seed (so the adapter exercised RunVault)
+        assert Path(run_vault).is_dir()
+        assert model == "some-model"
+        assert base_url == "https://proxy.example/v1"
+        assert auth_token == "tok-9"
+        return "lit-library" if "加到库" in str(utt) else None
+
+    run_fn = build_live_routing_run_fn(
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        base_url="https://proxy.example/v1",
+        auth_token="tok-9",
+        observe_impl=fake_observe,
+        ensure_seed_impl=_fake_seed(tmp_path),
+    )
+    (tmp_path / "work").mkdir(exist_ok=True)
+
+    card = {
+        "id": "I",
+        "layer": "routing",
+        "in_scope_skills": ["lit-library"],
+        "cases": [{"utt": "把这篇加到库里"}, {"utt": "继续读"}],
+    }
+    observed = run_fn(card, model="some-model")
+    assert calls == ["把这篇加到库里", "继续读"]
+    assert observed == ["lit-library", None]
