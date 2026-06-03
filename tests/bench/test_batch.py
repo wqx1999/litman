@@ -355,6 +355,101 @@ def test_run_batch_calls_cleanup_after_scoring() -> None:
     assert order == ["score", "cleanup"]
 
 
+def test_run_batch_transcript_dir_none_writes_nothing(tmp_path: Path) -> None:
+    """DEFAULT path: transcript_dir unset → no artifact dir, scoring unchanged.
+
+    Guards the red line that the opt-in debug dump is byte-identical to the
+    pre-existing behavior when not requested.
+    """
+    out = tmp_path / "transcripts"
+
+    def fake_run(card, *, round, model, **_):
+        return {"vault": "/tmp/v", "jsonl": [{"argv": ["list"]}], "_cleanup": lambda: None}
+
+    def fake_score(card, *, vault, jsonl, **_):
+        return (1, [])
+
+    cards = [{"id": "Z", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    run_batch(cards, model="m", rounds=2, run_card_fn=fake_run, score_fn=fake_score)
+    assert not out.exists()  # nothing written when transcript_dir is None
+
+
+def test_run_batch_keep_transcript_dumps_per_round(tmp_path: Path) -> None:
+    """transcript_dir set → one <id>-r<n>.json per round with commands + final
+    answer + resolved + the per-assertion trail; cleanup still fires afterwards."""
+    import json
+
+    from harness.checker import AssertResult
+
+    out = tmp_path / "transcripts"
+    cleaned: list[bool] = []
+
+    def fake_run(card, *, round, model, **_):
+        return {
+            "vault": "/tmp/v",
+            "jsonl": [{"argv": ["show", "x"], "stdout": "2023 Guntuboina"}],
+            "run": ExecutorResult(final_text=f"answer r{round}"),
+            "_cleanup": lambda: cleaned.append(True),
+        }
+
+    def fake_score(card, *, vault, jsonl, **_):
+        # A failing assertion, exactly the root-cause signal we want captured.
+        return (0, [AssertResult("answer_contains", "~Guntuboina", False, "not in final_text")])
+
+    cards = [{"id": "C2-show", "layer": "f", "expected_end_state": ["answer_contains: ~Guntuboina"]}]
+    run_batch(
+        cards,
+        model="m",
+        rounds=2,
+        run_card_fn=fake_run,
+        score_fn=fake_score,
+        transcript_dir=out,
+    )
+
+    f0, f1 = out / "C2-show-r0.json", out / "C2-show-r1.json"
+    assert f0.is_file() and f1.is_file()
+    p0 = json.loads(f0.read_text(encoding="utf-8"))
+    assert p0["card_id"] == "C2-show"
+    assert p0["round"] == 0
+    assert p0["resolved"] == 0
+    assert p0["final_text"] == "answer r0"
+    assert p0["jsonl"][0]["stdout"] == "2023 Guntuboina"
+    # the trail (AssertResult dataclass) is serialized field-by-field.
+    assert p0["trail"][0]["verb"] == "answer_contains"
+    assert p0["trail"][0]["passed"] is False
+    assert "not in final_text" in p0["trail"][0]["detail"]
+    # the vault was still cleaned up (transcript keeps only the small artifact).
+    assert cleaned == [True, True]
+
+
+def test_run_batch_keep_transcript_unwritable_dir_raises_before_spend(tmp_path: Path) -> None:
+    """An unwritable --keep-transcript dir aborts UP FRONT (before any run_card_fn
+    call), so a bad path never wastes a live run with silently-dropped artifacts.
+
+    REGRESSION: an unexpanded ``$BENCH/...`` (→ ``/results/...``) used to be
+    swallowed by _dump_transcript's bare except, so 24 rounds of live spend
+    produced zero transcripts. The up-front probe must turn that into a loud,
+    token-free failure (no-silent-skip, invariant #14).
+    """
+    import pytest
+
+    spawned: list[str] = []
+
+    def fake_run(card, *, round, model, **_):  # pragma: no cover - must not run
+        spawned.append(card["id"])
+        return 1
+
+    # A path UNDER a regular file can never be mkdir'd → OSError on the probe.
+    blocker = tmp_path / "afile"
+    blocker.write_text("x", encoding="utf-8")
+    bad_dir = blocker / "transcripts"
+
+    cards = [{"id": "Z", "layer": "f", "expected_end_state": ["path_exists: papers"]}]
+    with pytest.raises(ValueError, match="not writable"):
+        run_batch(cards, model="m", rounds=3, run_card_fn=fake_run, transcript_dir=bad_dir)
+    assert spawned == []  # aborted before spending a single round
+
+
 def test_run_batch_strips_reserved_keys_before_score_fn() -> None:
     """_score_one must not spread _-prefixed keys (e.g. _cleanup) into score_fn."""
     seen_kwargs: dict = {}

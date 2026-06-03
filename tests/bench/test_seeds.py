@@ -67,6 +67,17 @@ def test_build_1paper_seed() -> None:
     assert _health_errors(vault) == []
 
 
+def test_1paper_seed_injects_focal_loss_note() -> None:
+    """C3 precondition: the `notes` step writes 'focal loss' into #1's notes.md so
+    `lit search "focal loss"` has something to find (else C3 is a guaranteed-0
+    false negative). Notes stay health-clean (notes content is not in INDEX)."""
+    vault = build_seed("seed-1paper-diffdock")
+    (diffdock,) = [p for p in (vault / "papers").iterdir() if "DiffDock" in p.name]
+    note = (diffdock / "notes.md").read_text(encoding="utf-8")
+    assert "focal loss" in note.lower()
+    assert _health_errors(vault) == []
+
+
 def test_build_2paper_seed_clean() -> None:
     vault = build_seed("seed-2papers-peptide")
     papers = _papers(vault)

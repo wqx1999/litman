@@ -4,9 +4,11 @@ layer: adversarial
 source: 补
 fixtures: [4]
 needs_pty: false
+needs_network: true                   # 前置须先 code add（git clone）再注入悬空
 invariants: [12, 14, 15]
 routing_label: lit-reading      # "库还干净吗" → library health
 seed: seed-2papers-peptide
+skip_reason: "needs_network — 前置须先 code add（git clone）绑定 repo 再由 harness rm 制造悬空，沙箱无网；执行延后到用户机器试跑阶段（与 E1/J1 同列）"
 precondition: |
   #4 已 add 且 link 了它的 repo（code-clones 非空，codes/<repo>/ 真实存在）。
   然后 **harness 直接 rm 掉 codes/<repo>/ 目录**，留下 metadata 里的 code-clones 反向引用

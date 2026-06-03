@@ -4,9 +4,11 @@ layer: linking
 source: 列
 fixtures: [4]
 needs_pty: false
+needs_network: true                   # 前置须先 code add（git clone）
 invariants: [12]
 routing_label: lit-library
 seed: seed-2papers-peptide
+skip_reason: "needs_network — 前置须先 code add（git clone）绑定 repo，沙箱无网；执行延后到用户机器试跑阶段（与 E1/J1 同列）"
 precondition: |
   #4 已绑定其 repo（codes/<repo>/ 存在，code-clones 含它）。
 intent: |

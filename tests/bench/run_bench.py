@@ -117,6 +117,8 @@ def build_report(args: argparse.Namespace) -> BenchReport:
             auth_token=args.auth_token,
         )
 
+    transcript_dir = Path(args.keep_transcript) if args.keep_transcript else None
+
     return run_batch(
         cards,
         model=args.model,
@@ -127,6 +129,10 @@ def build_report(args: argparse.Namespace) -> BenchReport:
         # required kwarg (pdf_eq dereferences golden_dir.parent/"pdfs"). The live
         # handle carries no golden_dir, so thread the committed fixtures here.
         score_kwargs={"golden_dir": GOLDEN_DIR},
+        # Opt-in debug aid: when set, each round's transcript (commands + final
+        # answer + per-assertion trail) is dumped here before the run vault is
+        # removed. Unset (default) leaves the scoring path byte-identical.
+        transcript_dir=transcript_dir,
     )
 
 
@@ -169,6 +175,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cards", default=None, help="comma-separated card ids to run")
     parser.add_argument("--out", default=None, help="write the full report JSON here")
     parser.add_argument(
+        "--run-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "group this run's artifacts under DIR: writes DIR/report.json + "
+            "DIR/transcripts/ (sugar for --out DIR/report.json --keep-transcript "
+            "DIR/transcripts). Explicit --out / --keep-transcript override. The "
+            "launcher (submit.sh) builds DIR; this flag just files everything inside it."
+        ),
+    )
+    parser.add_argument(
         "--base-url",
         default=None,
         help="external-model proxy base URL (M34 §3.6.B); unset -> Anthropic OAuth",
@@ -179,11 +196,31 @@ def main(argv: list[str] | None = None) -> int:
         help="auth token for the external-model proxy (used only with --base-url)",
     )
     parser.add_argument(
+        "--keep-transcript",
+        default=None,
+        metavar="DIR",
+        help=(
+            "opt-in debug: dump each round's transcript (commands + final answer "
+            "+ per-assertion trail) to DIR before the run vault is removed; unset "
+            "leaves the scoring path unchanged"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="exercise the pipeline with a non-live fake executor (no claude -p)",
     )
     args = parser.parse_args(argv)
+
+    # --run-dir is sugar: file report.json + transcripts/ under one dir. Explicit
+    # --out / --keep-transcript still win (lower-level one-off override).
+    if args.run_dir:
+        run_dir = Path(args.run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if args.out is None:
+            args.out = str(run_dir / "report.json")
+        if args.keep_transcript is None:
+            args.keep_transcript = str(run_dir / "transcripts")
 
     report = build_report(args)
     print(format_report(report))

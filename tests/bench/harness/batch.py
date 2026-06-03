@@ -49,9 +49,10 @@ coverage dict but never silently fold into a passing number.
 
 from __future__ import annotations
 
+import json
 import statistics
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -308,6 +309,7 @@ def run_batch(
     score_fn: Callable[..., tuple[int, list]] = resolve,
     run_kwargs: dict[str, Any] | None = None,
     score_kwargs: dict[str, Any] | None = None,
+    transcript_dir: Path | None = None,
 ) -> BenchReport:
     """Run every non-skipped EXECUTION card ``rounds`` times and aggregate.
 
@@ -351,6 +353,23 @@ def run_batch(
     run_kwargs = run_kwargs or {}
     score_kwargs = score_kwargs or {}
 
+    if transcript_dir is not None:
+        # Fail BEFORE any agent spawn (token spend) if the dir is unwritable.
+        # A silently-swallowed bad --keep-transcript path wasted a whole live run
+        # (no-silent-skip, invariant #14). Probe with a real mkdir + write so an
+        # unexpanded "$BENCH/..." (→ /results/...) aborts up front, not after 24
+        # rounds of spend with zero artifacts saved.
+        try:
+            transcript_dir.mkdir(parents=True, exist_ok=True)
+            probe = transcript_dir / ".write-probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError as e:
+            raise ValueError(
+                f"--keep-transcript dir is not writable: {transcript_dir} ({e}); "
+                "fix the path before re-running (no tokens spent yet)"
+            ) from e
+
     card_scores: list[CardScore] = []
     counts = {"auto-scored": 0, "prose-blocked": 0, "routing": 0, "skipped": 0}
     auto_means: list[float] = []
@@ -382,6 +401,13 @@ def run_batch(
             run = run_card_fn(card, round=i, model=model, **run_kwargs)
             try:
                 resolved, _trail = _score_one(card, run, score_fn, score_kwargs)
+                if transcript_dir is not None:
+                    # Opt-in only: dump the in-memory transcript (commands +
+                    # final answer + per-assertion trail) BEFORE _maybe_cleanup
+                    # rm's the disposable vault. Default (None) path is untouched.
+                    _dump_transcript(
+                        transcript_dir, cid, i, model, run, resolved, _trail
+                    )
             finally:
                 _maybe_cleanup(run)
             round_scores.append(int(resolved))
@@ -470,6 +496,78 @@ def _score_one(
         kwargs = {**score_kwargs, **scoreable}
         return score_fn(card, **kwargs)
     raise TypeError(f"run_card_fn returned unscoreable handle: {type(run).__name__}")
+
+
+def _trail_to_json(trail: Any) -> Any:
+    """Serialize the per-assertion trail (list of ``AssertResult`` dataclasses).
+
+    Falls back to ``str`` for anything that is neither a dataclass nor a plain
+    JSON scalar, so a debug dump never raises on an unexpected element.
+    """
+    if not isinstance(trail, list):
+        return str(trail)
+    out = []
+    for item in trail:
+        if is_dataclass(item) and not isinstance(item, type):
+            out.append(asdict(item))
+        elif isinstance(item, (str, int, float, bool, type(None))):
+            out.append(item)
+        else:
+            out.append(str(item))
+    return out
+
+
+def _dump_transcript(
+    transcript_dir: Path,
+    card_id: str,
+    round: int,  # noqa: A002 - mirror the loop variable name
+    model: str,
+    run: Any,
+    resolved: int,
+    trail: Any,
+) -> None:
+    """Write one round's transcript artifact to ``<transcript_dir>/<id>-r<n>.json``.
+
+    Opt-in debug aid (only called when ``run_batch(transcript_dir=...)`` is set):
+    captures the agent's emitted commands (``jsonl``), final answer
+    (``run.final_text``), the resolved score, and the per-assertion ``trail`` —
+    everything needed to root-cause a failing card WITHOUT keeping the disposable
+    run vault (which ``_maybe_cleanup`` still removes as usual). The default path
+    (``transcript_dir=None``) never reaches here, so behavior is byte-identical.
+
+    Never raises into the scoring loop: a dump failure is a debug-convenience
+    miss, not a scoring error.
+    """
+    try:
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "card_id": card_id,
+            "round": round,
+            "model": model,
+            "resolved": int(resolved),
+            "trail": _trail_to_json(trail),
+        }
+        if isinstance(run, dict):
+            payload["jsonl"] = run.get("jsonl")
+            result = run.get("run")
+            payload["final_text"] = getattr(result, "final_text", None)
+            payload["exit_code"] = getattr(result, "exit_code", None)
+        else:
+            # A fake handle (int / tuple); record what little we have.
+            payload["run_repr"] = str(run)
+        path = transcript_dir / f"{card_id}-r{round}.json"
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001 - a dump miss must not kill a long run
+        # Non-fatal (one bad round shouldn't abort a 3-hour run), but NEVER
+        # silent: the up-front probe in run_batch already caught an unwritable
+        # dir, so reaching here means a mid-run anomaly worth surfacing.
+        print(
+            f"WARNING: failed to write transcript {card_id}-r{round}: {e}",
+            file=sys.stderr,
+        )
 
 
 def _maybe_cleanup(run: Any) -> None:

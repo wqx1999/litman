@@ -16,11 +16,16 @@ from harness.scenarios import (
     load_card,
 )
 
-# The full corpus is 33 cards; 5 carry an explicit skip_reason (4 needs_network
-# + 1 needs_pty), the rest are sandbox-runnable definitions.
+# The full corpus is 33 cards; 7 carry an explicit skip_reason (6 needs_network
+# + 1 needs_pty), the rest are sandbox-runnable definitions. E2/H1 join the
+# needs_network set: both preconditions require a bound code repo (a `code add`
+# = git clone), which the sandbox seed builder cannot stage — leaving them
+# auto-scored produced guaranteed-0 false negatives for every model.
 EXPECTED_CARD_COUNT = 33
 EXPECTED_SKIP_IDS = {
     "E1-code-add",
+    "E2-code-rm",
+    "H1-inject-dangling-clone",
     "J1-read-compare-link-clone",
     "J1-corrupt",
     "J2-amp-survey",

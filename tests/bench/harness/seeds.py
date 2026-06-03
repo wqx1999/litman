@@ -109,6 +109,10 @@ class SeedStep:
     * ``project_add``  — ``project`` (name); the dir is created under the vault.
     * ``link``         — ``fixture`` + ``project``.
     * ``read``         — ``fixture``.
+    * ``notes``        — ``fixture`` + ``notes_text`` (appended to that paper's
+                         ``notes.md``; emulates a user-authored note so cards like
+                         C3 ``lit search`` have content to find — there is no CLI
+                         notes-writer, notes.md is a plain authored TRUTH file).
     """
 
     op: str
@@ -118,6 +122,7 @@ class SeedStep:
     set: tuple[tuple[str, str], ...] = ()
     add_tags: tuple[str, ...] = ()
     project: str | None = None
+    notes_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,10 @@ def _link(fixture: int, project: str) -> SeedStep:
     return SeedStep("link", fixture=fixture, project=project)
 
 
+def _notes(fixture: int, text: str) -> SeedStep:
+    return SeedStep("notes", fixture=fixture, notes_text=text)
+
+
 # ---------------------------------------------------------------------------
 # The seed set (4 seeds; seed-100papers DEFERRED but the model scales to it)
 # ---------------------------------------------------------------------------
@@ -174,8 +183,20 @@ SEED_SPECS: dict[str, SeedSpec] = {
     # B1/B2/B3 (modify/read/revisit on #1), C3 (search notes), G3 (trash+restore).
     "seed-1paper-diffdock": SeedSpec(
         name="seed-1paper-diffdock",
-        steps=(_INIT, _add(1)),
-        description="Vault with #1 DiffDock added (status=inbox).",
+        steps=(
+            _INIT,
+            _add(1),
+            # C3 precondition: the user has written "focal loss" in #1's notes, so
+            # `lit search "focal loss"` has something to locate (id contains
+            # "DiffDock" → satisfies the stdout assertion deterministically).
+            _notes(
+                1,
+                "Reading notes — DiffDock.\n\n"
+                "Tried reframing the confidence head with a focal loss to fight "
+                "the easy-negative imbalance in the pose ranking.",
+            ),
+        ),
+        description="Vault with #1 DiffDock added (status=inbox); notes mention focal loss (C3).",
     ),
     # --- 2 papers: PeptideBERT (#4) + Multi-Peptide (#5), same group --------
     # A2 (precondition has #1; add #4 — but the *checked* state is #4 present;
@@ -377,6 +398,22 @@ def _apply_step(step: SeedStep, ctx: _BuildEnv) -> None:
         assert step.fixture is not None
         pid = _paper_id_for_fixture(vault, step.fixture)
         _run_lit(["read", pid, *lib], env=ctx.env)
+        return
+
+    if step.op == "notes":
+        assert step.fixture is not None and step.notes_text is not None
+        pid = _paper_id_for_fixture(vault, step.fixture)
+        # No CLI notes-writer exists; notes.md is a plain user-authored file
+        # (`lit add` seeds a template). Append the fixture note directly — this
+        # emulates the user having written it, the only way to satisfy a card
+        # whose precondition is "the user wrote X in notes" (e.g. C3). notes
+        # content is NOT in INDEX.json / views, so nothing derived desyncs.
+        notes_path = vault / "papers" / pid / "notes.md"
+        existing = notes_path.read_text(encoding="utf-8") if notes_path.is_file() else ""
+        sep = "" if existing.endswith("\n") or not existing else "\n"
+        notes_path.write_text(
+            existing + sep + step.notes_text.rstrip("\n") + "\n", encoding="utf-8"
+        )
         return
 
     raise ValueError(f"unknown seed step op: {step.op!r}")
