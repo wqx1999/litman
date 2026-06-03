@@ -458,6 +458,44 @@ def test_stdout_contains_falls_back_to_blob(synth_vault: Path) -> None:
     assert not miss.passed
 
 
+def test_stdout_not_contains(synth_vault: Path) -> None:
+    """C1: a filtered list must NOT surface the out-of-range paper."""
+    jsonl = [{"argv": ["list"], "stdout": "#4 PeptideBERT\n#5 Multi-Peptide"}]
+    # Absent -> passes (the negative assertion holds).
+    assert _ck("stdout_not_contains: ~DiffDock", synth_vault, jsonl).passed
+    # Present -> fails (the paper leaked into the filtered output).
+    assert not _ck("stdout_not_contains: ~PeptideBERT", synth_vault, jsonl).passed
+
+
+def test_stdout_not_contains_searches_widest_evidence(synth_vault: Path) -> None:
+    """Safety direction for the negative verb: a substring present ONLY in the
+    unmapped blob (not the per-record stdout) must still FAIL not_contains when a
+    run is threaded — never a false 'absent' pass."""
+    from harness.executor import ExecutorResult, LitCall, ToolResult
+
+    run = ExecutorResult(
+        lit_calls=[LitCall(argv=["list"], raw="lit list", tool_use_id="b1")],
+        tool_results=[ToolResult(tool="Bash", content="#1 DiffDock", tool_use_id="OTHER")],
+    )
+    jsonl = run.as_jsonl_records()
+    assert jsonl[0]["stdout"] == ""  # unmapped -> empty per-record stdout
+
+    # Without run: per-record stdout is empty, so DiffDock looks (wrongly) absent.
+    no_run = check_assertion(
+        "stdout_not_contains: ~DiffDock", vault=synth_vault, jsonl=jsonl, golden_dir=GOLDEN_DIR
+    )
+    assert no_run.passed  # only the jsonl is visible here
+    # With run: the blob exposes DiffDock -> the negative assertion correctly fails.
+    with_run = check_assertion(
+        "stdout_not_contains: ~DiffDock",
+        vault=synth_vault,
+        jsonl=jsonl,
+        golden_dir=GOLDEN_DIR,
+        run=run,
+    )
+    assert not with_run.passed, with_run.detail
+
+
 def test_answer_contains_no_run_is_hard_fail(synth_vault: Path) -> None:
     """run=None must FAIL, never silently pass (invariant #14 no-silent-skip)."""
     r = _ck("answer_contains: ~2023", synth_vault)  # no run threaded

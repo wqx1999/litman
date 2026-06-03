@@ -27,13 +27,19 @@ Four further verbs read state the vault YAML does not own:
 * ``count`` matches over INDEX.json papers (e.g. ``count: title~PeptideBERT == 1``
   proves the dedup did not create a duplicate, M34 §3.5: A3).
 
-Two evidence verbs score the agent's observable output:
+Three evidence verbs score the agent's observable output:
 
 * ``stdout_contains: ~substr`` greps the joined ``record["stdout"]`` of the
   jsonl (works from the jsonl alone — the executor widens its records to carry
   each lit call's captured stdout). When that misses and a ``run`` is threaded
   it falls back to the executor's ``stdout_blob`` (every captured result block),
   recovering output whose result block could not be paired to a call by id.
+* ``stdout_not_contains: ~substr`` is the negative of the above (e.g. C1: a
+  filtered ``lit list`` must NOT surface the out-of-range paper). It searches the
+  WIDEST evidence — jsonl stdout *and* ``stdout_blob`` when a ``run`` is threaded
+  — and passes only when the substring is absent from all of it. Widening the
+  search can only make a present substring easier to find, so it never yields a
+  false "absent" pass.
 * ``answer_contains: ~substr`` greps ``run.final_text`` (the agent's natural
   language answer, e.g. C2 "year=2023"). Needs ``run`` threaded; when it is
   ``None`` the result is a *failed* assertion (``detail="no run threaded"``),
@@ -568,6 +574,28 @@ def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> Asse
     )
 
 
+def _check_stdout_not_contains(jsonl: list[dict], arg: str, run: Any = None) -> AssertResult:
+    """``stdout_not_contains: ~substr`` — the negative of stdout_contains.
+
+    Passes only when ``substr`` is absent from the WIDEST available evidence: the
+    joined jsonl ``record["stdout"]`` AND (when a ``run`` is threaded) the
+    executor's ``stdout_blob``. Searching the broadest space is the safe direction
+    for a negative assertion — a substring that is actually present is more likely
+    to be found and correctly fail, so this never yields a false "absent" pass.
+    """
+    sub = arg.strip().lstrip("~").strip()
+    blob = "\n".join(str(r.get("stdout", "")) for r in jsonl)
+    present = _norm(sub) in _norm(blob)
+    if not present and run is not None:
+        from harness.executor import stdout_blob
+
+        present = _norm(sub) in _norm(stdout_blob(run))
+    return AssertResult(
+        "stdout_not_contains", arg, not present,
+        "" if not present else f"lit-call stdout unexpectedly contains {sub!r}",
+    )
+
+
 def _check_answer_contains(run: Any, arg: str) -> AssertResult:
     """``answer_contains: ~substr`` — grep the agent's final natural-language answer.
 
@@ -601,7 +629,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "ran", "not_ran",
         "file_exists", "file_contains", "file_nonempty",
         "count",
-        "stdout_contains", "answer_contains",
+        "stdout_contains", "stdout_not_contains", "answer_contains",
     }
 )
 
@@ -670,6 +698,8 @@ def check_assertion(
         return _check_count(vault, arg)
     if verb == "stdout_contains":
         return _check_stdout_contains(jsonl, arg, run)
+    if verb == "stdout_not_contains":
+        return _check_stdout_not_contains(jsonl, arg, run)
     if verb == "answer_contains":
         return _check_answer_contains(run, arg)
 

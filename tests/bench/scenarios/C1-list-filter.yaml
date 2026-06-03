@@ -12,14 +12,13 @@ precondition: |
 intent: |
   "把我库里 2023 年以后、跟 peptide 有关的论文列出来。"
 expected_end_state:
-  - "ran: list"                        # lit list --year 2023,2024 --topic ...
-  - "stdout_contains: ~PeptideBERT"    # 输出含 #4
-  - "stdout_contains: ~Multi-Peptide"  # 输出含 #5
-  - 输出不含 #1(DiffDock)               # 负向断言，无 stdout_not_contains 动词 → 留 prose
+  - "ran: list"                          # lit list --year 2023,2024 --topic ...
+  - "stdout_contains: ~PeptideBERT"      # 输出含 #4
+  - "stdout_contains: ~Multi-Peptide"    # 输出含 #5
+  - "stdout_not_contains: ~DiffDock"     # 输出不含 #1(2022，超出 year 过滤)
 auto_fail:
   - grep / ls -R vault 而非 lit list                                    # ADR-007
   - 触碰真库
 notes: |
-  "输出含 #4、#5" 的正向部分转 stdout_contains（执行器 stdout 解析）。负向部分
-  "不含 #1" 当前 DSL 无 stdout_not_contains 动词，保留 prose（checker 标 manual，
-  不静默通过）；执行阶段由报告人工复核。
+  正向"输出含 #4、#5"转 stdout_contains，负向"不含 #1"转 stdout_not_contains
+  （均由执行器 stdout 解析）。该卡现已全 DSL → auto-scored。
