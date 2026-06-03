@@ -186,6 +186,26 @@ def test_taxonomy_drift_unreadable_file_emits_error(
 
 
 # ---------------------------------------------------------------------------
+# §6.3: a bare-scalar list-field must not iterate per-character
+#
+# metadata.yaml is schema-less; `topics: foo` (no `- foo`) loads as the string
+# "foo". The pre-fix code did `for value in p.get("topics") or []`, iterating
+# the string's CHARACTERS — one phantom drift Issue per char. The shared
+# `as_str_list` coercion wraps a scalar into a single-element list so the value
+# surfaces once, as itself (no silent mangling, invariant #14).
+# ---------------------------------------------------------------------------
+
+
+def test_taxonomy_drift_scalar_field_not_iterated_per_char(vault: Path) -> None:
+    paper = _minimal_paper(topics="zzz_unregistered_topic")
+    issues = check_taxonomy_drift(vault, [paper])
+    # Exactly one Issue for the whole value, not one per character.
+    assert len(issues) == 1
+    assert "zzz_unregistered_topic" in issues[0].message
+    assert issues[0].category == "taxonomy_drift"
+
+
+# ---------------------------------------------------------------------------
 # C-ops1: run_push_integrity_errors exclusion contract
 #
 # These pin the load-bearing carve-outs so a future refactor that drops

@@ -558,9 +558,21 @@ def test_a7_no_new_runtime_dependency_and_no_networkx() -> None:
         dep.split(">")[0].split("<")[0].split("=")[0].split("[")[0].strip().lower()
         for dep in deps
     }
-    assert "networkx" not in dep_names
-    # The runtime set is frozen at exactly these seven (no graph lib snuck in).
-    assert dep_names == {
+    # Real intent: no graph library backs the viz feature — the data layer
+    # stays pure-stdlib. Blocklist the usual suspects rather than freezing the
+    # whole dep set with `==`, which would false-trip on any *legitimate* future
+    # dependency unrelated to graphs (the §6.2 brittleness this relaxes).
+    graph_libs = {
+        "networkx",
+        "igraph",
+        "python-igraph",
+        "graph-tool",
+        "pygraphviz",
+        "pyvis",
+    }
+    assert graph_libs.isdisjoint(dep_names)
+    # The seven core deps must all still be present (superset, not exact).
+    assert dep_names >= {
         "click",
         "ruamel.yaml",
         "httpx",

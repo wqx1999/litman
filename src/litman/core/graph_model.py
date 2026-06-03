@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
+from litman.core.coerce import as_str_list as _as_str_list
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
@@ -61,29 +62,6 @@ UNASSIGNED = "(unassigned)"
 _DIRECTED_FORWARD_FIELDS: tuple[str, ...] = tuple(
     f for f in FORWARD_REF_FIELDS if RELATION_PAIRS.get(f) != f
 )
-
-
-def _as_str_list(value: Any) -> list[str]:
-    """Coerce a metadata list-field value into a list of strings.
-
-    metadata.yaml is schema-less (invariant #7): a list-typed field may be
-    absent, ``None``, a proper list, or — when the user wrote ``projects: x``
-    without a ``- x`` list item — a bare scalar. Iterating a bare scalar string
-    with ``for x in value`` yields its CHARACTERS, exploding ``pepforge`` into
-    six phantom nodes. This normalizes:
-
-    * ``None`` / missing -> ``[]``
-    * a ``list`` -> its elements stringified
-    * a bare scalar -> a single-element ``[str(value)]``
-
-    A bare scalar is wrapped, never dropped, so the value still SURFACES as one
-    node and gets invalid-marked if unregistered (no silent-skip, invariant #14).
-    """
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(x) for x in value]
-    return [str(value)]
 
 
 # ---------------------------------------------------------------------------

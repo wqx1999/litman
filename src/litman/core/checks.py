@@ -47,6 +47,7 @@ from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.coerce import as_str_list
 from litman.core.dates import is_iso_date, is_iso_datetime
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
@@ -978,8 +979,8 @@ def check_views_vs_metadata(
             continue
         pid = str(pid)
         for view_name, field_name in LIST_VIEW_FIELDS.items():
-            for value in p.get(field_name) or []:
-                expected[view_name].add((_safe_name(str(value)), pid))
+            for value in as_str_list(p.get(field_name)):
+                expected[view_name].add((_safe_name(value), pid))
         for view_name, field_name in SCALAR_VIEW_FIELDS.items():
             value = p.get(field_name)
             if value:
@@ -1065,9 +1066,8 @@ def check_taxonomy_drift(
     for p in papers:
         pid = p.get("id") or "(unknown)"
         for dict_name in USER_DICTS:
-            field_values = p.get(dict_name) or []
-            for value in field_values:
-                if str(value) not in registered.get(dict_name, []):
+            for value in as_str_list(p.get(dict_name)):
+                if value not in registered.get(dict_name, []):
                     out.append(
                         Issue(
                             category="taxonomy_drift",
@@ -1593,7 +1593,7 @@ def check_relevance_orphan(
         pid = p.get("id")
         if not pid:
             continue
-        member_projects = set(p.get("projects") or [])
+        member_projects = set(as_str_list(p.get("projects")))
         for key in p:
             if not isinstance(key, str) or not key.startswith("relevance-"):
                 continue
@@ -1968,8 +1968,8 @@ def check_code_clone_integrity(
         pid = p.get("id")
         if not pid:
             continue
-        for name in p.get("code-clones") or []:
-            if not isinstance(name, str) or not name:
+        for name in as_str_list(p.get("code-clones")):
+            if not name:
                 continue
             references.setdefault(name, []).append(str(pid))
     referenced_repos = set(references.keys())

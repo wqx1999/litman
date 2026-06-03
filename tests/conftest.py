@@ -11,10 +11,22 @@ lines as extractable text. Used by the M20 code-URL scanner tests and the
 from __future__ import annotations
 
 import io
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
+
+# Strip FORCE_COLOR before any test module imports a litman command (and thus
+# constructs its Rich Console). This machine's background shell exports
+# FORCE_COLOR=3, which Rich honours OVER NO_COLOR / PY_COLORS, so it injects
+# ANSI escapes into CliRunner-captured output and breaks ~39 substring
+# assertions (e.g. "0.33.0" in output vs the escaped "0.\x1b[1;36m33.0\x1b[0m").
+# Popping it at conftest import time — before collection imports any test
+# module — guarantees the Console sees a clean env. NO_COLOR is set as belt-
+# and-suspenders for any code path that builds a Console on a real tty.
+os.environ.pop("FORCE_COLOR", None)
+os.environ.setdefault("NO_COLOR", "1")
 
 
 def _build_text_pdf(pages: Sequence[Sequence[str]]) -> bytes:
