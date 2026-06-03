@@ -47,12 +47,15 @@ GOLDEN_DIR = FIXTURES_DIR / "golden"
 DEFAULT_CACHE_ROOT = Path("/tmp/litman-bench-seeds")
 SEED_KEY_FILE = ".seed-key"
 
-# The `lit` entry point inside the litman conda env (bypasses `conda activate`).
+# The `lit` CLI entry point, resolved in priority order: an explicit env override
+# (LITMAN_BENCH_LIT_BIN — pin a specific install for reproducibility) -> `lit`
+# discovered on PATH (the portable default — a venv `pip install ./litman` or
+# `pipx install` puts it there, so a fresh clone needs no config) -> bare "lit"
+# (subprocess resolves it, or fails with a clear error if litman is not installed).
 LIT_BIN = Path(
-    os.environ.get(
-        "LITMAN_BENCH_LIT_BIN",
-        "/work/wangq/software/miniconda3/envs/litman/bin/lit",
-    )
+    os.environ.get("LITMAN_BENCH_LIT_BIN")
+    or shutil.which("lit")
+    or "lit"
 )
 
 
