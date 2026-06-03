@@ -107,6 +107,7 @@ lit setup   # interactive wizard: shell completion → Claude Code skill → vau
 ### With an AI agent
 
 ```
+Create a new vault at /work/me/.
 Add ~/Downloads/attention_is_all_you_need.pdf to my vault.
 Show me all papers tagged with topic: transformer.
 Tag 2017_Vaswani_Attention with topic: attention.
@@ -161,6 +162,24 @@ Local-preview the docs as a static site:
 pip install mkdocs mkdocs-material
 mkdocs serve
 ```
+
+## Acknowledgments
+
+This tool was developed in the [Süssmuth Lab](https://www.tu.berlin/en/biochemie/research/research-in-suessmuth-group), Technische Universität Berlin. Computations and infrastructure were supported by the [TU Berlin HPC cluster](https://www.tu.berlin/en/hpc-cluster/introduction-slurm-version).
+
+This project was built with the help of AI-powered development tools:
+
+[![Claude Code](https://img.shields.io/badge/Claude_Code-Anthropic-d4a574?logo=anthropic&logoColor=white)](https://claude.ai/code)
+[![Cursor](https://img.shields.io/badge/Cursor-AI_Editor-000000?logo=cursor&logoColor=white)](https://cursor.sh)
+
+Core dependencies that make litman possible:
+
+[![Click](https://img.shields.io/badge/Click-CLI_Framework-4B8BBE?logoColor=white)](https://click.palletsprojects.com/)
+[![ruamel.yaml](https://img.shields.io/badge/ruamel.yaml-YAML_Parser-FFDD54?logoColor=black)](https://pypi.org/project/ruamel.yaml/)
+[![pypdf](https://img.shields.io/badge/pypdf-PDF_Extraction-EE4C2C?logoColor=white)](https://pypdf.readthedocs.io/)
+[![Pydantic](https://img.shields.io/badge/Pydantic-Data_Validation-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
+[![Rich](https://img.shields.io/badge/Rich-Terminal_UI-FAD000?logoColor=black)](https://rich.readthedocs.io/)
+[![httpx](https://img.shields.io/badge/httpx-HTTP_Client-2D9CDB?logoColor=white)](https://www.python-httpx.org/)
 
 ## License
 
