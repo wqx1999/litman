@@ -1,3 +1,3 @@
 """litman — local-first, AI-augmented literature management CLI."""
 
-__version__ = "0.33.0"
+__version__ = "1.0.0"
