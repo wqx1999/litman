@@ -39,12 +39,15 @@ notes: |
   缺或过期 REFERENCES.md / 多余 symlink"均报 **error** 级 → health 失败，已忠实覆盖那两条
   断言（agent 把 projects 字段塞上却没真 link，member_ids 有而 link_ids 无 → error）。
 
-  **大小写：断言用小写 `pepcodec`，不是 intent 里的 CamelCase `PepCodec`。** 依据：
-  (1) 4 个 TAXONOMY key（projects/topics/methods/data）在 CLI 层全是 `strip()`、**不
-  lowercase**（`commands/taxonomy.py:237`、`commands/project.py:171`），小写是统一**约定**；
-  (2) lit-library skill 明确教小写 project token（`lit project add pepforge` 示例、
-  "deterministic canonicalization (case)"）；(3) 过滤/解析大小写不敏感
-  （`core/query.py:104` `token.lower() in entry.lower()`），`pepcodec` 与 `PepCodec`
-  解析到同一项目。故忠实的存储是小写，agent 敲小写是对的。identity.md 的 CamelCase 仅叙述
-  用词，非存储 key。（附带 litman 隐患：`project add` 去重 `project.py:191` 大小写敏感，理论
-  上 `PepCodec`+`pepcodec` 可并存为两项目——记入 later proposal，与本卡无关。）
+  **大小写由 checker 归一化，不靠断言字面。** agent 的 project token 大小写是**掷硬币**
+  （cc_haiku r0 敲 `pepcodec`、260604_2 r0 敲 `PepCodec`，同 prompt 同 skill 两种都出）。
+  litman 自己对 4 个 TAXONOMY key（projects/topics/methods/data）**存储大小写保留**
+  （`commands/taxonomy.py:237`、`commands/project.py:171` 仅 `strip()`）但**匹配大小写不
+  敏感**（`core/query.py:104` `token.lower() in entry.lower()`）——`PepCodec` 与 `pepcodec`
+  在 litman 里是**同一个项目**。故 `taxonomy_has` / `yaml_list_has` 的成员比较已改为按 litman
+  自身的 `_norm`（casefold）等价判定（`harness/checker.py` `_check_taxonomy` /
+  `_check_yaml_list`），断言字面用小写 `pepcodec` 还是 CamelCase 都不影响通过。这把卡从"测
+  agent 大小写约定遵从"（噪音）还原为"测 agent 能否把论文绑进项目"（能力）。J1/D4 仍写
+  CamelCase `PepCodec`，行为一致、无需改。（附带 litman 隐患：`project add` 去重
+  `project.py:191` 大小写敏感，理论上 `PepCodec`+`pepcodec` 可并存为两项目——记入 later
+  proposal，与本卡无关；本卡的 case-insensitive 不掩盖该隐患，二者关注点不同。）

@@ -322,7 +322,16 @@ def _check_yaml(vault: Path, arg: str, verb: str) -> AssertResult:
 
 
 def _check_yaml_list(data: Any, rest: str, arg: str) -> AssertResult:
-    """``<key> has <val>`` / ``<key> empty`` / ``<key> empty-of <val>``."""
+    """``<key> has <val>`` / ``<key> empty`` / ``<key> empty-of <val>``.
+
+    Membership (``has`` / ``empty-of``) compares case-insensitively (``_norm``)
+    so a taxonomy-key list (projects/topics/methods/data) is judged by litman's
+    OWN case-folding equivalence rather than a byte match — the agent's cosmetic
+    case choice (`PepCodec` vs `pepcodec`) must not decide the card. List values
+    litman derives deterministically (paper ids in ``related``, clone-dir names
+    in ``code-clones``) carry no case coin-flip, so the looser compare never
+    yields a false membership there.
+    """
     verb = "yaml_list_has"
     tokens = rest.split()
     if not tokens:
@@ -339,14 +348,14 @@ def _check_yaml_list(data: Any, rest: str, arg: str) -> AssertResult:
 
     if len(tokens) >= 3 and tokens[1] == "empty-of":
         val = tokens[2]
-        ok = val not in items
+        ok = not any(_norm(val) == _norm(x) for x in items)
         return AssertResult(
             verb, arg, ok, "" if ok else f"{key}={items!r} still contains {val!r}"
         )
 
     if len(tokens) >= 3 and tokens[1] == "has":
         val = tokens[2]
-        ok = val in items
+        ok = any(_norm(val) == _norm(x) for x in items)
         return AssertResult(
             verb, arg, ok, "" if ok else f"{key}={items!r} does not contain {val!r}"
         )
@@ -400,7 +409,12 @@ def _check_taxonomy(vault: Path, arg: str, *, want: bool) -> AssertResult:
     from litman.core.taxonomy import parse_taxonomy
 
     parsed = parse_taxonomy(tax_file.read_text(encoding="utf-8"))
-    present = value in parsed.get(dict_name, [])
+    # litman matches all 4 TAXONOMY keys case-insensitively (query.py:104
+    # `token.lower() in entry.lower()`) while storage is case-preserving
+    # (strip-only). Judge presence by litman's OWN equivalence so the card never
+    # measures the agent's cosmetic case coin-flip — `PepCodec` and `pepcodec`
+    # are one project, not two.
+    present = any(_norm(value) == _norm(e) for e in parsed.get(dict_name, []))
     ok = present is want
     return AssertResult(
         verb, arg, ok,
