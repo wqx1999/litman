@@ -10,14 +10,28 @@ seed: seed-1paper-diffdock
 precondition: |
   #1 已入库，discussion.md 不存在或为空。
 intent: |
-  "我们刚聊的关于 DiffDock 的几个点，帮我记到这篇的讨论里。"
+  "我们刚聊的关于 DiffDock 的几个点，帮我记到这篇的讨论里：(1) 它把分子对接从回归
+  单一位姿改成了扩散式的生成建模，采样多个候选位姿；(2) 它的置信度模型给出的排序，
+  对挑出真正可用的位姿很关键；(3) 对我们做的肽-受体体系，盲对接设定可能比重对接更
+  贴近真实用例。"
 expected_end_state:
   - "path_exists: papers/<diffdock>/discussion.md"
-  - discussion.md 非空且含本次讨论要点
+  - "vault_file_nonempty: papers/<diffdock>/discussion.md"
 auto_fail:
   - 改动 metadata.yaml 结构化字段（讨论只落 discussion.md）
 adherence_flags:
   - 写进 notes.md（agent 视角）而非 discussion.md（用户视角）—— 二者语义不同
 notes: |
-  "discussion.md 非空且含本次讨论要点" 是内容质量判断，DSL 无法机检（需读散文
-  语义），转录为 prose（checker 标 manual，不静默通过）。
+  全 DSL（auto-scored）。原卡 intent "我们刚聊的几个点" 预设了一段前序对话，而 bench
+  跑单轮 `claude -p` 没有任何前序——agent 只能反问"要点是什么"，never 写 discussion.md
+  → 整张 prose-blocked 藏住这桩真失败（cc_haiku_260604_0 r0 即此）。现把三个要点**内联
+  进 intent**，agent 有可蒸馏的素材，单轮即可完成。
+
+  判分用 `vault_file_nonempty`（新 verb，锚 vault 根，读 vault 内 markdown；`file_*` 只
+  读 cwd 锚不到）：它精准抓住两种真失败——(a) 问而不写 → discussion.md 不存在/空；
+  (b) 写进 notes.md 而非 discussion.md（adherence_flag）→ discussion.md 仍空。
+
+  **刻意不**对 discussion.md 内容做关键词断言：agent 蒸馏时会改写/可能用英文，任何固定
+  关键词（如 "扩散"）都会因语言/措辞漂移 false-negative，等于把刚清的污染塞回尺子。
+  "是否忠实含三个要点" 这一内容质量判断留作可选人工复核；可机检的真失败（没写 / 写错
+  文件）已由上面两行覆盖。

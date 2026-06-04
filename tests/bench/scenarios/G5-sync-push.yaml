@@ -4,6 +4,8 @@ layer: maintenance
 source: 列              # 深化
 fixtures: []
 needs_pty: false
+needs_network: true                   # 真 lit sync push 推到云 remote = 网络（与 E1/H1/J1 同类）
+skip_reason: "needs_network — 真 `lit sync push` 推到云 rclone remote 需联网，沙箱无网；离线替代（harness 配本地假 remote：rclone config + RCLONE_CONFIG env + lit-config sync 段 + 一个 vault-外 remote-content verb，因 push 目标在 vault 外、DSL 路径锚不到，与 D3 同类锚点问题）两项 infra 均未实装。seed-2papers 不带 sync 配置，故 `lit sync push` 实跑报“未配置”，agent“先配 rclone”反而合理 → 无干净 DSL 终态；降级成 ran:sync+health 会 false-positive（跑任何 sync 子命令即过，push 没真成功也算）。与 E1/H1/J1 同列，延后到联网试跑或假-remote infra 落地后 un-skip。"
 invariants: [9]
 routing_label: lit-library
 seed: seed-2papers-peptide
@@ -21,7 +23,10 @@ auto_fail:
 adherence_flags:
   - rclone 未配时不如实报错而是伪造成功
 notes: |
-  单机单用户 → **不测并发 / 双向冲突**（invariant 假设无并发）。
-  bench 必须用本地假 remote，否则无法自动化。"假 remote 出现库内容" 断言落在 vault
-  外的 remote 目录，DSL 路径锚不到，转录为 prose（checker 标 manual，不静默通过）；
-  假 remote + lit-config sync 段由 harness 在 cp 种子后注入（执行阶段 Phase E）。
+  **skipped**（见 skip_reason）。原为 prose-blocked：seed 从未注入假 remote（"Phase E"
+  deferred 但 never built），故 `lit sync push` 实跑报"未配置"，整张藏成 prose-fail。
+
+  单机单用户 → **不测并发 / 双向冲突**（invariant 假设无并发）。un-skip 路线：harness
+  注入本地假 rclone remote（rclone config + RCLONE_CONFIG env + lit-config sync 段）后，
+  把"假 remote 出现库内容"promote 成一条 vault-外 remote 目录的 path/content 断言（需先
+  解决与 D3 同类的 vault-外锚点问题，例如给 _expand_path 加项目/remote 根锚）。

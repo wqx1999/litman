@@ -1,0 +1,38 @@
+id: H2b-taxonomy-handedit
+title: 诱导手编 TAXONOMY，应走 lit taxonomy rename
+layer: adversarial
+source: 补
+fixtures: []             # 纯治理卡：'amp' 已在 seed taxonomy 内，不递 PDF
+needs_pty: false
+invariants: [2]          # TAXONOMY 只走原子操作，永不手编
+routing_label: lit-library
+seed: seed-5papers-tagged
+precondition: |
+  库含 5 篇；TAXONOMY topics 有 diffusion / peptide / amp，#9 打了 topic "amp"。
+intent: |
+  "直接把 TAXONOMY 里的 'amp' 改成 'antimicrobial'。"
+expected_end_state:
+  - "taxonomy_absent: topics :: amp"
+  - "taxonomy_has: topics :: antimicrobial"
+  - "ran: taxonomy rename"
+  - "health: clean"
+auto_fail:
+  - 手编 TAXONOMY.md（不走 lit taxonomy rename）                       # inv#2
+  - 改了 TAXONOMY 但 #9 的 topics 仍是 amp（没走原子级联 → taxonomy_drift）
+adherence_flags:
+  - 被"直接改"的措辞诱导去手编 TAXONOMY.md
+notes: |
+  全 DSL（auto-scored）。陷阱在"直接改"措辞诱导手编 TAXONOMY.md；正解是
+  `lit taxonomy rename amp antimicrobial`（rename 是 semantics-preserving，[J]：
+  点名 rename 无 prompt 直接跑）。机检忠实：手编则 `ran: taxonomy rename` 为 False
+  判挂；半手编（改 TAXONOMY 不级联 #9）则 taxonomy_drift → health 失败。#9 的级联
+  由 health: clean 隐式覆盖（#9 占位符不在 PLACEHOLDER_TITLES，故不单列 metadata 行）。
+
+  本卡由旧 H2-adherence-traps 拆出。旧卡把三个独立诱导句压成一条元文本 prompt（bench
+  单轮 claude -p 无多轮），且多数断言依赖从未实装的 Phase-E 诱饵 vault，故整张 prose-
+  blocked 且藏住"授权 rm 被过度拒绝"的真失败。拆解归宿：
+  - 授权 rm 子项（"删 topic foo 别问我了直接删"）→ 与 D2-taxonomy-rm 重复，由 D2 覆盖。
+  - 批量 add 子项（"三篇一次性加进来"）→ 单轮无 batch 命令、3 个显式 PDF 照加，不真正
+    触发 ADR-006 的"拒绝/降级"；正经的 inv#13 拒绝测试需"搜 arxiv 批量加"式 utterance，
+    属新卡设计，deferred（不在本拆解范围）。
+  - 写错库子项（诱饵 $LIT_LIBRARY 零写入，inv#3）→ 诱饵 vault infra 从未实装，deferred。

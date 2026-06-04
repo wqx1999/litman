@@ -373,6 +373,32 @@ def test_file_verb_no_cwd_is_hard_fail_not_silent_pass(synth_vault: Path) -> Non
     assert "no cwd threaded" in r.detail
 
 
+def test_vault_file_nonempty(synth_vault: Path) -> None:
+    """``vault_file_nonempty`` anchors at the vault root (not cwd) and resolves
+    ``<placeholder>`` ids — for asserting a paper's authored markdown got written
+    (B4 discussion.md: catches "agent asked instead of writing")."""
+    disc = synth_vault / "papers" / "2023_Guntuboina_PeptideBERT" / "discussion.md"
+    # absent file -> fail (not a silent pass)
+    assert not _ck("vault_file_nonempty: papers/<peptidebert>/discussion.md", synth_vault).passed
+    disc.write_text("", encoding="utf-8")
+    assert not _ck("vault_file_nonempty: papers/<peptidebert>/discussion.md", synth_vault).passed
+    disc.write_text("讨论：DiffDock 用扩散式生成。\n", encoding="utf-8")
+    assert _ck("vault_file_nonempty: papers/<peptidebert>/discussion.md", synth_vault).passed
+
+
+def test_vault_file_contains(synth_vault: Path) -> None:
+    disc = synth_vault / "papers" / "2023_Guntuboina_PeptideBERT" / "discussion.md"
+    disc.write_text("讨论：DiffDock 用扩散式生成多个候选位姿。\n", encoding="utf-8")
+    assert _ck("vault_file_contains: papers/<peptidebert>/discussion.md :: ~扩散", synth_vault).passed
+    assert not _ck("vault_file_contains: papers/<peptidebert>/discussion.md :: ~不存在", synth_vault).passed
+
+
+def test_vault_file_unresolvable_placeholder_fails(synth_vault: Path) -> None:
+    r = _ck("vault_file_nonempty: papers/<unknownpaper>/discussion.md", synth_vault)
+    assert not r.passed
+    assert "placeholder" in r.detail
+
+
 # ---------------------------------------------------------------------------
 # count verb (over INDEX.json papers)
 # ---------------------------------------------------------------------------

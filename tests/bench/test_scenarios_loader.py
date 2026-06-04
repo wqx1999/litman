@@ -30,6 +30,7 @@ EXPECTED_SKIP_IDS = {
     "J1-corrupt",
     "J2-amp-survey",
     "D2-pty-taxonomy-rm",
+    "G5-sync-push",  # needs harness-configured fake rclone remote + out-of-vault content verb (infra unbuilt)
 }
 
 

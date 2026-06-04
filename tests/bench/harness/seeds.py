@@ -196,7 +196,7 @@ _INIT = SeedStep("init")
 SEED_SPECS: dict[str, SeedSpec] = {
     # --- empty: just an initialized vault -----------------------------------
     # Covers every card whose precondition is "隔离库已 init" with nothing in
-    # it (A1, E3, D2-pty parent, F1-build-from-empty, G5, H1-build, H2, J1, J2).
+    # it (A1, E3, D2-pty parent, F1-build-from-empty, G5, H1-build, J1, J2).
     "seed-empty": SeedSpec(
         name="seed-empty",
         steps=(_INIT,),

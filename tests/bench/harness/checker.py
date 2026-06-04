@@ -507,6 +507,42 @@ def _check_file(cwd: Path | None, arg: str, verb: str) -> AssertResult:
     return AssertResult(verb, arg, False, f"unknown file verb {verb!r}")
 
 
+def _check_vault_file(vault: Path, arg: str, verb: str) -> AssertResult:
+    """``vault_file_contains`` / ``vault_file_nonempty`` — text content of a file
+    INSIDE the vault (e.g. ``papers/<id>/discussion.md``).
+
+    Distinct from the ``file_*`` verbs, which resolve against the executor's
+    neutral ``cwd``: these anchor at the vault root via :func:`_expand_path` and
+    accept ``<placeholder>`` ids, so a card can assert on a paper's *authored*
+    markdown (``notes.md`` / ``discussion.md``) — content the ``yaml_*`` verbs
+    (YAML only) and ``file_*`` verbs (cwd only) cannot reach. ``_norm`` makes the
+    substring match whitespace/case-insensitive so a distilled-but-paraphrased
+    body still matches a distinctive token from the prompt.
+    """
+    if verb == "vault_file_contains":
+        rel, _, sub = arg.partition("::")
+        path, detail = _expand_path(vault, rel.strip())
+        if path is None:
+            return AssertResult(verb, arg, False, detail)
+        sub = sub.strip().lstrip("~").strip()
+        if not path.is_file():
+            return AssertResult(verb, arg, False, f"{path} does not exist")
+        body = path.read_text(encoding="utf-8", errors="replace")
+        ok = _norm(sub) in _norm(body)
+        return AssertResult(
+            verb, arg, ok, "" if ok else f"{path} does not contain {sub!r}"
+        )
+
+    # vault_file_nonempty
+    path, detail = _expand_path(vault, arg.strip())
+    if path is None:
+        return AssertResult(verb, arg, False, detail)
+    if not path.is_file():
+        return AssertResult(verb, arg, False, f"{path} does not exist")
+    ok = path.stat().st_size > 0
+    return AssertResult(verb, arg, ok, "" if ok else f"{path} is empty")
+
+
 # ---------------------------------------------------------------------------
 # count verb (over INDEX.json papers)
 # ---------------------------------------------------------------------------
@@ -628,6 +664,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "health", "health_reports",
         "ran", "not_ran",
         "file_exists", "file_contains", "file_nonempty",
+        "vault_file_contains", "vault_file_nonempty",
         "count",
         "stdout_contains", "stdout_not_contains", "answer_contains",
     }
@@ -694,6 +731,8 @@ def check_assertion(
         return _check_ran(jsonl, arg, want=False)
     if verb in ("file_exists", "file_contains", "file_nonempty"):
         return _check_file(cwd, arg, verb)
+    if verb in ("vault_file_contains", "vault_file_nonempty"):
+        return _check_vault_file(vault, arg, verb)
     if verb == "count":
         return _check_count(vault, arg)
     if verb == "stdout_contains":

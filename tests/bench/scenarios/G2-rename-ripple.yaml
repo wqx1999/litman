@@ -8,26 +8,33 @@ invariants: [14]
 routing_label: lit-library
 seed: seed-2papers-peptide
 precondition: |
-  #4、#5 已入库；#4 的 related 含 #5（seed 已注入，rename 涟漪反向 related 边可机检）。
-  扩展前置（#5 notes.md 的 [[<#4 old-id>]] wikilink、#4 link 到 PepCodec）尚未注入，
-  对应断言仍是 prose（见 notes）。
+  #4、#5 已入库；#4 的 related 含 #5（seed `_relate(4,5)` 已注入，rename 涟漪的反向
+  related 边可机检）。wikilink / 项目 symlink 涟漪不在本卡范围（seed 未建，见 notes）。
 intent: |
   "把 PeptideBERT 的 id 改成 2023_Guntuboina_PeptideBERT-v2。"
 expected_end_state:
   - "path_exists: papers/2023_Guntuboina_PeptideBERT-v2"
-  - "path_absent: papers/<old-peptidebert-id>"
-  - "#5 的 related 指向新 id（不悬空）"
-  - "#5 notes.md 的 [[...]] wikilink 更新为新 id"
-  - PepCodec 的 litman_reflib symlink 指向新路径
+  - "path_absent: papers/2023_Guntuboina_PeptideBERT-Language"
+  - "yaml_list_has: papers/<multi-peptide>/metadata.yaml :: related has 2023_Guntuboina_PeptideBERT-v2"
   - "ran: rename"
   - "health: clean"
 auto_fail:
   - 改目录名但反向引用（related / wikilink / symlink）悬空 → 没走 lit rename 原子涟漪
   - 手 mv 目录
 notes: |
-  逐条反向引用更新（related / wikilink / 项目 symlink）的内容断言需深读散文 + 项目
-  目录（vault 外），DSL 单态路径覆盖不到，转录为 prose（checker 标 manual，不静默
-  通过）；health: clean 兜底"无悬空引用"。#4↔#5 的 related 边已在 seed build 时由
-  _relate(4, 5) 注入，故"#5 的 related 指向新 id（不悬空）"现已可经 health/rename
-  输出机检；wikilink / 项目 symlink 增量仍 deferred（seed-2papers 未给 #4 建
-  wikilink / 项目 link），待 harness cp 种子后注入（执行阶段 Phase E）。
+  全 DSL（auto-scored）。原先三处问题导致它假困在 prose-blocked 且永不可过：
+
+  1. `path_absent: <old-peptidebert-id>` —— placeholder 按 title "PeptideBERT" 解析，
+     改名只动 id 不动 title，故改名后它**重新解析到新 id** `...-v2`，去查新路径"不存在"
+     → 必挂（agent 改对了也判 0，cc_haiku_260604_0 r0 即此）。改为 literal 旧 id
+     `2023_Guntuboina_PeptideBERT-Language`（`derive_id` 实跑确认），改名后它确实消失。
+
+  2. "#5 的 related 指向新 id" —— #4↔#5 的 related 边由 seed `_relate(4, 5)` 真注入，
+     `lit rename` 原子更新反向边，故 promote 成 `yaml_list_has ... related has <新id>`
+     机检：agent 没更新 / 手 mv 致悬空都判挂，忠实。
+
+  3. "#5 notes.md wikilink"、"PepCodec litman_reflib symlink" 两条 —— seed-2papers
+     **从未注入** wikilink / 项目 link（原 notes 自承 deferred 到"Phase E"，但该注入
+     never built），即在断言**不存在的状态** → 必然 manual-fail。已删除（不静默丢：
+     wikilink / 项目-link rename 涟漪的覆盖留待未来给 seed 加 `_notes` wikilink +
+     `_project`/`_link` 后，另起卡或在此补回）。health: clean 仍兜底"无悬空引用"。

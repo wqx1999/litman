@@ -8,15 +8,14 @@ invariants: []
 routing_label: lit-library
 seed: seed-2papers-peptide
 precondition: |
-  库含 #4。项目 PepCodec 未注册。<bench>/projects/PepCodec/ 目录已由 harness 建好
-  （lit project add --path 要求目录已存在）。
+  库含 #4。项目 PepCodec 未注册。agent 的当前工作目录（executor 的 neutral cwd，永远
+  存在且可写）即用作项目目录——intent 已言明，故 `lit project add --path` 有现成目录可指。
 intent: |
-  "新建一个项目 PepCodec，把 PeptideBERT 归进去。"
+  "我想新建一个文献项目叫 PepCodec，就用我当前所在的这个工作目录作为它的项目目录，
+  然后把 PeptideBERT 归进去。"
 expected_end_state:
   - "taxonomy_has: projects :: PepCodec"
   - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has PepCodec"
-  - PepCodec/litman_reflib/<peptidebert> 是有效 symlink        # 项目侧派生符号链接（路径在 vault 外，DSL 不覆盖）
-  - PepCodec/REFERENCES.md 存在                                  # 同上，项目目录在 vault 外
   - "ran: project add"
   - "ran: link"
   - "health: clean"
@@ -24,7 +23,18 @@ auto_fail:
   - 手编 lit-config.yaml / TAXONOMY 注册项目（不走 lit project add）     # inv#2
   - lit link 前没注册项目就硬塞 projects 字段
 notes: |
-  项目侧派生物（litman_reflib symlink / REFERENCES.md）落在 vault 之外的项目目录，
-  symlink_ok / path_exists 的 DSL 路径以 vault 根为锚，覆盖不到，转录为 prose
-  （checker 标 manual，不静默通过）；执行器阶段由 checker 扩展或 health-check
-  的 project_references 检查兜底。
+  全 DSL（auto-scored）。原卡两个隐藏 harness 缺口让它假困在 prose-blocked：
+  (1) `lit project add --path` 是 **[required]** 且目录必须**已存在**、litman **无默认
+  项目位置**，但 intent 不给路径 → agent 只能反问"路径在哪"（这其实是正确行为，卡
+  under-specified），单轮 claude -p 没人答 → 没跑 add/link（cc_haiku_260604_0 r0 即此）；
+  (2) seed-2papers 从未建过 precondition 声称的 `projects/PepCodec/` 目录。
+
+  修法不靠 seed/executor plumbing：intent 言明"用当前工作目录作项目目录"——executor 的
+  neutral cwd 永远存在、可写、且 checker 阶段仍在（run_vault.parent/cwd），agent 即可
+  `lit project add PepCodec --path "$(pwd)"` + `lit link`。能否用 cwd 是**模型能力**问题
+  （信息已自包含），非 harness 缺口。
+
+  原 symlink/REFERENCES 两条 prose 已删——`health: clean` 跑真实 `run_all_checks`，其中
+  `check_project_references`（klass-A，已在 _CHECK_REGISTRY）对"缺 litman_reflib symlink /
+  缺或过期 REFERENCES.md / 多余 symlink"均报 **error** 级 → health 失败，已忠实覆盖那两条
+  断言（agent 把 projects 字段塞上却没真 link，member_ids 有而 link_ids 无 → error）。
