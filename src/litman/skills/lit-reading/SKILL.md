@@ -141,6 +141,10 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 4. **Topic cue** ("the GAT one", "anything on peptide hemolysis") → Tier-2 discovery below (`lit list --topic X --format json`).
 5. **Notes-content cue** ("我之前在 notes / discussion 里写过关于 X 的看法吗", "where did I note that idea") → `lit search <query>`. This is the ONLY path to your own free-form notes; it returns `{id, file, line, snippet}` per matched line. Narrow with `--in notes` / `--in discussion`. **The PDF full text is NOT searched** (that's `lit open` / the PDF ladder).
 
+### Re-open branch — a stated re-open of an already-finished paper → `lit revisit` inline
+
+When locate lands on a paper that **already carries a `read-date`** (or `status: deep-read` / `skim`) and the user's own words declare they **re-opened** it ("我今天又把 DiffDock 翻出来想了想", "重新看了下 X", "looking at X again", "let me look at X again"), the re-open event is already on the record: **run `lit revisit <id>` now** (Tier 2, inline — stamps `last-revisited`, leaves `read-date` untouched per inv#11), **then** continue to Phase 2 to engage whatever they want to think through. Do **not** turn the stamp into a "要不要我标记一下 revisit?" question — a non-interactive single turn would stall there and never stamp. Only when the re-open is your own *inference* (the user gestured at the paper but never said they re-read it) do you propose-and-confirm first. Full rule + the never-*infer* boundary: B10 → "Re-opening an already-finished paper".
+
 ### Bounded-retrieval ladder (in-vault; reuse in Phase 3)
 
 **Never `cat INDEX.json` whole** — use bounded retrieval:
