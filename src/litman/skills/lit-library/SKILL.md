@@ -29,7 +29,7 @@ Classify every action before you take it.
 |---|---|---|---|
 | 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, scan a PDF, query INDEX via `lit list --format json`, `lit project list`, `lit code list`, `lit trash list`, `lit health-check` |
 | 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=` |
-| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm — [A]/[B]), `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]) |
+| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm — [A]/[B]), `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
 
 The CLI hard-rejects unregistered controlled-vocabulary values, so your job is to **not invent values**.
 
@@ -393,7 +393,7 @@ Tier: projection is **Tier 2**; `--force`-over-sentinel is a **Tier-3 ask**.
 - **Update relevance after linking** — `lit modify <paper-id> --set relevance-<project>=…` sets/edits the per-project relevance note without re-linking. **Tier 2.** At link time prefer the inline `lit link --relevance "..."`.
 - **List projects** — `lit project list`. **Tier 1** read, **canonical source** for the registered set AND each project's path. Three columns: `name` / `path` / `status` (drift marker `✓` / `⚠ path-missing` / `⚠ config-only` / `⚠ taxonomy-only`). Use this for both "what projects exist" and "where is `<project>` on disk". Do NOT hand-parse `lit-config.yaml`, do NOT use `lit config show` for project paths.
 - **List a project's literature** — `lit list --project <name>` (**Tier 1**; supports `--format json`). Per-project view of *papers*, distinct from `lit project list` which lists the *projects* themselves.
-- **Rename** — `lit project rename <old> <new>`. **Tier 3 governance** (cascades: TAXONOMY + config key + every referencing paper's `projects:` + INDEX). Reuse [J] discipline: never hand-edit, **show the impact** ("renames `<old>`→`<new>` across the N papers using it"), **ask once**; re-read TAXONOMY afterward.
+- **Rename** — `lit project rename <old> <new>`. **Tier 3 governance** (cascades: TAXONOMY + config key + every referencing paper's `projects:` + INDEX). Reuse [J] discipline: never hand-edit; for an **explicitly named** rename ("把 `<old>` 改名 `<new>`") **show the impact** ("renames `<old>`→`<new>` across the N papers using it") **then run and report** (semantics-preserving — the CLI has no prompt and no `--yes`; named ⇒ show-then-act, don't re-ask); re-read TAXONOMY afterward.
 - **Delete** — `lit project rm <name>`. **Tier 3 + destructive** (cascade-untags every paper). Treat like deletion: **never initiate**, **show the impact + confirm before executing** even on explicit request. Project-registry removal only — trashes no paper.
 - **Set path** — `lit project set-path <name> <abs>`. **Tier 2.** For when the project dir moved; user supplies the new path; no cascade.
 
@@ -438,7 +438,11 @@ Commands (verify exact flag spelling with `lit taxonomy <verb> --help`):
 Rules:
 
 - **NEVER hand-edit `TAXONOMY.md`** — always the atomic CLI.
-- **Tier 3 (cascades to N papers)**: before running, **show the impact** ("merge folds `tokenisation` into `tokenization` and re-tags the N papers using it") and **ask once**. `merge` / `rm` prompt `Continue? [y/N]`; in a non-interactive run you MUST pass `--yes` / `-y` or the command aborts. On confirm, run + relay, then **re-read `TAXONOMY.md`**.
+- **Tier 3 (cascades to N papers)**: always **show the blast radius first** ("removing `diffusion` strips it from the N papers tagged with it" / "merge folds `tokenisation` into `tokenization` and re-tags the N papers"). Then split by who owns the judgment:
+  - **`rename` of a value the user named explicitly** ("把 X 改名 Y") — semantics-preserving (no data loss), so the CLI has **no prompt and no `--yes`**: show the impact, **run, and report**.
+  - **`rm` of a value the user named explicitly** ("删掉 `diffusion` 这个 topic") — the named value **is** the user's decision; show the blast radius then **run with `--yes` / `-y` and report** — do **not** insert a separate confirmation question. The CLI's `Continue? [y/N]` is the safety gate for a human typing the command directly; an agent acting on an explicit, reversible instruction satisfies it with `--yes`. (`taxonomy rm` is atomic + reversible — re-add the value, re-tag — NOT the never-execute purge class; the real safety net is reversibility, not a relayed confirmation prompt.)
+  - **`merge`, or any consolidation YOU propose** (which values "mean the same" is the user's vocabulary judgment), **or genuinely ambiguous intent** (the user is musing, not commanding), **or a blast radius that contradicts the user's apparent expectation** — **ask once before acting**; `merge` then needs `--yes` / `-y` non-interactively (without it it aborts).
+  After running, **re-read `TAXONOMY.md`**.
 - **Never decide a consolidation yourself** — which values "mean the same thing" is a vocabulary judgment the user owns. You MAY propose a merge when you spot near-duplicates (e.g. in Flow A), but propose only.
 - **dict routing**: these verbs operate on `topics` / `methods` / `data`. The `projects` dict is governed through `lit project` ([H]), not `lit taxonomy`.
 
