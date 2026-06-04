@@ -35,6 +35,7 @@ def test_seed_specs_defined() -> None:
     assert set(SEED_SPECS) == {
         "seed-empty",
         "seed-1paper-diffdock",
+        "seed-1paper-diffdock-read",
         "seed-2papers-peptide",
         "seed-5papers-tagged",
     }

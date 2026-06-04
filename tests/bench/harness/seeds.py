@@ -161,8 +161,18 @@ def _tax(dict_name: str, *values: str) -> SeedStep:
     return SeedStep("taxonomy_add", dict_name=dict_name, values=tuple(values))
 
 
-def _modify(fixture: int, *, add_tags: tuple[str, ...] = ()) -> SeedStep:
-    return SeedStep("modify", fixture=fixture, add_tags=add_tags)
+def _modify(
+    fixture: int,
+    *,
+    set_: tuple[tuple[str, str], ...] = (),
+    add_tags: tuple[str, ...] = (),
+) -> SeedStep:
+    """``lit modify`` step. ``set_`` drives ``--set k=v`` (scalar fields, incl.
+    semantic ones like ``read-date`` / ``status`` — used to seed a paper into an
+    already-read state with a FIXED past date so cross-state checks stay
+    deterministic, e.g. B2-revisit's "read-date unchanged"). ``add_tags`` drives
+    ``--add-tag``."""
+    return SeedStep("modify", fixture=fixture, set=set_, add_tags=add_tags)
 
 
 def _project(name: str) -> SeedStep:
@@ -220,6 +230,24 @@ SEED_SPECS: dict[str, SeedSpec] = {
             ),
         ),
         description="Vault with #1 DiffDock added (status=inbox); notes mention focal loss (C3).",
+    ),
+    # --- 1 paper, already read (FIXED past read-date) -----------------------
+    # B2-revisit precondition: #1 is a FINISHED paper (read-date set, status
+    # deep-read) so "re-opening it" → `lit revisit` is the right stamp. The date
+    # is a FIXED past value (not `lit read`, which stamps today) so B2's
+    # "read-date unchanged after revisit" is a deterministic `yaml_eq`. Distinct
+    # from seed-1paper-diffdock (status=inbox/unread) which B1 needs.
+    "seed-1paper-diffdock-read": SeedSpec(
+        name="seed-1paper-diffdock-read",
+        steps=(
+            _INIT,
+            _add(1),
+            _modify(1, set_=(("read-date", "2026-05-01"), ("status", "deep-read"))),
+        ),
+        description=(
+            "Vault with #1 DiffDock already read (read-date=2026-05-01, "
+            "status=deep-read) — B2 revisit precondition."
+        ),
     ),
     # --- 2 papers: PeptideBERT (#4) + Multi-Peptide (#5), same group --------
     # A2 (precondition has #1; add #4 — but the *checked* state is #4 present;

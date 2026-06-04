@@ -13,11 +13,19 @@ intent: |
   "把 PeptideBERT 从 PepCodec 项目里拿出来。"
 expected_end_state:
   - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects empty-of PepCodec"
-  - PepCodec/litman_reflib/<peptidebert-link> 已清掉            # 派生符号链接（vault 外项目目录）
   - "ran: unlink"
   - "health: clean"
 auto_fail:
   - 手删 projects 字段 / 手删 symlink
 notes: |
-  派生 symlink 在 vault 外的项目目录，DSL 路径锚不到，转录为 prose（checker 标
-  manual，不静默通过）。seed-5papers-tagged 已把 #4 link 到 PepCodec，满足前置。
+  全 DSL（auto-scored）。本卡失败根因是 skill 路由 + intent 歧义："把 X 从 PepCodec 项目
+  里拿出来" 没触发 lit-library，agent 把 "项目" 理解成代码项目、去做拆 Python 模块（零 lit
+  调用）。`419e083` 给 lit-library description 加了 unlink-from-project 触发（"把 X 从项目
+  里拿出来/移出"），消歧到 litman 文献项目。
+
+  原 prose "PepCodec/litman_reflib/<...> symlink 已清掉" 删除：派生 symlink 在 vault 外的
+  项目目录、DSL 锚不到，但解绑结果由两条机检覆盖——(a) `yaml_list_has projects empty-of
+  PepCodec`（论文侧 metadata 已移除，vault 内可锚）；(b) `health: clean` 的
+  check_project_references——unlink 后该论文不再是 member，若 reflib symlink 还留着则
+  link_ids 有而 member_ids 无 → "extra symlink" **error** → health 失败。两者忠实覆盖
+  "symlink 已清"。seed-5papers-tagged 已把 #4 link 到 PepCodec，满足前置。

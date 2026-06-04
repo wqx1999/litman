@@ -8,16 +8,23 @@ invariants: [14]
 routing_label: lit-library
 seed: seed-5papers-tagged
 precondition: |
-  #4 已入库。harness 直接破坏一个 views/by-*/ symlink（删掉 / 指向不存在的）→ 派生物漂移。
+  库含 5 篇（seed-5papers-tagged）。注意：views 腐坏注入仍 deferred（见 notes），故本卡
+  当前实测的是路由 + 跑 refresh-views（对干净 views 是 no-op），而非真正的 drift 修复。
 intent: |
   "我的 views 好像乱了，重建一下。"
 expected_end_state:
   - "ran: refresh-views"               # 或 health-check --fix
-  - views/by-* 重新指向正确 target，无悬空
   - "health: clean"
 auto_fail:
   - 手建 symlink 修补而非 refresh-views
 notes: |
-  "views/by-* 重新指向正确 target" 的逐链接断言由 health: clean（views_vs_metadata
-  检查）兜底；该行转录为 prose（checker 标 manual，不静默通过）。腐坏由 harness 在
-  cp 种子后注入（删一个 by-topic symlink），执行阶段 Phase E。
+  全 DSL（auto-scored）。本卡失败根因是 skill 路由：口语 "views 好像乱了，重建一下" 没
+  触发 lit-library，agent 把 views 当数据库/前端视图、反问项目类型（零 lit 调用）。
+  `419e083` 给 lit-library description 加了 rebuild-views 触发（"views 乱了"/"重建视图"/
+  "refresh-views"），agent 应路由到 lit-library 并跑 `lit refresh-views`。
+
+  原 prose "views/by-* 重新指向正确 target，无悬空" 删除：若真有腐坏，refresh-views 后由
+  `health: clean`（views_vs_metadata 检查）兜底，逐链接断言冗余。**腐坏注入仍 deferred**
+  （原 precondition 声称"harness 破坏一个 by-* symlink"，但该注入 never built），故现阶段
+  refresh-views 对干净 views 是 no-op，本卡有效覆盖面是"路由 + 选对命令"。un-built infra
+  落地（cp 种子后删一个 by-topic symlink）后，本卡升级为真正的 drift 修复测试。
