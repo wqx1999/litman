@@ -1,121 +1,87 @@
-// Pivot controls (D3): toggle aggregate <-> drilldown, filter by group, export
-// PNG. Grouping/recolouring by project is the default encoding; the group
-// filter is the GUI pivot for "show only these projects" and doubles as a
-// recolour focus (dimming non-selected groups is done in the canvas).
+// Controls: choose the colour/cluster dimension, see (and clear) the current
+// focus, and export a PNG. Colouring is one way to look at the network;
+// focusing into a value is the other (triggered from the legend swatches).
 
-import { groupColor } from '../graph/encoding'
-import type { View } from '../graph/aggregate-drilldown'
+import { DIMENSIONS, DIMENSION_LABEL, type Dimension } from '../types'
 
 interface Props {
-  view: View
-  drilldownProjects: string[]
-  groups: string[]
-  visibleGroups: Set<string> | null
-  onHome: () => void
-  onDrill: (project: string) => void
-  onToggleGroup: (group: string) => void
-  onResetGroups: () => void
+  color: Dimension
+  focus: { dim: Dimension; value: string } | null
+  onSetColor: (dim: Dimension) => void
+  onClearFocus: () => void
   onExportPng: () => void
 }
 
 export function Controls({
-  view,
-  drilldownProjects,
-  groups,
-  visibleGroups,
-  onHome,
-  onDrill,
-  onToggleGroup,
-  onResetGroups,
+  color,
+  focus,
+  onSetColor,
+  onClearFocus,
   onExportPng,
 }: Props) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-stone-200 bg-white/90 p-3 text-sm shadow-sm backdrop-blur">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onHome}
-            disabled={view.kind === 'aggregate'}
-            className="rounded-md bg-stone-800 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-700 disabled:cursor-default disabled:bg-stone-300"
-          >
-            ⌂ Overview
-          </button>
-          <span className="text-xs text-stone-500">
-            {view.kind === 'aggregate'
-              ? 'click a project to drill in'
-              : `drilled into ${view.project}`}
-          </span>
+    <div className="flex flex-col gap-4 rounded-xl border border-[#e3dccd] bg-[#faf8f3]/90 p-3 text-sm shadow-sm">
+      {/* Focus state / back to overview */}
+      <div>
+        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-stone-400">
+          View
         </div>
-        <button
-          type="button"
-          onClick={onExportPng}
-          className="rounded-md border border-stone-300 px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:bg-stone-100"
-        >
-          ↓ Export PNG
-        </button>
+        {focus ? (
+          <div className="flex flex-col gap-1.5">
+            <div className="text-xs text-stone-600">
+              Focused on{' '}
+              <span className="font-medium text-stone-800">
+                {DIMENSION_LABEL[focus.dim]} = {focus.value}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={onClearFocus}
+              className="self-start rounded-md bg-stone-800 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-stone-700"
+            >
+              ← All papers
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs text-stone-500">
+            All papers. Click a colour in the legend to zoom into that slice.
+          </div>
+        )}
       </div>
 
+      {/* Colour / cluster dimension */}
       <div>
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-xs font-medium text-stone-500">
-            Drill into project
-          </span>
+        <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-stone-400">
+          Colour &amp; cluster by
         </div>
-        <select
-          value={view.kind === 'drilldown' ? view.project : ''}
-          onChange={(e) => {
-            if (e.target.value) onDrill(e.target.value)
-            else onHome()
-          }}
-          className="w-full rounded-md border border-stone-300 px-2 py-1 text-xs"
-        >
-          <option value="">— Library overview —</option>
-          {drilldownProjects.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-xs font-medium text-stone-500">
-            Filter by group
-          </span>
-          <button
-            type="button"
-            onClick={onResetGroups}
-            className="text-xs text-stone-400 hover:text-stone-600"
-          >
-            reset
-          </button>
-        </div>
-        <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
-          {groups.map((g) => {
-            const active = visibleGroups === null || visibleGroups.has(g)
+        <div className="flex flex-wrap gap-1.5">
+          {DIMENSIONS.map((d) => {
+            const active = d === color
             return (
               <button
-                key={g}
+                key={d}
                 type="button"
-                onClick={() => onToggleGroup(g)}
-                className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition ${
+                onClick={() => onSetColor(d)}
+                className={`rounded-full border px-2.5 py-1 text-xs transition ${
                   active
-                    ? 'border-stone-300 bg-white text-stone-700'
-                    : 'border-stone-200 bg-stone-100 text-stone-400'
+                    ? 'border-stone-700 bg-stone-800 text-white'
+                    : 'border-[#ddd5c6] bg-white text-stone-600 hover:bg-stone-50'
                 }`}
               >
-                <span
-                  className="inline-block h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: groupColor(g), opacity: active ? 1 : 0.3 }}
-                />
-                {g}
+                {DIMENSION_LABEL[d]}
               </button>
             )
           })}
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={onExportPng}
+        className="self-start rounded-md border border-[#ddd5c6] px-3 py-1.5 text-xs font-medium text-stone-700 transition hover:bg-stone-100"
+      >
+        ↓ Export PNG
+      </button>
     </div>
   )
 }

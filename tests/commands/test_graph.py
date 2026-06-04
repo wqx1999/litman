@@ -30,7 +30,6 @@ from litman.core.library import create_vault
 from litman.core.taxonomy import update_user_dict_section
 from litman.exceptions import LitmanError
 
-
 # ---------------------------------------------------------------------------
 # Vault construction helpers (mirror tests/core/test_graph_model.py style)
 # ---------------------------------------------------------------------------
@@ -198,26 +197,45 @@ def test_a7_inject_round_trip() -> None:
     # any extra occurrences in the output mean the payload was injected >1 time.
     sentinel = "ZZ_SENTINEL_UNIQUE_TOKEN_ZZ"
     data = {
-        "summary": {"papers": 1, "projects": 1, "codes": 0, "corrupt": 0, "invalid_edges": 0},
-        "aggregate": {
-            "nodes": [
-                {
-                    "id": "p",
-                    "type": "project",
-                    "label": sentinel,
-                    "size": 1,
-                    "status": "ok",
-                    "group": "p",
-                }
-            ],
-            "edges": [],
+        "summary": {
+            "papers": 1,
+            "corrupt": 0,
+            "invalid_edges": 0,
+            "dimensions": {"projects": 1, "topics": 0, "methods": 0, "data": 0, "codes": 0},
         },
-        "drilldown": {"(unassigned)": {"nodes": [], "edges": []}},
+        "nodes": [
+            {
+                "id": "p",
+                "label": sentinel,
+                "type": "paper",
+                "status": "ok",
+                "degree": 0,
+                "dims": {"projects": ["pf"], "topics": [], "methods": [], "data": [], "codes": []},
+                "meta": {
+                    "year": 2021,
+                    "authors": ["X"],
+                    "n_authors": 1,
+                    "journal": "",
+                    "doi": "",
+                    "type": "",
+                    "priority": "",
+                    "read_status": "inbox",
+                },
+            }
+        ],
+        "edges": [],
+        "dimensions": {
+            "projects": {"values": ["pf"], "invalid": []},
+            "topics": {"values": [], "invalid": []},
+            "methods": {"values": [], "invalid": []},
+            "data": {"values": [], "invalid": []},
+            "codes": {"values": [], "invalid": []},
+        },
     }
     html = _inject(template, data)
     # The real JSON is present...
     assert '"papers": 1' in html or '"papers":1' in html
-    assert '"(unassigned)"' in html
+    assert '"dimensions"' in html
     # ...and the quoted placeholder is gone (no double-injection / stale token).
     assert '"__LIT_GRAPH_DATA__"' not in html
     # The sentinel from the injected data appears EXACTLY ONCE: triple-injection

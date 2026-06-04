@@ -1,38 +1,51 @@
-"""Knowledge-graph serialization layer for ``lit graph`` (M35 Phase 1).
+"""Knowledge-graph serialization layer for ``lit graph`` (M35).
 
 Reconstructs the *emergent* knowledge graph (identity.md) from vault metadata
-into a layered JSON snapshot the frontend renders. This module is **read-only**
-and produces nothing on disk — the caller (a future ``commands/graph.py``)
+into a flat, paper-centric JSON snapshot the frontend renders. This module is
+**read-only** and produces nothing on disk — the caller (``commands/graph.py``)
 injects the returned dict into a static page.
 
-Two layers (D5):
+Model (rev 2 — paper-centric):
 
-* **aggregate** — one node per project plus a project--project edge whose weight
-  is the count of papers shared by both projects (D5, A5). Topics never create
-  project edges. This is the always-readable top view for any library size.
-* **drilldown** — per-project subgraphs (project->paper / paper->code membership
-  edges plus paper<->paper relation edges) keyed by project name, with an
-  ``"(unassigned)"`` bucket for papers in no project.
+* **Nodes are papers, full stop.** A library is a *network of papers*; projects,
+  topics, methods, data, and code-clones are not nodes — they are *dimensions*
+  the frontend colours and clusters papers by, or focuses into. There is no
+  project hub node, no code node. A paper that belongs to several projects is a
+  *pivot*: under the "projects" lens it gets pulled between clusters, which is
+  exactly the structure the user wants to see.
+* **Edges are paper<->paper relations only** (``related`` / ``extends`` /
+  ``contradicts``). Membership ("paper X is in project A") is carried on the
+  node as ``dims.projects = [...]``, not as an edge, so the default view is the
+  pure relation network rather than a hairball of membership spokes.
+* Every node carries its membership across *all* dimensions (``dims``), so the
+  frontend can recolour / recluster / focus by any dimension client-side with
+  no second fetch.
+
+Dimensions (the closed set — invariant: user-added free-text fields are NOT
+graphable, only the 4 TAXONOMY keys + code-clones):
+
+    projects, topics, methods, data, codes   (codes <- the ``code-clones`` field)
 
 Design contracts (from the M35 spec §2.2 + proposal D4--D7):
 
 * Papers are enumerated via :func:`document.list_papers` — no second scan loop.
 * A corrupt-metadata paper that ``list_papers`` silently drops is re-enumerated
   here and surfaces as a ``type:"corrupt"`` node + ``summary["corrupt"]`` count.
-  It must never vanish from the output (invariant #14, P0 / OQ1).
+  It must never vanish from the default view (invariant #14, P0 / OQ1).
 * Relation edge types come from :data:`relations.RELATION_PAIRS` via
   :data:`relations.FORWARD_REF_FIELDS` (single source, D7) — adding a new
   relation pair to that map auto-flows here with no change to this module.
 * ``related`` is undirected with symmetric dedup; ``extends`` / ``contradicts``
   are directed A->B; the same node pair with two relation types yields two
   edges (multi-edge, D6).
-* Invalid conditions (dangling code-clone, deleted-project link, unregistered
+* Drift conditions (dangling code-clone, deleted-project link, unregistered
   taxonomy value, broken relation pairing) are re-derived here from the same
   *primitives* the health checks use (RELATION_PAIRS, parse_taxonomy + the
   user-dict set, the config projects map, the codes dir / repo-meta filename),
   not by string-parsing ``run_all_checks`` output (OQ2). A relation pointing at
-  a non-existent / other-vault id is treated as a missing-endpoint broken
-  pairing — the edge is marked invalid, never a crash (OQ4).
+  a non-existent / other-vault id is a missing-endpoint broken pairing — the
+  edge is marked invalid and its source paper gains an ``invalid`` status so it
+  still surfaces even though the dangling endpoint has no node to draw to (OQ4).
 """
 
 from __future__ import annotations
@@ -47,13 +60,21 @@ from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.id import is_valid_id
 from litman.core.relations import FORWARD_REF_FIELDS, RELATION_PAIRS
-from litman.core.taxonomy import USER_DICTS, parse_taxonomy
+from litman.core.taxonomy import parse_taxonomy
 from litman.exceptions import ConfigError
 
-# Bucket label for papers that belong to no project. A literal (not a project
-# name) so it can never collide with a real project — project names are
-# TAXONOMY-governed identifiers and parentheses are not valid id chars there.
-UNASSIGNED = "(unassigned)"
+# The closed set of colour/cluster/focus dimensions and the metadata field each
+# reads. Only the 4 TAXONOMY keys + code-clones are graphable; arbitrary
+# user-added fields are deliberately excluded (they have no controlled
+# vocabulary, so they cannot anchor a clean cluster or a legend).
+DIMENSIONS: tuple[str, ...] = ("projects", "topics", "methods", "data", "codes")
+_DIM_FIELD: dict[str, str] = {
+    "projects": "projects",
+    "topics": "topics",
+    "methods": "methods",
+    "data": "data",
+    "codes": "code-clones",
+}
 
 # Relation fields that draw a *directed* A->B arrow. ``related`` (the remaining
 # forward field) is undirected. Derived from RELATION_PAIRS so a future
@@ -62,6 +83,45 @@ UNASSIGNED = "(unassigned)"
 _DIRECTED_FORWARD_FIELDS: tuple[str, ...] = tuple(
     f for f in FORWARD_REF_FIELDS if RELATION_PAIRS.get(f) != f
 )
+
+# Cap on how many authors travel into the render payload. The detail card shows
+# "First Author et al." past a few, so shipping a 50-author list would only
+# bloat the JSON; ``n_authors`` keeps the true count for the "et al." cue.
+_MAX_AUTHORS = 12
+
+
+def _coerce_year(value: Any) -> int | None:
+    """Best-effort int year (schema says int|null, but tolerate a digit string)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _node_meta(p: dict[str, Any]) -> dict[str, Any]:
+    """Cheap bibliographic projection for the read-only detail card.
+
+    Only small scalar / short-list fields the card displays — never abstract,
+    notes, or PDF text (the GUI is offline & self-contained; the full record is
+    ``lit show <id>``). Corrupt papers pass ``{}`` and get the all-empty shape.
+    ``read_status`` is the paper's triage ``status`` field (inbox / skim /
+    deep-read / dropped), kept distinct from the node's graph ``status``
+    (ok / invalid / corrupt).
+    """
+    authors = _as_str_list(p.get("authors"))
+    return {
+        "year": _coerce_year(p.get("year")),
+        "authors": authors[:_MAX_AUTHORS],
+        "n_authors": len(authors),
+        "journal": str(p.get("journal") or ""),
+        "doi": str(p.get("doi") or ""),
+        "type": str(p.get("type") or ""),
+        "priority": str(p.get("priority") or ""),
+        "read_status": str(p.get("status") or ""),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +180,7 @@ def _extract_relation_edges(papers: list[dict[str, Any]]) -> list[dict[str, Any]
 
     The endpoint id is taken verbatim from the field — a dangling / cross-vault
     target is still emitted as an edge here (its validity is stamped later by
-    :func:`_invalid_markers`), so a broken relation never silently drops.
+    :func:`_invalid_relation_edges`), so a broken relation never silently drops.
     """
     out: list[dict[str, Any]] = []
     seen_related: set[tuple[str, str]] = set()
@@ -150,96 +210,33 @@ def _extract_relation_edges(papers: list[dict[str, Any]]) -> list[dict[str, Any]
     return out
 
 
-# ---------------------------------------------------------------------------
-# Membership edges (drill-down layer)
-# ---------------------------------------------------------------------------
+def _invalid_relation_edges(
+    papers: list[dict[str, Any]],
+) -> set[tuple[str, str, str]]:
+    """``(source, target, type)`` triples whose forward edge is broken.
 
-
-def _project_paper_edges(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """project->paper membership edges, one per (project, paper) pair."""
-    out: list[dict[str, Any]] = []
-    for p in papers:
-        pid = p.get("id")
-        if not pid:
-            continue
-        pid = str(pid)
-        for project in _as_str_list(p.get("projects")):
-            out.append(
-                {
-                    "source": project,
-                    "target": pid,
-                    "type": "projects",
-                    "directed": True,
-                    "weight": 1,
-                    "status": "ok",
-                }
-            )
-    return out
-
-
-def _paper_code_edges(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """paper->code membership edges, one per (paper, code-clone) pair."""
-    out: list[dict[str, Any]] = []
-    for p in papers:
-        pid = p.get("id")
-        if not pid:
-            continue
-        pid = str(pid)
-        for name in _as_str_list(p.get("code-clones")):
-            out.append(
-                {
-                    "source": pid,
-                    "target": name,
-                    "type": "code-clones",
-                    "directed": True,
-                    "weight": 1,
-                    "status": "ok",
-                }
-            )
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Aggregate project--project edges (shared-paper weight)
-# ---------------------------------------------------------------------------
-
-
-def _aggregate_project_edges(
-    papers: list[dict[str, Any]], project_names: list[str]
-) -> list[dict[str, Any]]:
-    """One undirected edge per project pair that shares >= 1 paper (D5 / A5).
-
-    Edge weight is the number of papers whose ``projects`` list contains BOTH
-    project names. Topics never produce a project edge (only the ``projects``
-    field is consulted). Pairs with zero shared papers emit no edge.
+    Broken = the endpoint lacks the matching reverse field, OR the endpoint is
+    a non-existent / other-vault id (missing endpoint). Re-derived from
+    RELATION_PAIRS (OQ2), never a crash on a dangling id (OQ4).
     """
-    shared: dict[tuple[str, str], int] = {}
-    known = set(project_names)
-    for p in papers:
-        members = sorted({x for x in _as_str_list(p.get("projects")) if x in known})
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                shared[(members[i], members[j])] = (
-                    shared.get((members[i], members[j]), 0) + 1
-                )
-
-    out: list[dict[str, Any]] = []
-    for (a, b), weight in sorted(shared.items()):
-        out.append(
-            {
-                "source": a,
-                "target": b,
-                "type": "shared-papers",
-                "directed": False,
-                "weight": weight,
-                "status": "ok",
-            }
-        )
+    by_id = {str(p.get("id")): p for p in papers if p.get("id")}
+    out: set[tuple[str, str, str]] = set()
+    for pid, paper in by_id.items():
+        for field in FORWARD_REF_FIELDS:
+            reverse = RELATION_PAIRS[field]
+            for ref in _as_str_list(paper.get(field)):
+                other = by_id.get(ref)
+                if other is None:
+                    out.add((pid, ref, field))
+                    continue
+                back = set(_as_str_list(other.get(reverse)))
+                if pid not in back:
+                    out.add((pid, ref, field))
     return out
 
 
 # ---------------------------------------------------------------------------
-# Invalid-marker re-derivation (the four conditions, from primitives)
+# Dimension drift (per-value invalid sets, from primitives)
 # ---------------------------------------------------------------------------
 
 
@@ -247,7 +244,7 @@ def _load_registered_taxonomy(vault: Path) -> dict[str, list[str]] | None:
     """Parse ``TAXONOMY.md`` into its registered-value map, or ``None``.
 
     Returns ``None`` when the file is missing or unreadable — the caller then
-    skips taxonomy invalid-marking rather than flagging every value as
+    skips taxonomy drift-marking rather than flagging every value as
     unregistered (a missing TAXONOMY.md is owned by ``check_taxonomy_drift``,
     not by the graph layer).
     """
@@ -281,8 +278,8 @@ def _config_project_names(vault: Path) -> set[str] | None:
     """Project names registered in ``lit-config.yaml``, or ``None``.
 
     Returns ``None`` when the config is unparseable — the caller then skips
-    deleted-project invalid-marking (an unreadable config is owned by
-    ``check_config_readable``, not flagged as a broken link per project here).
+    deleted-project drift-marking (an unreadable config is owned by
+    ``check_config_readable``, not flagged per project here).
     """
     try:
         config = load_config(vault)
@@ -291,87 +288,40 @@ def _config_project_names(vault: Path) -> set[str] | None:
     return set(config.projects)
 
 
-def _invalid_markers(
-    vault: Path, papers: list[dict[str, Any]]
-) -> dict[str, set]:
-    """Re-derive the four invalid conditions into lookup sets.
+def _dimension_drift(
+    vault: Path, dim_values: dict[str, set[str]]
+) -> dict[str, set[str]]:
+    """Per-dimension set of *invalid* values (drift), keyed by dimension name.
 
-    Reuses the underlying primitives the health checks use (RELATION_PAIRS,
-    parse_taxonomy + USER_DICTS, the config projects map, the codes dir +
-    repo-meta filename) — never parses ``run_all_checks`` output (OQ2). The
-    returned sets are consumed by :func:`build_graph` to stamp
-    ``status:"invalid"`` onto matching nodes / edges.
-
-    Keys:
-
-    * ``"invalid_code_names"`` — repo names listed in some paper's
-      ``code-clones`` with no ``codes/<name>/repo-meta.yaml`` on disk
+    * ``projects`` — values absent from the lit-config projects map
+      (deleted-project link). Empty when the config is unreadable (owned by
+      ``check_config_readable``).
+    * ``codes`` — repo names with no ``codes/<name>/repo-meta.yaml`` on disk
       (dangling code-clone).
-    * ``"invalid_project_names"`` — project names a paper links to that are
-      absent from the lit-config projects map (deleted-project link).
-    * ``"invalid_taxonomy_nodes"`` — paper ids carrying a topics/methods/data/
-      projects value absent from ``TAXONOMY.md`` (unregistered taxonomy).
-    * ``"invalid_relation_edges"`` — ``(source, target, type)`` triples whose
-      forward edge has no matching reverse field on the endpoint, including
-      the endpoint being a non-existent / other-vault id (broken pairing /
-      missing endpoint, OQ4).
+    * ``topics`` / ``methods`` / ``data`` — values absent from ``TAXONOMY.md``
+      (unregistered taxonomy). Empty when TAXONOMY.md is unreadable.
+
+    Re-uses the health-check primitives (config map, codes dir, parse_taxonomy)
+    rather than parsing ``run_all_checks`` output (OQ2).
     """
-    by_id = {str(p.get("id")): p for p in papers if p.get("id")}
+    invalid: dict[str, set[str]] = {d: set() for d in DIMENSIONS}
 
-    # 1. dangling code-clones.
-    disk_repos = _on_disk_repo_names(vault)
-    invalid_code_names: set[str] = set()
-    for p in papers:
-        for name in _as_str_list(p.get("code-clones")):
-            if name and name not in disk_repos:
-                invalid_code_names.add(name)
-
-    # 2. project link to a name absent from the config projects map.
     config_projects = _config_project_names(vault)
-    invalid_project_names: set[str] = set()
     if config_projects is not None:
-        for p in papers:
-            for project in _as_str_list(p.get("projects")):
-                if project not in config_projects:
-                    invalid_project_names.add(project)
+        invalid["projects"] = {
+            v for v in dim_values["projects"] if v not in config_projects
+        }
 
-    # 3. unregistered taxonomy value on a paper.
+    disk_repos = _on_disk_repo_names(vault)
+    invalid["codes"] = {v for v in dim_values["codes"] if v not in disk_repos}
+
     registered = _load_registered_taxonomy(vault)
-    invalid_taxonomy_nodes: set[str] = set()
     if registered is not None:
-        for p in papers:
-            pid = p.get("id")
-            if not pid:
-                continue
-            for dict_name in USER_DICTS:
-                allowed = registered.get(dict_name, [])
-                for value in _as_str_list(p.get(dict_name)):
-                    if value not in allowed:
-                        invalid_taxonomy_nodes.add(str(pid))
+        for dim in ("topics", "methods", "data"):
+            allowed = set(registered.get(dim, []))
+            invalid[dim] = {v for v in dim_values[dim] if v not in allowed}
 
-    # 4. broken relation pairing (forward edge whose endpoint lacks the
-    #    matching reverse field, or whose endpoint does not exist here).
-    invalid_relation_edges: set[tuple[str, str, str]] = set()
-    for pid, paper in by_id.items():
-        for field in FORWARD_REF_FIELDS:
-            reverse = RELATION_PAIRS[field]
-            for ref in _as_str_list(paper.get(field)):
-                other = by_id.get(ref)
-                if other is None:
-                    # Missing endpoint (deleted / cross-vault id): broken
-                    # pairing, never a crash (OQ4).
-                    invalid_relation_edges.add((pid, ref, field))
-                    continue
-                back = set(_as_str_list(other.get(reverse)))
-                if pid not in back:
-                    invalid_relation_edges.add((pid, ref, field))
-
-    return {
-        "invalid_code_names": invalid_code_names,
-        "invalid_project_names": invalid_project_names,
-        "invalid_taxonomy_nodes": invalid_taxonomy_nodes,
-        "invalid_relation_edges": invalid_relation_edges,
-    }
+    return invalid
 
 
 # ---------------------------------------------------------------------------
@@ -380,27 +330,31 @@ def _invalid_markers(
 
 
 def build_graph(vault: Path) -> dict[str, Any]:
-    """Build the layered knowledge-graph JSON for a vault.
+    """Build the paper-centric knowledge-graph JSON for a vault.
 
-    Scans the full metadata set (this is an explicit Tier-2 read, invariant #15
-    permits per-paper metadata here), re-surfaces corrupt papers, and returns
-    the aggregate + per-project drill-down structure described in the module
-    docstring. Pure read — never writes the vault.
+    Scans the full metadata set (an explicit Tier-2 read, invariant #15 permits
+    per-paper metadata here), re-surfaces corrupt papers, and returns the flat
+    node/edge/dimension structure described in the module docstring. Pure read —
+    never writes the vault.
 
     Returns a dict shaped as::
 
         {
-          "summary": {papers, projects, codes, corrupt, invalid_edges},
-          "aggregate": {"nodes": [...], "edges": [...]},
-          "drilldown": {"<project>": {"nodes": [...], "edges": [...]}, ...},
+          "summary": {papers, corrupt, invalid_edges, dimensions: {<dim>: count}},
+          "nodes": [
+            {id, label, type, status, degree, dims: {<dim>: [values...]},
+             meta: {year, authors, n_authors, journal, doi, type, priority,
+                    read_status}}, ...
+          ],
+          "edges": [{source, target, type, directed, weight, status}, ...],
+          "dimensions": {<dim>: {values: [...], invalid: [...]}, ...},
         }
 
-    A paper<->paper relation edge is render-duplicated into every shared-project
-    drill-down bucket whose project both endpoints belong to (so the relation
-    stays visible in each subgraph it spans). Node degree / sizing is computed
-    once on the deduped relation list, so per-bucket repetition does not inflate
-    sizes — but a consumer aggregating edges ACROSS buckets must dedup on
-    ``(source, target, type)`` to avoid counting the same relation twice.
+    ``nodes`` holds every loaded paper (``type:"paper"``) plus every corrupt
+    paper (``type:"corrupt"``, empty ``dims``). ``edges`` holds only paper<->
+    paper relation edges; membership is encoded in each node's ``dims`` instead.
+    ``dimensions[d].values`` is the sorted distinct set of values present on any
+    paper for dimension ``d``; ``dimensions[d].invalid`` flags the drift subset.
     """
     # A top-level non-mapping metadata.yaml (bare list / bare scalar) is truthy
     # so list_papers' ``if not metadata`` guard lets it through as a non-dict
@@ -412,190 +366,92 @@ def build_graph(vault: Path) -> dict[str, Any]:
     loaded_ids = {str(p.get("id")) for p in papers if p.get("id")}
     corrupt_ids = _enumerate_corrupt_ids(vault, loaded_ids)
 
-    markers = _invalid_markers(vault, papers)
-
-    # --- collect entity sets --------------------------------------------
-    # Projects seen on any paper PLUS those registered in the config, so a
-    # registered-but-empty project still shows as a node. Project nodes are
-    # always real projects (never a synthetic corrupt pseudo-project, OQ1).
-    project_names: set[str] = set()
+    # --- distinct dimension values + their drift subset ------------------
+    dim_values: dict[str, set[str]] = {d: set() for d in DIMENSIONS}
     for p in papers:
-        for project in _as_str_list(p.get("projects")):
-            project_names.add(project)
-    config_projects = _config_project_names(vault)
-    if config_projects is not None:
-        project_names |= config_projects
-    project_list = sorted(project_names)
+        for dim in DIMENSIONS:
+            for v in _as_str_list(p.get(_DIM_FIELD[dim])):
+                if v:
+                    dim_values[dim].add(v)
+    dim_invalid = _dimension_drift(vault, dim_values)
 
-    # Per-project + per-code membership counts for node sizing.
-    project_paper_count: dict[str, int] = dict.fromkeys(project_list, 0)
-    project_code_count: dict[str, int] = dict.fromkeys(project_list, 0)
-    code_ref_count: dict[str, int] = {}
-    for p in papers:
-        paper_projects = _as_str_list(p.get("projects"))
-        paper_codes = _as_str_list(p.get("code-clones"))
-        for project in paper_projects:
-            project_paper_count[project] = project_paper_count.get(project, 0) + 1
-            project_code_count[project] = (
-                project_code_count.get(project, 0) + len(paper_codes)
-            )
-        for name in paper_codes:
-            code_ref_count[name] = code_ref_count.get(name, 0) + 1
-
-    # --- edges -----------------------------------------------------------
+    # --- relation edges + their validity --------------------------------
     relation_edges = _extract_relation_edges(papers)
-    project_edges = _project_paper_edges(papers)
-    code_edges = _paper_code_edges(papers)
-    aggregate_edges = _aggregate_project_edges(papers, project_list)
-
-    # Stamp invalid status onto relation edges (broken pairing / missing
-    # endpoint) and membership edges (deleted-project / dangling code-clone).
+    broken = _invalid_relation_edges(papers)
     invalid_edge_count = 0
+    invalid_rel_sources: set[str] = set()
     for e in relation_edges:
-        if (e["source"], e["target"], e["type"]) in markers["invalid_relation_edges"]:
+        if (e["source"], e["target"], e["type"]) in broken:
             e["status"] = "invalid"
             invalid_edge_count += 1
-    for e in project_edges:
-        if e["source"] in markers["invalid_project_names"]:
-            e["status"] = "invalid"
-            invalid_edge_count += 1
-    for e in code_edges:
-        if e["target"] in markers["invalid_code_names"]:
-            e["status"] = "invalid"
-            invalid_edge_count += 1
+            invalid_rel_sources.add(e["source"])
 
-    # --- paper degree (for paper-node sizing) ---------------------------
+    # --- paper degree (relation connectivity, for node sizing) ----------
     degree: dict[str, int] = dict.fromkeys(loaded_ids, 0)
     for e in relation_edges:
         degree[e["source"]] = degree.get(e["source"], 0) + 1
-        degree[e["target"]] = degree.get(e["target"], 0) + 1
-    for e in project_edges:
-        degree[e["target"]] = degree.get(e["target"], 0) + 1
-    for e in code_edges:
-        degree[e["source"]] = degree.get(e["source"], 0) + 1
+        if e["target"] in degree:  # only loaded endpoints count
+            degree[e["target"]] = degree[e["target"]] + 1
 
-    # --- node builders ---------------------------------------------------
-    def _paper_node(p: dict[str, Any]) -> dict[str, Any]:
-        pid = str(p.get("id"))
-        projects = _as_str_list(p.get("projects"))
-        status = "invalid" if pid in markers["invalid_taxonomy_nodes"] else "ok"
-        return {
-            "id": pid,
-            "type": "paper",
-            "label": str(p.get("title") or pid),
-            "size": degree.get(pid, 0),
-            "status": status,
-            "group": projects[0] if projects else UNASSIGNED,
+    # --- nodes -----------------------------------------------------------
+    nodes: list[dict[str, Any]] = []
+    for p in papers:
+        pid = p.get("id")
+        if not pid:
+            continue
+        pid = str(pid)
+        dims = {
+            dim: sorted({v for v in _as_str_list(p.get(_DIM_FIELD[dim])) if v})
+            for dim in DIMENSIONS
         }
-
-    def _project_node(name: str) -> dict[str, Any]:
-        size = project_paper_count.get(name, 0) + project_code_count.get(name, 0)
-        return {
-            "id": name,
-            "type": "project",
-            "label": name,
-            "size": size,
-            "status": "ok",
-            "group": name,
-        }
-
-    def _code_node(name: str, group: str) -> dict[str, Any]:
-        status = "invalid" if name in markers["invalid_code_names"] else "ok"
-        return {
-            "id": name,
-            "type": "code",
-            "label": name,
-            "size": code_ref_count.get(name, 0),
-            "status": status,
-            "group": group,
-        }
-
-    def _corrupt_node(pid: str) -> dict[str, Any]:
-        return {
-            "id": pid,
-            "type": "corrupt",
-            "label": pid,
-            "size": 0,
-            "status": "corrupt",
-            "group": UNASSIGNED,
-        }
-
-    # --- aggregate layer (real projects only) ---------------------------
-    aggregate_nodes = [_project_node(n) for n in project_list]
-
-    # --- drill-down layer ------------------------------------------------
-    # Each project bucket holds its project node, member paper nodes, the
-    # codes those papers reference, and the membership + relation edges
-    # internal to it. Papers in no project (and every corrupt paper) live in
-    # the "(unassigned)" bucket so nothing disappears (OQ1).
-    drilldown: dict[str, dict[str, list[dict[str, Any]]]] = {}
-
-    def _bucket(name: str) -> dict[str, list[dict[str, Any]]]:
-        return drilldown.setdefault(name, {"nodes": [], "edges": []})
-
-    papers_by_id = {str(p.get("id")): p for p in papers if p.get("id")}
-
-    # Project buckets: project node + its papers + their codes.
-    for name in project_list:
-        b = _bucket(name)
-        b["nodes"].append(_project_node(name))
-
-    seen_paper_in_bucket: set[tuple[str, str]] = set()
-    seen_code_in_bucket: set[tuple[str, str]] = set()
-    for pid, p in papers_by_id.items():
-        paper_projects = _as_str_list(p.get("projects"))
-        target_buckets = paper_projects if paper_projects else [UNASSIGNED]
-        for bucket_name in target_buckets:
-            b = _bucket(bucket_name)
-            if (bucket_name, pid) not in seen_paper_in_bucket:
-                b["nodes"].append(_paper_node(p))
-                seen_paper_in_bucket.add((bucket_name, pid))
-            for name in _as_str_list(p.get("code-clones")):
-                if (bucket_name, name) not in seen_code_in_bucket:
-                    b["nodes"].append(_code_node(name, bucket_name))
-                    seen_code_in_bucket.add((bucket_name, name))
-
-    # Corrupt papers always show as corrupt nodes in the unassigned bucket.
-    unassigned = _bucket(UNASSIGNED)
+        # Drift: a value of any dimension is unregistered/dangling, OR the paper
+        # is the source of a broken relation pairing (so it surfaces even though
+        # the dangling endpoint has no node to draw the red edge to).
+        has_drift_value = any(
+            any(v in dim_invalid[dim] for v in dims[dim]) for dim in DIMENSIONS
+        )
+        invalid = has_drift_value or pid in invalid_rel_sources
+        nodes.append(
+            {
+                "id": pid,
+                "label": str(p.get("title") or pid),
+                "type": "paper",
+                "status": "invalid" if invalid else "ok",
+                "degree": degree.get(pid, 0),
+                "dims": dims,
+                "meta": _node_meta(p),
+            }
+        )
     for cid in corrupt_ids:
-        unassigned["nodes"].append(_corrupt_node(cid))
+        nodes.append(
+            {
+                "id": cid,
+                "label": cid,
+                "type": "corrupt",
+                "status": "corrupt",
+                "degree": 0,
+                "dims": {dim: [] for dim in DIMENSIONS},
+                "meta": _node_meta({}),
+            }
+        )
 
-    # Membership edges into their owning project bucket.
-    for e in project_edges:
-        _bucket(e["source"])["edges"].append(e)
-    # Code edges follow their paper into every bucket the paper belongs to.
-    for e in code_edges:
-        src = e["source"]
-        p = papers_by_id.get(src)
-        paper_projects = _as_str_list(p.get("projects")) if p else []
-        for bucket_name in (paper_projects if paper_projects else [UNASSIGNED]):
-            _bucket(bucket_name)["edges"].append(e)
-    # Relation edges: place in each bucket whose project both endpoints share;
-    # if the endpoints share no project (or one is unassigned), it goes to the
-    # unassigned bucket so the relation stays visible somewhere.
-    for e in relation_edges:
-        src_p = papers_by_id.get(e["source"])
-        tgt_p = papers_by_id.get(e["target"])
-        src_projects = set(_as_str_list(src_p.get("projects"))) if src_p else set()
-        tgt_projects = set(_as_str_list(tgt_p.get("projects"))) if tgt_p else set()
-        common = src_projects & tgt_projects
-        for bucket_name in (sorted(common) if common else [UNASSIGNED]):
-            _bucket(bucket_name)["edges"].append(e)
-
-    # Ensure the unassigned bucket always exists (even on an all-projected
-    # vault) so consumers can rely on the key.
-    _bucket(UNASSIGNED)
-
+    dimensions = {
+        dim: {
+            "values": sorted(dim_values[dim]),
+            "invalid": sorted(dim_invalid[dim]),
+        }
+        for dim in DIMENSIONS
+    }
     summary = {
-        "papers": len(papers),
-        "projects": len(project_list),
-        "codes": len(code_ref_count),
+        "papers": len(loaded_ids),
         "corrupt": len(corrupt_ids),
         "invalid_edges": invalid_edge_count,
+        "dimensions": {dim: len(dim_values[dim]) for dim in DIMENSIONS},
     }
 
     return {
         "summary": summary,
-        "aggregate": {"nodes": aggregate_nodes, "edges": aggregate_edges},
-        "drilldown": drilldown,
+        "nodes": nodes,
+        "edges": relation_edges,
+        "dimensions": dimensions,
     }

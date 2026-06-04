@@ -1,30 +1,61 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ForceGraph, type FGMethods } from './graph/ForceGraph'
 import {
-  distinctGroups,
-  neighborIds,
-  subgraphFor,
+  MULTI_KEY,
+  NONE_KEY,
   type View,
-} from './graph/aggregate-drilldown'
+  colorAfterFocus,
+  colorKeysPresent,
+  initialView,
+  visibleEdges,
+  visibleNodes,
+} from './graph/dimensions'
 import { Controls } from './controls/Controls'
+import { DetailPanel } from './controls/DetailPanel'
 import { Legend } from './controls/Legend'
 import { SummaryBanner } from './controls/SummaryBanner'
-import type { GraphData, GraphNode } from './types'
+import { DIMENSIONS, DIMENSION_LABEL, type Dimension, type GraphData } from './types'
 
 export default function App({ data }: { data: GraphData }) {
-  const [view, setView] = useState<View>({ kind: 'aggregate' })
-  const [highlight, setHighlight] = useState<Set<string> | null>(null)
-  const [visibleGroups, setVisibleGroups] = useState<Set<string> | null>(null)
+  const [view, setView] = useState<View>(initialView())
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [size, setSize] = useState({ w: 800, h: 600 })
 
   const graphRef = useRef<FGMethods | undefined>(undefined)
   const canvasWrapRef = useRef<HTMLDivElement>(null)
 
-  const subgraph = useMemo(() => subgraphFor(data, view), [data, view])
-  const groups = useMemo(() => distinctGroups(subgraph.nodes), [subgraph])
-  const drilldownProjects = useMemo(
-    () => Object.keys(data.drilldown).sort(),
-    [data],
+  // id -> node for the detail card (relation-target resolution); built from ALL
+  // nodes so a selected paper / relation target resolves even when the current
+  // focus has filtered it off the canvas.
+  const nodesById = useMemo(
+    () => new Map(data.nodes.map((n) => [n.id, n])),
+    [data.nodes],
+  )
+  const selectedNode = selectedId ? (nodesById.get(selectedId) ?? null) : null
+  const dimInvalid = useMemo(() => {
+    const out = {} as Record<Dimension, string[]>
+    for (const d of DIMENSIONS) out[d] = data.dimensions[d].invalid
+    return out
+  }, [data.dimensions])
+
+  const visNodes = useMemo(() => visibleNodes(data, view), [data, view])
+  const visIds = useMemo(() => new Set(visNodes.map((n) => n.id)), [visNodes])
+  const visEdges = useMemo(
+    () => visibleEdges(data.edges, visIds),
+    [data.edges, visIds],
+  )
+  // Real cluster anchors (synthetic multiple/none keys never get a cluster).
+  const clusterValues = useMemo(
+    () =>
+      colorKeysPresent(visNodes, view.color).filter(
+        (k) => k !== MULTI_KEY && k !== NONE_KEY,
+      ),
+    [visNodes, view.color],
+  )
+  // Colour keys present (incl. synthetic) for the legend.
+  const legendKeys = useMemo(
+    () => colorKeysPresent(visNodes, view.color),
+    [visNodes, view.color],
   )
 
   // Track the canvas container size so the force graph fills the panel.
@@ -39,55 +70,45 @@ export default function App({ data }: { data: GraphData }) {
     return () => ro.disconnect()
   }, [])
 
-  // Reset highlight + group filter when switching views.
-  useEffect(() => {
-    setHighlight(null)
-    setVisibleGroups(null)
-  }, [view])
+  const setColor = useCallback((dim: Dimension) => {
+    setView((v) => ({ ...v, color: dim }))
+  }, [])
 
-  const handleNodeClick = useCallback(
-    (node: GraphNode) => {
-      // In aggregate view, clicking a project drills in. Elsewhere, a click
-      // toggles neighbour highlight.
-      if (view.kind === 'aggregate' && node.type === 'project') {
-        setView({ kind: 'drilldown', project: node.id })
-        return
-      }
-      setHighlight((cur) => {
-        if (cur && cur.has(node.id) && cur.size <= 1) return null
-        const nb = neighborIds(subgraph.edges, node.id)
-        return nb
-      })
-    },
-    [view, subgraph],
-  )
+  // Zoom into a (dimension, value) slice. Colour auto-switches to a different
+  // dimension so the slice's internal structure is immediately visible.
+  const focusValue = useCallback((dim: Dimension, value: string) => {
+    setView({ focus: { dim, value }, color: colorAfterFocus(dim) })
+  }, [])
 
-  const handleToggleGroup = useCallback(
-    (group: string) => {
-      setVisibleGroups((cur) => {
-        const base = cur ?? new Set(groups)
-        const next = new Set(base)
-        if (next.has(group)) next.delete(group)
-        else next.add(group)
-        // All selected => null (show everything, no dimming distinction).
-        return next.size === groups.length ? null : next
-      })
+  const clearFocus = useCallback(() => {
+    setView((v) => ({ ...v, focus: null }))
+  }, [])
+
+  // A legend swatch click zooms into that value of the CURRENT colour
+  // dimension (synthetic multiple/none keys are not focusable).
+  const onLegendClick = useCallback(
+    (key: string) => {
+      if (key === MULTI_KEY || key === NONE_KEY) return
+      focusValue(view.color, key)
     },
-    [groups],
+    [view.color, focusValue],
   )
 
   const exportPng = useCallback(() => {
-    const wrap = canvasWrapRef.current
-    const canvas = wrap?.querySelector('canvas')
+    const canvas = canvasWrapRef.current?.querySelector('canvas')
     if (!canvas) return
-    const url = canvas.toDataURL('image/png')
     const a = document.createElement('a')
-    a.href = url
-    const stamp =
-      view.kind === 'aggregate' ? 'overview' : view.project.replace(/[^\w-]+/g, '_')
+    a.href = canvas.toDataURL('image/png')
+    const stamp = view.focus
+      ? `${view.focus.dim}-${view.focus.value}`.replace(/[^\w-]+/g, '_')
+      : `by-${view.color}`
     a.download = `litman-graph-${stamp}.png`
     a.click()
   }, [view])
+
+  const subtitle = view.focus
+    ? `Focus · ${DIMENSION_LABEL[view.focus.dim]} = ${view.focus.value}  ·  ${visNodes.length} papers, coloured by ${DIMENSION_LABEL[view.color]}`
+    : `All papers, coloured by ${DIMENSION_LABEL[view.color]}`
 
   return (
     <div className="flex h-screen w-screen flex-col bg-[#f3efe8] text-stone-800">
@@ -96,11 +117,7 @@ export default function App({ data }: { data: GraphData }) {
           <h1 className="text-lg font-semibold tracking-tight">
             litman <span className="text-stone-400">·</span> knowledge graph
           </h1>
-          <p className="text-xs text-stone-400">
-            {view.kind === 'aggregate'
-              ? 'Library overview — project clusters'
-              : `Project: ${view.project}`}
-          </p>
+          <p className="text-xs text-stone-400">{subtitle}</p>
         </div>
         <SummaryBanner summary={data.summary} />
       </header>
@@ -108,34 +125,50 @@ export default function App({ data }: { data: GraphData }) {
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r border-[#e7e1d5] bg-[#f3efe8] p-3">
           <Controls
-            view={view}
-            drilldownProjects={drilldownProjects}
-            groups={groups}
-            visibleGroups={visibleGroups}
-            onHome={() => setView({ kind: 'aggregate' })}
-            onDrill={(p) => setView({ kind: 'drilldown', project: p })}
-            onToggleGroup={handleToggleGroup}
-            onResetGroups={() => setVisibleGroups(null)}
+            color={view.color}
+            focus={view.focus}
+            onSetColor={setColor}
+            onClearFocus={clearFocus}
             onExportPng={exportPng}
           />
         </aside>
 
         <main ref={canvasWrapRef} className="relative min-w-0 flex-1">
           <ForceGraph
-            subgraph={subgraph}
+            nodes={visNodes}
+            edges={visEdges}
+            colorDim={view.color}
+            clusterValues={clusterValues}
+            selectedId={selectedId}
             width={size.w}
             height={size.h}
-            highlight={highlight}
-            visibleGroups={visibleGroups}
-            onNodeClick={handleNodeClick}
+            onNodeClick={(n) => setSelectedId(n.id)}
             graphRef={graphRef}
           />
-          <div className="absolute right-3 top-3 z-10 w-52">
-            <Legend />
+          <div className="absolute right-3 top-3 z-10 w-56">
+            <Legend
+              colorDim={view.color}
+              keys={legendKeys}
+              focusedValue={view.focus?.value ?? null}
+              onPick={onLegendClick}
+            />
           </div>
-          {subgraph.nodes.length === 0 && (
+          {selectedNode && (
+            <div className="absolute left-3 top-3 z-20 w-80">
+              <DetailPanel
+                node={selectedNode}
+                nodesById={nodesById}
+                edges={data.edges}
+                dimensionInvalid={dimInvalid}
+                onClose={() => setSelectedId(null)}
+                onFocusValue={focusValue}
+                onSelectNode={(id) => setSelectedId(id)}
+              />
+            </div>
+          )}
+          {visNodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-stone-400">
-              No nodes in this view.
+              No papers in this view.
             </div>
           )}
         </main>

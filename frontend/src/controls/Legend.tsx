@@ -1,89 +1,77 @@
-// Self-explanatory legend (B4): someone reading a screenshot without litman
-// installed must understand shapes, colours, and the drift signal. Shapes are
-// tiny inline SVG matching the canvas glyphs, drawn in real palette colours so
-// the "shape = type, colour = project" split reads at a glance. Floats top-
-// right over the canvas so it sits next to what it explains.
+// Legend: the colour key for the current dimension, doubling as the focus
+// picker — clicking a value zooms into that slice. A short marker note explains
+// the pivot / corrupt / drift cues. Floats top-right over the canvas so it sits
+// next to what it explains, and stays readable in an exported screenshot (B4).
 
-import { CORRUPT_RED, DRIFT_RED, GREY } from '../graph/encoding'
+import { CORRUPT_RED, DRIFT_RED, PIVOT, colorForKey } from '../graph/encoding'
+import { MULTI_KEY, NONE_KEY } from '../graph/dimensions'
+import { DIMENSION_LABEL, type Dimension } from '../types'
 
-function Swatch({ children }: { children: React.ReactNode }) {
-  return (
-    <svg width="16" height="16" viewBox="-9 -9 18 18" className="shrink-0">
-      {children}
-    </svg>
-  )
+function keyLabel(key: string): string {
+  if (key === MULTI_KEY) return 'multiple (pivot)'
+  if (key === NONE_KEY) return 'none'
+  return key
 }
 
-function Row({ swatch, children }: { swatch: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <li className="flex items-center gap-2">
-      <Swatch>{swatch}</Swatch>
-      <span>{children}</span>
-    </li>
-  )
+interface Props {
+  colorDim: Dimension
+  keys: string[]
+  focusedValue: string | null
+  onPick: (key: string) => void
 }
 
-export function Legend() {
+export function Legend({ colorDim, keys, focusedValue, onPick }: Props) {
   return (
     <div className="rounded-xl border border-[#e3dccd] bg-[#faf8f3]/95 p-3 text-[11px] leading-tight text-stone-600 shadow-md backdrop-blur">
-      <div className="mb-2 text-xs font-semibold text-stone-700">Legend</div>
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-xs font-semibold text-stone-700">
+          Colour = {DIMENSION_LABEL[colorDim]}
+        </span>
+        <span className="text-[10px] text-stone-400">click to zoom</span>
+      </div>
 
-      <div className="mb-1 font-medium text-stone-400">Shape = type · colour = project</div>
-      <ul className="mb-2.5 space-y-1.5">
-        <Row swatch={<rect x="-6" y="-6" width="12" height="12" rx="2.5" fill="#c0613b" />}>
-          Project
-        </Row>
-        <Row swatch={<circle r="6" fill="#4a6b7b" />}>Paper</Row>
-        <Row swatch={<polygon points="0,-7 7,0 0,7 -7,0" fill="#6b7b4f" />}>Code repo</Row>
-        <Row swatch={<circle r="6" fill={GREY} />}>Unassigned / weak</Row>
+      <ul className="mb-2.5 max-h-64 space-y-1 overflow-y-auto pr-1">
+        {keys.map((k) => {
+          const focusable = k !== MULTI_KEY && k !== NONE_KEY
+          const isFocused = focusable && k === focusedValue
+          return (
+            <li key={k}>
+              <button
+                type="button"
+                disabled={!focusable}
+                onClick={() => onPick(k)}
+                className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left transition ${
+                  focusable ? 'hover:bg-stone-200/50' : 'cursor-default'
+                } ${isFocused ? 'bg-stone-200/70 font-medium text-stone-800' : ''}`}
+              >
+                <span
+                  className="inline-block h-3 w-3 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: colorForKey(k),
+                    border: k === MULTI_KEY ? `1.5px solid ${PIVOT}` : 'none',
+                  }}
+                />
+                <span className="truncate">{keyLabel(k)}</span>
+              </button>
+            </li>
+          )
+        })}
+        {keys.length === 0 && <li className="px-1 text-stone-400">no values</li>}
       </ul>
 
-      <div className="mb-1 font-medium text-stone-400">Relations</div>
-      <ul className="mb-2.5 space-y-1.5">
-        <Row
-          swatch={
-            <>
-              <line x1="-7" y1="0" x2="6" y2="0" stroke="#6b7b4f" strokeWidth="1.8" />
-              <polygon points="7,0 2.5,-2.5 2.5,2.5" fill="#6b7b4f" />
-            </>
-          }
-        >
-          extends / contradicts (directed)
-        </Row>
-        <Row swatch={<line x1="-7" y1="0" x2="7" y2="0" stroke="#9a9082" strokeWidth="1.8" />}>
-          related / shared (undirected)
-        </Row>
-      </ul>
-
-      <div className="mb-1 font-medium text-stone-400">Health</div>
-      <ul className="space-y-1.5">
-        <Row
-          swatch={
-            <>
-              <circle r="4.5" fill={CORRUPT_RED} />
-              <circle r="7" fill="none" stroke={CORRUPT_RED} strokeWidth="1.8" />
-            </>
-          }
-        >
-          <span style={{ color: CORRUPT_RED }}>Corrupt</span> metadata
-        </Row>
-        <Row
-          swatch={
-            <line
-              x1="-7"
-              y1="0"
-              x2="7"
-              y2="0"
-              stroke={DRIFT_RED}
-              strokeWidth="1.6"
-              strokeDasharray="3 2"
-              opacity="0.6"
-            />
-          }
-        >
-          <span style={{ color: DRIFT_RED }}>Drift</span> (invalid, faded)
-        </Row>
-      </ul>
+      <div className="border-t border-[#e7e1d5] pt-2 text-[10px] text-stone-500">
+        <div className="mb-0.5">
+          <span style={{ color: PIVOT }}>●</span> dark ring = pivot (bridges
+          values)
+        </div>
+        <div className="mb-0.5">
+          <span style={{ color: CORRUPT_RED }}>●</span> corrupt metadata
+        </div>
+        <div>
+          <span style={{ color: DRIFT_RED }}>○</span> red ring / dashed edge =
+          drift
+        </div>
+      </div>
     </div>
   )
 }

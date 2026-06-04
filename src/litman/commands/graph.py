@@ -177,10 +177,11 @@ def graph_cmd(
 ) -> None:
     """Open a read-only knowledge-graph view of the library in a browser.
 
-    Scans all metadata, reconstructs the emergent project<->paper<->code graph,
-    and renders it into a self-contained HTML page opened via file:// (no server,
-    works offline). The GUI never writes the vault. Corrupt papers and broken
-    references show up as red nodes/edges rather than disappearing.
+    Scans all metadata and reconstructs the emergent network of papers, which the
+    GUI colours / clusters / focuses by project, topic, method, data, or
+    code-clone. Renders into a self-contained HTML page opened via file:// (no
+    server, works offline). The GUI never writes the vault. Corrupt papers and
+    broken references show up as red nodes/edges rather than disappearing.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     papers = list_papers(vault)
@@ -202,10 +203,11 @@ def graph_cmd(
     path = _render_and_open(html, output, vault)
 
     s = data["summary"]
+    dims = s["dimensions"]
     console.print(
         f"[green]✓[/] Opened knowledge graph "
-        f"[dim]({s['papers']} papers, {s['projects']} projects, "
-        f"{s['codes']} code repos"
+        f"[dim]({s['papers']} papers, {dims['projects']} projects, "
+        f"{dims['topics']} topics, {dims['codes']} code repos"
         + (f", {s['corrupt']} corrupt" if s["corrupt"] else "")
         + (f", {s['invalid_edges']} invalid edges" if s["invalid_edges"] else "")
         + f")[/] → [bold]{path}[/]"

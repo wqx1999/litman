@@ -1,17 +1,19 @@
-// D9 visual encoding helpers, shared by the canvas renderer and the legend so
-// the two never drift. Shape encodes entity type, colour encodes group. The
-// drift signal (corrupt / invalid) is deliberately *de-emphasised* so it does
-// not shout over the actual structure: corrupt papers (the rare, severe case)
-// stay a bold red dot; invalid nodes keep their group colour but gain a thin
-// red ring; invalid edges fade to a translucent dashed red (see ForceGraph).
-// Greys are the "weak / unassigned" reference tone (viz-conventions).
+// Visual encoding helpers, shared by the canvas renderer and the legend so the
+// two never drift. The model is paper-centric: every node is a paper (a
+// circle), COLOUR encodes the chosen dimension's value, a *pivot* (paper with
+// >1 value in that dimension) gets a distinct dark fill + ring, and unassigned
+// papers fade to a warm grey. The drift signal (corrupt / invalid) is
+// deliberately de-emphasised so it does not shout over the structure: corrupt
+// papers (rare, severe) are a bold red dot; invalid papers keep their colour
+// but gain a thin red ring; invalid edges fade to translucent dashed red.
 
-import type { GraphEdge, GraphNode, NodeType } from '../types'
+import type { GraphEdge } from '../types'
+import { MULTI_KEY, NONE_KEY } from './dimensions'
 
 // Warm, editorial palette ("暖色高级灰"). Low-saturation earth tones chosen to
-// sit together without clashing, so adjacent project clusters read as a family
-// rather than a default-matplotlib rainbow. Assigned by hashing the group name
-// so a project keeps its colour across reopens and aggregate/drilldown views.
+// sit together without clashing, so adjacent clusters read as a family rather
+// than a default-matplotlib rainbow. Assigned by hashing the value so a given
+// value keeps its colour across recolours / focus.
 const PALETTE = [
   '#c0613b', // terracotta
   '#6b7b4f', // olive
@@ -25,10 +27,11 @@ const PALETTE = [
   '#8a7d6b', // taupe
 ]
 
-export const GREY = '#a8a097' // unassigned / weak relationship (warm grey)
+export const GREY = '#bcb4a8' // unassigned (no value in this dimension)
+export const PIVOT = '#403a33' // dark warm — a paper bridging >1 value (pivot)
 export const CORRUPT_RED = '#b3402e' // bold red — corrupt metadata only
 export const DRIFT_RED = '#a8493a' // ring / edge accent for invalid (drift)
-export const EDGE_OK = '#b6ae9f' // warm neutral membership/relation edge
+export const EDGE_OK = '#b6ae9f' // warm neutral relation edge
 
 function hashString(s: string): number {
   let h = 2166136261
@@ -39,23 +42,30 @@ function hashString(s: string): number {
   return h >>> 0
 }
 
-export function groupColor(group: string): string {
-  if (!group || group === '(unassigned)') return GREY
-  return PALETTE[hashString(group) % PALETTE.length]
+// `#rrggbb` -> `rgba(r,g,b,a)`. All palette / marker colours are 6-digit hex,
+// so the glow halo can be drawn in a node's own hue at an arbitrary alpha.
+function withAlpha(hex: string, a: number): string {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${a})`
 }
 
-// Final fill colour for a node. Corrupt = bold red (rare + most severe, must be
-// seen). Invalid keeps its group colour (the red *ring* marks it instead, so a
-// whole cluster of taxonomy-drift papers doesn't turn into a wall of red).
-export function nodeColor(node: GraphNode): string {
-  if (node.status === 'corrupt') return CORRUPT_RED
-  return groupColor(node.group)
+// Colour for a colour-key (a dimension value, or the synthetic MULTI / NONE).
+export function colorForKey(key: string): string {
+  if (key === NONE_KEY) return GREY
+  if (key === MULTI_KEY) return PIVOT
+  return PALETTE[hashString(key) % PALETTE.length]
 }
 
-// Whether a node should get the thin red drift ring (invalid, e.g. unregistered
-// taxonomy). Corrupt draws its own bolder ring in drawNodeShape.
-export function nodeHasDriftRing(node: GraphNode): boolean {
-  return node.status === 'invalid'
+// Relation edge type -> colour so multi-edges between the same pair are
+// distinguishable (D6). Undirected `related` is a quiet warm grey; the
+// directed types get their own muted hues.
+export const RELATION_TYPE_COLORS: Record<string, string> = {
+  related: '#a79d8d',
+  extends: '#6b7b4f',
+  contradicts: '#b5552f',
 }
 
 export function edgeColor(edge: GraphEdge): string {
@@ -63,100 +73,74 @@ export function edgeColor(edge: GraphEdge): string {
   return RELATION_TYPE_COLORS[edge.type] ?? EDGE_OK
 }
 
-// Relation/edge type → colour so multi-edges between the same pair are
-// distinguishable (D6). Membership edges (projects / code-clones / shared-
-// papers) use neutral warm tones; relation edges get their own muted hues.
-export const RELATION_TYPE_COLORS: Record<string, string> = {
-  related: '#9a9082', // warm grey — undirected, weak
-  extends: '#6b7b4f', // olive — directed
-  contradicts: '#b5552f', // brick — directed
-  projects: '#cdc5b6', // pale warm grey — membership
-  'code-clones': '#b08a4a', // antique gold — membership
-  'shared-papers': '#b0a89c', // warm grey — aggregate shared-paper edge
-}
-
-// Map a node's raw `size` (degree / count) to a canvas radius. sqrt keeps area
-// roughly proportional to the value (bar-graph discipline carried to nodes).
-export function nodeRadius(size: number): number {
-  return 4 + Math.sqrt(Math.max(0, size)) * 1.7
+// Map a paper's relation degree to a canvas radius. sqrt keeps area roughly
+// proportional to connectivity (bar-graph discipline carried to nodes). Pivots
+// get a small bump so they read as hubs even at low degree.
+export function nodeRadius(degree: number, pivot: boolean): number {
+  return (pivot ? 5 : 4) + Math.sqrt(Math.max(0, degree)) * 1.6
 }
 
 // Deterministic seed offset for initial placement so reopening is roughly
-// stable (B2/B4) — react-force-graph only reads it once before the sim runs.
+// stable — react-force-graph only reads it once before the sim runs.
 export function seedXY(id: string): { x: number; y: number } {
   const h = hashString(id)
   const angle = (h % 360) * (Math.PI / 180)
-  const r = 50 + (((h >>> 9) % 1000) / 1000) * 250
+  const r = 40 + (((h >>> 9) % 1000) / 1000) * 220
   return { x: Math.cos(angle) * r, y: Math.sin(angle) * r }
 }
 
-export const SHAPE_BY_TYPE: Record<NodeType, string> = {
-  project: 'square',
-  paper: 'circle',
-  code: 'diamond',
-  corrupt: 'circle (red)',
-}
-
-// Trace a node's outline path (no fill/stroke) so the caller can fill-with-
-// shadow then stroke-without-shadow over the identical path.
-function traceShape(
+// Draw a paper node: a same-hue glow halo, a circle filled `fill`, a hairline
+// warm stroke (dark + thicker when highlighted), a dark ring for pivots, and a
+// red ring for corrupt / invalid drift.
+export function drawNode(
   ctx: CanvasRenderingContext2D,
-  type: NodeType,
-  x: number,
-  y: number,
-  r: number,
-): void {
-  ctx.beginPath()
-  if (type === 'project') {
-    const s = r * 1.7
-    const rad = Math.min(3, s * 0.18) // soft rounded square
-    ctx.roundRect(x - s / 2, y - s / 2, s, s, rad)
-  } else if (type === 'code') {
-    const s = r * 1.35
-    ctx.moveTo(x, y - s)
-    ctx.lineTo(x + s, y)
-    ctx.lineTo(x, y + s)
-    ctx.lineTo(x - s, y)
-    ctx.closePath()
-  } else {
-    ctx.arc(x, y, r, 0, 2 * Math.PI)
-  }
-}
-
-// Draw a node on a 2D canvas: soft drop shadow under the fill, a hairline warm
-// stroke (or a dark stroke when highlighted), plus a red ring for corrupt /
-// invalid drift markers.
-export function drawNodeShape(
-  ctx: CanvasRenderingContext2D,
-  type: NodeType,
   x: number,
   y: number,
   r: number,
   fill: string,
-  highlighted: boolean,
-  driftRing: boolean,
+  opts: { highlighted: boolean; pivot: boolean; corrupt: boolean; drift: boolean },
 ): void {
-  // 1) fill with a soft warm shadow for depth.
-  ctx.save()
-  ctx.fillStyle = fill
-  ctx.shadowColor = 'rgba(70,55,40,0.22)'
-  ctx.shadowBlur = highlighted ? 10 : 4
-  ctx.shadowOffsetY = 1
-  traceShape(ctx, type, x, y, r)
+  // 0) soft glow halo in the node's OWN hue (a radial gradient fading to
+  //    transparent). On the light canvas this reads as a gentle bloom; where
+  //    halos overlap inside a cluster they add up, so a dense cluster gets a
+  //    luminous coloured core without any per-node clutter. Wider + brighter
+  //    when highlighted so a hover focus glows.
+  const haloR = r * (opts.highlighted ? 3.2 : 2.2)
+  const innerA = opts.highlighted ? 0.55 : 0.18
+  const grad = ctx.createRadialGradient(x, y, r * 0.6, x, y, haloR)
+  grad.addColorStop(0, withAlpha(fill, innerA))
+  grad.addColorStop(1, withAlpha(fill, 0))
+  ctx.fillStyle = grad
+  ctx.beginPath()
+  ctx.arc(x, y, haloR, 0, 2 * Math.PI)
   ctx.fill()
-  ctx.restore()
 
-  // 2) hairline stroke over the same path (no shadow).
-  traceShape(ctx, type, x, y, r)
-  ctx.strokeStyle = highlighted ? '#3a322a' : 'rgba(80,62,44,0.20)'
-  ctx.lineWidth = highlighted ? 2 : 0.7
+  // 1) filled core circle (opaque, drawn over the halo).
+  ctx.fillStyle = fill
+  ctx.beginPath()
+  ctx.arc(x, y, r, 0, 2 * Math.PI)
+  ctx.fill()
+
+  // 2) hairline stroke. Pivots get a dark ring so they pop as hubs.
+  ctx.beginPath()
+  ctx.arc(x, y, r, 0, 2 * Math.PI)
+  if (opts.highlighted) {
+    ctx.strokeStyle = '#2f2922'
+    ctx.lineWidth = 2
+  } else if (opts.pivot) {
+    ctx.strokeStyle = PIVOT
+    ctx.lineWidth = 1.6
+  } else {
+    ctx.strokeStyle = 'rgba(80,62,44,0.22)'
+    ctx.lineWidth = 0.7
+  }
   ctx.stroke()
 
-  // 3) drift ring: bold for corrupt, thinner for invalid.
-  if (type === 'corrupt' || driftRing) {
+  // 3) red ring: bold for corrupt, thinner for invalid drift.
+  if (opts.corrupt || opts.drift) {
     ctx.beginPath()
-    ctx.strokeStyle = type === 'corrupt' ? CORRUPT_RED : DRIFT_RED
-    ctx.lineWidth = type === 'corrupt' ? 2.4 : 1.6
+    ctx.strokeStyle = opts.corrupt ? CORRUPT_RED : DRIFT_RED
+    ctx.lineWidth = opts.corrupt ? 2.4 : 1.5
     ctx.arc(x, y, r + 3, 0, 2 * Math.PI)
     ctx.stroke()
   }
