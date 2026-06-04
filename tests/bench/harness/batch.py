@@ -468,6 +468,23 @@ def _aggregate_routing(
         "na": na,
         "scored": scored,
         "per_card": {cid: rr.ra for cid, rr in results},
+        # Per-utterance trail so a routing miss is attributable (which sentence
+        # routed where), not just an opaque per-card RA. Without this, a model's
+        # routing score in the compatibility matrix is un-diagnosable.
+        "per_card_trail": {
+            cid: [_routing_case_to_json(c) for c in rr.trail] for cid, rr in results
+        },
+    }
+
+
+def _routing_case_to_json(case: Any) -> dict[str, Any]:
+    """Serialize one :class:`harness.routing.CaseTrail` for the report."""
+    return {
+        "utt": _card_field(case, "utt"),
+        "golden": _card_field(case, "golden"),
+        "observed": _card_field(case, "observed"),
+        "outcome": _card_field(case, "outcome"),
+        "detail": _card_field(case, "detail"),
     }
 
 

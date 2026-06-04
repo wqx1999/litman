@@ -14,8 +14,8 @@ intent: |
   "我想新建一个文献项目叫 PepCodec，就用我当前所在的这个工作目录作为它的项目目录，
   然后把 PeptideBERT 归进去。"
 expected_end_state:
-  - "taxonomy_has: projects :: PepCodec"
-  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has PepCodec"
+  - "taxonomy_has: projects :: pepcodec"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has pepcodec"
   - "ran: project add"
   - "ran: link"
   - "health: clean"
@@ -38,3 +38,13 @@ notes: |
   `check_project_references`（klass-A，已在 _CHECK_REGISTRY）对"缺 litman_reflib symlink /
   缺或过期 REFERENCES.md / 多余 symlink"均报 **error** 级 → health 失败，已忠实覆盖那两条
   断言（agent 把 projects 字段塞上却没真 link，member_ids 有而 link_ids 无 → error）。
+
+  **大小写：断言用小写 `pepcodec`，不是 intent 里的 CamelCase `PepCodec`。** 依据：
+  (1) 4 个 TAXONOMY key（projects/topics/methods/data）在 CLI 层全是 `strip()`、**不
+  lowercase**（`commands/taxonomy.py:237`、`commands/project.py:171`），小写是统一**约定**；
+  (2) lit-library skill 明确教小写 project token（`lit project add pepforge` 示例、
+  "deterministic canonicalization (case)"）；(3) 过滤/解析大小写不敏感
+  （`core/query.py:104` `token.lower() in entry.lower()`），`pepcodec` 与 `PepCodec`
+  解析到同一项目。故忠实的存储是小写，agent 敲小写是对的。identity.md 的 CamelCase 仅叙述
+  用词，非存储 key。（附带 litman 隐患：`project add` 去重 `project.py:191` 大小写敏感，理论
+  上 `PepCodec`+`pepcodec` 可并存为两项目——记入 later proposal，与本卡无关。）

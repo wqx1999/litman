@@ -664,11 +664,23 @@ def test_run_batch_scores_routing_with_fake_routing_run_fn() -> None:
     assert routing["scored"] == 3    # hits + misses (na excluded)
     assert routing["ra"] == 2 / 3
     assert routing["per_card"]["I-route"] == 2 / 3
-    # report_to_dict carries the routing section (JSON-serializable).
+    # Per-utterance trail is persisted so a miss is attributable (which sentence
+    # routed where), not just an opaque per-card RA.
+    trail = routing["per_card_trail"]["I-route"]
+    assert [t["outcome"] for t in trail] == ["hit", "miss", "hit", "na"]
+    assert [t["utt"] for t in trail] == [
+        "把这篇加到库里", "继续读", "browse or roundup", "引用这篇",
+    ]
+    assert trail[1]["observed"] == "lit-library"  # the wrong-route miss
+    assert trail[1]["detail"]  # carries why it missed
+    assert trail[2]["golden"] == ["lit-library", "lit-reading"]  # acceptable set
+    # report_to_dict carries the routing section (JSON-serializable, incl. trail).
     import json
 
     payload = report_to_dict(report)
-    assert json.loads(json.dumps(payload))["routing"]["ra"] == 2 / 3
+    rt = json.loads(json.dumps(payload))["routing"]
+    assert rt["ra"] == 2 / 3
+    assert rt["per_card_trail"]["I-route"][1]["outcome"] == "miss"
 
 
 def test_run_batch_aggregates_ra_across_two_routing_cards() -> None:
