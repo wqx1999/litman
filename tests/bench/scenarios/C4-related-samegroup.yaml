@@ -14,8 +14,7 @@ precondition: |
 intent: |
   "我在看 PeptideBERT，我库里还有没有相关的、最好同一批人做的？"
 expected_end_state:
-  - "ran: related"                     # 或 list/search，但应走 CLI 检索
-  - "stdout_contains: ~Multi-Peptide"  # 输出包含 #5（由 jsonl stdout 断言）
+  - "stdout_contains: ~Multi-Peptide"  # 输出含 #5（由 jsonl stdout 断言，已隐含"走了 CLI 检索且命中"）
 auto_fail:
   - 触碰真库
 adherence_flags:
@@ -24,3 +23,11 @@ adherence_flags:
 notes: |
   "输出包含 Multi-Peptide(#5)" 是 stdout 内容断言，转 stdout_contains（执行器
   stdout 解析），不静默通过。
+
+  原先还有一条 `ran: related`，已删除——它过度指定了 solution path 且与 stdout_contains
+  冗余。stdout 只从 lit 调用捕获，所以 stdout_contains 命中 #5 已经证明 agent (a) 走了
+  CLI 检索、(b) 找到了正确的相关论文；grep / cat 原始 vault 的输出不进 lit-call stdout，
+  仍会判挂（auto_fail / adherence_flag 不漏）。`lit related` / `lit list --author` /
+  `lit show` / `lit search` 都是合法路径（卡本意即注释里的"或 list/search"），不该只认
+  字面含 "related" 的 argv——cc_haiku_260603_2 的 r2 正是用 `lit list --author` 精准答
+  出"同一批人"却被 `ran: related` 冤判（1/1/0）。
