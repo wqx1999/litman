@@ -181,6 +181,8 @@ Core dependencies that make litman possible:
 [![Rich](https://img.shields.io/badge/Rich-Terminal_UI-FAD000?logoColor=black)](https://rich.readthedocs.io/)
 [![httpx](https://img.shields.io/badge/httpx-HTTP_Client-2D9CDB?logoColor=white)](https://www.python-httpx.org/)
 
+Octopus mascot generated with [Doubao](https://www.doubao.com/) (AI image generation).
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).

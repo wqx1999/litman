@@ -28,19 +28,23 @@ commit, and it never touches your real vault (see *Isolation* below).
 ## Setup from a fresh clone
 
 The harness drives the `lit` CLI **and** imports `litman` as a library (the
-`health` checks), so it needs litman installed in the Python that runs it. A venv
-gives both with zero pollution of the system Python.
+`health` checks), so it needs litman installed in the Python that runs it. A
+dedicated conda env (or a `python3 -m venv`) gives both with no pollution of your
+base environment.
 
 ```bash
 git clone https://github.com/wqx1999/litman.git && cd litman
 
-python3 -m venv .venv
-source .venv/bin/activate           # the one activation step; dev-only
-pip install -e ".[dev]"             # litman + lit CLI + pytest, all inside .venv
+conda create -n litman-bench python=3.12 -y
+conda activate litman-bench         # dev-only; a `python3 -m venv` works identically
+pip install -e ".[dev]"             # litman + lit CLI + pytest, all inside the env
 
 # fetch the 10 fixture PDFs (not in git; sha256-verified against fixtures.lock)
 python tests/bench/fetch_fixtures.py
 ```
+
+Use a **new** env (`conda create -n litman-bench`), not `base` — that keeps the
+install isolated; `conda env remove -n litman-bench` wipes it without a trace.
 
 `fetch_fixtures.py` (no args) skips PDFs already present and matching the lock, so
 it is safe to re-run. `--check` verifies cached files without the network. A wrong
