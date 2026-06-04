@@ -66,6 +66,11 @@ class Card:
     adherence_flags: list[Any] = field(default_factory=list)
     notes: str = ""
     skip_reason: str | None = None
+    # Methodology exclusion (distinct from skip_reason): the card runs fine in the
+    # sandbox but cannot be FAIRLY scored single-turn (e.g. it encodes an
+    # intrinsically multi-turn interaction). Excluded from TRR via the
+    # ``multi-turn`` coverage bucket, NOT the physical ``skipped`` bucket.
+    single_turn_unfit: str | None = None
     # Routing-card extras.
     in_scope_skills: list[str] = field(default_factory=list)
     cases: list[Any] = field(default_factory=list)
@@ -112,6 +117,7 @@ def load_card(path: Path) -> Card:
         adherence_flags=list(data.get("adherence_flags") or []),
         notes=str(data.get("notes", "")),
         skip_reason=data.get("skip_reason"),
+        single_turn_unfit=data.get("single_turn_unfit"),
         in_scope_skills=list(data.get("in_scope_skills") or []),
         cases=list(data.get("cases") or []),
     )

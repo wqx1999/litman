@@ -4,6 +4,7 @@ layer: maintenance
 source: 缺
 fixtures: []                          # 库操作卡：#1 已在 seed 内，不递 PDF（防 re-add 陷阱）
 needs_pty: false
+single_turn_unfit: "multi-turn — intent 是一口气内的自我撤回（'删了…诶不对…找回来'）。rm+restore 往返本质是两轮交互压进单个 prompt：一个能力拉满且 skill-compliant 的 agent 完全可以把它读成 net no-op（'你改主意了，没删，还在'）——这读法既合理、又契合 skill 对删除的'never initiate'姿态。故单轮 TRR 量的是'模型挑了哪个合理读法'而非能力上限。归入 multi-turn 桶（非 skipped：沙箱跑得动，问题是单轮不公平），待未来有多轮/人工测 tier 再 un-skip。"
 invariants: []
 routing_label: {lit-library, lit-reading}    # restore 碰撞
 seed: seed-1paper-diffdock
@@ -26,6 +27,14 @@ notes: |
   lit rm 是可恢复删除（进 .trash/，capped 100）。测"删除可逆 + restore 重建关系"。
 
   intent 原为元文本 "分两步：1.… 2.…"（bench 单轮无多轮，整段灌进一个 prompt，"分两步"
-  是 harness 黑话泄进了 prompt）→ 改成两句自然口语拼接。本卡失败根因是 skill 路由：
-  "删了…找回来" 没触发 lit-library，agent 反问 "DiffDock 是什么"（零 lit 调用）；
-  `419e083` 给 lit-library description 加了 delete-a-paper 触发。
+  是 harness 黑话泄进了 prompt）→ 改成两句自然口语拼接。`419e083` 给 lit-library
+  description 加了 delete-a-paper 触发，路由层已通（restore 在 batch-1 命中）。
+
+  **2026-06-04 重分桶决策（cc_haiku_260604_0，rounds [0,1,0]）：** 路由修好后,本卡
+  暴露出更深的卡面歧义。r1 走字面 rm→restore 往返(过);r0/r2 把"删了…诶不对…找回来"
+  读成"你改主意了、没删、还在,无需恢复"(挂)——而后者既合理、又契合 skill 对删除的
+  "never initiate" 姿态。两种读法对一个能力拉满的 agent 都站得住,故单轮 TRR 量的是
+  "模型挑了哪个合理读法"而非能力上限(假信号)。rm+restore 往返本质是两轮交互,单轮无
+  法在不靠"分两步"元框架的前提下既保住 rm 又保住 restore 且无 no-op 逃逸。**故移出单轮
+  TRR,加 `single_turn_unfit` 进 multi-turn 桶**(非 skipped:沙箱跑得动,问题是单轮不
+  公平,见 `harness/batch.py` coverage_tag)。待未来有多轮/人工测 tier 再 un-skip。

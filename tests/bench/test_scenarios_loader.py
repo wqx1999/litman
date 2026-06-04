@@ -16,11 +16,15 @@ from harness.scenarios import (
     load_card,
 )
 
-# The full corpus is 33 cards; 7 carry an explicit skip_reason (6 needs_network
-# + 1 needs_pty), the rest are sandbox-runnable definitions. E2/H1 join the
+# The full corpus is 33 cards; 8 carry an explicit skip_reason (7 needs_network
+# + 1 needs_pty) — the sandbox physically cannot run those. E2/H1 join the
 # needs_network set: both preconditions require a bound code repo (a `code add`
 # = git clone), which the sandbox seed builder cannot stage — leaving them
 # auto-scored produced guaranteed-0 false negatives for every model.
+# A SEPARATE class is `single_turn_unfit` (the ``multi-turn`` coverage bucket):
+# the card runs fine but cannot be FAIRLY scored single-turn (an intrinsically
+# multi-turn interaction). It is NOT a skip_reason — different exclusion reason
+# (methodology, not sandbox limits) — so it lives in its own expected set below.
 EXPECTED_CARD_COUNT = 33
 EXPECTED_SKIP_IDS = {
     "E1-code-add",
@@ -31,6 +35,9 @@ EXPECTED_SKIP_IDS = {
     "J2-amp-survey",
     "D2-pty-taxonomy-rm",
     "G5-sync-push",  # needs harness-configured fake rclone remote + out-of-vault content verb (infra unbuilt)
+}
+EXPECTED_MULTITURN_IDS = {
+    "G3-trash-restore",  # 'delete it… wait no, restore it' — one-breath retraction, unfair single-turn
 }
 
 
@@ -64,6 +71,24 @@ def test_non_skip_cards_are_sandbox_runnable() -> None:
         if c.skip_reason is None:
             assert not c.needs_network, f"{c.id} needs_network but no skip_reason"
             assert not c.needs_pty, f"{c.id} needs_pty but no skip_reason"
+
+
+def test_multiturn_cards_marked() -> None:
+    """``single_turn_unfit`` cards form their own set, disjoint from skip_reason.
+
+    A multi-turn-excluded card runs fine in the sandbox (no network / pty), so it
+    must carry NO skip_reason — the two exclusion classes never overlap.
+    """
+    cards = _all_cards()
+    multiturn = {c.id for c in cards if c.single_turn_unfit}
+    assert multiturn == EXPECTED_MULTITURN_IDS
+    by_id = {c.id: c for c in cards}
+    for cid in EXPECTED_MULTITURN_IDS:
+        c = by_id[cid]
+        assert c.single_turn_unfit.strip(), f"{cid} has empty single_turn_unfit"
+        assert c.skip_reason is None, f"{cid} is both skip_reason and single_turn_unfit"
+        assert not c.needs_network and not c.needs_pty, f"{cid} multi-turn but needs sandbox cap"
+    assert not (EXPECTED_MULTITURN_IDS & EXPECTED_SKIP_IDS), "exclusion sets must be disjoint"
 
 
 def test_every_non_routing_card_has_intent() -> None:

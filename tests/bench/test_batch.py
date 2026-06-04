@@ -31,6 +31,22 @@ def test_coverage_tag_skipped() -> None:
     assert coverage_tag({"id": "E1", "skip_reason": "needs_network"}) == "skipped"
 
 
+def test_coverage_tag_multiturn() -> None:
+    # Methodology exclusion: runs in the sandbox but unfair to score single-turn.
+    assert (
+        coverage_tag({"id": "G3", "layer": "maintenance", "single_turn_unfit": "multi-turn — ..."})
+        == "multi-turn"
+    )
+
+
+def test_coverage_tag_skipped_precedes_multiturn() -> None:
+    # A physical skip wins over a methodology exclusion if both are (wrongly) set.
+    assert (
+        coverage_tag({"id": "X", "skip_reason": "needs_pty", "single_turn_unfit": "y"})
+        == "skipped"
+    )
+
+
 def test_coverage_tag_routing() -> None:
     assert coverage_tag({"id": "I", "layer": "routing", "cases": []}) == "routing"
 
@@ -97,7 +113,13 @@ def test_run_batch_excludes_routing_and_skipped_from_trr() -> None:
     ]
     report = run_batch(cards, model="m", rounds=2, run_card_fn=fake_run)
     counts = report.coverage["counts"]
-    assert counts == {"auto-scored": 1, "prose-blocked": 1, "routing": 1, "skipped": 1}
+    assert counts == {
+        "auto-scored": 1,
+        "prose-blocked": 1,
+        "routing": 1,
+        "skipped": 1,
+        "multi-turn": 0,
+    }
     # TRR denominator is only the single auto-scored card.
     assert report.coverage["trr_denominator"] == 1
     assert report.trr_mean == 1.0
@@ -172,7 +194,7 @@ def test_report_to_dict_round_trips() -> None:
 def test_real_corpus_every_card_classifies() -> None:
     """Every loaded card gets a known coverage tag (no card falls through)."""
     cards = load_all_cards()
-    valid = {"auto-scored", "prose-blocked", "routing", "skipped"}
+    valid = {"auto-scored", "prose-blocked", "routing", "skipped", "multi-turn"}
     for c in cards:
         assert coverage_tag(c) in valid, c.id
 

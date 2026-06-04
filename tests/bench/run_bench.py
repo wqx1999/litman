@@ -159,7 +159,7 @@ def format_report(report: BenchReport) -> str:
         )
     lines.append("-" * 60)
     for c in report.cards:
-        if c.tag in ("skipped", "routing"):
+        if c.tag in ("skipped", "routing", "multi-turn"):
             lines.append(f"  [{c.tag:>13}] {c.card_id}")
         else:
             lines.append(

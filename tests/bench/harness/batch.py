@@ -33,7 +33,13 @@ inside /dev (tests inject fakes for ``run_card_impl`` / ``ensure_seed_impl``).
 Coverage tags (``coverage_tag``):
 
 * ``skipped``       — the card carries a ``skip_reason`` (needs_network /
-  needs_pty) and is excluded from every metric.
+  needs_pty): the sandbox physically cannot run it; excluded from every metric.
+* ``multi-turn``    — the card carries ``single_turn_unfit``: it runs fine in
+  the sandbox but encodes an intrinsically multi-turn interaction that cannot be
+  FAIRLY scored from one cold-start utterance, so single-turn TRR would measure
+  which defensible reading the model picked, not capability. Excluded from TRR
+  (distinct bucket, not folded into ``skipped`` — the exclusion reason differs:
+  methodology, not sandbox limits — invariant #14 no-silent-skip spirit).
 * ``routing``       — a routing card (``layer == "routing"``); scored by RA, not
   TRR.
 * ``prose-blocked`` — an execution card with at least one un-mechanizable prose
@@ -43,8 +49,8 @@ Coverage tags (``coverage_tag``):
   DSL; it counts toward TRR.
 
 Only ``auto-scored`` EXECUTION cards contribute to TRR. Routing accuracy is
-reported on its own axis; prose-blocked and skipped cards are surfaced in the
-coverage dict but never silently fold into a passing number.
+reported on its own axis; prose-blocked, skipped, and multi-turn cards are
+surfaced in the coverage dict but never silently fold into a passing number.
 """
 
 from __future__ import annotations
@@ -120,9 +126,11 @@ def _has_prose_line(card: Any) -> bool:
 
 
 def coverage_tag(card: Any) -> str:
-    """Classify a card into one of the four coverage buckets."""
+    """Classify a card into one of the five coverage buckets."""
     if _card_field(card, "skip_reason"):
         return "skipped"
+    if _card_field(card, "single_turn_unfit"):
+        return "multi-turn"
     if _card_field(card, "layer") == "routing":
         return "routing"
     if _has_prose_line(card):
@@ -371,7 +379,7 @@ def run_batch(
             ) from e
 
     card_scores: list[CardScore] = []
-    counts = {"auto-scored": 0, "prose-blocked": 0, "routing": 0, "skipped": 0}
+    counts = {"auto-scored": 0, "prose-blocked": 0, "routing": 0, "skipped": 0, "multi-turn": 0}
     auto_means: list[float] = []
     routing_results: list[tuple[str, RoutingResult]] = []
 
@@ -380,7 +388,10 @@ def run_batch(
         tag = coverage_tag(card)
         counts[tag] += 1
 
-        if tag == "skipped":
+        if tag in ("skipped", "multi-turn"):
+            # Both are excluded from execution + every metric. ``skipped`` =
+            # sandbox physically cannot run it (network / pty); ``multi-turn`` =
+            # runs fine but is unfair to score single-turn (see ``single_turn_unfit``).
             card_scores.append(CardScore(card_id=cid, tag=tag, rounds=[], mean=0.0))
             continue
 
@@ -429,6 +440,7 @@ def run_batch(
         "prose_blocked_cards": [c.card_id for c in card_scores if c.tag == "prose-blocked"],
         "routing_cards": [c.card_id for c in card_scores if c.tag == "routing"],
         "skipped_cards": [c.card_id for c in card_scores if c.tag == "skipped"],
+        "multi_turn_cards": [c.card_id for c in card_scores if c.tag == "multi-turn"],
         "trr_denominator": len(auto_means),
     }
 

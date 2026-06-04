@@ -84,9 +84,13 @@ Flags:
 | `--auth-token` | — | token for the external-model proxy (only with `--base-url`) |
 
 The report prints an honest coverage breakdown (auto-scored / prose-blocked /
-routing / skipped). Only auto-scored execution cards contribute to TRR; routing
-accuracy is reported on its own axis; prose-blocked and skipped cards are surfaced,
-never folded silently into a passing number.
+routing / skipped / multi-turn). Only auto-scored execution cards contribute to
+TRR; routing accuracy is reported on its own axis; prose-blocked, skipped, and
+multi-turn cards are surfaced, never folded silently into a passing number.
+`skipped` = the sandbox physically cannot run the card (network / pty);
+`multi-turn` = it runs but encodes an intrinsically multi-turn interaction that
+cannot be fairly scored from one cold-start utterance (kept distinct so the
+exclusion reason — methodology vs sandbox limits — stays legible).
 
 ## External models
 
