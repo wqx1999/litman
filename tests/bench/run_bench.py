@@ -187,22 +187,22 @@ def _format_tokens(tokens: dict) -> str:
 
     Breaks input into fresh (``in``), cache-read (``cache_r``), and cache-write
     (``cache_w``) so cost can be computed at each tier's own price; output (``out``)
-    is separate. Cost is shown only when the provider reported it for every spawn.
+    is separate. No dollar figure is shown: against an external proxy the CLI's
+    cost is mispriced, so cost is left to be derived from these counters x the
+    provider's real per-token prices.
     """
     def fmt(b: dict | None, label: str) -> str:
         if not b:
             return f"  {label:>11}: (none)"
-        cost = b.get("total_cost_usd")
-        cost_s = f"  cost=${cost:.4f}" if cost is not None else ""
         return (
             f"  {label:>11}: in={b.get('input_tokens', 0):,}"
             f"  cache_r={b.get('cache_read_input_tokens', 0):,}"
             f"  cache_w={b.get('cache_creation_input_tokens', 0):,}"
             f"  out={b.get('output_tokens', 0):,}"
-            f"  spawns={b.get('spawns', 0)}{cost_s}"
+            f"  spawns={b.get('spawns', 0)}"
         )
 
-    out = ["tokens (input / output / cache, for cost computation):"]
+    out = ["tokens (input / output / cache — apply provider prices for $):"]
     out.append(fmt(tokens.get("total"), "TOTAL"))
     out.append(fmt(tokens.get("auto_scored"), "auto-scored"))
     out.append(fmt(tokens.get("routing"), "routing"))

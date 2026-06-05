@@ -82,9 +82,9 @@ class CardScore:
     """Per-card aggregate over N rounds.
 
     ``usage`` is the token spend summed over this card's rounds (input / output
-    / cache_creation / cache_read + a ``spawns`` count and optional
-    ``total_cost_usd``), or ``{}`` for non-executed tags (skipped / multi-turn /
-    routing) and for fake (dry-run) runs that report no usage."""
+    / cache_creation / cache_read + a ``spawns`` count), or ``{}`` for
+    non-executed tags (skipped / multi-turn / routing) and for fake (dry-run)
+    runs that report no usage."""
 
     card_id: str
     tag: str
@@ -149,10 +149,10 @@ def _usage_of(run: Any) -> dict:
 def _sum_usage(usages: list[dict]) -> dict:
     """Sum a list of per-spawn ``usage`` dicts into one bucket.
 
-    Adds the four token counters, counts the contributing ``spawns``, and sums
-    ``total_cost_usd`` when every contributing spawn reported one (a partial
-    cost would mislead, so cost is emitted only when complete). Empty input ->
-    ``{}`` so callers can treat "no usage" as falsy."""
+    Adds the four token counters and counts the contributing ``spawns``. Empty
+    input -> ``{}`` so callers can treat "no usage" as falsy. Cost is NOT summed
+    here: dollar figures are derived downstream from these counters x the
+    provider's own prices (see :func:`harness.executor._parse_usage`)."""
     contributing = [u for u in usages if u]
     if not contributing:
         return {}
@@ -161,9 +161,6 @@ def _sum_usage(usages: list[dict]) -> dict:
         for k in _USAGE_KEYS:
             out[k] += int(u.get(k, 0) or 0)
     out["spawns"] = len(contributing)
-    costs = [u.get("total_cost_usd") for u in contributing]
-    if all(c is not None for c in costs):
-        out["total_cost_usd"] = round(sum(float(c) for c in costs), 6)
     return out
 
 
@@ -179,9 +176,6 @@ def _merge_usage_buckets(*buckets: dict) -> dict:
             out[k] += int(b.get(k, 0) or 0)
         spawns += int(b.get("spawns", 0) or 0)
     out["spawns"] = spawns
-    costs = [b.get("total_cost_usd") for b in present]
-    if all(c is not None for c in costs):
-        out["total_cost_usd"] = round(sum(float(c) for c in costs), 6)
     return out
 
 

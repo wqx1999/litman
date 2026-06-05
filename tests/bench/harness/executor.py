@@ -105,8 +105,9 @@ class ExecutorResult:
     ``claude`` process exit; ``timed_out`` flags a killed run. ``usage`` =
     the token accounting parsed from the stream-json ``result`` event
     (input / output / cache_creation / cache_read tokens + optional
-    total_cost_usd / num_turns); ``{}`` when the run produced no result event
-    (e.g. a hard API error that aborted before any usage was reported).
+    num_turns; dollar cost is deliberately not captured, see _parse_usage);
+    ``{}`` when the run produced no result event (e.g. a hard API error that
+    aborted before any usage was reported).
     """
 
     skills: list[str] = field(default_factory=list)
@@ -384,10 +385,15 @@ def _parse_usage(event: dict) -> dict:
     """Extract the token accounting from a stream-json ``result`` event.
 
     Claude Code's final ``result`` event carries a ``usage`` block (the four
-    Anthropic token counters) plus a top-level ``total_cost_usd`` / ``num_turns``.
-    We keep the four counters always (defaulting absent ones to 0 so cost math
-    never trips on a missing key) and fold in cost + turns when present. Returns
-    ``{}`` when the event has no usage block at all (nothing to account)."""
+    Anthropic token counters) plus a top-level ``num_turns``. We keep the four
+    counters always (defaulting absent ones to 0 so downstream math never trips
+    on a missing key) and fold in turns when present. We deliberately do NOT
+    capture ``total_cost_usd``: against an external proxy (a non-Anthropic model
+    routed through a compat endpoint) that figure is computed from the wrong
+    price table and does not reflect the provider's real charge — recording it
+    would mislead. Cost is derived downstream from the raw counters x the
+    provider's own per-token prices. Returns ``{}`` when the event has no usage
+    block at all (nothing to account)."""
     u = event.get("usage") or {}
     if not u:
         return {}
@@ -397,9 +403,6 @@ def _parse_usage(event: dict) -> dict:
         "cache_creation_input_tokens": int(u.get("cache_creation_input_tokens", 0) or 0),
         "cache_read_input_tokens": int(u.get("cache_read_input_tokens", 0) or 0),
     }
-    cost = event.get("total_cost_usd")
-    if cost is not None:
-        out["total_cost_usd"] = float(cost)
     turns = event.get("num_turns")
     if turns is not None:
         out["num_turns"] = int(turns)
