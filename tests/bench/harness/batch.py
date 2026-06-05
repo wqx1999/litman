@@ -79,12 +79,18 @@ def _card_field(card: Any, name: str) -> Any:
 
 @dataclass
 class CardScore:
-    """Per-card aggregate over N rounds."""
+    """Per-card aggregate over N rounds.
+
+    ``usage`` is the token spend summed over this card's rounds (input / output
+    / cache_creation / cache_read + a ``spawns`` count and optional
+    ``total_cost_usd``), or ``{}`` for non-executed tags (skipped / multi-turn /
+    routing) and for fake (dry-run) runs that report no usage."""
 
     card_id: str
     tag: str
     rounds: list[int]
     mean: float
+    usage: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -95,6 +101,12 @@ class BenchReport:
     misroute / miss / spurious / na + per-card RA), or ``None`` when no routing
     card was scored (no ``routing_run_fn`` was passed to :func:`run_batch`). A
     ``None`` section reads as an honest "RA not scored", never a fake 0.
+
+    ``tokens`` is the run's grand-total token accounting (an ``auto_scored``
+    bucket summed over executed cards, a ``routing`` bucket summed over the
+    routing classification spawns, and a ``total``), or ``None`` when no live
+    usage was observed (dry run / fakes). Lets the reader compute cost per
+    model without re-reading every transcript.
     """
 
     model: str
@@ -104,6 +116,73 @@ class BenchReport:
     cards: list[CardScore]
     coverage: dict[str, Any] = field(default_factory=dict)
     routing: dict[str, Any] | None = None
+    tokens: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Token usage aggregation
+# ---------------------------------------------------------------------------
+
+# The four Anthropic token counters (one stream-json ``usage`` block per spawn).
+_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _usage_of(run: Any) -> dict:
+    """Best-effort token ``usage`` of one run handle.
+
+    The live adapter returns ``{"run": ExecutorResult, ...}``; the ExecutorResult
+    carries ``.usage``. Fakes (ints / tuples / usage-less dicts) carry none, so
+    this returns ``{}`` — dry runs simply contribute zero tokens."""
+    if isinstance(run, dict):
+        result = run.get("run")
+        u = getattr(result, "usage", None)
+        if isinstance(u, dict):
+            return u
+    return {}
+
+
+def _sum_usage(usages: list[dict]) -> dict:
+    """Sum a list of per-spawn ``usage`` dicts into one bucket.
+
+    Adds the four token counters, counts the contributing ``spawns``, and sums
+    ``total_cost_usd`` when every contributing spawn reported one (a partial
+    cost would mislead, so cost is emitted only when complete). Empty input ->
+    ``{}`` so callers can treat "no usage" as falsy."""
+    contributing = [u for u in usages if u]
+    if not contributing:
+        return {}
+    out: dict[str, Any] = {k: 0 for k in _USAGE_KEYS}
+    for u in contributing:
+        for k in _USAGE_KEYS:
+            out[k] += int(u.get(k, 0) or 0)
+    out["spawns"] = len(contributing)
+    costs = [u.get("total_cost_usd") for u in contributing]
+    if all(c is not None for c in costs):
+        out["total_cost_usd"] = round(sum(float(c) for c in costs), 6)
+    return out
+
+
+def _merge_usage_buckets(*buckets: dict) -> dict:
+    """Combine already-summed buckets (e.g. auto_scored + routing) into a total."""
+    present = [b for b in buckets if b]
+    if not present:
+        return {}
+    out: dict[str, Any] = {k: 0 for k in _USAGE_KEYS}
+    spawns = 0
+    for b in present:
+        for k in _USAGE_KEYS:
+            out[k] += int(b.get(k, 0) or 0)
+        spawns += int(b.get("spawns", 0) or 0)
+    out["spawns"] = spawns
+    costs = [b.get("total_cost_usd") for b in present]
+    if all(c is not None for c in costs):
+        out["total_cost_usd"] = round(sum(float(c) for c in costs), 6)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +322,7 @@ def build_live_routing_run_fn(
     auth_token: str | None = None,
     observe_impl: Callable[..., str | None] | None = None,
     ensure_seed_impl: Callable[..., Path] | None = None,
+    usage_sink: list[dict] | None = None,
 ) -> Callable[..., list[str | None]]:
     """Build the live ``routing_run_fn`` :func:`run_batch` calls per routing card.
 
@@ -259,9 +339,16 @@ def build_live_routing_run_fn(
     is injectable so the tests drive the adapter with canned skills, never spawning
     a live agent (M34 §3.5 hard boundary). It spawns ``claude -p`` per utterance in
     production, exercised ONLY under Phase G authorization.
+
+    When ``usage_sink`` is provided AND the default (real) ``observe_impl`` is in
+    use, each routing probe's token ``usage`` is appended to it so the routing
+    spawns count toward the run's grand-total cost. Injected ``observe_impl``
+    doubles (tests) never receive ``usage_sink``, so their signatures are
+    untouched and the M34 §3.5 boundary holds.
     """
     from harness.runlit import RunVault
 
+    default_observe = observe_impl is None
     if observe_impl is None:
         from harness.executor import observe_skill_for_utterance as observe_impl  # type: ignore[assignment]
     if ensure_seed_impl is None:
@@ -279,15 +366,17 @@ def build_live_routing_run_fn(
             utt = _case_field(case, "utt")
             rv = RunVault(Path(seed_vault), run_root=Path(work_root))
             rv.__enter__()  # cp seed -> <work_root>/bench-<uuid>/vault
+            kwargs: dict[str, Any] = dict(
+                fixtures_pdfs_dir=Path(work_root) / "_routing_no_fixtures",
+                model=model,
+                base_url=base_url,
+                auth_token=auth_token,
+            )
+            # usage_sink is only on the real observe; never forwarded to a double.
+            if default_observe and usage_sink is not None:
+                kwargs["usage_sink"] = usage_sink
             try:
-                skill = observe_impl(
-                    str(utt),
-                    rv.vault,
-                    fixtures_pdfs_dir=Path(work_root) / "_routing_no_fixtures",
-                    model=model,
-                    base_url=base_url,
-                    auth_token=auth_token,
-                )
+                skill = observe_impl(str(utt), rv.vault, **kwargs)
             finally:
                 rv.__exit__()  # routing probe leaves nothing to score; rm now
             observed.append(skill)
@@ -318,6 +407,7 @@ def run_batch(
     run_kwargs: dict[str, Any] | None = None,
     score_kwargs: dict[str, Any] | None = None,
     transcript_dir: Path | None = None,
+    routing_usage_sink: list[dict] | None = None,
 ) -> BenchReport:
     """Run every non-skipped EXECUTION card ``rounds`` times and aggregate.
 
@@ -408,10 +498,14 @@ def run_batch(
             continue
 
         round_scores: list[int] = []
+        round_usages: list[dict] = []
         for i in range(rounds):
             run = run_card_fn(card, round=i, model=model, **run_kwargs)
             try:
                 resolved, _trail = _score_one(card, run, score_fn, score_kwargs)
+                # Snapshot the spawn's token usage BEFORE _maybe_cleanup; cheap
+                # and independent of the opt-in transcript dump below.
+                round_usages.append(_usage_of(run))
                 if transcript_dir is not None:
                     # Opt-in only: dump the in-memory transcript (commands +
                     # final answer + per-assertion trail) BEFORE _maybe_cleanup
@@ -425,7 +519,13 @@ def run_batch(
 
         mean = sum(round_scores) / len(round_scores) if round_scores else 0.0
         card_scores.append(
-            CardScore(card_id=cid, tag=tag, rounds=round_scores, mean=mean)
+            CardScore(
+                card_id=cid,
+                tag=tag,
+                rounds=round_scores,
+                mean=mean,
+                usage=_sum_usage(round_usages),
+            )
         )
         if tag == "auto-scored":
             auto_means.append(mean)
@@ -444,6 +544,20 @@ def run_batch(
         "trr_denominator": len(auto_means),
     }
 
+    # Grand-total token accounting: execution cards (per-card usage already summed
+    # across rounds) + the routing classification spawns. ``None`` when no live
+    # usage was observed (dry run / fakes), so it never reads as a fake zero.
+    auto_bucket = _merge_usage_buckets(*(c.usage for c in card_scores))
+    routing_bucket = _sum_usage(routing_usage_sink or [])
+    total_bucket = _merge_usage_buckets(auto_bucket, routing_bucket)
+    tokens: dict[str, Any] | None = None
+    if total_bucket:
+        tokens = {
+            "auto_scored": auto_bucket or None,
+            "routing": routing_bucket or None,
+            "total": total_bucket,
+        }
+
     return BenchReport(
         model=model,
         rounds=rounds,
@@ -452,6 +566,7 @@ def run_batch(
         cards=card_scores,
         coverage=coverage,
         routing=_aggregate_routing(routing_results),
+        tokens=tokens,
     )
 
 
@@ -581,6 +696,9 @@ def _dump_transcript(
             result = run.get("run")
             payload["final_text"] = getattr(result, "final_text", None)
             payload["exit_code"] = getattr(result, "exit_code", None)
+            # Per-spawn token accounting (input / output / cache); {} on a hard
+            # API error that aborted before any usage was reported.
+            payload["usage"] = getattr(result, "usage", None) or None
         else:
             # A fake handle (int / tuple); record what little we have.
             payload["run_repr"] = str(run)
@@ -625,7 +743,9 @@ def report_to_dict(report: BenchReport) -> dict[str, Any]:
     """Project a :class:`BenchReport` to a JSON-serializable dict.
 
     The ``routing`` key is the aggregated RA section, or ``None`` when no routing
-    card was scored (no ``routing_run_fn`` — e.g. a dry run).
+    card was scored (no ``routing_run_fn`` — e.g. a dry run). The ``tokens`` key
+    is the grand-total token accounting (or ``None`` for a dry run); each card
+    carries its own per-card ``usage`` so cost can be attributed per task.
     """
     return {
         "model": report.model,
@@ -633,9 +753,16 @@ def report_to_dict(report: BenchReport) -> dict[str, Any]:
         "trr_mean": report.trr_mean,
         "trr_std": report.trr_std,
         "cards": [
-            {"card_id": c.card_id, "tag": c.tag, "rounds": c.rounds, "mean": c.mean}
+            {
+                "card_id": c.card_id,
+                "tag": c.tag,
+                "rounds": c.rounds,
+                "mean": c.mean,
+                "usage": c.usage or None,
+            }
             for c in report.cards
         ],
         "coverage": report.coverage,
         "routing": report.routing,
+        "tokens": report.tokens,
     }

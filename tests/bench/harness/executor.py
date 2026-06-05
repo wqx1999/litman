@@ -102,7 +102,11 @@ class ExecutorResult:
     ``tool_results`` = captured ``tool_result`` blocks (lit stdout lives here).
     ``tool_names`` = every tool_use name seen (for design-time observation).
     ``final_text`` = the agent's final result message. ``exit_code`` is the
-    ``claude`` process exit; ``timed_out`` flags a killed run.
+    ``claude`` process exit; ``timed_out`` flags a killed run. ``usage`` =
+    the token accounting parsed from the stream-json ``result`` event
+    (input / output / cache_creation / cache_read tokens + optional
+    total_cost_usd / num_turns); ``{}`` when the run produced no result event
+    (e.g. a hard API error that aborted before any usage was reported).
     """
 
     skills: list[str] = field(default_factory=list)
@@ -113,6 +117,7 @@ class ExecutorResult:
     exit_code: int = 0
     timed_out: bool = False
     raw_events: list[dict] = field(default_factory=list)
+    usage: dict = field(default_factory=dict)
 
     def as_jsonl_records(self) -> list[dict]:
         """Project the agent's lit calls into the checker's jsonl record shape.
@@ -370,8 +375,35 @@ def parse_stream(lines: list[str]) -> ExecutorResult:
 
         elif etype == "result":
             result.final_text = str(event.get("result", ""))
+            result.usage = _parse_usage(event)
 
     return result
+
+
+def _parse_usage(event: dict) -> dict:
+    """Extract the token accounting from a stream-json ``result`` event.
+
+    Claude Code's final ``result`` event carries a ``usage`` block (the four
+    Anthropic token counters) plus a top-level ``total_cost_usd`` / ``num_turns``.
+    We keep the four counters always (defaulting absent ones to 0 so cost math
+    never trips on a missing key) and fold in cost + turns when present. Returns
+    ``{}`` when the event has no usage block at all (nothing to account)."""
+    u = event.get("usage") or {}
+    if not u:
+        return {}
+    out = {
+        "input_tokens": int(u.get("input_tokens", 0) or 0),
+        "output_tokens": int(u.get("output_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(u.get("cache_creation_input_tokens", 0) or 0),
+        "cache_read_input_tokens": int(u.get("cache_read_input_tokens", 0) or 0),
+    }
+    cost = event.get("total_cost_usd")
+    if cost is not None:
+        out["total_cost_usd"] = float(cost)
+    turns = event.get("num_turns")
+    if turns is not None:
+        out["num_turns"] = int(turns)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +535,7 @@ def observe_skill_for_utterance(
     model: str = DEFAULT_MODEL,
     base_url: str | None = None,
     auth_token: str | None = None,
+    usage_sink: list[dict] | None = None,
 ) -> str | None:
     """Route ONE utterance through the executor and return the skill it fired.
 
@@ -514,6 +547,12 @@ def observe_skill_for_utterance(
     no skill. The ``None`` case is a routing MISS for a skill-equipped agent (the
     skill exists and should have triggered), scored upstream by
     :func:`harness.routing.score_routing`.
+
+    When ``usage_sink`` is provided, this probe's token ``usage`` is appended to
+    it (one dict per spawn) so the routing axis's ~14 classification spawns are
+    counted in the run's grand-total cost, not silently dropped. The routing
+    label return value is unchanged, so :func:`harness.routing.score_routing`
+    is untouched.
 
     This is the SOLE executor touchpoint for the routing axis (M34 §3.6.A) — like
     :func:`run_card`, it spawns ``claude -p``, so it is exercised ONLY under live
@@ -528,4 +567,6 @@ def observe_skill_for_utterance(
         base_url=base_url,
         auth_token=auth_token,
     )
+    if usage_sink is not None and result.usage:
+        usage_sink.append(result.usage)
     return result.skills[0] if result.skills else None

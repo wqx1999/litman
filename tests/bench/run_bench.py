@@ -91,6 +91,10 @@ def build_report(args: argparse.Namespace) -> BenchReport:
             raise SystemExit(f"no cards matched --cards {args.cards!r}")
 
     dry = args.dry_run or os.environ.get("LITMAN_BENCH_FAKE") == "1"
+    # Routing token sink: filled by the live routing adapter (one usage dict per
+    # classification spawn), read back by run_batch into the report's grand
+    # total. None in dry mode (no routing spawns).
+    routing_usage: list[dict] | None = None
     if dry:
         # Non-live: a fake execution scorer + NO routing_run_fn, so routing cards
         # are tagged/counted but RA stays unscored (the routing seam would spawn
@@ -103,6 +107,7 @@ def build_report(args: argparse.Namespace) -> BenchReport:
         # through, not interpreted here. The routing adapter spawns claude -p per
         # utterance, so it is built + wired structurally but NEVER exercised inside
         # /dev — it fires only under explicit live authorization.
+        routing_usage = []
         run_card_fn = build_live_run_card_fn(
             fixtures_pdfs_dir=FIXTURES_PDFS_DIR,
             seeds_dir=SEEDS_CACHE_ROOT,
@@ -115,6 +120,7 @@ def build_report(args: argparse.Namespace) -> BenchReport:
             work_root=WORK_ROOT,
             base_url=args.base_url,
             auth_token=args.auth_token,
+            usage_sink=routing_usage,
         )
 
     transcript_dir = Path(args.keep_transcript) if args.keep_transcript else None
@@ -133,6 +139,9 @@ def build_report(args: argparse.Namespace) -> BenchReport:
         # answer + per-assertion trail) is dumped here before the run vault is
         # removed. Unset (default) leaves the scoring path byte-identical.
         transcript_dir=transcript_dir,
+        # Routing spawns' tokens (filled above during the run) fold into the
+        # report's grand total alongside the execution cards.
+        routing_usage_sink=routing_usage,
     )
 
 
@@ -157,15 +166,47 @@ def format_report(report: BenchReport) -> str:
             f"RA (routing, n={routing['scored']}): {routing['ra']:.3f}  "
             f"(miss={routing['miss']} spurious={routing['spurious']} na={routing['na']})"
         )
+    if report.tokens:
+        lines.append(_format_tokens(report.tokens))
     lines.append("-" * 60)
     for c in report.cards:
         if c.tag in ("skipped", "routing", "multi-turn"):
             lines.append(f"  [{c.tag:>13}] {c.card_id}")
         else:
-            lines.append(
-                f"  [{c.tag:>13}] {c.card_id}: mean={c.mean:.3f} rounds={c.rounds}"
-            )
+            line = f"  [{c.tag:>13}] {c.card_id}: mean={c.mean:.3f} rounds={c.rounds}"
+            if c.usage:
+                line += f"  [tok in={c.usage.get('input_tokens', 0):,}" \
+                        f" out={c.usage.get('output_tokens', 0):,}" \
+                        f" cache_r={c.usage.get('cache_read_input_tokens', 0):,}]"
+            lines.append(line)
     return "\n".join(lines)
+
+
+def _format_tokens(tokens: dict) -> str:
+    """One-block token summary: grand total + the auto/routing split.
+
+    Breaks input into fresh (``in``), cache-read (``cache_r``), and cache-write
+    (``cache_w``) so cost can be computed at each tier's own price; output (``out``)
+    is separate. Cost is shown only when the provider reported it for every spawn.
+    """
+    def fmt(b: dict | None, label: str) -> str:
+        if not b:
+            return f"  {label:>11}: (none)"
+        cost = b.get("total_cost_usd")
+        cost_s = f"  cost=${cost:.4f}" if cost is not None else ""
+        return (
+            f"  {label:>11}: in={b.get('input_tokens', 0):,}"
+            f"  cache_r={b.get('cache_read_input_tokens', 0):,}"
+            f"  cache_w={b.get('cache_creation_input_tokens', 0):,}"
+            f"  out={b.get('output_tokens', 0):,}"
+            f"  spawns={b.get('spawns', 0)}{cost_s}"
+        )
+
+    out = ["tokens (input / output / cache, for cost computation):"]
+    out.append(fmt(tokens.get("total"), "TOTAL"))
+    out.append(fmt(tokens.get("auto_scored"), "auto-scored"))
+    out.append(fmt(tokens.get("routing"), "routing"))
+    return "\n".join(out)
 
 
 def main(argv: list[str] | None = None) -> int:
