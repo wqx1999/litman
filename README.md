@@ -12,6 +12,8 @@
 <img src="https://img.shields.io/badge/AI--native-Claude%20Code-D97757?logo=anthropic&logoColor=white" alt="AI-native: Claude Code"/>
 </p>
 
+<p><b>English</b> | <a href="README-CN.md">中文</a></p>
+
 </div>
 
 **Local-first, AI-augmented literature management CLI.**
@@ -136,7 +138,7 @@ lit modify 2017_Vaswani_Attention --add-tag topics=transformer
 lit link 2017_Vaswani_Attention --project MyResearchProject
 
 # remove
-lit remove 2017_Vaswani_Attention
+lit rm 2017_Vaswani_Attention
 ```
 
 
@@ -234,3 +236,7 @@ Octopus mascot generated with [Doubao](https://www.doubao.com/) (AI image genera
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+---
+
+<sub>AI agents: a condensed, link-dense map of this project lives in [README-Agent.md](README-Agent.md).</sub>
