@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from litman.core.vault_registry import REGISTRY_ENV_VAR
+
 
 def _build_text_pdf(pages: Sequence[Sequence[str]]) -> bytes:
     """Hand-assemble a minimal multi-page PDF carrying the given text lines.
@@ -91,3 +93,22 @@ def make_text_pdf(tmp_path: Path) -> Callable[..., Path]:
         return path
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _isolate_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redirect the vault registry to an empty per-test temp dir.
+
+    The registry (``vaults.yaml``, by default under
+    ``platformdirs.user_config_dir("litman")``) is machine-level global state.
+    A test that exercises vault discovery without setting ``$LIT_LIBRARY`` —
+    e.g. the negative ``LibraryNotFoundError`` path — would otherwise pick up
+    whatever vault is registered and active on the developer's box: it passes
+    in CI (empty registry) yet fails locally. Pointing ``$LITMAN_REGISTRY_DIR``
+    at a fresh empty dir gives every test an empty registry unless it opts in
+    by registering one. ``load_registry()`` treats an absent ``vaults.yaml`` as
+    empty, so nothing needs to be created on disk.
+    """
+    monkeypatch.setenv(REGISTRY_ENV_VAR, str(tmp_path / "litman-registry"))
