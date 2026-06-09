@@ -78,7 +78,7 @@ litman is a Python CLI tool. Install with **pipx** so `lit` is permanently
 available in every shell, isolated from your other Python environments.
 Don't have pipx? See [pipx.pypa.io](https://pipx.pypa.io).
 
-**From PyPI** (stable release; not yet shipped, planned):
+**From PyPI** (recommended):
 
 ```bash
 pipx install litman   # first install

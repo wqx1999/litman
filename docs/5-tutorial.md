@@ -81,12 +81,6 @@ $ lit --version          # confirms lit is installed and on your PATH
 
 (Plain `pip install litman` works too if you manage your own environment.)
 
-<!-- INTERNAL: strip the note below at the public PyPI release -->
-> **Internal testing, before the PyPI release.** litman is not on PyPI yet.
-> Install it from the repository with your GitHub access:
-> `pipx install "git+ssh://git@github.com/wqx1999/litman.git@v1.0.0"`. The
-> `lit --version` output is identical either way.
-
 **To remove it:** `pipx uninstall litman`.
 
 ## 2. Set up your library
