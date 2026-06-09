@@ -439,8 +439,10 @@ def add_cmd(
             _yaml.dump(_build_metadata(parsed, paper_id), f)
         (paper_dir / "notes.md").write_text(
             f"# {parsed['title']}\n\n"
-            "(Personal notes go here. The `/read-paper` skill will draft a "
-            "discussion.md alongside this file in M3.)\n",
+            "<!-- Link another paper in this vault as [[paper-id]] (a wikilink, "
+            "not backticks or plain text) so lit rm and lit health-check keep "
+            "it tracked. -->\n\n"
+            "(Personal notes go here.)\n",
             encoding="utf-8",
         )
         shutil.copy2(pdf_path, paper_dir / "paper.pdf")

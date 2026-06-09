@@ -457,7 +457,7 @@ Rules:
 3. **Never** assume the vault is git-tracked. It is deliberately not.
 4. **Never** store API keys in `lit-config.yaml`. The CLI calls no LLM API — that's the agent's job, via the JSON-file bridge.
 5. **Never** install / uninstall litman or modify its conda env. If `lit` is missing, tell the user and stop.
-6. **Verify every `[[X]]` wikilink against the filesystem before you write or keep it.** When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (`lit show X` resolves, or it appears in `lit list`). If not, write it as `[[X]] (deleted)` — **never emit a bare `[[X]]` for a paper not in the vault.**
+6. **Cross-reference in-vault papers with `[[paper-id]]` wikilinks, then verify each against the filesystem.** When notes mention another paper in this vault, write it as a `[[paper-id]]` wikilink — **never backticks or plain text**, which escape `lit rm`'s `(deleted)` tagging and `lit health-check`'s dangling detection, leaving a silent dead link when the target is removed. When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (`lit show X` resolves, or it appears in `lit list`). If not, write it as `[[X]] (deleted)` — **never emit a bare `[[X]]` for a paper not in the vault.**
 7. **Never** set a reverse relation field (`extended-by` / `contradicted-by`) by hand — drive only the forward field and let the CLI maintain the pair ([E]).
 
 If unsure whether an operation respects these, run `lit health-check` after — it surfaces vault drift and the user inspects before acting.
