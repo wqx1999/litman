@@ -142,19 +142,61 @@ lit remove 2017_Vaswani_Attention
 
 ---
 
+## Agent model benchmark
+
+litman's agent layer (the bundled `lit-library` and `lit-reading` skills) is
+meant to work with whatever model you point Claude Code at, not only Anthropic's.
+To see how well different models drive it, we ran each one as the Claude Code
+backend and had it operate litman through the skills, over **22 everyday-workflow
+tasks** (add, read, tag, modify, link, export, taxonomy edits, health checks,
+...), 3 rounds each, on **litman 1.0.0** (June 2026).
+
+**What the score is.** Each task is a **single-turn prompt in a clean context**:
+a fresh agent gets one natural-language instruction and must complete it in that
+one turn, with no prior conversation and no follow-up. **TRR** (task-completion
+rate) is the fraction of tasks the resulting vault state passed; **RA** (routing
+accuracy) is how often the agent picked the correct skill for a request.
+
+**A low score does not mean the model cannot operate litman.** It means the model
+less often *one-shots* the task from a cold start. With more guidance (a more
+detailed request, or a few follow-up turns) a lower-scoring model can still do the
+same work. This is a deliberately hard zero-shot floor, not a ceiling.
+
+| Model | Task completion (TRR) | Routing (RA) |
+|:---|---:|---:|
+| [Claude Sonnet 4.6](https://www.anthropic.com) | 97% | 100% |
+| [Claude Haiku 4.5](https://www.anthropic.com) | 97% | 79% |
+| [DeepSeek-V4 Flash](https://www.deepseek.com) | 80% | 71% |
+| [DeepSeek-V4 Pro](https://www.deepseek.com) | 76% | 57% |
+| [MiniMax-M3](https://www.minimax.io) | 71% | 75% |
+| [GLM-5.1](https://z.ai/model-api) | 58% | 64% |
+| [MiMo-V2.5 Pro](https://mimo.mi.com/) | 26% | 0% |
+| [MiMo-V2.5](https://mimo.mi.com/) | 21% | 0% |
+
+TRR is the mean over the 22 auto-scored tasks across 3 rounds; network-dependent
+and multi-turn scenarios (code cloning, cloud sync, a multi-turn recovery case)
+are excluded from this single-turn score. Whatever the model scores, the data
+layer validates every write — a wrong command fails loudly rather than writing
+bad data into the vault, so a lower-scoring model needs more turns but never
+corrupts the library.
+
+---
+
 ## Documentation
 
-Full reference lives under [`docs/`](docs/):
+Full documentation lives under [`docs/`](docs/). New to litman? The
+[tutorial](docs/5-tutorial.md) covers about 80% of everyday use; for anything
+else, ask the agent or check the command reference. [docs/0-readme.md](docs/0-readme.md)
+maps out the whole set.
 
 | Topic | File |
 |---|---|
-| Vocabulary and concepts | [docs/concepts.md](docs/concepts.md) |
-| Command reference (by scenario) | [docs/commands.md](docs/commands.md) |
-| `metadata.yaml` schema | [docs/metadata-schema.md](docs/metadata-schema.md) |
-| `lit-config.yaml` schema | [docs/config-schema.md](docs/config-schema.md) |
-| `TAXONOMY.md` schema | [docs/taxonomy-schema.md](docs/taxonomy-schema.md) |
-| Four-layer architecture | [docs/architecture.md](docs/architecture.md) |
-| Design philosophy | [docs/philosophy.md](docs/philosophy.md) |
+| Start here — docs map | [docs/0-readme.md](docs/0-readme.md) |
+| Design philosophy | [docs/1-philosophy.md](docs/1-philosophy.md) |
+| Four-layer architecture | [docs/2-architecture.md](docs/2-architecture.md) |
+| Concepts and field reference (`metadata.yaml`, `lit-config.yaml`, `TAXONOMY.md`) | [docs/3-concepts.md](docs/3-concepts.md) |
+| Command reference | [docs/4-commands.md](docs/4-commands.md) |
+| Tutorial | [docs/5-tutorial.md](docs/5-tutorial.md) |
 
 Local-preview the docs as a static site:
 
@@ -180,6 +222,12 @@ Core dependencies that make litman possible:
 [![Pydantic](https://img.shields.io/badge/Pydantic-Data_Validation-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
 [![Rich](https://img.shields.io/badge/Rich-Terminal_UI-FAD000?logoColor=black)](https://rich.readthedocs.io/)
 [![httpx](https://img.shields.io/badge/httpx-HTTP_Client-2D9CDB?logoColor=white)](https://www.python-httpx.org/)
+
+Cloud sync (`lit sync`) is powered by [rclone](https://rclone.org/), the external
+CLI that mirrors the vault to any cloud backend it supports — the backbone of how
+a vault gets backed up and moved between machines:
+
+[![rclone](https://img.shields.io/badge/rclone-Cloud_Sync_Engine-3F87E5?logo=rclone&logoColor=white)](https://rclone.org/)
 
 Octopus mascot generated with [Doubao](https://www.doubao.com/) (AI image generation).
 

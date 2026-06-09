@@ -44,12 +44,9 @@ markdown_extensions:
   - pymdownx.snippets
 
 nav:
-  - Home: README.md
-  - Concepts: concepts.md
-  - Commands: commands.md
-  - Schema reference:
-      - "metadata.yaml": metadata-schema.md
-      - "lit-config.yaml": config-schema.md
-      - "TAXONOMY.md": taxonomy-schema.md
-  - Architecture: architecture.md
-  - Philosophy: philosophy.md
+  - Home: 0-readme.md
+  - Philosophy: 1-philosophy.md
+  - Architecture: 2-architecture.md
+  - Concepts: 3-concepts.md
+  - Commands: 4-commands.md
+  - Tutorial: 5-tutorial.md
