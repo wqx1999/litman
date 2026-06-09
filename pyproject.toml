@@ -48,6 +48,12 @@ dev = [
 [project.scripts]
 lit = "litman.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/wqx1999/litman"
+Repository = "https://github.com/wqx1999/litman"
+Documentation = "https://github.com/wqx1999/litman/blob/main/docs/0-readme.md"
+Issues = "https://github.com/wqx1999/litman/issues"
+
 # Single source of truth for the version: src/litman/__init__.py __version__.
 # pyproject reads it via attr so `lit --version`, the wheel metadata, and the
 # string in exported BibTeX / the Crossref User-Agent can never drift apart.

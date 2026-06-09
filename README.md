@@ -1,10 +1,10 @@
-<h1>LITerature MANager <img src="assets/logo1.png" width="120" align="right"/></h1>
+<h1>LITerature MANager <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo1.png" width="120" align="right"/></h1>
 
 <br clear="all"/>
 
 <div align="center">
 
-<img src="assets/logo2.svg" width="58%" alt="LITMAN"/>
+<img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo2.png" width="58%" alt="LITMAN"/>
 
 <p>
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
