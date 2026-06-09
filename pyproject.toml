@@ -13,9 +13,12 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Qingxin Wang", email = "qingxinwong1999@gmail.com" },
 ]
-keywords = ["literature", "bibliography", "papers", "cli", "claude"]
+keywords = [
+    "literature", "bibliography", "reference-manager", "papers", "bibtex",
+    "knowledge-management", "cli", "local-first", "claude-code", "ai-agent",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
     "Operating System :: POSIX :: Linux",
@@ -48,7 +51,7 @@ lit = "litman.cli:main"
 # Single source of truth for the version: src/litman/__init__.py __version__.
 # pyproject reads it via attr so `lit --version`, the wheel metadata, and the
 # string in exported BibTeX / the Crossref User-Agent can never drift apart.
-# Bump __version__ to match the X.Y.Z of the milestone tag (v<X.Y.Z>-m<N>).
+# Bump __version__ following semver for each release; tag the commit v<X.Y.Z>.
 [tool.setuptools.dynamic]
 version = { attr = "litman.__version__" }
 

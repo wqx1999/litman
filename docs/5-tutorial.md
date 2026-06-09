@@ -21,9 +21,9 @@ have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
 > **Tested with** litman 1.0.0 on Unix (Linux and macOS), June 2026, with Claude
-> Sonnet 4.6 driving the agent path in Claude Code. A Windows screencast of the
-> same workflow is coming separately. The command output shown below comes from
-> this setup; exact wording can shift slightly with a different litman version.
+> Sonnet 4.6 driving the agent path in Claude Code. The command output shown
+> below comes from this setup; exact wording can shift slightly with a different
+> litman version.
 
 ## Two ways to do everything
 
