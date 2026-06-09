@@ -151,7 +151,7 @@ meant to work with whatever model you point Claude Code at, not only Anthropic's
 To see how well different models drive it, we ran each one as the Claude Code
 backend and had it operate litman through the skills, over **22 everyday-workflow
 tasks** (add, read, tag, modify, link, export, taxonomy edits, health checks,
-...), 3 rounds each, on **litman 1.0.0** (June 2026).
+...), 3 rounds each, on the **litman 1.0.0** codebase ([commit 876d11c](https://github.com/wqx1999/litman/commit/876d11c), June 2026).
 
 **What the score is.** Each task is a **single-turn prompt in a clean context**:
 a fresh agent gets one natural-language instruction and must complete it in that
