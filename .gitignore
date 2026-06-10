@@ -38,3 +38,9 @@ Thumbs.db
 # litman-bench downloaded fixture PDFs (copyrighted — fetched, never committed).
 # Only the PDFs are ignored; fixtures/golden/*.json (extraction ground truth) IS tracked.
 tests/bench/fixtures/pdfs/
+
+# webUI frontend build artifacts (node toolchain output; the vendored
+# vite build under src/litman/assets/webui/ IS tracked, but these are not).
+frontend/node_modules/
+frontend/.vite/
+frontend/dist/

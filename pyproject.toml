@@ -44,6 +44,10 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
 
 [project.scripts]
 lit = "litman.cli:main"
@@ -73,6 +77,12 @@ include = ["litman*"]
 "litman.skills" = [
     "lit-library/*", "lit-library/**/*",
     "lit-reading/*", "lit-reading/**/*",
+]
+# Bundle the vendored webUI build (`frontend/build.sh` → vite output) so a
+# `pip install 'litman[web]'` ships the SPA inside the wheel; without these
+# patterns the asset tree is dropped because it carries no Python sources.
+"litman" = [
+    "assets/webui/*", "assets/webui/**/*",
 ]
 
 [tool.ruff]
