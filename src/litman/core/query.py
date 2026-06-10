@@ -17,6 +17,8 @@ helper carry two unlike comparison kinds. It stays in the list command layer.
 
 from __future__ import annotations
 
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -114,3 +116,50 @@ def matches_filters(
             return False
 
     return True
+
+
+def recency_key(vault: Path, paper: dict[str, Any]) -> float:
+    """Sort key for ``--sort recent``: the more recent of two engagement
+    signals, as a POSIX timestamp.
+
+    1. ``paper.pdf`` filesystem mtime — bumps when the user annotates the
+       PDF in a viewer that writes back to the file (the reading signal,
+       viewer-agnostic because mtime is OS-maintained).
+    2. ``updated-at`` metadata field — bumps on any litman write
+       (lit read / lit modify / tag / link = agent-mediated curation).
+
+    Returns the later of the two. A missing PDF or a missing/malformed
+    ``updated-at`` contributes 0.0, so a paper with neither engagement
+    signal sinks to the bottom.
+
+    Shared by ``lit list --sort recent`` and the webUI smart-list ``view=``
+    query (invariant #16: the GUI reuses the same recency ranking the CLI
+    uses, never a second sort path).
+    """
+    pdf = vault / "papers" / str(paper.get("id", "")) / "paper.pdf"
+    try:
+        pdf_mtime = pdf.stat().st_mtime
+    except OSError:
+        pdf_mtime = 0.0
+    # The YAML safe-loader parses an ISO 8601 timestamp into a datetime
+    # object, so updated-at usually arrives already typed. A plain string
+    # is still accepted (e.g. a non-roundtripped value) via fromisoformat.
+    raw = paper.get("updated-at")
+    try:
+        if isinstance(raw, datetime):
+            updated = raw.timestamp()
+        elif isinstance(raw, date):
+            # A bare date (YAML safe-loader parses "2026-05-30" into a
+            # datetime.date, NOT a string) has no .timestamp() and is not a
+            # valid fromisoformat() argument — treat it as that day's midnight
+            # instead of sinking the paper to 0.0 (review F29). datetime is a
+            # date subclass, so this branch only catches pure dates (the
+            # datetime check above already handled the common case).
+            updated = datetime(raw.year, raw.month, raw.day).timestamp()
+        elif raw:
+            updated = datetime.fromisoformat(str(raw)).timestamp()
+        else:
+            updated = 0.0
+    except (ValueError, TypeError, OSError, OverflowError):
+        updated = 0.0
+    return max(pdf_mtime, updated)

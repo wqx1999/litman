@@ -12,11 +12,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
+from litman.core.query import recency_key
 from litman.core.taxonomy import parse_taxonomy
 from litman.core.vault_registry import find_active, load_registry
 from litman.core.views import project_paper
@@ -47,19 +48,78 @@ def _index_papers(vault: Path) -> list[dict[str, Any]] | None:
     return papers if isinstance(papers, list) else None
 
 
+# The three left-nav smart-lists. Their membership/ordering depends on
+# recency_key (paper.pdf mtime + updated-at), which the INDEX thin projection
+# does NOT carry, so a smart-list view is always computed server-side over the
+# full metadata returned by ``list_papers`` — reusing the SAME recency_key the
+# CLI's ``lit list --sort recent`` uses (invariant #16: one ranking, no second
+# sort path).
+_SMART_LIST_VIEWS = frozenset({"reading", "recent-read", "backlog"})
+
+
+def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
+    """Order ``list_papers`` for one smart-list view.
+
+    - ``reading``     = unread, not dropped, recency DESC.
+    - ``recent-read`` = read (read-date set), not dropped, read-date DESC.
+    - ``backlog``     = unread, not dropped, recency ASC (same membership as
+      ``reading`` in reverse — the tail of the unread list).
+    """
+    papers = list_papers(vault)
+    if view == "recent-read":
+        read = [
+            p for p in papers
+            if p.get("read-date") and p.get("status") != "dropped"
+        ]
+        # str ISO sort is fine; list.sort is stable so equal read-dates keep
+        # the incoming id-ascending order from list_papers as a tiebreak.
+        read.sort(key=lambda p: str(p.get("read-date") or ""), reverse=True)
+        return read
+
+    unread = [
+        p for p in papers
+        if not p.get("read-date") and p.get("status") != "dropped"
+    ]
+    unread.sort(
+        key=lambda p: recency_key(vault, p),
+        reverse=(view == "reading"),
+    )
+    return unread
+
+
 @router.get("/papers")
-def get_papers(request: Request) -> list[dict[str, Any]]:
+def get_papers(
+    request: Request,
+    view: str | None = Query(default=None),
+) -> list[dict[str, Any]]:
     """List papers as the INDEX.json thin projection.
 
-    Reads INDEX.json directly when present (the agent-facing thin projection,
-    invariant #10); falls back to projecting ``list_papers`` through the same
-    ``project_paper`` so the schema is byte-identical when INDEX is missing.
+    Without ``view`` (Phase 0 behavior): reads INDEX.json directly when present
+    (the agent-facing thin projection, invariant #10); falls back to projecting
+    ``list_papers`` through the same ``project_paper`` so the schema is
+    byte-identical when INDEX is missing.
+
+    With ``view`` ∈ {reading, recent-read, backlog}: a recency-ordered
+    smart-list computed server-side (the recency signal is absent from INDEX),
+    returned through the same thin ``project_paper`` schema. Any other ``view``
+    value is a 400.
     """
     vault = _vault(request)
-    indexed = _index_papers(vault)
-    if indexed is not None:
-        return indexed
-    return [project_paper(p) for p in list_papers(vault)]
+    if view is None:
+        indexed = _index_papers(vault)
+        if indexed is not None:
+            return indexed
+        return [project_paper(p) for p in list_papers(vault)]
+
+    if view not in _SMART_LIST_VIEWS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown view {view!r}; expected one of "
+                f"{sorted(_SMART_LIST_VIEWS)}."
+            ),
+        )
+    return [project_paper(p) for p in _smart_list(vault, view)]
 
 
 @router.get("/paper/{paper_id}")

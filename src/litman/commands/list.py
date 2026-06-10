@@ -14,7 +14,7 @@ from rich.table import Table
 from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.query import matches_filters, split_csv
+from litman.core.query import matches_filters, recency_key, split_csv
 from litman.core.views import project_paper
 
 console = Console()
@@ -52,47 +52,11 @@ def _format_cell(value: Any) -> str:
     return "-" if value is None else str(value)
 
 
-def _recency_key(vault: Path, paper: dict[str, Any]) -> float:
-    """Sort key for ``--sort recent``: the more recent of two engagement
-    signals, as a POSIX timestamp.
-
-    1. ``paper.pdf`` filesystem mtime — bumps when the user annotates the
-       PDF in a viewer that writes back to the file (the reading signal,
-       viewer-agnostic because mtime is OS-maintained).
-    2. ``updated-at`` metadata field — bumps on any litman write
-       (lit read / lit modify / tag / link = agent-mediated curation).
-
-    Returns the later of the two. A missing PDF or a missing/malformed
-    ``updated-at`` contributes 0.0, so a paper with neither engagement
-    signal sinks to the bottom.
-    """
-    pdf = vault / "papers" / str(paper.get("id", "")) / "paper.pdf"
-    try:
-        pdf_mtime = pdf.stat().st_mtime
-    except OSError:
-        pdf_mtime = 0.0
-    # The YAML safe-loader parses an ISO 8601 timestamp into a datetime
-    # object, so updated-at usually arrives already typed. A plain string
-    # is still accepted (e.g. a non-roundtripped value) via fromisoformat.
-    raw = paper.get("updated-at")
-    try:
-        if isinstance(raw, datetime):
-            updated = raw.timestamp()
-        elif isinstance(raw, date):
-            # A bare date (YAML safe-loader parses "2026-05-30" into a
-            # datetime.date, NOT a string) has no .timestamp() and is not a
-            # valid fromisoformat() argument — treat it as that day's midnight
-            # instead of sinking the paper to 0.0 (review F29). datetime is a
-            # date subclass, so this branch only catches pure dates (the
-            # datetime check above already handled the common case).
-            updated = datetime(raw.year, raw.month, raw.day).timestamp()
-        elif raw:
-            updated = datetime.fromisoformat(str(raw)).timestamp()
-        else:
-            updated = 0.0
-    except (ValueError, TypeError, OSError, OverflowError):
-        updated = 0.0
-    return max(pdf_mtime, updated)
+# Backward-compat alias: ``recency_key`` was extracted to core/query.py so the
+# webUI smart-list query can share the exact ranking (invariant #16). Any test
+# or caller referencing the old private name still resolves to the same
+# function.
+_recency_key = recency_key
 
 
 def _as_date(raw: Any) -> date | None:
@@ -294,7 +258,7 @@ def list_cmd(
         # list.sort is stable: papers with equal recency keep the incoming
         # id-ascending order (list_papers returns id-asc). So no explicit
         # tie-break is needed — equal-recency ties stay deterministic.
-        filtered.sort(key=lambda p: _recency_key(vault, p), reverse=True)
+        filtered.sort(key=lambda p: recency_key(vault, p), reverse=True)
 
     # True match count, captured BEFORE the --limit slice so the table title
     # can report matched-vs-shown honestly. Slicing first would lose it.
