@@ -47,6 +47,7 @@ from litman.core.dedup import (
 from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file
+from litman.core.notes import WIKILINK_REMINDER
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
 from litman.importers.llm import parse_llm_json, parse_llm_json_text
@@ -439,9 +440,7 @@ def add_cmd(
             _yaml.dump(_build_metadata(parsed, paper_id), f)
         (paper_dir / "notes.md").write_text(
             f"# {parsed['title']}\n\n"
-            "<!-- Link another paper in this vault as [[paper-id]] (a wikilink, "
-            "not backticks or plain text) so lit rm and lit health-check keep "
-            "it tracked. -->\n\n"
+            f"{WIKILINK_REMINDER}\n\n"
             "(Personal notes go here.)\n",
             encoding="utf-8",
         )

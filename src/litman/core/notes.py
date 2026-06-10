@@ -39,8 +39,8 @@ is the single source of truth; the tag is only its surfaced projection
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 # Same ``[[...]]`` form health-check uses (core/checks.py): no ``|alias``
 # support, no nested brackets, single line. Kept identical so annotate /
@@ -49,6 +49,29 @@ _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
 # The status suffix appended right after a ``[[A]]`` whose target is gone.
 _DELETED_SUFFIX = " (deleted)"
+
+
+# ---------------------------------------------------------------------------
+# Wikilink-format reminder (self-healing scaffold)
+# ---------------------------------------------------------------------------
+
+# Seeded into every fresh notes.md by ``lit add`` and re-inserted on every
+# reading-session close (see :func:`heal_wikilink_reminder`). The agent
+# regenerates notes.md wholesale (skills: notes = overwrite-style STATE
+# snapshot), so a reminder living inside the file is wiped on the first
+# regeneration and the agent stops seeing the ``[[id]]`` convention. Healing it
+# back keeps the nudge in front of the agent every round with no skill change.
+WIKILINK_REMINDER = (
+    "<!-- Link another paper in this vault as [[paper-id]] (a wikilink, "
+    "not backticks or plain text) so lit rm and lit health-check keep "
+    "it tracked. -->"
+)
+
+# Distinctive phrase used to detect the reminder regardless of exact wording or
+# position. Real notes never contain it, so a false "already present" is
+# implausible; the historical scaffold carries the identical phrase, so old
+# vaults are recognised and never get a duplicate.
+_WIKILINK_REMINDER_MARKER = "not backticks or plain text"
 
 
 def enumerate_markdown_files(vault: Path) -> Iterable[Path]:
@@ -147,3 +170,59 @@ def _retarget(text: str, target_id: str, *, annotate: bool) -> str:
             pos += len(_DELETED_SUFFIX)
     out.append(text[pos:])
     return "".join(out)
+
+
+def ensure_wikilink_reminder(text: str) -> str:
+    """Return ``text`` with the wikilink-format reminder guaranteed present.
+
+    Idempotent: when the reminder (detected via the distinctive
+    :data:`_WIKILINK_REMINDER_MARKER` phrase) is already there, ``text`` comes
+    back unchanged so the caller can skip the write. When absent, the reminder
+    is inserted just after the first ``# `` H1 heading — matching the ``lit add``
+    scaffold layout (heading, blank, reminder, blank, body) — or prepended when
+    the note has no heading.
+    """
+    if _WIKILINK_REMINDER_MARKER in text:
+        return text
+
+    lines = text.split("\n")
+    heading_idx = next(
+        (i for i, line in enumerate(lines) if line.startswith("# ")), None
+    )
+    if heading_idx is None:
+        if not text:
+            return WIKILINK_REMINDER + "\n"
+        return "\n".join([WIKILINK_REMINDER, "", *lines])
+
+    head = lines[: heading_idx + 1]
+    tail = lines[heading_idx + 1 :]
+    # Drop a single existing blank right after the heading so the inserted
+    # block does not stack double blank lines.
+    if tail and tail[0] == "":
+        tail = tail[1:]
+    return "\n".join([*head, "", WIKILINK_REMINDER, "", *tail])
+
+
+def heal_wikilink_reminder(vault: Path, paper_id: str) -> bool:
+    """Re-insert the wikilink reminder into ``papers/<id>/notes.md`` if missing.
+
+    Wired into every reading-session close (``lit read`` / ``promote`` /
+    ``drop`` / ``revisit``) so an agent overwrite that stripped the reminder is
+    repaired before the next session reads the note. Returns ``True`` when the
+    file was rewritten, ``False`` on a no-op (reminder already present, or the
+    note / paper dir absent). The single-file write goes through ``staged_write``
+    so a crash never leaves a half-written note; notes.md is not truth-lockable,
+    so it stays agent-writable afterwards.
+    """
+    from litman.core.atomic import staged_write
+
+    notes_path = vault / "papers" / paper_id / "notes.md"
+    if not notes_path.is_file():
+        return False
+    text = notes_path.read_text(encoding="utf-8")
+    healed = ensure_wikilink_reminder(text)
+    if healed == text:
+        return False
+    with staged_write(vault, op_id=f"notes-reminder-{paper_id}") as stage:
+        stage.write_text(f"papers/{paper_id}/notes.md", healed)
+    return True

@@ -20,6 +20,7 @@ import click
 from litman.commands.modify import _apply_modify
 from litman.core.dates import validate_iso_date
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.notes import heal_wikilink_reminder
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 
 
@@ -87,3 +88,6 @@ def read_cmd(
         set_ops=(f"read-date={date_value}",),
         skip_set_noop=True,
     )
+    # Reading-session close: repair the wikilink reminder an agent overwrite
+    # may have stripped from notes.md, so the next session sees it again.
+    heal_wikilink_reminder(vault, paper_id)

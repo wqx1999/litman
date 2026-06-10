@@ -12,13 +12,19 @@ discussion.md, each guarded by ``.is_file()``).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from litman.core.notes import (
+    WIKILINK_REMINDER,
     annotate_deleted_wikilinks,
     deannotate_deleted_wikilinks,
+    ensure_wikilink_reminder,
     enumerate_markdown_files,
+    heal_wikilink_reminder,
 )
+
+_MARKER = "not backticks or plain text"  # _WIKILINK_REMINDER_MARKER, kept local
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +157,87 @@ def test_enumerate_skips_absent_discussion(tmp_path: Path) -> None:
 
 def test_enumerate_no_papers_dir(tmp_path: Path) -> None:
     assert list(enumerate_markdown_files(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# ensure_wikilink_reminder (pure transform)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_present_returns_unchanged() -> None:
+    text = f"# Title\n\n{WIKILINK_REMINDER}\n\n(Personal notes go here.)\n"
+    assert ensure_wikilink_reminder(text) == text
+
+
+def test_ensure_detected_by_marker_even_if_reworded() -> None:
+    # A reworded reminder still carrying the marker phrase must NOT be
+    # duplicated — detection keys on the marker, not the exact string.
+    text = f"# Title\n\n<!-- use [[id]], {_MARKER}! -->\n\nbody\n"
+    assert ensure_wikilink_reminder(text) == text
+
+
+def test_ensure_inserts_after_heading_preserving_body() -> None:
+    text = "# Some Paper\n\nMy real notes about [[2024_X]].\n"
+    out = ensure_wikilink_reminder(text)
+    assert _MARKER in out
+    assert out.startswith("# Some Paper\n\n<!-- ")
+    assert "My real notes about [[2024_X]]." in out
+    # The real wikilink is preserved and not mistaken for the reminder.
+    assert "[[2024_X]]" in out
+
+
+def test_ensure_prepends_when_no_heading() -> None:
+    text = "Just some notes, no heading.\n"
+    out = ensure_wikilink_reminder(text)
+    assert out.startswith(WIKILINK_REMINDER)
+    assert "Just some notes, no heading." in out
+
+
+def test_ensure_empty_text() -> None:
+    assert ensure_wikilink_reminder("") == WIKILINK_REMINDER + "\n"
+
+
+def test_ensure_is_idempotent() -> None:
+    text = "# T\n\nbody\n"
+    once = ensure_wikilink_reminder(text)
+    assert ensure_wikilink_reminder(once) == once
+
+
+# ---------------------------------------------------------------------------
+# heal_wikilink_reminder (file-level, atomic)
+# ---------------------------------------------------------------------------
+
+
+def test_heal_rewrites_when_missing(tmp_path: Path) -> None:
+    d = _make_paper(tmp_path, "2024_A")
+    notes = d / "notes.md"
+    # Simulate an agent overwrite that stripped the reminder.
+    notes.write_text("# 2024_A\n\nUpdated understanding.\n", encoding="utf-8")
+    assert heal_wikilink_reminder(tmp_path, "2024_A") is True
+    healed = notes.read_text(encoding="utf-8")
+    assert _MARKER in healed
+    assert "Updated understanding." in healed
+
+
+def test_heal_noop_when_present(tmp_path: Path) -> None:
+    d = _make_paper(tmp_path, "2024_A")
+    notes = d / "notes.md"
+    body = f"# 2024_A\n\n{WIKILINK_REMINDER}\n\nkept.\n"
+    notes.write_text(body, encoding="utf-8")
+    assert heal_wikilink_reminder(tmp_path, "2024_A") is False
+    assert notes.read_text(encoding="utf-8") == body  # byte-identical
+
+
+def test_heal_noop_when_notes_absent(tmp_path: Path) -> None:
+    _make_paper(tmp_path, "2024_A")  # dir but no notes.md
+    assert heal_wikilink_reminder(tmp_path, "2024_A") is False
+
+
+def test_heal_keeps_notes_writable(tmp_path: Path) -> None:
+    # The whole point of notes.md being unlocked must survive the staged write:
+    # the agent has to be able to overwrite it again next session.
+    d = _make_paper(tmp_path, "2024_A")
+    notes = d / "notes.md"
+    notes.write_text("# 2024_A\n\nbody\n", encoding="utf-8")
+    heal_wikilink_reminder(tmp_path, "2024_A")
+    assert os.access(notes, os.W_OK)
