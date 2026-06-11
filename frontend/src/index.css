@@ -1,18 +1,50 @@
 @import "tailwindcss";
 
 @theme {
-  /* Warm neutral palette mirrored from the PepForge design language so the two
-     litman/PepForge frontends read as one product. */
-  --color-stone-50: #fafaf8;
-  --color-stone-100: #f5f3f0;
-  --color-stone-200: #e8e4df;
-  --color-stone-300: #d6d0c8;
-  --color-stone-400: #9aa0a6;
-  --color-stone-500: #6e7378;
-  --color-stone-600: #565a5e;
-  --color-stone-700: #3d4044;
-  --color-stone-800: #282c30;
-  --color-stone-900: #16181a;
+  /* macOS-native neutral system palette. Replaces the previous warm-stone
+     (PepForge) ramp with cool, near-neutral greys (Apple systemGray / label
+     family) so nothing reads as warm or yellow. Kept under the `stone-*` names
+     so every existing utility re-tints globally with zero class churn. */
+  --color-stone-50: #fbfbfd;
+  --color-stone-100: #f4f4f7;
+  --color-stone-200: #e6e6eb;
+  --color-stone-300: #d4d4da;
+  --color-stone-400: #aeaeb4;
+  --color-stone-500: #8a8a90;
+  --color-stone-600: #6a6a70;
+  --color-stone-700: #48484c;
+  --color-stone-800: #2b2b2e;
+  --color-stone-900: #1c1c1e;
+
+  /* System accent (macOS blue). Selection highlight, active controls, links,
+     focus rings. One variable to retint if the user prefers graphite/etc. */
+  --color-accent-50: #eef5ff;
+  --color-accent-100: #d8e9ff;
+  --color-accent-200: #b7d8ff;
+  --color-accent-500: #007aff;
+  --color-accent-600: #0a6fe0;
+  --color-accent-700: #0857b3;
+
+  /* Paper-status dot semantics — macOS system green / orange / teal / grey.
+     Note skim is system *orange*, deliberately not the old amber/yellow. */
+  --color-status-read: #34c759;
+  --color-status-skim: #ff9f0a;
+  --color-status-inbox: #5ac8fa;
+  --color-status-dropped: #c7c7cc;
+
+  /* System font stacks — San Francisco on macOS, graceful fallbacks elsewhere.
+     The native look wants the system faces, not a bundled webfont. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  /* Motion language — one fluid easing shared by every transition (panels,
+     disclosures, dropdowns, tabs) so nothing feels one-off or rigid. Reused via
+     the `ease-fluid` / `ease-soft` / `animate-grow-in` utilities; new UI
+     (dropdown menus, toasts) should pull from these, never hard-code a curve. */
+  --ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-soft: cubic-bezier(0.32, 0.72, 0, 1);
+  --animate-grow-in: grow-in 0.28s var(--ease-fluid);
 }
 
 html,
@@ -23,8 +55,39 @@ body,
 }
 
 body {
-  font-family: Inter, -apple-system, "Segoe UI", Arial, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  color: var(--color-stone-800);
+  background: var(--color-stone-100);
+}
+
+/* Cool the text-selection highlight to the system accent. */
+::selection {
+  background: color-mix(in srgb, var(--color-accent-500) 22%, transparent);
+}
+
+/* Thin, unobtrusive macOS-style overlay scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-stone-300) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-stone-400) 55%, transparent);
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-stone-400);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Minimal typographic styling for marked-rendered markdown (notes/discussion).
@@ -32,34 +95,51 @@ body {
    markdown panes need these back. */
 .prose-litman {
   color: var(--color-stone-800);
-  line-height: 1.6;
-  font-size: 0.95rem;
+  line-height: 1.65;
+  font-size: 0.925rem;
 }
-.prose-litman h1 { font-size: 1.5rem; font-weight: 600; margin: 1rem 0 0.5rem; }
-.prose-litman h2 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 0.5rem; }
-.prose-litman h3 { font-size: 1.1rem; font-weight: 600; margin: 0.75rem 0 0.5rem; }
-.prose-litman p { margin: 0.5rem 0; }
-.prose-litman ul { list-style: disc; padding-left: 1.5rem; margin: 0.5rem 0; }
-.prose-litman ol { list-style: decimal; padding-left: 1.5rem; margin: 0.5rem 0; }
+.prose-litman h1 { font-size: 1.45rem; font-weight: 600; letter-spacing: -0.01em; margin: 1.1rem 0 0.5rem; }
+.prose-litman h2 { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; margin: 1rem 0 0.5rem; }
+.prose-litman h3 { font-size: 1.05rem; font-weight: 600; margin: 0.8rem 0 0.4rem; }
+.prose-litman p { margin: 0.55rem 0; }
+.prose-litman ul { list-style: disc; padding-left: 1.5rem; margin: 0.55rem 0; }
+.prose-litman ol { list-style: decimal; padding-left: 1.5rem; margin: 0.55rem 0; }
+.prose-litman li { margin: 0.2rem 0; }
 .prose-litman code {
   background: var(--color-stone-200);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
+  font-family: var(--font-mono);
   font-size: 0.85em;
 }
 .prose-litman pre {
   background: var(--color-stone-100);
-  padding: 0.75rem;
-  border-radius: 0.375rem;
+  border: 1px solid var(--color-stone-200);
+  padding: 0.8rem;
+  border-radius: 0.5rem;
   overflow-x: auto;
-  margin: 0.75rem 0;
+  margin: 0.8rem 0;
 }
 .prose-litman pre code { background: none; padding: 0; }
-.prose-litman a { color: var(--color-stone-700); }
+.prose-litman a { color: var(--color-accent-600); text-decoration: none; }
+.prose-litman a:hover { text-decoration: underline; }
 .prose-litman blockquote {
   border-left: 3px solid var(--color-stone-300);
-  padding-left: 0.75rem;
+  padding-left: 0.8rem;
   color: var(--color-stone-600);
-  margin: 0.5rem 0;
+  margin: 0.6rem 0;
+}
+
+/* Shared entrance for elements that pop into existence (a new tab today; later
+   dropdown menus and toasts). Pair with the `animate-grow-in` utility, whose
+   timing comes from `--animate-grow-in` in the theme above. */
+@keyframes grow-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }

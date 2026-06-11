@@ -56,7 +56,7 @@ export default function PdfView({ paperId }: Props) {
 
       const viewport = page.getViewport({ scale })
       const canvas = document.createElement('canvas')
-      canvas.className = 'mx-auto mb-4 shadow-sm bg-white'
+      canvas.className = 'mx-auto mb-4 rounded-sm bg-white shadow-md ring-1 ring-black/5'
       canvas.width = Math.ceil(viewport.width * dpr)
       canvas.height = Math.ceil(viewport.height * dpr)
       canvas.style.width = `${Math.floor(viewport.width)}px`
@@ -155,18 +155,18 @@ export default function PdfView({ paperId }: Props) {
           onClick={zoomOut}
           disabled={scale <= MIN_SCALE}
           title="Zoom out"
-          className="rounded px-2 py-0.5 text-sm text-stone-700 hover:bg-stone-200 disabled:text-stone-400"
+          className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           −
         </button>
-        <span className="w-12 text-center text-xs tabular-nums text-stone-600">
+        <span className="w-12 text-center text-xs tabular-nums text-stone-500">
           {Math.round(scale * 100)}%
         </span>
         <button
           onClick={zoomIn}
           disabled={scale >= MAX_SCALE}
           title="Zoom in"
-          className="rounded px-2 py-0.5 text-sm text-stone-700 hover:bg-stone-200 disabled:text-stone-400"
+          className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           +
         </button>
@@ -177,7 +177,7 @@ export default function PdfView({ paperId }: Props) {
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto bg-stone-200 p-4">
+      <div className="min-h-0 flex-1 overflow-auto bg-stone-200 p-6">
         {error && (
           <div className="text-sm text-red-700">Failed to load PDF: {error}</div>
         )}

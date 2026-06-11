@@ -15,7 +15,7 @@ function Chips({ values }: { values: string[] | undefined }) {
       {values.map((v) => (
         <span
           key={v}
-          className="rounded bg-stone-200 px-1.5 py-0.5 text-xs text-stone-700"
+          className="rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
         >
           {v}
         </span>
@@ -26,8 +26,8 @@ function Chips({ values }: { values: string[] | undefined }) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="mb-3">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-500">
+    <div className="mb-3.5">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
         {label}
       </div>
       <div className="text-sm text-stone-800">{children}</div>
@@ -60,7 +60,7 @@ function Relations({
             <button
               key={id}
               onClick={() => onOpenPaper(id)}
-              className="mr-1 text-xs text-stone-700 underline decoration-stone-400"
+              className="mr-1 text-xs text-accent-600 transition-colors hover:underline"
             >
               {id}
             </button>
@@ -71,7 +71,8 @@ function Relations({
   )
 }
 
-/** Read-only metadata cockpit (Phase 1 — no write controls, those are Phase 3). */
+/** Read-only metadata cockpit (Phase 1 — no write controls, those are Phase 3).
+ * Collapses to a narrow strip via an animated width, mirroring BrowsePanel. */
 export default function Cockpit({
   paper,
   loading,
@@ -79,93 +80,113 @@ export default function Cockpit({
   onToggle,
   onOpenPaper,
 }: Props) {
-  if (collapsed) {
-    return (
-      <div className="flex w-8 flex-col items-center border-l border-stone-200 bg-stone-100 pt-3">
+  return (
+    <div
+      className={`relative flex shrink-0 overflow-hidden border-l border-stone-200 bg-stone-100 transition-[width] duration-300 ease-fluid ${
+        collapsed ? 'w-9' : 'w-80'
+      }`}
+    >
+      {/* Collapsed strip: just the expand handle, fading in once narrowed. */}
+      <div
+        className={`absolute inset-0 flex flex-col items-center pt-3 transition-opacity duration-200 ${
+          collapsed ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0'
+        }`}
+      >
         <button
           onClick={onToggle}
           title="Expand metadata"
-          className="text-stone-500 hover:text-stone-800"
+          className="text-stone-500 transition-colors hover:text-stone-800"
         >
           ‹
         </button>
       </div>
-    )
-  }
 
-  return (
-    <aside className="w-80 shrink-0 overflow-auto border-l border-stone-200 bg-stone-100 p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-stone-500">
-          Metadata
-        </span>
-        <button
-          onClick={onToggle}
-          title="Collapse metadata"
-          className="text-stone-500 hover:text-stone-800"
-        >
-          ›
-        </button>
-      </div>
-
-      {loading && <div className="text-sm text-stone-500">Loading…</div>}
-      {!loading && !paper && (
-        <div className="text-sm text-stone-500">Select a paper.</div>
-      )}
-
-      {paper && (
-        <div>
-          <Field label="Title">{paper.title || paper.id}</Field>
-          <Field label="Authors">
-            {paper.authors && paper.authors.length > 0
-              ? paper.authors.join('; ')
-              : '—'}
-          </Field>
-          <Field label="Venue / Year">
-            {[paper.journal, paper.year].filter(Boolean).join(' · ') || '—'}
-          </Field>
-          {paper.doi && (
-            <Field label="DOI">
-              <a
-                href={`https://doi.org/${paper.doi}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-stone-700 underline decoration-stone-400"
-              >
-                {paper.doi}
-              </a>
-            </Field>
-          )}
-          <Field label="Status / Priority / Type">
-            {[paper.status, paper.priority, paper.type]
-              .map((v) => v || '—')
-              .join(' · ')}
-          </Field>
-          <Field label="Read-date / Last-revisited">
-            {[paper['read-date'], paper['last-revisited']]
-              .map((v) => v || '—')
-              .join(' · ')}
-          </Field>
-          <Field label="Topics">
-            <Chips values={paper.topics} />
-          </Field>
-          <Field label="Methods">
-            <Chips values={paper.methods} />
-          </Field>
-          <Field label="Data">
-            <Chips values={paper.data} />
-          </Field>
-          <Field label="Projects">
-            <Chips values={paper.projects} />
-          </Field>
-          <Field label="Relations">
-            <Relations paper={paper} onOpenPaper={onOpenPaper} />
-          </Field>
-          <Field label="Code-clones">
-            <Chips values={paper['code-clones']} />
-          </Field>
+      {/* Full inspector — fixed w-80 so it never reflows while the container
+          width animates; cross-fades out when collapsed. */}
+      <aside
+        className={`h-full w-80 overflow-auto p-4 transition-opacity duration-200 ${
+          collapsed ? 'pointer-events-none opacity-0' : 'opacity-100 delay-100'
+        }`}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            Metadata
+          </span>
+          <button
+            onClick={onToggle}
+            title="Collapse metadata"
+            className="text-stone-500 transition-colors hover:text-stone-800"
+          >
+            ›
+          </button>
         </div>
-      )}
-    </aside>
+
+        {loading && <div className="text-sm text-stone-500">Loading…</div>}
+        {!loading && !paper && (
+          <div className="text-sm text-stone-500">Select a paper.</div>
+        )}
+
+        {paper && (
+          <div>
+            <div className="mb-4">
+              <div className="text-[15px] font-semibold leading-snug text-stone-900">
+                {paper.title || paper.id}
+              </div>
+              <div className="mt-0.5 font-mono text-xs text-stone-500">
+                {paper.id}
+              </div>
+            </div>
+            <Field label="Authors">
+              {paper.authors && paper.authors.length > 0
+                ? paper.authors.join('; ')
+                : '—'}
+            </Field>
+            <Field label="Venue / Year">
+              {[paper.journal, paper.year].filter(Boolean).join(' · ') || '—'}
+            </Field>
+            {paper.doi && (
+              <Field label="DOI">
+                <a
+                  href={`https://doi.org/${paper.doi}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent-600 transition-colors hover:underline"
+                >
+                  {paper.doi}
+                </a>
+              </Field>
+            )}
+            <Field label="Status / Priority / Type">
+              {[paper.status, paper.priority, paper.type]
+                .map((v) => v || '—')
+                .join(' · ')}
+            </Field>
+            <Field label="Read-date / Last-revisited">
+              {[paper['read-date'], paper['last-revisited']]
+                .map((v) => v || '—')
+                .join(' · ')}
+            </Field>
+            <Field label="Topics">
+              <Chips values={paper.topics} />
+            </Field>
+            <Field label="Methods">
+              <Chips values={paper.methods} />
+            </Field>
+            <Field label="Data">
+              <Chips values={paper.data} />
+            </Field>
+            <Field label="Projects">
+              <Chips values={paper.projects} />
+            </Field>
+            <Field label="Relations">
+              <Relations paper={paper} onOpenPaper={onOpenPaper} />
+            </Field>
+            <Field label="Code-clones">
+              <Chips values={paper['code-clones']} />
+            </Field>
+          </div>
+        )}
+      </aside>
+    </div>
   )
 }

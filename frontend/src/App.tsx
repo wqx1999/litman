@@ -192,7 +192,7 @@ export default function App() {
   const projectNames = useMemo(() => projects.map((p) => p.name), [projects])
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
       <TopBar
         vaults={vaults}
         search={search}

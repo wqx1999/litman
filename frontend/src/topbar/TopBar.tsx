@@ -21,6 +21,12 @@ async function copy(text: string): Promise<boolean> {
   }
 }
 
+/** macOS-toolbar-style button: borderless, hover reveals a soft rounded fill. */
+const toolBtn =
+  'rounded-md px-2 py-1 text-sm text-stone-600 transition-colors ' +
+  'hover:bg-stone-200 active:bg-stone-300 ' +
+  'disabled:text-stone-300 disabled:hover:bg-transparent'
+
 export default function TopBar({
   vaults,
   search,
@@ -38,7 +44,7 @@ export default function TopBar({
   }
 
   return (
-    <header className="flex items-center gap-3 border-b border-stone-200 bg-stone-50 px-3 py-2">
+    <header className="flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md">
       <img
         src={logoUrl}
         alt="litman"
@@ -50,7 +56,7 @@ export default function TopBar({
         value={vaults?.active ?? ''}
         disabled
         title="Vault switching lands in Phase 3"
-        className="rounded border border-stone-300 bg-stone-100 px-2 py-1 text-sm text-stone-600"
+        className="rounded-md border border-stone-300 bg-stone-100 px-2 py-1 text-sm text-stone-500 shadow-sm"
       >
         {vaults?.active ? (
           vaults.vaults.map((v) => (
@@ -65,11 +71,14 @@ export default function TopBar({
       </select>
 
       <div className="relative flex-1">
+        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400">
+          ⌕
+        </span>
         <input
           value={search}
           onChange={(e) => onSearch(e.target.value)}
-          placeholder="🔍 Search title or id…"
-          className="w-full max-w-md rounded border border-stone-300 bg-white px-2 py-1 text-sm"
+          placeholder="Search title or id…"
+          className="w-full max-w-md rounded-lg border border-stone-300 bg-white py-1.5 pl-8 pr-3 text-sm text-stone-800 shadow-sm transition placeholder:text-stone-400 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/25"
         />
       </div>
 
@@ -78,7 +87,7 @@ export default function TopBar({
           onClick={() => selectedId && doCopy('id', selectedId)}
           disabled={!selectedId}
           title="Copy paper id"
-          className="rounded px-2 py-1 text-sm text-stone-700 hover:bg-stone-200 disabled:text-stone-400"
+          className={toolBtn}
         >
           ⧉ id
         </button>
@@ -86,24 +95,20 @@ export default function TopBar({
           onClick={() => selectedId && doCopy('link', `[[${selectedId}]]`)}
           disabled={!selectedId}
           title="Copy [[id]] wikilink"
-          className="rounded px-2 py-1 text-sm text-stone-700 hover:bg-stone-200 disabled:text-stone-400"
+          className={toolBtn}
         >
           ⧉ [[id]]
         </button>
         {copied && (
           <span className="text-xs text-stone-500">copied {copied}</span>
         )}
-        <button
-          onClick={onRefresh}
-          title="Refresh"
-          className="rounded px-2 py-1 text-sm text-stone-700 hover:bg-stone-200"
-        >
+        <button onClick={onRefresh} title="Refresh" className={toolBtn}>
           ⟳
         </button>
         <button
           disabled
           title="New project — coming in Phase 3"
-          className="rounded px-2 py-1 text-sm text-stone-400"
+          className={toolBtn}
         >
           ＋ project
         </button>
