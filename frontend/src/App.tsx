@@ -73,12 +73,6 @@ export default function App() {
       .finally(() => setLoadingList(false))
   }, [])
 
-  const refresh = useCallback(() => {
-    fetchVaults().then(setVaults)
-    fetchProjects().then(setProjects)
-    loadList(listMode)
-  }, [listMode, loadList])
-
   useEffect(() => {
     fetchVaults().then(setVaults)
     fetchProjects().then(setProjects)
@@ -191,15 +185,16 @@ export default function App() {
 
   const projectNames = useMemo(() => projects.map((p) => p.name), [projects])
 
+  // Active vault's filesystem path (server-side), used by the Cockpit to build
+  // the copy-path action. Null until /api/vaults resolves or if none is active.
+  const vaultPath = useMemo(
+    () => vaults?.vaults.find((v) => v.active)?.path ?? null,
+    [vaults],
+  )
+
   return (
     <div className="flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
-      <TopBar
-        vaults={vaults}
-        search={search}
-        onSearch={setSearch}
-        selectedId={selectedId}
-        onRefresh={refresh}
-      />
+      <TopBar vaults={vaults} search={search} onSearch={setSearch} />
       <div className="flex min-h-0 flex-1">
         <BrowsePanel
           scoped={scoped}
@@ -237,6 +232,7 @@ export default function App() {
           collapsed={cockpitCollapsed}
           onToggle={() => setCockpitCollapsed((c) => !c)}
           onOpenPaper={openPdf}
+          vaultPath={vaultPath}
         />
       </div>
     </div>

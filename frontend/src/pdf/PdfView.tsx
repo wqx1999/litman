@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -16,6 +16,12 @@ const MIN_SCALE = 0.5
 const MAX_SCALE = 3.0
 const DEFAULT_SCALE = 1.3
 const ZOOM_STEP = 0.2
+const WHEEL_STEP = 0.1
+
+// Clamp to [MIN, MAX] and snap to 0.1 so button/wheel zoom lands on tidy steps.
+// The % input bypasses the snap so the field can hold any integer percentage.
+const clampScale = (s: number) =>
+  Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round(s * 10) / 10))
 
 /** Read-only pdf.js render with HiDPI-sharp pages and zoom (Phase 1 — no
  * annotation editor layer, that lands in Phase 2).
@@ -37,10 +43,30 @@ export default function PdfView({ paperId }: Props) {
   // Bumped on every (re)render trigger; the async loop compares against it to
   // detect that it has been superseded and must stop.
   const renderGenRef = useRef(0)
+  // The scroll viewport; the ctrl/cmd-wheel zoom listener binds here.
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const [error, setError] = useState<string | null>(null)
   const [pageCount, setPageCount] = useState(0)
   const [scale, setScale] = useState(DEFAULT_SCALE)
+  // Draft string while the user is typing in the % box; null = show live scale.
+  const [pctDraft, setPctDraft] = useState<string | null>(null)
+
+  const zoomBy = useCallback((delta: number) => {
+    setScale((s) => clampScale(s + delta))
+  }, [])
+  const resetZoom = useCallback(() => setScale(DEFAULT_SCALE), [])
+
+  // Commit a typed percentage from the toolbar input: parse, clamp, apply. The
+  // input holds an integer percent so the field can land on any value (e.g.
+  // 137%), unlike the 0.1-snapped button/wheel zoom.
+  const commitPct = useCallback((raw: string) => {
+    setPctDraft(null)
+    const n = parseInt(raw, 10)
+    if (Number.isFinite(n) && n > 0) {
+      setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, n / 100)))
+    }
+  }, [])
 
   // Render (or re-render) all pages of the currently-loaded document at `scale`.
   async function renderAll(doc: PDFDocumentProxy, gen: number) {
@@ -143,27 +169,82 @@ export default function PdfView({ paperId }: Props) {
     // intended trigger (the doc comes from a ref, not the dep array).
   }, [scale])
 
-  const zoomOut = () =>
-    setScale((s) => Math.max(MIN_SCALE, Math.round((s - ZOOM_STEP) * 10) / 10))
-  const zoomIn = () =>
-    setScale((s) => Math.min(MAX_SCALE, Math.round((s + ZOOM_STEP) * 10) / 10))
+  // Ctrl/Cmd + wheel zooms the PDF instead of the browser page (also catches
+  // trackpad pinch, which fires wheel events with ctrlKey set). Plain wheel is
+  // left alone so it still scrolls the page stack. Bound manually with
+  // passive:false because a React onWheel handler can't preventDefault reliably.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      e.preventDefault()
+      zoomBy(e.deltaY < 0 ? WHEEL_STEP : -WHEEL_STEP)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [zoomBy])
+
+  // Ctrl/Cmd + (+ / - / 0), including the numpad, drives PDF zoom rather than
+  // the browser's. Only one PdfView is mounted at a time (TabArea renders the
+  // active tab only), so a window listener is unambiguous.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
+        e.preventDefault()
+        zoomBy(ZOOM_STEP)
+      } else if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
+        e.preventDefault()
+        zoomBy(-ZOOM_STEP)
+      } else if (e.key === '0' || e.code === 'Numpad0') {
+        e.preventDefault()
+        resetZoom()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [zoomBy, resetZoom])
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-stone-200 bg-stone-100 px-3 py-1.5">
         <button
-          onClick={zoomOut}
+          onClick={() => zoomBy(-ZOOM_STEP)}
           disabled={scale <= MIN_SCALE}
           title="Zoom out"
           className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           −
         </button>
-        <span className="w-12 text-center text-xs tabular-nums text-stone-500">
-          {Math.round(scale * 100)}%
-        </span>
+        <div className="flex items-center gap-0.5">
+          <input
+            value={pctDraft ?? String(Math.round(scale * 100))}
+            onChange={(e) =>
+              setPctDraft(e.target.value.replace(/[^0-9]/g, '').slice(0, 3))
+            }
+            onFocus={(e) => {
+              setPctDraft(String(Math.round(scale * 100)))
+              e.currentTarget.select()
+            }}
+            onBlur={(e) => commitPct(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur()
+              } else if (e.key === 'Escape') {
+                setPctDraft(null)
+                e.currentTarget.blur()
+              }
+            }}
+            inputMode="numeric"
+            aria-label="Zoom percentage"
+            title="Type a zoom %, then Enter"
+            className="w-9 rounded bg-transparent text-right text-xs tabular-nums text-stone-600 hover:bg-stone-200 focus:bg-white focus:outline-none focus:ring-1 focus:ring-stone-300"
+          />
+          <span className="text-xs text-stone-500">%</span>
+        </div>
         <button
-          onClick={zoomIn}
+          onClick={() => zoomBy(ZOOM_STEP)}
           disabled={scale >= MAX_SCALE}
           title="Zoom in"
           className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
@@ -177,7 +258,7 @@ export default function PdfView({ paperId }: Props) {
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto bg-stone-200 p-6">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto bg-stone-200 p-6">
         {error && (
           <div className="text-sm text-red-700">Failed to load PDF: {error}</div>
         )}

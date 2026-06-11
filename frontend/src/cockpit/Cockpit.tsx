@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { PaperMeta } from '../types'
 
 interface Props {
@@ -6,6 +7,8 @@ interface Props {
   collapsed: boolean
   onToggle: () => void
   onOpenPaper: (id: string) => void
+  /** Active vault's filesystem path (server-side), for the copy-path action. */
+  vaultPath: string | null
 }
 
 function Chips({ values }: { values: string[] | undefined }) {
@@ -79,7 +82,24 @@ export default function Cockpit({
   collapsed,
   onToggle,
   onOpenPaper,
+  vaultPath,
 }: Props) {
+  const [copied, setCopied] = useState<string | null>(null)
+
+  // Per-paper copy actions live here (the selected-paper context), not the top
+  // bar. `ID` pastes into CLI commands / metadata / filenames; `path` is the
+  // paper-folder path on the vault host — from it you reach pdf / metadata /
+  // notes, or hand it straight to a terminal or an agent.
+  async function doCopy(form: string, value: string) {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(form)
+      setTimeout(() => setCopied(null), 1200)
+    } catch {
+      /* no clipboard in some sandboxes — silently ignore */
+    }
+  }
+
   return (
     <div
       className={`relative flex shrink-0 overflow-hidden border-l border-stone-200 bg-stone-100 transition-[width] duration-300 ease-fluid ${
@@ -134,6 +154,34 @@ export default function Cockpit({
               </div>
               <div className="mt-0.5 font-mono text-xs text-stone-500">
                 {paper.id}
+              </div>
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => doCopy('ID', paper.id)}
+                  title="Copy the paper id"
+                  className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900"
+                >
+                  <span className="text-stone-400">⧉</span> Copy ID
+                </button>
+                <button
+                  onClick={() =>
+                    vaultPath && doCopy('path', `${vaultPath}/papers/${paper.id}`)
+                  }
+                  disabled={!vaultPath}
+                  title={
+                    vaultPath
+                      ? 'Copy the paper folder path'
+                      : 'Vault path unavailable'
+                  }
+                  className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                >
+                  <span className="text-stone-400">⧉</span> Copy path
+                </button>
+                {copied && (
+                  <span className="text-[11px] font-medium text-emerald-600">
+                    ✓ copied {copied}
+                  </span>
+                )}
               </div>
             </div>
             <Field label="Authors">
