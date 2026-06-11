@@ -259,6 +259,94 @@ def test_root_route_serves_spa_or_placeholder(
 
 
 # ---------------------------------------------------------------------------
+# /api/search — notes/discussion typeahead scope
+# ---------------------------------------------------------------------------
+
+
+def test_get_search_finds_notes_hit(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    (vault / "papers" / paper_id / "notes.md").write_text(
+        "alpha beta gamma\n", encoding="utf-8"
+    )
+    resp = _client(vault).get("/api/search", params={"q": "beta"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["query"] == "beta"
+    assert len(body["hits"]) == 1
+    hit = body["hits"][0]
+    assert hit["id"] == paper_id
+    assert hit["scope"] == "notes"
+    assert "beta" in hit["snippet"].lower()
+
+
+def test_get_search_collapses_to_one_hit_preferring_notes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A paper matching in both files collapses to a single notes-scoped hit."""
+    vault, paper_id = vault_with_paper
+    (vault / "papers" / paper_id / "notes.md").write_text(
+        "shared keyword in notes\n", encoding="utf-8"
+    )
+    (vault / "papers" / paper_id / "discussion.md").write_text(
+        "shared keyword in discussion\n", encoding="utf-8"
+    )
+    resp = _client(vault).get("/api/search", params={"q": "keyword"})
+    hits = resp.json()["hits"]
+    assert len(hits) == 1
+    assert hits[0]["scope"] == "notes"
+
+
+def test_get_search_discussion_only(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    (vault / "papers" / paper_id / "discussion.md").write_text(
+        "only here: needle\n", encoding="utf-8"
+    )
+    resp = _client(vault).get("/api/search", params={"q": "needle"})
+    hits = resp.json()["hits"]
+    assert [h["scope"] for h in hits] == ["discussion"]
+
+
+def test_get_search_empty_query_returns_no_hits(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).get("/api/search", params={"q": "   "})
+    assert resp.status_code == 200
+    assert resp.json()["hits"] == []
+
+
+def test_get_search_no_match_returns_empty(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    (vault / "papers" / paper_id / "notes.md").write_text(
+        "nothing relevant here\n", encoding="utf-8"
+    )
+    resp = _client(vault).get("/api/search", params={"q": "zzzznotpresent"})
+    assert resp.json()["hits"] == []
+
+
+def test_get_search_long_line_is_windowed(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A long matched line is trimmed around the match with ellipses."""
+    vault, paper_id = vault_with_paper
+    line = "x" * 200 + " UNIQUEMARK " + "y" * 200
+    (vault / "papers" / paper_id / "notes.md").write_text(
+        line + "\n", encoding="utf-8"
+    )
+    resp = _client(vault).get("/api/search", params={"q": "UNIQUEMARK"})
+    snippet = resp.json()["hits"][0]["snippet"]
+    assert "UNIQUEMARK" in snippet
+    assert len(snippet) < len(line)
+    assert snippet.startswith("…") and snippet.endswith("…")
+
+
+# ---------------------------------------------------------------------------
 # A5 — smart-list ?view= query
 # ---------------------------------------------------------------------------
 

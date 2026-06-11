@@ -3,14 +3,17 @@ import {
   fetchPaper,
   fetchPapers,
   fetchProjects,
+  fetchSearch,
   fetchVaults,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import SaveDialog from './tabs/SaveDialog'
+import { mergeCandidates } from './search'
 import type {
   IndexPaper,
   PaperMeta,
   ProjectEntry,
+  SearchHit,
   SmartListView,
   Tab,
   TabKind,
@@ -58,6 +61,16 @@ export default function App() {
   const [filters, setFilters] = useState<Filters>(emptyFilters)
   const [search, setSearch] = useState('')
 
+  // Search spans all four scopes. id/title are matched instantly client-side,
+  // but over the WHOLE library (a global quick-jump), not just the current
+  // smart-list — so we keep the full INDEX separate from the list-mode `papers`.
+  const [allPapers, setAllPapers] = useState<IndexPaper[]>([])
+  // notes/discussion hits from /api/search (debounced, async). The token guards
+  // against an earlier slower response overwriting a newer one.
+  const [serverHits, setServerHits] = useState<SearchHit[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const searchToken = useRef(0)
+
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -94,11 +107,56 @@ export default function App() {
   useEffect(() => {
     fetchVaults().then(setVaults)
     fetchProjects().then(setProjects)
+    // Full INDEX (no view) backs global id/title matching + title lookup for
+    // notes/discussion hits — independent of which smart-list the middle list
+    // is showing.
+    fetchPapers().then(setAllPapers)
   }, [])
 
   useEffect(() => {
     loadList(listMode)
   }, [listMode, loadList])
+
+  // Debounced notes/discussion search. id/title match instantly off allPapers
+  // (no network); only the markdown scopes need the server. An empty query
+  // clears hits without a request.
+  useEffect(() => {
+    const q = search.trim()
+    if (!q) {
+      // Invalidate any in-flight response so a late fetch can't repopulate
+      // hits after the box is cleared.
+      searchToken.current++
+      setServerHits([])
+      setSearchLoading(false)
+      return
+    }
+    setSearchLoading(true)
+    const token = ++searchToken.current
+    const timer = setTimeout(() => {
+      fetchSearch(q)
+        .then((res) => {
+          if (searchToken.current === token) setServerHits(res.hits)
+        })
+        .catch(() => {
+          if (searchToken.current === token) setServerHits([])
+        })
+        .finally(() => {
+          if (searchToken.current === token) setSearchLoading(false)
+        })
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  // Ranked candidates feed both the dropdown (top few) and the list filter
+  // (the full matched id set), from one merge so the two never disagree.
+  const searchCandidates = useMemo(
+    () => mergeCandidates(allPapers, serverHits, search),
+    [allPapers, serverHits, search],
+  )
+  const matchedIds = useMemo(
+    () => new Set(searchCandidates.map((c) => c.id)),
+    [searchCandidates],
+  )
 
   // `scoped` is ONLY the project filter now; the all/dropped status logic moved
   // into `visible` so every dimension composes through one AND pipeline. The
@@ -135,17 +193,15 @@ export default function App() {
         out = out.filter((p) => (p[field] ?? []).some((v) => sel.has(v)))
       }
     }
-    // SEARCH: title/id substring (unchanged), applied last.
-    const q = search.trim().toLowerCase()
-    if (q) {
-      out = out.filter(
-        (p) =>
-          (p.title || '').toLowerCase().includes(q) ||
-          p.id.toLowerCase().includes(q),
-      )
+    // SEARCH (applied last): keep papers in the merged 4-scope match set. The
+    // set spans id/title (instant) + notes/discussion (async, fills in shortly
+    // after typing). Dropped/facet narrowing above still ANDs with it. The
+    // dropdown caps its preview; the list keeps the full matched set.
+    if (search.trim()) {
+      out = out.filter((p) => matchedIds.has(p.id))
     }
     return out
-  }, [scoped, filters, listMode, search])
+  }, [scoped, filters, listMode, search, matchedIds])
 
   const toggleFilter = useCallback((field: FacetKey, value: string) => {
     setFilters((prev) => {
@@ -290,6 +346,9 @@ export default function App() {
         vaults={vaults}
         search={search}
         onSearch={setSearch}
+        searchCandidates={searchCandidates}
+        searchLoading={searchLoading}
+        onSelectResult={selectPaper}
         focusMode={focusMode}
         onToggleFocus={toggleFocus}
       />

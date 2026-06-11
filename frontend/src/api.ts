@@ -5,6 +5,7 @@ import type {
   IndexPaper,
   PaperMeta,
   ProjectEntry,
+  SearchPayload,
   SmartListView,
   Taxonomy,
   VaultsPayload,
@@ -38,6 +39,12 @@ export interface CitePayload {
 
 export function fetchCite(id: string): Promise<CitePayload> {
   return getJSON<CitePayload>(`/api/paper/${encodeURIComponent(id)}/cite`)
+}
+
+/** Vault-wide notes/discussion substring search (the typeahead's async scopes;
+ * id/title are matched client-side). Returns one hit per paper, notes-first. */
+export function fetchSearch(q: string): Promise<SearchPayload> {
+  return getJSON<SearchPayload>(`/api/search?q=${encodeURIComponent(q)}`)
 }
 
 /** The URL pdf.js fetches (with HTTP range) — not the bytes. */

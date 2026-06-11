@@ -1,11 +1,19 @@
 import { useState } from 'react'
 import type { VaultsPayload } from '../types'
+import type { Candidate } from '../search'
+import SearchBox from './SearchBox'
 import logoUrl from '../assets/litman-logo.png'
 
 interface Props {
   vaults: VaultsPayload | null
   search: string
   onSearch: (q: string) => void
+  /** Ranked typeahead candidates (App merges client id/title + server md hits). */
+  searchCandidates: Candidate[]
+  /** A server notes/discussion search is in flight. */
+  searchLoading: boolean
+  /** Jump to a paper picked from the dropdown. */
+  onSelectResult: (id: string) => void
   focusMode: boolean
   onToggleFocus: () => void
 }
@@ -41,6 +49,9 @@ export default function TopBar({
   vaults,
   search,
   onSearch,
+  searchCandidates,
+  searchLoading,
+  onSelectResult,
   focusMode,
   onToggleFocus,
 }: Props) {
@@ -73,17 +84,13 @@ export default function TopBar({
         )}
       </select>
 
-      <div className="relative flex-1">
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400">
-          ⌕
-        </span>
-        <input
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder="Search title or id…"
-          className="w-full max-w-md rounded-lg border border-stone-300 bg-white py-1.5 pl-8 pr-3 text-sm text-stone-800 shadow-sm transition placeholder:text-stone-400 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/25"
-        />
-      </div>
+      <SearchBox
+        value={search}
+        onChange={onSearch}
+        candidates={searchCandidates}
+        loading={searchLoading}
+        onSelect={onSelectResult}
+      />
 
       <button
         type="button"

@@ -19,6 +19,7 @@ from litman.core.cite import format_acs
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
+from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy
 from litman.core.vault_registry import find_active, load_registry
 from litman.core.views import project_paper
@@ -121,6 +122,79 @@ def get_papers(
             ),
         )
     return [project_paper(p) for p in _smart_list(vault, view)]
+
+
+def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:
+    """A short, match-centered slice of a matched markdown line for a dropdown row.
+
+    Keeps the matched substring visible: starts ~``lead`` chars before the
+    (case-insensitive) match, spans ``width`` chars, and marks any trimmed end
+    with an ellipsis. A whole line that already fits is returned untouched
+    (only stripped). Trimming is presentation-only — ``core.search`` returns
+    full lines for agent retrieval; the GUI is the one place that wants a
+    bounded preview.
+    """
+    line = line.strip()
+    if len(line) <= width:
+        return line
+    idx = line.lower().find(query.lower())
+    if idx < 0:  # query spanned across normalization — fall back to a head slice
+        return line[:width].rstrip() + "…"
+    start = max(0, idx - lead)
+    end = min(len(line), start + width)
+    snippet = line[start:end].strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(line):
+        snippet = snippet + "…"
+    return snippet
+
+
+@router.get("/search")
+def get_search(
+    request: Request,
+    q: str = Query(default=""),
+) -> dict[str, Any]:
+    """Substring search over authored ``notes.md`` / ``discussion.md`` (vault-wide).
+
+    Powers the typeahead dropdown's notes / discussion scopes only — id / title
+    matching is instant client-side off the already-loaded INDEX projection, so
+    this endpoint never re-scans metadata. Same corpus and matcher as
+    ``lit search`` (``core.search.search_notes``): case-insensitive substring,
+    with ``paper.pdf`` full text, ``.trash/`` and ``views/`` excluded
+    (invariant #16: one search path, not a second one reinvented here).
+
+    Collapsed to at most one hit per paper (notes preferred over discussion),
+    each carrying a match-centered snippet. The caller caps how many rows it
+    renders; the full id set drives the middle list's filter.
+    """
+    vault = _vault(request)
+    query = q.strip()
+    if not query:
+        return {"query": q, "hits": []}
+
+    # search_notes yields line-level hits ordered by (id, file, line). Collapse
+    # to one per paper: the first hit wins, but a later notes hit upgrades a
+    # discussion-only entry so notes always outranks discussion per paper.
+    best: dict[str, dict[str, Any]] = {}
+    for hit in search_notes(vault, query):
+        pid = hit["id"]
+        cur = best.get(pid)
+        # First hit for a paper wins; a later notes hit upgrades a
+        # discussion-only entry so notes always outranks discussion per paper.
+        if cur is None or (cur["file"] != "notes" and hit["file"] == "notes"):
+            best[pid] = hit
+
+    hits = [
+        {
+            "id": h["id"],
+            "scope": h["file"],  # "notes" | "discussion"
+            "line": h["line"],
+            "snippet": _snippet_window(h["snippet"], query),
+        }
+        for h in best.values()
+    ]
+    return {"query": q, "hits": hits}
 
 
 @router.get("/paper/{paper_id}")

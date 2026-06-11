@@ -37,6 +37,24 @@ export interface PaperMeta extends IndexPaper {
 /** The smart-list views the server computes (sorted by recency / read-date). */
 export type SmartListView = 'reading' | 'recent-read' | 'backlog'
 
+/** Where a search term matched. `id`/`title` are resolved client-side off the
+ * loaded INDEX; `notes`/`discussion` come from /api/search. */
+export type SearchScope = 'id' | 'title' | 'notes' | 'discussion'
+
+/** One notes/discussion hit from /api/search (one per paper, notes preferred). */
+export interface SearchHit {
+  id: string
+  scope: 'notes' | 'discussion'
+  /** Match-centered slice of the matched line (already trimmed server-side). */
+  snippet: string
+  line: number
+}
+
+export interface SearchPayload {
+  query: string
+  hits: SearchHit[]
+}
+
 /** TAXONOMY controlled vocabulary, one list per key. */
 export interface Taxonomy {
   projects: string[]
