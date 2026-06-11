@@ -54,19 +54,32 @@ export default function MdView({ paperId, doc, onOpenPaper }: Props) {
     }
   }
 
-  if (missing) {
-    return (
-      <div className="h-full overflow-auto bg-stone-50 p-6 text-sm text-stone-500">
-        No {doc}.md for this paper yet.
-      </div>
+  const header =
+    doc === 'notes' ? (
+      <span className="text-emerald-700">📝 Notes</span>
+    ) : (
+      <span className="text-sky-700">💬 Discussion</span>
     )
-  }
 
   return (
-    <div
-      className="prose-litman h-full overflow-auto bg-stone-50 p-6"
-      onClick={handleClick}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className="flex h-full flex-col bg-stone-50">
+      <div className="shrink-0 border-b border-stone-200 bg-stone-100 px-6 py-2 text-sm font-semibold">
+        {header}
+        <span className="ml-2 font-mono text-xs font-normal text-stone-500">
+          {paperId}
+        </span>
+      </div>
+      {missing ? (
+        <div className="flex-1 overflow-auto p-6 text-sm text-stone-500">
+          No {doc}.md for this paper yet.
+        </div>
+      ) : (
+        <div
+          className="prose-litman min-h-0 flex-1 overflow-auto p-6"
+          onClick={handleClick}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )}
+    </div>
   )
 }

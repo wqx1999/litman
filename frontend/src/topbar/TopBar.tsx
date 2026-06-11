@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { VaultsPayload } from '../types'
+import logoUrl from '../assets/litman-logo.png'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -38,7 +39,12 @@ export default function TopBar({
 
   return (
     <header className="flex items-center gap-3 border-b border-stone-200 bg-stone-50 px-3 py-2">
-      <span className="text-sm font-semibold text-stone-800">litman</span>
+      <img
+        src={logoUrl}
+        alt="litman"
+        title="litman"
+        className="h-6 w-auto shrink-0 select-none"
+      />
 
       <select
         value={vaults?.active ?? ''}

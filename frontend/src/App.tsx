@@ -15,17 +15,22 @@ import type {
   VaultsPayload,
 } from './types'
 import TopBar from './topbar/TopBar'
-import LeftNav from './nav/LeftNav'
-import type { Facet, ListMode } from './nav/LeftNav'
-import PaperList from './list/PaperList'
+import BrowsePanel from './nav/BrowsePanel'
+import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
+import { emptyFilters } from './nav/BrowsePanel'
 import TabArea from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
 
-const SMART_VIEWS: ReadonlySet<string> = new Set([
-  'reading',
-  'recent-read',
-  'backlog',
-])
+const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
+
+// Single-value fields filter on `p[f]` (string | null); array fields filter on
+// `p[f]` (string[]). Status carries the dropped-default-hide special case.
+const SINGLE_FILTER_FIELDS: Array<'priority' | 'type'> = ['priority', 'type']
+const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
+  'topics',
+  'methods',
+  'data',
+]
 
 function tabLabel(id: string, kind: TabKind): string {
   if (kind === 'pdf') return id
@@ -36,15 +41,19 @@ export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
 
-  // The current paper set the middle list shows. `all`/`dropped` use the full
-  // INDEX list (filtered client-side); the smart-lists come pre-ordered from
-  // the server (recency / read-date), so they replace `papers` wholesale.
+  // The current paper set the middle list shows. `all` uses the full INDEX list
+  // (filtered client-side); the smart-lists come pre-ordered from the server
+  // (recency / read-date), so they replace `papers` wholesale.
   const [papers, setPapers] = useState<IndexPaper[]>([])
   const [loadingList, setLoadingList] = useState(false)
 
   const [listMode, setListMode] = useState<ListMode>('reading')
   const [projectScope, setProjectScope] = useState<string | null>(null)
-  const [activeFacet, setActiveFacet] = useState<Facet | null>(null)
+  // Multi-dimensional client-side filters: one multi-select Set per field, over
+  // all six facet dimensions (status/priority/type single-value; topics/methods/
+  // data array). Cross-dimension AND, within-dimension OR. `project` is NOT a
+  // facet — it stays the top dropdown (single-select scope).
+  const [filters, setFilters] = useState<Filters>(emptyFilters)
   const [search, setSearch] = useState('')
 
   const [tabs, setTabs] = useState<Tab[]>([])
@@ -54,6 +63,7 @@ export default function App() {
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
   const [cockpitCollapsed, setCockpitCollapsed] = useState(false)
+  const [leftCollapsed, setLeftCollapsed] = useState(false)
 
   const loadList = useCallback((mode: ListMode) => {
     setLoadingList(true)
@@ -78,29 +88,42 @@ export default function App() {
     loadList(listMode)
   }, [listMode, loadList])
 
-  // Project scope filters every list mode; `all`/`dropped` filter status here
-  // too (the smart-lists already excluded dropped / split by read-date server
-  // side, so they pass through unchanged except for project + facet + search).
+  // `scoped` is ONLY the project filter now; the all/dropped status logic moved
+  // into `visible` so every dimension composes through one AND pipeline. The
+  // smart-lists (reading/recent-read) already came pre-ordered + dropped-free
+  // from the server, so project scope is the only narrowing applied here.
   const scoped = useMemo(() => {
-    let out = papers
-    if (projectScope) {
-      out = out.filter((p) => (p.projects || []).includes(projectScope))
-    }
-    if (listMode === 'dropped') {
-      out = out.filter((p) => p.status === 'dropped')
+    if (!projectScope) return papers
+    return papers.filter((p) => (p.projects || []).includes(projectScope))
+  }, [papers, projectScope])
+
+  // Multi-dimensional filter: cross-dimension AND, within-dimension OR.
+  const visible = useMemo(() => {
+    let out = scoped
+    // STATUS (single, OR) with dropped default-hide preserved: when nothing is
+    // ticked, `all` still suppresses dropped; reading/recent-read server views
+    // already exclude it.
+    const st = filters.status
+    if (st.size > 0) {
+      out = out.filter((p) => p.status != null && st.has(p.status))
     } else if (listMode === 'all') {
       out = out.filter((p) => p.status !== 'dropped')
     }
-    return out
-  }, [papers, projectScope, listMode])
-
-  const visible = useMemo(() => {
-    let out = scoped
-    if (activeFacet) {
-      out = out.filter((p) =>
-        (p[activeFacet.field] || []).includes(activeFacet.value),
-      )
+    // PRIORITY, TYPE (single, OR).
+    for (const field of SINGLE_FILTER_FIELDS) {
+      const sel = filters[field]
+      if (sel.size > 0) {
+        out = out.filter((p) => p[field] != null && sel.has(p[field]!))
+      }
     }
+    // TOPICS, METHODS, DATA (array, OR within / AND across).
+    for (const field of ARRAY_FILTER_FIELDS) {
+      const sel = filters[field]
+      if (sel.size > 0) {
+        out = out.filter((p) => (p[field] ?? []).some((v) => sel.has(v)))
+      }
+    }
+    // SEARCH: title/id substring (unchanged), applied last.
     const q = search.trim().toLowerCase()
     if (q) {
       out = out.filter(
@@ -110,7 +133,19 @@ export default function App() {
       )
     }
     return out
-  }, [scoped, activeFacet, search])
+  }, [scoped, filters, listMode, search])
+
+  const toggleFilter = useCallback((field: FacetKey, value: string) => {
+    setFilters((prev) => {
+      const next = new Set(prev[field])
+      next.has(value) ? next.delete(value) : next.add(value)
+      return { ...prev, [field]: next }
+    })
+  }, [])
+
+  const clearFilters = useCallback(() => {
+    setFilters(emptyFilters())
+  }, [])
 
   const selectPaper = useCallback((id: string) => {
     setSelectedId(id)
@@ -166,25 +201,24 @@ export default function App() {
         onRefresh={refresh}
       />
       <div className="flex min-h-0 flex-1">
-        <LeftNav
+        <BrowsePanel
           scoped={scoped}
+          visible={visible}
+          loading={loadingList}
           projects={projectNames}
           projectScope={projectScope}
           onProjectScope={setProjectScope}
           listMode={listMode}
-          onListMode={(m) => {
-            setActiveFacet(null)
-            setListMode(m)
-          }}
-          activeFacet={activeFacet}
-          onFacet={setActiveFacet}
-        />
-        <PaperList
-          papers={visible}
-          loading={loadingList}
+          onListMode={setListMode}
+          filters={filters}
+          onToggleFilter={toggleFilter}
+          onClearFilters={clearFilters}
           selectedId={selectedId}
+          onSelect={selectPaper}
           onOpenPdf={openPdf}
           onOpenDoc={openDoc}
+          collapsed={leftCollapsed}
+          onToggle={() => setLeftCollapsed((c) => !c)}
         />
         <TabArea
           tabs={tabs}
