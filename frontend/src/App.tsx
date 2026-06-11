@@ -75,6 +75,13 @@ export default function App() {
   const [cockpitLoading, setCockpitLoading] = useState(false)
   const [cockpitCollapsed, setCockpitCollapsed] = useState(false)
   const [leftCollapsed, setLeftCollapsed] = useState(false)
+  // Focus mode collapses both side panels at once (PDF fills the middle) and
+  // restores their prior collapse state on exit.
+  const [focusMode, setFocusMode] = useState(false)
+  const prevCollapseRef = useRef<{ left: boolean; right: boolean }>({
+    left: false,
+    right: false,
+  })
 
   const loadList = useCallback((mode: ListMode) => {
     setLoadingList(true)
@@ -261,9 +268,31 @@ export default function App() {
     [vaults],
   )
 
+  // Enter/exit focus mode: stash the current panel collapse, hide both panels,
+  // restore on exit.
+  const toggleFocus = useCallback(() => {
+    setFocusMode((on) => {
+      if (!on) {
+        prevCollapseRef.current = { left: leftCollapsed, right: cockpitCollapsed }
+        setLeftCollapsed(true)
+        setCockpitCollapsed(true)
+      } else {
+        setLeftCollapsed(prevCollapseRef.current.left)
+        setCockpitCollapsed(prevCollapseRef.current.right)
+      }
+      return !on
+    })
+  }, [leftCollapsed, cockpitCollapsed])
+
   return (
     <div className="flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
-      <TopBar vaults={vaults} search={search} onSearch={setSearch} />
+      <TopBar
+        vaults={vaults}
+        search={search}
+        onSearch={setSearch}
+        focusMode={focusMode}
+        onToggleFocus={toggleFocus}
+      />
       <div className="flex min-h-0 flex-1">
         <BrowsePanel
           scoped={scoped}

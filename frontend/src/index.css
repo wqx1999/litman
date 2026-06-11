@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: `dark:` utilities apply when <html> carries `.dark`. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   /* macOS-native neutral system palette. Replaces the previous warm-stone
      (PepForge) ramp with cool, near-neutral greys (Apple systemGray / label
@@ -45,6 +48,51 @@
   --ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-soft: cubic-bezier(0.32, 0.72, 0, 1);
   --animate-grow-in: grow-in 0.28s var(--ease-fluid);
+}
+
+/* ============================================================
+   Dark mode — class-based (`.dark` on <html>, set by the no-FOUC
+   script in index.html and flipped by the TopBar toggle). The whole
+   app re-tints by inverting the `stone-*` ramp, so every bg-/text-/
+   border-stone utility flips with zero per-element churn. Values are
+   macOS dark system greys: very dark elevated surfaces, near-white
+   labels.
+   ============================================================ */
+.dark {
+  --color-stone-50: #2c2c2e;  /* elevated surface: cards, header, inputs */
+  --color-stone-100: #1c1c1e; /* base canvas (darkest) */
+  --color-stone-200: #3a3a3c; /* hover fill / subtle border / chip */
+  --color-stone-300: #48484a; /* border / divider */
+  --color-stone-400: #636366; /* faint icon / placeholder */
+  --color-stone-500: #8e8e93; /* tertiary text */
+  --color-stone-600: #aeaeb2; /* secondary text */
+  --color-stone-700: #d1d1d6; /* near-primary text */
+  --color-stone-800: #f0f0f2; /* primary text */
+  --color-stone-900: #ffffff; /* max-emphasis text */
+
+  /* macOS uses a slightly brighter blue on dark backgrounds. */
+  --color-accent-50: #16263a;  /* subtle selected / hover tint on dark */
+  --color-accent-100: #1e3a5c;
+  --color-accent-200: #28507f;
+  --color-accent-500: #0a84ff; /* active controls, focus ring, links */
+  --color-accent-600: #409cff;
+  --color-accent-700: #5aa9ff;
+}
+
+/* Card / modal / input surfaces are literal `bg-white` (not a stone utility),
+   so the ramp inversion above can't reach them. Darken them to the elevated
+   surface in dark mode. The pdf.js page is its own <canvas> (not a bg-white
+   div), so real paper stays white. New `bg-white` surfaces inherit this dark
+   treatment automatically.
+
+   The `focus:bg-white` variant (note textarea, zoom input) is a separate
+   escaped class the plain `.bg-white` selector can't reach, and `--color-white`
+   is deliberately NOT overridden (that would also recolor `text-white` on the
+   accent buttons). Catch the focus variant explicitly so focused inputs don't
+   flash pure white on dark — the focus ring/border still signal focus. */
+.dark .bg-white,
+.dark .focus\:bg-white:focus {
+  background-color: var(--color-stone-50);
 }
 
 html,
