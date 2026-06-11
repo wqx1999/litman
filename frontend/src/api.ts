@@ -28,6 +28,18 @@ export function fetchPaper(id: string): Promise<PaperMeta> {
   return getJSON<PaperMeta>(`/api/paper/${encodeURIComponent(id)}`)
 }
 
+/** A compact ACS-style citation plus any caveats (unverified journal
+ * abbreviation, missing volume/pages, preprint venue). `text` is paste-clean;
+ * `warnings` are shown beside the Cite button, never folded into `text`. */
+export interface CitePayload {
+  text: string
+  warnings: string[]
+}
+
+export function fetchCite(id: string): Promise<CitePayload> {
+  return getJSON<CitePayload>(`/api/paper/${encodeURIComponent(id)}/cite`)
+}
+
 /** The URL pdf.js fetches (with HTTP range) — not the bytes. */
 export function pdfUrl(id: string): string {
   return `/api/paper/${encodeURIComponent(id)}/pdf`

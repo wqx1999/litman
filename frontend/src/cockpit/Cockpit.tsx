@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { PaperMeta } from '../types'
+import { fetchCite } from '../api'
 
 interface Props {
   paper: PaperMeta | null
@@ -85,6 +86,21 @@ export default function Cockpit({
   vaultPath,
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
+  // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
+  // Persisted until the selected paper changes so the user actually reads them.
+  const [citeWarn, setCiteWarn] = useState<string[] | null>(null)
+
+  // The currently-shown paper id, refreshed synchronously each render and read
+  // inside the async Cite handler to drop a response that lands after the user
+  // has already moved to a different paper.
+  const shownId = useRef<string | undefined>(paper?.id)
+  shownId.current = paper?.id
+
+  // Selecting a different paper clears stale copy/cite feedback.
+  useEffect(() => {
+    setCopied(null)
+    setCiteWarn(null)
+  }, [paper?.id])
 
   // Per-paper copy actions live here (the selected-paper context), not the top
   // bar. `ID` pastes into CLI commands / metadata / filenames; `path` is the
@@ -97,6 +113,27 @@ export default function Cockpit({
       setTimeout(() => setCopied(null), 1200)
     } catch {
       /* no clipboard in some sandboxes — silently ignore */
+    }
+  }
+
+  // Cite fetches the server-formatted ACS citation (one formatting path,
+  // invariant #16), copies the clean text, and surfaces any caveats so a
+  // wrong-looking abbreviation is never copied silently.
+  async function doCite() {
+    if (!paper) return
+    const id = paper.id
+    try {
+      const { text, warnings } = await fetchCite(id)
+      // The selection may have moved on while the request was in flight — drop
+      // the stale result rather than copy it / flash its warnings under another
+      // paper.
+      if (shownId.current !== id) return
+      await navigator.clipboard.writeText(text)
+      setCopied('citation')
+      setCiteWarn(warnings.length ? warnings : null)
+      setTimeout(() => setCopied(null), 1200)
+    } catch {
+      /* no clipboard / fetch failure — silently ignore */
     }
   }
 
@@ -177,12 +214,29 @@ export default function Cockpit({
                 >
                   <span className="text-stone-400">⧉</span> Copy path
                 </button>
+                <button
+                  onClick={doCite}
+                  title="Copy an ACS-style citation (journal abbrev. year, volume, pages)"
+                  className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900"
+                >
+                  <span className="text-stone-400">❝</span> Cite
+                </button>
                 {copied && (
                   <span className="text-[11px] font-medium text-emerald-600">
                     ✓ copied {copied}
                   </span>
                 )}
               </div>
+              {citeWarn && (
+                <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-700">
+                  <span className="font-semibold">Citation copied — verify:</span>
+                  <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                    {citeWarn.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
             <Field label="Authors">
               {paper.authors && paper.authors.length > 0

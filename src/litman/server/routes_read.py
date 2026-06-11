@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+from litman.core.cite import format_acs
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
@@ -134,6 +135,25 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
         # The paper exists; its metadata is broken. That is a server-side
         # data problem (500), not a missing resource (404).
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/paper/{paper_id}/cite")
+def get_paper_cite(request: Request, paper_id: str) -> dict[str, Any]:
+    """Compact ACS-style citation for one paper, plus any caveats.
+
+    Same formatting path as ``lit cite`` (``core.cite.format_acs``); the webUI
+    copies ``text`` to the clipboard and shows ``warnings`` (unverified journal
+    abbreviation, missing fields, preprint venue) next to the button.
+    """
+    vault = _vault(request)
+    try:
+        meta = find_paper(vault, paper_id)
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CorruptMetadataError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    citation = format_acs(meta)
+    return {"text": citation.text, "warnings": citation.warnings}
 
 
 @router.get("/paper/{paper_id}/pdf")

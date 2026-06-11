@@ -62,6 +62,29 @@ def test_get_paper_unknown_id_404(
     assert resp.status_code == 404
 
 
+def test_get_cite_returns_text_and_warnings(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).get(f"/api/paper/{paper_id}/cite")
+    assert resp.status_code == 200
+    body = resp.json()
+    # Fixture journal "Test J." (not in the abbreviation table) + year only.
+    assert body["text"] == "Test J. 2024."
+    # Unknown abbreviation + missing volume/pages are surfaced, never folded
+    # into the citation text.
+    assert any("abbreviation" in w for w in body["warnings"])
+    assert body["warnings"]  # non-empty: caveats are surfaced, not swallowed
+
+
+def test_get_cite_unknown_id_404(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).get("/api/paper/does_not_exist/cite")
+    assert resp.status_code == 404
+
+
 def test_get_pdf_supports_range(
     vault_with_paper: tuple[Path, str],
     make_text_pdf: Callable[..., Path],

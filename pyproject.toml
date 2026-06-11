@@ -84,6 +84,10 @@ include = ["litman*"]
 "litman" = [
     "assets/webui/*", "assets/webui/**/*",
 ]
+# Bundle the journal abbreviation table (CC0, used by `lit cite` / the webUI
+# cite endpoint). Without this the wheel drops the CSV (no Python sources in
+# the dir) and `litman.core.cite` can't resolve it via importlib.resources.
+"litman.data" = ["*.csv"]
 
 [tool.ruff]
 line-length = 100
