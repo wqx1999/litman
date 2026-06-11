@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   fetchPaper,
   fetchPapers,
   fetchProjects,
   fetchVaults,
 } from './api'
+import type { PdfHandle } from './pdf/PdfView'
+import SaveDialog from './tabs/SaveDialog'
 import type {
   IndexPaper,
   PaperMeta,
@@ -59,6 +61,15 @@ export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Flush handles for mounted PDF tabs, used to prompt Save / Don't-save when a
+  // tab with unsaved annotations is closed. Only the active PDF tab is mounted
+  // (TabArea renders one tab), so at most one entry is live.
+  const handlesRef = useRef<Map<string, PdfHandle>>(new Map())
+  // Tab key awaiting a close decision (drives the SaveDialog), and whether its
+  // save is in flight.
+  const [pendingClose, setPendingClose] = useState<string | null>(null)
+  const [savingClose, setSavingClose] = useState(false)
 
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
@@ -170,18 +181,76 @@ export default function App() {
     [openTab],
   )
 
+  // Remove a tab from the bar and re-point the active tab. Does NOT save — the
+  // caller decides (closeTab prompts; the dialog handlers save/discard first).
+  const removeTab = useCallback((key: string) => {
+    setTabs((prev) => {
+      const next = prev.filter((t) => t.key !== key)
+      setActiveTab((cur) =>
+        cur === key ? (next.length ? next[next.length - 1].key : null) : cur,
+      )
+      return next
+    })
+  }, [])
+
+  const registerPdf = useCallback((key: string, handle: PdfHandle | null) => {
+    if (handle) handlesRef.current.set(key, handle)
+    else handlesRef.current.delete(key)
+  }, [])
+
   const closeTab = useCallback(
     (key: string) => {
-      setTabs((prev) => {
-        const next = prev.filter((t) => t.key !== key)
-        setActiveTab((cur) =>
-          cur === key ? (next.length ? next[next.length - 1].key : null) : cur,
-        )
-        return next
-      })
+      const handle = handlesRef.current.get(key)
+      if (handle?.isDirty()) {
+        setPendingClose(key)
+        return
+      }
+      removeTab(key)
     },
-    [],
+    [removeTab],
   )
+
+  // SaveDialog actions for the tab pending a close decision.
+  const confirmSave = useCallback(async () => {
+    const key = pendingClose
+    if (!key) return
+    setSavingClose(true)
+    try {
+      await handlesRef.current.get(key)?.flush()
+    } catch (err) {
+      console.error('Failed to embed PDF annotations:', err)
+    } finally {
+      setSavingClose(false)
+      setPendingClose(null)
+      removeTab(key)
+    }
+  }, [pendingClose, removeTab])
+
+  const confirmDiscard = useCallback(() => {
+    const key = pendingClose
+    if (!key) return
+    handlesRef.current.get(key)?.discard()
+    setPendingClose(null)
+    removeTab(key)
+  }, [pendingClose, removeTab])
+
+  const cancelClose = useCallback(() => setPendingClose(null), [])
+
+  // Warn before a full-page unload (browser/tab close, reload) if any PDF has
+  // unsaved annotations — the in-app close prompt cannot run there.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      for (const handle of handlesRef.current.values()) {
+        if (handle.isDirty()) {
+          e.preventDefault()
+          e.returnValue = ''
+          return
+        }
+      }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
 
   const projectNames = useMemo(() => projects.map((p) => p.name), [projects])
 
@@ -225,6 +294,7 @@ export default function App() {
           }}
           onClose={closeTab}
           onOpenPaper={openPdf}
+          onRegisterPdf={registerPdf}
         />
         <Cockpit
           paper={cockpitPaper}
@@ -235,6 +305,15 @@ export default function App() {
           vaultPath={vaultPath}
         />
       </div>
+      {pendingClose && (
+        <SaveDialog
+          label={tabs.find((t) => t.key === pendingClose)?.label ?? pendingClose}
+          saving={savingClose}
+          onSave={confirmSave}
+          onDiscard={confirmDiscard}
+          onCancel={cancelClose}
+        />
+      )}
     </div>
   )
 }

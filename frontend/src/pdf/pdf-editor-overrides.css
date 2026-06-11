@@ -1,0 +1,40 @@
+/* Suppress pdf.js's built-in floating editor toolbar.
+ *
+ * pdf.js's per-annotation floating toolbar (`.editToolbar`, shown next to a
+ * selected highlight / text / ink editor) is chrome designed for the full
+ * `viewer.html` distribution. Embedded in our React app it is broken on two
+ * fronts: (1) its button glyphs are masks pointing at RELATIVE `images/*.svg`
+ * paths our vite build never ships, so they render blank; (2) it is positioned
+ * `position:absolute; inset-inline-end:0` relative to the editor div, so a
+ * freshly-created (briefly degenerate) editor leaves the toolbar detached far
+ * from where the user is looking. Patching the icons + position via CSS proved
+ * fragile across pdf.js internals.
+ *
+ * Instead we hide the native toolbar entirely and drive the editor from our own
+ * React toolbar (colour swatches / size / thickness / delete) via the
+ * documented `switchannotationeditorparams` event + the UIManager. We keep
+ * pdf.js's selection outline + resize handles (`.selectedEditor`) — only the
+ * floating button bar is removed. `!important` beats pdf.js's high-specificity
+ * `:is(.annotationEditorLayer …) .editToolbar` rule without replicating it.
+ * Imported AFTER `pdf_viewer.css` in PdfView.tsx so it wins the cascade.
+ */
+.editToolbar {
+  display: none !important;
+}
+
+/* Suppress pdf.js's native comment chrome for the same reasons.
+ *
+ * With a `commentManager` wired up (which we need so highlight/draw editors can
+ * carry a note and so FreeText stops auto-rendering its text as a hover popup),
+ * pdf.js would otherwise show: (1) `.annotationCommentButton` — a small bubble
+ * button overlaid on each commented annotation, whose icon is again an
+ * unshipped `images/*.svg` mask; and (2) `.commentPopup` — the floating note
+ * box, whose DOM the full viewer's CommentManager builds and which our minimal
+ * manager does not. We render neither; the note is added/edited from our own
+ * toolbar Note button + NoteDialog modal, and the note text round-trips through
+ * the PDF via saveDocument(). Hiding both keeps the surface clean and avoids
+ * broken icons. */
+.annotationCommentButton,
+.commentPopup {
+  display: none !important;
+}

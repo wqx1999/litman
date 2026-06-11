@@ -1,5 +1,6 @@
 import type { Tab } from '../types'
 import PdfView from '../pdf/PdfView'
+import type { PdfHandle } from '../pdf/PdfView'
 import MdView from '../md/MdView'
 
 interface Props {
@@ -8,6 +9,8 @@ interface Props {
   onActivate: (key: string) => void
   onClose: (key: string) => void
   onOpenPaper: (id: string) => void
+  /** Register/unregister a PDF tab's flush handle for the close-time prompt. */
+  onRegisterPdf: (key: string, handle: PdfHandle | null) => void
 }
 
 export default function TabArea({
@@ -16,6 +19,7 @@ export default function TabArea({
   onActivate,
   onClose,
   onOpenPaper,
+  onRegisterPdf,
 }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
@@ -62,7 +66,12 @@ export default function TabArea({
           </div>
         )}
         {active && active.kind === 'pdf' && (
-          <PdfView key={active.key} paperId={active.paperId} />
+          <PdfView
+            key={active.key}
+            paperId={active.paperId}
+            tabKey={active.key}
+            onRegister={onRegisterPdf}
+          />
         )}
         {active && active.kind !== 'pdf' && (
           <MdView

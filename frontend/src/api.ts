@@ -33,6 +33,33 @@ export function pdfUrl(id: string): string {
   return `/api/paper/${encodeURIComponent(id)}/pdf`
 }
 
+/** Overwrite paper.pdf with annotated bytes (pdf.js `saveDocument()` output).
+ *
+ * Invariant #16 whitelist direct-write: the server atomically replaces
+ * `papers/{id}/paper.pdf` via staged_write. Called once on flush (tab
+ * close/switch), never per annotation. Throws on a non-ok response so a
+ * fire-and-forget caller's `.then` chain rejects rather than silently dropping
+ * a failed save.
+ */
+export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<void> {
+  // Send the bytes' underlying buffer slice as the body. fetch accepts an
+  // ArrayBuffer as BodyInit and sends it verbatim; slicing by byteOffset/Length
+  // copies exactly the view's region (saveDocument hands back a tight view, but
+  // slicing is correct regardless of any offset).
+  const buffer = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer
+  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
+    method: 'PUT',
+    body: buffer,
+    headers: { 'Content-Type': 'application/pdf' },
+  })
+  if (!resp.ok) {
+    throw new Error(`PUT pdf-annotations/${id} → ${resp.status} ${resp.statusText}`)
+  }
+}
+
 async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
   const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
