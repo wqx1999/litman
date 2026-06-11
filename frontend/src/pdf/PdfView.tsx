@@ -396,9 +396,12 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     const doc = docRef.current
     const id = paperIdRef.current
     if (!dirtyRef.current || !doc) return
-    dirtyRef.current = false
     const bytes = await doc.saveDocument()
     await putPdfAnnotations(id, bytes)
+    // Clear ONLY after the write lands. If saveDocument()/PUT throws, dirtyRef
+    // stays true so the unmount teardown retries the save instead of silently
+    // dropping the edit (callers log the error).
+    dirtyRef.current = false
   }, [commitPending])
 
   // Register this view's flush handle with the parent so closing the tab can
@@ -509,8 +512,21 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     // pdf.js broadcasts the active param values (e.g. when a different editor is
     // selected, or on mode entry) as [type, value] pairs; mirror them so the
     // toolbar's highlighted swatch/size tracks the selected annotation.
-    const onParamsChanged = (e: { details?: [number, unknown][] }) => {
+    const onParamsChanged = (e: {
+      source?: EditorUIManager
+      details?: [number, unknown][]
+    }) => {
       const details = e.details ?? []
+      // annotationeditorparamschanged fires on every setSelected (the params
+      // dispatch precedes the editing-state dispatch, and the editor is already
+      // in the selection set by then). Recompute the note indicator here too:
+      // this is the path that catches a DIRECT annotation→annotation reselect,
+      // where hasSelectedEditor stays true→true so editingstateschanged does NOT
+      // re-fire — onEditingStates alone would leave hasNote stale on the new pick.
+      const ui = e.source
+      if (ui) uiManagerRef.current = ui
+      const sel = ui?.firstSelectedEditor
+      if (sel) setHasNote(!!sel.hasComment)
       // Infer the selected annotation's type from which param kinds pdf.js
       // broadcasts (each editor exposes a distinct set). Drives the Cursor-mode
       // contextual bar; ignored in tool modes (barType uses editMode there).

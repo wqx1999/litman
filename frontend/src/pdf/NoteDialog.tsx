@@ -18,13 +18,21 @@ export default function NoteDialog({ initialText, onResolve }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const editing = initialText.trim() !== ''
 
+  // Focus + caret-to-end ONCE on mount so editing an existing note is
+  // immediately typeable. Deliberately empty-deps: depending on `text` would
+  // re-run this on every keystroke and snap the caret back to the end, which
+  // breaks editing in the middle of the note.
   useEffect(() => {
-    // Focus + caret-to-end so editing an existing note is immediately typeable.
     const ta = taRef.current
     if (ta) {
       ta.focus()
       ta.setSelectionRange(ta.value.length, ta.value.length)
     }
+  }, [])
+
+  // Esc cancels, Cmd/Ctrl+Enter saves. Re-subscribed when `text` changes so the
+  // save shortcut always sends the latest draft.
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onResolve(undefined)
       else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onResolve(text)
