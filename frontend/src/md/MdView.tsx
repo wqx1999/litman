@@ -263,14 +263,12 @@ export default function MdView({
           </span>
         )}
       </div>
-      {missing ? (
-        <div
-          className="flex-1 cursor-text overflow-auto p-8 text-sm text-stone-400"
-          onDoubleClick={enterEdit}
-        >
-          No {doc}.md for this paper yet — double-click to start writing.
-        </div>
-      ) : editing ? (
+      {/* `editing` MUST be tested before `missing`: entering edit on an absent
+          file leaves `text` null (the draft lives in App, not `text`), so a
+          `missing`-first chain would keep the placeholder mounted and the
+          textarea would never appear — the Save/Cancel header would show
+          (driven by `editing`) while the body stayed un-editable. */}
+      {editing ? (
         <textarea
           ref={textareaRef}
           value={draft}
@@ -279,6 +277,13 @@ export default function MdView({
           spellCheck={false}
           className="min-h-0 w-full flex-1 resize-none bg-white p-8 font-mono text-sm leading-relaxed text-stone-800 outline-none"
         />
+      ) : missing ? (
+        <div
+          className="flex-1 cursor-text overflow-auto p-8 text-sm text-stone-400"
+          onDoubleClick={enterEdit}
+        >
+          No {doc}.md for this paper yet — double-click to start writing.
+        </div>
       ) : (
         <div
           ref={contentRef}
