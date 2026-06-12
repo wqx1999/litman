@@ -686,6 +686,9 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
       // state dispatch won't setState on the unmounting view; the wrapped
       // addCommands still flips dirtyRef (a ref) so the save below picks it up.
       commitPendingRef.current()
+      // Capture the UIManager before the ref is nulled — teardown destroys it to
+      // drop its leaked document-level listeners (see teardown comment).
+      const uiManager = uiManagerRef.current
       eventBusRef.current = null
       uiManagerRef.current = null
 
@@ -702,6 +705,27 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
       // worker mid-save, rejecting saveDocument(), and silently dropping the
       // write (the "edits don't persist after reopen" bug).
       const teardown = () => {
+        // Destroy the AnnotationEditorUIManager so its document-level listeners
+        // (selectionchange, focus/blur, keyboard) are removed. We build a fresh
+        // PDFViewer every mount but never tore the old one down, so each tab-reopen
+        // leaked a UIManager: the stale one kept listening on `document` and, on the
+        // next view's text selection, ran FIRST — reaching `selection.empty()` then
+        // no-opping (its layers were gone) — so it emptied the selection before the
+        // live manager could turn it into a highlight. Text highlighting thus died
+        // after a save+reopen until a full page reload (which drops all document
+        // listeners) brought it back; free-draw stayed fine (instance-local
+        // textLayer pointerdown, not the global selectionchange path).
+        // `viewer.setDocument(null)` throws in this pdf.js build, so call the
+        // manager's own `destroy()` — what pdf.js's setDocument does internally:
+        // aborts its AbortController, removing every `_signal`-bound listener. Safe
+        // after saveDocument() (the dirty branch runs teardown in `.finally`) — it
+        // tears down editor state, not the doc's already-serialized
+        // annotationStorage.
+        try {
+          ;(uiManager as unknown as { destroy?: () => void } | null)?.destroy?.()
+        } catch (err) {
+          console.error('Failed to destroy PDF editor UIManager:', err)
+        }
         if (doc) void doc.destroy()
         else void loadingTask.destroy()
       }
