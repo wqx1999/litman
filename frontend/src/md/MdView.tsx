@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
 import { fetchDiscussion, fetchNotes } from '../api'
 
@@ -7,6 +7,9 @@ interface Props {
   doc: 'notes' | 'discussion'
   /** Called when a [[paper-id]] wikilink is clicked. */
   onOpenPaper: (id: string) => void
+  /** When set (the doc was opened from a search hit), scroll to and highlight
+   * every occurrence of this query in the rendered markdown. */
+  highlightQuery?: string
 }
 
 // [[paper-id]] → a marker anchor we delegate-click below. Done on the raw
@@ -22,9 +25,10 @@ function wikilinksToAnchors(src: string): string {
 }
 
 /** Read-only markdown render (Phase 1 — editing/saving is Phase 3). */
-export default function MdView({ paperId, doc, onOpenPaper }: Props) {
+export default function MdView({ paperId, doc, onOpenPaper, highlightQuery }: Props) {
   const [html, setHtml] = useState<string>('')
   const [missing, setMissing] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -43,6 +47,49 @@ export default function MdView({ paperId, doc, onOpenPaper }: Props) {
       cancelled = true
     }
   }, [paperId, doc])
+
+  // After the markdown renders, mark every occurrence of the search query and
+  // scroll the first into view (a search hit opened this doc). Runs again when
+  // the query or rendered html changes; unwraps prior marks first so re-jumping
+  // doesn't stack them.
+  useEffect(() => {
+    const root = contentRef.current
+    if (!root) return
+    root.querySelectorAll('mark[data-search]').forEach((m) => {
+      const parent = m.parentNode
+      if (!parent) return
+      while (m.firstChild) parent.insertBefore(m.firstChild, m)
+      parent.removeChild(m)
+      parent.normalize()
+    })
+    const q = highlightQuery?.trim().toLowerCase()
+    if (!q) return
+    // Collect matching text nodes first (a full walk), then mutate — mutating
+    // mid-walk would invalidate the TreeWalker.
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const matches: Text[] = []
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if ((n.nodeValue ?? '').toLowerCase().includes(q)) matches.push(n as Text)
+    }
+    let first: HTMLElement | null = null
+    for (const node of matches) {
+      const idx = (node.nodeValue ?? '').toLowerCase().indexOf(q)
+      if (idx < 0) continue
+      const range = document.createRange()
+      range.setStart(node, idx)
+      range.setEnd(node, idx + q.length)
+      const mark = document.createElement('mark')
+      mark.dataset.search = '1'
+      mark.className = 'rounded-sm bg-amber-200 px-0.5 text-stone-900'
+      try {
+        range.surroundContents(mark)
+      } catch {
+        continue // match straddled element boundaries — skip it
+      }
+      if (!first) first = mark
+    }
+    first?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [html, highlightQuery])
 
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
     const target = e.target as HTMLElement
@@ -75,6 +122,7 @@ export default function MdView({ paperId, doc, onOpenPaper }: Props) {
         </div>
       ) : (
         <div
+          ref={contentRef}
           className="prose-litman mx-auto min-h-0 w-full max-w-3xl flex-1 overflow-auto p-8"
           onClick={handleClick}
           dangerouslySetInnerHTML={{ __html: html }}

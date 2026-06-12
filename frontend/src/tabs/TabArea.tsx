@@ -11,6 +11,9 @@ interface Props {
   onOpenPaper: (id: string) => void
   /** Register/unregister a PDF tab's flush handle for the close-time prompt. */
   onRegisterPdf: (key: string, handle: PdfHandle | null) => void
+  /** A notes/discussion tab (by key) to scroll to + highlight a query in, set
+   * when the doc was opened from a search hit. */
+  mdJump: { key: string; query: string } | null
 }
 
 export default function TabArea({
@@ -20,6 +23,7 @@ export default function TabArea({
   onClose,
   onOpenPaper,
   onRegisterPdf,
+  mdJump,
 }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
@@ -79,6 +83,9 @@ export default function TabArea({
             paperId={active.paperId}
             doc={active.kind}
             onOpenPaper={onOpenPaper}
+            highlightQuery={
+              mdJump && mdJump.key === active.key ? mdJump.query : undefined
+            }
           />
         )}
       </div>

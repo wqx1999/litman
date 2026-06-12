@@ -237,6 +237,13 @@ def get_paper_pdf(request: Request, paper_id: str) -> FileResponse:
     Starlette's ``FileResponse`` emits ``Accept-Ranges: bytes`` and honors a
     ``Range:`` request header with a ``206 Partial Content`` response, which
     pdf.js relies on to fetch the document in segments.
+
+    ``Cache-Control: no-store`` is mandatory: paper.pdf is mutable (the
+    annotation write-back overwrites it in place via :func:`staged_write`), yet
+    it is served at a stable URL. Without it the browser caches the bytes (and
+    pdf.js's range requests reuse them), so reopening a paper after a save shows
+    the *old* file. ``no-store`` forces a fresh fetch every time; on a localhost
+    server the re-read is cheap.
     """
     vault = _vault(request)
     # Defense-in-depth: build the path only from an id the core layer would
@@ -247,7 +254,11 @@ def get_paper_pdf(request: Request, paper_id: str) -> FileResponse:
     pdf_path = vault / "papers" / paper_id / "paper.pdf"
     if not pdf_path.is_file():
         raise HTTPException(status_code=404, detail=f"No paper.pdf for {paper_id!r}.")
-    return FileResponse(pdf_path, media_type="application/pdf")
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/paper/{paper_id}/notes")

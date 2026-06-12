@@ -18,6 +18,9 @@ export interface Candidate {
   rank: number
   /** Matched markdown line (notes/discussion scopes); '' for id/title. */
   snippet: string
+  /** 1-based line of the match in the .md (notes/discussion scopes only), so the
+   * picker can open that doc and scroll to it. Absent for id/title. */
+  line?: number
 }
 
 // Secondary sort within a rank tier: prefer id, then title, then notes, then
@@ -79,6 +82,7 @@ export function mergeCandidates(
       scope: h.scope,
       rank: h.scope === 'notes' ? 3 : 4,
       snippet: h.snippet,
+      line: h.line,
     })
   }
 

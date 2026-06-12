@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { AnnotationEditorType, AnnotationEditorParamsType } from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -12,12 +12,16 @@ import 'pdfjs-dist/web/pdf_viewer.css'
 // annotation chrome.
 import './pdf-editor-overrides.css'
 import { CommentManager } from './comment-manager'
-import NoteDialog from './NoteDialog'
+import ParamSwatches, { type ParamType } from './ParamSwatches'
 import { pdfUrl, putPdfAnnotations } from '../api'
 
 // pdf.js needs its worker registered once, before any document is parsed. The
 // `?url` import gives vite the hashed worker path under assets/ at build time.
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
+
+// UIManagers whose `addCommands` we've wrapped for dirty-tracking (see captureUI).
+// A WeakSet so a destroyed document's manager is GC'd without leaking here.
+const wrappedManagers = new WeakSet<object>()
 
 /** Handle the parent (App) uses to flush / inspect a mounted PDF tab when the
  *  user closes it. Lets the close path show a Save / Don't-save / Cancel prompt
@@ -59,7 +63,7 @@ const clampScale = (s: number) =>
 // other three enter the matching creation editor. Numeric values come from
 // pdf.js's own enum (v5: FREETEXT=3, HIGHLIGHT=9, INK=15, POPUP=16) — never
 // hard-coded, so a pdf.js bump can't silently point a button at the wrong mode.
-type EditMode = 'none' | 'highlight' | 'freetext' | 'ink'
+type EditMode = 'none' | ParamType
 const EDITOR_TYPE: Record<EditMode, number> = {
   none: AnnotationEditorType.POPUP,
   highlight: AnnotationEditorType.HIGHLIGHT,
@@ -79,58 +83,45 @@ const EDIT_MODES: { mode: EditMode; label: string; title: string }[] = [
 // create — and every entry into highlight mode (which rebuilds existing highlights) —
 // throw "Cannot read properties of null (reading 'get')", which silently corrupts the
 // editor. The option is a comma-separated `name=#hex` STRING (pdf.js splits it
-// internally). Keep the names/hexes in sync with HL_SWATCHES below so our colour
+// internally). The hex values mirror HL_SWATCHES in ParamSwatches.tsx so our colour
 // bar values resolve to a known name (used for the annotation's aria label).
 const HIGHLIGHT_COLORS =
   'yellow=#FFFF98,green=#53FFBC,blue=#80EBFF,pink=#FFCBE6,red=#FF4F5F,' +
   'yellow_HCM=#FFFFCC,green_HCM=#53FFBC,blue_HCM=#80EBFF,pink_HCM=#F6B8FF,red_HCM=#C50043'
 
-// Built-in colour bars (per the user's request: a few fixed swatches, no full
-// colour picker). Highlight uses pdf.js's translucent palette; text/ink use
-// opaque ink colours. Each `hex` is what we feed to the matching *_COLOR param.
-const HL_SWATCHES = [
-  { name: 'Yellow', hex: '#FFFF98' },
-  { name: 'Green', hex: '#53FFBC' },
-  { name: 'Blue', hex: '#80EBFF' },
-  { name: 'Pink', hex: '#FFCBE6' },
-  { name: 'Red', hex: '#FF4F5F' },
-]
-const PEN_SWATCHES = [
-  { name: 'Black', hex: '#1A1A1A' },
-  { name: 'Red', hex: '#E03131' },
-  { name: 'Blue', hex: '#1971C2' },
-  { name: 'Green', hex: '#2F9E44' },
-  { name: 'Orange', hex: '#E8590C' },
-]
-// FreeText font sizes (FREETEXT_SIZE param) — `ui` sizes the preview glyph.
-const TEXT_SIZES = [
-  { value: 12, ui: '11px' },
-  { value: 18, ui: '14px' },
-  { value: 28, ui: '18px' },
-]
-// Ink line widths (INK_THICKNESS param) — `dot` is the preview bar height.
-const INK_WIDTHS = [
-  { value: 2, dot: 2 },
-  { value: 6, dot: 4 },
-  { value: 12, dot: 7 },
-]
-
 const PARAM = AnnotationEditorParamsType
 
-// The subset of pdf.js's AnnotationEditorUIManager we touch: programmatic
-// delete, the finalize pair (commit active editor / end ink drawing session),
-// and the currently-selected editor (for the Note button — `editComment()`
-// opens the comment dialog; `hasComment`/`canAddComment` drive the button).
-type SelectedEditor = {
-  editComment(): void
+// The slivers of pdf.js's editor we touch on the SELECTED annotation. `comment`
+// is asymmetric (getter returns an object, setter takes a string / null), and
+// `canAddComment` is true for highlight + ink, false for FreeText (a text
+// annotation IS the note) — so pdf.js itself enforces "text can't carry a note".
+interface SelectedEditor {
   canAddComment?: boolean
-  hasComment?: boolean
+  get comment(): { text: string | null } | null
+  set comment(value: string | null)
 }
+// Opaque handle for a pdf.js editor — we only hand it straight back to
+// `setSelected`, never read its fields, so an unnamed object type is enough.
+type AnnotationEditorHandle = object
+// One undo/redo command pair handed to the UIManager (used for note edits and,
+// internally by pdf.js, for every annotation mutation — see captureUI).
+type EditorCommand = { cmd: () => void; undo: () => void; mustExec: boolean }
 type EditorUIManager = {
   delete(): void
   commitOrRemove(): void
-  currentLayer?: { endDrawingSession(stop: boolean): void } | null
+  addCommands(params: EditorCommand): void
+  // Look up an editor instance by its DOM id (= editor.div.id, prefix
+  // `pdfjs_internal_editor_`; pdf.mjs sets `div.setAttribute("id", this.id)`).
+  // Used to read a hovered annotation's note for the read-only hover tooltip —
+  // UIManager.getEditor(id) returns #allEditors.get(id).
+  getEditor?(id: string): SelectedEditor | undefined
+  // Ends the current freehand drawing session and returns the editor it
+  // finalized (null if there was no open session or the stroke was empty).
+  currentLayer?: {
+    endDrawingSession(stop: boolean): AnnotationEditorHandle | null
+  } | null
   firstSelectedEditor?: SelectedEditor | null
+  setSelected?(editor: AnnotationEditorHandle): void
 }
 
 function TrashIcon() {
@@ -143,77 +134,79 @@ function TrashIcon() {
   )
 }
 
-function NoteIcon({ filled }: { filled: boolean }) {
-  // Speech-bubble glyph. Filled when the selected annotation already carries a
-  // note, outline when it doesn't (click to add). Inline SVG, same rationale as
-  // TrashIcon.
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5"
-      fill={filled ? 'currentColor' : 'none'}
-      stroke="currentColor"
-      strokeWidth="1.3"
-      aria-hidden
-    >
-      <path
-        d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v6A1.5 1.5 0 0 1 12.5 11H6l-3 3v-3H3.5A1.5 1.5 0 0 1 2 9.5v-6z"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-/** pdf.js render via the higher-level `pdf_viewer` (Phase 2 — text +
- * annotation + annotation-editor layers).
+/** pdf.js render via the higher-level `pdf_viewer` (text + annotation +
+ * annotation-editor layers).
  *
- * We drive pdf.js's `PDFViewer` (text + annotation + annotation-editor layers)
- * and enable three built-in editors — Highlight / FreeText / Ink — plus a
- * Cursor (POPUP) mode that selects/moves/recolours/deletes existing annotations
- * of any type. The editor's own floating toolbar + native comment chrome are
- * hidden (see pdf-editor-overrides.css); instead our toolbar exposes contextual
- * controls and drives the editor through the documented
- * `switchannotationeditorparams` event (colour / size / thickness) and the
- * UIManager (delete). pdf.js v5 has no `annotationEditorParams` setter — the
- * eventBus is the supported path. The contextual bar is selection-aware: in
- * Cursor mode it mirrors the SELECTED annotation's type so the same colour /
- * size / delete / note controls apply to it.
+ * We drive pdf.js's `PDFViewer` and enable three built-in editors — Highlight /
+ * FreeText / Ink — plus a Cursor (POPUP) mode that selects/moves/recolours/deletes
+ * existing annotations of any type. The editor's own floating toolbar + native
+ * comment chrome are hidden (see pdf-editor-overrides.css); instead two surfaces
+ * drive the editors through the documented `switchannotationeditorparams` event
+ * (colour / size / thickness) and the UIManager (delete, note command):
+ *   - the TOP toolbar shows the active creation tool's default params (set the pen
+ *     before you draw), and
+ *   - a floating popover, anchored next to the SELECTED annotation (Adobe-style),
+ *     recolours / resizes it, edits its note inline, or deletes it.
  *
- * Notes (comments): Highlight + Ink annotations can carry a note via the Note
- * button, captured in our NoteDialog and embedded into the PDF by pdf.js's
- * comment machinery (a minimal CommentManager supplies just the dialog). FreeText
- * cannot carry a note (pdf.js sets canAddComment=false) — a text annotation IS
- * the note. Wiring a CommentManager also stops FreeText from auto-rendering its
- * text as a stray hover popup.
+ * Notes (comments): Highlight + Ink can carry a note (edited inline in the popover
+ * and embedded into the PDF by pdf.js's comment machinery via `editor.comment`);
+ * FreeText cannot (canAddComment=false — the text IS the note). A CommentManager
+ * is still wired (its mere presence stops FreeText auto-rendering its text as a
+ * stray hover popup), but we never use its dialog — note capture is inline.
  *
  * Annotation persistence (invariant #16): edits embed into the PDF via
- * `doc.saveDocument()`. The parent intercepts tab close to prompt Save / Don't
- * save (via the registered PdfHandle); a silent flush still runs on plain
- * unmount (tab switch) unless `discard()` suppressed it. We never flush per
- * stroke. `dirtyRef` gates the flush so an untouched PDF is never re-written. */
+ * `doc.saveDocument()`. The user saves explicitly (Save button / ⌘-Ctrl+S) with
+ * visible state; the parent also intercepts tab close to prompt Save / Don't save
+ * (via the registered PdfHandle), and a best-effort flush runs on plain unmount
+ * (tab switch) unless `discard()` suppressed it. `dirtyRef` (driven by the wrapped
+ * `addCommands`, cleared on save) gates every flush so an untouched / already-saved
+ * PDF is never re-written. */
 export default function PdfView({ paperId, tabKey, onRegister }: Props) {
   // The absolutely-positioned scroll container pdf_viewer attaches to.
   const containerRef = useRef<HTMLDivElement>(null)
   // The inner `.pdfViewer` div pdf_viewer fills with pages.
   const viewerElRef = useRef<HTMLDivElement>(null)
+  // The relative+isolate wrapper the floating popover positions itself within.
+  const pdfWrapRef = useRef<HTMLDivElement>(null)
+  // The floating editor popover (positioned imperatively by the rAF loop).
+  const popoverRef = useRef<HTMLDivElement>(null)
+  // The read-only note tooltip shown while hovering a commented annotation
+  // (positioned imperatively by a layout effect; pointer-events:none).
+  const hoverNoteRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<PDFViewer | null>(null)
   const eventBusRef = useRef<EventBus | null>(null)
-  // The AnnotationEditorUIManager, captured from editingstateschanged's source
-  // (it dispatches with `source: this`). Used for programmatic delete and to
-  // finalize pending editors before save, without reaching into pdf.js private
-  // fields. `commitOrRemove` + `endDrawingSession` mirror pdf.js's own
-  // `#beforeUnload` handler.
+  // The AnnotationEditorUIManager, captured from the editing-state event source
+  // (it dispatches with `source: this`). Used for programmatic delete, note
+  // commands, and finalizing pending editors before save.
   const uiManagerRef = useRef<EditorUIManager | null>(null)
   const docRef = useRef<PDFDocumentProxy | null>(null)
   // Captured for the unmount flush so the cleanup closure does not depend on a
   // possibly-stale prop.
   const paperIdRef = useRef(paperId)
   paperIdRef.current = paperId
-  // Set true once an annotation command lands; gates the one-shot flush.
+  // Set true by the wrapped addCommands on any edit; cleared after a save lands.
+  // The single source of truth for "has unsaved annotation edits".
   const dirtyRef = useRef(false)
   // Set by discard(): the unmount teardown must not save when the user chose
   // "Don't save" at the close prompt.
   const discardRef = useRef(false)
+  // Re-entrancy guard so a note command's editing-state dispatch can't recurse
+  // back into commitNote while it is mid-flight.
+  const committingNoteRef = useRef(false)
+  // The editor whose note the popover textarea is currently bound to. We commit
+  // to THIS editor (not the live selection) so a note survives even if the click
+  // that ends editing also clears the pdf.js selection.
+  const lastNoteEditorRef = useRef<SelectedEditor | null>(null)
+  // Stable indirections so the load effect's cleanup / event handlers can call
+  // the latest commit callbacks without listing them as effect deps.
+  const commitNoteRef = useRef<() => void>(() => {})
+  const commitPendingRef = useRef<() => void>(() => {})
+  // Guards saveNow against a double-fire (button click racing ⌘/Ctrl+S).
+  const savingRef = useRef(false)
+  // The id of the annotation the hover tooltip currently shows (null = hidden).
+  // A ref so the high-frequency mouseover handler can short-circuit re-entry on
+  // the same annotation without a state read.
+  const hoverIdRef = useRef<string | null>(null)
 
   const [error, setError] = useState<string | null>(null)
   const [pageCount, setPageCount] = useState(0)
@@ -221,23 +214,32 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
   const [editMode, setEditMode] = useState<EditMode>('none')
   // Draft string while the user is typing in the % box; null = show live scale.
   const [pctDraft, setPctDraft] = useState<string | null>(null)
-  // True when an annotation editor is selected — gates Delete / Note buttons.
+  // True when an annotation editor is selected — gates the floating popover.
   const [hasSelection, setHasSelection] = useState(false)
   // Type of the currently-selected annotation (inferred from the params pdf.js
-  // broadcasts on selection). In Cursor mode this drives which contextual
-  // controls the toolbar shows; null when nothing is selected.
-  const [selectedType, setSelectedType] = useState<EditMode | null>(null)
-  // True when the selected highlight/ink already carries a note (fills the Note
-  // icon so the user can tell at a glance).
-  const [hasNote, setHasNote] = useState(false)
-  // Open note modal request: holds the resolver the CommentManager awaits.
-  const [noteDialog, setNoteDialog] = useState<{
-    initial: string
-    resolve: (value: string | undefined) => void
+  // broadcasts on selection). Drives the popover's controls; null when nothing
+  // is selected.
+  const [selectedType, setSelectedType] = useState<ParamType | null>(null)
+  // True when there are unsaved annotation edits (drives the Save button).
+  const [dirty, setDirty] = useState(false)
+  // True while a save (saveDocument + PUT) is in flight (button → "Saving…").
+  const [saving, setSaving] = useState(false)
+  // Brief positive confirmation after an explicit save ("Saved ✓").
+  const [savedFlash, setSavedFlash] = useState(false)
+  // The selected highlight/ink's note text, edited inline in the popover.
+  const [noteDraft, setNoteDraft] = useState('')
+  // The hovered annotation's note (read-only tooltip). ax/ay/atop are the
+  // annotation's left / bottom / top relative to the PDF wrapper; the layout
+  // effect measures the tooltip and clamps it inside the wrapper.
+  const [hoverNote, setHoverNote] = useState<{
+    text: string
+    ax: number
+    ay: number
+    atop: number
   } | null>(null)
 
-  // Per-tool params shown in the contextual bar. Persist across papers so the
-  // user's last colour/size sticks. Defaults match pdf.js's first-use feel.
+  // Per-tool params shown in the contextual controls. Persist across papers so
+  // the user's last colour/size sticks. Defaults match pdf.js's first-use feel.
   const [hlColor, setHlColor] = useState('#FFFF98')
   const [textColor, setTextColor] = useState('#1A1A1A')
   const [textSize, setTextSize] = useState(18)
@@ -248,27 +250,29 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
   // every zoom; a ref mirrors the state for that.
   const scaleRef = useRef(scale)
   scaleRef.current = scale
+  // Mirror of noteDraft so the commit callbacks (stable identity) read fresh text.
+  const noteDraftRef = useRef(noteDraft)
+  noteDraftRef.current = noteDraft
 
-  // Bridge the CommentManager (created once per document, inside the load
-  // effect) to React state. The manager calls openNoteRef.current(initial) and
-  // awaits the user's note; we resolve it from the NoteDialog handlers. A ref so
-  // the manager closes over a stable function while always hitting fresh state.
-  const openNoteRef = useRef<(initial: string) => Promise<string | undefined>>(
-    () => Promise.resolve(undefined),
-  )
-  openNoteRef.current = (initial: string) =>
-    new Promise<string | undefined>((resolve) =>
-      setNoteDialog({ initial, resolve }),
-    )
-
-  // Which annotation type the contextual bar reflects: the active creation tool,
-  // or (in Cursor mode) the selected annotation's type. null = no bar.
-  const barType: EditMode | null =
-    editMode !== 'none' ? editMode : hasSelection ? selectedType : null
+  // Which annotation type the colour/size actions target: the selected editor in
+  // selection mode (the popover is showing), else the active creation tool.
+  const actionType: ParamType | null = hasSelection
+    ? selectedType
+    : editMode !== 'none'
+      ? editMode
+      : null
+  // The creation tool's params show in the top toolbar only while a tool is
+  // active AND nothing is selected (a selection hands editing to the popover).
+  const toolType: ParamType | null =
+    !hasSelection && editMode !== 'none' ? editMode : null
+  const colorFor = (t: ParamType) =>
+    t === 'highlight' ? hlColor : t === 'freetext' ? textColor : inkColor
+  // Highlight + Ink can carry a note; FreeText cannot (it IS the note).
+  const canNoteFor = (t: ParamType) => t === 'highlight' || t === 'ink'
 
   // Push a clamped scale to the live viewer and mirror it into state (so the %
-  // box and button disabled-states track it). The single seam every zoom path
-  // funnels through.
+  // box and button disabled-states track it). The single seam every zoom funnels
+  // through.
   const applyScale = useCallback((next: number) => {
     const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next))
     const viewer = viewerRef.current
@@ -282,9 +286,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
   )
   const resetZoom = useCallback(() => applyScale(DEFAULT_SCALE), [applyScale])
 
-  // Commit a typed percentage from the toolbar input: parse, clamp, apply. The
-  // input holds an integer percent so the field can land on any value (e.g.
-  // 137%), unlike the 0.1-snapped button/wheel zoom.
+  // Commit a typed percentage from the toolbar input: parse, clamp, apply.
   const commitPct = useCallback(
     (raw: string) => {
       setPctDraft(null)
@@ -326,23 +328,24 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     [setParam, hlColor, textColor, textSize, inkColor, inkWidth],
   )
 
-  // Apply a colour to the contextual target: the selected editor in Cursor mode,
-  // else the active tool's default for the next annotation. Keyed off barType so
-  // recolouring a selected highlight in Cursor mode hits HIGHLIGHT_COLOR, etc.
+  // Apply a colour to the contextual target: the selected editor when the popover
+  // is showing, else the active tool's default for the next annotation. pdf.js
+  // routes the param to the selected editor automatically when one is selected;
+  // we mirror the value into the matching swatch state so the bar reflects it.
   const pickColor = useCallback(
     (hex: string) => {
-      if (barType === 'highlight') {
+      if (actionType === 'highlight') {
         setHlColor(hex)
         setParam(PARAM.HIGHLIGHT_COLOR, hex)
-      } else if (barType === 'freetext') {
+      } else if (actionType === 'freetext') {
         setTextColor(hex)
         setParam(PARAM.FREETEXT_COLOR, hex)
-      } else if (barType === 'ink') {
+      } else if (actionType === 'ink') {
         setInkColor(hex)
         setParam(PARAM.INK_COLOR, hex)
       }
     },
-    [barType, setParam],
+    [actionType, setParam],
   )
 
   const pickTextSize = useCallback(
@@ -364,33 +367,57 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     uiManagerRef.current?.delete()
   }, [])
 
-  // Open the note dialog for the selected highlight/ink. editComment() runs
-  // pdf.js's comment flow, which calls our CommentManager.showDialog →
-  // openNoteRef → NoteDialog; saving routes back through addCommands (marks the
-  // doc dirty so the close-flush embeds the note into the PDF).
-  const openNote = useCallback(() => {
-    uiManagerRef.current?.firstSelectedEditor?.editComment()
+  // Embed the popover textarea's draft into the note of the editor it is bound to
+  // (lastNoteEditorRef), through the UIManager command stack (gives undo/redo and,
+  // via the wrapped addCommands, marks the doc dirty). A no-op when the text is
+  // unchanged. Targets lastNoteEditorRef rather than the live selection so the
+  // note still commits if the click that ended editing also cleared the selection.
+  const commitNote = useCallback(() => {
+    if (committingNoteRef.current) return
+    const ui = uiManagerRef.current
+    const ed = lastNoteEditorRef.current
+    if (!ui || !ed || !ed.canAddComment) return
+    const prev = ed.comment?.text ?? null
+    const draft = noteDraftRef.current
+    const next = draft.trim() === '' ? null : draft
+    if (next === prev) return
+    committingNoteRef.current = true
+    try {
+      ui.addCommands({
+        cmd: () => {
+          ed.comment = next
+        },
+        undo: () => {
+          ed.comment = prev
+        },
+        mustExec: true,
+      })
+    } finally {
+      committingNoteRef.current = false
+    }
   }, [])
+  commitNoteRef.current = commitNote
 
-  // Finalize the in-progress editor before a save: commit the active FreeText
-  // and end any open Ink drawing session. Without this, an editor still being
-  // edited at save time is not yet in the annotationStorage that saveDocument()
-  // serializes, so its annotation silently fails to embed (Highlight commits on
-  // creation and was unaffected; FreeText/Ink were not). Mirrors pdf.js's own
-  // #beforeUnload handler.
+  // Finalize in-progress edits before a save: flush a pending note draft, commit
+  // the active FreeText, and end any open Ink drawing session. Without this, an
+  // editor still being edited at save time is not yet in the annotationStorage
+  // that saveDocument() serializes, so its annotation silently fails to embed.
   const commitPending = useCallback(() => {
     const ui = uiManagerRef.current
     if (!ui) return
     try {
+      commitNote()
       ui.commitOrRemove()
       ui.currentLayer?.endDrawingSession(false)
     } catch (err) {
       console.error('Failed to commit pending annotation:', err)
     }
-  }, [])
+  }, [commitNote])
+  commitPendingRef.current = commitPending
 
   // Embed pending edits into the PDF and overwrite paper.pdf (invariant #16).
-  // Stable callback (reads refs) so the registration effect does not churn.
+  // Stable callback (reads refs) so the registration effect does not churn. Used
+  // by the close-prompt (parent awaits) and wrapped by saveNow for the toolbar.
   const flush = useCallback(async () => {
     commitPending()
     const doc = docRef.current
@@ -399,10 +426,44 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     const bytes = await doc.saveDocument()
     await putPdfAnnotations(id, bytes)
     // Clear ONLY after the write lands. If saveDocument()/PUT throws, dirtyRef
-    // stays true so the unmount teardown retries the save instead of silently
-    // dropping the edit (callers log the error).
+    // stays true so a later save retries instead of silently dropping the edit.
     dirtyRef.current = false
+    setDirty(false)
   }, [commitPending])
+
+  // Explicit user save (Save button / ⌘-Ctrl+S): flush with visible state +
+  // a brief "Saved ✓" confirmation. savingRef guards a double-fire.
+  const saveNow = useCallback(async () => {
+    if (savingRef.current || !dirtyRef.current) return
+    savingRef.current = true
+    setSaving(true)
+    try {
+      await flush()
+      setSavedFlash(true)
+    } catch (err) {
+      console.error('Failed to save annotations:', err)
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
+  }, [flush])
+
+  // Hide the read-only hover-note tooltip. Defined up here (not with the other
+  // hover logic below) so the wheel-zoom effect can list it as a dep without a
+  // temporal-dead-zone error on a later const.
+  const clearHover = useCallback(() => {
+    if (hoverIdRef.current !== null) {
+      hoverIdRef.current = null
+      setHoverNote(null)
+    }
+  }, [])
+
+  // Clear the "Saved ✓" flash after a moment.
+  useEffect(() => {
+    if (!savedFlash) return
+    const t = setTimeout(() => setSavedFlash(false), 1600)
+    return () => clearTimeout(t)
+  }, [savedFlash])
 
   // Register this view's flush handle with the parent so closing the tab can
   // prompt Save / Don't save instead of writing silently.
@@ -414,6 +475,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
       discard: () => {
         discardRef.current = true
         dirtyRef.current = false
+        setDirty(false)
       },
     })
     return () => onRegister(tabKey, null)
@@ -431,19 +493,22 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     setEditMode('none')
     setHasSelection(false)
     setSelectedType(null)
-    setHasNote(false)
-    setNoteDialog(null)
+    setNoteDraft('')
+    setDirty(false)
+    setSaving(false)
+    setSavedFlash(false)
     dirtyRef.current = false
     discardRef.current = false
+    lastNoteEditorRef.current = null
 
     const eventBus = new EventBus()
     eventBusRef.current = eventBus
     const linkService = new PDFLinkService({ eventBus })
-    // Supplies just the note-capture dialog; pdf.js does the rest (comment
-    // buttons, embedding the note into the PDF on save). Its presence also
-    // switches FreeText off the legacy "render my text as a hover popup" path.
+    // Supplies pdf.js's comment contract; its presence switches FreeText off the
+    // legacy "render my text as a hover popup" path. We capture notes inline, so
+    // its dialog is never invoked (openDialog returns undefined).
     const commentManager = new CommentManager({
-      openDialog: (initial) => openNoteRef.current(initial),
+      openDialog: () => Promise.resolve(undefined),
     })
     const viewer = new PDFViewer({
       container,
@@ -466,6 +531,37 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     linkService.setViewer(viewer)
     viewerRef.current = viewer
 
+    // Capture the UIManager and, once per manager, wrap `addCommands` so EVERY
+    // annotation mutation (create / move / recolour / delete / note) flips dirty.
+    // Selection changes do NOT go through addCommands, so dirty stays put when the
+    // user merely clicks around — and stays clean after a save even though pdf.js
+    // keeps the (still-undoable) command on its stack. This is the only reliable
+    // "edited since last save" signal pdf.js exposes.
+    const captureUI = (ui?: EditorUIManager) => {
+      if (!ui) return
+      uiManagerRef.current = ui
+      if (!wrappedManagers.has(ui)) {
+        wrappedManagers.add(ui)
+        const orig = ui.addCommands.bind(ui)
+        ui.addCommands = (params: EditorCommand) => {
+          dirtyRef.current = true
+          setDirty(true)
+          return orig(params)
+        }
+      }
+    }
+
+    // Load the selected editor's note into the popover textarea when the selection
+    // moves to a different editor (or clears). Flushes the PREVIOUS editor's draft
+    // first so switching/deselecting never drops an in-progress note.
+    const syncNoteDraft = (ui?: EditorUIManager) => {
+      const ed = ui?.firstSelectedEditor ?? null
+      if (ed === lastNoteEditorRef.current) return
+      commitNoteRef.current()
+      lastNoteEditorRef.current = ed
+      setNoteDraft(ed?.comment?.text ?? '')
+    }
+
     // Apply the initial scale once pages are laid out (currentScale before
     // pagesinit is ignored by pdf_viewer).
     const onPagesInit = () => {
@@ -487,49 +583,41 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     }
     eventBus.on('annotationeditorlayerrendered', enterCursorMode)
 
-    // editingstateschanged fires with the full editor state every time (pdf.js
-    // merges into a persistent object). We capture the UIManager (= event
-    // source) for programmatic delete, mirror the undo stack into dirty (a real
-    // command grows it; mere text selection does not; undoing everything drains
-    // it → false, so "add then fully undo" ends clean and the flush is a no-op),
-    // and track whether an editor is selected to gate the Delete button.
+    // editingstateschanged fires with the full editor state every time. Capture
+    // the UIManager (= event source), track whether an editor is selected (gates
+    // the popover), and sync the inline note. Dirty is NOT derived here — it is
+    // owned by the wrapped addCommands (see captureUI).
     const onEditingStates = (e: {
       source?: EditorUIManager
-      details?: { hasSomethingToUndo?: boolean; hasSelectedEditor?: boolean }
+      details?: { hasSelectedEditor?: boolean }
     }) => {
-      const ui = e.source
-      if (ui) uiManagerRef.current = ui
-      dirtyRef.current = !!e.details?.hasSomethingToUndo
+      captureUI(e.source)
       const selected = !!e.details?.hasSelectedEditor
       setHasSelection(selected)
-      // Selection cleared → drop the inferred type so the Cursor-mode bar hides.
+      // Selection cleared → drop the inferred type so the popover hides.
       if (!selected) setSelectedType(null)
-      // Reflect whether the selected highlight/ink already carries a note.
-      setHasNote(selected && !!ui?.firstSelectedEditor?.hasComment)
+      syncNoteDraft(e.source)
     }
     eventBus.on('editingstateschanged', onEditingStates)
 
     // pdf.js broadcasts the active param values (e.g. when a different editor is
     // selected, or on mode entry) as [type, value] pairs; mirror them so the
-    // toolbar's highlighted swatch/size tracks the selected annotation.
+    // contextual controls' highlighted swatch/size track the selected annotation.
     const onParamsChanged = (e: {
       source?: EditorUIManager
       details?: [number, unknown][]
     }) => {
       const details = e.details ?? []
       // annotationeditorparamschanged fires on every setSelected (the params
-      // dispatch precedes the editing-state dispatch, and the editor is already
-      // in the selection set by then). Recompute the note indicator here too:
+      // dispatch precedes the editing-state dispatch). Sync the note here too:
       // this is the path that catches a DIRECT annotation→annotation reselect,
       // where hasSelectedEditor stays true→true so editingstateschanged does NOT
-      // re-fire — onEditingStates alone would leave hasNote stale on the new pick.
-      const ui = e.source
-      if (ui) uiManagerRef.current = ui
-      const sel = ui?.firstSelectedEditor
-      if (sel) setHasNote(!!sel.hasComment)
+      // re-fire.
+      captureUI(e.source)
+      syncNoteDraft(e.source)
       // Infer the selected annotation's type from which param kinds pdf.js
-      // broadcasts (each editor exposes a distinct set). Drives the Cursor-mode
-      // contextual bar; ignored in tool modes (barType uses editMode there).
+      // broadcasts (each editor exposes a distinct set). Drives the popover's
+      // controls; ignored in tool modes (toolType uses editMode there).
       const types = details.map(([t]) => t)
       if (types.includes(PARAM.HIGHLIGHT_COLOR)) {
         setSelectedType('highlight')
@@ -593,16 +681,11 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
       eventBus.off('editingstateschanged', onEditingStates)
       eventBus.off('annotationeditorparamschanged', onParamsChanged)
 
-      // Finalize any in-progress editor so the flush below embeds it. Events are
-      // already detached, so the resulting state dispatch won't setState on the
-      // unmounting view.
-      const ui = uiManagerRef.current
-      try {
-        ui?.commitOrRemove()
-        ui?.currentLayer?.endDrawingSession(false)
-      } catch (err) {
-        console.error('Failed to commit pending annotation:', err)
-      }
+      // Finalize any in-progress editor (and flush a pending inline note) so the
+      // flush below embeds it. Events are already detached, so the resulting
+      // state dispatch won't setState on the unmounting view; the wrapped
+      // addCommands still flips dirtyRef (a ref) so the save below picks it up.
+      commitPendingRef.current()
       eventBusRef.current = null
       uiManagerRef.current = null
 
@@ -623,9 +706,10 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
         else void loadingTask.destroy()
       }
 
-      // Silent flush on plain unmount (tab switch). When the user closed the tab
-      // the parent already ran flush()/discard() before removing it, so dirty is
-      // false here (or discard suppresses the save) and this is a no-op teardown.
+      // Best-effort flush on plain unmount (tab switch). When the user closed the
+      // tab the parent already ran flush()/discard() before removing it, so dirty
+      // is false here (or discard suppresses the save) and this is a no-op
+      // teardown. The deliberate save path is the explicit Save button / prompt.
       if (dirtyRef.current && !discardRef.current && doc) {
         dirtyRef.current = false
         doc
@@ -651,11 +735,12 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     const onWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return
       e.preventDefault()
+      clearHover() // zoom shifts annotations; drop a now-misplaced hover tooltip
       zoomBy(e.deltaY < 0 ? WHEEL_STEP : -WHEEL_STEP)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [zoomBy])
+  }, [zoomBy, clearHover])
 
   // Ctrl/Cmd + (+ / - / 0), including the numpad, drives PDF zoom rather than
   // the browser's. Only one PdfView is mounted at a time (TabArea renders the
@@ -678,15 +763,155 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     return () => window.removeEventListener('keydown', onKey)
   }, [zoomBy, resetZoom])
 
-  const colorBar = barType === 'highlight' ? HL_SWATCHES : PEN_SWATCHES
-  const activeColor =
-    barType === 'highlight'
-      ? hlColor
-      : barType === 'freetext'
-        ? textColor
-        : inkColor
-  // Highlight + Ink can carry a note; FreeText cannot (it IS the note).
-  const canNote = barType === 'highlight' || barType === 'ink'
+  // ⌘/Ctrl+S saves annotations into the PDF instead of the browser's "save page".
+  // Bound in the CAPTURE phase so it beats both the browser default AND pdf.js's
+  // editor-level ctrl+s (which only commits the active editor) — saveNow's
+  // commitPending already does that commit before writing, so nothing is lost.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault()
+        e.stopPropagation()
+        void saveNow()
+      }
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [saveNow])
+
+  // In Draw (Ink) mode, finalize each stroke as soon as it's released and select
+  // the resulting editor. pdf.js's Ink editor is multi-stroke
+  // (supportMultipleDrawings = true): a stroke does NOT finalize an editor — the
+  // drawing session stays open for more strokes until you switch tools or click
+  // empty space, so the mark the user just drew is neither an editor nor selected
+  // and the popover (gated on a selection) never appears. We end the session on
+  // pointerup — deferred a tick so pdf.js's own pointerup records the stroke
+  // geometry first — then setSelected the returned editor, which dispatches the
+  // selection + params events our handlers consume (popping the editor popover on
+  // the just-drawn mark). We stay in Ink mode, so consecutive marks are still one
+  // stroke each; moving/resizing still uses Cursor.
+  useEffect(() => {
+    if (editMode !== 'ink') return
+    const onPointerUp = () => {
+      setTimeout(() => {
+        const ui = uiManagerRef.current
+        const editor = ui?.currentLayer?.endDrawingSession(false)
+        if (editor) ui?.setSelected?.(editor)
+      }, 0)
+    }
+    window.addEventListener('pointerup', onPointerUp)
+    return () => window.removeEventListener('pointerup', onPointerUp)
+  }, [editMode])
+
+  // Anchor the floating popover next to the selected annotation (Adobe-style).
+  // A rAF loop syncs the popover to the `.selectedEditor` element's live rect, so
+  // it follows the object through scroll / zoom / drag with one mechanism. We
+  // mutate the popover's style directly (not React state) to avoid a re-render
+  // per frame; React still owns the popover's visibility + contents.
+  useEffect(() => {
+    if (!hasSelection) return
+    let raf = 0
+    const place = () => {
+      raf = requestAnimationFrame(place)
+      const wrap = pdfWrapRef.current
+      const pop = popoverRef.current
+      const sel = wrap?.querySelector<HTMLElement>('.selectedEditor')
+      if (!wrap || !pop) return
+      const wr = wrap.getBoundingClientRect()
+      const sr = sel?.getBoundingClientRect()
+      // Hide until the selected editor's element exists and is within view (it
+      // can be absent for a tick after selection, or scrolled out of the page).
+      if (!sr || sr.bottom < wr.top || sr.top > wr.bottom) {
+        pop.style.visibility = 'hidden'
+        return
+      }
+      const gap = 8
+      const pw = pop.offsetWidth
+      const ph = pop.offsetHeight
+      let left = sr.left - wr.left
+      let top = sr.bottom - wr.top + gap
+      // Flip above the object if the popover would overflow the bottom edge.
+      if (top + ph > wr.height - gap) top = sr.top - wr.top - ph - gap
+      left = Math.max(gap, Math.min(left, wr.width - pw - gap))
+      top = Math.max(gap, Math.min(top, wr.height - ph - gap))
+      pop.style.left = `${left}px`
+      pop.style.top = `${top}px`
+      pop.style.visibility = 'visible'
+    }
+    raf = requestAnimationFrame(place)
+    return () => cancelAnimationFrame(raf)
+  }, [hasSelection])
+
+  // --- Hover note tooltip ---------------------------------------------------
+  // Hovering a commented highlight / ink annotation surfaces its note in a
+  // read-only tooltip (no click needed), Adobe-style. We detect the hovered
+  // annotation by event delegation on the wrapper: every editor's div carries
+  // id `pdfjs_internal_editor_<n>` (= the UIManager's #allEditors key), so
+  // `getEditor(div.id).comment` reads the note. A SELECTED annotation
+  // (`.selectedEditor`) is skipped — the editable popover already shows its note.
+  const handlePdfHover = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement
+      const div = target.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]')
+      if (!div || div.classList.contains('selectedEditor')) {
+        clearHover()
+        return
+      }
+      if (div.id === hoverIdRef.current) return // already showing this one
+      const ed = uiManagerRef.current?.getEditor?.(div.id)
+      const text = ed?.comment?.text?.trim()
+      if (!text) {
+        // No note (or a FreeText, whose text is the annotation itself) → nothing
+        // to surface; drop any tooltip left over from a neighbouring annotation.
+        clearHover()
+        return
+      }
+      const wrap = pdfWrapRef.current
+      if (!wrap) return
+      const wr = wrap.getBoundingClientRect()
+      const dr = div.getBoundingClientRect()
+      hoverIdRef.current = div.id
+      setHoverNote({
+        text,
+        ax: dr.left - wr.left,
+        ay: dr.bottom - wr.top,
+        atop: dr.top - wr.top,
+      })
+    },
+    [clearHover],
+  )
+
+  // Measure the tooltip and clamp it inside the wrapper (below the annotation,
+  // flipped above if it would overflow the bottom). useLayoutEffect so the
+  // position is set before paint — no visible jump from a default corner.
+  useLayoutEffect(() => {
+    const tip = hoverNoteRef.current
+    const wrap = pdfWrapRef.current
+    if (!hoverNote || !tip || !wrap) return
+    const gap = 6
+    const wr = wrap.getBoundingClientRect()
+    const tw = tip.offsetWidth
+    const th = tip.offsetHeight
+    const left = Math.max(gap, Math.min(hoverNote.ax, wr.width - tw - gap))
+    let top = hoverNote.ay + gap
+    if (top + th > wr.height - gap) top = hoverNote.atop - th - gap
+    top = Math.max(gap, Math.min(top, wr.height - th - gap))
+    tip.style.left = `${left}px`
+    tip.style.top = `${top}px`
+    tip.style.visibility = 'visible'
+  }, [hoverNote])
+
+  // Scrolling the page stack moves annotations out from under the tooltip's
+  // (wrapper-relative) anchor, so drop it on scroll; the next hover re-shows it.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onScroll = () => clearHover()
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [clearHover])
+
+  const saveLabel = saving ? 'Saving…' : savedFlash && !dirty ? 'Saved ✓' : 'Save'
 
   return (
     <div className="flex h-full flex-col">
@@ -758,126 +983,66 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
           })}
         </div>
 
-        {/* Contextual param bar — colours + (size | thickness) + note + delete.
-            Shown while a creation tool is active, or (in Cursor mode) while an
-            annotation is selected, mirroring that annotation's type. */}
-        {barType && (
+        {/* Creation-tool params: pick the colour / size for the NEXT annotation
+            before you draw. Editing an EXISTING annotation happens in the
+            floating popover, not here. */}
+        {toolType && (
           <>
             <div className="mx-1 h-4 w-px bg-stone-300" />
-            <div className="flex items-center gap-1.5 animate-grow-in">
-              {colorBar.map((c) => {
-                const active =
-                  activeColor.toLowerCase() === c.hex.toLowerCase()
-                return (
-                  <button
-                    key={c.hex}
-                    onClick={() => pickColor(c.hex)}
-                    title={c.name}
-                    aria-label={c.name}
-                    aria-pressed={active}
-                    className={
-                      'h-5 w-5 rounded-full transition ' +
-                      (active
-                        ? 'ring-2 ring-accent-500 ring-offset-1'
-                        : 'ring-1 ring-stone-300 hover:scale-110')
-                    }
-                    style={{ backgroundColor: c.hex }}
-                  />
-                )
-              })}
-
-              {barType === 'freetext' && (
-                <div className="ml-1 flex items-center gap-0.5">
-                  {TEXT_SIZES.map((s) => (
-                    <button
-                      key={s.value}
-                      onClick={() => pickTextSize(s.value)}
-                      aria-pressed={textSize === s.value}
-                      title={`Font size ${s.value}`}
-                      className={
-                        'flex h-6 w-6 items-center justify-center rounded-md font-semibold leading-none transition-colors ' +
-                        (textSize === s.value
-                          ? 'bg-accent-50 text-accent-700 ring-1 ring-accent-500'
-                          : 'text-stone-600 hover:bg-stone-200')
-                      }
-                      style={{ fontSize: s.ui }}
-                    >
-                      A
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {barType === 'ink' && (
-                <div className="ml-1 flex items-center gap-0.5">
-                  {INK_WIDTHS.map((w) => (
-                    <button
-                      key={w.value}
-                      onClick={() => pickInkWidth(w.value)}
-                      aria-pressed={inkWidth === w.value}
-                      title={`Thickness ${w.value}`}
-                      className={
-                        'flex h-6 w-7 items-center justify-center rounded-md transition-colors ' +
-                        (inkWidth === w.value
-                          ? 'bg-accent-50 ring-1 ring-accent-500'
-                          : 'hover:bg-stone-200')
-                      }
-                    >
-                      <span
-                        className="rounded-full bg-stone-600"
-                        style={{ width: '14px', height: `${w.dot}px` }}
-                      />
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <div className="mx-0.5 h-4 w-px bg-stone-300" />
-              {canNote && (
-                <button
-                  onClick={openNote}
-                  disabled={!hasSelection}
-                  title={
-                    hasNote
-                      ? 'Edit note on selected annotation'
-                      : 'Add a note to selected annotation'
-                  }
-                  aria-label="Note on selected annotation"
-                  aria-pressed={hasNote}
-                  className={
-                    'flex h-6 w-6 items-center justify-center rounded-md transition-colors disabled:text-stone-300 disabled:hover:bg-transparent ' +
-                    (hasNote
-                      ? 'text-accent-600 hover:bg-accent-50'
-                      : 'text-stone-600 hover:bg-stone-200')
-                  }
-                >
-                  <NoteIcon filled={hasNote} />
-                </button>
-              )}
-              <button
-                onClick={deleteSelected}
-                disabled={!hasSelection}
-                title="Delete selected annotation"
-                aria-label="Delete selected annotation"
-                className="flex h-6 w-6 items-center justify-center rounded-md text-stone-600 transition-colors hover:bg-red-50 hover:text-red-600 disabled:text-stone-300 disabled:hover:bg-transparent disabled:hover:text-stone-300"
-              >
-                <TrashIcon />
-              </button>
+            <div className="animate-grow-in">
+              <ParamSwatches
+                type={toolType}
+                color={colorFor(toolType)}
+                onColor={pickColor}
+                textSize={textSize}
+                onTextSize={pickTextSize}
+                inkWidth={inkWidth}
+                onInkWidth={pickInkWidth}
+              />
             </div>
           </>
         )}
 
-        {pageCount > 0 && (
-          <span className="ml-auto text-xs text-stone-500">
-            {pageCount} page{pageCount === 1 ? '' : 's'}
-          </span>
-        )}
+        <div className="ml-auto flex items-center gap-2.5">
+          <button
+            onClick={() => void saveNow()}
+            disabled={!dirty || saving}
+            title={
+              dirty
+                ? 'Save annotations into the PDF (⌘/Ctrl+S)'
+                : 'No unsaved changes'
+            }
+            className={
+              'rounded-md px-2.5 py-0.5 text-xs font-medium transition-colors ' +
+              (dirty && !saving
+                ? 'bg-accent-500 text-white shadow-sm hover:bg-accent-600'
+                : savedFlash
+                  ? 'bg-emerald-50 text-emerald-600'
+                  : 'bg-stone-200 text-stone-400')
+            }
+          >
+            {saveLabel}
+          </button>
+          {pageCount > 0 && (
+            <span className="text-xs text-stone-500">
+              {pageCount} page{pageCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* pdf_viewer requires an absolutely-positioned, overflow:auto container
           with an inner `.pdfViewer` div it fills with pages. `absolute inset-0`
-          gives it the positioned box; the relative wrapper bounds it. */}
-      <div className="relative min-h-0 flex-1 bg-stone-200">
+          gives it the positioned box; the relative wrapper bounds it. `isolate`
+          forces a stacking context here so pdf.js's huge internal z-indexes
+          (e.g. `.selectedEditor` at z-index:100000) — and our popover above them —
+          stay contained and can't paint over the TopBar's search dropdown. */}
+      <div
+        ref={pdfWrapRef}
+        onMouseOver={handlePdfHover}
+        onMouseLeave={clearHover}
+        className="relative isolate min-h-0 flex-1 bg-stone-200"
+      >
         {error && (
           <div className="absolute inset-x-0 top-0 z-10 p-6 text-sm text-red-700">
             Failed to load PDF: {error}
@@ -891,17 +1056,72 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
         <div ref={containerRef} className="absolute inset-0 overflow-auto p-6">
           <div ref={viewerElRef} className="pdfViewer" />
         </div>
-      </div>
 
-      {noteDialog && (
-        <NoteDialog
-          initialText={noteDialog.initial}
-          onResolve={(value) => {
-            noteDialog.resolve(value)
-            setNoteDialog(null)
-          }}
-        />
-      )}
+        {/* Floating editor popover, anchored next to the selected annotation by
+            the rAF loop above. zIndex sits above pdf.js's .selectedEditor
+            (100000) but stays trapped in this `isolate` wrapper. Pointer events
+            are kept from reaching pdf.js so clicking the popover never deselects
+            the annotation it edits. */}
+        {hasSelection && selectedType && (
+          <div
+            ref={popoverRef}
+            style={{ visibility: 'hidden', zIndex: 100001 }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            className="absolute flex flex-col gap-2 rounded-xl border border-stone-200 bg-white/95 p-2.5 shadow-xl shadow-stone-900/10 backdrop-blur-sm"
+          >
+            <ParamSwatches
+              type={selectedType}
+              color={colorFor(selectedType)}
+              onColor={pickColor}
+              textSize={textSize}
+              onTextSize={pickTextSize}
+              inkWidth={inkWidth}
+              onInkWidth={pickInkWidth}
+            />
+            {canNoteFor(selectedType) && (
+              <textarea
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onBlur={commitNote}
+                // Keep keystrokes inside the note. pdf.js's window-level
+                // Backspace/Delete shortcut deletes the SELECTED annotation; its
+                // text-field guard only exempts <input>, so a Delete meant to fix
+                // a typo here would wipe the highlight/ink. Stopping propagation
+                // (its listener is on `window`, bubble phase) prevents that.
+                onKeyDown={(e) => e.stopPropagation()}
+                rows={2}
+                placeholder="Add a note…"
+                className="w-52 resize-none rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800 placeholder:text-stone-400 focus:border-accent-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent-400"
+              />
+            )}
+            <button
+              onClick={deleteSelected}
+              title="Delete annotation"
+              aria-label="Delete annotation"
+              className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-1 text-xs text-red-600 transition-colors hover:bg-red-50"
+            >
+              <TrashIcon />
+              Delete
+            </button>
+          </div>
+        )}
+
+        {/* Read-only hover-note tooltip, positioned by the layout effect above.
+            pointer-events:none so the cursor "passes through" to the annotation
+            underneath — otherwise hovering the tooltip itself would fire a
+            mouseover with no editor target and flicker it closed. zIndex sits
+            with the popover, trapped in this `isolate` wrapper. */}
+        {hoverNote && (
+          <div
+            ref={hoverNoteRef}
+            style={{ visibility: 'hidden', zIndex: 100001 }}
+            className="pointer-events-none absolute max-w-xs whitespace-pre-wrap break-words rounded-lg bg-stone-800/95 px-2.5 py-1.5 text-xs leading-snug text-stone-50 shadow-lg shadow-stone-900/20 backdrop-blur-sm"
+          >
+            {hoverNote.text}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

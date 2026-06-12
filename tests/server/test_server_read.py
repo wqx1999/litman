@@ -98,12 +98,17 @@ def test_get_pdf_supports_range(
     full = client.get(f"/api/paper/{paper_id}/pdf")
     assert full.status_code == 200
     assert full.headers["accept-ranges"] == "bytes"
+    # paper.pdf is mutable (annotation write-back overwrites it at a stable URL),
+    # so it must never be cached — otherwise reopening after a save shows the old
+    # file. Both the full and range responses must carry no-store.
+    assert full.headers["cache-control"] == "no-store"
 
     partial = client.get(
         f"/api/paper/{paper_id}/pdf", headers={"Range": "bytes=0-99"}
     )
     assert partial.status_code == 206
     assert partial.headers["accept-ranges"] == "bytes"
+    assert partial.headers["cache-control"] == "no-store"
     assert len(partial.content) == 100
 
 

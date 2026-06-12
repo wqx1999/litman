@@ -11,8 +11,9 @@
  * fragile across pdf.js internals.
  *
  * Instead we hide the native toolbar entirely and drive the editor from our own
- * React toolbar (colour swatches / size / thickness / delete) via the
- * documented `switchannotationeditorparams` event + the UIManager. We keep
+ * React controls (the top toolbar for the active tool's params, plus a floating
+ * popover anchored to the selected annotation for colour / size / note / delete)
+ * via the documented `switchannotationeditorparams` event + the UIManager. We keep
  * pdf.js's selection outline + resize handles (`.selectedEditor`) — only the
  * floating button bar is removed. `!important` beats pdf.js's high-specificity
  * `:is(.annotationEditorLayer …) .editToolbar` rule without replicating it.
@@ -30,10 +31,12 @@
  * button overlaid on each commented annotation, whose icon is again an
  * unshipped `images/*.svg` mask; and (2) `.commentPopup` — the floating note
  * box, whose DOM the full viewer's CommentManager builds and which our minimal
- * manager does not. We render neither; the note is added/edited from our own
- * toolbar Note button + NoteDialog modal, and the note text round-trips through
- * the PDF via saveDocument(). Hiding both keeps the surface clean and avoids
- * broken icons. */
+ * manager does not. We render neither; the note is added/edited inline in our
+ * floating popover (a textarea), and the note text round-trips through the PDF
+ * via saveDocument(). For READING a note we render our own lightweight hover
+ * tooltip (see PdfView's handlePdfHover) instead of pdf.js's `.commentPopup`,
+ * whose DOM our minimal CommentManager never builds. Hiding both keeps the
+ * surface clean and avoids broken icons. */
 .annotationCommentButton,
 .commentPopup {
   display: none !important;

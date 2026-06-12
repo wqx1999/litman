@@ -9,8 +9,9 @@ interface Props {
   candidates: Candidate[]
   /** A server notes/discussion fetch is in flight (drives the spinner row). */
   loading: boolean
-  /** Selecting a row jumps to that paper (mirrors clicking a list row). */
-  onSelect: (id: string) => void
+  /** Selecting a row opens the matched scope: the PDF for an id/title hit, or the
+   * notes/discussion doc (scrolled to the match) for a markdown hit. */
+  onSelect: (candidate: Candidate) => void
 }
 
 const SCOPE_LABEL: Record<SearchScope, string> = {
@@ -77,8 +78,8 @@ export default function SearchBox({
     setActive(0)
   }, [value, candidates.length])
 
-  const choose = (id: string) => {
-    onSelect(id)
+  const choose = (candidate: Candidate) => {
+    onSelect(candidate)
     setOpen(false)
   }
 
@@ -97,7 +98,7 @@ export default function SearchBox({
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const pick = shown[active]
-      if (pick) choose(pick.id)
+      if (pick) choose(pick)
     }
   }
 
@@ -149,7 +150,7 @@ export default function SearchBox({
                 // Keep input focus so the box's onBlur doesn't fire first.
                 onMouseDown={(e) => e.preventDefault()}
                 onMouseEnter={() => setActive(i)}
-                onClick={() => choose(c.id)}
+                onClick={() => choose(c)}
                 className={`flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors ${
                   isActive ? 'bg-accent-50' : 'hover:bg-stone-100'
                 }`}

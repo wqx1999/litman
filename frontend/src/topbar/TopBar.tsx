@@ -12,8 +12,9 @@ interface Props {
   searchCandidates: Candidate[]
   /** A server notes/discussion search is in flight. */
   searchLoading: boolean
-  /** Jump to a paper picked from the dropdown. */
-  onSelectResult: (id: string) => void
+  /** Open the scope picked from the dropdown (PDF for id/title, the notes /
+   * discussion doc scrolled to the match for a markdown hit). */
+  onSelectResult: (candidate: Candidate) => void
   focusMode: boolean
   onToggleFocus: () => void
 }
@@ -58,7 +59,7 @@ export default function TopBar({
   const [dark, toggleDark] = useDarkMode()
 
   return (
-    <header className="flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md">
+    <header className="relative z-30 flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md">
       <img
         src={logoUrl}
         alt="litman"

@@ -8,7 +8,7 @@ import {
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import SaveDialog from './tabs/SaveDialog'
-import { mergeCandidates } from './search'
+import { mergeCandidates, type Candidate } from './search'
 import type {
   IndexPaper,
   PaperMeta,
@@ -74,6 +74,9 @@ export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // A notes/discussion tab opened from a search hit, plus the query to scroll to
+  // and highlight inside it. Keyed by tab so only that doc highlights.
+  const [mdJump, setMdJump] = useState<{ key: string; query: string } | null>(null)
 
   // Flush handles for mounted PDF tabs, used to prompt Save / Don't-save when a
   // tab with unsaved annotations is closed. Only the active PDF tab is mounted
@@ -244,6 +247,21 @@ export default function App() {
     [openTab],
   )
 
+  // Route a picked search result by where it matched: an id/title hit opens the
+  // paper PDF; a notes/discussion hit opens that doc and scrolls to / highlights
+  // the matched query (captured now, since `search` may be edited afterwards).
+  const onSearchSelect = useCallback(
+    (c: Candidate) => {
+      if (c.scope === 'notes' || c.scope === 'discussion') {
+        openDoc(c.id, c.scope)
+        setMdJump({ key: `${c.scope}:${c.id}`, query: search })
+      } else {
+        openPdf(c.id)
+      }
+    },
+    [openDoc, openPdf, search],
+  )
+
   // Remove a tab from the bar and re-point the active tab. Does NOT save — the
   // caller decides (closeTab prompts; the dialog handlers save/discard first).
   const removeTab = useCallback((key: string) => {
@@ -348,7 +366,7 @@ export default function App() {
         onSearch={setSearch}
         searchCandidates={searchCandidates}
         searchLoading={searchLoading}
-        onSelectResult={selectPaper}
+        onSelectResult={onSearchSelect}
         focusMode={focusMode}
         onToggleFocus={toggleFocus}
       />
@@ -383,6 +401,7 @@ export default function App() {
           onClose={closeTab}
           onOpenPaper={openPdf}
           onRegisterPdf={registerPdf}
+          mdJump={mdJump}
         />
         <Cockpit
           paper={cockpitPaper}
