@@ -212,6 +212,30 @@ def fixed_enum_allows_none(field: str) -> bool:
     its unevaluated state is the explicit value ``inbox``."""
     return field in _OPTIONAL_FIXED_ENUMS
 
+
+# Display order for ``status``: a curation lifecycle (inbox → skim → deep-read,
+# then dropped), not alphabetical. The other two have no natural order, so they
+# are sorted. This is the order the webUI dropdowns render (one source, not a
+# second list hard-coded in the frontend).
+_STATUS_ORDER: tuple[str, ...] = ("inbox", "skim", "deep-read", "dropped")
+
+
+def all_fixed_enums() -> dict[str, list[str]]:
+    """Every fixed-enum field's allowed values, in display order.
+
+    Public accessor over the private ``_FIXED_ENUM_VALUES`` table so the webUI
+    can populate its status / priority / type dropdowns from the SAME source
+    ``check_schema`` / ``lit modify --set`` validate against (no second list in
+    the frontend). ``status`` follows the curation-lifecycle order; ``priority``
+    and ``type`` are sorted. ``None``-as-legal is reported separately via
+    :func:`fixed_enum_allows_none`.
+    """
+    return {
+        "status": list(_STATUS_ORDER),
+        "priority": sorted(_FIXED_ENUM_VALUES["priority"]),
+        "type": sorted(_FIXED_ENUM_VALUES["type"]),
+    }
+
 # Forward + reverse relation fields (ADR-012). Sourced from the shared
 # RELATION_PAIRS map so dangling-ref scans cover reverse fields too.
 _REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS

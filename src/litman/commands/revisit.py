@@ -23,6 +23,36 @@ from litman.core.notes import heal_wikilink_reminder
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 
 
+def apply_revisit(vault: Path, paper_id: str, date_value: str) -> None:
+    """Stamp ``last-revisited`` on one paper.
+
+    The single backend for both ``lit revisit`` and the webUI's ``POST
+    /api/paper/{id}/revisit`` (invariant #16: one semantics path). ``paper_id``
+    must already be resolved; ``date_value`` is an already-validated
+    ``YYYY-MM-DD`` string.
+
+    A revisit presupposes a first read: ``_apply_modify``'s date-ordering guard
+    raises ``ModifyError`` when the paper has no ``read-date`` (or the resulting
+    pair is otherwise inconsistent). On success it stamps the date, bumps
+    ``updated-at``, rebuilds INDEX/views atomically; the reading-session close
+    then heals the wikilink reminder.
+
+    Raises:
+        PaperNotFoundError: ``papers/<id>/metadata.yaml`` does not exist.
+        ModifyError: no ``read-date`` (revisit before first read) or any other
+            date-ordering breach (invariant #11).
+    """
+    _apply_modify(
+        vault,
+        paper_id,
+        set_ops=(f"last-revisited={date_value}",),
+        skip_set_noop=True,
+    )
+    # Reading-session close: repair the wikilink reminder an agent overwrite
+    # may have stripped from notes.md, so the next session sees it again.
+    heal_wikilink_reminder(vault, paper_id)
+
+
 @click.command("revisit")
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
@@ -83,12 +113,4 @@ def revisit_cmd(
     date_value = validate_iso_date(date_str) if date_str else today_iso()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
-    _apply_modify(
-        vault,
-        paper_id,
-        set_ops=(f"last-revisited={date_value}",),
-        skip_set_noop=True,
-    )
-    # Reading-session close: repair the wikilink reminder an agent overwrite
-    # may have stripped from notes.md, so the next session sees it again.
-    heal_wikilink_reminder(vault, paper_id)
+    apply_revisit(vault, paper_id, date_value)

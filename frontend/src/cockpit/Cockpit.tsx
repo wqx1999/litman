@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PaperMeta } from '../types'
-import { fetchCite } from '../api'
+import type { FixedEnums, PaperMeta, Taxonomy } from '../types'
+import { fetchCite, postRead, postRevisit, putMetadata } from '../api'
 
 interface Props {
   paper: PaperMeta | null
@@ -10,8 +10,19 @@ interface Props {
   onOpenPaper: (id: string) => void
   /** Active vault's filesystem path (server-side), for the copy-path action. */
   vaultPath: string | null
+  /** TAXONOMY controlled vocabulary — the add-chip affordance offers existing
+   * values only (3b; inline-create is 3c). */
+  taxonomy: Taxonomy | null
+  /** status/priority/type whitelists for the dropdowns. */
+  fixedEnums: FixedEnums | null
+  /** Called after a successful structured write so the parent re-fetches the
+   * cockpit paper AND the left list (status/read-date move smart-list members). */
+  onChanged: () => void
+  /** Toast a message (used to surface the backend's raw error verbatim). */
+  notify: (msg: string) => void
 }
 
+/** A read-only chip group (relations / code-clones stay read-only in 3b). */
 function Chips({ values }: { values: string[] | undefined }) {
   if (!values || values.length === 0) return <span className="text-stone-400">—</span>
   return (
@@ -35,6 +46,116 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </div>
       <div className="text-sm text-stone-800">{children}</div>
+    </div>
+  )
+}
+
+const SELECT_CLASS =
+  'w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 ' +
+  'shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 ' +
+  'focus:ring-accent-400 disabled:opacity-50'
+
+/** A single fixed-enum dropdown (status / priority / type). Options come from
+ * `fixedEnums`; the unset option is offered only when `allowsNone`. */
+function EnumSelect({
+  field,
+  value,
+  options,
+  allowsNone,
+  disabled,
+  onPick,
+}: {
+  field: string
+  value: string | null | undefined
+  options: string[]
+  allowsNone: boolean
+  disabled: boolean
+  onPick: (next: string | null) => void
+}) {
+  // Empty string is the sentinel for "— (unset)"; a real value never is.
+  const current = value ?? ''
+  return (
+    <select
+      aria-label={field}
+      className={SELECT_CLASS}
+      value={current}
+      disabled={disabled}
+      onChange={(e) => onPick(e.target.value === '' ? null : e.target.value)}
+    >
+      {allowsNone && <option value="">— (unset)</option>}
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** Editable tag chips for a USER_DICTS field (topics/methods/data). Each value
+ * carries an × (remove); a select offers TAXONOMY values not yet attached
+ * (existing values only — inline-create is 3c). */
+function TagEditor({
+  field,
+  values,
+  vocabulary,
+  busy,
+  onAdd,
+  onRemove,
+}: {
+  field: string
+  values: string[] | undefined
+  vocabulary: string[]
+  busy: boolean
+  onAdd: (value: string) => void
+  onRemove: (value: string) => void
+}) {
+  const attached = values ?? []
+  // Offer only registered values not already attached.
+  const available = vocabulary.filter((v) => !attached.includes(v))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1">
+        {attached.length === 0 && <span className="text-stone-400">—</span>}
+        {attached.map((v) => (
+          <span
+            key={v}
+            className="inline-flex items-center gap-1 rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
+          >
+            {v}
+            <button
+              type="button"
+              aria-label={`Remove ${field} ${v}`}
+              title={`Remove ${v}`}
+              disabled={busy}
+              onClick={() => onRemove(v)}
+              className="text-stone-400 transition-colors hover:text-rose-600 disabled:opacity-50"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      {available.length > 0 && (
+        <select
+          aria-label={`Add ${field}`}
+          className={SELECT_CLASS}
+          value=""
+          disabled={busy}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v) onAdd(v)
+            e.target.value = '' // reset to the placeholder so the same value can re-add later
+          }}
+        >
+          <option value="">+ add {field}…</option>
+          {available.map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   )
 }
@@ -75,8 +196,15 @@ function Relations({
   )
 }
 
-/** Read-only metadata cockpit (Phase 1 — no write controls, those are Phase 3).
- * Collapses to a narrow strip via an animated width, mirroring BrowsePanel. */
+/** Curation cockpit with structured write controls (Phase 3b).
+ *
+ * Dropdowns (status/priority/type), editable tag chips (topics/methods/data),
+ * and mutually-exclusive read/revisit buttons all dispatch to the invariant #16
+ * second-class write endpoints (the server runs the `lit` command backend). On
+ * success the parent re-fetches via `onChanged`; on error the backend's raw
+ * message is toasted via `notify`. Relations / code-clones stay read-only (3c).
+ * Collapses to a narrow strip via an animated width, mirroring BrowsePanel.
+ */
 export default function Cockpit({
   paper,
   loading,
@@ -84,15 +212,23 @@ export default function Cockpit({
   onToggle,
   onOpenPaper,
   vaultPath,
+  taxonomy,
+  fixedEnums,
+  onChanged,
+  notify,
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
   // Persisted until the selected paper changes so the user actually reads them.
   const [citeWarn, setCiteWarn] = useState<string[] | null>(null)
+  // A structured write is in flight — disables the write controls so a second
+  // click can't race the first (the backend serialises, but a double-fire would
+  // toast a confusing intermediate state).
+  const [writing, setWriting] = useState(false)
 
   // The currently-shown paper id, refreshed synchronously each render and read
-  // inside the async Cite handler to drop a response that lands after the user
-  // has already moved to a different paper.
+  // inside the async handlers to drop a response that lands after the user has
+  // already moved to a different paper.
   const shownId = useRef<string | undefined>(paper?.id)
   shownId.current = paper?.id
 
@@ -136,6 +272,54 @@ export default function Cockpit({
       /* no clipboard / fetch failure — silently ignore */
     }
   }
+
+  // Run a structured write, then refresh on success or toast the backend's raw
+  // message on failure. `writing` gates the controls for the duration. The
+  // backend serialises writes; the parent's onChanged re-fetches the cockpit.
+  async function runWrite(fn: () => Promise<unknown>) {
+    setWriting(true)
+    try {
+      await fn()
+      onChanged()
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWriting(false)
+    }
+  }
+
+  function setEnum(field: 'status' | 'priority' | 'type', next: string | null) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => putMetadata(id, { set: { [field]: next } }))
+  }
+
+  function addTag(field: 'topics' | 'methods' | 'data', value: string) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => putMetadata(id, { addTag: { [field]: [value] } }))
+  }
+
+  function removeTag(field: 'topics' | 'methods' | 'data', value: string) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => putMetadata(id, { rmTag: { [field]: [value] } }))
+  }
+
+  function markRead() {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => postRead(id))
+  }
+
+  function logRevisit() {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => postRevisit(id))
+  }
+
+  const readDate = paper?.['read-date'] ?? null
+  const lastRevisited = paper?.['last-revisited'] ?? null
 
   return (
     <div
@@ -258,24 +442,115 @@ export default function Cockpit({
                 </a>
               </Field>
             )}
-            <Field label="Status / Priority / Type">
-              {[paper.status, paper.priority, paper.type]
-                .map((v) => v || '—')
-                .join(' · ')}
+
+            <Field label="Status">
+              {fixedEnums ? (
+                <EnumSelect
+                  field="status"
+                  value={paper.status}
+                  options={fixedEnums.status.values}
+                  allowsNone={fixedEnums.status.allowsNone}
+                  disabled={writing}
+                  onPick={(next) => setEnum('status', next)}
+                />
+              ) : (
+                <span className="text-stone-400">{paper.status || '—'}</span>
+              )}
             </Field>
-            <Field label="Read-date / Last-revisited">
-              {[paper['read-date'], paper['last-revisited']]
-                .map((v) => v || '—')
-                .join(' · ')}
+            <Field label="Priority">
+              {fixedEnums ? (
+                <EnumSelect
+                  field="priority"
+                  value={paper.priority}
+                  options={fixedEnums.priority.values}
+                  allowsNone={fixedEnums.priority.allowsNone}
+                  disabled={writing}
+                  onPick={(next) => setEnum('priority', next)}
+                />
+              ) : (
+                <span className="text-stone-400">{paper.priority || '—'}</span>
+              )}
             </Field>
+            <Field label="Type">
+              {fixedEnums ? (
+                <EnumSelect
+                  field="type"
+                  value={paper.type}
+                  options={fixedEnums.type.values}
+                  allowsNone={fixedEnums.type.allowsNone}
+                  disabled={writing}
+                  onPick={(next) => setEnum('type', next)}
+                />
+              ) : (
+                <span className="text-stone-400">{paper.type || '—'}</span>
+              )}
+            </Field>
+
+            <Field label="Read / Revisit">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={writing || readDate != null}
+                  onClick={markRead}
+                  title={
+                    readDate != null
+                      ? `First read ${readDate}`
+                      : 'Stamp the first-read date (today)'
+                  }
+                  className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                >
+                  {readDate != null ? `Read · ${readDate}` : 'Mark read'}
+                </button>
+                <button
+                  type="button"
+                  disabled={writing || readDate == null}
+                  onClick={logRevisit}
+                  title={
+                    readDate == null
+                      ? '先标记已读 (mark as read first)'
+                      : 'Stamp a return visit (today)'
+                  }
+                  className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                >
+                  Log revisit
+                </button>
+              </div>
+              {lastRevisited != null && (
+                <div className="mt-1 text-[11px] text-stone-500">
+                  last revisited {lastRevisited}
+                </div>
+              )}
+            </Field>
+
             <Field label="Topics">
-              <Chips values={paper.topics} />
+              <TagEditor
+                field="topics"
+                values={paper.topics}
+                vocabulary={taxonomy?.topics ?? []}
+                busy={writing}
+                onAdd={(v) => addTag('topics', v)}
+                onRemove={(v) => removeTag('topics', v)}
+              />
             </Field>
             <Field label="Methods">
-              <Chips values={paper.methods} />
+              <TagEditor
+                field="methods"
+                values={paper.methods}
+                vocabulary={taxonomy?.methods ?? []}
+                busy={writing}
+                onAdd={(v) => addTag('methods', v)}
+                onRemove={(v) => removeTag('methods', v)}
+              />
             </Field>
             <Field label="Data">
-              <Chips values={paper.data} />
+              <TagEditor
+                field="data"
+                values={paper.data}
+                vocabulary={taxonomy?.data ?? []}
+                busy={writing}
+                onAdd={(v) => addTag('data', v)}
+                onRemove={(v) => removeTag('data', v)}
+              />
             </Field>
             <Field label="Projects">
               <Chips values={paper.projects} />

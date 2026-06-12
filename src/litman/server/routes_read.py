@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+from litman.core.checks import all_fixed_enums, fixed_enum_allows_none
 from litman.core.cite import format_acs
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
@@ -291,6 +292,24 @@ def get_taxonomy(request: Request) -> dict[str, list[str]]:
     vault = _vault(request)
     text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
     return parse_taxonomy(text)
+
+
+@router.get("/fixed-enums")
+def get_fixed_enums() -> dict[str, dict[str, Any]]:
+    """Whitelists for the status / priority / type cockpit dropdowns.
+
+    Sourced from ``core.checks`` (the same table ``check_schema`` / ``lit modify
+    --set`` validate against), never hard-coded in the frontend. Each field
+    carries its allowed ``values`` in display order plus ``allowsNone`` — whether
+    the dropdown offers an "— (unset)" option (priority/type, M29; status's
+    unevaluated state is the explicit value ``inbox``, so it has none). Vault-
+    independent, so it takes no request state.
+    """
+    enums = all_fixed_enums()
+    return {
+        field: {"values": values, "allowsNone": fixed_enum_allows_none(field)}
+        for field, values in enums.items()
+    }
 
 
 @router.get("/projects")

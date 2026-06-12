@@ -66,6 +66,22 @@ export interface Taxonomy {
   priority: string[]
 }
 
+/** One fixed-enum field's dropdown options. `allowsNone` is true for the
+ * optional enums (priority/type), which then offer an "— (unset)" choice;
+ * status is required so it has none. */
+export interface FixedEnumField {
+  values: string[]
+  allowsNone: boolean
+}
+
+/** The /api/fixed-enums payload: status/priority/type whitelists for the
+ * cockpit dropdowns, sourced from core/checks (not hard-coded in the frontend). */
+export interface FixedEnums {
+  status: FixedEnumField
+  priority: FixedEnumField
+  type: FixedEnumField
+}
+
 export interface ProjectEntry {
   name: string
   path: string

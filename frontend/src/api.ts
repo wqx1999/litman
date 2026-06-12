@@ -2,6 +2,7 @@
 // they resolve against whatever host:port `lit gui` bound to.
 
 import type {
+  FixedEnums,
   IndexPaper,
   PaperMeta,
   ProjectEntry,
@@ -15,6 +16,38 @@ async function getJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url)
   if (!resp.ok) {
     throw new Error(`${url} → ${resp.status} ${resp.statusText}`)
+  }
+  return (await resp.json()) as T
+}
+
+/** A mutating JSON request that surfaces the server's `detail` on failure.
+ *
+ * Unlike `getJSON` (which throws a generic status-line Error), this parses the
+ * FastAPI error body's `detail` and throws `new Error(detail)` so the cockpit
+ * can toast the backend's real message verbatim — e.g. a ModifyError like
+ * "Refusing to write: a revisit presupposes a first read" or
+ * "Invalid status 'bogus'. Allowed values: …". Falls back to the status text
+ * when the body has no parseable `detail`. Returns the parsed JSON response.
+ */
+async function mutateJSON<T>(
+  url: string,
+  method: 'PUT' | 'POST',
+  body?: unknown,
+): Promise<T> {
+  const resp = await fetch(url, {
+    method,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+  })
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    throw new Error(detail)
   }
   return (await resp.json()) as T
 }
@@ -129,6 +162,55 @@ export function fetchDiscussion(id: string): Promise<string | null> {
 
 export function fetchTaxonomy(): Promise<Taxonomy> {
   return getJSON<Taxonomy>('/api/taxonomy')
+}
+
+/** The status/priority/type whitelists (+ allowsNone) backing the cockpit
+ * dropdowns. Sourced from the server, never hard-coded here. */
+export function fetchFixedEnums(): Promise<FixedEnums> {
+  return getJSON<FixedEnums>('/api/fixed-enums')
+}
+
+/** The body of a structured metadata write (one transaction). All optional;
+ * `set` carries scalar fields (status/priority/type), the tag maps carry
+ * topics/methods/data add/remove. */
+export interface MetadataWrite {
+  set?: Record<string, string | null>
+  addTag?: Record<string, string[]>
+  rmTag?: Record<string, string[]>
+}
+
+/** Apply a structured metadata change through the `lit modify` backend
+ * (invariant #16 second-class write: the server runs `_apply_modify`, which
+ * validates + writes + recomputes INDEX/views atomically). Throws the backend's
+ * raw message on rejection so the cockpit can toast it. */
+export function putMetadata(
+  id: string,
+  body: MetadataWrite,
+): Promise<{ ok: boolean; changed: boolean }> {
+  return mutateJSON(`/api/paper/${encodeURIComponent(id)}/metadata`, 'PUT', body)
+}
+
+/** Stamp read-date through the `lit read` backend (idempotent first-read). An
+ * absent `date` defaults to today server-side. */
+export function postRead(
+  id: string,
+  date?: string,
+): Promise<{ ok: boolean; changed: boolean; message: string }> {
+  return mutateJSON(
+    `/api/paper/${encodeURIComponent(id)}/read`,
+    'POST',
+    date ? { date } : {},
+  )
+}
+
+/** Stamp last-revisited through the `lit revisit` backend. Throws the backend's
+ * "a revisit presupposes a first read" message (400) when the paper is unread. */
+export function postRevisit(id: string, date?: string): Promise<{ ok: boolean }> {
+  return mutateJSON(
+    `/api/paper/${encodeURIComponent(id)}/revisit`,
+    'POST',
+    date ? { date } : {},
+  )
 }
 
 export function fetchProjects(): Promise<ProjectEntry[]> {

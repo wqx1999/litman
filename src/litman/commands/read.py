@@ -27,6 +27,51 @@ from litman.core.notes import heal_wikilink_reminder
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 
 
+def apply_read(vault: Path, paper_id: str, date_value: str) -> tuple[bool, str]:
+    """Stamp ``read-date`` (the immutable first-read date) on one paper.
+
+    The single backend for both ``lit read`` and the webUI's ``POST
+    /api/paper/{id}/read`` (invariant #16: one semantics path). ``paper_id``
+    must already be resolved (the CLI runs it through ``resolve_paper_input``;
+    the server passes the canonical id straight through). ``date_value`` is an
+    already-validated ``YYYY-MM-DD`` string.
+
+    read-date is the immutable first-read stamp: if it is already set this is a
+    no-op that leaves it unchanged (so a re-read cannot push the first read past
+    a later ``last-revisited``). On a change, ``_apply_modify`` stamps the date,
+    bumps ``updated-at``, and rebuilds INDEX/views atomically; the reading-
+    session close then heals the wikilink reminder in notes.md.
+
+    Returns:
+        ``(changed, message)``. ``changed`` is ``True`` when the date was newly
+        stamped, ``False`` on the already-read no-op. ``message`` is the
+        human-readable "already read on …" notice on a no-op, else an empty
+        string (``_apply_modify`` prints its own diff on a change).
+
+    Raises:
+        PaperNotFoundError: no paper with ``paper_id`` (via ``find_paper``).
+    """
+    existing = find_paper(vault, paper_id)
+    if existing.get("read-date"):
+        message = (
+            f"{paper_id} already read on {existing['read-date']}; "
+            "leaving read-date unchanged. Log a return visit with "
+            f"`lit revisit {paper_id}`, or correct a wrong date with "
+            f"`lit modify {paper_id} --set read-date=<YYYY-MM-DD>`."
+        )
+        return False, message
+    _apply_modify(
+        vault,
+        paper_id,
+        set_ops=(f"read-date={date_value}",),
+        skip_set_noop=True,
+    )
+    # Reading-session close: repair the wikilink reminder an agent overwrite
+    # may have stripped from notes.md, so the next session sees it again.
+    heal_wikilink_reminder(vault, paper_id)
+    return True, ""
+
+
 @click.command("read")
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
@@ -90,23 +135,9 @@ def read_cmd(
     # a no-op so a re-read can't silently overwrite it (and push it past
     # last-revisited). Correcting a wrong first-read date is deliberately less
     # convenient — go through `lit modify` (friction as a feature: the everyday
-    # path can't foot-gun, the repair path is explicit). find_paper raises
-    # PaperNotFoundError for a ghost id.
-    existing = find_paper(vault, paper_id)
-    if existing.get("read-date"):
-        click.echo(
-            f"{paper_id} already read on {existing['read-date']}; "
-            "leaving read-date unchanged. Log a return visit with "
-            f"`lit revisit {paper_id}`, or correct a wrong date with "
-            f"`lit modify {paper_id} --set read-date=<YYYY-MM-DD>`."
-        )
-        return
-    _apply_modify(
-        vault,
-        paper_id,
-        set_ops=(f"read-date={date_value}",),
-        skip_set_noop=True,
-    )
-    # Reading-session close: repair the wikilink reminder an agent overwrite
-    # may have stripped from notes.md, so the next session sees it again.
-    heal_wikilink_reminder(vault, paper_id)
+    # path can't foot-gun, the repair path is explicit). apply_read raises
+    # PaperNotFoundError for a ghost id; on a no-op it returns the notice for
+    # echoing, on a change _apply_modify (inside it) printed its own diff.
+    changed, message = apply_read(vault, paper_id, date_value)
+    if not changed:
+        click.echo(message)

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  fetchFixedEnums,
   fetchPaper,
   fetchPapers,
   fetchProjects,
   fetchSearch,
+  fetchTaxonomy,
   fetchVaults,
   putDiscussion,
   putNotes,
@@ -13,6 +15,7 @@ import type { MdDraft } from './md/MdView'
 import SaveDialog from './tabs/SaveDialog'
 import { mergeCandidates, type Candidate } from './search'
 import type {
+  FixedEnums,
   IndexPaper,
   PaperMeta,
   ProjectEntry,
@@ -20,6 +23,7 @@ import type {
   SmartListView,
   Tab,
   TabKind,
+  Taxonomy,
   VaultsPayload,
 } from './types'
 import TopBar from './topbar/TopBar'
@@ -49,6 +53,12 @@ function tabLabel(id: string, kind: TabKind): string {
 export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
+  // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
+  // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
+  // after a write are deferred to 3c (inline-create), so a stale-but-present
+  // vocabulary is fine here (3b attaches existing values only).
+  const [taxonomy, setTaxonomy] = useState<Taxonomy | null>(null)
+  const [fixedEnums, setFixedEnums] = useState<FixedEnums | null>(null)
 
   // The current paper set the middle list shows. `all` uses the full INDEX list
   // (filtered client-side); the smart-lists come pre-ordered from the server
@@ -130,6 +140,8 @@ export default function App() {
   useEffect(() => {
     fetchVaults().then(setVaults)
     fetchProjects().then(setProjects)
+    fetchTaxonomy().then(setTaxonomy)
+    fetchFixedEnums().then(setFixedEnums)
     // Full INDEX (no view) backs global id/title matching + title lookup for
     // notes/discussion hits — independent of which smart-list the middle list
     // is showing.
@@ -246,6 +258,22 @@ export default function App() {
       .catch(() => setCockpitPaper(null))
       .finally(() => setCockpitLoading(false))
   }, [])
+
+  // After a cockpit structured write: re-fetch the selected paper so the cockpit
+  // reflects the change, AND refresh both the current smart-list (a status /
+  // read-date change moves smart-list membership + ordering) and the full INDEX
+  // (it backs search + wikilink resolution). The backend already recomputed
+  // INDEX/views atomically — these are read refreshes, not a re-derivation.
+  const refreshAfterWrite = useCallback(() => {
+    const id = selectedId
+    if (id) {
+      fetchPaper(id)
+        .then(setCockpitPaper)
+        .catch(() => setCockpitPaper(null))
+    }
+    loadList(listMode)
+    fetchPapers().then(setAllPapers)
+  }, [selectedId, loadList, listMode])
 
   const openTab = useCallback(
     (id: string, kind: TabKind) => {
@@ -536,6 +564,10 @@ export default function App() {
           onToggle={() => setCockpitCollapsed((c) => !c)}
           onOpenPaper={openPdf}
           vaultPath={vaultPath}
+          taxonomy={taxonomy}
+          fixedEnums={fixedEnums}
+          onChanged={refreshAfterWrite}
+          notify={notify}
         />
       </div>
       {pendingClose && (
