@@ -275,6 +275,16 @@ export default function App() {
     fetchPapers().then(setAllPapers)
   }, [selectedId, loadList, listMode])
 
+  // After a write that changes the shared vocabulary (a new taxonomy value, a
+  // project link/unlink, a new project): refresh the cached /api/taxonomy +
+  // /api/projects so the cockpit autocomplete + link dropdown reflect the new
+  // values. Decoupled from refreshAfterWrite (which refreshes per-paper + lists)
+  // so a plain status/tag-attach write doesn't pay for two extra fetches.
+  const refreshVocab = useCallback(() => {
+    fetchTaxonomy().then(setTaxonomy)
+    fetchProjects().then(setProjects)
+  }, [])
+
   const openTab = useCallback(
     (id: string, kind: TabKind) => {
       const key = `${kind}:${id}`
@@ -518,6 +528,8 @@ export default function App() {
         onSelectResult={onSearchSelect}
         focusMode={focusMode}
         onToggleFocus={toggleFocus}
+        onProjectCreated={refreshVocab}
+        notify={notify}
       />
       <div className="flex min-h-0 flex-1">
         <BrowsePanel
@@ -565,8 +577,10 @@ export default function App() {
           onOpenPaper={openPdf}
           vaultPath={vaultPath}
           taxonomy={taxonomy}
+          projects={projects}
           fixedEnums={fixedEnums}
           onChanged={refreshAfterWrite}
+          onVocabChanged={refreshVocab}
           notify={notify}
         />
       </div>

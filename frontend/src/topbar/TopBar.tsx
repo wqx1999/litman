@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { VaultsPayload } from '../types'
 import type { Candidate } from '../search'
+import { createProject } from '../api'
 import SearchBox from './SearchBox'
 import logoUrl from '../assets/litman-logo.png'
 
@@ -17,6 +18,10 @@ interface Props {
   onSelectResult: (candidate: Candidate) => void
   focusMode: boolean
   onToggleFocus: () => void
+  /** Refresh the registered-project list after a successful create (3c-1). */
+  onProjectCreated: () => void
+  /** Toast a message (surfaces the backend's raw create error verbatim). */
+  notify: (msg: string) => void
 }
 
 /** Reads the `.dark` class the no-FOUC script (index.html) already set on
@@ -55,8 +60,11 @@ export default function TopBar({
   onSelectResult,
   focusMode,
   onToggleFocus,
+  onProjectCreated,
+  notify,
 }: Props) {
   const [dark, toggleDark] = useDarkMode()
+  const [showNewProject, setShowNewProject] = useState(false)
 
   return (
     <header className="relative z-30 flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md">
@@ -84,6 +92,27 @@ export default function TopBar({
           <option value="">no vault</option>
         )}
       </select>
+
+      <button
+        type="button"
+        onClick={() => setShowNewProject(true)}
+        title="Register a new project (name + absolute path)"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
+        aria-label="New project"
+      >
+        <IconPlus />
+      </button>
+
+      {showNewProject && (
+        <NewProjectDialog
+          onClose={() => setShowNewProject(false)}
+          onCreated={() => {
+            setShowNewProject(false)
+            onProjectCreated()
+          }}
+          notify={notify}
+        />
+      )}
 
       <SearchBox
         value={search}
@@ -117,6 +146,120 @@ export default function TopBar({
         {dark ? <IconSun /> : <IconMoon />}
       </button>
     </header>
+  )
+}
+
+/** Register-a-new-project modal (name + absolute path). Mirrors SaveDialog's
+ * shell; the path must already exist + be a directory server-side (A7), so a
+ * bad path surfaces the backend's TaxonomyError verbatim via `notify` and the
+ * dialog stays open for correction. Escape cancels. */
+function NewProjectDialog({
+  onClose,
+  onCreated,
+  notify,
+}: {
+  onClose: () => void
+  onCreated: () => void
+  notify: (msg: string) => void
+}) {
+  const [name, setName] = useState('')
+  const [path, setPath] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const canSubmit = name.trim().length > 0 && path.trim().length > 0 && !busy
+
+  async function submit() {
+    if (!canSubmit) return
+    setBusy(true)
+    try {
+      await createProject(name.trim(), path.trim())
+      onCreated()
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err))
+      setBusy(false) // keep the dialog open so the user can fix the path
+    }
+  }
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={busy ? undefined : onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">New project</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Register a project name bound to an existing absolute path on this
+          machine.
+        </p>
+        <div className="mt-4 flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Name
+            </span>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              disabled={busy}
+              placeholder="pepforge"
+              onChange={(e) => setName(e.target.value)}
+              className={INPUT}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Absolute path
+            </span>
+            <input
+              type="text"
+              value={path}
+              disabled={busy}
+              placeholder="/work/you/Project/pepforge"
+              onChange={(e) => setPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit()
+              }}
+              className={`${INPUT} font-mono`}
+            />
+          </label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function IconPlus() {
+  return (
+    <svg {...SVG_PROPS}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
   )
 }
 

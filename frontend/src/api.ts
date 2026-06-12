@@ -31,7 +31,7 @@ async function getJSON<T>(url: string): Promise<T> {
  */
 async function mutateJSON<T>(
   url: string,
-  method: 'PUT' | 'POST',
+  method: 'PUT' | 'POST' | 'DELETE',
   body?: unknown,
 ): Promise<T> {
   const resp = await fetch(url, {
@@ -219,4 +219,47 @@ export function fetchProjects(): Promise<ProjectEntry[]> {
 
 export function fetchVaults(): Promise<VaultsPayload> {
   return getJSON<VaultsPayload>('/api/vaults')
+}
+
+/** Link a paper to a registered project through the `lit link` backend
+ * (invariant #16 second-class write). Throws the backend's raw LinkError
+ * message (400) when the project is unregistered or its dir is missing. */
+export function linkProject(
+  id: string,
+  project: string,
+  relevance?: string,
+): Promise<{ ok: boolean }> {
+  return mutateJSON(
+    `/api/paper/${encodeURIComponent(id)}/project`,
+    'POST',
+    relevance ? { project, relevance } : { project },
+  )
+}
+
+/** Unlink a paper from a project through the `lit unlink` backend. */
+export function unlinkProject(id: string, project: string): Promise<{ ok: boolean }> {
+  return mutateJSON(
+    `/api/paper/${encodeURIComponent(id)}/project/${encodeURIComponent(project)}`,
+    'DELETE',
+  )
+}
+
+/** Register a new project through the `lit project add` backend (dual-write
+ * TAXONOMY + config). The path must already exist and be a directory (A7);
+ * the backend's TaxonomyError surfaces verbatim on rejection. */
+export function createProject(
+  name: string,
+  path: string,
+): Promise<{ ok: boolean; name: string; path: string }> {
+  return mutateJSON('/api/projects', 'POST', { name, path })
+}
+
+/** Register a new controlled-vocab value through the `lit taxonomy add` backend
+ * (register-first per invariant #2). This only registers the value; the caller
+ * then attaches it via `putMetadata` addTag (two-step inline-create). */
+export function addTaxonomyValue(
+  key: string,
+  value: string,
+): Promise<{ ok: boolean; added: string[]; skipped: string[] }> {
+  return mutateJSON(`/api/taxonomy/${encodeURIComponent(key)}`, 'POST', { value })
 }

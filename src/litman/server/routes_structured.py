@@ -18,14 +18,24 @@ read" ModifyError).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
 
 from litman.commands.modify import _apply_modify
 from litman.commands.read import apply_read
 from litman.commands.revisit import apply_revisit
+from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
-from litman.exceptions import ModifyError, PaperNotFoundError
+from litman.core.project_link import (
+    LinkError,
+    add_project,
+    link_paper_to_project,
+    unlink_paper_from_project,
+)
+from litman.core.taxonomy import add_taxonomy_values
+from litman.exceptions import ModifyError, PaperNotFoundError, TaxonomyError
 
 router = APIRouter(prefix="/api")
 
@@ -48,6 +58,22 @@ def _ops_from_tag_map(tag_map: object, flag: str) -> tuple[str, ...]:
         raise HTTPException(status_code=400, detail=f"{flag} must be an object.")
     ops: list[str] = []
     for key, values in tag_map.items():
+        # `projects` is a USER_DICT that `_apply_modify` would happily append to,
+        # but a project membership is more than a metadata list entry: it owns the
+        # `litman_reflib/<id>` symlink + REFERENCES.md that only
+        # link_paper_to_project / unlink_paper_from_project keep consistent. Let
+        # the generic metadata endpoint write `projects` and you get a half-linked
+        # paper (metadata says linked, no symlink) — a drift the GUI must not be
+        # able to create. Route projects through the dedicated link endpoints.
+        if key == "projects":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{flag} cannot write 'projects'. Use POST/DELETE "
+                    "/api/paper/{id}/project so the symlink + REFERENCES.md stay "
+                    "consistent."
+                ),
+            )
         if not isinstance(values, list):
             raise HTTPException(
                 status_code=400, detail=f"{flag}[{key!r}] must be a list of values."
@@ -218,3 +244,142 @@ async def post_revisit(request: Request, paper_id: str) -> dict[str, object]:
     except ModifyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
+
+
+@router.post("/paper/{paper_id}/project")
+async def post_paper_project(request: Request, paper_id: str) -> dict[str, object]:
+    """Link a paper to a registered project through the ``lit link`` backend.
+
+    Body JSON ``{"project": str, "relevance"?: str}``. Reaches the filesystem
+    only through :func:`litman.core.project_link.link_paper_to_project`, which
+    resolves the project from the config registry map, updates the paper's
+    ``projects`` field, recreates the ``litman_reflib`` / ``litman_code``
+    symlinks, regenerates REFERENCES.md, and rebuilds INDEX + views atomically
+    (invariant #16: no second write path). The registry is the same
+    ``load_config(vault).projects`` map ``GET /api/projects`` reads from.
+
+    An unregistered project / missing project dir surfaces as LinkError → 400;
+    an unknown paper as PaperNotFoundError → 404.
+    """
+    _require_valid_id(paper_id)
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    project = payload.get("project")
+    if not isinstance(project, str) or not project.strip():
+        raise HTTPException(status_code=400, detail="project must be a non-empty string.")
+    relevance = payload.get("relevance")
+    if relevance is not None and not isinstance(relevance, str):
+        raise HTTPException(status_code=400, detail="relevance must be a string.")
+
+    vault = request.app.state.vault
+    registry = load_config(vault).projects
+    try:
+        link_paper_to_project(
+            vault, paper_id, project.strip(), registry, relevance=relevance
+        )
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LinkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.delete("/paper/{paper_id}/project/{project}")
+async def delete_paper_project(
+    request: Request, paper_id: str, project: str
+) -> dict[str, object]:
+    """Unlink a paper from a project through the ``lit unlink`` backend.
+
+    Reaches the filesystem only through
+    :func:`litman.core.project_link.unlink_paper_from_project`, the reverse of
+    the link path: drops the project from the paper's ``projects`` field, removes
+    the project-side symlinks (keeping shared code symlinks still used by another
+    linked paper), regenerates REFERENCES.md, and rebuilds INDEX + views
+    atomically. Same config registry map as the link endpoint.
+    """
+    _require_valid_id(paper_id)
+
+    vault = request.app.state.vault
+    registry = load_config(vault).projects
+    try:
+        unlink_paper_from_project(vault, paper_id, project, registry)
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LinkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/projects")
+async def post_projects(request: Request) -> dict[str, object]:
+    """Register a new project through the ``lit project add`` backend.
+
+    Body JSON ``{"name": str, "path": str}``. Reaches the filesystem only through
+    :func:`litman.core.project_link.add_project` (the same core ``lit project
+    add`` calls), which validates the path exists and is a directory (A7), then
+    dual-writes TAXONOMY.md + lit-config.yaml atomically (invariant #2). The path
+    is resolved to an absolute path here, mirroring the CLI's
+    ``click.Path(resolve_path=True)``. Empty name / missing path / duplicate name
+    surface as TaxonomyError → 400.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    name = payload.get("name")
+    path = payload.get("path")
+    if not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="name must be a string.")
+    if not isinstance(path, str) or not path.strip():
+        raise HTTPException(status_code=400, detail="path must be a non-empty string.")
+
+    vault = request.app.state.vault
+    try:
+        summary = add_project(vault, name, Path(path).expanduser().resolve())
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "name": summary["name"], "path": summary["path"]}
+
+
+@router.post("/taxonomy/{key}")
+async def post_taxonomy(request: Request, key: str) -> dict[str, object]:
+    """Register a new controlled-vocabulary value through the ``lit taxonomy add``
+    backend (register-first per invariant #2).
+
+    Body JSON ``{"value": str}``. Reaches the filesystem only through
+    :func:`litman.core.taxonomy.add_taxonomy_values` (the same core the CLI
+    calls), which registers the value in TAXONOMY.md atomically — it does NOT
+    attach the value to any paper. The frontend's inline-create then makes the
+    separate ``PUT /metadata`` addTag call to attach it (two steps: register,
+    then tag).
+
+    ``key`` must be a user-extensible dict (topics / methods / data); an unknown
+    key, a fixed-enum key, ``projects`` (path-bound, use ``POST /api/projects``),
+    or an empty value surface as TaxonomyError → 400.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    value = payload.get("value")
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=400, detail="value must be a non-empty string.")
+
+    vault = request.app.state.vault
+    try:
+        added, skipped = add_taxonomy_values(vault, key, (value,))
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "added": added, "skipped": skipped}

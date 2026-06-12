@@ -26,6 +26,10 @@ makes that mapping explicit so callers don't hard-code it.
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+from litman.core.atomic import staged_write
+from litman.exceptions import TaxonomyError
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
 FIXED_DICTS: tuple[str, ...] = ("type", "status", "priority")
@@ -187,3 +191,89 @@ def replace_value_in_field(
     if changed:
         metadata[field] = new_list
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Write core: register new user-dict value(s) (shared by `lit taxonomy add`
+# and the webUI `POST /api/taxonomy/{key}` — invariant #16 one write path)
+# ---------------------------------------------------------------------------
+
+
+def reject_projects_write(dict_name: str) -> None:
+    """Hard-deprecate generic ``projects`` writes (M15).
+
+    ``projects`` carries a path binding in lit-config.yaml, so a write through
+    the generic taxonomy path would be a half-update footgun (TAXONOMY.md
+    changed, config map not). The dedicated ``lit project`` group / the
+    ``add_project`` core keeps both truth sources atomic.
+    """
+    if dict_name == "projects":
+        raise TaxonomyError(
+            "'projects' has path binding requirements; use `lit project` "
+            "instead.\n"
+            "  add:    lit project add <name> --path <abs-path>\n"
+            "  rename: lit project rename <old> <new>\n"
+            "  rm:     lit project rm <name>"
+        )
+
+
+def validate_user_dict(dict_name: str) -> None:
+    """Reject unknown dicts and fixed enums (writable subcommands only)."""
+    if dict_name in FIXED_DICTS:
+        raise TaxonomyError(
+            f"Cannot modify fixed-enum dict {dict_name!r}. "
+            "Fixed enums (type, status, priority) require a code release "
+            "because the app's enum lists must change in lockstep."
+        )
+    if dict_name not in USER_DICTS:
+        raise TaxonomyError(
+            f"Unknown dict {dict_name!r}. "
+            f"User-extensible dicts: {', '.join(USER_DICTS)}."
+        )
+
+
+def add_taxonomy_values(
+    vault: Path, dict_name: str, values: tuple[str, ...]
+) -> tuple[list[str], list[str]]:
+    """Register new value(s) in a user dict (atomic TAXONOMY.md write).
+
+    The single backend for both ``lit taxonomy add`` and the webUI's
+    ``POST /api/taxonomy/{key}`` (invariant #16: one write path, register-first
+    per invariant #2). Already-present values are silent no-ops; the dict body
+    is rewritten in sorted order. Only TAXONOMY.md is touched (registering a
+    value never ripples into any paper's metadata).
+
+    Returns:
+        ``(added, skipped)`` — values newly registered vs already present.
+
+    Raises:
+        TaxonomyError: ``dict_name`` is ``projects`` (use ``add_project``),
+            a fixed enum, an unknown dict, or any value is empty.
+    """
+    reject_projects_write(dict_name)
+    validate_user_dict(dict_name)
+
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    current = parse_taxonomy(text)[dict_name]
+
+    added: list[str] = []
+    skipped: list[str] = []
+    new_set = set(current)
+    for v in values:
+        v = v.strip()
+        if not v:
+            raise TaxonomyError("Empty value is not allowed.")
+        if v in new_set:
+            skipped.append(v)
+            continue
+        new_set.add(v)
+        added.append(v)
+
+    if not added:
+        return added, skipped
+
+    new_text = update_user_dict_section(text, dict_name, sorted(new_set))
+    with staged_write(vault, op_id=f"taxonomy-add-{dict_name}") as stage:
+        stage.write_text("TAXONOMY.md", new_text)
+
+    return added, skipped

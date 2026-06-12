@@ -39,13 +39,15 @@ from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.taxonomy import (
     ALL_DICTS,
-    FIXED_DICTS,
     USER_DICTS,
     USER_DICT_TO_METADATA_FIELD,
+    add_taxonomy_values,
     find_referencing_papers,
     parse_taxonomy,
+    reject_projects_write as _reject_projects_write,
     replace_value_in_field,
     update_user_dict_section,
+    validate_user_dict as _validate_user_dict,
 )
 from litman.core.views import render_index
 from litman.exceptions import TaxonomyError
@@ -62,40 +64,6 @@ def _dump_yaml_to_string(data: dict[str, Any]) -> str:
     buf = io.StringIO()
     _yaml.dump(data, buf)
     return buf.getvalue()
-
-
-def _validate_user_dict(dict_name: str) -> None:
-    """Reject unknown dicts and fixed enums (writable subcommands only)."""
-    if dict_name in FIXED_DICTS:
-        raise TaxonomyError(
-            f"Cannot modify fixed-enum dict {dict_name!r}. "
-            "Fixed enums (type, status, priority) require a code release "
-            "because the app's enum lists must change in lockstep."
-        )
-    if dict_name not in USER_DICTS:
-        raise TaxonomyError(
-            f"Unknown dict {dict_name!r}. "
-            f"User-extensible dicts: {', '.join(USER_DICTS)}."
-        )
-
-
-def _reject_projects_write(dict_name: str) -> None:
-    """Hard-deprecate ``lit taxonomy {add,rename,rm} projects`` (M15).
-
-    ``projects`` carries a path binding in lit-config.yaml, so a write
-    through the generic taxonomy path would be a half-update footgun
-    (TAXONOMY.md changed, config map not). The dedicated ``lit project``
-    group keeps both truth sources atomic. ``lit taxonomy list projects``
-    stays available (read-only, no side effect) — only the writers redirect.
-    """
-    if dict_name == "projects":
-        raise TaxonomyError(
-            "'projects' has path binding requirements; use `lit project` "
-            "instead.\n"
-            "  add:    lit project add <name> --path <abs-path>\n"
-            "  rename: lit project rename <old> <new>\n"
-            "  rm:     lit project rm <name>"
-        )
 
 
 def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
@@ -224,36 +192,14 @@ def taxonomy_add_cmd(
     Already-present values are silent no-ops. The dict body is rewritten
     in sorted order regardless of the input order.
     """
-    _reject_projects_write(dict_name)
-    _validate_user_dict(dict_name)
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
-
-    current = parsed[dict_name]
-    added: list[str] = []
-    skipped: list[str] = []
-    new_set = set(current)
-    for v in values:
-        v = v.strip()
-        if not v:
-            raise TaxonomyError("Empty value is not allowed.")
-        if v in new_set:
-            skipped.append(v)
-            continue
-        new_set.add(v)
-        added.append(v)
+    added, skipped = add_taxonomy_values(vault, dict_name, values)
 
     if not added:
         console.print(
             f"[yellow]No-op:[/] every value already present in {dict_name}."
         )
         return
-
-    new_body = sorted(new_set)
-    new_text = update_user_dict_section(text, dict_name, new_body)
-
-    with staged_write(vault, op_id=f"taxonomy-add-{dict_name}") as stage:
-        stage.write_text("TAXONOMY.md", new_text)
 
     console.print(f"[bold green]✓ Updated[/] {escape(dict_name)}")
     for v in sorted(added):

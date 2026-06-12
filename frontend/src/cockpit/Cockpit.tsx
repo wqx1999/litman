@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FixedEnums, PaperMeta, Taxonomy } from '../types'
-import { fetchCite, postRead, postRevisit, putMetadata } from '../api'
+import type { FixedEnums, PaperMeta, ProjectEntry, Taxonomy } from '../types'
+import {
+  addTaxonomyValue,
+  fetchCite,
+  linkProject,
+  postRead,
+  postRevisit,
+  putMetadata,
+  unlinkProject,
+} from '../api'
 
 interface Props {
   paper: PaperMeta | null
@@ -11,13 +19,19 @@ interface Props {
   /** Active vault's filesystem path (server-side), for the copy-path action. */
   vaultPath: string | null
   /** TAXONOMY controlled vocabulary — the add-chip affordance offers existing
-   * values only (3b; inline-create is 3c). */
+   * values plus an explicit inline-create (3c-1). */
   taxonomy: Taxonomy | null
+  /** Registered projects (name/path/status) backing the link dropdown (3c-1). */
+  projects: ProjectEntry[]
   /** status/priority/type whitelists for the dropdowns. */
   fixedEnums: FixedEnums | null
   /** Called after a successful structured write so the parent re-fetches the
    * cockpit paper AND the left list (status/read-date move smart-list members). */
   onChanged: () => void
+  /** Called after a write that changes the shared vocabulary (a new taxonomy
+   * value or project link/unlink) so the parent re-fetches /api/taxonomy +
+   * /api/projects, keeping the dropdowns/autocomplete current (3c-1). */
+  onVocabChanged: () => void
   /** Toast a message (used to surface the backend's raw error verbatim). */
   notify: (msg: string) => void
 }
@@ -93,14 +107,18 @@ function EnumSelect({
 }
 
 /** Editable tag chips for a USER_DICTS field (topics/methods/data). Each value
- * carries an × (remove); a select offers TAXONOMY values not yet attached
- * (existing values only — inline-create is 3c). */
+ * carries an × (remove); a select offers TAXONOMY values not yet attached, and a
+ * filter input doubles as inline-create — typing a value not in the vocabulary
+ * reveals an explicit "Create 'X'" button (3c-1 guardrail: creating a new
+ * controlled value is a deliberate click, never an accidental free-text commit).
+ */
 function TagEditor({
   field,
   values,
   vocabulary,
   busy,
   onAdd,
+  onCreate,
   onRemove,
 }: {
   field: string
@@ -108,11 +126,27 @@ function TagEditor({
   vocabulary: string[]
   busy: boolean
   onAdd: (value: string) => void
+  /** Register a brand-new taxonomy value, then attach it (register-first). */
+  onCreate: (value: string) => void
   onRemove: (value: string) => void
 }) {
+  const [draft, setDraft] = useState('')
   const attached = values ?? []
   // Offer only registered values not already attached.
   const available = vocabulary.filter((v) => !attached.includes(v))
+  const typed = draft.trim()
+  // Inline-create is offered only for a typed value that is genuinely new
+  // (not already registered, not already attached). An exact registered match
+  // is attached through the select, never re-created.
+  const isNew =
+    typed.length > 0 &&
+    !vocabulary.includes(typed) &&
+    !attached.includes(typed)
+  // Filter the select's options by the draft (case-insensitive substring) so the
+  // input is also an autocomplete over existing values.
+  const filtered = typed
+    ? available.filter((v) => v.toLowerCase().includes(typed.toLowerCase()))
+    : available
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap gap-1">
@@ -136,7 +170,16 @@ function TagEditor({
           </span>
         ))}
       </div>
-      {available.length > 0 && (
+      <input
+        type="text"
+        aria-label={`Filter or create ${field}`}
+        placeholder={`Filter or create ${field}…`}
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        className={SELECT_CLASS}
+      />
+      {filtered.length > 0 && (
         <select
           aria-label={`Add ${field}`}
           className={SELECT_CLASS}
@@ -144,14 +187,95 @@ function TagEditor({
           disabled={busy}
           onChange={(e) => {
             const v = e.target.value
-            if (v) onAdd(v)
+            if (v) {
+              onAdd(v)
+              setDraft('')
+            }
             e.target.value = '' // reset to the placeholder so the same value can re-add later
           }}
         >
           <option value="">+ add {field}…</option>
-          {available.map((v) => (
+          {filtered.map((v) => (
             <option key={v} value={v}>
               {v}
+            </option>
+          ))}
+        </select>
+      )}
+      {isNew && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            onCreate(typed)
+            setDraft('')
+          }}
+          className="self-start rounded-md border border-accent-300 bg-accent-50 px-2.5 py-1 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+        >
+          + Create “{typed}”
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** Writable Projects field: chips for each linked project (× to unlink) plus a
+ * dropdown to link a registered project not yet attached (3c-1). Unlike the
+ * topics/methods/data tag editor, projects are never inline-created here — a new
+ * project carries a path binding, so it is created via the TopBar + dialog. */
+function ProjectEditor({
+  attached,
+  registered,
+  busy,
+  onLink,
+  onUnlink,
+}: {
+  attached: string[]
+  registered: string[]
+  busy: boolean
+  onLink: (project: string) => void
+  onUnlink: (project: string) => void
+}) {
+  const available = registered.filter((p) => !attached.includes(p))
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1">
+        {attached.length === 0 && <span className="text-stone-400">—</span>}
+        {attached.map((p) => (
+          <span
+            key={p}
+            className="inline-flex items-center gap-1 rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
+          >
+            {p}
+            <button
+              type="button"
+              aria-label={`Unlink project ${p}`}
+              title={`Unlink ${p}`}
+              disabled={busy}
+              onClick={() => onUnlink(p)}
+              className="text-stone-400 transition-colors hover:text-rose-600 disabled:opacity-50"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      {available.length > 0 && (
+        <select
+          aria-label="Link project"
+          className={SELECT_CLASS}
+          value=""
+          disabled={busy}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v) onLink(v)
+            e.target.value = ''
+          }}
+        >
+          <option value="">+ link project…</option>
+          {available.map((p) => (
+            <option key={p} value={p}>
+              {p}
             </option>
           ))}
         </select>
@@ -213,8 +337,10 @@ export default function Cockpit({
   onOpenPaper,
   vaultPath,
   taxonomy,
+  projects,
   fixedEnums,
   onChanged,
+  onVocabChanged,
   notify,
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
@@ -276,11 +402,14 @@ export default function Cockpit({
   // Run a structured write, then refresh on success or toast the backend's raw
   // message on failure. `writing` gates the controls for the duration. The
   // backend serialises writes; the parent's onChanged re-fetches the cockpit.
-  async function runWrite(fn: () => Promise<unknown>) {
+  // `vocabChanged` additionally refreshes the shared taxonomy/projects caches
+  // (a new taxonomy value or a project link/unlink that the dropdowns reflect).
+  async function runWrite(fn: () => Promise<unknown>, vocabChanged = false) {
     setWriting(true)
     try {
       await fn()
       onChanged()
+      if (vocabChanged) onVocabChanged()
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err))
     } finally {
@@ -304,6 +433,30 @@ export default function Cockpit({
     if (!paper) return
     const id = paper.id
     runWrite(() => putMetadata(id, { rmTag: { [field]: [value] } }))
+  }
+
+  // Inline-create: register the new taxonomy value first (invariant #2), then
+  // attach it via the existing addTag path — two steps, one button click. The
+  // vocabulary refresh keeps the new value in autocomplete for other papers.
+  function createTag(field: 'topics' | 'methods' | 'data', value: string) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(async () => {
+      await addTaxonomyValue(field, value)
+      await putMetadata(id, { addTag: { [field]: [value] } })
+    }, true)
+  }
+
+  function linkProj(project: string) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => linkProject(id, project), true)
+  }
+
+  function unlinkProj(project: string) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => unlinkProject(id, project), true)
   }
 
   function markRead() {
@@ -529,6 +682,7 @@ export default function Cockpit({
                 vocabulary={taxonomy?.topics ?? []}
                 busy={writing}
                 onAdd={(v) => addTag('topics', v)}
+                onCreate={(v) => createTag('topics', v)}
                 onRemove={(v) => removeTag('topics', v)}
               />
             </Field>
@@ -539,6 +693,7 @@ export default function Cockpit({
                 vocabulary={taxonomy?.methods ?? []}
                 busy={writing}
                 onAdd={(v) => addTag('methods', v)}
+                onCreate={(v) => createTag('methods', v)}
                 onRemove={(v) => removeTag('methods', v)}
               />
             </Field>
@@ -549,11 +704,18 @@ export default function Cockpit({
                 vocabulary={taxonomy?.data ?? []}
                 busy={writing}
                 onAdd={(v) => addTag('data', v)}
+                onCreate={(v) => createTag('data', v)}
                 onRemove={(v) => removeTag('data', v)}
               />
             </Field>
             <Field label="Projects">
-              <Chips values={paper.projects} />
+              <ProjectEditor
+                attached={paper.projects ?? []}
+                registered={projects.map((p) => p.name)}
+                busy={writing}
+                onLink={linkProj}
+                onUnlink={unlinkProj}
+              />
             </Field>
             <Field label="Relations">
               <Relations paper={paper} onOpenPaper={onOpenPaper} />

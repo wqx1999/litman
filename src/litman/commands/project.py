@@ -45,7 +45,7 @@ from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.project_link import CODE_SUBDIR
+from litman.core.project_link import CODE_SUBDIR, add_project
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
@@ -168,50 +168,12 @@ def project_add_cmd(
     Both truth sources are updated in a single atomic staged_write so a
     crash never leaves the name in one but not the other.
     """
-    name = name.strip()
-    if not name:
-        raise TaxonomyError("Project name cannot be empty.")
-    if not project_path.exists():
-        raise TaxonomyError(
-            f"Path {str(project_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {project_path}`), "
-            "then re-run — placeholder registration is intentionally "
-            "not allowed."
-        )
-    if not project_path.is_dir():
-        raise TaxonomyError(
-            f"Path {str(project_path)!r} is not a directory."
-        )
-
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
-    config = load_config(vault)
-
-    registered_names = set(parsed[_PROJECTS_DICT]) | set(config.projects)
-    if name in registered_names:
-        existing_path = config.projects.get(name)
-        raise TaxonomyError(
-            f"Project {name!r} is already registered"
-            + (f" → {existing_path}" if existing_path else "")
-            + ". Use `lit project set-path "
-            f"{name} <new-path>` to change its path, or "
-            f"`lit project rename {name} <new-name>` to rename it."
-        )
-
-    new_taxonomy_text = update_user_dict_section(
-        text, _PROJECTS_DICT, sorted(parsed[_PROJECTS_DICT] + [name])
-    )
-    new_projects = dict(config.projects)
-    new_projects[name] = str(project_path)
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    with staged_write(vault, op_id=f"project-add-{name}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        stage.write_text("lit-config.yaml", new_config_text)
+    summary = add_project(vault, name, project_path)
 
     console.print(
-        f"[bold green]✓ Registered[/] {escape(name)} → "
-        f"{escape(str(project_path))}"
+        f"[bold green]✓ Registered[/] {escape(summary['name'])} → "
+        f"{escape(summary['path'])}"
     )
 
 

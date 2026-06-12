@@ -34,6 +34,7 @@ from typing import Any
 from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
+from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.portable_link import (
@@ -44,8 +45,11 @@ from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     write_references_md,
 )
+from litman.core.taxonomy import parse_taxonomy, update_user_dict_section
 from litman.core.views import render_index
-from litman.exceptions import LitmanError, PaperNotFoundError
+from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
+
+_PROJECTS_DICT = "projects"
 
 CODE_SUBDIR = "litman_code"
 
@@ -364,6 +368,72 @@ def unlink_paper_from_project(
         "code_links_kept": code_links_kept,
         "references_md": refs_path,
     }
+
+
+def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
+    """Register a new project (atomic dual-write TAXONOMY.md + lit-config.yaml).
+
+    The single backend for both ``lit project add`` and the webUI's
+    ``POST /api/projects`` (invariant #16: one validate + write path). A project
+    is a controlled ``projects`` value bound to an on-disk working directory, so
+    both truth sources — TAXONOMY.md's ``## projects`` section and
+    lit-config.yaml's ``projects:`` map — are updated in a single staged_write
+    so a crash never leaves the name in one but not the other (invariant #2).
+
+    ``path`` must already exist and be a directory (A7 / typo defense — no
+    placeholder registration). The CLI normally resolves the path via
+    ``click.Path(resolve_path=True)`` before calling this; the server resolves
+    it itself, so callers should pass an absolute, resolved path.
+
+    Returns:
+        ``{"name": ..., "path": str(path)}`` summary for the caller to render.
+
+    Raises:
+        TaxonomyError: empty name, path missing / not a directory, or the name
+            is already registered.
+    """
+    name = name.strip()
+    if not name:
+        raise TaxonomyError("Project name cannot be empty.")
+    if not path.exists():
+        raise TaxonomyError(
+            f"Path {str(path)!r} does not exist. "
+            f"Create it first (e.g. `mkdir -p {path}`), "
+            "then re-run — placeholder registration is intentionally "
+            "not allowed."
+        )
+    if not path.is_dir():
+        raise TaxonomyError(f"Path {str(path)!r} is not a directory.")
+
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    parsed = parse_taxonomy(text)
+    config = load_config(vault)
+
+    registered_names = set(parsed[_PROJECTS_DICT]) | set(config.projects)
+    if name in registered_names:
+        existing_path = config.projects.get(name)
+        raise TaxonomyError(
+            f"Project {name!r} is already registered"
+            + (f" → {existing_path}" if existing_path else "")
+            + ". Use `lit project set-path "
+            f"{name} <new-path>` to change its path, or "
+            f"`lit project rename {name} <new-name>` to rename it."
+        )
+
+    new_taxonomy_text = update_user_dict_section(
+        text, _PROJECTS_DICT, sorted(parsed[_PROJECTS_DICT] + [name])
+    )
+    new_projects = dict(config.projects)
+    new_projects[name] = str(path)
+    as_dict = config_to_yaml_dict(load_config(vault))
+    as_dict["projects"] = new_projects
+    new_config_text = _dump_yaml_to_string(as_dict)
+
+    with staged_write(vault, op_id=f"project-add-{name}") as stage:
+        stage.write_text("TAXONOMY.md", new_taxonomy_text)
+        stage.write_text("lit-config.yaml", new_config_text)
+
+    return {"name": name, "path": str(path)}
 
 
 def rebuild_all_project_links(

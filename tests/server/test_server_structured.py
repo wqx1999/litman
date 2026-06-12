@@ -20,6 +20,7 @@ Guarded with ``importorskip`` so the suite still collects when the optional
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -224,6 +225,24 @@ def test_put_metadata_add_unregistered_topic_400(
     assert _meta(vault, paper_id)["topics"] == []
 
 
+@pytest.mark.parametrize("flag", ["addTag", "rmTag"])
+def test_put_metadata_rejects_projects_tag_400(
+    vault_with_paper: tuple[Path, str], flag: str
+) -> None:
+    """The generic /metadata endpoint must NOT write `projects` — that would
+    append the metadata list entry without the litman_reflib symlink +
+    REFERENCES.md (a half-linked drift). Projects route through the dedicated
+    link/unlink endpoints; the generic write rejects the key (400), nothing
+    written."""
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={flag: {"projects": ["whatever"]}}
+    )
+    assert resp.status_code == 400
+    assert "projects" in resp.json()["detail"]
+    assert _meta(vault, paper_id)["projects"] == []
+
+
 def test_put_metadata_empty_body_400(vault_with_paper: tuple[Path, str]) -> None:
     vault, paper_id = vault_with_paper
     resp = _client(vault).put(f"/api/paper/{paper_id}/metadata", json={})
@@ -369,3 +388,283 @@ def test_get_fixed_enums(vault_with_paper: tuple[Path, str]) -> None:
     assert body["type"]["allowsNone"] is True
     assert "research" in body["type"]["values"]
     assert body["type"]["values"] == sorted(body["type"]["values"])
+
+
+# ---------------------------------------------------------------------------
+# 3c-1 helpers: register a project through the real CLI backend
+# ---------------------------------------------------------------------------
+
+
+def _register_project(vault: Path, name: str, project_dir: Path) -> None:
+    """Register a project via the real CLI (dual-write TAXONOMY + config).
+
+    Mirrors ``_register_topic``: the only legitimate way to register a project
+    is the atomic command path (invariant #2), which is exactly what the GUI's
+    3c-1 ``POST /api/projects`` calls into via the shared ``add_project`` core.
+    """
+    project_dir.mkdir(parents=True, exist_ok=True)
+    result = CliRunner().invoke(
+        cli,
+        ["project", "add", name, "--path", str(project_dir),
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+
+# ---------------------------------------------------------------------------
+# POST /paper/{id}/project — link  (+ DELETE … — unlink)
+# ---------------------------------------------------------------------------
+
+
+def test_post_project_links_paper_writes_backend_and_reprojects_index(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A4 core: a project link writes metadata.yaml ``projects`` AND the backend
+    reprojects INDEX.json to match AND runs the project-side side effects
+    (litman_reflib symlink + REFERENCES.md)."""
+    vault, paper_id = vault_with_paper
+    project_dir = tmp_path / "pepforge"
+    _register_project(vault, "pepforge", project_dir)
+    assert _meta(vault, paper_id)["projects"] == []  # fixture default
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+
+    # TRUTH updated …
+    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    # … DERIVED projection recomputed to match …
+    assert _index_paper(vault, paper_id)["projects"] == ["pepforge"]
+    # … and the project-side side effects ran (symlink + REFERENCES.md).
+    assert (project_dir / "litman_reflib" / paper_id).is_symlink()
+    assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
+
+
+def test_post_project_with_relevance(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "relevance": "core baseline"},
+    )
+    assert resp.status_code == 200
+    assert _meta(vault, paper_id)["relevance-pepforge"] == "core baseline"
+
+
+def test_delete_project_unlinks_roundtrip(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    project_dir = tmp_path / "pepforge"
+    _register_project(vault, "pepforge", project_dir)
+    client = _client(vault)
+
+    client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+
+    resp = client.delete(f"/api/paper/{paper_id}/project/pepforge")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    # TRUTH + DERIVED both reflect the unlink, symlink torn down.
+    assert _meta(vault, paper_id)["projects"] == []
+    assert _index_paper(vault, paper_id)["projects"] == []
+    assert not (project_dir / "litman_reflib" / paper_id).exists()
+
+
+def test_post_project_unregistered_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Link to an unregistered project → LinkError → 400 (raw message)."""
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "ghost"}
+    )
+    assert resp.status_code == 400
+    assert "not registered" in resp.json()["detail"]
+    assert _meta(vault, paper_id)["projects"] == []
+
+
+def test_post_project_unknown_paper_404(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, _ = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    resp = _client(vault).post(
+        "/api/paper/2099_Nobody_Missing/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 404
+
+
+def test_post_project_empty_name_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "   "}
+    )
+    assert resp.status_code == 400
+
+
+def test_post_project_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).post(
+        "/api/paper/foo..bar/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /projects — create / register a project (A7)
+# ---------------------------------------------------------------------------
+
+
+def test_post_projects_registers_with_real_dir(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, _ = vault_with_paper
+    project_dir = tmp_path / "newproj"
+    project_dir.mkdir()
+
+    resp = _client(vault).post(
+        "/api/projects", json={"name": "newproj", "path": str(project_dir)}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["name"] == "newproj"
+
+    # Registered in both truth sources (visible via the read endpoint).
+    projects = _client(vault).get("/api/projects").json()
+    names = {p["name"] for p in projects}
+    assert "newproj" in names
+
+
+def test_post_projects_nonexistent_path_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A7: the path must exist; a missing path → TaxonomyError → 400."""
+    vault, _ = vault_with_paper
+    missing = tmp_path / "does-not-exist"
+    resp = _client(vault).post(
+        "/api/projects", json={"name": "ghost", "path": str(missing)}
+    )
+    assert resp.status_code == 400
+    assert "does not exist" in resp.json()["detail"]
+    # Not registered.
+    names = {p["name"] for p in _client(vault).get("/api/projects").json()}
+    assert "ghost" not in names
+
+
+def test_post_projects_path_is_file_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A7: the path must be a directory; a file → TaxonomyError → 400."""
+    vault, _ = vault_with_paper
+    f = tmp_path / "afile.txt"
+    f.write_text("x")
+    resp = _client(vault).post(
+        "/api/projects", json={"name": "p", "path": str(f)}
+    )
+    assert resp.status_code == 400
+    assert "not a directory" in resp.json()["detail"]
+
+
+def test_post_projects_empty_name_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, _ = vault_with_paper
+    project_dir = tmp_path / "p"
+    project_dir.mkdir()
+    resp = _client(vault).post(
+        "/api/projects", json={"name": "   ", "path": str(project_dir)}
+    )
+    assert resp.status_code == 400
+
+
+def test_post_projects_duplicate_name_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, _ = vault_with_paper
+    _register_project(vault, "dup", tmp_path / "dup")
+    resp = _client(vault).post(
+        "/api/projects", json={"name": "dup", "path": str(tmp_path / "dup")}
+    )
+    assert resp.status_code == 400
+    assert "already registered" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# POST /taxonomy/{key} — register-first inline-create (invariant #2)
+# ---------------------------------------------------------------------------
+
+
+def test_post_taxonomy_registers_value_then_addtag_succeeds(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Register-first round-trip: POST /api/taxonomy/topics registers the value
+    in TAXONOMY, then the existing PUT /metadata addTag attaches it (the two-step
+    inline-create the cockpit performs)."""
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+
+    reg = client.post("/api/taxonomy/topics", json={"value": "peptide"})
+    assert reg.status_code == 200
+    assert reg.json()["added"] == ["peptide"]
+    # The value is now in TAXONOMY but NOT attached to any paper.
+    parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text())
+    assert "peptide" in parsed["topics"]
+    assert _meta(vault, paper_id)["topics"] == []
+    # M32: the GUI write went through the atomic backend, so TAXONOMY.md is
+    # re-locked read-only afterwards (not left writable by a second write path).
+    assert not os.access(vault / "TAXONOMY.md", os.W_OK)
+
+    # Step two: attach via the existing addTag path — now it is registered.
+    attach = client.put(
+        f"/api/paper/{paper_id}/metadata", json={"addTag": {"topics": ["peptide"]}}
+    )
+    assert attach.status_code == 200
+    assert _meta(vault, paper_id)["topics"] == ["peptide"]
+
+
+def test_post_taxonomy_unknown_key_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).post("/api/taxonomy/bogus", json={"value": "x"})
+    assert resp.status_code == 400
+    assert "Unknown dict" in resp.json()["detail"]
+
+
+def test_post_taxonomy_fixed_enum_key_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """A fixed-enum dict (status) cannot be extended via inline-create."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).post("/api/taxonomy/status", json={"value": "rejected"})
+    assert resp.status_code == 400
+    assert "fixed-enum" in resp.json()["detail"]
+
+
+def test_post_taxonomy_projects_key_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """projects is path-bound: inline-create must redirect to POST /api/projects."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).post("/api/taxonomy/projects", json={"value": "p"})
+    assert resp.status_code == 400
+    assert "lit project" in resp.json()["detail"]
+
+
+def test_post_taxonomy_empty_value_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).post("/api/taxonomy/topics", json={"value": "   "})
+    assert resp.status_code == 400
