@@ -79,6 +79,38 @@ export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<
   }
 }
 
+/** Overwrite a paper's notes.md / discussion.md with the full edited text.
+ *
+ * Invariant #16 whitelist direct-write (symmetric with the GET read endpoints,
+ * which return `{text}`): the server atomically replaces the file via
+ * staged_write. Both are whole-file overwrites (the md tab edits the entire
+ * file, not a patch); the server re-inserts the wikilink reminder on notes only.
+ * Throws on a non-ok response so the caller can surface a failed save instead of
+ * silently returning to render mode having lost the edit.
+ */
+async function putMdText(
+  id: string,
+  doc: 'notes' | 'discussion',
+  text: string,
+): Promise<void> {
+  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
+    method: 'PUT',
+    body: JSON.stringify({ text }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!resp.ok) {
+    throw new Error(`PUT ${doc}/${id} → ${resp.status} ${resp.statusText}`)
+  }
+}
+
+export function putNotes(id: string, text: string): Promise<void> {
+  return putMdText(id, 'notes', text)
+}
+
+export function putDiscussion(id: string, text: string): Promise<void> {
+  return putMdText(id, 'discussion', text)
+}
+
 async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
   const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null

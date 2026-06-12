@@ -11,20 +11,29 @@ interface Props {
   onCancel: () => void
   /** True while the save (saveDocument + PUT) is in flight. */
   saving: boolean
+  /** Dialog heading. Defaults to the PDF-annotation wording. */
+  title?: string
+  /** What `{label}` has unsaved (e.g. "annotations", "edits"). Defaults to the
+   * PDF wording; an md tab passes "edits" / a note-specific phrasing. */
+  bodyNoun?: string
 }
 
-/** Close-time confirmation for a PDF tab that has unsaved annotations.
+/** Close-time confirmation for a tab with unsaved changes.
  *
- * The WebUI flushes annotations into paper.pdf on tab close (invariant #16);
- * this dialog gives the close an explicit Save / Don't Save / Cancel choice
- * instead of a silent write, so the user is never surprised by an edited PDF
- * (or by lost edits). Escape cancels, Enter saves. */
+ * Shared by the PDF tab (annotations embed into paper.pdf on close, invariant
+ * #16) and the md tabs (notes/discussion edits). It gives the close an explicit
+ * Save / Don't Save / Cancel choice instead of a silent write/loss, so the user
+ * is never surprised by an edited file or by dropped edits. The wording is
+ * parameterized (defaults to the PDF copy) so one component covers both kinds.
+ * Escape cancels, Enter saves. */
 export default function SaveDialog({
   label,
   onSave,
   onDiscard,
   onCancel,
   saving,
+  title = 'Save annotations?',
+  bodyNoun = 'unsaved annotations',
 }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -44,12 +53,10 @@ export default function SaveDialog({
         onClick={(e) => e.stopPropagation()}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">
-          Save annotations?
-        </h2>
+        <h2 className="text-sm font-semibold text-stone-900">{title}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          <span className="font-medium text-stone-700">{label}</span> has
-          unsaved annotations. Embed them into the PDF before closing?
+          <span className="font-medium text-stone-700">{label}</span> has{' '}
+          {bodyNoun}. Save before closing?
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button

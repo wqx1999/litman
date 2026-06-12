@@ -2,6 +2,7 @@ import type { Tab } from '../types'
 import PdfView from '../pdf/PdfView'
 import type { PdfHandle } from '../pdf/PdfView'
 import MdView from '../md/MdView'
+import type { MdDraft } from '../md/MdView'
 
 interface Props {
   tabs: Tab[]
@@ -11,9 +12,18 @@ interface Props {
   onOpenPaper: (id: string) => void
   /** Register/unregister a PDF tab's flush handle for the close-time prompt. */
   onRegisterPdf: (key: string, handle: PdfHandle | null) => void
+  /** Surface a transient message (e.g. a failed md save) to the host. */
+  onNotify: (message: string) => void
   /** A notes/discussion tab (by key) to scroll to + highlight a query in, set
    * when the doc was opened from a search hit. */
   mdJump: { key: string; query: string } | null
+  /** The active md tab's lifted edit session (App-owned), or undefined when the
+   * active tab is not an md tab or is not being edited. */
+  mdDraft?: MdDraft
+  /** Forwarded md edit-session callbacks (App owns the per-tab draft map). */
+  onMdBeginEdit: (tabKey: string, seed: string) => void
+  onMdDraftChange: (tabKey: string, draft: string) => void
+  onMdEndEdit: (tabKey: string) => void
 }
 
 export default function TabArea({
@@ -23,7 +33,12 @@ export default function TabArea({
   onClose,
   onOpenPaper,
   onRegisterPdf,
+  onNotify,
   mdJump,
+  mdDraft,
+  onMdBeginEdit,
+  onMdDraftChange,
+  onMdEndEdit,
 }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
@@ -82,10 +97,16 @@ export default function TabArea({
             key={active.key}
             paperId={active.paperId}
             doc={active.kind}
+            tabKey={active.key}
             onOpenPaper={onOpenPaper}
+            onNotify={onNotify}
             highlightQuery={
               mdJump && mdJump.key === active.key ? mdJump.query : undefined
             }
+            draftEntry={mdDraft}
+            onBeginEdit={onMdBeginEdit}
+            onDraftChange={onMdDraftChange}
+            onEndEdit={onMdEndEdit}
           />
         )}
       </div>

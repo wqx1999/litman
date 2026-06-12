@@ -5,8 +5,11 @@ import {
   fetchProjects,
   fetchSearch,
   fetchVaults,
+  putDiscussion,
+  putNotes,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
+import type { MdDraft } from './md/MdView'
 import SaveDialog from './tabs/SaveDialog'
 import { mergeCandidates, type Candidate } from './search'
 import type {
@@ -25,6 +28,7 @@ import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
 import { emptyFilters } from './nav/BrowsePanel'
 import TabArea from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
+import Toast from './ui/Toast'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
@@ -71,6 +75,10 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false)
   const searchToken = useRef(0)
 
+  // A single transient toast (dangling wikilink, failed save). Last write wins.
+  const [toast, setToast] = useState<string | null>(null)
+  const notify = useCallback((msg: string) => setToast(msg), [])
+
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -82,6 +90,18 @@ export default function App() {
   // tab with unsaved annotations is closed. Only the active PDF tab is mounted
   // (TabArea renders one tab), so at most one entry is live.
   const handlesRef = useRef<Map<string, PdfHandle>>(new Map())
+
+  // Lifted md edit sessions, keyed by tab. State (so the active MdView re-renders
+  // on each keystroke) plus a ref mirror (so the stable close/unload callbacks
+  // read fresh values without re-binding). An entry exists ONLY while that tab is
+  // mid-edit; it survives MdView's unmount on tab switch (the whole point of the
+  // lift — TabArea mounts one tab, so a switch would otherwise drop the draft).
+  // Unlike PDF (whose handle is only registered for the mounted tab), an md draft
+  // here outlives the unmount, so App can prompt/save even a non-active md tab.
+  const [mdDrafts, setMdDrafts] = useState<Map<string, MdDraft>>(new Map())
+  const mdDraftsRef = useRef(mdDrafts)
+  mdDraftsRef.current = mdDrafts
+
   // Tab key awaiting a close decision (drives the SaveDialog), and whether its
   // save is in flight.
   const [pendingClose, setPendingClose] = useState<string | null>(null)
@@ -247,6 +267,31 @@ export default function App() {
     [openTab],
   )
 
+  // A [[id]] wikilink click resolves against the full loaded library. A target
+  // not in the vault would 404 the PDF tab, so a dangling link toasts instead of
+  // opening a broken tab (decision 4). allPapers is the same full INDEX the
+  // search quick-jump uses, so the check matches what's actually loadable.
+  //
+  // A `[[vault:id]]` cross-vault target (a documented wikilink form, see
+  // core/notes.py) can never live in THIS vault's INDEX, so it must NOT fall
+  // through to the same-vault "no paper" toast. Cross-vault navigation is out of
+  // scope (single-vault GUI); we surface a distinct hint instead. Paper ids never
+  // contain ':' (core/id.py), so any colon marks the vault separator.
+  const openWikilink = useCallback(
+    (target: string) => {
+      if (target.includes(':')) {
+        notify('Cross-vault link — open that vault to follow it.')
+        return
+      }
+      if (allPapers.some((p) => p.id === target)) {
+        openPdf(target)
+      } else {
+        notify(`No paper "${target}" in this vault.`)
+      }
+    },
+    [allPapers, openPdf, notify],
+  )
+
   // Route a picked search result by where it matched: an id/title hit opens the
   // paper PDF; a notes/discussion hit opens that doc and scrolls to / highlights
   // the matched query (captured now, since `search` may be edited afterwards).
@@ -262,17 +307,68 @@ export default function App() {
     [openDoc, openPdf, search],
   )
 
-  // Remove a tab from the bar and re-point the active tab. Does NOT save — the
-  // caller decides (closeTab prompts; the dialog handlers save/discard first).
-  const removeTab = useCallback((key: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.key !== key)
-      setActiveTab((cur) =>
-        cur === key ? (next.length ? next[next.length - 1].key : null) : cur,
-      )
+  // --- Lifted md edit sessions (Fix 1) -------------------------------------
+  // App owns each md tab's draft so it survives MdView's unmount on tab switch,
+  // and so the close prompt / page-unload guard can see "unsaved md edits" the
+  // same way they see dirty PDF annotations.
+
+  const mdBeginEdit = useCallback((tabKey: string, seed: string) => {
+    setMdDrafts((prev) => {
+      const next = new Map(prev)
+      next.set(tabKey, { draft: seed, savedText: seed })
       return next
     })
   }, [])
+
+  const mdDraftChange = useCallback((tabKey: string, draft: string) => {
+    setMdDrafts((prev) => {
+      const cur = prev.get(tabKey)
+      if (!cur) return prev // not editing (stale event) — ignore
+      const next = new Map(prev)
+      next.set(tabKey, { ...cur, draft })
+      return next
+    })
+  }, [])
+
+  const mdEndEdit = useCallback((tabKey: string) => {
+    setMdDrafts((prev) => {
+      if (!prev.has(tabKey)) return prev
+      const next = new Map(prev)
+      next.delete(tabKey)
+      return next
+    })
+  }, [])
+
+  // A tab has unsaved md edits when its lifted draft diverges from the on-disk
+  // text it began from — the md analogue of PdfHandle.isDirty(). Reads the ref so
+  // close/unload callbacks stay stable.
+  const mdTabDirty = useCallback((key: string): boolean => {
+    const entry = mdDraftsRef.current.get(key)
+    return entry !== undefined && entry.draft !== entry.savedText
+  }, [])
+
+  // Remove a tab from the bar and re-point the active tab. Does NOT save — the
+  // caller decides (closeTab prompts; the dialog handlers save/discard first).
+  // Also drops any lifted md draft for the tab so a later tab reusing the key
+  // (same paper reopened) starts clean.
+  const removeTab = useCallback(
+    (key: string) => {
+      setTabs((prev) => {
+        const next = prev.filter((t) => t.key !== key)
+        setActiveTab((cur) =>
+          cur === key ? (next.length ? next[next.length - 1].key : null) : cur,
+        )
+        return next
+      })
+      setMdDrafts((prev) => {
+        if (!prev.has(key)) return prev
+        const next = new Map(prev)
+        next.delete(key)
+        return next
+      })
+    },
+    [],
+  )
 
   const registerPdf = useCallback((key: string, handle: PdfHandle | null) => {
     if (handle) handlesRef.current.set(key, handle)
@@ -281,52 +377,77 @@ export default function App() {
 
   const closeTab = useCallback(
     (key: string) => {
+      // Both dirty-tab kinds route through the same SaveDialog: a PDF tab with
+      // un-embedded annotations, or an md tab with an unsaved draft.
       const handle = handlesRef.current.get(key)
-      if (handle?.isDirty()) {
+      if (handle?.isDirty() || mdTabDirty(key)) {
         setPendingClose(key)
         return
       }
       removeTab(key)
     },
-    [removeTab],
+    [removeTab, mdTabDirty],
   )
 
-  // SaveDialog actions for the tab pending a close decision.
+  // SaveDialog actions for the tab pending a close decision. The tab may be a
+  // PDF tab (flush via its registered handle) or an md tab (PUT the lifted draft
+  // directly — the md tab need not be mounted, so App owns the write).
   const confirmSave = useCallback(async () => {
     const key = pendingClose
     if (!key) return
     setSavingClose(true)
     try {
-      await handlesRef.current.get(key)?.flush()
+      const tab = tabs.find((t) => t.key === key)
+      const entry = mdDraftsRef.current.get(key)
+      if (tab && tab.kind !== 'pdf' && entry) {
+        const put = tab.kind === 'notes' ? putNotes : putDiscussion
+        await put(tab.paperId, entry.draft)
+      } else {
+        await handlesRef.current.get(key)?.flush()
+      }
     } catch (err) {
-      console.error('Failed to embed PDF annotations:', err)
-    } finally {
+      console.error('Failed to save before closing tab:', err)
+      // The write failed — keep the tab open and the draft intact rather than
+      // closing and silently losing the edit. Mirrors PDF flush keeping dirty.
       setSavingClose(false)
       setPendingClose(null)
-      removeTab(key)
+      return
     }
-  }, [pendingClose, removeTab])
+    setSavingClose(false)
+    setPendingClose(null)
+    removeTab(key)
+  }, [pendingClose, removeTab, tabs])
 
   const confirmDiscard = useCallback(() => {
     const key = pendingClose
     if (!key) return
     handlesRef.current.get(key)?.discard()
     setPendingClose(null)
-    removeTab(key)
+    removeTab(key) // also drops the md draft entry
   }, [pendingClose, removeTab])
 
   const cancelClose = useCallback(() => setPendingClose(null), [])
 
+  // The tab pending close, and whether it is an md tab (drives the dialog copy
+  // and the body noun: an md tab has unsaved "edits", not "annotations").
+  const pendingTab = pendingClose
+    ? tabs.find((t) => t.key === pendingClose) ?? null
+    : null
+  const pendingIsMd = pendingTab !== null && pendingTab.kind !== 'pdf'
+
   // Warn before a full-page unload (browser/tab close, reload) if any PDF has
-  // unsaved annotations — the in-app close prompt cannot run there.
+  // unsaved annotations OR any md tab has an unsaved draft — the in-app close
+  // prompt cannot run there.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      for (const handle of handlesRef.current.values()) {
-        if (handle.isDirty()) {
-          e.preventDefault()
-          e.returnValue = ''
-          return
-        }
+      const pdfDirty = [...handlesRef.current.values()].some((h) => h.isDirty())
+      const mdDirty = [...mdDraftsRef.current.values()].some(
+        (d) => d.draft !== d.savedText,
+      )
+      if (pdfDirty || mdDirty) {
+        e.preventDefault()
+        e.returnValue = ''
+        return
       }
     }
     window.addEventListener('beforeunload', onBeforeUnload)
@@ -399,9 +520,14 @@ export default function App() {
             if (tab) selectPaper(tab.paperId)
           }}
           onClose={closeTab}
-          onOpenPaper={openPdf}
+          onOpenPaper={openWikilink}
           onRegisterPdf={registerPdf}
+          onNotify={notify}
           mdJump={mdJump}
+          mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
+          onMdBeginEdit={mdBeginEdit}
+          onMdDraftChange={mdDraftChange}
+          onMdEndEdit={mdEndEdit}
         />
         <Cockpit
           paper={cockpitPaper}
@@ -414,13 +540,16 @@ export default function App() {
       </div>
       {pendingClose && (
         <SaveDialog
-          label={tabs.find((t) => t.key === pendingClose)?.label ?? pendingClose}
+          label={pendingTab?.label ?? pendingClose}
           saving={savingClose}
           onSave={confirmSave}
           onDiscard={confirmDiscard}
           onCancel={cancelClose}
+          title={pendingIsMd ? 'Save edits?' : undefined}
+          bodyNoun={pendingIsMd ? 'unsaved edits' : undefined}
         />
       )}
+      {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
   )
 }
