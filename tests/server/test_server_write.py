@@ -1,7 +1,8 @@
 """Whitelist write-endpoint tests for the litman webUI server (A3).
 
 Covers the three invariant #16 first-class direct writes, each atomically
-overwriting one authored file via ``staged_write``:
+writing one authored file via ``staged_write`` (notes/discussion are
+create-or-overwrite, paper.pdf is overwrite-only):
 
 * ``PUT /api/paper/{id}/pdf-annotations`` → paper.pdf
 * ``PUT /api/paper/{id}/notes``          → notes.md (with wikilink reminder)
@@ -193,15 +194,23 @@ def test_put_notes_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
     assert resp.json()["detail"] == "Invalid paper id: 'foo..bar'."
 
 
-def test_put_notes_missing_file_404(vault_with_paper: tuple[Path, str]) -> None:
-    """Whitelist is OVERWRITE-only: no notes.md on disk → 404, never create."""
+def test_put_notes_creates_when_absent(vault_with_paper: tuple[Path, str]) -> None:
+    """notes.md is CREATE-or-overwrite: an absent file is created, not 404'd.
+
+    (``lit add`` scaffolds notes.md, but a paper can still lack it; discussion.md
+    is never scaffolded, so the GUI must be able to start one — same code path.)
+    """
     vault, paper_id = vault_with_paper
     notes_path = vault / "papers" / paper_id / "notes.md"
     assert not notes_path.exists()
 
-    resp = _client(vault).put(f"/api/paper/{paper_id}/notes", json={"text": "x"})
-    assert resp.status_code == 404
-    assert not notes_path.exists()
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/notes", json={"text": "# Notes\n\nfirst note\n"}
+    )
+    assert resp.status_code == 200
+    on_disk = notes_path.read_text(encoding="utf-8")
+    assert "first note" in on_disk
+    assert WIKILINK_REMINDER in on_disk  # reminder injected on create too
 
 
 def test_put_notes_empty_text_400(vault_with_paper: tuple[Path, str]) -> None:
@@ -285,16 +294,37 @@ def test_put_discussion_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
     assert resp.json()["detail"] == "Invalid paper id: 'foo..bar'."
 
 
-def test_put_discussion_missing_file_404(
+def test_put_discussion_creates_when_absent(
     vault_with_paper: tuple[Path, str],
 ) -> None:
+    """discussion.md is CREATE-or-overwrite — ``lit add`` never scaffolds it, so
+    the first GUI save creates the file (the dogfood case that exposed the bug).
+    """
     vault, paper_id = vault_with_paper
     disc_path = vault / "papers" / paper_id / "discussion.md"
     assert not disc_path.exists()
 
-    resp = _client(vault).put(f"/api/paper/{paper_id}/discussion", json={"text": "x"})
-    assert resp.status_code == 404
-    assert not disc_path.exists()
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/discussion",
+        json={"text": "# Discussion\n\nfirst thought\n"},
+    )
+    assert resp.status_code == 200
+    on_disk = disc_path.read_text(encoding="utf-8")
+    assert on_disk == "# Discussion\n\nfirst thought\n"  # exact, no reminder
+    assert WIKILINK_REMINDER not in on_disk
+
+
+def test_put_md_unknown_paper_404(vault_with_paper: tuple[Path, str]) -> None:
+    """A valid-format id with no ``papers/{id}/`` dir → 404 for both md endpoints:
+    create-or-overwrite still requires the paper to exist (no stray files)."""
+    vault, _ = vault_with_paper
+    ghost = "2099_Nobody_Missing"
+    assert not (vault / "papers" / ghost).exists()
+    for doc in ("notes", "discussion"):
+        resp = _client(vault).put(f"/api/paper/{ghost}/{doc}", json={"text": "x"})
+        assert resp.status_code == 404, doc
+        assert resp.json()["detail"] == f"No such paper: {ghost!r}."
+    assert not (vault / "papers" / ghost).exists()
 
 
 def test_put_discussion_empty_text_400(

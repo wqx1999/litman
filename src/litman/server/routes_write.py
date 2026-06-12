@@ -7,7 +7,8 @@ retrieval, so they may be written directly — but ALWAYS through
 ``core/atomic.py`` ``staged_write`` (atomic ``os.replace``), never a naive open.
 
 Phase 2 wired the PDF-annotation overwrite; phase 3a adds the notes.md and
-discussion.md overwrites (the other two whitelist members). None of these
+discussion.md writes (create-or-overwrite; the other two whitelist members).
+None of these
 handlers scan the vault, touch metadata / INDEX / TAXONOMY, or open any second
 write path. The vault is read from ``request.app.state.vault`` (set by
 :func:`litman.server.create_app`), so nothing here assumes a path.
@@ -91,18 +92,20 @@ async def put_notes(request: Request, paper_id: str) -> dict[str, object]:
     the edit stripped it (idempotent: present → returned unchanged), matching the
     heal-on-read-close behaviour so the convention survives a human rewrite.
 
-    Mirrors :func:`put_pdf_annotations`: reject a traversal-style id → 404,
-    require the file to already exist (OVERWRITE-only whitelist) → 404 if absent,
-    and go through ``staged_write`` so a crash mid-write can never tear the note.
+    Reject a traversal-style id → 404, and require the PAPER to exist (its
+    ``papers/{id}/`` dir) → 404 if absent. The notes.md file itself is
+    CREATE-or-overwrite: unlike paper.pdf (which only ``lit add`` produces),
+    notes.md / discussion.md are whitelist members the GUI may create — and in
+    practice must, since ``lit add`` scaffolds notes.md but never discussion.md.
+    Goes through ``staged_write`` so a crash mid-write can never tear the note.
     """
     vault = request.app.state.vault
 
     if not is_valid_id(paper_id):
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
 
-    notes_path = vault / "papers" / paper_id / "notes.md"
-    if not notes_path.is_file():
-        raise HTTPException(status_code=404, detail=f"No notes.md for {paper_id!r}.")
+    if not (vault / "papers" / paper_id).is_dir():
+        raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
 
     text = await _md_text_body(request)
     healed = ensure_wikilink_reminder(text)
@@ -115,22 +118,21 @@ async def put_notes(request: Request, paper_id: str) -> dict[str, object]:
 
 @router.put("/paper/{paper_id}/discussion")
 async def put_discussion(request: Request, paper_id: str) -> dict[str, object]:
-    """Atomically overwrite ``papers/{id}/discussion.md`` with the posted text.
+    """Atomically write ``papers/{id}/discussion.md`` with the posted text.
 
     Same whitelist path as :func:`put_notes` (full overwrite, never an append:
     per-line append is the agent SOP and has no GUI caller), but WITHOUT the
-    wikilink reminder — discussion.md carries no scaffold nudge.
+    wikilink reminder — discussion.md carries no scaffold nudge. Like notes it is
+    CREATE-or-overwrite: ``lit add`` never scaffolds discussion.md, so the first
+    GUI save for a paper is always a create.
     """
     vault = request.app.state.vault
 
     if not is_valid_id(paper_id):
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
 
-    discussion_path = vault / "papers" / paper_id / "discussion.md"
-    if not discussion_path.is_file():
-        raise HTTPException(
-            status_code=404, detail=f"No discussion.md for {paper_id!r}."
-        )
+    if not (vault / "papers" / paper_id).is_dir():
+        raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
 
     text = await _md_text_body(request)
 

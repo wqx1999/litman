@@ -168,12 +168,14 @@ export default function MdView({
   }
 
   const enterEdit = useCallback(() => {
-    // A missing file can't be opened for edit here: the whitelist write is
-    // overwrite-only (the server 404s on a create), so seed from "" only when a
-    // file exists. text===null means absent → stay in the empty-state view.
-    if (text === null) return
-    onBeginEdit(tabKey, text)
-  }, [text, onBeginEdit, tabKey])
+    // notes.md / discussion.md are create-or-overwrite, so editing is allowed
+    // even when the file is absent (text === null) — a first edit starts blank
+    // and the save creates the file (lit add never scaffolds discussion.md).
+    // Wait for the fetch to settle (loaded) so an existing file seeds the
+    // textarea from its real content, not a transient null.
+    if (!loaded) return
+    onBeginEdit(tabKey, text ?? '')
+  }, [loaded, text, onBeginEdit, tabKey])
 
   const save = useCallback(async () => {
     if (saving) return
@@ -256,16 +258,17 @@ export default function MdView({
             </button>
           </div>
         ) : (
-          !missing && (
-            <span className="font-mono text-xs font-normal text-stone-400">
-              double-click to edit
-            </span>
-          )
+          <span className="font-mono text-xs font-normal text-stone-400">
+            {missing ? 'double-click to start writing' : 'double-click to edit'}
+          </span>
         )}
       </div>
       {missing ? (
-        <div className="flex-1 overflow-auto p-6 text-sm text-stone-500">
-          No {doc}.md for this paper yet.
+        <div
+          className="flex-1 cursor-text overflow-auto p-8 text-sm text-stone-400"
+          onDoubleClick={enterEdit}
+        >
+          No {doc}.md for this paper yet — double-click to start writing.
         </div>
       ) : editing ? (
         <textarea
