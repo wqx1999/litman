@@ -38,7 +38,7 @@ def vault_with_paper(tmp_path: Path) -> tuple[Path, str]:
         "type: research\n"
         "status: inbox\n"
         "priority: B\n"
-        "read-date:\n"
+        "read-date: '2026-05-01'\n"
         "last-revisited:\n"
         "related: []\n"
         "contradicts: []\n"
@@ -70,7 +70,7 @@ def test_revisit_writes_today_by_default(
     meta = _read_meta(vault, paper_id)
     assert meta["last-revisited"] == _today_iso()
     # read-date untouched — revisit is its own semantic field.
-    assert meta["read-date"] is None
+    assert meta["read-date"] == "2026-05-01"
 
 
 def test_revisit_with_explicit_date_override(
@@ -106,3 +106,30 @@ def test_revisit_rejects_malformed_and_relaxed_dates(
     meta = _read_meta(vault, paper_id)
     assert meta["last-revisited"] is None
     assert meta["updated-at"] == meta["created-at"]
+
+
+def test_revisit_requires_read_date(tmp_path: Path) -> None:
+    """A revisit presupposes a first read: revisiting a paper that has no
+    read-date is refused, and nothing is written (invariant #11)."""
+    vault = create_vault(tmp_path)
+    paper_id = "2024_Unread"
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Unread\n"
+        "title: Unread\n"
+        "authors:\n"
+        "  - Foo, Alice\n"
+        "year: 2024\n"
+        "created-at: '2026-04-28T10:00:00+02:00'\n"
+        "updated-at: '2026-04-28T10:00:00+02:00'\n"
+        "status: inbox\n"
+        "read-date:\n"
+        "last-revisited:\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["revisit", paper_id, "--library", str(vault)])
+    assert result.exit_code != 0
+    # nothing written — last-revisited stays empty.
+    assert _read_meta(vault, paper_id)["last-revisited"] is None

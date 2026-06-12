@@ -35,7 +35,7 @@ from ruamel.yaml import YAML
 from litman.core.atomic import staged_write
 from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
 from litman.core.correctors import reconcile_derived
-from litman.core.dates import now_iso
+from litman.core.dates import date_ordering_violations, now_iso
 from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
@@ -403,6 +403,26 @@ def _apply_modify(
             diffs.append((key, before, after))
         if key in RELATION_TAG_FIELDS:
             relation_ops.append(("rm", key, value))
+
+    # Date-ordering guard (invariant #11): when this op touched read-date or
+    # last-revisited, the resulting pair must stay consistent — neither in the
+    # future, a revisit implies a first read, and read-date never postdates
+    # last-revisited. Gated on the diff so an unrelated edit (e.g. --set
+    # priority=A) is never blocked by pre-existing data; surfacing pre-existing
+    # ordering issues is health-check's job, not this write's. `lit read`'s
+    # idempotence stops the common overwrite foot-gun; this catches the
+    # `lit modify` / hand-edit paths.
+    if any(k in ("read-date", "last-revisited") for k, _, _ in diffs):
+        violations = date_ordering_violations(
+            metadata.get("read-date"), metadata.get("last-revisited")
+        )
+        if violations:
+            raise ModifyError(
+                "Refusing to write: "
+                + "; ".join(violations)
+                + ". read-date is the immutable first-read stamp; log a return "
+                "visit with `lit revisit` instead."
+            )
 
     # ----- ADR-012 auto double-write -----
     # For each relation tag the user wrote, mirror it onto the opposite

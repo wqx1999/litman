@@ -12,20 +12,15 @@ backdate when logging older revisits. Same-day repeats are no-ops.
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 import click
 
 from litman.commands.modify import _apply_modify
-from litman.core.dates import validate_iso_date
+from litman.core.dates import today_iso, validate_iso_date
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import heal_wikilink_reminder
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-
-
-def _today_iso() -> str:
-    return datetime.now().astimezone().date().isoformat()
 
 
 @click.command("revisit")
@@ -78,10 +73,14 @@ def revisit_cmd(
 
     Distinct from lit read (which stamps read-date, the first
     read); invariant #11 keeps the two fields semantically separate.
+    A revisit presupposes a first read, so the paper must already have a
+    read-date that does not postdate the revisit (mark it read first with
+    lit read).
+
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.
     """
-    date_value = validate_iso_date(date_str) if date_str else _today_iso()
+    date_value = validate_iso_date(date_str) if date_str else today_iso()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     _apply_modify(

@@ -87,8 +87,11 @@ def test_read_with_explicit_date_override(
     assert meta["read-date"] == "2026-05-11"
 
 
-def test_read_same_day_is_noop(vault_with_paper: tuple[Path, str]) -> None:
-    """Re-running with the same date must not bump updated-at."""
+def test_read_is_noop_when_already_set(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """read-date is the immutable first-read stamp: a second `lit read` (even
+    with a different date) leaves it unchanged and does not bump updated-at."""
     vault, paper_id = vault_with_paper
     runner = CliRunner()
     runner.invoke(
@@ -98,17 +101,41 @@ def test_read_same_day_is_noop(vault_with_paper: tuple[Path, str]) -> None:
     meta_after_first = _read_meta(vault, paper_id)
     first_updated_at = meta_after_first["updated-at"]
 
+    # A later re-read must NOT overwrite the first-read date.
     result = runner.invoke(
         cli,
-        ["read", paper_id, "--date", "2026-05-11", "--library", str(vault)],
+        ["read", paper_id, "--date", "2026-06-01", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
-    assert "No-op" in result.output
+    assert "already read on 2026-05-11" in result.output
 
     meta_after_second = _read_meta(vault, paper_id)
     assert meta_after_second["read-date"] == "2026-05-11"
-    # updated-at unchanged — invariant #11: no real change → no timestamp bump.
+    # updated-at unchanged — nothing was written.
     assert meta_after_second["updated-at"] == first_updated_at
+
+
+def test_read_date_correctable_via_modify(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Escape hatch (friction as a feature): `lit read` won't overwrite a set
+    read-date, but the explicit `lit modify --set read-date=` still can."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["read", paper_id, "--date", "2026-05-11", "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "read-date=2026-05-09",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["read-date"] == "2026-05-09"
 
 
 def test_read_paper_not_found(vault_with_paper: tuple[Path, str]) -> None:

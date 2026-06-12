@@ -47,7 +47,11 @@ from ruamel.yaml import YAML, YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
-from litman.core.dates import is_iso_date, is_iso_datetime
+from litman.core.dates import (
+    date_ordering_violations,
+    is_iso_date,
+    is_iso_datetime,
+)
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
@@ -314,6 +318,26 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                         hint=f"correct via `lit modify {pid} --set {field}=<YYYY-MM-DD>`",
                     )
                 )
+        # Date-ordering (invariant #11): read-date ≤ last-revisited ≤ today,
+        # and a last-revisited implies a read-date. Shares date_ordering_
+        # violations with the modify-time guard so the two cannot drift. The
+        # format loop above already reported unparseable values, which the
+        # helper skips.
+        for msg in date_ordering_violations(
+            p.get("read-date"), p.get("last-revisited")
+        ):
+            out.append(
+                Issue(
+                    category="schema",
+                    severity="error",
+                    paper_id=pid,
+                    message=msg,
+                    hint=(
+                        "read-date is the first-read stamp; correct via "
+                        f"`lit modify {pid} --set read-date=<YYYY-MM-DD>`"
+                    ),
+                )
+            )
     return out
 
 

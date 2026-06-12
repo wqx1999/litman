@@ -5,27 +5,26 @@ compute today's date + assemble ``--set`` syntax + invoke modify) into
 one command. Date defaults to today (ISO 8601, local timezone); pass
 ``--date <YYYY-MM-DD>`` to backdate when logging older reads.
 
-Repeating ``lit read <id>`` the same day is a no-op: ``read-date`` is
-already that day, so ``updated-at`` is not bumped either. Mirrors
-``lit modify`` no-op semantics via the shared ``_apply_modify`` backend.
+``read-date`` is the immutable first-read stamp: once set, ``lit read`` is
+a no-op and will not overwrite it (so the first read can never be pushed
+past a later ``last-revisited``). Log a return visit with ``lit revisit``;
+correct a mistaken date through ``lit modify --set read-date=`` — the repair
+path is deliberately more explicit than the everyday one (friction as a
+feature).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 import click
 
 from litman.commands.modify import _apply_modify
-from litman.core.dates import validate_iso_date
+from litman.core.dates import today_iso, validate_iso_date
+from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import heal_wikilink_reminder
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-
-
-def _today_iso() -> str:
-    return datetime.now().astimezone().date().isoformat()
 
 
 @click.command("read")
@@ -71,17 +70,37 @@ def read_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Mark a paper as read by stamping read-date.
+    """Mark a paper as read by stamping read-date (the first-read date).
 
     Equivalent to lit modify <id> --set read-date=<YYYY-MM-DD>.
     Defaults to today (local timezone); use --date to backdate.
 
+    read-date is the immutable first-read stamp: if it is already set this
+    command is a no-op and leaves it unchanged. Log a return visit with
+    lit revisit; correct a wrong date with
+    lit modify <id> --set read-date=<YYYY-MM-DD>.
+
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.
     """
-    date_value = validate_iso_date(date_str) if date_str else _today_iso()
+    date_value = validate_iso_date(date_str) if date_str else today_iso()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
+    # read-date is the immutable "first read" stamp: once set, this command is
+    # a no-op so a re-read can't silently overwrite it (and push it past
+    # last-revisited). Correcting a wrong first-read date is deliberately less
+    # convenient — go through `lit modify` (friction as a feature: the everyday
+    # path can't foot-gun, the repair path is explicit). find_paper raises
+    # PaperNotFoundError for a ghost id.
+    existing = find_paper(vault, paper_id)
+    if existing.get("read-date"):
+        click.echo(
+            f"{paper_id} already read on {existing['read-date']}; "
+            "leaving read-date unchanged. Log a return visit with "
+            f"`lit revisit {paper_id}`, or correct a wrong date with "
+            f"`lit modify {paper_id} --set read-date=<YYYY-MM-DD>`."
+        )
+        return
     _apply_modify(
         vault,
         paper_id,

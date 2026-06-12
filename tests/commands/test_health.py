@@ -79,8 +79,8 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "type": fields.get("type", "research"),
         "status": fields.get("status", "deep-read"),
         "priority": fields.get("priority", "B"),
-        "read-date": None,
-        "last-revisited": None,
+        "read-date": fields.get("read_date"),
+        "last-revisited": fields.get("last_revisited"),
         "related": fields.get("related", []),
         "contradicts": fields.get("contradicts", []),
         "contradicted-by": fields.get("contradicted_by", []),
@@ -141,6 +141,36 @@ def test_schema_invalid_priority(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar", priority="X")
     issues = check_schema(vault, list_papers(vault))
     assert any(i.category == "schema" and "'priority'" in i.message for i in issues)
+
+
+def test_schema_clean_with_consistent_dates(vault: Path) -> None:
+    """read-date ≤ last-revisited ≤ today → no ordering issue (invariant #11)."""
+    _write_paper(
+        vault, "2024_Foo_Bar", read_date="2026-05-01", last_revisited="2026-05-10"
+    )
+    assert check_schema(vault, list_papers(vault)) == []
+
+
+def test_schema_flags_last_revisited_without_read_date(vault: Path) -> None:
+    """A revisit presupposes a first read: last-revisited set + read-date empty
+    is an ordering error."""
+    _write_paper(vault, "2024_Foo_Bar", last_revisited="2026-05-10")
+    issues = check_schema(vault, list_papers(vault))
+    assert any(
+        i.category == "schema" and "read-date is not" in i.message for i in issues
+    )
+
+
+def test_schema_flags_read_date_after_last_revisited(vault: Path) -> None:
+    """read-date later than last-revisited → ordering error."""
+    _write_paper(
+        vault, "2024_Foo_Bar", read_date="2026-05-20", last_revisited="2026-05-10"
+    )
+    issues = check_schema(vault, list_papers(vault))
+    assert any(
+        i.category == "schema" and "after last-revisited" in i.message
+        for i in issues
+    )
 
 
 # --- paper_dir_validity (merged id_consistency + invalid_paper_dirs, M30) ---

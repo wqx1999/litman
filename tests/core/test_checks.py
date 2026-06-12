@@ -125,9 +125,14 @@ def test_schema_malformed_semantic_date_errors(
 
 @pytest.mark.parametrize("field", ["read-date", "last-revisited"])
 def test_schema_semantic_date_none_and_valid_ok(vault: Path, field: str) -> None:
-    # None (not yet read/revisited) and a strict date both pass.
+    # None (not yet read/revisited) and a strict date both pass the format gate.
     assert check_schema(vault, [_minimal_paper(**{field: None})]) == []
-    assert check_schema(vault, [_minimal_paper(**{field: "2026-05-30"})]) == []
+    # last-revisited needs a read-date alongside it to satisfy the ordering
+    # rule (a revisit presupposes a first read); read-date alone is fine.
+    extra = {"read-date": "2026-05-01"} if field == "last-revisited" else {}
+    assert check_schema(
+        vault, [_minimal_paper(**{field: "2026-05-30", **extra})]
+    ) == []
 
 
 # ---------------------------------------------------------------------------
