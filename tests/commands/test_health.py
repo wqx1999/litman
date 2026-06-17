@@ -40,6 +40,7 @@ from litman.core.checks import (
 )
 from litman.core.document import list_papers
 from litman.core.library import create_vault
+from litman.core.notes import WIKILINK_REMINDER
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -643,6 +644,33 @@ def test_dangling_wikilinks_present_but_corrupt_paper_not_flagged(
     )
     _write_paper(vault, "A_a_a", notes="See [[X_x_x]] for context.")
     assert check_dangling_wikilinks(vault, list_papers(vault)) == []
+
+
+def test_dangling_wikilinks_ignores_seeded_reminder_comment(vault: Path) -> None:
+    # Regression: the wikilink-format reminder (core/notes.py WIKILINK_REMINDER)
+    # seeded into every notes.md and self-healed on each reading-session close
+    # embeds a literal ``[[paper-id]]`` inside an HTML comment to demonstrate the
+    # syntax. It is scaffolding, not a real edge, and must NOT be reported as a
+    # dangling same-vault link — otherwise every paper in the library trips this
+    # warning and drowns the real ones.
+    assert "[[paper-id]]" in WIKILINK_REMINDER  # guard: reminder still embeds it
+    _write_paper(vault, "A_a_a", notes=f"{WIKILINK_REMINDER}\n\nReal notes.\n")
+    assert check_dangling_wikilinks(vault, list_papers(vault)) == []
+
+
+def test_dangling_wikilinks_comment_stripping_is_scoped(vault: Path) -> None:
+    # Comment-stripping must only silence links INSIDE comments: a real dangling
+    # ``[[GHOST]]`` in body text is still flagged even when another dangling link
+    # is commented out in the same file.
+    _write_paper(
+        vault,
+        "A_a_a",
+        notes="<!-- ignore [[HIDDEN_x_y]] -->\nReal: [[GHOST_x_y]].\n",
+    )
+    issues = check_dangling_wikilinks(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert "[[GHOST_x_y]]" in issues[0].message
+    assert "HIDDEN_x_y" not in issues[0].message
 
 
 def test_health_missing_deleted_tag(vault: Path) -> None:

@@ -247,6 +247,18 @@ _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 # rename + cross-vault logic stay agnostic to it.
 _DELETED_SUFFIX = " (deleted)"
 
+# HTML comments are scaffolding, not graph edges. The wikilink-format reminder
+# seeded into every notes.md (core/notes.py WIKILINK_REMINDER) embeds a literal
+# ``[[paper-id]]`` to demonstrate the syntax; left in the scan it false-positives
+# as a dangling same-vault link on every paper — and since the reminder is
+# self-healed back on each reading-session close (b3ecb9c), the noise is
+# guaranteed library-wide. A commented-out ``[[id]]`` is "not a real reference"
+# the same way commented-out code does not run, so check_dangling_wikilinks
+# strips comment regions before matching. Only that check strips: rename /
+# annotate rewrite text in place and must preserve comments, and the reminder's
+# ``paper-id`` placeholder never resolves to a real id so it is inert there.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
 
 # ---------------------------------------------------------------------------
 # Per-paper / cross-paper checks
@@ -823,6 +835,11 @@ def check_dangling_wikilinks(
                 )
             )
             continue
+        # Strip HTML comments (e.g. the seeded wikilink reminder) before
+        # scanning — a commented-out ``[[id]]`` is not a real reference. The
+        # finditer AND the deletion-tag peek below both run on this stripped
+        # text so match offsets stay mutually consistent.
+        scan_text = _HTML_COMMENT_RE.sub("", text)
         # Same-vault dedup must account for per-occurrence tag state: the
         # same ``[[X]]`` can appear both ``(deleted)``-tagged and bare in
         # one file, and only the bare one is a missing-tag drift. Keying on
@@ -830,14 +847,14 @@ def check_dangling_wikilinks(
         # seen (M24.2 regression). Cross-vault links carry no tag, so their
         # dedup collapses on ``raw`` regardless of the (always-False) flag.
         seen: set[tuple[str, bool]] = set()
-        for m in _WIKILINK_RE.finditer(text):
+        for m in _WIKILINK_RE.finditer(scan_text):
             raw = m.group(1).strip()
             if not raw:
                 continue
             # Peek at the char(s) after this link's ``]]`` for the deletion
             # marker (M24). Done on the slice, not the regex, so the form
             # rename + cross-vault logic see is unchanged.
-            has_deleted_tag = text.startswith(_DELETED_SUFFIX, m.end())
+            has_deleted_tag = scan_text.startswith(_DELETED_SUFFIX, m.end())
             key = (raw, has_deleted_tag)
             if key in seen:
                 continue
