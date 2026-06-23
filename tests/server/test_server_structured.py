@@ -367,6 +367,75 @@ def test_post_revisit_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# POST /unread — guarded reversal of read (clears read-date + last-revisited)
+# ---------------------------------------------------------------------------
+
+
+def test_post_unread_clears_read_date(vault_with_paper: tuple[Path, str]) -> None:
+    """A4: unread clears read-date through the backend and reprojects INDEX."""
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+    client.post(f"/api/paper/{paper_id}/read", json={"date": "2026-05-11"})
+    assert _meta(vault, paper_id)["read-date"] == "2026-05-11"
+
+    resp = client.post(f"/api/paper/{paper_id}/unread")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": True, "message": ""}
+    # TRUTH cleared …
+    assert _meta(vault, paper_id)["read-date"] is None
+    # … DERIVED reprojected to match.
+    assert _index_paper(vault, paper_id)["read-date"] is None
+    # M32: metadata.yaml re-locked read-only after the atomic write.
+    assert not os.access(vault / "papers" / paper_id / "metadata.yaml", os.W_OK)
+
+
+def test_post_unread_clears_read_and_revisit(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A revisit record cannot outlive its read-date (date-ordering), so unread
+    clears BOTH stamps in one atomic write — exactly what the confirm dialog
+    warns about."""
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+    client.post(f"/api/paper/{paper_id}/read", json={"date": "2026-05-11"})
+    client.post(f"/api/paper/{paper_id}/revisit", json={"date": "2026-06-01"})
+    assert _meta(vault, paper_id)["last-revisited"] == "2026-06-01"
+
+    resp = client.post(f"/api/paper/{paper_id}/unread")
+    assert resp.status_code == 200
+    assert resp.json()["changed"] is True
+    meta = _meta(vault, paper_id)
+    assert meta["read-date"] is None
+    assert meta["last-revisited"] is None
+
+
+def test_post_unread_not_read_is_noop(vault_with_paper: tuple[Path, str]) -> None:
+    """An already-unread paper is a no-op (changed: False), not an error — the
+    backend never writes a spurious update."""
+    vault, paper_id = vault_with_paper
+    assert _meta(vault, paper_id)["read-date"] is None
+
+    resp = _client(vault).post(f"/api/paper/{paper_id}/unread")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["changed"] is False
+    assert "not marked read" in body["message"]
+    assert _meta(vault, paper_id)["read-date"] is None
+
+
+def test_post_unread_unknown_paper_404(vault_with_paper: tuple[Path, str]) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).post("/api/paper/2099_Nobody_Missing/unread")
+    assert resp.status_code == 404
+
+
+def test_post_unread_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
+    vault, _ = vault_with_paper
+    resp = _client(vault).post("/api/paper/foo..bar/unread")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /fixed-enums
 # ---------------------------------------------------------------------------
 

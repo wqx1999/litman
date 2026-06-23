@@ -6,6 +6,7 @@ import {
   linkProject,
   postRead,
   postRevisit,
+  postUnread,
   putMetadata,
   unlinkProject,
 } from '../api'
@@ -320,6 +321,69 @@ function Relations({
   )
 }
 
+/** Confirm dialog for the guarded unread (problem 5). Clearing read-date
+ * reverses an immutable-by-default stamp, so it sits behind a default-No confirm
+ * (Cancel is autofocused); when a revisit record exists the body spells out that
+ * it is dropped too (the date-ordering rule forbids a revisit without a first
+ * read). Mirrors the macOS-style modal shell used by the TopBar project dialog. */
+function UnreadConfirm({
+  readDate,
+  lastRevisited,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  readDate: string | null
+  lastRevisited: string | null
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Mark as unread?</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          This clears the first-read date
+          {readDate ? ` (${readDate})` : ''}, returning this paper to unread.
+        </p>
+        {lastRevisited != null && (
+          <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-700">
+            The last revisit ({lastRevisited}) will also be cleared — a revisit
+            cannot exist without a first read. This cannot be undone.
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Mark unread
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Curation cockpit with structured write controls (Phase 3b).
  *
  * Dropdowns (status/priority/type), editable tag chips (topics/methods/data),
@@ -351,6 +415,10 @@ export default function Cockpit({
   // click can't race the first (the backend serialises, but a double-fire would
   // toast a confusing intermediate state).
   const [writing, setWriting] = useState(false)
+  // Unread-confirm dialog (problem 5): clearing read-date reverses an
+  // immutable-by-default stamp, so it sits behind a default-No confirm that also
+  // warns the revisit record is dropped. Only reachable when readDate != null.
+  const [showUnread, setShowUnread] = useState(false)
 
   // The currently-shown paper id, refreshed synchronously each render and read
   // inside the async handlers to drop a response that lands after the user has
@@ -362,6 +430,7 @@ export default function Cockpit({
   useEffect(() => {
     setCopied(null)
     setCiteWarn(null)
+    setShowUnread(false)
   }, [paper?.id])
 
   // Per-paper copy actions live here (the selected-paper context), not the top
@@ -469,6 +538,16 @@ export default function Cockpit({
     if (!paper) return
     const id = paper.id
     runWrite(() => postRevisit(id))
+  }
+
+  // Guarded unread (problem 5): clears read-date + last-revisited in one atomic
+  // backend write. Gated behind UnreadConfirm; runWrite refreshes the list so
+  // the paper rejoins the unread smart-lists.
+  function doUnread() {
+    if (!paper) return
+    const id = paper.id
+    setShowUnread(false)
+    runWrite(() => postUnread(id))
   }
 
   const readDate = paper?.['read-date'] ?? null
@@ -641,6 +720,18 @@ export default function Cockpit({
 
             <Field label="Read / Revisit">
               <div className="flex items-center gap-1.5">
+                {readDate != null && (
+                  <button
+                    type="button"
+                    aria-label="Mark as unread"
+                    title="Mark as unread (undo the first-read stamp)"
+                    disabled={writing}
+                    onClick={() => setShowUnread(true)}
+                    className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
+                  >
+                    ↺
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={writing || readDate != null}
@@ -672,6 +763,15 @@ export default function Cockpit({
                 <div className="mt-1 text-[11px] text-stone-500">
                   last revisited {lastRevisited}
                 </div>
+              )}
+              {showUnread && (
+                <UnreadConfirm
+                  readDate={readDate}
+                  lastRevisited={lastRevisited}
+                  busy={writing}
+                  onCancel={() => setShowUnread(false)}
+                  onConfirm={doUnread}
+                />
               )}
             </Field>
 

@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 from litman.commands.modify import _apply_modify
-from litman.commands.read import apply_read
+from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
 from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
@@ -244,6 +244,32 @@ async def post_revisit(request: Request, paper_id: str) -> dict[str, object]:
     except ModifyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True}
+
+
+@router.post("/paper/{paper_id}/unread")
+async def post_unread(request: Request, paper_id: str) -> dict[str, object]:
+    """Clear read-date (+ dependent last-revisited) through the modify backend.
+
+    The guarded reversal of ``POST /read`` — the "I mis-clicked Mark read"
+    repair. Reuses :func:`litman.commands.read.apply_unread`, which clears both
+    stamps in ONE atomic ``_apply_modify`` (the date-ordering guard forbids a
+    lone ``last-revisited``, so the two must clear together; any revisit record
+    is discarded — the cockpit's confirm dialog, default-No, warns about that
+    loss). read-date is immutable-by-default (invariant #11); this constrained
+    undo is the GUI's front-door repair, while the CLI's stays ``lit modify``.
+
+    No body. An already-unread paper is a no-op (``changed: False``), not an
+    error. ModifyError → 400, PaperNotFoundError → 404.
+    """
+    _require_valid_id(paper_id)
+    vault = request.app.state.vault
+    try:
+        changed, message = apply_unread(vault, paper_id)
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ModifyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "changed": changed, "message": message}
 
 
 @router.post("/paper/{paper_id}/project")

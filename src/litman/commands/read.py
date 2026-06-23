@@ -72,6 +72,46 @@ def apply_read(vault: Path, paper_id: str, date_value: str) -> tuple[bool, str]:
     return True, ""
 
 
+def apply_unread(vault: Path, paper_id: str) -> tuple[bool, str]:
+    """Clear ``read-date`` (and its dependent ``last-revisited``) on one paper.
+
+    The guarded reversal of :func:`apply_read`, and the single backend for the
+    webUI's ``POST /api/paper/{id}/unread`` — the "I mis-clicked Mark read"
+    repair. There is deliberately NO ``lit unread`` sugar command: read-date is
+    the immutable-by-default first-read stamp (invariant #11), so the CLI repair
+    path stays the explicit ``lit modify --set read-date=`` (friction as a
+    feature); the GUI gets this constrained undo behind a confirm dialog instead.
+
+    The date-ordering guard forbids a ``last-revisited`` without a ``read-date``,
+    so clearing read-date REQUIRES clearing last-revisited in the same write —
+    the two stamps are unset atomically (clearing last-revisited is a no-op when
+    it was already empty). Any revisit record is therefore discarded; warning the
+    user of that loss is the caller's job (the GUI confirm dialog, default-No).
+
+    ``paper_id`` must already be resolved. Goes through ``_apply_modify``, so the
+    write is the same atomic validate + staged_write + INDEX/views recompute as
+    every other structured edit — no second write path (invariant #16).
+
+    Returns:
+        ``(changed, message)``. ``changed`` is ``False`` on the
+        not-currently-read no-op (``message`` explains); ``True`` when the stamps
+        were cleared (``message`` empty — ``_apply_modify`` prints its own diff).
+
+    Raises:
+        PaperNotFoundError: no paper with ``paper_id`` (via ``find_paper``).
+    """
+    existing = find_paper(vault, paper_id)
+    if not existing.get("read-date"):
+        return False, f"{paper_id} is not marked read; nothing to undo."
+    changed = _apply_modify(
+        vault,
+        paper_id,
+        set_ops=("read-date=", "last-revisited="),
+        skip_set_noop=True,
+    )
+    return changed, ""
+
+
 @click.command("read")
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id

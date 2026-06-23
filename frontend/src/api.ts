@@ -213,6 +213,16 @@ export function postRevisit(id: string, date?: string): Promise<{ ok: boolean }>
   )
 }
 
+/** Clear read-date (+ dependent last-revisited) through the modify backend —
+ * the guarded reversal of `postRead`. An already-unread paper is a no-op
+ * (changed: false). The caller's confirm dialog warns that any revisit record
+ * is discarded (the date-ordering rule forbids a revisit without a first read). */
+export function postUnread(
+  id: string,
+): Promise<{ ok: boolean; changed: boolean; message: string }> {
+  return mutateJSON(`/api/paper/${encodeURIComponent(id)}/unread`, 'POST')
+}
+
 export function fetchProjects(): Promise<ProjectEntry[]> {
   return getJSON<ProjectEntry[]>('/api/projects')
 }
