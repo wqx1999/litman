@@ -24,6 +24,10 @@ interface Props {
   onToggleFocus: () => void
   /** Refresh the registered-project list + papers after a create/delete (P4). */
   onProjectsChanged: () => void
+  /** Switch the active vault (3c-2) — App handles the confirm + re-fetch. */
+  onSwitchVault: (name: string) => void
+  /** A vault switch is in flight — disables the selector to block re-entry. */
+  switching: boolean
   /** Toast a message (surfaces the backend's raw error verbatim). */
   notify: (msg: string) => void
 }
@@ -70,6 +74,8 @@ export default function TopBar({
   focusMode,
   onToggleFocus,
   onProjectsChanged,
+  onSwitchVault,
+  switching,
   notify,
 }: Props) {
   const [dark, toggleDark] = useDarkMode()
@@ -86,9 +92,16 @@ export default function TopBar({
 
       <select
         value={vaults?.active ?? ''}
-        disabled
-        title="Vault switching lands in Phase 3"
-        className="rounded-md border border-stone-300 bg-stone-100 px-2 py-1 text-sm text-stone-500 shadow-sm"
+        onChange={(e) => onSwitchVault(e.target.value)}
+        disabled={switching || !vaults?.active || vaults.vaults.length < 2}
+        title={
+          !vaults?.active
+            ? 'No active vault'
+            : vaults.vaults.length < 2
+              ? 'Only one vault registered'
+              : 'Switch the active vault (applies globally)'
+        }
+        className="rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-700 shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:bg-stone-100 disabled:text-stone-500"
       >
         {vaults?.active ? (
           vaults.vaults.map((v) => (

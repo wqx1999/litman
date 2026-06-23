@@ -7,6 +7,7 @@ import {
   fetchSearch,
   fetchTaxonomy,
   fetchVaults,
+  putActiveVault,
   putDiscussion,
   putNotes,
 } from './api'
@@ -27,6 +28,7 @@ import type {
   VaultsPayload,
 } from './types'
 import TopBar from './topbar/TopBar'
+import SwitchVaultDialog from './topbar/SwitchVaultDialog'
 import BrowsePanel from './nav/BrowsePanel'
 import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
 import { emptyFilters } from './nav/BrowsePanel'
@@ -116,6 +118,11 @@ export default function App() {
   // save is in flight.
   const [pendingClose, setPendingClose] = useState<string | null>(null)
   const [savingClose, setSavingClose] = useState(false)
+
+  // Vault switch (3c-2): the target awaiting confirmation, and whether the
+  // switch (flush + PUT + reload) is in flight.
+  const [pendingVault, setPendingVault] = useState<string | null>(null)
+  const [switchingVault, setSwitchingVault] = useState(false)
 
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
@@ -527,6 +534,88 @@ export default function App() {
     })
   }, [leftCollapsed, cockpitCollapsed])
 
+  // --- Vault switch (3c-2) -------------------------------------------------
+  // Switching is global (registry active) + closes every tab. App owns the
+  // orchestration: flush any unsaved annotations/notes, PUT the switch (the
+  // server repoints in place), then reload all vault-scoped data and reset the
+  // tab / selection / filter state for the new vault.
+
+  const switchVault = useCallback(
+    (name: string) => {
+      if (!name || name === vaults?.active) return
+      setPendingVault(name)
+    },
+    [vaults],
+  )
+
+  // Unsaved tabs at the moment the confirm opens (PDF annotations + md drafts),
+  // for the dialog's "N will be saved" note. Recomputed when the dialog opens.
+  const dirtyTabCount = useMemo(() => {
+    let n = 0
+    for (const h of handlesRef.current.values()) if (h.isDirty()) n++
+    for (const d of mdDraftsRef.current.values()) if (d.draft !== d.savedText) n++
+    return n
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVault])
+
+  // Flush every dirty tab before a switch (the tabs are about to close). PDF
+  // annotations embed via their handle; md drafts PUT the lifted text. Throws on
+  // the first failure so the caller aborts the switch and keeps the edits.
+  const flushAllDirty = useCallback(async () => {
+    for (const handle of handlesRef.current.values()) {
+      if (handle.isDirty()) await handle.flush()
+    }
+    for (const [key, entry] of mdDraftsRef.current) {
+      if (entry.draft === entry.savedText) continue
+      const tab = tabs.find((t) => t.key === key)
+      if (tab && tab.kind !== 'pdf') {
+        const put = tab.kind === 'notes' ? putNotes : putDiscussion
+        await put(tab.paperId, entry.draft)
+      }
+    }
+  }, [tabs])
+
+  // Reload everything for the now-active vault and reset per-vault view state
+  // (the old vault's tabs / selection / filters / scope no longer apply).
+  const reloadForVault = useCallback(() => {
+    setTabs([])
+    setActiveTab(null)
+    setSelectedId(null)
+    setCockpitPaper(null)
+    setMdDrafts(new Map())
+    // Tabs are gone, so each PdfView unmounts and fires registerPdf(null) on a
+    // now-absent key (a harmless delete); clear the handle map directly rather
+    // than wait on those callbacks.
+    handlesRef.current.clear()
+    setProjectScope(null)
+    setFilters(emptyFilters())
+    setSearch('')
+    setServerHits([])
+    setMdJump(null)
+    fetchVaults().then(setVaults)
+    fetchProjects().then(setProjects)
+    fetchTaxonomy().then(setTaxonomy)
+    fetchFixedEnums().then(setFixedEnums)
+    fetchPapers().then(setAllPapers)
+    loadList(listMode)
+  }, [loadList, listMode])
+
+  const confirmSwitchVault = useCallback(async () => {
+    const name = pendingVault
+    if (!name) return
+    setSwitchingVault(true)
+    try {
+      await flushAllDirty()
+      await putActiveVault(name)
+      reloadForVault()
+      setPendingVault(null)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSwitchingVault(false)
+    }
+  }, [pendingVault, flushAllDirty, reloadForVault, notify])
+
   return (
     <div className="flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
       <TopBar
@@ -541,6 +630,8 @@ export default function App() {
         focusMode={focusMode}
         onToggleFocus={toggleFocus}
         onProjectsChanged={refreshProjects}
+        onSwitchVault={switchVault}
+        switching={switchingVault}
         notify={notify}
       />
       <div className="flex min-h-0 flex-1">
@@ -606,6 +697,16 @@ export default function App() {
           onCancel={cancelClose}
           title={pendingIsMd ? 'Save edits?' : undefined}
           bodyNoun={pendingIsMd ? 'unsaved edits' : undefined}
+        />
+      )}
+      {pendingVault && (
+        <SwitchVaultDialog
+          targetName={pendingVault}
+          tabCount={tabs.length}
+          dirtyCount={dirtyTabCount}
+          switching={switchingVault}
+          onCancel={() => setPendingVault(null)}
+          onConfirm={confirmSwitchVault}
         />
       )}
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}

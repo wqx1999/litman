@@ -231,6 +231,17 @@ export function fetchVaults(): Promise<VaultsPayload> {
   return getJSON<VaultsPayload>('/api/vaults')
 }
 
+/** Switch the active vault through the `lit vault use` backend (3c-2). GLOBAL:
+ * sets the registry's active vault (affects `lit` in every terminal without an
+ * explicit --library/$LIT_LIBRARY) and repoints the running server in place, no
+ * restart. Throws the backend's VaultRegistryError (400) on an unknown name or a
+ * stale/missing vault path. */
+export function putActiveVault(
+  name: string,
+): Promise<{ ok: boolean; active: string; path: string }> {
+  return mutateJSON('/api/vaults/active', 'PUT', { name })
+}
+
 /** Link a paper to a registered project through the `lit link` backend
  * (invariant #16 second-class write). Throws the backend's raw LinkError
  * message (400) when the project is unregistered or its dir is missing. */
