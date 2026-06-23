@@ -578,6 +578,7 @@ export default function App() {
           vaultPath={vaultPath}
           taxonomy={taxonomy}
           projects={projects}
+          allPapers={allPapers}
           fixedEnums={fixedEnums}
           onChanged={refreshAfterWrite}
           onVocabChanged={refreshVocab}

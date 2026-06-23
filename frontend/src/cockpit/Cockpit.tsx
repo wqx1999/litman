@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FixedEnums, PaperMeta, ProjectEntry, Taxonomy } from '../types'
+import type { FixedEnums, IndexPaper, PaperMeta, ProjectEntry, Taxonomy } from '../types'
 import {
   addTaxonomyValue,
+  deleteTaxonomyValue,
   fetchCite,
   linkProject,
   postRead,
@@ -24,6 +25,9 @@ interface Props {
   taxonomy: Taxonomy | null
   /** Registered projects (name/path/status) backing the link dropdown (3c-1). */
   projects: ProjectEntry[]
+  /** Full INDEX projection — backs the Manage dialog's per-value in-use count
+   * ("used by N", problem 2) without an extra round-trip. */
+  allPapers: IndexPaper[]
   /** status/priority/type whitelists for the dropdowns. */
   fixedEnums: FixedEnums | null
   /** Called after a successful structured write so the parent re-fetches the
@@ -107,180 +111,369 @@ function EnumSelect({
   )
 }
 
-/** Editable tag chips for a USER_DICTS field (topics/methods/data). Each value
- * carries an × (remove); a select offers TAXONOMY values not yet attached, and a
- * filter input doubles as inline-create — typing a value not in the vocabulary
- * reveals an explicit "Create 'X'" button (3c-1 guardrail: creating a new
- * controlled value is a deliberate click, never an accidental free-text commit).
+/** A one-line summary of the attached values for a collapsed TagSelect: the
+ * first couple verbatim, the rest folded into a "+N" tail. */
+function summarize(values: string[], max = 2): string {
+  if (values.length <= max) return values.join(' · ')
+  return `${values.slice(0, max).join(' · ')} · +${values.length - max}`
+}
+
+/** A compact, collapsed-by-default multi-select for a tag-like field
+ * (topics/methods/data via TAXONOMY, or projects via the registry). Collapsed it
+ * is a single summary row (problem 1: no vertical bulk); expanded it is an inline
+ * disclosure (click-outside or Esc to close, one open at a time) showing a
+ * filter/create box, a toggle list (✓ = attached; click to add/remove), and —
+ * for the controlled-vocab fields only — an inline-create button and a "Manage…"
+ * entry into the dictionary editor. `onCreate`/`onManage` are omitted for
+ * projects (a project is created/deleted from the TopBar, never here). Problem 3:
+ * every tag field is now the same compact dropdown regardless of how full it is.
  */
-function TagEditor({
+function TagSelect({
   field,
   values,
   vocabulary,
+  open,
   busy,
+  onOpen,
+  onClose,
   onAdd,
-  onCreate,
   onRemove,
+  onCreate,
+  onManage,
 }: {
   field: string
   values: string[] | undefined
   vocabulary: string[]
+  open: boolean
   busy: boolean
+  onOpen: () => void
+  onClose: () => void
   onAdd: (value: string) => void
-  /** Register a brand-new taxonomy value, then attach it (register-first). */
-  onCreate: (value: string) => void
   onRemove: (value: string) => void
+  /** Register-then-attach a brand-new taxonomy value (controlled-vocab fields). */
+  onCreate?: (value: string) => void
+  /** Open the dictionary editor for this field (controlled-vocab fields). */
+  onManage?: () => void
 }) {
   const [draft, setDraft] = useState('')
+  const rootRef = useRef<HTMLDivElement>(null)
   const attached = values ?? []
-  // Offer only registered values not already attached.
-  const available = vocabulary.filter((v) => !attached.includes(v))
   const typed = draft.trim()
-  // Inline-create is offered only for a typed value that is genuinely new
-  // (not already registered, not already attached). An exact registered match
-  // is attached through the select, never re-created.
+  // Inline-create is offered only on a controlled-vocab field, for a genuinely
+  // new value: non-empty, not already registered, not already attached.
   const isNew =
+    onCreate != null &&
     typed.length > 0 &&
     !vocabulary.includes(typed) &&
     !attached.includes(typed)
-  // Filter the select's options by the draft (case-insensitive substring) so the
-  // input is also an autocomplete over existing values.
-  const filtered = typed
-    ? available.filter((v) => v.toLowerCase().includes(typed.toLowerCase()))
-    : available
+  // The list shows every registered value (attached ones get a ✓), filtered by
+  // the draft (case-insensitive substring) so the box doubles as autocomplete.
+  const filtered = (
+    typed
+      ? vocabulary.filter((v) => v.toLowerCase().includes(typed.toLowerCase()))
+      : vocabulary
+  )
+    .slice()
+    .sort((a, b) => a.localeCompare(b))
+
+  // Collapse on an outside click (trigger + panel sit inside rootRef, so a click
+  // on either keeps it open). The parent guarantees one-open-at-a-time via the
+  // shared openField it threads into `open`.
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open, onClose])
+
+  // Clear the filter draft whenever the panel closes, so a stale filter does not
+  // greet the next open.
+  useEffect(() => {
+    if (!open) setDraft('')
+  }, [open])
+
+  const summary = attached.length > 0 ? summarize(attached) : null
+
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex flex-wrap gap-1">
-        {attached.length === 0 && <span className="text-stone-400">—</span>}
-        {attached.map((v) => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
-          >
-            {v}
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        aria-label={`${field} (${attached.length} selected)`}
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => (open ? onClose() : onOpen())}
+        className={`flex w-full items-center justify-between gap-2 rounded-md border border-stone-300 bg-white px-2 py-1 text-left text-sm shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50 ${
+          open ? 'ring-1 ring-accent-400' : ''
+        }`}
+      >
+        <span className={`truncate ${summary ? 'text-stone-800' : 'text-stone-400'}`}>
+          {summary ?? '—'}
+        </span>
+        <span
+          className={`shrink-0 text-stone-400 transition-transform ${
+            open ? 'rotate-180' : ''
+          }`}
+        >
+          ▾
+        </span>
+      </button>
+
+      {open && (
+        <div
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') onClose()
+          }}
+          className="mt-1 rounded-lg border border-stone-200 bg-white p-1.5 shadow-md"
+        >
+          <input
+            type="text"
+            autoFocus
+            aria-label={onCreate ? `Filter or create ${field}` : `Filter ${field}`}
+            placeholder={onCreate ? `Filter or create ${field}…` : `Filter ${field}…`}
+            value={draft}
+            disabled={busy}
+            onChange={(e) => setDraft(e.target.value)}
+            className="mb-1 w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+          />
+          <div className="max-h-48 overflow-y-auto">
+            {filtered.length === 0 && (
+              <div className="px-2 py-1.5 text-xs text-stone-400">
+                {vocabulary.length === 0 ? 'No values yet.' : 'No match.'}
+              </div>
+            )}
+            {filtered.map((v) => {
+              const on = attached.includes(v)
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => (on ? onRemove(v) : onAdd(v))}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
+                >
+                  <span
+                    className={`w-3 shrink-0 ${
+                      on ? 'text-accent-600' : 'text-transparent'
+                    }`}
+                  >
+                    ✓
+                  </span>
+                  <span className="truncate">{v}</span>
+                </button>
+              )
+            })}
+          </div>
+          {isNew && (
             <button
               type="button"
-              aria-label={`Remove ${field} ${v}`}
-              title={`Remove ${v}`}
               disabled={busy}
-              onClick={() => onRemove(v)}
-              className="text-stone-400 transition-colors hover:text-rose-600 disabled:opacity-50"
+              onClick={() => {
+                onCreate!(typed)
+                setDraft('')
+              }}
+              className="mt-1 w-full rounded-md border border-accent-300 bg-accent-50 px-2.5 py-1 text-left text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
             >
-              ×
+              + Create “{typed}”
             </button>
-          </span>
-        ))}
-      </div>
-      <input
-        type="text"
-        aria-label={`Filter or create ${field}`}
-        placeholder={`Filter or create ${field}…`}
-        value={draft}
-        disabled={busy}
-        onChange={(e) => setDraft(e.target.value)}
-        className={SELECT_CLASS}
-      />
-      {filtered.length > 0 && (
-        <select
-          aria-label={`Add ${field}`}
-          className={SELECT_CLASS}
-          value=""
-          disabled={busy}
-          onChange={(e) => {
-            const v = e.target.value
-            if (v) {
-              onAdd(v)
-              setDraft('')
-            }
-            e.target.value = '' // reset to the placeholder so the same value can re-add later
-          }}
-        >
-          <option value="">+ add {field}…</option>
-          {filtered.map((v) => (
-            <option key={v} value={v}>
-              {v}
-            </option>
-          ))}
-        </select>
-      )}
-      {isNew && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            onCreate(typed)
-            setDraft('')
-          }}
-          className="self-start rounded-md border border-accent-300 bg-accent-50 px-2.5 py-1 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
-        >
-          + Create “{typed}”
-        </button>
+          )}
+          {onManage && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onManage}
+              className="mt-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
+            >
+              <span className="text-stone-400">⚙</span> Manage {field}…
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
 }
 
-/** Writable Projects field: chips for each linked project (× to unlink) plus a
- * dropdown to link a registered project not yet attached (3c-1). Unlike the
- * topics/methods/data tag editor, projects are never inline-created here — a new
- * project carries a path binding, so it is created via the TopBar + dialog. */
-function ProjectEditor({
-  attached,
-  registered,
-  busy,
-  onLink,
-  onUnlink,
-}: {
-  attached: string[]
-  registered: string[]
-  busy: boolean
-  onLink: (project: string) => void
-  onUnlink: (project: string) => void
-}) {
-  const available = registered.filter((p) => !attached.includes(p))
+function IconTrash() {
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex flex-wrap gap-1">
-        {attached.length === 0 && <span className="text-stone-400">—</span>}
-        {attached.map((p) => (
-          <span
-            key={p}
-            className="inline-flex items-center gap-1 rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
-          >
-            {p}
-            <button
-              type="button"
-              aria-label={`Unlink project ${p}`}
-              title={`Unlink ${p}`}
-              disabled={busy}
-              onClick={() => onUnlink(p)}
-              className="text-stone-400 transition-colors hover:text-rose-600 disabled:opacity-50"
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
+    </svg>
+  )
+}
+
+/** Dictionary editor for one controlled-vocab field (problem 2). Lists every
+ * registered value with its in-use count (from the loaded INDEX) and a delete
+ * affordance; deletion routes through a default-No confirm into the
+ * `lit taxonomy rm` backend (atomic dictionary + reference rewrite, invariant
+ * #2). The macOS-style modal shell mirrors UnreadConfirm / NewProjectDialog. */
+function ManageDialog({
+  field,
+  vocabulary,
+  countFor,
+  busy,
+  onDelete,
+  onClose,
+}: {
+  field: string
+  vocabulary: string[]
+  countFor: (value: string) => number
+  busy: boolean
+  onDelete: (value: string) => Promise<void>
+  onClose: () => void
+}) {
+  // The value awaiting delete confirmation (null = the list view).
+  const [pending, setPending] = useState<string | null>(null)
+  const sorted = vocabulary.slice().sort((a, b) => a.localeCompare(b))
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={busy ? undefined : onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && !pending) onClose()
+        }}
+        className="flex max-h-[70vh] w-[24rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Manage {field}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Deleting a value removes it from the {field} vocabulary and untags it
+          from every paper. This cannot be undone.
+        </p>
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
+          {sorted.length === 0 && (
+            <div className="px-3 py-4 text-center text-xs text-stone-400">
+              No values yet.
+            </div>
+          )}
+          {sorted.map((v) => (
+            <div
+              key={v}
+              className="flex items-center justify-between gap-2 border-b border-stone-100 px-3 py-1.5 last:border-b-0"
             >
-              ×
-            </button>
-          </span>
-        ))}
-      </div>
-      {available.length > 0 && (
-        <select
-          aria-label="Link project"
-          className={SELECT_CLASS}
-          value=""
-          disabled={busy}
-          onChange={(e) => {
-            const v = e.target.value
-            if (v) onLink(v)
-            e.target.value = ''
-          }}
-        >
-          <option value="">+ link project…</option>
-          {available.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
+              <span className="truncate text-sm text-stone-800">{v}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-[11px] text-stone-400">
+                  used by {countFor(v)}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Delete ${field} ${v}`}
+                  title={`Delete “${v}”`}
+                  disabled={busy}
+                  onClick={() => setPending(v)}
+                  className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
+                >
+                  <IconTrash />
+                </button>
+              </div>
+            </div>
           ))}
-        </select>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+      {pending != null && (
+        <DeleteValueConfirm
+          field={field}
+          value={pending}
+          count={countFor(pending)}
+          busy={busy}
+          onCancel={() => setPending(null)}
+          onConfirm={async () => {
+            await onDelete(pending)
+            setPending(null)
+          }}
+        />
       )}
+    </div>
+  )
+}
+
+/** Default-No confirm for deleting a controlled-vocab value (problem 2). The
+ * body states whether the value is still in use (untags N papers) or orphaned;
+ * Cancel is autofocused and the destructive button is rose, mirroring
+ * UnreadConfirm. Sits above the Manage dialog (z-[60]). */
+function DeleteValueConfirm({
+  field,
+  value,
+  count,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  field: string
+  value: string
+  count: number
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              // Stop the click bubbling to the Manage dialog's backdrop (this
+              // confirm renders inside it) — otherwise dismissing the confirm
+              // would also tear down the whole Manage dialog in one click.
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Delete “{value}”?</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          This removes “{value}” from the {field} vocabulary
+          {count > 0
+            ? ` and untags it from ${count} paper${count === 1 ? '' : 's'}. This cannot be undone.`
+            : '. It is not attached to any paper.'}
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -384,13 +577,13 @@ function UnreadConfirm({
   )
 }
 
-/** Curation cockpit with structured write controls (Phase 3b).
+/** Curation cockpit with structured write controls (Phase 3b/3c/3d).
  *
- * Dropdowns (status/priority/type), editable tag chips (topics/methods/data),
+ * Dropdowns (status/priority/type), compact tag selects (topics/methods/data),
  * and mutually-exclusive read/revisit buttons all dispatch to the invariant #16
  * second-class write endpoints (the server runs the `lit` command backend). On
  * success the parent re-fetches via `onChanged`; on error the backend's raw
- * message is toasted via `notify`. Relations / code-clones stay read-only (3c).
+ * message is toasted via `notify`. Relations / code-clones stay read-only.
  * Collapses to a narrow strip via an animated width, mirroring BrowsePanel.
  */
 export default function Cockpit({
@@ -402,6 +595,7 @@ export default function Cockpit({
   vaultPath,
   taxonomy,
   projects,
+  allPapers,
   fixedEnums,
   onChanged,
   onVocabChanged,
@@ -419,6 +613,13 @@ export default function Cockpit({
   // immutable-by-default stamp, so it sits behind a default-No confirm that also
   // warns the revisit record is dropped. Only reachable when readDate != null.
   const [showUnread, setShowUnread] = useState(false)
+  // The currently-expanded tag dropdown (topics/methods/data/projects), or null.
+  // One field at a time: opening one collapses the others (problem 1/3).
+  const [openField, setOpenField] = useState<string | null>(null)
+  // The controlled-vocab field whose Manage dialog is open (problem 2), or null.
+  const [manageField, setManageField] = useState<
+    'topics' | 'methods' | 'data' | null
+  >(null)
 
   // The currently-shown paper id, refreshed synchronously each render and read
   // inside the async handlers to drop a response that lands after the user has
@@ -426,11 +627,14 @@ export default function Cockpit({
   const shownId = useRef<string | undefined>(paper?.id)
   shownId.current = paper?.id
 
-  // Selecting a different paper clears stale copy/cite feedback.
+  // Selecting a different paper clears stale copy/cite feedback and collapses any
+  // open dropdown / dialog (they pertain to the previous paper).
   useEffect(() => {
     setCopied(null)
     setCiteWarn(null)
     setShowUnread(false)
+    setOpenField(null)
+    setManageField(null)
   }, [paper?.id])
 
   // Per-paper copy actions live here (the selected-paper context), not the top
@@ -472,7 +676,9 @@ export default function Cockpit({
   // message on failure. `writing` gates the controls for the duration. The
   // backend serialises writes; the parent's onChanged re-fetches the cockpit.
   // `vocabChanged` additionally refreshes the shared taxonomy/projects caches
-  // (a new taxonomy value or a project link/unlink that the dropdowns reflect).
+  // (a new/removed taxonomy value or a project link/unlink the dropdowns
+  // reflect). Returns the promise so a caller (e.g. delete-confirm) can await
+  // completion before dismissing its dialog.
   async function runWrite(fn: () => Promise<unknown>, vocabChanged = false) {
     setWriting(true)
     try {
@@ -514,6 +720,27 @@ export default function Cockpit({
       await addTaxonomyValue(field, value)
       await putMetadata(id, { addTag: { [field]: [value] } })
     }, true)
+  }
+
+  // Delete a controlled-vocab value through the `lit taxonomy rm` backend
+  // (problem 2). vocabChanged=true so the Manage list + every field dropdown
+  // refresh; onChanged additionally re-pulls the INDEX so "used by N" and the
+  // selected paper's own tags reflect the cascade. Returned so the confirm
+  // dialog can await it before closing.
+  function deleteValue(
+    field: 'topics' | 'methods' | 'data',
+    value: string,
+  ): Promise<void> {
+    return runWrite(() => deleteTaxonomyValue(field, value), true)
+  }
+
+  // In-use count for a value, read off the loaded INDEX (no round-trip). Backs
+  // the Manage list's "used by N" and the delete confirm's wording.
+  function countValue(
+    field: 'topics' | 'methods' | 'data',
+    value: string,
+  ): number {
+    return allPapers.filter((p) => (p[field] ?? []).includes(value)).length
   }
 
   function linkProj(project: string) {
@@ -776,45 +1003,70 @@ export default function Cockpit({
             </Field>
 
             <Field label="Topics">
-              <TagEditor
+              <TagSelect
                 field="topics"
                 values={paper.topics}
                 vocabulary={taxonomy?.topics ?? []}
+                open={openField === 'topics'}
                 busy={writing}
+                onOpen={() => setOpenField('topics')}
+                onClose={() => setOpenField((f) => (f === 'topics' ? null : f))}
                 onAdd={(v) => addTag('topics', v)}
-                onCreate={(v) => createTag('topics', v)}
                 onRemove={(v) => removeTag('topics', v)}
+                onCreate={(v) => createTag('topics', v)}
+                onManage={() => {
+                  setOpenField(null)
+                  setManageField('topics')
+                }}
               />
             </Field>
             <Field label="Methods">
-              <TagEditor
+              <TagSelect
                 field="methods"
                 values={paper.methods}
                 vocabulary={taxonomy?.methods ?? []}
+                open={openField === 'methods'}
                 busy={writing}
+                onOpen={() => setOpenField('methods')}
+                onClose={() => setOpenField((f) => (f === 'methods' ? null : f))}
                 onAdd={(v) => addTag('methods', v)}
-                onCreate={(v) => createTag('methods', v)}
                 onRemove={(v) => removeTag('methods', v)}
+                onCreate={(v) => createTag('methods', v)}
+                onManage={() => {
+                  setOpenField(null)
+                  setManageField('methods')
+                }}
               />
             </Field>
             <Field label="Data">
-              <TagEditor
+              <TagSelect
                 field="data"
                 values={paper.data}
                 vocabulary={taxonomy?.data ?? []}
+                open={openField === 'data'}
                 busy={writing}
+                onOpen={() => setOpenField('data')}
+                onClose={() => setOpenField((f) => (f === 'data' ? null : f))}
                 onAdd={(v) => addTag('data', v)}
-                onCreate={(v) => createTag('data', v)}
                 onRemove={(v) => removeTag('data', v)}
+                onCreate={(v) => createTag('data', v)}
+                onManage={() => {
+                  setOpenField(null)
+                  setManageField('data')
+                }}
               />
             </Field>
             <Field label="Projects">
-              <ProjectEditor
-                attached={paper.projects ?? []}
-                registered={projects.map((p) => p.name)}
+              <TagSelect
+                field="projects"
+                values={paper.projects}
+                vocabulary={projects.map((p) => p.name)}
+                open={openField === 'projects'}
                 busy={writing}
-                onLink={linkProj}
-                onUnlink={unlinkProj}
+                onOpen={() => setOpenField('projects')}
+                onClose={() => setOpenField((f) => (f === 'projects' ? null : f))}
+                onAdd={linkProj}
+                onRemove={unlinkProj}
               />
             </Field>
             <Field label="Relations">
@@ -826,6 +1078,17 @@ export default function Cockpit({
           </div>
         )}
       </aside>
+
+      {manageField && (
+        <ManageDialog
+          field={manageField}
+          vocabulary={taxonomy?.[manageField] ?? []}
+          countFor={(v) => countValue(manageField, v)}
+          busy={writing}
+          onDelete={(v) => deleteValue(manageField, v)}
+          onClose={() => setManageField(null)}
+        />
+      )}
     </div>
   )
 }

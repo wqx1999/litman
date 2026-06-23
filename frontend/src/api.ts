@@ -273,3 +273,18 @@ export function addTaxonomyValue(
 ): Promise<{ ok: boolean; added: string[]; skipped: string[] }> {
   return mutateJSON(`/api/taxonomy/${encodeURIComponent(key)}`, 'POST', { value })
 }
+
+/** Remove a controlled-vocab value through the `lit taxonomy rm` backend
+ * (atomic dictionary + reference rewrite per invariant #2). The value rides as a
+ * query param, not a path segment, because a value may contain '/' (e.g.
+ * "deep-learning/transformers"). `changed` is the count of papers untagged.
+ * Throws the backend's TaxonomyError (400) verbatim on rejection. */
+export function deleteTaxonomyValue(
+  key: string,
+  value: string,
+): Promise<{ ok: boolean; changed: number }> {
+  return mutateJSON(
+    `/api/taxonomy/${encodeURIComponent(key)}?value=${encodeURIComponent(value)}`,
+    'DELETE',
+  )
+}
