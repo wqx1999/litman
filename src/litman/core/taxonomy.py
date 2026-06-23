@@ -29,6 +29,9 @@ import re
 from pathlib import Path
 
 from litman.core.atomic import staged_write
+from litman.core.dates import now_iso
+from litman.core.document import list_papers
+from litman.core.views import render_index
 from litman.exceptions import TaxonomyError
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
@@ -277,3 +280,68 @@ def add_taxonomy_values(
         stage.write_text("TAXONOMY.md", new_text)
 
     return added, skipped
+
+
+def remove_taxonomy_value(
+    vault: Path, dict_name: str, value: str
+) -> tuple[int, list[str]]:
+    """Remove a user-dict value, cascading the removal to every referencing paper.
+
+    The single backend for the WRITE half of both ``lit taxonomy rm`` and the
+    webUI's ``DELETE /api/taxonomy/{key}`` (invariant #16: one validate + write
+    path). Drops ``value`` from TAXONOMY.md and from each referencing paper's
+    metadata.yaml in one atomic staged_write (TAXONOMY.md + staged metas +
+    INDEX.json), then rebuilds INDEX + views together through the shared
+    ``reconcile_derived`` funnel.
+
+    Confirm-free by design: the cascade-with-confirm gate (``_confirm_destructive``)
+    and console output stay in the ``lit taxonomy rm`` command; the GUI's confirm
+    dialog is the confirmation on the server path.
+
+    Returns:
+        ``(n_changed, referencing_ids)`` — count of papers whose metadata was
+        rewritten and the sorted ids that referenced ``value`` before removal.
+
+    Raises:
+        TaxonomyError: ``dict_name`` is ``projects`` (use ``remove_project``),
+            a fixed enum, an unknown dict, or ``value`` is not registered.
+    """
+    # Local imports avoid a core import-cycle at module load: core.ripple imports
+    # this module (replace_value_in_field), and reconcile_derived → core.checks
+    # imports this module too. Mirrors core.project_link's lazy reconcile import.
+    from litman.core.correctors import reconcile_derived
+    from litman.core.ripple import _ripple_removals
+
+    reject_projects_write(dict_name)
+    validate_user_dict(dict_name)
+
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    current = parse_taxonomy(text)[dict_name]
+    if value not in current:
+        raise TaxonomyError(f"{value!r} is not registered in {dict_name}.")
+
+    papers = list_papers(vault)
+    referencing = find_referencing_papers(papers, dict_name, value)
+
+    new_body = [v for v in current if v != value]
+    new_text = update_user_dict_section(text, dict_name, new_body)
+
+    n_changed, staged_meta_paths, all_papers = _ripple_removals(
+        vault, USER_DICT_TO_METADATA_FIELD[dict_name], value
+    )
+    fresh_index = render_index(all_papers, now_iso())
+
+    with staged_write(vault, op_id=f"taxonomy-rm-{dict_name}") as stage:
+        stage.write_text("TAXONOMY.md", new_text)
+        for relpath, content in staged_meta_paths:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", fresh_index)
+
+    if n_changed > 0:
+        # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
+        # INDEX + views recomputed together. The staged INDEX.json above is the
+        # crash-safety layer. project_refs=False keeps behavior identical
+        # (taxonomy commands govern topics/methods/data, never project refs).
+        reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+
+    return n_changed, referencing

@@ -737,3 +737,227 @@ def test_post_taxonomy_empty_value_400(
     vault, _ = vault_with_paper
     resp = _client(vault).post("/api/taxonomy/topics", json={"value": "   "})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/taxonomy/{key}?value=X — remove a controlled value (P2)
+# ---------------------------------------------------------------------------
+
+
+def _seed_second_paper(vault: Path, paper_id: str) -> None:
+    """Write a second minimal paper into the vault, mirroring the fixture seed.
+
+    The taxonomy-delete cascade must rewrite EVERY referencing paper, so the
+    A4 assertion needs ≥2 papers tagged with the same value.
+    """
+    from litman.core.views import write_index
+    from litman.core.document import list_papers
+
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        f"id: {paper_id}\n"
+        "title: Second Paper\n"
+        "authors:\n"
+        "  - Baz, Carol\n"
+        "year: 2025\n"
+        "journal: Test J.\n"
+        "doi: 10.1/y\n"
+        "arxiv-id:\n"
+        "github:\n"
+        "created-at: '2026-04-28T10:00:00+02:00'\n"
+        "updated-at: '2026-04-28T10:00:00+02:00'\n"
+        "projects: []\n"
+        "topics: []\n"
+        "methods: []\n"
+        "data: []\n"
+        "type: research\n"
+        "status: inbox\n"
+        "priority: B\n"
+        "read-date:\n"
+        "last-revisited:\n"
+        "related: []\n"
+        "contradicts: []\n"
+        "extends: []\n"
+        "code-clones: []\n",
+        encoding="utf-8",
+    )
+    write_index(vault, list_papers(vault))
+
+
+def test_delete_taxonomy_cascades_to_all_referencing_papers(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """A4 core: deleting a tag value drops it from EVERY referencing paper's
+    metadata.yaml (TRUTH) AND the backend reprojects each INDEX entry to match
+    (DERIVED) AND the value is gone from TAXONOMY.md."""
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, paper_id = vault_with_paper
+    paper2 = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper2)
+    _register_topic(vault, "peptide")
+
+    client = _client(vault)
+    # Tag both papers through the existing addTag write path.
+    for pid in (paper_id, paper2):
+        r = client.put(
+            f"/api/paper/{pid}/metadata", json={"addTag": {"topics": ["peptide"]}}
+        )
+        assert r.status_code == 200, r.text
+    assert _meta(vault, paper_id)["topics"] == ["peptide"]
+    assert _meta(vault, paper2)["topics"] == ["peptide"]
+
+    resp = client.delete("/api/taxonomy/topics", params={"value": "peptide"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": 2}
+
+    # TRUTH: both papers untagged …
+    assert _meta(vault, paper_id)["topics"] == []
+    assert _meta(vault, paper2)["topics"] == []
+    # … DERIVED: both INDEX projections reprojected to match …
+    assert _index_paper(vault, paper_id)["topics"] == []
+    assert _index_paper(vault, paper2)["topics"] == []
+    # … and the value is gone from TAXONOMY.md.
+    parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text())
+    assert "peptide" not in parsed["topics"]
+
+
+def test_delete_taxonomy_unregistered_value_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """An unregistered value → TaxonomyError → 400 (the frontend treats it as
+    benign: the value is already gone)."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).delete(
+        "/api/taxonomy/topics", params={"value": "ghost"}
+    )
+    assert resp.status_code == 400
+    assert "not registered" in resp.json()["detail"]
+
+
+def test_delete_taxonomy_projects_key_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """projects is path-bound: deleting it must redirect to DELETE /api/projects."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).delete(
+        "/api/taxonomy/projects", params={"value": "whatever"}
+    )
+    assert resp.status_code == 400
+    assert "lit project" in resp.json()["detail"]
+
+
+def test_delete_taxonomy_missing_value_param_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """The value is a required query param; omitting it is a client bug → 400."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).delete("/api/taxonomy/topics")
+    assert resp.status_code == 400
+    assert "value query parameter is required" in resp.json()["detail"]
+
+
+def test_delete_taxonomy_value_with_slash_cascades(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """The value is a query param SPECIFICALLY so a value containing '/' survives
+    routing (a path segment would not). Guard that motivating edge case end-to-
+    end: a slash value registers, tags, and cascade-deletes with TRUTH + DERIVED
+    both dropping it."""
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, paper_id = vault_with_paper
+    slash_value = "deep-learning/transformers"
+    _register_topic(vault, slash_value)
+
+    client = _client(vault)
+    r = client.put(
+        f"/api/paper/{paper_id}/metadata",
+        json={"addTag": {"topics": [slash_value]}},
+    )
+    assert r.status_code == 200, r.text
+    assert _meta(vault, paper_id)["topics"] == [slash_value]
+
+    resp = client.delete("/api/taxonomy/topics", params={"value": slash_value})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": 1}
+
+    # TRUTH + DERIVED both drop the slash value.
+    assert _meta(vault, paper_id)["topics"] == []
+    assert _index_paper(vault, paper_id)["topics"] == []
+    assert (
+        slash_value
+        not in parse_taxonomy((vault / "TAXONOMY.md").read_text())["topics"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/projects/{name} — delete a project (P2)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_project_cascades_and_keeps_dir(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A4 core: deleting a project drops it from the linked paper's metadata
+    (TRUTH) + both truth sources, reprojects INDEX, tears down the
+    litman_reflib symlink + REFERENCES.md (DERIVED) — but NEVER removes the
+    project directory itself."""
+    from litman.core.taxonomy import parse_taxonomy
+    from litman.core.config import load_config
+
+    vault, paper_id = vault_with_paper
+    project_dir = tmp_path / "pepforge"
+    _register_project(vault, "pepforge", project_dir)
+
+    # Seed two non-default config fields so the full-config rewrite inside
+    # remove_project is guarded against silently dropping unrelated keys (the
+    # highest data-loss risk in P2 — it rewrites the entire lit-config.yaml).
+    import io
+
+    cfg_path = vault / "lit-config.yaml"
+    _raw = _yaml.load(cfg_path.read_text())
+    _raw["default_pdf_viewer"] = "zathura"
+    _raw["default_clone_depth"] = 0
+    _buf = io.StringIO()
+    _yaml.dump(_raw, _buf)
+    cfg_path.write_text(_buf.getvalue(), encoding="utf-8")
+
+    client = _client(vault)
+
+    # Link the paper so the cascade has something to untag + symlinks to tear down.
+    client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    assert (project_dir / "litman_reflib" / paper_id).is_symlink()
+    assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
+
+    resp = client.delete("/api/projects/pepforge")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": 1}
+
+    # TRUTH: paper untagged + dropped from both truth sources …
+    assert _meta(vault, paper_id)["projects"] == []
+    assert "pepforge" not in parse_taxonomy((vault / "TAXONOMY.md").read_text())["projects"]
+    assert "pepforge" not in load_config(vault).projects
+    # … DERIVED: INDEX reprojected, symlink + REFERENCES.md torn down …
+    assert _index_paper(vault, paper_id)["projects"] == []
+    assert not (project_dir / "litman_reflib" / paper_id).exists()
+    assert not (project_dir / "litman_reflib" / "REFERENCES.md").exists()
+    # … but the project directory itself is preserved (never rmdir'd).
+    assert project_dir.is_dir()
+    # … and the full-config rewrite preserved every non-projects field
+    # (only the one project entry dropped — no collateral data loss).
+    cfg_after = load_config(vault)
+    assert cfg_after.default_pdf_viewer == "zathura"
+    assert cfg_after.default_clone_depth == 0
+
+
+def test_delete_project_unregistered_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """An unregistered project name → TaxonomyError → 400."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).delete("/api/projects/ghost")
+    assert resp.status_code == 400
+    assert "not registered" in resp.json()["detail"]

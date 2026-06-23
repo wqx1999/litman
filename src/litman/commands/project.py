@@ -37,7 +37,6 @@ from rich.markup import escape
 from rich.table import Table
 from ruamel.yaml import YAML
 
-from litman.commands.taxonomy import _ripple_removals, _ripple_replacements
 from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.config import config_to_yaml_dict, load_config
@@ -45,11 +44,12 @@ from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.project_link import CODE_SUBDIR, add_project
+from litman.core.project_link import add_project, remove_project
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
 )
+from litman.core.ripple import _ripple_replacements
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
@@ -441,7 +441,7 @@ def project_rm_cmd(
     """
     name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
+    _, parsed = _load_taxonomy(vault)
     config = load_config(vault)
 
     known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
@@ -488,59 +488,11 @@ def project_rm_cmd(
             console.print("[dim]Aborted. Nothing changed.[/]")
             return
 
-    # Build the post-removal truth sources.
-    new_taxonomy_values = [
-        v for v in parsed[_PROJECTS_DICT] if v != name
-    ]
-    new_taxonomy_text = update_user_dict_section(
-        text, _PROJECTS_DICT, new_taxonomy_values
-    )
-    new_projects = {
-        k: v for k, v in config.projects.items() if k != name
-    }
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    n_changed, staged_meta_paths, all_papers = _ripple_removals(
-        vault, _PROJECTS_DICT, name, drop_relevance=True
-    )
-    fresh_index = render_index(all_papers, now_iso())
-
-    with staged_write(vault, op_id=f"project-rm-{name}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        stage.write_text("lit-config.yaml", new_config_text)
-        for relpath, content in staged_meta_paths:
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", fresh_index)
-
-    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
-    # INDEX + views/by-project/ (the removed project drops out) recomputed
-    # together. project_refs=False: the removed project's own symlinks +
-    # REFERENCES.md are torn down explicitly below, and no other project's
-    # membership changed — behavior identical to the pre-funnel command.
-    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
-
-    # Post-commit teardown of the project's on-disk artifacts. Mirrors the
-    # unlink pattern: filesystem-mutating, cheap to redo, recoverable.
-    if project_dir is not None and project_dir.is_dir():
-        literature_dir = project_dir / LITERATURE_SUBDIR
-        if literature_dir.is_dir():
-            for child in literature_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
-            refs = literature_dir / REFERENCES_FILENAME
-            if refs.exists():
-                refs.unlink()
-        # Symmetric teardown of litman_code/ (parallel to rm.py's
-        # _teardown_project_links). The project is gone, so every
-        # litman_code/<repo> symlink is an orphan — no shared-lib retention
-        # judgment needed. Without this, those symlinks become permanent
-        # orphans that no later rebuild_all_project_links revisits (the project
-        # is already out of the registry), violating invariant #14.
-        code_dir = project_dir / CODE_SUBDIR
-        if code_dir.is_dir():
-            for child in code_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
+    # The cascade write (dual TAXONOMY + config rewrite, metadata + INDEX, derived
+    # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI
+    # DELETE endpoint shares the exact write path (invariant #16). The command
+    # keeps only the confirm gate + console output.
+    n_changed, _ = remove_project(vault, name)
 
     console.print(
         f"[bold green]✓ Removed[/] project {escape(name)}."

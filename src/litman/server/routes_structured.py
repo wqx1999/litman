@@ -32,9 +32,10 @@ from litman.core.project_link import (
     LinkError,
     add_project,
     link_paper_to_project,
+    remove_project,
     unlink_paper_from_project,
 )
-from litman.core.taxonomy import add_taxonomy_values
+from litman.core.taxonomy import add_taxonomy_values, remove_taxonomy_value
 from litman.exceptions import ModifyError, PaperNotFoundError, TaxonomyError
 
 router = APIRouter(prefix="/api")
@@ -409,3 +410,59 @@ async def post_taxonomy(request: Request, key: str) -> dict[str, object]:
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "added": added, "skipped": skipped}
+
+
+@router.delete("/taxonomy/{key}")
+async def delete_taxonomy(
+    request: Request, key: str, value: str | None = None
+) -> dict[str, object]:
+    """Remove a controlled-vocabulary value through the ``lit taxonomy rm`` backend.
+
+    The value is a QUERY param (``?value=X``) rather than a path segment because a
+    controlled value may contain ``/`` (it would break path routing). Reaches the
+    filesystem only through :func:`litman.core.taxonomy.remove_taxonomy_value`
+    (the same core the CLI's WRITE half calls), which drops the value from
+    TAXONOMY.md and cascades the removal to every referencing paper's metadata in
+    one atomic staged_write, then rebuilds INDEX + views (invariant #16: no second
+    write path). Confirm-free — the GUI's confirm dialog is the confirmation, so
+    the server skips the CLI's ``_confirm_destructive`` gate.
+
+    ``key`` must be a user-extensible dict (topics / methods / data); an unknown
+    key, a fixed-enum key, ``projects`` (path-bound, use ``DELETE /api/projects``),
+    or an unregistered value surface as TaxonomyError → 400. A missing ``value``
+    query param is a client bug → 400.
+    """
+    if not value or not value.strip():
+        raise HTTPException(
+            status_code=400, detail="value query parameter is required."
+        )
+
+    vault = request.app.state.vault
+    try:
+        n_changed, _ = remove_taxonomy_value(vault, key, value)
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "changed": n_changed}
+
+
+@router.delete("/projects/{name}")
+async def delete_project(request: Request, name: str) -> dict[str, object]:
+    """Delete a project through the ``lit project rm`` backend.
+
+    Reaches the filesystem only through
+    :func:`litman.core.project_link.remove_project` (the same core the CLI's WRITE
+    half calls): drops the project from both truth sources (TAXONOMY.md +
+    lit-config.yaml), cascades the untag (and the paired ``relevance-<name>``) to
+    every referencing paper, rebuilds INDEX + views, and tears down the project's
+    ``litman_reflib`` / ``litman_code`` symlinks + REFERENCES.md — without removing
+    the project directory itself (invariant #16: no second write path). Confirm-
+    free — the GUI's confirm dialog is the confirmation.
+
+    An unregistered project surfaces as TaxonomyError → 400.
+    """
+    vault = request.app.state.vault
+    try:
+        n_changed, _ = remove_project(vault, name)
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "changed": n_changed}

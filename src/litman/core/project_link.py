@@ -27,7 +27,6 @@ skipped (ADR-005).
 from __future__ import annotations
 
 import io
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -43,9 +42,14 @@ from litman.core.portable_link import (
 )
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
+    REFERENCES_FILENAME,
     write_references_md,
 )
-from litman.core.taxonomy import parse_taxonomy, update_user_dict_section
+from litman.core.taxonomy import (
+    find_referencing_papers,
+    parse_taxonomy,
+    update_user_dict_section,
+)
 from litman.core.views import render_index
 from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
 
@@ -434,6 +438,120 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
         stage.write_text("lit-config.yaml", new_config_text)
 
     return {"name": name, "path": str(path)}
+
+
+def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
+    """Delete a project: cascade-untag papers + drop from both truth sources.
+
+    The single backend for the WRITE half of both ``lit project rm`` and the
+    webUI's ``DELETE /api/projects/{name}`` (invariant #16: one validate + write
+    path). A project is a controlled ``projects`` value with a lit-config.yaml
+    path binding, so removal updates BOTH truth sources (TAXONOMY.md's
+    ``## projects`` section and the config map) plus every referencing paper's
+    metadata.yaml — including the paired ``relevance-<name>`` annotation
+    (``drop_relevance=True``) so no orphan is stranded — in one atomic
+    staged_write. INDEX + views are then rebuilt through the shared
+    ``reconcile_derived`` funnel.
+
+    Post-commit teardown unlinks the project's ``litman_reflib/`` paper symlinks,
+    its ``litman_code/`` repo symlinks, and deletes REFERENCES.md. It NEVER
+    removes the project directory itself (preserving the CLI's behavior exactly):
+    only the litman-managed children inside it are torn down.
+
+    Confirm-free by design: the cascade-with-confirm gate (``_confirm_destructive``)
+    and console output stay in the ``lit project rm`` command; the GUI's confirm
+    dialog is the confirmation on the server path.
+
+    Returns:
+        ``(n_changed, referencing_ids)`` — count of papers whose metadata was
+        rewritten and the sorted ids that referenced ``name`` before removal.
+
+    Raises:
+        TaxonomyError: ``name`` is not registered in either truth source.
+    """
+    # Local import avoids a core import-cycle at module load: reconcile_derived
+    # → core.checks imports core.taxonomy, and core.ripple imports core.taxonomy
+    # too. Mirrors the lazy reconcile import in link/unlink above.
+    from litman.core.correctors import reconcile_derived
+    from litman.core.ripple import _ripple_removals
+
+    name = name.strip()
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    parsed = parse_taxonomy(text)
+    config = load_config(vault)
+
+    known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
+    if name not in known:
+        raise TaxonomyError(
+            f"Project {name!r} is not registered. "
+            "Run `lit project list` to inspect."
+        )
+
+    papers = list_papers(vault)
+    referencing = find_referencing_papers(papers, _PROJECTS_DICT, name)
+
+    project_dir_str = config.projects.get(name)
+    project_dir = (
+        Path(project_dir_str).expanduser() if project_dir_str else None
+    )
+
+    # Build the post-removal truth sources.
+    new_taxonomy_values = [
+        v for v in parsed[_PROJECTS_DICT] if v != name
+    ]
+    new_taxonomy_text = update_user_dict_section(
+        text, _PROJECTS_DICT, new_taxonomy_values
+    )
+    new_projects = {
+        k: v for k, v in config.projects.items() if k != name
+    }
+    as_dict = config_to_yaml_dict(load_config(vault))
+    as_dict["projects"] = new_projects
+    new_config_text = _dump_yaml_to_string(as_dict)
+
+    n_changed, staged_meta_paths, all_papers = _ripple_removals(
+        vault, _PROJECTS_DICT, name, drop_relevance=True
+    )
+    fresh_index = render_index(all_papers, now_iso())
+
+    with staged_write(vault, op_id=f"project-rm-{name}") as stage:
+        stage.write_text("TAXONOMY.md", new_taxonomy_text)
+        stage.write_text("lit-config.yaml", new_config_text)
+        for relpath, content in staged_meta_paths:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", fresh_index)
+
+    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
+    # INDEX + views/by-project/ (the removed project drops out) recomputed
+    # together. project_refs=False: the removed project's own symlinks +
+    # REFERENCES.md are torn down explicitly below, and no other project's
+    # membership changed — behavior identical to the pre-funnel command.
+    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+
+    # Post-commit teardown of the project's on-disk artifacts. Mirrors the
+    # unlink pattern: filesystem-mutating, cheap to redo, recoverable.
+    if project_dir is not None and project_dir.is_dir():
+        literature_dir = project_dir / LITERATURE_SUBDIR
+        if literature_dir.is_dir():
+            for child in literature_dir.iterdir():
+                if child.is_symlink():
+                    child.unlink()
+            refs = literature_dir / REFERENCES_FILENAME
+            if refs.exists():
+                refs.unlink()
+        # Symmetric teardown of litman_code/ (parallel to rm.py's
+        # _teardown_project_links). The project is gone, so every
+        # litman_code/<repo> symlink is an orphan — no shared-lib retention
+        # judgment needed. Without this, those symlinks become permanent
+        # orphans that no later rebuild_all_project_links revisits (the project
+        # is already out of the registry), violating invariant #14.
+        code_dir = project_dir / CODE_SUBDIR
+        if code_dir.is_dir():
+            for child in code_dir.iterdir():
+                if child.is_symlink():
+                    child.unlink()
+
+    return n_changed, referencing
 
 
 def rebuild_all_project_links(
