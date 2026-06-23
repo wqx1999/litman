@@ -32,6 +32,13 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from litman.cli import cli
+from litman.core.library import create_vault
+from litman.core.vault_registry import (
+    add_vault,
+    find_active,
+    load_registry,
+    save_registry,
+)
 from litman.server import create_app
 
 _yaml = YAML(typ="safe")
@@ -961,3 +968,74 @@ def test_delete_project_unregistered_400(
     resp = _client(vault).delete("/api/projects/ghost")
     assert resp.status_code == 400
     assert "not registered" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/vaults/active — switch the active vault (3c-2)
+# ---------------------------------------------------------------------------
+
+
+def _two_registered_vaults(tmp_path: Path) -> tuple[Path, Path]:
+    """Create + register two vaults; return (v1, v2). v1 is active (added first,
+    so auto-active under add_vault); v2 is registered but inactive."""
+    v1 = create_vault(tmp_path, name="one")
+    v2 = create_vault(tmp_path, name="two")
+    reg = load_registry()
+    reg = add_vault(reg, "one", v1)  # registry empty → forced active
+    reg = add_vault(reg, "two", v2)  # inactive
+    save_registry(reg)
+    return v1, v2
+
+
+def test_put_active_vault_switches_registry_and_live_server(tmp_path: Path) -> None:
+    """PUT flips the registry's global active AND repoints the live server."""
+    v1, v2 = _two_registered_vaults(tmp_path)
+    app = create_app(v1)
+    client = TestClient(app)
+
+    resp = client.put("/api/vaults/active", json={"name": "two"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["active"] == "two"
+    assert Path(body["path"]).resolve() == v2.resolve()
+
+    # The live server is repointed in place (no restart).
+    assert Path(app.state.vault).resolve() == v2.resolve()
+    # The registry's global active flipped (same effect as `lit vault use`).
+    active = find_active(load_registry())
+    assert active is not None and active.name == "two"
+
+
+def test_put_active_vault_unknown_name_400(tmp_path: Path) -> None:
+    """An unregistered name → VaultRegistryError → 400, nothing switched."""
+    v1, _v2 = _two_registered_vaults(tmp_path)
+    app = create_app(v1)
+    resp = TestClient(app).put("/api/vaults/active", json={"name": "nope"})
+    assert resp.status_code == 400
+    assert Path(app.state.vault).resolve() == v1.resolve()
+    active = find_active(load_registry())
+    assert active is not None and active.name == "one"
+
+
+def test_put_active_vault_missing_path_refused_400(tmp_path: Path) -> None:
+    """A stale registry entry (vault dir gone) is refused BEFORE persisting, so
+    the global active + the live server stay on the old vault."""
+    import shutil
+
+    v1, v2 = _two_registered_vaults(tmp_path)
+    app = create_app(v1)
+    shutil.rmtree(v2)  # vault two moved / deleted out from under the registry
+
+    resp = TestClient(app).put("/api/vaults/active", json={"name": "two"})
+    assert resp.status_code == 400
+    assert Path(app.state.vault).resolve() == v1.resolve()
+    active = find_active(load_registry())
+    assert active is not None and active.name == "one"
+
+
+def test_put_active_vault_empty_name_400(tmp_path: Path) -> None:
+    """A blank name is a client bug → 400."""
+    v1, _v2 = _two_registered_vaults(tmp_path)
+    resp = TestClient(create_app(v1)).put("/api/vaults/active", json={"name": ""})
+    assert resp.status_code == 400

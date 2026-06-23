@@ -36,7 +36,13 @@ from litman.core.project_link import (
     unlink_paper_from_project,
 )
 from litman.core.taxonomy import add_taxonomy_values, remove_taxonomy_value
-from litman.exceptions import ModifyError, PaperNotFoundError, TaxonomyError
+from litman.core.vault_registry import apply_vault_use
+from litman.exceptions import (
+    ModifyError,
+    PaperNotFoundError,
+    TaxonomyError,
+    VaultRegistryError,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -466,3 +472,41 @@ async def delete_project(request: Request, name: str) -> dict[str, object]:
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "changed": n_changed}
+
+
+@router.put("/vaults/active")
+async def put_active_vault(request: Request) -> dict[str, object]:
+    """Switch the active vault through the ``lit vault use`` backend (3c-2).
+
+    Body JSON ``{"name": str}``. This is a GLOBAL switch: it sets the registry's
+    active vault via :func:`litman.core.vault_registry.apply_vault_use` (the same
+    set_active + save_registry the CLI's ``lit vault use`` calls), so subsequent
+    ``lit`` commands in ANY terminal without ``--library`` / ``$LIT_LIBRARY``
+    resolve to the new vault — not just this GUI. The running server is also
+    repointed in place: ``app.state.vault`` is updated so every later request
+    hits the new vault without a restart.
+
+    ``require_path=True`` rejects a stale registry entry (vault moved or deleted)
+    with a 400 BEFORE the switch is persisted, so the global active is never left
+    pointing at a dead path. An unknown name also surfaces as VaultRegistryError
+    → 400.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="name must be a non-empty string.")
+
+    try:
+        entry = apply_vault_use(name, require_path=True)
+    except VaultRegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    target = Path(entry.path).expanduser()
+    request.app.state.vault = target
+    return {"ok": True, "active": name, "path": str(target)}
