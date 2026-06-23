@@ -334,10 +334,14 @@ function ManageDialog({
   // The value awaiting delete confirmation (null = the list view).
   const [pending, setPending] = useState<string | null>(null)
   const sorted = vocabulary.slice().sort((a, b) => a.localeCompare(b))
+  // While a delete confirm is open (or a delete is in flight), gate the list's
+  // controls so a keyboard-tab onto a row behind the confirm can't swap the
+  // delete target out from under it.
+  const blocked = busy || pending != null
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={busy ? undefined : onClose}
+      onClick={blocked ? undefined : onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -371,7 +375,7 @@ function ManageDialog({
                   type="button"
                   aria-label={`Delete ${field} ${v}`}
                   title={`Delete “${v}”`}
-                  disabled={busy}
+                  disabled={blocked}
                   onClick={() => setPending(v)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
                 >
@@ -384,7 +388,7 @@ function ManageDialog({
         <div className="mt-4 flex justify-end">
           <button
             onClick={onClose}
-            disabled={busy}
+            disabled={blocked}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
             Done

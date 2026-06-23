@@ -285,6 +285,16 @@ export default function App() {
     fetchProjects().then(setProjects)
   }, [])
 
+  // After a project create/delete from the TopBar manager: refresh the project
+  // list + taxonomy (refreshVocab) AND the papers/selected/list (refreshAfterWrite).
+  // A delete cascades untags across papers, so the middle list + cockpit must
+  // re-pull, not just the project dropdown; a create only needs the vocab refresh
+  // but the extra read is cheap and keeps one callback for both.
+  const refreshProjects = useCallback(() => {
+    refreshVocab()
+    refreshAfterWrite()
+  }, [refreshVocab, refreshAfterWrite])
+
   const openTab = useCallback(
     (id: string, kind: TabKind) => {
       const key = `${kind}:${id}`
@@ -521,6 +531,8 @@ export default function App() {
     <div className="flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
       <TopBar
         vaults={vaults}
+        projects={projects}
+        allPapers={allPapers}
         search={search}
         onSearch={setSearch}
         searchCandidates={searchCandidates}
@@ -528,7 +540,7 @@ export default function App() {
         onSelectResult={onSearchSelect}
         focusMode={focusMode}
         onToggleFocus={toggleFocus}
-        onProjectCreated={refreshVocab}
+        onProjectsChanged={refreshProjects}
         notify={notify}
       />
       <div className="flex min-h-0 flex-1">

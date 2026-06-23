@@ -1,12 +1,16 @@
 import { useState } from 'react'
-import type { VaultsPayload } from '../types'
+import type { IndexPaper, ProjectEntry, VaultsPayload } from '../types'
 import type { Candidate } from '../search'
-import { createProject } from '../api'
+import { createProject, deleteProject } from '../api'
 import SearchBox from './SearchBox'
 import logoUrl from '../assets/litman-logo.png'
 
 interface Props {
   vaults: VaultsPayload | null
+  /** Registered projects backing the global Projects manager (P4). */
+  projects: ProjectEntry[]
+  /** Full INDEX projection — backs the delete-project confirm's "N papers" count. */
+  allPapers: IndexPaper[]
   search: string
   onSearch: (q: string) => void
   /** Ranked typeahead candidates (App merges client id/title + server md hits). */
@@ -18,9 +22,9 @@ interface Props {
   onSelectResult: (candidate: Candidate) => void
   focusMode: boolean
   onToggleFocus: () => void
-  /** Refresh the registered-project list after a successful create (3c-1). */
-  onProjectCreated: () => void
-  /** Toast a message (surfaces the backend's raw create error verbatim). */
+  /** Refresh the registered-project list + papers after a create/delete (P4). */
+  onProjectsChanged: () => void
+  /** Toast a message (surfaces the backend's raw error verbatim). */
   notify: (msg: string) => void
 }
 
@@ -47,12 +51,17 @@ function useDarkMode(): readonly [boolean, () => void] {
   return [dark, toggle] as const
 }
 
-/** Global chrome: brand, current-vault indicator, the title/id search, and the
- * focus / dark-mode toggles. No per-paper or mutating actions live here —
- * copy-id / copy-wikilink moved to the Cockpit (selected-paper context);
- * project creation lands next to the project dropdown in Phase 3. */
+/** Global chrome: brand, current-vault indicator, the global Projects manager,
+ * the title/id search, and the focus / dark-mode toggles. No per-paper actions
+ * live here — copy-id / cite moved to the Cockpit (selected-paper context), and
+ * per-paper project link/unlink stays in the Cockpit's project dropdown. Project
+ * register/remove are GLOBAL operations, so they sit in the labeled Projects
+ * control here (P4), next to the vault indicator — the workspace-level region
+ * that future vault operations will join. */
 export default function TopBar({
   vaults,
+  projects,
+  allPapers,
   search,
   onSearch,
   searchCandidates,
@@ -60,11 +69,11 @@ export default function TopBar({
   onSelectResult,
   focusMode,
   onToggleFocus,
-  onProjectCreated,
+  onProjectsChanged,
   notify,
 }: Props) {
   const [dark, toggleDark] = useDarkMode()
-  const [showNewProject, setShowNewProject] = useState(false)
+  const [showProjects, setShowProjects] = useState(false)
 
   return (
     <header className="relative z-30 flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md">
@@ -95,21 +104,19 @@ export default function TopBar({
 
       <button
         type="button"
-        onClick={() => setShowNewProject(true)}
-        title="Register a new project (name + absolute path)"
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
-        aria-label="New project"
+        onClick={() => setShowProjects(true)}
+        title="Register or remove projects"
+        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1 text-sm font-medium text-stone-600 shadow-sm transition duration-200 ease-fluid hover:bg-stone-50 hover:text-stone-900"
       >
-        <IconPlus />
+        <IconFolder /> Projects
       </button>
 
-      {showNewProject && (
-        <NewProjectDialog
-          onClose={() => setShowNewProject(false)}
-          onCreated={() => {
-            setShowNewProject(false)
-            onProjectCreated()
-          }}
+      {showProjects && (
+        <ProjectManager
+          projects={projects}
+          allPapers={allPapers}
+          onChanged={onProjectsChanged}
+          onClose={() => setShowProjects(false)}
           notify={notify}
         />
       )}
@@ -149,10 +156,224 @@ export default function TopBar({
   )
 }
 
+/** The global Projects manager (P4): lists every registered project with its
+ * in-use count, removes one through a default-No confirm into the `lit project
+ * rm` backend (cascade: unlink papers + tear down reflib links, directory kept),
+ * and registers a new one via NewProjectDialog. Project create/delete are
+ * global (not per-paper), so they live here rather than in the Cockpit — the
+ * Cockpit's project dropdown only links/unlinks the selected paper. macOS-style
+ * modal shell shared with the rest of the app. */
+function ProjectManager({
+  projects,
+  allPapers,
+  onChanged,
+  onClose,
+  notify,
+}: {
+  projects: ProjectEntry[]
+  allPapers: IndexPaper[]
+  onChanged: () => void
+  onClose: () => void
+  notify: (msg: string) => void
+}) {
+  // The project awaiting delete confirmation, the new-project dialog toggle, and
+  // whether a delete is in flight (gates the controls).
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [showNew, setShowNew] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  // Papers linked to a project, off the loaded INDEX (no round-trip).
+  function countFor(name: string): number {
+    return allPapers.filter((p) => (p.projects ?? []).includes(name)).length
+  }
+
+  async function doDelete(name: string) {
+    setBusy(true)
+    try {
+      await deleteProject(name)
+      onChanged()
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+      setPendingDelete(null)
+    }
+  }
+
+  const sorted = projects.slice().sort((a, b) => a.name.localeCompare(b.name))
+  const blocked = busy || pendingDelete != null || showNew
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={blocked ? undefined : onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && !pendingDelete && !showNew) onClose()
+        }}
+        className="flex max-h-[70vh] w-[28rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Projects</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Register a project, or remove one. Removing unlinks it from every paper
+          and tears down its reflib links, but leaves the project folder on disk.
+        </p>
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
+          {sorted.length === 0 && (
+            <div className="px-3 py-4 text-center text-xs text-stone-400">
+              No projects registered.
+            </div>
+          )}
+          {sorted.map((p) => (
+            <div
+              key={p.name}
+              className="flex items-center justify-between gap-2 border-b border-stone-100 px-3 py-2 last:border-b-0"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium text-stone-800">
+                  {p.name}
+                </div>
+                <div className="truncate font-mono text-[11px] text-stone-400">
+                  {p.path}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-[11px] text-stone-400">
+                  {countFor(p.name)} papers
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Delete project ${p.name}`}
+                  title={`Delete project “${p.name}”`}
+                  disabled={blocked}
+                  onClick={() => setPendingDelete(p.name)}
+                  className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
+                >
+                  <IconTrash />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-between">
+          <button
+            type="button"
+            disabled={blocked}
+            onClick={() => setShowNew(true)}
+            className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+          >
+            + New project
+          </button>
+          <button
+            type="button"
+            disabled={blocked}
+            onClick={onClose}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+      {pendingDelete != null && (
+        <DeleteProjectConfirm
+          name={pendingDelete}
+          count={countFor(pendingDelete)}
+          busy={busy}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => doDelete(pendingDelete)}
+        />
+      )}
+      {showNew && (
+        <NewProjectDialog
+          onClose={() => setShowNew(false)}
+          onCreated={() => {
+            setShowNew(false)
+            onChanged()
+          }}
+          notify={notify}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Default-No confirm for unregistering a project (P4). The body states the
+ * cascade (unlinks N papers, drops reflib links) and that the on-disk directory
+ * is kept; Cancel is autofocused, the destructive button is rose, and the
+ * backdrop stops click-through so dismissing it keeps the manager open. */
+function DeleteProjectConfirm({
+  name,
+  count,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  name: string
+  count: number
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">
+          Delete project “{name}”?
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          This unregisters “{name}”
+          {count > 0
+            ? ` and unlinks it from ${count} paper${count === 1 ? '' : 's'}`
+            : ''}{' '}
+          and removes its reflib links + REFERENCES.md. The project folder on
+          disk is kept. This cannot be undone.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Register-a-new-project modal (name + absolute path). Mirrors SaveDialog's
  * shell; the path must already exist + be a directory server-side (A7), so a
  * bad path surfaces the backend's TaxonomyError verbatim via `notify` and the
- * dialog stays open for correction. Escape cancels. */
+ * dialog stays open for correction. Escape cancels. The backdrop stops
+ * click-through so, when opened from the ProjectManager, dismissing it does not
+ * also close the manager. */
 function NewProjectDialog({
   onClose,
   onCreated,
@@ -187,8 +408,15 @@ function NewProjectDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={busy ? undefined : onClose}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onClose()
+            }
+      }
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -255,14 +483,6 @@ function NewProjectDialog({
   )
 }
 
-function IconPlus() {
-  return (
-    <svg {...SVG_PROPS}>
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  )
-}
-
 const ICON = 'h-[18px] w-[18px]'
 const SVG_PROPS = {
   className: ICON,
@@ -273,6 +493,32 @@ const SVG_PROPS = {
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
   'aria-hidden': true,
+}
+
+/** Folder — the global Projects manager. */
+function IconFolder() {
+  return (
+    <svg {...SVG_PROPS}>
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  )
+}
+
+function IconTrash() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
+    </svg>
+  )
 }
 
 /** Viewfinder brackets — "frame the content" (focus mode). */

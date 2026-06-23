@@ -264,6 +264,17 @@ export function createProject(
   return mutateJSON('/api/projects', 'POST', { name, path })
 }
 
+/** Unregister a project through the `lit project rm` backend (atomic TAXONOMY +
+ * config rewrite, then cascade: unlink every paper, drop relevance keys, tear
+ * down reflib symlinks + REFERENCES.md). The on-disk project directory is left
+ * intact. `changed` counts the papers unlinked. Throws the backend's
+ * TaxonomyError (400) verbatim on rejection. */
+export function deleteProject(
+  name: string,
+): Promise<{ ok: boolean; changed: number }> {
+  return mutateJSON(`/api/projects/${encodeURIComponent(name)}`, 'DELETE')
+}
+
 /** Register a new controlled-vocab value through the `lit taxonomy add` backend
  * (register-first per invariant #2). This only registers the value; the caller
  * then attaches it via `putMetadata` addTag (two-step inline-create). */
