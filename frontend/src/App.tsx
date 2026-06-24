@@ -805,6 +805,40 @@ export default function App() {
     [activeTab],
   )
 
+  // Switching a center tab = make it active + sync the selection. This is the
+  // exact path the tab strip's click uses (TabArea onActivate), extracted so the
+  // keyboard switchers below drive identical behavior — no second activation
+  // path (and whatever flush-on-switch the click does is preserved verbatim).
+  const activateTab = useCallback(
+    (key: string) => {
+      setActiveTab(key)
+      const tab = tabs.find((t) => t.key === key)
+      if (tab) selectPaper(tab.paperId)
+    },
+    [tabs, selectPaper],
+  )
+  // `,` / `.` cycle the open tabs (wrap-around); both no-op with < 2 tabs.
+  const activateAdjacentTab = useCallback(
+    (delta: 1 | -1) => {
+      if (tabs.length < 2) return
+      const idx = tabs.findIndex((t) => t.key === activeTab)
+      if (idx === -1) {
+        activateTab(tabs[0].key)
+        return
+      }
+      const next = (idx + delta + tabs.length) % tabs.length
+      activateTab(tabs[next].key)
+    },
+    [tabs, activeTab, activateTab],
+  )
+  // `1`–`9` jump straight to the Nth tab; out-of-range is a no-op.
+  const activateTabByIndex = useCallback(
+    (n: number) => {
+      if (n >= 1 && n <= tabs.length) activateTab(tabs[n - 1].key)
+    },
+    [tabs, activateTab],
+  )
+
   // ⌥R toasts a post-write hint with the undo affordance (AC B5 ②). Wrap the
   // cockpit handle's triggerRead so the shortcut path adds that toast on top of
   // the same markRead write (the cockpit button itself stays toast-free — the
@@ -842,6 +876,8 @@ export default function App() {
     toggleDark,
     toggleLeft,
     toggleRight,
+    activateAdjacentTab,
+    activateTabByIndex,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -913,11 +949,7 @@ export default function App() {
             <TabArea
               tabs={tabs}
               activeKey={activeTab}
-              onActivate={(key) => {
-                setActiveTab(key)
-                const tab = tabs.find((t) => t.key === key)
-                if (tab) selectPaper(tab.paperId)
-              }}
+              onActivate={activateTab}
               onClose={closeTab}
               onOpenPaper={openWikilink}
               onRegisterPdf={registerPdf}

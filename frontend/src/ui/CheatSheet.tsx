@@ -72,6 +72,15 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Tabs',
+    note: 'Switch the open document tabs.',
+    rows: [
+      { chords: [[',']], action: 'Previous tab' },
+      { chords: [['.']], action: 'Next tab' },
+      { chords: [['1–9']], action: 'Jump to tab 1–9' },
+    ],
+  },
+  {
     title: 'PDF tools',
     note: 'Only while a PDF tab is active. Tools switch freely in any order.',
     rows: [

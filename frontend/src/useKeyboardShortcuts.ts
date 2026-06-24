@@ -19,6 +19,13 @@ export interface ShortcutDeps {
   toggleLeft: () => void
   toggleRight: () => void
 
+  // --- Tier 1: center tab switching (global, focus-guarded) ---------------
+  /** Cycle the active center document tab. delta +1 = next, -1 = previous;
+   * wraps around; no-op with fewer than two tabs. */
+  activateAdjacentTab: (delta: 1 | -1) => void
+  /** Jump straight to the Nth center tab (1-based). Out-of-range = no-op. */
+  activateTabByIndex: (n: number) => void
+
   // --- Cheat sheet (`?`) ---------------------------------------------------
   cheatSheetOpen: boolean
   toggleCheatSheet: () => void
@@ -93,6 +100,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleDark,
     toggleLeft,
     toggleRight,
+    activateAdjacentTab,
+    activateTabByIndex,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -211,6 +220,23 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           e.preventDefault()
           toggleRight()
           return
+        case 'Comma':
+          e.preventDefault()
+          activateAdjacentTab(-1)
+          return
+        case 'Period':
+          e.preventDefault()
+          activateAdjacentTab(1)
+          return
+      }
+
+      // 1–9 jump straight to the Nth center tab (main number row only). Bare
+      // digits are free in-browser; the Cmd/Ctrl+digit browser tab-jump was
+      // rejected earlier (it fights the host browser). e.code is "DigitN".
+      if (/^Digit[1-9]$/.test(e.code)) {
+        e.preventDefault()
+        activateTabByIndex(Number(e.code.slice(5)))
+        return
       }
 
       // PDF tools fire only when a PDF tab is active (V/H/T/D; Esc handled above).
@@ -244,6 +270,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleDark,
     toggleLeft,
     toggleRight,
+    activateAdjacentTab,
+    activateTabByIndex,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
