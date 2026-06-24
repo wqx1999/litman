@@ -23,8 +23,16 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 // A WeakSet so a destroyed document's manager is GC'd without leaking here.
 const wrappedManagers = new WeakSet<object>()
 
+// The PDF-tool modes the keyboard shortcuts can switch to, mirroring EditMode
+// below. Exposed on the handle so the global shortcut dispatcher (V/H/T/D/Esc)
+// can drive the active PDF tab without reaching into its internals — it calls
+// the same `selectMode` the toolbar buttons do (one tool-switch path, no second
+// way to mutate editor state). 'none' is Cursor / Esc.
+export type PdfEditMode = 'none' | ParamType
+
 /** Handle the parent (App) uses to flush / inspect a mounted PDF tab when the
- *  user closes it. Lets the close path show a Save / Don't-save / Cancel prompt
+ *  user closes it, and to drive its annotation tool from the global keyboard
+ *  shortcuts. Lets the close path show a Save / Don't-save / Cancel prompt
  *  instead of a silent write (invariant #16: annotations embed into paper.pdf). */
 export interface PdfHandle {
   /** Are there annotation edits not yet embedded into the PDF? */
@@ -33,6 +41,10 @@ export interface PdfHandle {
   flush(): Promise<void>
   /** Drop pending edits so the unmount teardown does not save them. */
   discard(): void
+  /** Switch the active annotation tool (Cursor/Highlight/Text/Draw) from the
+   *  global keyboard shortcuts — routes to the same `selectMode` the toolbar
+   *  buttons use, so "load the tool" stays one path. */
+  setEditMode(mode: PdfEditMode): void
 }
 
 interface Props {
@@ -477,9 +489,13 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
         dirtyRef.current = false
         setDirty(false)
       },
+      // Drive the active tool from the global V/H/T/D/Esc shortcuts through the
+      // exact toolbar path (no second way to set editor state). EditMode and
+      // PdfEditMode are the same union, so the cast is a label, not a widening.
+      setEditMode: (mode) => selectMode(mode),
     })
     return () => onRegister(tabKey, null)
-  }, [tabKey, onRegister, flush])
+  }, [tabKey, onRegister, flush, selectMode])
 
   // Build the viewer and load the document when the paper changes.
   useEffect(() => {

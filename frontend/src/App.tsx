@@ -13,6 +13,9 @@ import {
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import type { MdDraft } from './md/MdView'
+import type { CockpitHandle } from './cockpit/Cockpit'
+import { useKeyboardShortcuts } from './useKeyboardShortcuts'
+import CheatSheet from './ui/CheatSheet'
 import SaveDialog from './tabs/SaveDialog'
 import { mergeCandidates, type Candidate } from './search'
 import type {
@@ -50,6 +53,33 @@ const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
 function tabLabel(id: string, kind: TabKind): string {
   if (kind === 'pdf') return id
   return `${id} · ${kind}`
+}
+
+/** Reads the `.dark` class the no-FOUC script (index.html) already set on
+ * <html>, then flips it and persists the choice. Lifted from TopBar to App
+ * (Phase 4) so the `L` keyboard shortcut and the header toggle drive ONE theme
+ * state; `toggle` is a stable useCallback so the shortcut effect doesn't re-bind. */
+function useDarkMode(): readonly [boolean, () => void] {
+  const [dark, setDark] = useState(
+    () =>
+      typeof document !== 'undefined' &&
+      document.documentElement.classList.contains('dark'),
+  )
+  const toggle = useCallback(
+    () =>
+      setDark((d) => {
+        const next = !d
+        document.documentElement.classList.toggle('dark', next)
+        try {
+          localStorage.setItem('litman-theme', next ? 'dark' : 'light')
+        } catch {
+          /* private mode / no storage — class still applies this session */
+        }
+        return next
+      }),
+    [],
+  )
+  return [dark, toggle] as const
 }
 
 export default function App() {
@@ -141,6 +171,24 @@ export default function App() {
     left: false,
     right: false,
   })
+
+  // --- Keyboard shortcuts (Phase 4) ----------------------------------------
+  // Theme state lifted here so the `L` shortcut and the TopBar toggle share it.
+  const [dark, toggleDark] = useDarkMode()
+  // The `?` cheat-sheet overlay (a non-blocking overlay the dispatcher owns —
+  // NOT counted in anyModalOpen, so `?`/Esc still toggle it while it is up).
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(false)
+  // Modal-open flags reported up from the children, so the dispatcher's modal
+  // guard can suppress global shortcuts while a blocking surface is open.
+  const [cockpitModalOpen, setCockpitModalOpen] = useState(false)
+  const [projectsOpen, setProjectsOpen] = useState(false)
+  // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
+  // so registering it doesn't re-render; a state copy drives the hook's deps.
+  const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
+  const registerCockpit = useCallback(
+    (handle: CockpitHandle | null) => setCockpitHandle(handle),
+    [],
+  )
 
   const loadList = useCallback((mode: ListMode) => {
     setLoadingList(true)
@@ -622,6 +670,68 @@ export default function App() {
     }
   }, [pendingVault, flushAllDirty, reloadForVault, notify])
 
+  // --- Keyboard shortcuts wiring (Phase 4) ---------------------------------
+  // Panel toggles for `[` / `]` (focus mode keeps the same setters).
+  const toggleLeft = useCallback(() => setLeftCollapsed((c) => !c), [])
+  const toggleRight = useCallback(() => setCockpitCollapsed((c) => !c), [])
+  const toggleCheatSheet = useCallback(() => setCheatSheetOpen((o) => !o), [])
+  const closeCheatSheet = useCallback(() => setCheatSheetOpen(false), [])
+
+  // PDF-tool keys (V/H/T/D/Esc) only act when the active center tab is a PDF
+  // tab; the handle is resolved live from the ref Map (see getPdfHandle's note).
+  const activeTabKind = useMemo(
+    () => tabs.find((t) => t.key === activeTab)?.kind ?? null,
+    [tabs, activeTab],
+  )
+  const pdfActive = activeTabKind === 'pdf'
+  const getPdfHandle = useCallback(
+    () => (activeTab ? handlesRef.current.get(activeTab) ?? null : null),
+    [activeTab],
+  )
+
+  // ⌥R toasts a post-write hint with the undo affordance (AC B5 ②). Wrap the
+  // cockpit handle's triggerRead so the shortcut path adds that toast on top of
+  // the same markRead write (the cockpit button itself stays toast-free — the
+  // visible date in the panel is its own feedback). ⌥-actions are no-ops without
+  // a selection, handled in the dispatcher; the wrapper only adds the toast.
+  const shortcutCockpit = useMemo<CockpitHandle | null>(() => {
+    if (!cockpitHandle) return null
+    return {
+      ...cockpitHandle,
+      triggerRead: () => {
+        cockpitHandle.triggerRead()
+        notify('已标记已读 · ⌥⇧R 撤销')
+      },
+    }
+  }, [cockpitHandle, notify])
+
+  // A blocking surface is up when a SaveDialog / SwitchVaultDialog is pending, a
+  // cockpit confirm/panel is open, or the TopBar Projects manager is open. The
+  // cheat sheet is deliberately EXCLUDED — it is a non-blocking overlay the
+  // dispatcher owns (so `?`/Esc keep toggling it). While anyModalOpen, the
+  // dispatcher suppresses every global shortcut and lets the modal own its keys.
+  const anyModalOpen =
+    pendingClose !== null ||
+    pendingVault !== null ||
+    cockpitModalOpen ||
+    projectsOpen
+
+  useKeyboardShortcuts({
+    anyModalOpen,
+    toggleFocus,
+    toggleDark,
+    toggleLeft,
+    toggleRight,
+    cheatSheetOpen,
+    toggleCheatSheet,
+    closeCheatSheet,
+    pdfActive,
+    getPdfHandle,
+    selectedId,
+    cockpit: shortcutCockpit,
+    notify,
+  })
+
   return (
     // `relative` anchors the focus-mode TopBar, which detaches to `absolute`
     // and slides in/out from the top edge (see TopBar) so the reading area
@@ -642,6 +752,9 @@ export default function App() {
         onSwitchVault={switchVault}
         switching={switchingVault}
         notify={notify}
+        dark={dark}
+        onToggleDark={toggleDark}
+        onProjectsOpenChange={setProjectsOpen}
       />
       <div className="flex min-h-0 flex-1">
         <BrowsePanel
@@ -695,6 +808,8 @@ export default function App() {
           onChanged={refreshAfterWrite}
           onVocabChanged={refreshVocab}
           notify={notify}
+          onRegisterHandle={registerCockpit}
+          onModalState={setCockpitModalOpen}
         />
       </div>
       {pendingClose && (
@@ -718,6 +833,7 @@ export default function App() {
           onConfirm={confirmSwitchVault}
         />
       )}
+      {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
       {toast && (
         <Toast
           message={toast.message}

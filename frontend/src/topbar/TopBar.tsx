@@ -32,29 +32,14 @@ interface Props {
   switching: boolean
   /** Toast a message (surfaces the backend's raw error verbatim). */
   notify: (msg: string, variant?: ToastVariant) => void
-}
-
-/** Reads the `.dark` class the no-FOUC script (index.html) already set on
- * <html>, then flips it and persists the choice. Self-contained here so the
- * theme toggle needs no App-level state. */
-function useDarkMode(): readonly [boolean, () => void] {
-  const [dark, setDark] = useState(
-    () =>
-      typeof document !== 'undefined' &&
-      document.documentElement.classList.contains('dark'),
-  )
-  const toggle = () =>
-    setDark((d) => {
-      const next = !d
-      document.documentElement.classList.toggle('dark', next)
-      try {
-        localStorage.setItem('litman-theme', next ? 'dark' : 'light')
-      } catch {
-        /* private mode / no storage — class still applies this session */
-      }
-      return next
-    })
-  return [dark, toggle] as const
+  /** Current theme + toggle, lifted to App (Phase 4) so the `L` shortcut and the
+   * header button drive ONE theme state. The toggle still flips the `.dark`
+   * class + persists the choice (see App's useDarkMode). */
+  dark: boolean
+  onToggleDark: () => void
+  /** Report the global Projects manager's open state up so the shortcut
+   * dispatcher's modal guard suppresses global keys while it is up (Phase 4). */
+  onProjectsOpenChange: (open: boolean) => void
 }
 
 /** Global chrome: brand, current-vault indicator, the global Projects manager,
@@ -79,9 +64,16 @@ export default function TopBar({
   onSwitchVault,
   switching,
   notify,
+  dark,
+  onToggleDark,
+  onProjectsOpenChange,
 }: Props) {
-  const [dark, toggleDark] = useDarkMode()
   const [showProjects, setShowProjects] = useState(false)
+
+  // Mirror the manager's open state up so App's shortcut modal-guard sees it.
+  useEffect(() => {
+    onProjectsOpenChange(showProjects)
+  }, [showProjects, onProjectsOpenChange])
 
   // Focus mode turns the header into an auto-hiding overlay (macOS fullscreen
   // menu-bar idiom): it detaches to `absolute`, slides up out of view, and
@@ -196,7 +188,7 @@ export default function TopBar({
 
       <button
         type="button"
-        onClick={toggleDark}
+        onClick={onToggleDark}
         aria-pressed={dark}
         title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"

@@ -1,5 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FixedEnums, IndexPaper, PaperMeta, ProjectEntry, Taxonomy } from '../types'
+
+/** Imperative handle the global keyboard shortcuts (⌥R/⌥⇧R/⌥P/⌥D/⌥T/⌥C/⌥⇧C)
+ * use to drive the cockpit's existing curation actions on the selected paper.
+ * Every method routes to the SAME local handler the cockpit's own buttons call
+ * (markRead / doUnread / setEnum / setOpenField / doCopy) so confirms, onChanged
+ * refresh, and the invariant #16 write path stay untouched — the shortcut is a
+ * second trigger, never a second write path. ⌥-combos act only when a paper is
+ * selected; when none is, App no-ops + toasts before ever reaching the handle. */
+export interface CockpitHandle {
+  /** Stamp first-read (idempotent) — same as the Mark read button. */
+  triggerRead(): void
+  /** Open the default-No unread confirm — same as the ↺ undo button. */
+  triggerUnread(): void
+  /** status → promoted — same as picking it in the Status dropdown. */
+  triggerPromote(): void
+  /** status → dropped via the existing二次确认 — same as the Status dropdown +
+   *  the cockpit's own write guard surfacing the backend confirm. */
+  triggerDrop(): void
+  /** Open the Tags母栏 (Topics pill) so the user can pick a value (no write). */
+  openTags(): void
+  /** Copy the paper-folder path — same as the Copy path button. */
+  copyPath(): void
+  /** Copy the paper id — same as the Copy ID button. */
+  copyId(): void
+}
 import {
   addTaxonomyValue,
   deleteTaxonomyValue,
@@ -39,6 +64,13 @@ interface Props {
   onVocabChanged: () => void
   /** Toast a message (used to surface the backend's raw error verbatim). */
   notify: (msg: string) => void
+  /** Register/unregister the imperative handle the global keyboard shortcuts
+   * (Phase 4) drive curation through. Null on unmount. */
+  onRegisterHandle: (handle: CockpitHandle | null) => void
+  /** Report whether any cockpit-owned modal (a Tags field panel, the Manage
+   * dictionary dialog, the Unread confirm, or the Drop confirm) is open, so the
+   * shortcut dispatcher's modal guard can suppress global keys while one is up. */
+  onModalState: (open: boolean) => void
 }
 
 /** A read-only chip group (relations / code-clones stay read-only in 3b). */
@@ -654,6 +686,62 @@ function UnreadConfirm({
   )
 }
 
+/** Default-No confirm for dropping a paper via the ⌥D shortcut (Phase 4). The
+ * cockpit's Status dropdown drops without a prompt, but a one-keystroke ⌥D needs
+ * a guard (AC B5 ②: "⌥D 二次确认"). On confirm it calls the SAME
+ * `setEnum('status','dropped')` write path the dropdown uses, so this adds a
+ * confirmation step, not a second write path (invariant #16). Mirrors the macOS
+ * modal shell of UnreadConfirm; Cancel autofocused, destructive button rose. */
+function DropConfirm({
+  title,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  title: string
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Drop this paper?</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          Sets the status of “{title}” to dropped, removing it from the active
+          reading lists. You can restore it later by changing the status back.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Drop
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Curation cockpit with structured write controls (Phase 3b/3c/3d).
  *
  * Dropdowns (status/priority/type), the collapsed Tags group (topics/methods/
@@ -678,6 +766,8 @@ export default function Cockpit({
   onChanged,
   onVocabChanged,
   notify,
+  onRegisterHandle,
+  onModalState,
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
@@ -691,6 +781,10 @@ export default function Cockpit({
   // immutable-by-default stamp, so it sits behind a default-No confirm that also
   // warns the revisit record is dropped. Only reachable when readDate != null.
   const [showUnread, setShowUnread] = useState(false)
+  // Drop-confirm dialog (Phase 4): the ⌥D shortcut routes here so a one-keystroke
+  // drop is guarded (the Status dropdown drops without a prompt; the shortcut
+  // needs the二次确认). On confirm it calls the existing setEnum write path.
+  const [showDrop, setShowDrop] = useState(false)
   // The currently-open pill in the Tags group (topics/methods/data/projects), or
   // null. One field at a time: opening one collapses the others (problem 1/3).
   const [openField, setOpenField] = useState<string | null>(null)
@@ -711,6 +805,7 @@ export default function Cockpit({
     setCopied(null)
     setCiteWarn(null)
     setShowUnread(false)
+    setShowDrop(false)
     setOpenField(null)
     setManageField(null)
   }, [paper?.id])
@@ -855,8 +950,78 @@ export default function Cockpit({
     runWrite(() => postUnread(id))
   }
 
+  // Confirmed drop (Phase 4, ⌥D path): routes through the existing
+  // setEnum('status','dropped') write, so the only addition over the dropdown is
+  // the preceding二次确认 (DropConfirm), not a second write path.
+  function doDrop() {
+    setShowDrop(false)
+    setEnum('status', 'dropped')
+  }
+
   const readDate = paper?.['read-date'] ?? null
   const lastRevisited = paper?.['last-revisited'] ?? null
+
+  // --- Keyboard-shortcut handle (Phase 4) ----------------------------------
+  // The global dispatcher drives curation through the SAME local handlers the
+  // cockpit's own buttons call (no second write path, invariant #16). The
+  // handlers are recreated each render (they close over the live `paper`), so we
+  // mirror the dispatch table into a ref and register a STABLE handle that reads
+  // it — registering the live closures would re-fire onRegisterHandle every
+  // render. App already no-ops + toasts when no paper is selected, so the
+  // ⌥-actions here can assume a selection (they also guard internally).
+  const actionsRef = useRef<CockpitHandle>({
+    triggerRead: () => {},
+    triggerUnread: () => {},
+    triggerPromote: () => {},
+    triggerDrop: () => {},
+    openTags: () => {},
+    copyPath: () => {},
+    copyId: () => {},
+  })
+  actionsRef.current = {
+    triggerRead: markRead,
+    // ↺ undo only makes sense once read; mirror the button's gate (it is hidden
+    // until readDate != null). On an unread paper, undo-of-a-non-action is inert,
+    // so toast a subtle hint rather than no-op silently (误触看得见) — no write.
+    triggerUnread: () => {
+      if (readDate != null) setShowUnread(true)
+      else notify('尚未标记已读')
+    },
+    // `lit promote` is sugar for status=deep-read (commands/promote.py); mirror
+    // that exact value through the existing setEnum write rather than invent a
+    // "promoted" status the fixed-enum whitelist (deep-read/skim/inbox/dropped)
+    // would reject.
+    triggerPromote: () => setEnum('status', 'deep-read'),
+    triggerDrop: () => setShowDrop(true),
+    openTags: () => setOpenField('topics'),
+    copyPath: () => {
+      if (paper && vaultPath) doCopy('path', `${vaultPath}/papers/${paper.id}`)
+    },
+    copyId: () => {
+      if (paper) doCopy('ID', paper.id)
+    },
+  }
+  useEffect(() => {
+    const stable: CockpitHandle = {
+      triggerRead: () => actionsRef.current.triggerRead(),
+      triggerUnread: () => actionsRef.current.triggerUnread(),
+      triggerPromote: () => actionsRef.current.triggerPromote(),
+      triggerDrop: () => actionsRef.current.triggerDrop(),
+      openTags: () => actionsRef.current.openTags(),
+      copyPath: () => actionsRef.current.copyPath(),
+      copyId: () => actionsRef.current.copyId(),
+    }
+    onRegisterHandle(stable)
+    return () => onRegisterHandle(null)
+  }, [onRegisterHandle])
+
+  // Report cockpit-owned modal state up so the shortcut dispatcher's modal guard
+  // suppresses global keys while a confirm / dictionary / tag panel is open.
+  const modalOpen =
+    showUnread || showDrop || manageField != null || openField != null
+  useEffect(() => {
+    onModalState(modalOpen)
+  }, [modalOpen, onModalState])
 
   return (
     <div
@@ -1162,6 +1327,15 @@ export default function Cockpit({
           busy={writing}
           onDelete={(v) => deleteValue(manageField, v)}
           onClose={() => setManageField(null)}
+        />
+      )}
+
+      {showDrop && paper && (
+        <DropConfirm
+          title={paper.title || paper.id}
+          busy={writing}
+          onCancel={() => setShowDrop(false)}
+          onConfirm={doDrop}
         />
       )}
     </div>
