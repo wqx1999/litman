@@ -41,3 +41,27 @@
 .commentPopup {
   display: none !important;
 }
+
+/* Reset a stale tool cursor when returning to select mode.
+ *
+ * Our "Cursor" tool maps to pdf.js's POPUP editor mode (not NONE — NONE would
+ * disable the editor layer and make existing annotations unselectable; POPUP
+ * keeps them clickable while arming no creation tool). pdf.js's per-layer
+ * `updateMode` toggles a `${tool}Editing` class on the editor layer to drive
+ * each tool's cursor (`.annotationEditorLayer.freetextEditing { cursor: text }`,
+ * `.inkEditing { cursor: <pen> }`). That toggle runs in updateMode's `else`
+ * branch — but POPUP takes the `if` branch (it only sets `commentEditing`) and
+ * skips the loop, so the PREVIOUS tool's `freetextEditing` / `inkEditing` class
+ * lingers and its cursor stays stuck after switching back to select. (Highlight
+ * is unaffected: its cursor lives on the textLayer's `.highlighting` class,
+ * which POPUP's `default` switch branch clears via `disableTextSelection`.)
+ *
+ * pdf.js always sets `commentEditing` in POPUP/select mode, so force the cursor
+ * back to `auto` whenever it is present alongside a lingering tool class. The
+ * 3-class selector outranks pdf.js's 2-class `.annotationEditorLayer.freetextEditing`
+ * regardless of load order, and it does NOT apply while actually drawing/typing
+ * (where `commentEditing` is absent), so the real tool cursor still shows then. */
+.annotationEditorLayer.commentEditing.freetextEditing,
+.annotationEditorLayer.commentEditing.inkEditing {
+  cursor: auto;
+}
