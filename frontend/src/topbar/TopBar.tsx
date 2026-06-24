@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { IndexPaper, ProjectEntry, VaultsPayload } from '../types'
 import type { Candidate } from '../search'
@@ -83,8 +83,44 @@ export default function TopBar({
   const [dark, toggleDark] = useDarkMode()
   const [showProjects, setShowProjects] = useState(false)
 
+  // Focus mode turns the header into an auto-hiding overlay (macOS fullscreen
+  // menu-bar idiom): it detaches to `absolute`, slides up out of view, and
+  // slides back down only while the pointer is at the very top edge or a header
+  // control holds focus. `revealed` drives that slide; reset whenever focus
+  // toggles so re-entering focus always starts hidden.
+  const headerRef = useRef<HTMLElement>(null)
+  const [revealed, setRevealed] = useState(false)
+  useEffect(() => setRevealed(false), [focusMode])
+
+  // Hide on mouse-out, but keep the bar down while any header control still has
+  // focus (typing in search, the open vault <select>) so it can't vanish
+  // mid-interaction.
+  const hideUnlessFocused = () => {
+    if (!headerRef.current?.contains(document.activeElement)) setRevealed(false)
+  }
+
   return (
-    <header className="relative z-30 flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md">
+    <>
+      {focusMode && (
+        // Invisible catch-strip pinned to the top edge: hovering it reveals the
+        // hidden header. When revealed the header covers this strip.
+        <div
+          className="absolute inset-x-0 top-0 z-40 h-2"
+          onMouseEnter={() => setRevealed(true)}
+        />
+      )}
+      <header
+        ref={headerRef}
+        onMouseEnter={focusMode ? () => setRevealed(true) : undefined}
+        onMouseLeave={focusMode ? hideUnlessFocused : undefined}
+        className={
+          'flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md ' +
+          (focusMode
+            ? 'absolute inset-x-0 top-0 z-40 transition-transform duration-200 ease-fluid ' +
+              (revealed ? 'translate-y-0 shadow-lg shadow-stone-900/10' : '-translate-y-full')
+            : 'relative z-30')
+        }
+      >
       <img
         src={logoUrl}
         alt="litman"
@@ -167,7 +203,8 @@ export default function TopBar({
       >
         {dark ? <IconSun /> : <IconMoon />}
       </button>
-    </header>
+      </header>
+    </>
   )
 }
 

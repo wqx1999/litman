@@ -58,6 +58,21 @@ function Chips({ values }: { values: string[] | undefined }) {
   )
 }
 
+// Long author lists bloat the metadata panel, so cap the rendered names at six:
+// the first three and the last three, joined by an ellipsis. The full list is
+// kept on a `title` tooltip (see the Authors field) so nothing is truly hidden.
+const AUTHOR_HEAD = 3
+const AUTHOR_TAIL = 3
+
+function formatAuthors(authors: string[]): string {
+  if (authors.length <= AUTHOR_HEAD + AUTHOR_TAIL) return authors.join('; ')
+  return [
+    ...authors.slice(0, AUTHOR_HEAD),
+    '…',
+    ...authors.slice(-AUTHOR_TAIL),
+  ].join('; ')
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-3.5">
@@ -945,9 +960,19 @@ export default function Cockpit({
               )}
             </div>
             <Field label="Authors">
-              {paper.authors && paper.authors.length > 0
-                ? paper.authors.join('; ')
-                : '—'}
+              {paper.authors && paper.authors.length > 0 ? (
+                <span
+                  title={
+                    paper.authors.length > AUTHOR_HEAD + AUTHOR_TAIL
+                      ? paper.authors.join('; ')
+                      : undefined
+                  }
+                >
+                  {formatAuthors(paper.authors)}
+                </span>
+              ) : (
+                '—'
+              )}
             </Field>
             <Field label="Venue / Year">
               {[paper.journal, paper.year].filter(Boolean).join(' · ') || '—'}

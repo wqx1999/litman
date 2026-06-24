@@ -623,7 +623,10 @@ export default function App() {
   }, [pendingVault, flushAllDirty, reloadForVault, notify])
 
   return (
-    <div className="flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
+    // `relative` anchors the focus-mode TopBar, which detaches to `absolute`
+    // and slides in/out from the top edge (see TopBar) so the reading area
+    // reclaims the header's height.
+    <div className="relative flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
       <TopBar
         vaults={vaults}
         projects={projects}
