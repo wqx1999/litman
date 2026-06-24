@@ -13,19 +13,37 @@ import { createPortal } from 'react-dom'
  * regardless of any backdrop-filter ancestor (same reasoning as Toast /
  * ProjectManager). */
 
-/** One chord, rendered as keycap chip(s). A multi-key chord ("⌥⇧R") stays a
- * single chip so the modifier order reads as one gesture. */
+/** One keycap chip — a single physical key. Rendered in the app's system sans,
+ * NOT a monospace face: the mono stack fell back to a sharp serif on some
+ * browsers and read as out of place against the native UI. Multi-char labels
+ * (Esc / Alt / Shift / Ctrl) widen via padding; single chars keep a min width so
+ * they stay roughly square. */
 function Key({ children }: { children: string }) {
   return (
-    <kbd className="inline-flex min-w-[1.6rem] items-center justify-center rounded-md border border-stone-300 bg-stone-50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-stone-700 shadow-sm">
+    <kbd className="inline-flex min-w-[1.5rem] items-center justify-center rounded-md border border-stone-300 bg-stone-50 px-1.5 py-0.5 text-[11px] font-medium text-stone-700 shadow-sm">
       {children}
     </kbd>
   )
 }
 
+/** One chord = the keys pressed together, each its own keycap sitting adjacent
+ * (Alt Shift R). Modifiers are spelled out (Alt / Shift / Ctrl) instead of
+ * glyphs (⌥ ⇧ ⌘): the symbol is an extra decode step, and the word matches what
+ * is printed on the physical key. */
+function Chord({ keys }: { keys: string[] }) {
+  return (
+    <span className="flex items-center gap-1">
+      {keys.map((k, i) => (
+        <Key key={`${k}-${i}`}>{k}</Key>
+      ))}
+    </span>
+  )
+}
+
 interface Row {
-  /** The key chord(s) for this action. Multiple entries render as "A or B". */
-  keys: string[]
+  /** Alternative chords for the action; each chord is one set of keys pressed
+   * together. Multiple entries render joined by "or" (e.g. V or Esc). */
+  chords: string[][]
   action: string
   /** Optional scope tag (e.g. "PDF") shown muted after the action. */
   scope?: string
@@ -38,49 +56,50 @@ interface Section {
   rows: Row[]
 }
 
-// The scheme verbatim from §2.3. macOS glyphs (⌘ ⌥ ⇧) match what the user sees
-// on their keyboard; the dispatcher matches on e.code, but the cheat sheet is
-// for humans, so it shows the symbols.
+// The scheme verbatim from §2.3. Modifiers are spelled out (Alt / Shift / Ctrl)
+// rather than shown as glyphs — see Chord. Ctrl is accurate on every platform:
+// the app binds every system shortcut on metaKey OR ctrlKey, so Ctrl works on
+// macOS too (even though a Mac user habitually presses ⌘).
 const SECTIONS: Section[] = [
   {
     title: 'Display & panels',
     rows: [
-      { keys: ['F'], action: 'Focus mode (hide side panels)' },
-      { keys: ['L'], action: 'Toggle light / dark theme' },
-      { keys: ['['], action: 'Toggle the left panel' },
-      { keys: [']'], action: 'Toggle the right cockpit' },
-      { keys: ['?'], action: 'Toggle this cheat sheet' },
+      { chords: [['F']], action: 'Focus mode (hide side panels)' },
+      { chords: [['L']], action: 'Toggle light / dark theme' },
+      { chords: [['[']], action: 'Toggle the left panel' },
+      { chords: [[']']], action: 'Toggle the right cockpit' },
+      { chords: [['?']], action: 'Toggle this cheat sheet' },
     ],
   },
   {
     title: 'PDF tools',
     note: 'Only while a PDF tab is active. Tools switch freely in any order.',
     rows: [
-      { keys: ['V', 'Esc'], action: 'Cursor (select / exit tool)', scope: 'PDF' },
-      { keys: ['H'], action: 'Highlight', scope: 'PDF' },
-      { keys: ['T'], action: 'Text note', scope: 'PDF' },
-      { keys: ['D'], action: 'Draw (ink)', scope: 'PDF' },
+      { chords: [['V'], ['Esc']], action: 'Cursor (select / exit tool)', scope: 'PDF' },
+      { chords: [['H']], action: 'Highlight', scope: 'PDF' },
+      { chords: [['T']], action: 'Text note', scope: 'PDF' },
+      { chords: [['D']], action: 'Draw (ink)', scope: 'PDF' },
     ],
   },
   {
     title: 'Curation — selected paper',
-    note: 'Hold ⌥ (Alt). Acts on the selected paper; none selected is a no-op.',
+    note: 'Hold Alt. Acts on the selected paper; none selected is a no-op.',
     rows: [
-      { keys: ['⌥R'], action: 'Mark read (idempotent)' },
-      { keys: ['⌥⇧R'], action: 'Mark unread (confirm)' },
-      { keys: ['⌥P'], action: 'Promote (deep-read)' },
-      { keys: ['⌥D'], action: 'Drop (confirm)' },
-      { keys: ['⌥T'], action: 'Open the tag editor' },
-      { keys: ['⌥C'], action: 'Copy paper path' },
-      { keys: ['⌥⇧C'], action: 'Copy paper id' },
+      { chords: [['Alt', 'R']], action: 'Mark read (idempotent)' },
+      { chords: [['Alt', 'Shift', 'R']], action: 'Mark unread (confirm)' },
+      { chords: [['Alt', 'P']], action: 'Promote (deep-read)' },
+      { chords: [['Alt', 'D']], action: 'Drop (confirm)' },
+      { chords: [['Alt', 'T']], action: 'Open the tag editor' },
+      { chords: [['Alt', 'C']], action: 'Copy paper path' },
+      { chords: [['Alt', 'Shift', 'C']], action: 'Copy paper id' },
     ],
   },
   {
     title: 'System (unchanged)',
     rows: [
-      { keys: ['⌘S'], action: 'Save the current tab' },
-      { keys: ['⌘+', '⌘−', '⌘0'], action: 'PDF zoom' },
-      { keys: ['⌘K'], action: 'Focus search' },
+      { chords: [['Ctrl', 'S']], action: 'Save the current tab' },
+      { chords: [['Ctrl', '+'], ['Ctrl', '−'], ['Ctrl', '0']], action: 'PDF zoom' },
+      { chords: [['Ctrl', 'K']], action: 'Focus search' },
     ],
   },
 ]
@@ -100,12 +119,9 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
         aria-label="Keyboard shortcuts"
         className="max-h-[80vh] w-[34rem] max-w-[92vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-sm font-semibold text-stone-900">
-            Keyboard shortcuts
-          </h2>
-          <span className="text-[11px] text-stone-400">⌘ = Ctrl · ⌥ = Alt</span>
-        </div>
+        <h2 className="mb-3 text-sm font-semibold text-stone-900">
+          Keyboard shortcuts
+        </h2>
 
         {/* Two-column flow keeps the four groups compact on a single card. */}
         <div className="columns-1 gap-6 sm:columns-2">
@@ -133,13 +149,13 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
                         </span>
                       )}
                     </span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      {row.keys.map((k, i) => (
-                        <span key={k} className="flex items-center gap-1">
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {row.chords.map((chord, i) => (
+                        <span key={i} className="flex items-center gap-1.5">
                           {i > 0 && (
                             <span className="text-[10px] text-stone-400">or</span>
                           )}
-                          <Key>{k}</Key>
+                          <Chord keys={chord} />
                         </span>
                       ))}
                     </span>

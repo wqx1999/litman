@@ -40,6 +40,10 @@ interface Props {
   /** Report the global Projects manager's open state up so the shortcut
    * dispatcher's modal guard suppresses global keys while it is up (Phase 4). */
   onProjectsOpenChange: (open: boolean) => void
+  /** Open the keyboard-shortcut cheat sheet (Phase 4). A visible affordance for
+   * the otherwise hidden `?` convention — without it the shortcuts are
+   * undiscoverable (you can't learn `?` opens them if nothing points at it). */
+  onShowShortcuts: () => void
 }
 
 /** Global chrome: brand, current-vault indicator, the global Projects manager,
@@ -67,6 +71,7 @@ export default function TopBar({
   dark,
   onToggleDark,
   onProjectsOpenChange,
+  onShowShortcuts,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
 
@@ -194,6 +199,16 @@ export default function TopBar({
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
         {dark ? <IconSun /> : <IconMoon />}
+      </button>
+
+      <button
+        type="button"
+        onClick={onShowShortcuts}
+        title="Keyboard shortcuts (?)"
+        aria-label="Keyboard shortcuts"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
+      >
+        <IconHelp />
       </button>
       </header>
     </>
@@ -584,6 +599,18 @@ function IconFocus() {
   return (
     <svg {...SVG_PROPS}>
       <path d="M8 3H6a3 3 0 0 0-3 3v2M16 3h2a3 3 0 0 1 3 3v2M8 21H6a3 3 0 0 1-3-3v-2M16 21h2a3 3 0 0 0 3-3v-2" />
+    </svg>
+  )
+}
+
+/** Question mark in a circle — the macOS help-button idiom; opens the
+ * keyboard-shortcut cheat sheet (and so reveals the `?` shortcut). */
+function IconHelp() {
+  return (
+    <svg {...SVG_PROPS}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.2 9.3a2.8 2.8 0 0 1 5.4 1c0 1.8-2.7 2.3-2.7 4" />
+      <circle cx="12" cy="17.2" r="0.6" fill="currentColor" stroke="none" />
     </svg>
   )
 }

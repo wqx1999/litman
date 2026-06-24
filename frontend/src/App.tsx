@@ -755,6 +755,7 @@ export default function App() {
         dark={dark}
         onToggleDark={toggleDark}
         onProjectsOpenChange={setProjectsOpen}
+        onShowShortcuts={toggleCheatSheet}
       />
       <div className="flex min-h-0 flex-1">
         <BrowsePanel

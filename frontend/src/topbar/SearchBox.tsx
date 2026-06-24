@@ -65,6 +65,7 @@ export default function SearchBox({
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const trimmed = value.trim()
   const shown = candidates.slice(0, DROPDOWN_LIMIT)
@@ -77,6 +78,24 @@ export default function SearchBox({
   useEffect(() => {
     setActive(0)
   }, [value, candidates.length])
+
+  // ⌘/Ctrl+K focuses the search box from anywhere — the universal quick-jump
+  // convention. A window listener so it fires regardless of where focus sits;
+  // the global shortcut dispatcher deliberately ignores Cmd/Ctrl combos and
+  // leaves this one to us (see useKeyboardShortcuts' reserved-combo bail).
+  // e.code (not e.key) keeps it layout-stable; selecting the existing text means
+  // the next keystroke replaces the current query.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyK') {
+        e.preventDefault()
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const choose = (candidate: Candidate) => {
     onSelect(candidate)
@@ -119,6 +138,7 @@ export default function SearchBox({
         ⌕
       </span>
       <input
+        ref={inputRef}
         value={value}
         onChange={(e) => {
           onChange(e.target.value)
