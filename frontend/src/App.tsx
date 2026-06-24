@@ -4,13 +4,15 @@ import {
   fetchPaper,
   fetchPapers,
   fetchProjects,
-  fetchSearch,
   fetchTaxonomy,
+  fetchTrash,
+  fetchSearch,
   fetchVaults,
   putActiveVault,
   putDiscussion,
   putNotes,
   removePaper,
+  restorePaper,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import type { MdDraft } from './md/MdView'
@@ -30,9 +32,11 @@ import type {
   Tab,
   TabKind,
   Taxonomy,
+  TrashEntry,
   VaultsPayload,
 } from './types'
 import TopBar from './topbar/TopBar'
+import TrashView from './trash/TrashView'
 import SwitchVaultDialog from './topbar/SwitchVaultDialog'
 import BrowsePanel from './nav/BrowsePanel'
 import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
@@ -167,6 +171,14 @@ export default function App() {
   const [pendingVault, setPendingVault] = useState<string | null>(null)
   const [switchingVault, setSwitchingVault] = useState(false)
 
+  // Trash (recovery) view (Phase 4.9): full-screen read-only mode over this
+  // vault's .trash/. `trashEntries` backs both the left-nav footer count and the
+  // view's list; `restoringEntry` is the entry whose restore is in flight.
+  const [trashMode, setTrashMode] = useState(false)
+  const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([])
+  const [trashLoading, setTrashLoading] = useState(false)
+  const [restoringEntry, setRestoringEntry] = useState<string | null>(null)
+
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
   const [cockpitCollapsed, setCockpitCollapsed] = useState(false)
@@ -205,6 +217,17 @@ export default function App() {
       .finally(() => setLoadingList(false))
   }, [])
 
+  // Refresh this vault's trash list (backs the left-nav footer count + the trash
+  // view). Cheap (cap-100, one bounded call), so it is pulled on mount and again
+  // after any delete / restore so the count stays live.
+  const loadTrash = useCallback(() => {
+    setTrashLoading(true)
+    fetchTrash()
+      .then(setTrashEntries)
+      .catch(() => setTrashEntries([]))
+      .finally(() => setTrashLoading(false))
+  }, [])
+
   useEffect(() => {
     fetchVaults().then(setVaults)
     fetchProjects().then(setProjects)
@@ -214,7 +237,8 @@ export default function App() {
     // notes/discussion hits — independent of which smart-list the middle list
     // is showing.
     fetchPapers().then(setAllPapers)
-  }, [])
+    loadTrash()
+  }, [loadTrash])
 
   useEffect(() => {
     loadList(listMode)
@@ -572,12 +596,14 @@ export default function App() {
     }
     setRemoving(false)
     setPendingRemove(null)
-    notify(`Removed “${id}” to trash · restore with \`lit trash restore ${id}\``, 'success')
+    notify(`Removed “${id}” to trash · restore from the 🗑 Trash`, 'success')
     // The removed paper drops out of the list + counts; do NOT re-fetch its own
-    // metadata (it's gone) — just reload the list and the INDEX projection.
+    // metadata (it's gone) — just reload the list, the INDEX projection, and the
+    // trash count (the paper just landed in trash).
     loadList(listMode)
     fetchPapers().then(setAllPapers)
-  }, [pendingRemove, tabs, removeTab, selectedId, notify, loadList, listMode])
+    loadTrash()
+  }, [pendingRemove, tabs, removeTab, selectedId, notify, loadList, listMode, loadTrash])
 
   // The tab pending close, and whether it is an md tab (drives the dialog copy
   // and the body noun: an md tab has unsaved "edits", not "annotations").
@@ -688,13 +714,17 @@ export default function App() {
     setSearch('')
     setServerHits([])
     setMdJump(null)
+    // The trash is per-vault: leave trash mode and re-pull the new vault's trash.
+    setTrashMode(false)
+    setRestoringEntry(null)
     fetchVaults().then(setVaults)
     fetchProjects().then(setProjects)
     fetchTaxonomy().then(setTaxonomy)
     fetchFixedEnums().then(setFixedEnums)
     fetchPapers().then(setAllPapers)
     loadList(listMode)
-  }, [loadList, listMode])
+    loadTrash()
+  }, [loadList, listMode, loadTrash])
 
   const confirmSwitchVault = useCallback(async () => {
     const name = pendingVault
@@ -711,6 +741,50 @@ export default function App() {
       setSwitchingVault(false)
     }
   }, [pendingVault, flushAllDirty, reloadForVault, notify])
+
+  // --- Trash (recovery) view (Phase 4.9) -----------------------------------
+  const openTrash = useCallback(() => {
+    setTrashMode(true)
+    loadTrash() // re-pull so the view opens with the live list, not a stale count
+  }, [loadTrash])
+
+  const exitTrash = useCallback(() => setTrashMode(false), [])
+
+  // Restore a trashed paper: POST (resolve → restore_from_trash → reconcile),
+  // toast a summary (and a CLI-reclone hint when repos are missing), then refresh
+  // the trash list + the library lists so the paper reappears. Restore is the
+  // safe recovery direction, so no confirm dialog (decision c) — just a toast.
+  // A 409 (a live paper holds the id) / 404 surfaces the backend message.
+  const restoreFromTrash = useCallback(
+    async (entry: TrashEntry) => {
+      setRestoringEntry(entry.entryName)
+      try {
+        const res = await restorePaper(entry.entryName)
+        const parts: string[] = []
+        if (res.reverseEdgesRebuilt.length)
+          parts.push(`${res.reverseEdgesRebuilt.length} reverse edge(s)`)
+        if (res.reposRebound.length)
+          parts.push(`${res.reposRebound.length} repo(s)`)
+        if (res.projectsRebuilt.length)
+          parts.push(`${res.projectsRebuilt.length} project(s)`)
+        let msg = `Restored “${res.paperId}”`
+        if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
+        const missing = Object.keys(res.missingRepos).length
+        if (missing)
+          msg += ` · ${missing} repo(s) need re-clone in CLI: lit trash restore -y / lit health-check`
+        notify(msg, 'success')
+        // The restored paper is back in papers/ and out of trash: refresh both.
+        loadTrash()
+        loadList(listMode)
+        fetchPapers().then(setAllPapers)
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), 'error')
+      } finally {
+        setRestoringEntry(null)
+      }
+    },
+    [notify, loadTrash, loadList, listMode],
+  )
 
   // --- Keyboard shortcuts wiring (Phase 4) ---------------------------------
   // Panel toggles for `[` / `]` (focus mode keeps the same setters).
@@ -757,7 +831,10 @@ export default function App() {
     pendingRemove !== null ||
     pendingVault !== null ||
     cockpitModalOpen ||
-    projectsOpen
+    projectsOpen ||
+    // Trash mode owns its own (read-only) surface; suppress the library's global
+    // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
+    trashMode
 
   useKeyboardShortcuts({
     anyModalOpen,
@@ -801,61 +878,75 @@ export default function App() {
         onShowShortcuts={toggleCheatSheet}
       />
       <div className="flex min-h-0 flex-1">
-        <BrowsePanel
-          scoped={scoped}
-          visible={visible}
-          loading={loadingList}
-          projects={projectNames}
-          projectScope={projectScope}
-          onProjectScope={setProjectScope}
-          listMode={listMode}
-          onListMode={setListMode}
-          filters={filters}
-          onToggleFilter={toggleFilter}
-          onClearFilters={clearFilters}
-          selectedId={selectedId}
-          onSelect={selectPaper}
-          onOpenPdf={openPdf}
-          onOpenDoc={openDoc}
-          onRemovePaper={setPendingRemove}
-          collapsed={leftCollapsed}
-          onToggle={() => setLeftCollapsed((c) => !c)}
-        />
-        <TabArea
-          tabs={tabs}
-          activeKey={activeTab}
-          onActivate={(key) => {
-            setActiveTab(key)
-            const tab = tabs.find((t) => t.key === key)
-            if (tab) selectPaper(tab.paperId)
-          }}
-          onClose={closeTab}
-          onOpenPaper={openWikilink}
-          onRegisterPdf={registerPdf}
-          onNotify={notify}
-          mdJump={mdJump}
-          mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
-          onMdBeginEdit={mdBeginEdit}
-          onMdDraftChange={mdDraftChange}
-          onMdEndEdit={mdEndEdit}
-        />
-        <Cockpit
-          paper={cockpitPaper}
-          loading={cockpitLoading}
-          collapsed={cockpitCollapsed}
-          onToggle={() => setCockpitCollapsed((c) => !c)}
-          onOpenPaper={openPdf}
-          vaultPath={vaultPath}
-          taxonomy={taxonomy}
-          projects={projects}
-          allPapers={allPapers}
-          fixedEnums={fixedEnums}
-          onChanged={refreshAfterWrite}
-          onVocabChanged={refreshVocab}
-          notify={notify}
-          onRegisterHandle={registerCockpit}
-          onModalState={setCockpitModalOpen}
-        />
+        {trashMode ? (
+          <TrashView
+            entries={trashEntries}
+            loading={trashLoading}
+            onExit={exitTrash}
+            onRestore={restoreFromTrash}
+            restoringEntry={restoringEntry}
+          />
+        ) : (
+          <>
+            <BrowsePanel
+              scoped={scoped}
+              visible={visible}
+              loading={loadingList}
+              projects={projectNames}
+              projectScope={projectScope}
+              onProjectScope={setProjectScope}
+              listMode={listMode}
+              onListMode={setListMode}
+              filters={filters}
+              onToggleFilter={toggleFilter}
+              onClearFilters={clearFilters}
+              selectedId={selectedId}
+              onSelect={selectPaper}
+              onOpenPdf={openPdf}
+              onOpenDoc={openDoc}
+              onRemovePaper={setPendingRemove}
+              trashCount={trashEntries.length}
+              onOpenTrash={openTrash}
+              collapsed={leftCollapsed}
+              onToggle={() => setLeftCollapsed((c) => !c)}
+            />
+            <TabArea
+              tabs={tabs}
+              activeKey={activeTab}
+              onActivate={(key) => {
+                setActiveTab(key)
+                const tab = tabs.find((t) => t.key === key)
+                if (tab) selectPaper(tab.paperId)
+              }}
+              onClose={closeTab}
+              onOpenPaper={openWikilink}
+              onRegisterPdf={registerPdf}
+              onNotify={notify}
+              mdJump={mdJump}
+              mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
+              onMdBeginEdit={mdBeginEdit}
+              onMdDraftChange={mdDraftChange}
+              onMdEndEdit={mdEndEdit}
+            />
+            <Cockpit
+              paper={cockpitPaper}
+              loading={cockpitLoading}
+              collapsed={cockpitCollapsed}
+              onToggle={() => setCockpitCollapsed((c) => !c)}
+              onOpenPaper={openPdf}
+              vaultPath={vaultPath}
+              taxonomy={taxonomy}
+              projects={projects}
+              allPapers={allPapers}
+              fixedEnums={fixedEnums}
+              onChanged={refreshAfterWrite}
+              onVocabChanged={refreshVocab}
+              notify={notify}
+              onRegisterHandle={registerCockpit}
+              onModalState={setCockpitModalOpen}
+            />
+          </>
+        )}
       </div>
       {pendingClose && (
         <SaveDialog

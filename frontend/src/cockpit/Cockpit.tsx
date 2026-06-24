@@ -43,34 +43,48 @@ interface Props {
   collapsed: boolean
   onToggle: () => void
   onOpenPaper: (id: string) => void
+  /** Read-only variant (trash view): render the bibliographic header + read-only
+   * fields with NO write controls (no dropdowns, tag editing, read/revisit). A
+   * Restore action replaces the curation surface. Every write-related prop below
+   * (taxonomy/projects/fixedEnums/onChanged/...) is unused in this mode. */
+  readOnly?: boolean
+  /** Restore the trashed paper (read-only mode only). */
+  onRestore?: () => void
+  /** A restore is in flight — disables the Restore button. */
+  restoring?: boolean
+  /** Repos a restore would surface for CLI re-clone (read-only mode), shown as a
+   * hint under the Restore button. */
+  orphanRepoCount?: number
+
+  // --- Write-mode props (required by App; unused/omitted in read-only mode) ---
   /** Active vault's filesystem path (server-side), for the copy-path action. */
-  vaultPath: string | null
+  vaultPath?: string | null
   /** TAXONOMY controlled vocabulary — the add-chip affordance offers existing
    * values plus an explicit inline-create (3c-1). */
-  taxonomy: Taxonomy | null
+  taxonomy?: Taxonomy | null
   /** Registered projects (name/path/status) backing the link dropdown (3c-1). */
-  projects: ProjectEntry[]
+  projects?: ProjectEntry[]
   /** Full INDEX projection — backs the Manage dialog's per-value in-use count
    * ("used by N", problem 2) without an extra round-trip. */
-  allPapers: IndexPaper[]
+  allPapers?: IndexPaper[]
   /** status/priority/type whitelists for the dropdowns. */
-  fixedEnums: FixedEnums | null
+  fixedEnums?: FixedEnums | null
   /** Called after a successful structured write so the parent re-fetches the
    * cockpit paper AND the left list (status/read-date move smart-list members). */
-  onChanged: () => void
+  onChanged?: () => void
   /** Called after a write that changes the shared vocabulary (a new taxonomy
    * value or project link/unlink) so the parent re-fetches /api/taxonomy +
    * /api/projects, keeping the dropdowns/autocomplete current (3c-1). */
-  onVocabChanged: () => void
+  onVocabChanged?: () => void
   /** Toast a message (used to surface the backend's raw error verbatim). */
-  notify: (msg: string) => void
+  notify?: (msg: string) => void
   /** Register/unregister the imperative handle the global keyboard shortcuts
    * (Phase 4) drive curation through. Null on unmount. */
-  onRegisterHandle: (handle: CockpitHandle | null) => void
+  onRegisterHandle?: (handle: CockpitHandle | null) => void
   /** Report whether any cockpit-owned modal (a Tags field panel, the Manage
    * dictionary dialog, the Unread confirm, or the Drop confirm) is open, so the
    * shortcut dispatcher's modal guard can suppress global keys while one is up. */
-  onModalState: (open: boolean) => void
+  onModalState?: (open: boolean) => void
 }
 
 /** A read-only chip group (relations / code-clones stay read-only in 3b). */
@@ -752,22 +766,204 @@ function DropConfirm({
  * message is toasted via `notify`. Relations / code-clones stay read-only.
  * Collapses to a narrow strip via an animated width, mirroring BrowsePanel.
  */
-export default function Cockpit({
+export default function Cockpit(props: Props) {
+  // The trash view shows the same panel chrome but a read-only inspector with a
+  // Restore action — no write controls, no imperative handle, no modal state.
+  // Split into its own component so the live cockpit's write hooks never run for
+  // a trashed paper (invariant #16: no write path reachable in read-only mode).
+  if (props.readOnly) {
+    return (
+      <ReadOnlyCockpit
+        paper={props.paper}
+        loading={props.loading}
+        collapsed={props.collapsed}
+        onToggle={props.onToggle}
+        onOpenPaper={props.onOpenPaper}
+        onRestore={props.onRestore}
+        restoring={props.restoring ?? false}
+        orphanRepoCount={props.orphanRepoCount ?? 0}
+      />
+    )
+  }
+  return <WriteCockpit {...props} />
+}
+
+/** Read-only inspector for the trash view: bibliographic header, read-only
+ * metadata fields, relations / code-clones (read-only), and a Restore button.
+ * No dropdowns, tag editor, read/revisit, copy/cite — a trashed paper is not
+ * curated. Shares BrowsePanel/Cockpit's animated collapse chrome. */
+function ReadOnlyCockpit({
   paper,
   loading,
   collapsed,
   onToggle,
   onOpenPaper,
-  vaultPath,
-  taxonomy,
-  projects,
-  allPapers,
-  fixedEnums,
-  onChanged,
-  onVocabChanged,
-  notify,
-  onRegisterHandle,
-  onModalState,
+  onRestore,
+  restoring,
+  orphanRepoCount,
+}: {
+  paper: PaperMeta | null
+  loading: boolean
+  collapsed: boolean
+  onToggle: () => void
+  onOpenPaper: (id: string) => void
+  onRestore?: () => void
+  restoring: boolean
+  orphanRepoCount: number
+}) {
+  return (
+    <div
+      className={`relative flex shrink-0 overflow-hidden border-l border-stone-200 bg-stone-100 transition-[width] duration-300 ease-fluid ${
+        collapsed ? 'w-9' : 'w-80'
+      }`}
+    >
+      <div
+        className={`absolute inset-0 flex flex-col items-center pt-3 transition-opacity duration-200 ${
+          collapsed ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0'
+        }`}
+      >
+        <button
+          onClick={onToggle}
+          title="Expand metadata"
+          className="text-stone-500 transition-colors hover:text-stone-800"
+        >
+          ‹
+        </button>
+      </div>
+
+      <aside
+        className={`h-full w-80 overflow-auto p-4 transition-opacity duration-200 ${
+          collapsed ? 'pointer-events-none opacity-0' : 'opacity-100 delay-100'
+        }`}
+      >
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            Trashed paper
+          </span>
+          <button
+            onClick={onToggle}
+            title="Collapse metadata"
+            className="text-stone-500 transition-colors hover:text-stone-800"
+          >
+            ›
+          </button>
+        </div>
+
+        {loading && <div className="text-sm text-stone-500">Loading…</div>}
+        {!loading && !paper && (
+          <div className="text-sm text-stone-500">Select a trashed paper.</div>
+        )}
+
+        {paper && (
+          <div>
+            <div className="mb-4">
+              <div className="text-[15px] font-semibold leading-snug text-stone-900">
+                {paper.title || paper.id}
+              </div>
+              <div className="mt-0.5 font-mono text-xs text-stone-500">
+                {paper.id}
+              </div>
+              <div className="mt-3">
+                <button
+                  onClick={onRestore}
+                  disabled={restoring || !onRestore}
+                  className="w-full rounded-lg bg-accent-500 px-3 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
+                >
+                  {restoring ? 'Restoring…' : '↩ Restore to library'}
+                </button>
+                {orphanRepoCount > 0 && (
+                  <div className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                    {orphanRepoCount} hard-deleted{' '}
+                    {orphanRepoCount === 1 ? 'repo needs' : 'repos need'} re-clone
+                    in the CLI after restore (lit trash restore / lit
+                    health-check).
+                  </div>
+                )}
+              </div>
+            </div>
+            <Field label="Authors">
+              {paper.authors && paper.authors.length > 0 ? (
+                <span
+                  title={
+                    paper.authors.length > AUTHOR_HEAD + AUTHOR_TAIL
+                      ? paper.authors.join('; ')
+                      : undefined
+                  }
+                >
+                  {formatAuthors(paper.authors)}
+                </span>
+              ) : (
+                '—'
+              )}
+            </Field>
+            <Field label="Venue / Year">
+              {[paper.journal, paper.year].filter(Boolean).join(' · ') || '—'}
+            </Field>
+            {paper.doi && (
+              <Field label="DOI">
+                <a
+                  href={`https://doi.org/${paper.doi}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent-600 transition-colors hover:underline"
+                >
+                  {paper.doi}
+                </a>
+              </Field>
+            )}
+            <Field label="Status">
+              <span className="text-stone-700">{paper.status || '—'}</span>
+            </Field>
+            <Field label="Priority">
+              <span className="text-stone-700">{paper.priority || '—'}</span>
+            </Field>
+            <Field label="Type">
+              <span className="text-stone-700">{paper.type || '—'}</span>
+            </Field>
+            <Field label="Read-date">
+              <span className="text-stone-700">{paper['read-date'] || '—'}</span>
+            </Field>
+            <Field label="Topics">
+              <Chips values={paper.topics} />
+            </Field>
+            <Field label="Methods">
+              <Chips values={paper.methods} />
+            </Field>
+            <Field label="Data">
+              <Chips values={paper.data} />
+            </Field>
+            <Field label="Projects">
+              <Chips values={paper.projects} />
+            </Field>
+            <Field label="Relations">
+              <Relations paper={paper} onOpenPaper={onOpenPaper} />
+            </Field>
+            <Field label="Code-clones">
+              <Chips values={paper['code-clones']} />
+            </Field>
+          </div>
+        )}
+      </aside>
+    </div>
+  )
+}
+
+function WriteCockpit({
+  paper,
+  loading,
+  collapsed,
+  onToggle,
+  onOpenPaper,
+  vaultPath = null,
+  taxonomy = null,
+  projects = [],
+  allPapers = [],
+  fixedEnums = null,
+  onChanged = () => {},
+  onVocabChanged = () => {},
+  notify = () => {},
+  onRegisterHandle = () => {},
+  onModalState = () => {},
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).

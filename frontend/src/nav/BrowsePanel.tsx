@@ -51,6 +51,10 @@ interface Props {
   /** Soft-delete the paper (the expanded card's trash action). Hands off to App,
    * which runs the default-No confirm + `lit rm` DELETE. */
   onRemovePaper: (id: string) => void
+  /** Number of entries in this vault's trash (drives the footer count). */
+  trashCount: number
+  /** Enter the full-screen trash (recovery) view. */
+  onOpenTrash: () => void
   collapsed: boolean
   onToggle: () => void
 }
@@ -157,6 +161,8 @@ export default function BrowsePanel({
   onOpenPdf,
   onOpenDoc,
   onRemovePaper,
+  trashCount,
+  onOpenTrash,
   collapsed,
   onToggle,
 }: Props) {
@@ -571,6 +577,20 @@ export default function BrowsePanel({
               </div>
             )
           })}
+        </div>
+
+        {/* Trash entry — divided footer (macOS Mail/Notes convention). Enters the
+            read-only trash-recovery view; N is this vault's trash count. */}
+        <div className="shrink-0 border-t border-stone-200">
+          <button
+            onClick={onOpenTrash}
+            title="Open the trash (recover deleted papers)"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-stone-600 transition-colors hover:bg-stone-200"
+          >
+            <span>🗑</span>
+            <span>Trash</span>
+            <span className="ml-auto text-xs text-stone-400">{trashCount}</span>
+          </button>
         </div>
       </div>
     </div>

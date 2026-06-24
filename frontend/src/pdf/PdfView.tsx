@@ -53,6 +53,13 @@ interface Props {
   tabKey?: string
   /** Register/unregister this view's flush handle with the parent. */
   onRegister?: (key: string, handle: PdfHandle | null) => void
+  /** Read-only variant (trash view): render + zoom + read-only note hover, but
+   * hide every write affordance (annotation tools, Save, the edit popover) and
+   * never register a flush handle. A trashed PDF is immutable. */
+  readOnly?: boolean
+  /** Override the document URL (the trash view serves from /api/trash/.../pdf).
+   * Defaults to the live paper's /api/paper/{id}/pdf. */
+  pdfSrc?: string
 }
 
 const MIN_SCALE = 0.5
@@ -173,7 +180,13 @@ function TrashIcon() {
  * (tab switch) unless `discard()` suppressed it. `dirtyRef` (driven by the wrapped
  * `addCommands`, cleared on save) gates every flush so an untouched / already-saved
  * PDF is never re-written. */
-export default function PdfView({ paperId, tabKey, onRegister }: Props) {
+export default function PdfView({
+  paperId,
+  tabKey,
+  onRegister,
+  readOnly = false,
+  pdfSrc,
+}: Props) {
   // The absolutely-positioned scroll container pdf_viewer attaches to.
   const containerRef = useRef<HTMLDivElement>(null)
   // The inner `.pdfViewer` div pdf_viewer fills with pages.
@@ -478,9 +491,10 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
   }, [savedFlash])
 
   // Register this view's flush handle with the parent so closing the tab can
-  // prompt Save / Don't save instead of writing silently.
+  // prompt Save / Don't save instead of writing silently. Skipped in read-only
+  // (trash) mode: there is no write path, so no flush handle to expose.
   useEffect(() => {
-    if (!onRegister || !tabKey) return
+    if (readOnly || !onRegister || !tabKey) return
     onRegister(tabKey, {
       isDirty: () => dirtyRef.current,
       flush,
@@ -495,7 +509,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
       setEditMode: (mode) => selectMode(mode),
     })
     return () => onRegister(tabKey, null)
-  }, [tabKey, onRegister, flush, selectMode])
+  }, [tabKey, onRegister, flush, selectMode, readOnly])
 
   // Build the viewer and load the document when the paper changes.
   useEffect(() => {
@@ -589,6 +603,12 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     // layer has rendered: that's when the UIManager has registered its editor
     // types (AnnotationEditorLayer ctor → registerEditorTypes), which POPUP's
     // sidebar code needs. One-shot — detach after first fire.
+    //
+    // Read-only (trash) mode SKIPS this entirely: the viewer stays in
+    // AnnotationEditorType.NONE, so existing annotations can't be selected /
+    // moved / recoloured / deleted natively — no editor state to mutate, no
+    // write path reachable (red line ④). Annotations are baked into paper.pdf at
+    // save time, so they still render via the normal annotation layer.
     const enterCursorMode = () => {
       eventBus.off('annotationeditorlayerrendered', enterCursorMode)
       try {
@@ -597,7 +617,9 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
         console.error('Failed to enter select mode:', err)
       }
     }
-    eventBus.on('annotationeditorlayerrendered', enterCursorMode)
+    if (!readOnly) {
+      eventBus.on('annotationeditorlayerrendered', enterCursorMode)
+    }
 
     // editingstateschanged fires with the full editor state every time. Capture
     // the UIManager (= event source), track whether an editor is selected (gates
@@ -672,7 +694,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     eventBus.on('annotationeditorparamschanged', onParamsChanged)
 
     let cancelled = false
-    const loadingTask = pdfjsLib.getDocument({ url: pdfUrl(paperId) })
+    const loadingTask = pdfjsLib.getDocument({ url: pdfSrc ?? pdfUrl(paperId) })
     loadingTask.promise
       .then((doc) => {
         if (cancelled) {
@@ -750,7 +772,11 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
       // tab the parent already ran flush()/discard() before removing it, so dirty
       // is false here (or discard suppresses the save) and this is a no-op
       // teardown. The deliberate save path is the explicit Save button / prompt.
-      if (dirtyRef.current && !discardRef.current && doc) {
+      //
+      // Read-only (trash) mode never writes: no editor mode (NONE), so dirtyRef
+      // can't flip — but gate explicitly so no putPdfAnnotations call is even
+      // reachable against the trash entry_name (red line ④).
+      if (!readOnly && dirtyRef.current && !discardRef.current && doc) {
         dirtyRef.current = false
         doc
           .saveDocument()
@@ -763,7 +789,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
         teardown()
       }
     }
-  }, [paperId])
+  }, [paperId, pdfSrc, readOnly])
 
   // Ctrl/Cmd + wheel zooms the PDF instead of the browser page (also catches
   // trackpad pinch, which fires wheel events with ctrlKey set). Plain wheel is
@@ -807,7 +833,12 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
   // Bound in the CAPTURE phase so it beats both the browser default AND pdf.js's
   // editor-level ctrl+s (which only commits the active editor) — saveNow's
   // commitPending already does that commit before writing, so nothing is lost.
+  //
+  // NOT bound in read-only (trash) mode: there is no write path, so ⌘S must not
+  // even attempt a saveDocument()/PUT against the trash entry_name (red line ④).
+  // The browser's own "save page" is left alone there (no preventDefault).
   useEffect(() => {
+    if (readOnly) return
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault()
@@ -817,7 +848,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
     }
     window.addEventListener('keydown', onKey, { capture: true })
     return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [saveNow])
+  }, [saveNow, readOnly])
 
   // In Draw (Ink) mode, finalize each stroke as soon as it's released and select
   // the resulting editor. pdf.js's Ink editor is multi-stroke
@@ -999,70 +1030,78 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
           +
         </button>
 
-        <div className="mx-1 h-4 w-px bg-stone-300" />
-
-        <div className="flex items-center gap-1">
-          {EDIT_MODES.map(({ mode, label, title }) => {
-            const active = editMode === mode
-            return (
-              <button
-                key={mode}
-                onClick={() => selectMode(mode)}
-                title={title}
-                aria-pressed={active}
-                className={
-                  'rounded-md border px-2 py-0.5 text-xs transition-colors ' +
-                  (active
-                    ? 'border-accent-500 bg-accent-50 text-accent-700 ring-1 ring-accent-500'
-                    : 'border-transparent text-stone-600 hover:bg-stone-200')
-                }
-              >
-                {label}
-              </button>
-            )
-          })}
-        </div>
-
-        {/* Creation-tool params: pick the colour / size for the NEXT annotation
-            before you draw. Editing an EXISTING annotation happens in the
-            floating popover, not here. */}
-        {toolType && (
+        {/* Annotation tools + Save are hidden in read-only (trash) mode — a
+            trashed PDF is immutable, so only render + zoom + read-only hover. */}
+        {!readOnly && (
           <>
             <div className="mx-1 h-4 w-px bg-stone-300" />
-            <div className="animate-grow-in">
-              <ParamSwatches
-                type={toolType}
-                color={colorFor(toolType)}
-                onColor={pickColor}
-                textSize={textSize}
-                onTextSize={pickTextSize}
-                inkWidth={inkWidth}
-                onInkWidth={pickInkWidth}
-              />
+
+            <div className="flex items-center gap-1">
+              {EDIT_MODES.map(({ mode, label, title }) => {
+                const active = editMode === mode
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => selectMode(mode)}
+                    title={title}
+                    aria-pressed={active}
+                    className={
+                      'rounded-md border px-2 py-0.5 text-xs transition-colors ' +
+                      (active
+                        ? 'border-accent-500 bg-accent-50 text-accent-700 ring-1 ring-accent-500'
+                        : 'border-transparent text-stone-600 hover:bg-stone-200')
+                    }
+                  >
+                    {label}
+                  </button>
+                )
+              })}
             </div>
+
+            {/* Creation-tool params: pick the colour / size for the NEXT annotation
+                before you draw. Editing an EXISTING annotation happens in the
+                floating popover, not here. */}
+            {toolType && (
+              <>
+                <div className="mx-1 h-4 w-px bg-stone-300" />
+                <div className="animate-grow-in">
+                  <ParamSwatches
+                    type={toolType}
+                    color={colorFor(toolType)}
+                    onColor={pickColor}
+                    textSize={textSize}
+                    onTextSize={pickTextSize}
+                    inkWidth={inkWidth}
+                    onInkWidth={pickInkWidth}
+                  />
+                </div>
+              </>
+            )}
           </>
         )}
 
         <div className="ml-auto flex items-center gap-2.5">
-          <button
-            onClick={() => void saveNow()}
-            disabled={!dirty || saving}
-            title={
-              dirty
-                ? 'Save annotations into the PDF (⌘/Ctrl+S)'
-                : 'No unsaved changes'
-            }
-            className={
-              'rounded-md px-2.5 py-0.5 text-xs font-medium transition-colors ' +
-              (dirty && !saving
-                ? 'bg-accent-500 text-white shadow-sm hover:bg-accent-600'
-                : savedFlash
-                  ? 'bg-emerald-50 text-emerald-600'
-                  : 'bg-stone-200 text-stone-400')
-            }
-          >
-            {saveLabel}
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => void saveNow()}
+              disabled={!dirty || saving}
+              title={
+                dirty
+                  ? 'Save annotations into the PDF (⌘/Ctrl+S)'
+                  : 'No unsaved changes'
+              }
+              className={
+                'rounded-md px-2.5 py-0.5 text-xs font-medium transition-colors ' +
+                (dirty && !saving
+                  ? 'bg-accent-500 text-white shadow-sm hover:bg-accent-600'
+                  : savedFlash
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : 'bg-stone-200 text-stone-400')
+              }
+            >
+              {saveLabel}
+            </button>
+          )}
           {pageCount > 0 && (
             <span className="text-xs text-stone-500">
               {pageCount} page{pageCount === 1 ? '' : 's'}
@@ -1102,7 +1141,7 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
             (100000) but stays trapped in this `isolate` wrapper. Pointer events
             are kept from reaching pdf.js so clicking the popover never deselects
             the annotation it edits. */}
-        {hasSelection && selectedType && (
+        {!readOnly && hasSelection && selectedType && (
           <div
             ref={popoverRef}
             style={{ visibility: 'hidden', zIndex: 100001 }}

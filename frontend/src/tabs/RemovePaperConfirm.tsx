@@ -7,7 +7,7 @@ import { fetchRmPreview, type RmPreview } from '../api'
  * Removing a paper is destructive-but-recoverable: it routes through the
  * `lit rm` backend (DELETE /api/paper/{id}), which moves the folder to
  * `.trash/` and atomically tears down its external links. So this dialog (a)
- * states it is recoverable via `lit trash restore`, and (b) fetches the cascade
+ * states it is recoverable from the in-app Trash, and (b) fetches the cascade
  * preview on mount and lists exactly which soft-links break — the user asked to
  * be warned before deleting "which symlinks will break". Cancel is autofocused
  * and the destructive button is rose; the backdrop / Esc cancel unless a delete
@@ -85,9 +85,8 @@ export default function RemovePaperConfirm({
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
           Moves the paper to <code className="text-stone-500">.trash/</code> and
-          drops it from INDEX and every smart list. Recoverable with{' '}
-          <code className="text-stone-500">lit trash restore {paperId}</code> in
-          the CLI.
+          drops it from INDEX and every smart list. Recoverable from the in-app
+          Trash 🗑.
         </p>
 
         {/* Cascade preview: which external links the delete breaks. */}

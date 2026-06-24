@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { fetchDiscussion, fetchNotes, putDiscussion, putNotes } from '../api'
+import {
+  fetchDiscussion,
+  fetchNotes,
+  fetchTrashDiscussion,
+  fetchTrashNotes,
+  putDiscussion,
+  putNotes,
+} from '../api'
 
 /** The edit session for one md tab, owned by App (keyed per tab) so it survives
  * this view's unmount on tab switch. Absent (undefined) = not editing. */
@@ -17,6 +24,10 @@ interface Props {
   doc: 'notes' | 'discussion'
   /** This view's tab key, used to address its lifted edit session in App. */
   tabKey: string
+  /** Read-only variant (trash view): render the md from the trash endpoints
+   * (addressed by `paperId` carrying the trash entry_name) and never enter edit
+   * mode (no double-click, no Cmd+S save). Edit callbacks are unused here. */
+  readOnly?: boolean
   /** Called when a [[paper-id]] wikilink is clicked. The handler decides
    * whether the target exists (App holds the full paper list); a dangling
    * target shows a toast instead of opening a broken tab. */
@@ -72,6 +83,7 @@ export default function MdView({
   paperId,
   doc,
   tabKey,
+  readOnly = false,
   onOpenPaper,
   highlightQuery,
   onNotify,
@@ -90,8 +102,9 @@ export default function MdView({
 
   // Edit mode + the draft now come from App (controlled): a present draftEntry
   // means this tab is mid-edit. The draft survives this view's unmount because
-  // it lives in App, not here.
-  const editing = draftEntry !== undefined
+  // it lives in App, not here. Read-only (trash) tabs never edit, so editing is
+  // pinned false regardless of any stray draft.
+  const editing = !readOnly && draftEntry !== undefined
   const draft = draftEntry?.draft ?? ''
 
   const html = useMemo(
@@ -102,7 +115,15 @@ export default function MdView({
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
-    const load = doc === 'notes' ? fetchNotes : fetchDiscussion
+    // Read-only (trash) tabs address the file by the trash entry_name, which the
+    // host passes as `paperId`; live tabs use the per-paper read endpoints.
+    const load = readOnly
+      ? doc === 'notes'
+        ? fetchTrashNotes
+        : fetchTrashDiscussion
+      : doc === 'notes'
+        ? fetchNotes
+        : fetchDiscussion
     load(paperId).then((loadedText) => {
       if (cancelled) return
       setText(loadedText)
@@ -111,7 +132,7 @@ export default function MdView({
     return () => {
       cancelled = true
     }
-  }, [paperId, doc])
+  }, [paperId, doc, readOnly])
 
   // After the markdown renders, mark every occurrence of the search query and
   // scroll the first into view (a search hit opened this doc). Runs again when
@@ -168,6 +189,8 @@ export default function MdView({
   }
 
   const enterEdit = useCallback(() => {
+    // Read-only (trash) tabs never edit.
+    if (readOnly) return
     // notes.md / discussion.md are create-or-overwrite, so editing is allowed
     // even when the file is absent (text === null) — a first edit starts blank
     // and the save creates the file (lit add never scaffolds discussion.md).
@@ -175,7 +198,7 @@ export default function MdView({
     // textarea from its real content, not a transient null.
     if (!loaded) return
     onBeginEdit(tabKey, text ?? '')
-  }, [loaded, text, onBeginEdit, tabKey])
+  }, [readOnly, loaded, text, onBeginEdit, tabKey])
 
   const save = useCallback(async () => {
     if (saving) return
@@ -257,6 +280,10 @@ export default function MdView({
               {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
+        ) : readOnly ? (
+          <span className="font-mono text-xs font-normal text-stone-400">
+            read-only (trash)
+          </span>
         ) : (
           <span className="font-mono text-xs font-normal text-stone-400">
             {missing ? 'double-click to start writing' : 'double-click to edit'}
@@ -279,15 +306,21 @@ export default function MdView({
         />
       ) : missing ? (
         <div
-          className="flex-1 cursor-text overflow-auto p-8 text-sm text-stone-400"
+          className={`flex-1 overflow-auto p-8 text-sm text-stone-400 ${
+            readOnly ? '' : 'cursor-text'
+          }`}
           onDoubleClick={enterEdit}
         >
-          No {doc}.md for this paper yet — double-click to start writing.
+          {readOnly
+            ? `No ${doc}.md for this trashed paper.`
+            : `No ${doc}.md for this paper yet — double-click to start writing.`}
         </div>
       ) : (
         <div
           ref={contentRef}
-          className="prose-litman mx-auto min-h-0 w-full max-w-3xl flex-1 cursor-text overflow-auto p-8"
+          className={`prose-litman mx-auto min-h-0 w-full max-w-3xl flex-1 overflow-auto p-8 ${
+            readOnly ? '' : 'cursor-text'
+          }`}
           onClick={handleClick}
           onDoubleClick={enterEdit}
           dangerouslySetInnerHTML={{ __html: html }}

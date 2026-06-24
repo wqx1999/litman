@@ -109,4 +109,33 @@ export interface Tab {
   paperId: string
   /** Display label (paper id + a kind suffix). */
   label: string
+  /** True for a tab opened from the trash view: PDF/md render read-only and the
+   * tab carries a "Trash" badge. Absent on normal library tabs. */
+  trash?: boolean
+}
+
+/** One row of the GET /api/trash projection (the read-only trash library). */
+export interface TrashEntry {
+  paperId: string
+  title: string | null
+  /** ISO 8601 deletion time, or "(unknown)" when the sidecar was lost. */
+  deletedAt: string
+  /** Unique on-disk dir name (`<id>-<UTC-timestamp>`); the restore/read key. */
+  entryName: string
+  /** Number of 1:1 hard-deleted repos a restore would surface for re-clone. */
+  orphanRepoCount: number
+}
+
+/** The POST /api/trash/{entry}/restore summary — what the rebuild touched.
+ * Mirrors core.trash.RestoreResult minus the on-disk path. `missingRepos` maps
+ * repo name → upstream url for 1:1 repos the GUI never re-clones (CLI / health-
+ * check does); when non-empty the restore toast points the user at the CLI. */
+export interface RestoreResult {
+  paperId: string
+  title: string | null
+  reverseEdgesRebuilt: string[]
+  reposRebound: string[]
+  projectsRebuilt: string[]
+  missingRepos: Record<string, string>
+  deadEdgesDropped: string[]
 }

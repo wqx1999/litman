@@ -6,9 +6,11 @@ import type {
   IndexPaper,
   PaperMeta,
   ProjectEntry,
+  RestoreResult,
   SearchPayload,
   SmartListView,
   Taxonomy,
+  TrashEntry,
   VaultsPayload,
 } from './types'
 
@@ -343,4 +345,90 @@ export function deleteTaxonomyValue(
     `/api/taxonomy/${encodeURIComponent(key)}?value=${encodeURIComponent(value)}`,
     'DELETE',
   )
+}
+
+// --- Trash (recoverable-delete bin) — read-only library + restore (Phase 4.9) -
+
+/** The /api/trash projection (snake_case server keys → camelCase). */
+interface TrashEntryWire {
+  paper_id: string
+  title: string | null
+  deleted_at: string
+  entry_name: string
+  orphan_repo_count: number
+}
+
+/** List trash entries (newest-first) — the read-only trash library. Thin
+ * wrapper over `core.trash.list_trash`; the GUI never re-scans `.trash/`. */
+export async function fetchTrash(): Promise<TrashEntry[]> {
+  const wire = await getJSON<TrashEntryWire[]>('/api/trash')
+  return wire.map((e) => ({
+    paperId: e.paper_id,
+    title: e.title,
+    deletedAt: e.deleted_at,
+    entryName: e.entry_name,
+    orphanRepoCount: e.orphan_repo_count,
+  }))
+}
+
+/** Full metadata.yaml for a trashed paper (read from the resolved entry path). */
+export function fetchTrashMeta(entryName: string): Promise<PaperMeta> {
+  return getJSON<PaperMeta>(`/api/trash/${encodeURIComponent(entryName)}`)
+}
+
+/** The URL pdf.js fetches (with HTTP range) for a trashed paper. */
+export function trashPdfUrl(entryName: string): string {
+  return `/api/trash/${encodeURIComponent(entryName)}/pdf`
+}
+
+async function fetchTrashMdText(
+  entryName: string,
+  doc: 'notes' | 'discussion',
+): Promise<string | null> {
+  const resp = await fetch(`/api/trash/${encodeURIComponent(entryName)}/${doc}`)
+  if (resp.status === 404) return null
+  if (!resp.ok) throw new Error(`trash/${doc} → ${resp.status}`)
+  const body = (await resp.json()) as { text: string }
+  return body.text
+}
+
+export function fetchTrashNotes(entryName: string): Promise<string | null> {
+  return fetchTrashMdText(entryName, 'notes')
+}
+
+export function fetchTrashDiscussion(entryName: string): Promise<string | null> {
+  return fetchTrashMdText(entryName, 'discussion')
+}
+
+/** The restore summary as the server returns it (snake_case keys). */
+interface RestoreResultWire {
+  paper_id: string
+  title: string | null
+  reverse_edges_rebuilt: string[]
+  repos_rebound: string[]
+  projects_rebuilt: string[]
+  missing_repos: Record<string, string>
+  dead_edges_dropped: string[]
+}
+
+/** Restore a trashed paper through the `lit trash restore` backend
+ * (resolve → restore_from_trash → reconcile_derived). The endpoint never
+ * re-clones a hard-deleted 1:1 repo (decision b): those surface in
+ * `missingRepos` for the CLI / health-check. Throws the backend's verbatim
+ * message — 409 when a live paper already holds the id slot, 404 when the entry
+ * is gone. */
+export async function restorePaper(entryName: string): Promise<RestoreResult> {
+  const wire = await mutateJSON<RestoreResultWire>(
+    `/api/trash/${encodeURIComponent(entryName)}/restore`,
+    'POST',
+  )
+  return {
+    paperId: wire.paper_id,
+    title: wire.title,
+    reverseEdgesRebuilt: wire.reverse_edges_rebuilt,
+    reposRebound: wire.repos_rebound,
+    projectsRebuilt: wire.projects_rebuilt,
+    missingRepos: wire.missing_repos,
+    deadEdgesDropped: wire.dead_edges_dropped,
+  }
 }
