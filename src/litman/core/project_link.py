@@ -384,27 +384,32 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     lit-config.yaml's ``projects:`` map — are updated in a single staged_write
     so a crash never leaves the name in one but not the other (invariant #2).
 
-    ``path`` must already exist and be a directory (A7 / typo defense — no
-    placeholder registration). The CLI normally resolves the path via
-    ``click.Path(resolve_path=True)`` before calling this; the server resolves
-    it itself, so callers should pass an absolute, resolved path.
+    ``path`` must be absolute, already exist, and be a directory (A7 / typo
+    defense — no placeholder registration; litman never creates the folder).
+    The path is validated as absolute and then ``resolve()``-normalized here,
+    so callers may pass a raw (un-resolved) absolute path; the CLI's
+    ``click.Path(resolve_path=True)`` pre-resolution is idempotent.
 
     Returns:
         ``{"name": ..., "path": str(path)}`` summary for the caller to render.
 
     Raises:
-        TaxonomyError: empty name, path missing / not a directory, or the name
-            is already registered.
+        TaxonomyError: empty name, path not absolute / missing / not a
+            directory, or the name is already registered.
     """
     name = name.strip()
     if not name:
         raise TaxonomyError("Project name cannot be empty.")
+    if not path.is_absolute():
+        raise TaxonomyError(
+            f"Path {str(path)!r} is not absolute. "
+            "Give the full path to the folder, starting from '/'."
+        )
+    path = path.resolve()
     if not path.exists():
         raise TaxonomyError(
             f"Path {str(path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {path}`), "
-            "then re-run — placeholder registration is intentionally "
-            "not allowed."
+            "Point at an existing folder — litman does not create it."
         )
     if not path.is_dir():
         raise TaxonomyError(f"Path {str(path)!r} is not a directory.")

@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { IndexPaper, ProjectEntry, VaultsPayload } from '../types'
 import type { Candidate } from '../search'
 import { createProject, deleteProject } from '../api'
 import SearchBox from './SearchBox'
+import type { ToastVariant } from '../ui/Toast'
 import logoUrl from '../assets/litman-logo.png'
 
 interface Props {
@@ -29,7 +31,7 @@ interface Props {
   /** A vault switch is in flight — disables the selector to block re-entry. */
   switching: boolean
   /** Toast a message (surfaces the backend's raw error verbatim). */
-  notify: (msg: string) => void
+  notify: (msg: string, variant?: ToastVariant) => void
 }
 
 /** Reads the `.dark` class the no-FOUC script (index.html) already set on
@@ -175,7 +177,15 @@ export default function TopBar({
  * and registers a new one via NewProjectDialog. Project create/delete are
  * global (not per-paper), so they live here rather than in the Cockpit — the
  * Cockpit's project dropdown only links/unlinks the selected paper. macOS-style
- * modal shell shared with the rest of the app. */
+ * modal shell shared with the rest of the app.
+ *
+ * Portaled to document.body: TopBar's <header> carries `backdrop-blur-md`, and
+ * a backdrop-filter establishes a containing block for `position: fixed`
+ * descendants. Rendered inline, this modal's `fixed inset-0` would resolve
+ * against the ~44px-tall header instead of the viewport, centering (and
+ * clipping) the dialog on the header's midline. The portal lifts the whole
+ * subtree (this manager + its nested confirm/new dialogs) out of that
+ * containing block so `fixed` is viewport-relative again. */
 function ProjectManager({
   projects,
   allPapers,
@@ -187,7 +197,7 @@ function ProjectManager({
   allPapers: IndexPaper[]
   onChanged: () => void
   onClose: () => void
-  notify: (msg: string) => void
+  notify: (msg: string, variant?: ToastVariant) => void
 }) {
   // The project awaiting delete confirmation, the new-project dialog toggle, and
   // whether a delete is in flight (gates the controls).
@@ -204,9 +214,10 @@ function ProjectManager({
     setBusy(true)
     try {
       await deleteProject(name)
+      notify(`Removed project “${name}”.`, 'success')
       onChanged()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err))
+      notify(err instanceof Error ? err.message : String(err), 'error')
     } finally {
       setBusy(false)
       setPendingDelete(null)
@@ -216,7 +227,7 @@ function ProjectManager({
   const sorted = projects.slice().sort((a, b) => a.name.localeCompare(b.name))
   const blocked = busy || pendingDelete != null || showNew
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
       onClick={blocked ? undefined : onClose}
@@ -308,7 +319,8 @@ function ProjectManager({
           notify={notify}
         />
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -382,7 +394,8 @@ function DeleteProjectConfirm({
 }
 
 /** Register-a-new-project modal (name + absolute path). Mirrors SaveDialog's
- * shell; the path must already exist + be a directory server-side (A7), so a
+ * shell; the path must be absolute + already exist + be a directory server-side
+ * (A7; a relative path is rejected, not resolved against the server cwd), so a
  * bad path surfaces the backend's TaxonomyError verbatim via `notify` and the
  * dialog stays open for correction. Escape cancels. The backdrop stops
  * click-through so, when opened from the ProjectManager, dismissing it does not
@@ -394,7 +407,7 @@ function NewProjectDialog({
 }: {
   onClose: () => void
   onCreated: () => void
-  notify: (msg: string) => void
+  notify: (msg: string, variant?: ToastVariant) => void
 }) {
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
@@ -407,9 +420,10 @@ function NewProjectDialog({
     setBusy(true)
     try {
       await createProject(name.trim(), path.trim())
+      notify(`Linked project “${name.trim()}”.`, 'success')
       onCreated()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err))
+      notify(err instanceof Error ? err.message : String(err), 'error')
       setBusy(false) // keep the dialog open so the user can fix the path
     }
   }
@@ -440,8 +454,7 @@ function NewProjectDialog({
       >
         <h2 className="text-sm font-semibold text-stone-900">New project</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Register a project name bound to an existing absolute path on this
-          machine.
+          Links a name to an existing folder (nothing is created).
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
@@ -473,6 +486,9 @@ function NewProjectDialog({
               }}
               className={`${INPUT} font-mono`}
             />
+            <span className="text-[11px] text-stone-400">
+              the folder itself, must exist
+            </span>
           </label>
         </div>
         <div className="mt-5 flex justify-end gap-2">

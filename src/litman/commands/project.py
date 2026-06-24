@@ -150,9 +150,8 @@ def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
         path_type=Path,
     ),
     help=(
-        "Absolute on-disk path to the project's working directory. "
-        "Must already exist and be a directory (typo defense — no "
-        "placeholder registration)."
+        "Full path to an existing folder (the folder itself, not its "
+        "parent). litman does not create it."
     ),
 )
 @_library_option
@@ -163,10 +162,11 @@ def project_add_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Register a new project (dual-write TAXONOMY.md + lit-config.yaml).
+    """Link a project NAME to an existing folder (nothing is created).
 
-    Both truth sources are updated in a single atomic staged_write so a
-    crash never leaves the name in one but not the other.
+    NAME is a label papers tag with; it may differ from the folder's own
+    name. --path is the full path to that folder (not its parent), which
+    must already exist.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     summary = add_project(vault, name, project_path)

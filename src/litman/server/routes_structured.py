@@ -356,10 +356,11 @@ async def post_projects(request: Request) -> dict[str, object]:
     Body JSON ``{"name": str, "path": str}``. Reaches the filesystem only through
     :func:`litman.core.project_link.add_project` (the same core ``lit project
     add`` calls), which validates the path exists and is a directory (A7), then
-    dual-writes TAXONOMY.md + lit-config.yaml atomically (invariant #2). The path
-    is resolved to an absolute path here, mirroring the CLI's
-    ``click.Path(resolve_path=True)``. Empty name / missing path / duplicate name
-    surface as TaxonomyError → 400.
+    dual-writes TAXONOMY.md + lit-config.yaml atomically (invariant #2). The raw
+    path is passed through with only ``~`` expanded; ``add_project`` rejects a
+    relative path rather than resolving it against the server's opaque cwd, then
+    normalizes the absolute path itself. Relative / missing / not-a-directory /
+    duplicate name surface as TaxonomyError → 400.
     """
     try:
         payload = await request.json()
@@ -377,7 +378,7 @@ async def post_projects(request: Request) -> dict[str, object]:
 
     vault = request.app.state.vault
     try:
-        summary = add_project(vault, name, Path(path).expanduser().resolve())
+        summary = add_project(vault, name, Path(path).expanduser())
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "name": summary["name"], "path": summary["path"]}

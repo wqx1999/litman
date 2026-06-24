@@ -34,7 +34,7 @@ import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
 import { emptyFilters } from './nav/BrowsePanel'
 import TabArea from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
-import Toast from './ui/Toast'
+import Toast, { type ToastVariant } from './ui/Toast'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
@@ -87,9 +87,15 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false)
   const searchToken = useRef(0)
 
-  // A single transient toast (dangling wikilink, failed save). Last write wins.
-  const [toast, setToast] = useState<string | null>(null)
-  const notify = useCallback((msg: string) => setToast(msg), [])
+  // A single transient toast (dangling wikilink, failed save, project linked).
+  // Last write wins; `variant` tints the dot (default neutral 'info').
+  const [toast, setToast] = useState<{ message: string; variant: ToastVariant } | null>(
+    null,
+  )
+  const notify = useCallback(
+    (msg: string, variant: ToastVariant = 'info') => setToast({ message: msg, variant }),
+    [],
+  )
 
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
@@ -709,7 +715,13 @@ export default function App() {
           onConfirm={confirmSwitchVault}
         />
       )}
-      {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
+      {toast && (
+        <Toast
+          message={toast.message}
+          variant={toast.variant}
+          onDismiss={() => setToast(null)}
+        />
+      )}
     </div>
   )
 }
