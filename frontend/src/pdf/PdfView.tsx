@@ -74,23 +74,37 @@ const clampScale = (s: number) =>
   Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round(s * 10) / 10))
 
 // The three annotation editors this build exposes, plus a cursor/select mode.
-// "Cursor" maps to pdf.js's POPUP mode, NOT NONE: in POPUP the UIManager
-// enables ALL existing editors (highlight/text/ink) so they can be selected,
-// moved, recoloured and deleted, while a click on empty space creates nothing
-// (pdf.mjs gates STAMP/POPUP/SIGNATURE out of createAndAddNewEditor). NONE
-// would disable every editor — you could not touch an existing annotation. The
-// other three enter the matching creation editor. Numeric values come from
-// pdf.js's own enum (v5: FREETEXT=3, HIGHLIGHT=9, INK=15, POPUP=16) — never
+// "Cursor" maps to pdf.js's NONE mode (the reading default, like Adobe / Zotero):
+// the editor layer drops its pointer-events so native text selection (copy /
+// paste) works on the textLayer beneath, and the annotation layer keeps its
+// pointer-events so hyperlinks stay clickable (in pdf.mjs's updateMode the NONE
+// branch is the only one that does BOTH; POPUP — the old Cursor — blocked text
+// selection AND links). The cost — you cannot single-click an existing
+// annotation to select it — is covered by pdf.js's built-in double-click-to-edit
+// path: AnnotationElement._editOnDoubleClick dispatches `switchannotationeditormode`
+// (wired below), so double-clicking a saved highlight / note / ink enters its
+// editor and selects it, and the popover's recolour / delete / note still reach
+// it. The other three enter the matching creation editor. Numeric values come
+// from pdf.js's own enum (v5: NONE=0, FREETEXT=3, HIGHLIGHT=9, INK=15) — never
 // hard-coded, so a pdf.js bump can't silently point a button at the wrong mode.
 type EditMode = 'none' | ParamType
 const EDITOR_TYPE: Record<EditMode, number> = {
-  none: AnnotationEditorType.POPUP,
+  none: AnnotationEditorType.NONE,
   highlight: AnnotationEditorType.HIGHLIGHT,
   freetext: AnnotationEditorType.FREETEXT,
   ink: AnnotationEditorType.INK,
 }
+// Reverse of EDITOR_TYPE: maps pdf.js's numeric mode back to our EditMode union
+// so the toolbar's active-tool highlight can re-sync when pdf.js changes the
+// mode on its own (e.g. a double-click entering an editor).
+const MODE_TO_EDIT: Record<number, EditMode> = {
+  [AnnotationEditorType.NONE]: 'none',
+  [AnnotationEditorType.HIGHLIGHT]: 'highlight',
+  [AnnotationEditorType.FREETEXT]: 'freetext',
+  [AnnotationEditorType.INK]: 'ink',
+}
 const EDIT_MODES: { mode: EditMode; label: string; title: string }[] = [
-  { mode: 'none', label: 'Cursor', title: 'Select / move / edit existing annotations' },
+  { mode: 'none', label: 'Cursor', title: 'Select text / follow links (double-click an annotation to edit)' },
   { mode: 'highlight', label: 'Highlight', title: 'Highlight text' },
   { mode: 'freetext', label: 'Text', title: 'Add a text note' },
   { mode: 'ink', label: 'Draw', title: 'Freehand ink' },
@@ -157,8 +171,9 @@ function TrashIcon() {
  * annotation-editor layers).
  *
  * We drive pdf.js's `PDFViewer` and enable three built-in editors — Highlight /
- * FreeText / Ink — plus a Cursor (POPUP) mode that selects/moves/recolours/deletes
- * existing annotations of any type. The editor's own floating toolbar + native
+ * FreeText / Ink — plus a Cursor (NONE) mode for reading: native text selection
+ * (copy/paste) and clickable hyperlinks, with double-click-to-edit reaching
+ * existing annotations. The editor's own floating toolbar + native
  * comment chrome are hidden (see pdf-editor-overrides.css); instead two surfaces
  * drive the editors through the documented `switchannotationeditorparams` event
  * (colour / size / thickness) and the UIManager (delete, note command):
@@ -545,10 +560,10 @@ export default function PdfView({
       viewer: viewerEl,
       eventBus,
       linkService,
-      // Construct in NONE, then switch to POPUP (our Cursor default) once the
-      // editor layer has rendered — see enterCursorMode below. Entering POPUP at
-      // construction trips pdf.js's POPUP-mode comment-sidebar code, which maps
-      // over `#editorTypes` before any layer has registered them (null → throw).
+      // NONE is our Cursor (reading) default: native text selection + clickable
+      // hyperlinks. The Highlight / Text / Draw toolbar buttons switch into the
+      // creation editors; double-clicking a saved annotation switches into its
+      // editor via the switchannotationeditormode listener wired below.
       annotationEditorMode: AnnotationEditorType.NONE,
       // Required for the highlight editor — see HIGHLIGHT_COLORS above.
       annotationEditorHighlightColors: HIGHLIGHT_COLORS,
@@ -599,26 +614,48 @@ export default function PdfView({
     }
     eventBus.on('pagesinit', onPagesInit)
 
-    // Enter Cursor (POPUP) select mode only AFTER the first annotation-editor
-    // layer has rendered: that's when the UIManager has registered its editor
-    // types (AnnotationEditorLayer ctor → registerEditorTypes), which POPUP's
-    // sidebar code needs. One-shot — detach after first fire.
+    // pdf.js's embedded PDFViewer does NOT itself act on `switchannotationeditormode`
+    // (only the full viewer.html app wires that). We wire it so pdf.js's built-in
+    // double-click-to-edit works: AnnotationElement._editOnDoubleClick dispatches
+    // this event with the saved annotation's editor type + id, and we route it to
+    // the viewer so it enters that editor and selects the annotation (the popover
+    // then drives recolour / delete / note). Our own toolbar sets the mode
+    // directly (selectMode), so this listener only matters for the dblclick path.
     //
-    // Read-only (trash) mode SKIPS this entirely: the viewer stays in
-    // AnnotationEditorType.NONE, so existing annotations can't be selected /
-    // moved / recoloured / deleted natively — no editor state to mutate, no
-    // write path reachable (red line ④). Annotations are baked into paper.pdf at
-    // save time, so they still render via the normal annotation layer.
-    const enterCursorMode = () => {
-      eventBus.off('annotationeditorlayerrendered', enterCursorMode)
+    // Read-only (trash) mode SKIPS this: no write path may be reachable, so a
+    // double-click must never enter an editor (red line ④). The viewer stays in
+    // NONE; annotations still render (baked into paper.pdf) and stay selectable
+    // as text / followable as links, just not editable.
+    const onSwitchMode = (e: {
+      mode?: number
+      editId?: string | null
+      mustEnterInEditMode?: boolean
+    }) => {
+      if (e.mode == null) return
       try {
-        viewer.annotationEditorMode = { mode: AnnotationEditorType.POPUP }
+        viewer.annotationEditorMode = {
+          mode: e.mode,
+          editId: e.editId ?? null,
+          mustEnterInEditMode: e.mustEnterInEditMode ?? false,
+        }
       } catch (err) {
-        console.error('Failed to enter select mode:', err)
+        console.error('Failed to switch annotation editor mode:', err)
       }
     }
     if (!readOnly) {
-      eventBus.on('annotationeditorlayerrendered', enterCursorMode)
+      eventBus.on('switchannotationeditormode', onSwitchMode)
+    }
+
+    // Keep the React toolbar's active-tool highlight in sync when pdf.js changes
+    // the mode on its own (e.g. a double-click entering an editor). selectMode
+    // already sets editMode for toolbar-driven switches, so this is idempotent
+    // there; an unknown mode (shouldn't happen) is ignored.
+    const onModeChanged = (e: { mode?: number }) => {
+      const mode = MODE_TO_EDIT[e.mode ?? -1]
+      if (mode) setEditMode(mode)
+    }
+    if (!readOnly) {
+      eventBus.on('annotationeditormodechanged', onModeChanged)
     }
 
     // editingstateschanged fires with the full editor state every time. Capture
@@ -715,7 +752,8 @@ export default function PdfView({
     return () => {
       cancelled = true
       eventBus.off('pagesinit', onPagesInit)
-      eventBus.off('annotationeditorlayerrendered', enterCursorMode)
+      eventBus.off('switchannotationeditormode', onSwitchMode)
+      eventBus.off('annotationeditormodechanged', onModeChanged)
       eventBus.off('editingstateschanged', onEditingStates)
       eventBus.off('annotationeditorparamschanged', onParamsChanged)
 
