@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 from litman.commands.modify import _apply_modify
 from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
+from litman.commands.rm import discover_rm_impact, execute_rm
 from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
@@ -40,6 +41,7 @@ from litman.core.vault_registry import apply_vault_use
 from litman.exceptions import (
     ModifyError,
     PaperNotFoundError,
+    RmError,
     TaxonomyError,
     VaultRegistryError,
 )
@@ -277,6 +279,85 @@ async def post_unread(request: Request, paper_id: str) -> dict[str, object]:
     except ModifyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "changed": changed, "message": message}
+
+
+def _rm_impact_summary(plan: object) -> dict[str, object]:
+    """Project an :class:`RmPlan` into the JSON the confirm dialog renders.
+
+    Lists every external link the delete would break so the GUI can warn before
+    removing: which papers' references get cleared, which repos are unbound
+    (1:N) vs deleted as now-orphaned clones (1:1), which projects are unlinked,
+    and which referencing notes get tagged ``(deleted)``.
+    """
+    return {
+        "id": plan.paper_id,
+        "title": plan.title,
+        "references": sorted(plan.touched_ref_ids),
+        "reposUnbound": plan.repos_unbound,
+        "reposRemoved": sorted(plan.orphan_repos),
+        "projects": sorted(plan.projects),
+        "notes": sorted(plan.note_updates),
+    }
+
+
+@router.get("/paper/{paper_id}/rm-preview")
+async def get_rm_preview(request: Request, paper_id: str) -> dict[str, object]:
+    """Preview what ``DELETE /paper/{id}`` would tear down — no writes.
+
+    Backs the tab's trash-icon confirm dialog: runs the SAME
+    :func:`litman.commands.rm.discover_rm_impact` the CLI's ``--dry-run`` uses,
+    so the cascade the dialog shows is exactly what the delete will do. Pure
+    read; an unknown / invalid paper surfaces as PaperNotFoundError → 404 /
+    RmError → 400.
+    """
+    _require_valid_id(paper_id)
+    vault = request.app.state.vault
+    try:
+        plan = discover_rm_impact(vault, paper_id)
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RmError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _rm_impact_summary(plan)
+
+
+@router.delete("/paper/{paper_id}")
+async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
+    """Soft-delete a paper through the ``lit rm`` backend (move to ``.trash/``).
+
+    Reaches the filesystem only through
+    :func:`litman.commands.rm.discover_rm_impact` +
+    :func:`litman.commands.rm.execute_rm` — the identical core path ``lit rm``
+    drives — so the relationship-network teardown (external→A reference edges,
+    repo bindings, project symlinks) and the atomic staged write happen once,
+    with no second write path (invariant #16). ``purge=False`` is hard-wired:
+    the GUI only ever moves a paper to ``.trash/`` (recoverable via ``lit trash
+    restore``); the irreversible ``--purge`` / ``lit trash empty`` stay
+    CLI-only. Confirm-free — the tab's default-No confirm dialog is the
+    confirmation, mirroring ``delete_project``.
+
+    An unknown paper surfaces as PaperNotFoundError → 404, an invalid id /
+    missing metadata as RmError → 400.
+    """
+    _require_valid_id(paper_id)
+    vault = request.app.state.vault
+    try:
+        plan = discover_rm_impact(vault, paper_id)
+        result = execute_rm(plan, purge=False)
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RmError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "id": result.paper_id,
+        "references": sorted(result.touched_ref_ids),
+        "reposUnbound": result.repos_unbound,
+        "reposRemoved": result.orphan_repos,
+        "projects": result.projects,
+        "notes": result.note_files,
+        "warnings": result.warnings,
+    }
 
 
 @router.post("/paper/{paper_id}/project")

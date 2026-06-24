@@ -86,14 +86,27 @@ export default function TopBar({
   // control holds focus. `revealed` drives that slide; reset whenever focus
   // toggles so re-entering focus always starts hidden.
   const headerRef = useRef<HTMLElement>(null)
+  // Whether the pointer is currently over the header. A ref (not state) so the
+  // hide check reads it synchronously without forcing a re-render.
+  const pointerInside = useRef(false)
   const [revealed, setRevealed] = useState(false)
-  useEffect(() => setRevealed(false), [focusMode])
+  useEffect(() => {
+    setRevealed(false)
+    pointerInside.current = false
+  }, [focusMode])
 
-  // Hide on mouse-out, but keep the bar down while any header control still has
-  // focus (typing in search, the open vault <select>) so it can't vanish
-  // mid-interaction.
-  const hideUnlessFocused = () => {
-    if (!headerRef.current?.contains(document.activeElement)) setRevealed(false)
+  // Hide only once NEITHER the pointer is over the header NOR a header control
+  // holds focus (typing in search, an open vault <select>) — so the bar can't
+  // vanish mid-interaction. Re-evaluated on BOTH pointer-leave and focus-leave:
+  // if the pointer leaves while a control is still focused the first check bails,
+  // and the later blur re-runs it once focus clears. Without that second trigger
+  // the bar got stuck open after a search (the reported bug) — mouse-out fired
+  // once, bailed on the still-focused search box, and nothing re-checked when
+  // focus finally moved away.
+  const hideIfIdle = () => {
+    if (pointerInside.current) return
+    if (headerRef.current?.contains(document.activeElement)) return
+    setRevealed(false)
   }
 
   return (
@@ -108,8 +121,39 @@ export default function TopBar({
       )}
       <header
         ref={headerRef}
-        onMouseEnter={focusMode ? () => setRevealed(true) : undefined}
-        onMouseLeave={focusMode ? hideUnlessFocused : undefined}
+        onMouseEnter={
+          focusMode
+            ? () => {
+                pointerInside.current = true
+                setRevealed(true)
+              }
+            : undefined
+        }
+        onMouseLeave={
+          focusMode
+            ? () => {
+                pointerInside.current = false
+                hideIfIdle()
+              }
+            : undefined
+        }
+        // Focus entering a header control reveals the bar — this is how ⌘K
+        // (which focuses the search box) brings the hidden header into view in
+        // focus mode. Focus leaving re-checks the hide so the bar drops once
+        // both pointer and focus are gone; the relatedTarget guard avoids
+        // hiding when focus merely moves between two header controls.
+        onFocus={focusMode ? () => setRevealed(true) : undefined}
+        onBlur={
+          focusMode
+            ? (e) => {
+                if (
+                  !headerRef.current?.contains(e.relatedTarget as Node | null)
+                ) {
+                  hideIfIdle()
+                }
+              }
+            : undefined
+        }
         className={
           'flex items-center gap-2.5 border-b border-stone-200 bg-stone-50/90 px-3 py-2 backdrop-blur-md ' +
           (focusMode

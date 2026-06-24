@@ -48,6 +48,9 @@ interface Props {
   onSelect: (id: string) => void
   onOpenPdf: (id: string) => void
   onOpenDoc: (id: string, doc: 'notes' | 'discussion') => void
+  /** Soft-delete the paper (the expanded card's trash action). Hands off to App,
+   * which runs the default-No confirm + `lit rm` DELETE. */
+  onRemovePaper: (id: string) => void
   collapsed: boolean
   onToggle: () => void
 }
@@ -153,6 +156,7 @@ export default function BrowsePanel({
   onSelect,
   onOpenPdf,
   onOpenDoc,
+  onRemovePaper,
   collapsed,
   onToggle,
 }: Props) {
@@ -528,7 +532,7 @@ export default function BrowsePanel({
                       <div className="mb-2 text-sm text-stone-800">
                         {p.title || p.id}
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => onOpenPdf(p.id)}
                           className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
@@ -547,6 +551,19 @@ export default function BrowsePanel({
                         >
                           💬 discussion
                         </button>
+                        {/* Remove from library — set apart at the row's right edge
+                            (ml-auto) and rose-on-hover so it never reads as another
+                            "open" pill. Only present on the expanded (selected) card,
+                            so it is not a stray destructive button in the list. The
+                            default-No confirm in App is the mis-click guard. */}
+                        <button
+                          onClick={() => onRemovePaper(p.id)}
+                          title="Remove paper from library (move to trash)"
+                          aria-label="Remove paper from library"
+                          className="ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-lg text-stone-400 ring-1 ring-transparent transition-colors hover:bg-rose-50 hover:text-rose-500 hover:ring-rose-200"
+                        >
+                          <IconTrash />
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -557,5 +574,23 @@ export default function BrowsePanel({
         </div>
       </div>
     </div>
+  )
+}
+
+/** Trash can — the expanded card's "remove paper from library" action. */
+function IconTrash() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
+    </svg>
   )
 }

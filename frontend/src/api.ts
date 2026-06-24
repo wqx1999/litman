@@ -223,6 +223,40 @@ export function postUnread(
   return mutateJSON(`/api/paper/${encodeURIComponent(id)}/unread`, 'POST')
 }
 
+/** What removing a paper would tear down — the soft-delete confirm preview.
+ * Each list names the external links the delete breaks (sourced from the same
+ * `lit rm --dry-run` discovery the CLI uses). */
+export interface RmPreview {
+  id: string
+  title: string | null
+  /** Other papers whose relation fields lose this paper. */
+  references: string[]
+  /** Repos that stay (still bound by another paper) but drop this binding. */
+  reposUnbound: string[]
+  /** Cloned repos no other paper uses — their `codes/<repo>/` dir is deleted. */
+  reposRemoved: string[]
+  /** Projects this paper is unlinked from (reflib symlink + REFERENCES.md). */
+  projects: string[]
+  /** Referencing notes/discussion that get a `(deleted)` tag. */
+  notes: string[]
+}
+
+/** Preview the cascade of removing a paper, without deleting (GET, pure read).
+ * Backs the tab trash-icon confirm dialog. */
+export function fetchRmPreview(id: string): Promise<RmPreview> {
+  return getJSON<RmPreview>(`/api/paper/${encodeURIComponent(id)}/rm-preview`)
+}
+
+/** Soft-delete a paper through the `lit rm` backend: move it to `.trash/`
+ * (recoverable via `lit trash restore` in the CLI) and tear down its external
+ * links atomically. The server hard-wires `purge=False` — the GUI never
+ * permanently deletes. */
+export function removePaper(
+  id: string,
+): Promise<{ ok: boolean; warnings: string[] }> {
+  return mutateJSON(`/api/paper/${encodeURIComponent(id)}`, 'DELETE')
+}
+
 export function fetchProjects(): Promise<ProjectEntry[]> {
   return getJSON<ProjectEntry[]>('/api/projects')
 }

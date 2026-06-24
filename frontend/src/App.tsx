@@ -10,6 +10,7 @@ import {
   putActiveVault,
   putDiscussion,
   putNotes,
+  removePaper,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import type { MdDraft } from './md/MdView'
@@ -17,6 +18,7 @@ import type { CockpitHandle } from './cockpit/Cockpit'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 import CheatSheet from './ui/CheatSheet'
 import SaveDialog from './tabs/SaveDialog'
+import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
 import type {
   FixedEnums,
@@ -154,6 +156,11 @@ export default function App() {
   // save is in flight.
   const [pendingClose, setPendingClose] = useState<string | null>(null)
   const [savingClose, setSavingClose] = useState(false)
+
+  // Paper id awaiting a soft-delete decision (drives RemovePaperConfirm), and
+  // whether the `lit rm` DELETE is in flight.
+  const [pendingRemove, setPendingRemove] = useState<string | null>(null)
+  const [removing, setRemoving] = useState(false)
 
   // Vault switch (3c-2): the target awaiting confirmation, and whether the
   // switch (flush + PUT + reload) is in flight.
@@ -537,6 +544,41 @@ export default function App() {
 
   const cancelClose = useCallback(() => setPendingClose(null), [])
 
+  const cancelRemove = useCallback(() => {
+    if (!removing) setPendingRemove(null)
+  }, [removing])
+
+  // Soft-delete the paper after the confirm. Routes through the `lit rm` DELETE
+  // (server moves it to .trash/ + tears down its links), then closes every tab
+  // showing that paper, clears the cockpit if it was selected, and refreshes the
+  // lists. A failed delete keeps the dialog open with the backend message.
+  const confirmRemove = useCallback(async () => {
+    const id = pendingRemove
+    if (!id) return
+    setRemoving(true)
+    try {
+      await removePaper(id)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error')
+      setRemoving(false)
+      return
+    }
+    // Close any open tabs (pdf / notes / discussion) for the removed paper —
+    // their content is gone now. removeTab re-points the active tab each call.
+    tabs.filter((t) => t.paperId === id).forEach((t) => removeTab(t.key))
+    if (selectedId === id) {
+      setSelectedId(null)
+      setCockpitPaper(null)
+    }
+    setRemoving(false)
+    setPendingRemove(null)
+    notify(`Removed “${id}” to trash · restore with \`lit trash restore ${id}\``, 'success')
+    // The removed paper drops out of the list + counts; do NOT re-fetch its own
+    // metadata (it's gone) — just reload the list and the INDEX projection.
+    loadList(listMode)
+    fetchPapers().then(setAllPapers)
+  }, [pendingRemove, tabs, removeTab, selectedId, notify, loadList, listMode])
+
   // The tab pending close, and whether it is an md tab (drives the dialog copy
   // and the body noun: an md tab has unsaved "edits", not "annotations").
   const pendingTab = pendingClose
@@ -712,6 +754,7 @@ export default function App() {
   // dispatcher suppresses every global shortcut and lets the modal own its keys.
   const anyModalOpen =
     pendingClose !== null ||
+    pendingRemove !== null ||
     pendingVault !== null ||
     cockpitModalOpen ||
     projectsOpen
@@ -774,6 +817,7 @@ export default function App() {
           onSelect={selectPaper}
           onOpenPdf={openPdf}
           onOpenDoc={openDoc}
+          onRemovePaper={setPendingRemove}
           collapsed={leftCollapsed}
           onToggle={() => setLeftCollapsed((c) => !c)}
         />
@@ -832,6 +876,14 @@ export default function App() {
           switching={switchingVault}
           onCancel={() => setPendingVault(null)}
           onConfirm={confirmSwitchVault}
+        />
+      )}
+      {pendingRemove && (
+        <RemovePaperConfirm
+          paperId={pendingRemove}
+          busy={removing}
+          onCancel={cancelRemove}
+          onConfirm={confirmRemove}
         />
       )}
       {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
