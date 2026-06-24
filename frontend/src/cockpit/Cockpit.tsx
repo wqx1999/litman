@@ -111,184 +111,242 @@ function EnumSelect({
   )
 }
 
-/** A one-line summary of the attached values for a collapsed TagSelect: the
- * first couple verbatim, the rest folded into a "+N" tail. */
-function summarize(values: string[], max = 2): string {
-  if (values.length <= max) return values.join(' · ')
-  return `${values.slice(0, max).join(' · ')} · +${values.length - max}`
+/** One pill in the Tags group: the field name plus a count badge when the field
+ * has values. Clicking toggles the field's inline editor panel open/closed. A
+ * filled (accent) pill means the field is non-empty, so the collapsed group still
+ * reads at a glance which fields are tagged (problem 1's glanceability cost). */
+function TagPill({
+  label,
+  count,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string
+  count: number
+  active: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  const filled = count > 0
+  return (
+    <button
+      type="button"
+      aria-label={`${label} (${count} selected)`}
+      aria-expanded={active}
+      disabled={disabled}
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50 ${
+        filled
+          ? 'border-accent-300 bg-accent-50 text-accent-700 hover:bg-accent-100'
+          : 'border-stone-300 bg-white text-stone-500 hover:bg-stone-50'
+      } ${active ? 'ring-1 ring-accent-400' : ''}`}
+    >
+      <span>{label}</span>
+      {filled && (
+        <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent-200 px-1 text-[10px] font-bold text-accent-800">
+          {count}
+        </span>
+      )}
+    </button>
+  )
 }
 
-/** A compact, collapsed-by-default multi-select for a tag-like field
- * (topics/methods/data via TAXONOMY, or projects via the registry). Collapsed it
- * is a single summary row (problem 1: no vertical bulk); expanded it is an inline
- * disclosure (click-outside or Esc to close, one open at a time) showing a
- * filter/create box, a toggle list (✓ = attached; click to add/remove), and —
- * for the controlled-vocab fields only — an inline-create button and a "Manage…"
- * entry into the dictionary editor. `onCreate`/`onManage` are omitted for
- * projects (a project is created/deleted from the TopBar, never here). Problem 3:
- * every tag field is now the same compact dropdown regardless of how full it is.
- */
-function TagSelect({
+/** The inline editor panel for one tag field — a combobox (problem 3). The input
+ * is search-only (never doubles as a create box); the list shows every registered
+ * value (attached ones get a ✓, click to add/remove); a contextual "Create" row
+ * appears as the last list entry only when the typed text matches no existing
+ * value (controlled-vocab fields); a "Manage…" footer enters the dictionary
+ * editor. `onCreate`/`onManage` are omitted for projects (a project is
+ * created/deleted from the TopBar, never here). The panel mounts fresh per open
+ * (keyed on field in TagGroup), so the draft is always empty on open. */
+function TagPanel({
   field,
   values,
   vocabulary,
-  open,
   busy,
-  onOpen,
-  onClose,
   onAdd,
   onRemove,
   onCreate,
   onManage,
+  onClose,
 }: {
   field: string
   values: string[] | undefined
   vocabulary: string[]
-  open: boolean
   busy: boolean
-  onOpen: () => void
-  onClose: () => void
   onAdd: (value: string) => void
   onRemove: (value: string) => void
   /** Register-then-attach a brand-new taxonomy value (controlled-vocab fields). */
   onCreate?: (value: string) => void
   /** Open the dictionary editor for this field (controlled-vocab fields). */
   onManage?: () => void
+  onClose: () => void
 }) {
   const [draft, setDraft] = useState('')
-  const rootRef = useRef<HTMLDivElement>(null)
   const attached = values ?? []
   const typed = draft.trim()
+  const lower = typed.toLowerCase()
   // Inline-create is offered only on a controlled-vocab field, for a genuinely
-  // new value: non-empty, not already registered, not already attached.
+  // new value: non-empty, matching no registered value and nothing attached
+  // (case-insensitive, so "Test" won't offer to re-create "test").
   const isNew =
     onCreate != null &&
     typed.length > 0 &&
-    !vocabulary.includes(typed) &&
-    !attached.includes(typed)
-  // The list shows every registered value (attached ones get a ✓), filtered by
-  // the draft (case-insensitive substring) so the box doubles as autocomplete.
+    !vocabulary.some((v) => v.toLowerCase() === lower) &&
+    !attached.some((v) => v.toLowerCase() === lower)
+  // The list shows every registered value, filtered by the draft (case-insensitive
+  // substring) so the search box doubles as autocomplete.
   const filtered = (
-    typed
-      ? vocabulary.filter((v) => v.toLowerCase().includes(typed.toLowerCase()))
-      : vocabulary
+    typed ? vocabulary.filter((v) => v.toLowerCase().includes(lower)) : vocabulary
   )
     .slice()
     .sort((a, b) => a.localeCompare(b))
 
-  // Collapse on an outside click (trigger + panel sit inside rootRef, so a click
-  // on either keeps it open). The parent guarantees one-open-at-a-time via the
-  // shared openField it threads into `open`.
+  return (
+    <div
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose()
+      }}
+      className="mt-1.5 rounded-lg border border-stone-200 bg-white p-1.5 shadow-md"
+    >
+      <input
+        type="text"
+        autoFocus
+        aria-label={`Search ${field}`}
+        placeholder={`Search ${field}…`}
+        value={draft}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        className="mb-1 w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+      />
+      <div className="max-h-48 overflow-y-auto">
+        {filtered.length === 0 && !isNew && (
+          <div className="px-2 py-1.5 text-xs text-stone-400">
+            {vocabulary.length === 0 ? 'No values yet.' : 'No match.'}
+          </div>
+        )}
+        {filtered.map((v) => {
+          const on = attached.includes(v)
+          return (
+            <button
+              key={v}
+              type="button"
+              disabled={busy}
+              onClick={() => (on ? onRemove(v) : onAdd(v))}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
+            >
+              <span
+                className={`w-3 shrink-0 ${on ? 'text-accent-600' : 'text-transparent'}`}
+              >
+                ✓
+              </span>
+              <span className="truncate">{v}</span>
+            </button>
+          )
+        })}
+        {isNew && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              onCreate!(typed)
+              setDraft('')
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-accent-700 transition-colors hover:bg-accent-50 disabled:opacity-50"
+          >
+            <span className="w-3 shrink-0 text-accent-600">+</span>
+            <span className="truncate">Create “{typed}”</span>
+          </button>
+        )}
+      </div>
+      {onManage && (
+        <div className="mt-1 border-t border-stone-100 pt-1">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onManage}
+            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
+          >
+            <span className="text-stone-400">⚙</span> Manage {field}…
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Config for one field in the Tags group. */
+type TagFieldConfig = {
+  key: string
+  label: string
+  values: string[] | undefined
+  vocabulary: string[]
+  onAdd: (value: string) => void
+  onRemove: (value: string) => void
+  onCreate?: (value: string) => void
+  onManage?: () => void
+}
+
+/** The "Tags" group (problem 1): collapses the four multi-value association
+ * fields (topics/methods/data via TAXONOMY, projects via the registry) under one
+ * header so they no longer stack as four full-width dropdowns. The body is a row
+ * of pills; clicking a pill opens that field's TagPanel inline below the row, one
+ * at a time. A click outside the group (or Esc) closes the open panel. The open
+ * field is held by the parent (shared `openField`) so it resets on paper change. */
+function TagGroup({
+  fields,
+  openKey,
+  onOpenKey,
+  busy,
+}: {
+  fields: TagFieldConfig[]
+  openKey: string | null
+  onOpenKey: (key: string | null) => void
+  busy: boolean
+}) {
+  const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (!open) return
+    if (openKey == null) return
     function onDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onClose()
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onOpenKey(null)
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [open, onClose])
+  }, [openKey, onOpenKey])
 
-  // Clear the filter draft whenever the panel closes, so a stale filter does not
-  // greet the next open.
-  useEffect(() => {
-    if (!open) setDraft('')
-  }, [open])
-
-  const summary = attached.length > 0 ? summarize(attached) : null
+  const openCfg = fields.find((f) => f.key === openKey) ?? null
 
   return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        aria-label={`${field} (${attached.length} selected)`}
-        aria-expanded={open}
-        disabled={busy}
-        onClick={() => (open ? onClose() : onOpen())}
-        className={`flex w-full items-center justify-between gap-2 rounded-md border border-stone-300 bg-white px-2 py-1 text-left text-sm shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50 ${
-          open ? 'ring-1 ring-accent-400' : ''
-        }`}
-      >
-        <span className={`truncate ${summary ? 'text-stone-800' : 'text-stone-400'}`}>
-          {summary ?? '—'}
-        </span>
-        <span
-          className={`shrink-0 text-stone-400 transition-transform ${
-            open ? 'rotate-180' : ''
-          }`}
-        >
-          ▾
-        </span>
-      </button>
-
-      {open && (
-        <div
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') onClose()
-          }}
-          className="mt-1 rounded-lg border border-stone-200 bg-white p-1.5 shadow-md"
-        >
-          <input
-            type="text"
-            autoFocus
-            aria-label={onCreate ? `Filter or create ${field}` : `Filter ${field}`}
-            placeholder={onCreate ? `Filter or create ${field}…` : `Filter ${field}…`}
-            value={draft}
+    <div ref={rootRef} className="mb-3.5">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+        Tags
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {fields.map((f) => (
+          <TagPill
+            key={f.key}
+            label={f.label}
+            count={(f.values ?? []).length}
+            active={openKey === f.key}
             disabled={busy}
-            onChange={(e) => setDraft(e.target.value)}
-            className="mb-1 w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+            onClick={() => onOpenKey(openKey === f.key ? null : f.key)}
           />
-          <div className="max-h-48 overflow-y-auto">
-            {filtered.length === 0 && (
-              <div className="px-2 py-1.5 text-xs text-stone-400">
-                {vocabulary.length === 0 ? 'No values yet.' : 'No match.'}
-              </div>
-            )}
-            {filtered.map((v) => {
-              const on = attached.includes(v)
-              return (
-                <button
-                  key={v}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => (on ? onRemove(v) : onAdd(v))}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
-                >
-                  <span
-                    className={`w-3 shrink-0 ${
-                      on ? 'text-accent-600' : 'text-transparent'
-                    }`}
-                  >
-                    ✓
-                  </span>
-                  <span className="truncate">{v}</span>
-                </button>
-              )
-            })}
-          </div>
-          {isNew && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                onCreate!(typed)
-                setDraft('')
-              }}
-              className="mt-1 w-full rounded-md border border-accent-300 bg-accent-50 px-2.5 py-1 text-left text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
-            >
-              + Create “{typed}”
-            </button>
-          )}
-          {onManage && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onManage}
-              className="mt-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
-            >
-              <span className="text-stone-400">⚙</span> Manage {field}…
-            </button>
-          )}
-        </div>
+        ))}
+      </div>
+      {openCfg && (
+        <TagPanel
+          key={openCfg.key}
+          field={openCfg.key}
+          values={openCfg.values}
+          vocabulary={openCfg.vocabulary}
+          busy={busy}
+          onAdd={openCfg.onAdd}
+          onRemove={openCfg.onRemove}
+          onCreate={openCfg.onCreate}
+          onManage={openCfg.onManage}
+          onClose={() => onOpenKey(null)}
+        />
       )}
     </div>
   )
@@ -583,8 +641,9 @@ function UnreadConfirm({
 
 /** Curation cockpit with structured write controls (Phase 3b/3c/3d).
  *
- * Dropdowns (status/priority/type), compact tag selects (topics/methods/data),
- * and mutually-exclusive read/revisit buttons all dispatch to the invariant #16
+ * Dropdowns (status/priority/type), the collapsed Tags group (topics/methods/
+ * data/projects pills), and mutually-exclusive read/revisit buttons all dispatch
+ * to the invariant #16
  * second-class write endpoints (the server runs the `lit` command backend). On
  * success the parent re-fetches via `onChanged`; on error the backend's raw
  * message is toasted via `notify`. Relations / code-clones stay read-only.
@@ -617,8 +676,8 @@ export default function Cockpit({
   // immutable-by-default stamp, so it sits behind a default-No confirm that also
   // warns the revisit record is dropped. Only reachable when readDate != null.
   const [showUnread, setShowUnread] = useState(false)
-  // The currently-expanded tag dropdown (topics/methods/data/projects), or null.
-  // One field at a time: opening one collapses the others (problem 1/3).
+  // The currently-open pill in the Tags group (topics/methods/data/projects), or
+  // null. One field at a time: opening one collapses the others (problem 1/3).
   const [openField, setOpenField] = useState<string | null>(null)
   // The controlled-vocab field whose Manage dialog is open (problem 2), or null.
   const [manageField, setManageField] = useState<
@@ -1006,73 +1065,60 @@ export default function Cockpit({
               )}
             </Field>
 
-            <Field label="Topics">
-              <TagSelect
-                field="topics"
-                values={paper.topics}
-                vocabulary={taxonomy?.topics ?? []}
-                open={openField === 'topics'}
-                busy={writing}
-                onOpen={() => setOpenField('topics')}
-                onClose={() => setOpenField((f) => (f === 'topics' ? null : f))}
-                onAdd={(v) => addTag('topics', v)}
-                onRemove={(v) => removeTag('topics', v)}
-                onCreate={(v) => createTag('topics', v)}
-                onManage={() => {
-                  setOpenField(null)
-                  setManageField('topics')
-                }}
-              />
-            </Field>
-            <Field label="Methods">
-              <TagSelect
-                field="methods"
-                values={paper.methods}
-                vocabulary={taxonomy?.methods ?? []}
-                open={openField === 'methods'}
-                busy={writing}
-                onOpen={() => setOpenField('methods')}
-                onClose={() => setOpenField((f) => (f === 'methods' ? null : f))}
-                onAdd={(v) => addTag('methods', v)}
-                onRemove={(v) => removeTag('methods', v)}
-                onCreate={(v) => createTag('methods', v)}
-                onManage={() => {
-                  setOpenField(null)
-                  setManageField('methods')
-                }}
-              />
-            </Field>
-            <Field label="Data">
-              <TagSelect
-                field="data"
-                values={paper.data}
-                vocabulary={taxonomy?.data ?? []}
-                open={openField === 'data'}
-                busy={writing}
-                onOpen={() => setOpenField('data')}
-                onClose={() => setOpenField((f) => (f === 'data' ? null : f))}
-                onAdd={(v) => addTag('data', v)}
-                onRemove={(v) => removeTag('data', v)}
-                onCreate={(v) => createTag('data', v)}
-                onManage={() => {
-                  setOpenField(null)
-                  setManageField('data')
-                }}
-              />
-            </Field>
-            <Field label="Projects">
-              <TagSelect
-                field="projects"
-                values={paper.projects}
-                vocabulary={projects.map((p) => p.name)}
-                open={openField === 'projects'}
-                busy={writing}
-                onOpen={() => setOpenField('projects')}
-                onClose={() => setOpenField((f) => (f === 'projects' ? null : f))}
-                onAdd={linkProj}
-                onRemove={unlinkProj}
-              />
-            </Field>
+            <TagGroup
+              openKey={openField}
+              onOpenKey={setOpenField}
+              busy={writing}
+              fields={[
+                {
+                  key: 'topics',
+                  label: 'Topics',
+                  values: paper.topics,
+                  vocabulary: taxonomy?.topics ?? [],
+                  onAdd: (v) => addTag('topics', v),
+                  onRemove: (v) => removeTag('topics', v),
+                  onCreate: (v) => createTag('topics', v),
+                  onManage: () => {
+                    setOpenField(null)
+                    setManageField('topics')
+                  },
+                },
+                {
+                  key: 'methods',
+                  label: 'Methods',
+                  values: paper.methods,
+                  vocabulary: taxonomy?.methods ?? [],
+                  onAdd: (v) => addTag('methods', v),
+                  onRemove: (v) => removeTag('methods', v),
+                  onCreate: (v) => createTag('methods', v),
+                  onManage: () => {
+                    setOpenField(null)
+                    setManageField('methods')
+                  },
+                },
+                {
+                  key: 'data',
+                  label: 'Data',
+                  values: paper.data,
+                  vocabulary: taxonomy?.data ?? [],
+                  onAdd: (v) => addTag('data', v),
+                  onRemove: (v) => removeTag('data', v),
+                  onCreate: (v) => createTag('data', v),
+                  onManage: () => {
+                    setOpenField(null)
+                    setManageField('data')
+                  },
+                },
+                {
+                  key: 'projects',
+                  label: 'Projects',
+                  values: paper.projects,
+                  vocabulary: projects.map((p) => p.name),
+                  onAdd: linkProj,
+                  onRemove: unlinkProj,
+                },
+              ]}
+            />
             <Field label="Relations">
               <Relations paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
