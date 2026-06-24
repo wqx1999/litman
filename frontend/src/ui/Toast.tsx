@@ -46,7 +46,13 @@ export default function Toast({ message, onDismiss, variant = 'info', duration }
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[100] flex justify-center">
       <div
         role="status"
-        className="pointer-events-auto flex animate-grow-in items-center gap-2 rounded-xl bg-stone-900/90 px-4 py-2 text-sm text-white shadow-lg ring-1 ring-black/10 backdrop-blur-sm"
+        // The pill must stay a dark surface in BOTH themes. `bg-stone-900` is
+        // dark in light mode but the `.dark` ramp inverts it to white, which
+        // (with the preserved `text-white`) renders white-on-white. Pin a dark
+        // elevated surface in dark mode (stone-50 → #2c2c2e, matching modals)
+        // and a faint light edge so it reads as a floating element on the dark
+        // canvas.
+        className="pointer-events-auto flex animate-grow-in items-center gap-2 rounded-xl bg-stone-900/90 px-4 py-2 text-sm text-white shadow-lg ring-1 ring-black/10 backdrop-blur-sm dark:bg-stone-50/95 dark:ring-white/10"
         onClick={onDismiss}
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[variant]}`} />

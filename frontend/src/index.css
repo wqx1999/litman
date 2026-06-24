@@ -59,6 +59,11 @@
    labels.
    ============================================================ */
 .dark {
+  /* Native controls (placeholder, <select> option popup, caret, autofill,
+     default scrollbars) follow color-scheme, not the `.dark` class. Flip it
+     with the theme so they don't render light-scheme on a dark surface. */
+  color-scheme: dark;
+
   --color-stone-50: #2c2c2e;  /* elevated surface: cards, header, inputs */
   --color-stone-100: #1c1c1e; /* base canvas (darkest) */
   --color-stone-200: #3a3a3c; /* hover fill / subtle border / chip */
@@ -93,6 +98,22 @@
 .dark .bg-white,
 .dark .focus\:bg-white:focus {
   background-color: var(--color-stone-50);
+}
+
+/* Light scheme by default for native controls; the `.dark` block (also on
+   <html>) flips it to dark. Declared on <html> only so it inherits cleanly to
+   body / #root rather than being pinned on them. */
+html {
+  color-scheme: light;
+}
+
+/* Placeholder text — explicit, ramp-based colour so it never falls back to the
+   UA's scheme-dependent default (which renders near-invisible on the dark input
+   surface). stone-400 is the designated placeholder grey in both themes.
+   Firefox dims placeholders by default, so pin opacity to 1. */
+::placeholder {
+  color: var(--color-stone-400);
+  opacity: 1;
 }
 
 html,

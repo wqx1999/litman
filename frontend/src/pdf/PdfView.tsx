@@ -1140,7 +1140,10 @@ export default function PdfView({ paperId, tabKey, onRegister }: Props) {
           <div
             ref={hoverNoteRef}
             style={{ visibility: 'hidden', zIndex: 100001 }}
-            className="pointer-events-none absolute max-w-xs whitespace-pre-wrap break-words rounded-lg bg-stone-800/95 px-2.5 py-1.5 text-xs leading-snug text-stone-50 shadow-lg shadow-stone-900/20 backdrop-blur-sm"
+            // A dark tooltip in both themes. The `.dark` ramp would otherwise
+            // invert bg-stone-800 → light and text-stone-50 → dark (a bright
+            // tooltip); pin the dark elevated surface + light text in dark mode.
+            className="pointer-events-none absolute max-w-xs whitespace-pre-wrap break-words rounded-lg bg-stone-800/95 px-2.5 py-1.5 text-xs leading-snug text-stone-50 shadow-lg shadow-stone-900/20 backdrop-blur-sm dark:bg-stone-50/95 dark:text-stone-900"
           >
             {hoverNote.text}
           </div>
