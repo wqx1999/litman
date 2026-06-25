@@ -37,7 +37,14 @@ from litman.core.project_link import (
     unlink_paper_from_project,
 )
 from litman.core.taxonomy import add_taxonomy_values, remove_taxonomy_value
-from litman.core.vault_registry import apply_vault_use
+from litman.core.vault_registry import (
+    add_vault,
+    apply_vault_use,
+    find_by_name,
+    load_registry,
+    remove_vault,
+    save_registry,
+)
 from litman.exceptions import (
     ModifyError,
     PaperNotFoundError,
@@ -592,3 +599,88 @@ async def put_active_vault(request: Request) -> dict[str, object]:
     target = Path(entry.path).expanduser()
     request.app.state.vault = target
     return {"ok": True, "active": name, "path": str(target)}
+
+
+@router.post("/vaults")
+async def post_vault(request: Request) -> dict[str, object]:
+    """Register an EXISTING vault directory through the ``lit vault add`` backend.
+
+    Body JSON ``{"name": str, "path": str}``. Mirrors :func:`put_active_vault`
+    for body parse + ``VaultRegistryError`` → 400 mapping, but is a PURE registry
+    append: :func:`litman.core.vault_registry.add_vault` validates name shape /
+    uniqueness / that ``path`` is an existing directory containing a
+    ``lit-config.yaml``, then :func:`save_registry` persists. The route NEVER
+    touches ``app.state.vault`` and NEVER changes the active vault — "set active
+    after registering" is the frontend reusing the existing ``switchVault`` flow
+    (``PUT /api/vaults/active``), not a repoint baked in here. No second write
+    path (invariant #16).
+
+    ``set_active`` / ``imported_from`` / ``imported_at`` are deliberately not
+    accepted: provenance stays a CLI-only colleague-fork concern, and keeping the
+    route active-agnostic guarantees zero ``app.state`` side effect. A bad name /
+    duplicate / non-existent dir / non-vault dir surfaces as VaultRegistryError →
+    400 with the core's verbatim message preserved as ``detail``.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="name must be a non-empty string.")
+    path = payload.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise HTTPException(status_code=400, detail="path must be a non-empty string.")
+
+    reg = load_registry()
+    try:
+        reg = add_vault(reg, name, path)
+    except VaultRegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_registry(reg)
+
+    entry = find_by_name(reg, name)
+    assert entry is not None  # just added
+    return {"ok": True, "name": entry.name, "path": entry.path, "active": entry.is_active}
+
+
+@router.delete("/vaults/{name}")
+async def delete_vault(request: Request, name: str) -> dict[str, object]:
+    """Unregister a vault through the ``lit vault remove`` backend.
+
+    Loads the registry, GUARDS against unregistering the vault the server is
+    currently serving, then :func:`litman.core.vault_registry.remove_vault`
+    drops the entry and :func:`save_registry` persists. The vault directory on
+    disk is NEVER deleted (``remove_vault`` only de-registers, matching CLI
+    ``lit vault remove`` semantics). No second write path (invariant #16).
+
+    GUARD (GUI is stricter than the CLI, by design — a GUI-only user who
+    unregisters the served vault and closes the browser is locked out, since
+    ``lit gui`` cannot boot without an active vault; the CLI lets the user
+    ``lit vault use`` their way back, the GUI cannot): if ``name`` resolves to
+    ``request.app.state.vault`` → 409 BEFORE any registry mutation, registry
+    unchanged. An unknown name → ``remove_vault`` raises VaultRegistryError →
+    400.
+    """
+    reg = load_registry()
+    entry = find_by_name(reg, name)
+    if entry is not None:
+        served = Path(request.app.state.vault).expanduser().resolve()
+        if Path(entry.path).expanduser().resolve() == served:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot unregister the vault the GUI is currently serving — "
+                    "switch to another vault first."
+                ),
+            )
+
+    try:
+        reg = remove_vault(reg, name)
+    except VaultRegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_registry(reg)
+    return {"ok": True}

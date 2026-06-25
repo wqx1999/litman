@@ -287,6 +287,25 @@ export function putActiveVault(
   return mutateJSON('/api/vaults/active', 'PUT', { name })
 }
 
+/** Register an EXISTING vault directory through the `lit vault add` backend. Pure
+ * registry append: never changes the active vault (use `putActiveVault` for
+ * that). Throws the backend's verbatim VaultRegistryError (400) on a bad name,
+ * a duplicate, or a path that is not an existing litman vault directory. */
+export function registerVault(
+  name: string,
+  path: string,
+): Promise<{ ok: boolean; name: string; path: string; active: boolean }> {
+  return mutateJSON('/api/vaults', 'POST', { name, path })
+}
+
+/** Unregister a vault through the `lit vault remove` backend: drop the registry
+ * entry only — the vault directory on disk is NEVER deleted. Throws 409 when the
+ * name is the vault the GUI is currently serving (switch away first), or 400 on
+ * an unknown name. */
+export function unregisterVault(name: string): Promise<{ ok: boolean }> {
+  return mutateJSON(`/api/vaults/${encodeURIComponent(name)}`, 'DELETE')
+}
+
 /** Link a paper to a registered project through the `lit link` backend
  * (invariant #16 second-class write). Throws the backend's raw LinkError
  * message (400) when the project is unregistered or its dir is missing. */

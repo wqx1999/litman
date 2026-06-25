@@ -11,8 +11,10 @@ import {
   putActiveVault,
   putDiscussion,
   putNotes,
+  registerVault,
   removePaper,
   restorePaper,
+  unregisterVault,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import type { MdDraft } from './md/MdView'
@@ -222,6 +224,10 @@ export default function App() {
   // the shortcut dispatcher's modal guard suppresses global write-shortcuts
   // behind them — mirrors projectsOpen.
   const [observabilityOpen, setObservabilityOpen] = useState(false)
+  // True while the vault-manager panel (or its nested register form / unregister
+  // confirm) is open, so the shortcut dispatcher's modal guard suppresses global
+  // write-shortcuts behind it — mirrors projectsOpen / observabilityOpen.
+  const [vaultManagerOpen, setVaultManagerOpen] = useState(false)
   // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
   // so registering it doesn't re-render; a state copy drives the hook's deps.
   const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
@@ -763,6 +769,36 @@ export default function App() {
     }
   }, [pendingVault, flushAllDirty, reloadForVault, notify])
 
+  // --- Vault register / unregister (vault-manager slice) -------------------
+  // Both are PURE registry writes (the routes never touch app.state.vault). App
+  // owns them next to switchVault so library ops also enter the activity log via
+  // notify. onRegisterVault rethrows so the manager's form can show the backend's
+  // verbatim 400 inline; on success it refreshes the vault list and, when the
+  // user asked to set-active, reuses the EXISTING switchVault flow (which opens
+  // the SwitchVaultDialog confirm + flush + reload) — no new repoint logic.
+  const onRegisterVault = useCallback(
+    async (name: string, path: string, setActive: boolean) => {
+      await registerVault(name, path)
+      notify(`Registered vault “${name}”.`, 'success')
+      await fetchVaults().then(setVaults)
+      if (setActive) switchVault(name)
+    },
+    [notify, switchVault],
+  )
+
+  const onUnregisterVault = useCallback(
+    async (name: string) => {
+      try {
+        await unregisterVault(name)
+        notify(`Unregistered vault “${name}”.`, 'success')
+        await fetchVaults().then(setVaults)
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), 'error')
+      }
+    },
+    [notify],
+  )
+
   // --- Trash (recovery) view (Phase 4.9) -----------------------------------
   const openTrash = useCallback(() => {
     setTrashMode(true)
@@ -884,7 +920,8 @@ export default function App() {
   }, [cockpitHandle, notify])
 
   // A blocking surface is up when a SaveDialog / SwitchVaultDialog is pending, a
-  // cockpit confirm/panel is open, or the TopBar Projects manager is open. The
+  // cockpit confirm/panel is open, or a TopBar manager (Projects / observability
+  // / vault) is open. The
   // cheat sheet is deliberately EXCLUDED — it is a non-blocking overlay the
   // dispatcher owns (so `?`/Esc keep toggling it). While anyModalOpen, the
   // dispatcher suppresses every global shortcut and lets the modal own its keys.
@@ -895,6 +932,7 @@ export default function App() {
     cockpitModalOpen ||
     projectsOpen ||
     observabilityOpen ||
+    vaultManagerOpen ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -935,11 +973,14 @@ export default function App() {
         onToggleFocus={toggleFocus}
         onProjectsChanged={refreshProjects}
         onSwitchVault={switchVault}
+        onRegisterVault={onRegisterVault}
+        onUnregisterVault={onUnregisterVault}
         switching={switchingVault}
         notify={notify}
         dark={dark}
         onToggleDark={toggleDark}
         onProjectsOpenChange={setProjectsOpen}
+        onVaultManagerOpenChange={setVaultManagerOpen}
         onShowShortcuts={toggleCheatSheet}
         activityLog={activityLog}
         logUnread={logUnread}

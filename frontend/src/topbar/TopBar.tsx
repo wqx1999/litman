@@ -34,6 +34,13 @@ interface Props {
   onProjectsChanged: () => void
   /** Switch the active vault (3c-2) — App handles the confirm + re-fetch. */
   onSwitchVault: (name: string) => void
+  /** Register an EXISTING vault dir (vault-manager slice). Rejects with the
+   * backend's verbatim VaultRegistryError so the form can show it inline. On
+   * success App refreshes the list and, when `setActive`, reuses switchVault. */
+  onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  /** Unregister a vault (registry entry only — the directory on disk is kept).
+   * App handles the toast + list refresh; errors are toasted, not thrown. */
+  onUnregisterVault: (name: string) => Promise<void>
   /** A vault switch is in flight — disables the selector to block re-entry. */
   switching: boolean
   /** Toast a message (surfaces the backend's raw error verbatim). */
@@ -46,6 +53,10 @@ interface Props {
   /** Report the global Projects manager's open state up so the shortcut
    * dispatcher's modal guard suppresses global keys while it is up (Phase 4). */
   onProjectsOpenChange: (open: boolean) => void
+  /** Same mirror for the vault-manager panel (+ its nested register form /
+   * unregister confirm) — without it the global ⌥-write shortcuts fire behind
+   * the open panel (the modal-guard red line). */
+  onVaultManagerOpenChange: (open: boolean) => void
   /** Open the keyboard-shortcut cheat sheet (Phase 4). A visible affordance for
    * the otherwise hidden `?` convention — without it the shortcuts are
    * undiscoverable (you can't learn `?` opens them if nothing points at it). */
@@ -88,11 +99,14 @@ export default function TopBar({
   onToggleFocus,
   onProjectsChanged,
   onSwitchVault,
+  onRegisterVault,
+  onUnregisterVault,
   switching,
   notify,
   dark,
   onToggleDark,
   onProjectsOpenChange,
+  onVaultManagerOpenChange,
   onShowShortcuts,
   activityLog,
   logUnread,
@@ -101,6 +115,7 @@ export default function TopBar({
   trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
+  const [showVaults, setShowVaults] = useState(false)
   // Only one of the two observability panels is open at a time; opening either
   // closes the other. Opening the log also clears the unread dot.
   const [panel, setPanel] = useState<null | 'log' | 'health'>(null)
@@ -148,6 +163,12 @@ export default function TopBar({
   useEffect(() => {
     onProjectsOpenChange(showProjects)
   }, [showProjects, onProjectsOpenChange])
+
+  // Same mirror for the vault manager — its nested register form / unregister
+  // confirm live inside the panel, so panel-open covers them all.
+  useEffect(() => {
+    onVaultManagerOpenChange(showVaults)
+  }, [showVaults, onVaultManagerOpenChange])
 
   // Same mirror for the observability panels: while either is open, App's
   // anyModalOpen must be true so global write-shortcuts (⌥R/⌥P) don't fire
@@ -271,6 +292,27 @@ export default function TopBar({
           <option value="">no vault</option>
         )}
       </select>
+
+      {/* Always enabled — NOT gated by the <select>'s <2-vault disable, so a
+          single-vault user can still open the manager to register a second. */}
+      <button
+        type="button"
+        onClick={() => setShowVaults(true)}
+        title="Register or unregister vaults"
+        aria-label="Manage vaults"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-stone-300 bg-white text-stone-500 shadow-sm transition duration-200 ease-fluid hover:bg-stone-50 hover:text-stone-700"
+      >
+        <IconVault />
+      </button>
+
+      {showVaults && (
+        <VaultManager
+          vaults={vaults}
+          onRegisterVault={onRegisterVault}
+          onUnregisterVault={onUnregisterVault}
+          onClose={() => setShowVaults(false)}
+        />
+      )}
 
       <button
         type="button"
@@ -732,6 +774,362 @@ function NewProjectDialog({
   )
 }
 
+/** The vault manager (vault-manager slice): lists every registered vault with an
+ * active marker + path, unregisters a non-served one through a default-No confirm
+ * into the `lit vault remove` backend (registry entry only — the directory on
+ * disk is kept), and registers an EXISTING vault dir via RegisterVaultDialog.
+ * Mirrors ProjectManager's portaled, auto-theming modal shell (no `dark:`
+ * variants — the inverted `stone` ramp + `.dark .bg-white` handle dark mode).
+ *
+ * The served vault's row (`v.active`) has Unregister disabled with a "switch
+ * first" tooltip — a front-of-house mirror of the server's 409 guard (a GUI-only
+ * user who unregistered the served vault and closed the browser would be locked
+ * out, since `lit gui` needs an active vault to boot). */
+function VaultManager({
+  vaults,
+  onRegisterVault,
+  onUnregisterVault,
+  onClose,
+}: {
+  vaults: VaultsPayload | null
+  onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  onUnregisterVault: (name: string) => Promise<void>
+  onClose: () => void
+}) {
+  const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
+  const [showRegister, setShowRegister] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  async function doUnregister(name: string) {
+    setBusy(true)
+    try {
+      await onUnregisterVault(name)
+    } finally {
+      setBusy(false)
+      setPendingUnregister(null)
+    }
+  }
+
+  const entries = vaults?.vaults ?? []
+  const sorted = entries.slice().sort((a, b) => a.name.localeCompare(b.name))
+  const blocked = busy || pendingUnregister != null || showRegister
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={blocked ? undefined : onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && !pendingUnregister && !showRegister) onClose()
+        }}
+        className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Register an existing vault, or unregister one. Unregistering removes the
+          registry entry only — the vault folder on disk is kept. Switch vaults
+          from the selector in the toolbar.
+        </p>
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
+          {sorted.length === 0 && (
+            <div className="px-3 py-4 text-center text-xs text-stone-400">
+              No vaults registered.
+            </div>
+          )}
+          {sorted.map((v) => (
+            <div
+              key={v.name}
+              className="flex items-center justify-between gap-2 border-b border-stone-100 px-3 py-2 last:border-b-0"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-stone-800">
+                    {v.name}
+                  </span>
+                  {v.active && (
+                    <span className="shrink-0 rounded-full bg-accent-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-700">
+                      active
+                    </span>
+                  )}
+                </div>
+                <div className="truncate font-mono text-[11px] text-stone-400">
+                  {v.path}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={`Unregister vault ${v.name}`}
+                  title={
+                    v.active
+                      ? 'Switch to another vault first'
+                      : `Unregister vault “${v.name}”`
+                  }
+                  disabled={blocked || v.active}
+                  onClick={() => setPendingUnregister(v.name)}
+                  className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-300"
+                >
+                  <IconTrash />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-between">
+          <button
+            type="button"
+            disabled={blocked}
+            onClick={() => setShowRegister(true)}
+            className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+          >
+            + Register existing vault…
+          </button>
+          <button
+            type="button"
+            disabled={blocked}
+            onClick={onClose}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+      {pendingUnregister != null && (
+        <UnregisterVaultConfirm
+          name={pendingUnregister}
+          busy={busy}
+          onCancel={() => setPendingUnregister(null)}
+          onConfirm={() => doUnregister(pendingUnregister)}
+        />
+      )}
+      {showRegister && (
+        <RegisterVaultDialog
+          onRegisterVault={onRegisterVault}
+          onClose={() => setShowRegister(false)}
+          onRegistered={(setActive) => {
+            setShowRegister(false)
+            // When the user asked to set-active, App is already opening the
+            // SwitchVaultDialog (via switchVault) — close this panel so that
+            // confirm isn't stacked behind it.
+            if (setActive) onClose()
+          }}
+        />
+      )}
+    </div>,
+    document.body,
+  )
+}
+
+/** Default-No confirm for unregistering a vault (vault-manager slice). The body
+ * states that ONLY the registry entry is removed and the on-disk directory is
+ * kept; Cancel is autofocused, the destructive button is rose, and the backdrop
+ * stops click-through so dismissing it keeps the manager open. Mirrors
+ * DeleteProjectConfirm. */
+function UnregisterVaultConfirm({
+  name,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  name: string
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">
+          Unregister vault “{name}”?
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          This removes “{name}” from the vault registry only.{' '}
+          <span className="font-semibold">
+            The vault directory on disk is NOT deleted
+          </span>{' '}
+          — only the registry entry is removed. You can register it again later.
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            {busy ? 'Unregistering…' : 'Unregister'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Register-an-existing-vault modal (vault-manager slice). name + server-side
+ * path + a "switch to it after registering" checkbox. Mirrors NewProjectDialog's
+ * shell, but surfaces the backend's verbatim VaultRegistryError INLINE (not just
+ * a toast) so the user can fix the path without losing the form — the path must
+ * resolve server-side to an existing directory containing a lit-config.yaml. On
+ * success `onRegistered(setActive)` closes the form; when setActive the parent
+ * also closes so App's reused SwitchVaultDialog stands alone. Escape cancels;
+ * the backdrop stops click-through so dismissing it keeps the manager open. */
+function RegisterVaultDialog({
+  onRegisterVault,
+  onClose,
+  onRegistered,
+}: {
+  onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  onClose: () => void
+  onRegistered: (setActive: boolean) => void
+}) {
+  const [name, setName] = useState('')
+  const [path, setPath] = useState('')
+  const [setActive, setSetActive] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const canSubmit = name.trim().length > 0 && path.trim().length > 0 && !busy
+
+  async function submit() {
+    if (!canSubmit) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onRegisterVault(name.trim(), path.trim(), setActive)
+      onRegistered(setActive)
+    } catch (err) {
+      // Verbatim backend message inline; keep the dialog open for correction.
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onClose()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">
+          Register existing vault
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Adds an existing litman vault to the registry (nothing is created). The
+          path must already contain a lit-config.yaml.
+        </p>
+        <div className="mt-4 flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Name
+            </span>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              disabled={busy}
+              placeholder="main"
+              onChange={(e) => setName(e.target.value)}
+              className={INPUT}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Vault path
+            </span>
+            <input
+              type="text"
+              value={path}
+              disabled={busy}
+              placeholder="/work/you/literature_vault"
+              onChange={(e) => setPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit()
+              }}
+              className={`${INPUT} font-mono`}
+            />
+            <span className="text-[11px] text-stone-400">
+              the vault folder itself, must exist + contain lit-config.yaml
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-xs text-stone-600">
+            <input
+              type="checkbox"
+              checked={setActive}
+              disabled={busy}
+              onChange={(e) => setSetActive(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-400"
+            />
+            Switch to it after registering
+          </label>
+        </div>
+        {error && (
+          <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-[11px] leading-relaxed text-rose-600">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Registering…' : 'Register'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Per-severity accent for a health finding — readable in both themes (these
  * hues sit outside the inverted `stone` ramp, so no `dark:` variant is needed).
  * `dot` tints the leading marker, `text` the severity label. */
@@ -992,6 +1390,17 @@ function IconFolder() {
   return (
     <svg {...SVG_PROPS}>
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  )
+}
+
+/** Stacked cylinders (database) — the vault manager. */
+function IconVault() {
+  return (
+    <svg {...SVG_PROPS}>
+      <ellipse cx="12" cy="5" rx="7" ry="3" />
+      <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
+      <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
     </svg>
   )
 }
