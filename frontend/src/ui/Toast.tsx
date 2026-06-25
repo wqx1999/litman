@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 
-export type ToastVariant = 'info' | 'success' | 'error'
+export type ToastVariant = 'info' | 'success' | 'error' | 'warning'
 
 interface Props {
   /** The message to show; the host clears it via onDismiss. */
@@ -13,6 +13,10 @@ interface Props {
   /** Auto-dismiss after this many ms. Defaults to 6s for errors (more to read)
    * and 3.5s otherwise. */
   duration?: number
+  /** When true the toast does NOT auto-dismiss — it stays until the user clicks
+   * it (or the next notify replaces it). For warnings that must not vanish
+   * unread (e.g. a restore that left a code-clone link dangling). */
+  sticky?: boolean
 }
 
 /** Leading dot colour per variant — a restrained accent, never a filled block. */
@@ -20,6 +24,7 @@ const DOT: Record<ToastVariant, string> = {
   info: 'bg-stone-400',
   success: 'bg-emerald-400',
   error: 'bg-rose-400',
+  warning: 'bg-amber-400',
 }
 
 /** A single transient notification, bottom-center, auto-dismissing.
@@ -35,12 +40,19 @@ const DOT: Record<ToastVariant, string> = {
  * portal + high z keep it floating above any open modal so failures stay
  * readable while the dialog is up.
  */
-export default function Toast({ message, onDismiss, variant = 'info', duration }: Props) {
+export default function Toast({
+  message,
+  onDismiss,
+  variant = 'info',
+  duration,
+  sticky,
+}: Props) {
   const ms = duration ?? (variant === 'error' ? 6000 : 3500)
   useEffect(() => {
+    if (sticky) return
     const t = setTimeout(onDismiss, ms)
     return () => clearTimeout(t)
-  }, [message, ms, onDismiss])
+  }, [message, ms, onDismiss, sticky])
 
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-[100] flex justify-center">

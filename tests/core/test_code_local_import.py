@@ -22,7 +22,7 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
-from litman.core.code import make_repo_meta, write_repo_meta
+from litman.core.code import make_repo_meta, missing_code_clones, write_repo_meta
 from litman.core.library import create_vault
 from litman.exceptions import CodeError
 
@@ -494,3 +494,46 @@ def test_cli_code_add_help_mentions_url_and_local_path() -> None:
     assert "URL" in result.output or "url" in result.output
     assert "local" in result.output.lower()
     assert "--move" in result.output
+
+
+# ---------------------------------------------------------------------------
+# missing_code_clones — shared dangling-link predicate (CLI show / cockpit /
+# health-check all key off it; lock it so the three never drift)
+# ---------------------------------------------------------------------------
+
+
+def _make_clone(vault: Path, name: str, *, with_meta: bool = True) -> None:
+    """Materialize codes/<name>/ (with or without repo-meta.yaml)."""
+    (vault / "codes" / name).mkdir(parents=True, exist_ok=True)
+    if with_meta:
+        (vault / "codes" / name / "repo-meta.yaml").write_text("papers: []\n")
+
+
+def test_missing_code_clones_flags_only_absent(vault: Path) -> None:
+    _make_clone(vault, "present-repo")
+    missing = missing_code_clones(vault, ["present-repo", "gone-repo"])
+    assert missing == ["gone-repo"]
+
+
+def test_missing_code_clones_dir_without_meta_is_missing(vault: Path) -> None:
+    # A directory with no repo-meta.yaml is "missing" — same criterion as
+    # check_code_clone_integrity (the clone is unrecoverable / unreferenceable).
+    _make_clone(vault, "no-meta", with_meta=False)
+    assert missing_code_clones(vault, ["no-meta"]) == ["no-meta"]
+
+
+def test_missing_code_clones_is_order_preserving(vault: Path) -> None:
+    _make_clone(vault, "b-present")
+    assert missing_code_clones(vault, ["a-gone", "b-present", "c-gone"]) == [
+        "a-gone",
+        "c-gone",
+    ]
+
+
+def test_missing_code_clones_skips_empty_and_non_string(vault: Path) -> None:
+    assert missing_code_clones(vault, ["", "ok-gone", None]) == ["ok-gone"]  # type: ignore[list-item]
+
+
+def test_missing_code_clones_no_codes_dir(vault: Path) -> None:
+    # No codes/ at all — every referenced name is missing.
+    assert missing_code_clones(vault, ["x", "y"]) == ["x", "y"]

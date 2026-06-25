@@ -104,6 +104,49 @@ function Chips({ values }: { values: string[] | undefined }) {
   )
 }
 
+/** Code-clone chips with a dangling-link marker. A name in `missing` (server-
+ * resolved: codes/<name>/ is gone, the same criterion lit health-check uses for
+ * invariant #12) renders amber + ⚠ "missing", so a link to a deleted codebase
+ * never reads as live (e.g. after a restore that did not re-clone). The link is
+ * kept by design — re-clone via `lit code add` or drop it via `lit code unlink`. */
+function CodeCloneChips({
+  values,
+  missing,
+}: {
+  values: string[] | undefined
+  missing: string[] | undefined
+}) {
+  if (!values || values.length === 0)
+    return <span className="text-stone-400">—</span>
+  const gone = new Set(missing ?? [])
+  return (
+    <div className="flex flex-wrap gap-1">
+      {values.map((v) =>
+        gone.has(v) ? (
+          <span
+            key={v}
+            title={`codes/${v}/ is missing — the clone was deleted. Re-clone it (lit code add) or drop the link (lit code unlink); lit health-check reports it.`}
+            className="inline-flex items-center gap-1 rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/50 dark:text-amber-200 dark:ring-amber-800"
+          >
+            <span aria-hidden>⚠</span>
+            {v}
+            <span className="text-[10px] font-medium uppercase tracking-wide opacity-80">
+              missing
+            </span>
+          </span>
+        ) : (
+          <span
+            key={v}
+            className="rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
+          >
+            {v}
+          </span>
+        ),
+      )}
+    </div>
+  )
+}
+
 // Long author lists bloat the metadata panel, so cap the rendered names at six:
 // the first three and the last three, joined by an ellipsis. The full list is
 // kept on a `title` tooltip (see the Authors field) so nothing is truly hidden.
@@ -939,7 +982,10 @@ function ReadOnlyCockpit({
               <Relations paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
             <Field label="Code-clones">
-              <Chips values={paper['code-clones']} />
+              <CodeCloneChips
+                values={paper['code-clones']}
+                missing={paper['code-clones-missing']}
+              />
             </Field>
           </div>
         )}
@@ -1509,7 +1555,10 @@ function WriteCockpit({
               <Relations paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
             <Field label="Code-clones">
-              <Chips values={paper['code-clones']} />
+              <CodeCloneChips
+                values={paper['code-clones']}
+                missing={paper['code-clones-missing']}
+              />
             </Field>
           </div>
         )}

@@ -50,6 +50,26 @@ DEFAULT_CLONE_DEPTH = 1  # `git clone --depth 1`; `--depth 0` means "no shallow"
 # `cd -<name>` and shell-flag parsing.
 _VALID_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
+
+def missing_code_clones(vault: Path, names: list[str]) -> list[str]:
+    """Return the ``code-clones`` names whose clone is gone from disk.
+
+    A name is "missing" when ``codes/<name>/repo-meta.yaml`` does not exist —
+    the same "dangling ref" criterion
+    :func:`litman.core.checks.check_code_clone_integrity` enforces for
+    invariant #12. Shared so the CLI (``lit show``), the webUI cockpit, and
+    ``lit health-check`` all agree on what a dangling code-clone link is.
+    Order-preserving; empty / non-string names are skipped (never valid repos).
+    """
+    codes_dir = vault / CODES_DIRNAME
+    return [
+        name
+        for name in names
+        if isinstance(name, str)
+        and name
+        and not (codes_dir / name / REPO_META_FILENAME).is_file()
+    ]
+
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.default_flow_style = False

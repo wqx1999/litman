@@ -44,6 +44,10 @@ interface Props {
    * the otherwise hidden `?` convention — without it the shortcuts are
    * undiscoverable (you can't learn `?` opens them if nothing points at it). */
   onShowShortcuts: () => void
+  /** In trash mode, hide the library-scoped controls (vault switch, Projects,
+   * search) — they act on the live library, not the trash being browsed. The
+   * vault identity moves into the trash banner (see TrashView). */
+  trashMode?: boolean
 }
 
 /** Global chrome: brand, current-vault indicator, the global Projects manager,
@@ -72,6 +76,7 @@ export default function TopBar({
   onToggleDark,
   onProjectsOpenChange,
   onShowShortcuts,
+  trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
 
@@ -169,6 +174,8 @@ export default function TopBar({
         className="h-6 w-auto shrink-0 select-none"
       />
 
+      {!trashMode && (
+      <>
       <select
         value={vaults?.active ?? ''}
         onChange={(e) => onSwitchVault(e.target.value)}
@@ -220,6 +227,12 @@ export default function TopBar({
         loading={searchLoading}
         onSelect={onSelectResult}
       />
+      </>
+      )}
+      {/* In trash mode the middle controls are gone; this spacer keeps the
+          focus/dark/help cluster pinned to the right edge (the SearchBox's
+          flex-grow normally does that). */}
+      {trashMode && <div className="flex-1" />}
 
       <button
         type="button"

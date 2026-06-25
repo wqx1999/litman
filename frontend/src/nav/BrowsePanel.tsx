@@ -481,6 +481,9 @@ export default function BrowsePanel({
           )}
           {visible.map((p) => {
             const selected = p.id === selectedId
+            // Dropped papers are shown (in `all`) but muted + tagged, so they
+            // read as low-priority records rather than active entries.
+            const isDropped = p.status === 'dropped'
             return (
               <div
                 key={p.id}
@@ -493,7 +496,9 @@ export default function BrowsePanel({
                 <button
                   onClick={() => onSelect(p.id)}
                   title={p.title ?? p.id}
-                  className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
+                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left ${
+                    isDropped ? 'opacity-55' : ''
+                  }`}
                 >
                   <span
                     className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(
@@ -508,6 +513,14 @@ export default function BrowsePanel({
                   >
                     {p.id}
                   </span>
+                  {isDropped && (
+                    <span
+                      className="shrink-0 rounded bg-stone-200 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-stone-500 dark:bg-stone-700 dark:text-stone-300"
+                      title="Dropped — evaluated and set aside (kept as a record)"
+                    >
+                      dropped
+                    </span>
+                  )}
                   {p.year != null && (
                     <span
                       className={`ml-auto shrink-0 text-xs ${
@@ -580,16 +593,18 @@ export default function BrowsePanel({
         </div>
 
         {/* Trash entry — divided footer (macOS Mail/Notes convention). Enters the
-            read-only trash-recovery view; N is this vault's trash count. */}
+            read-only trash-recovery view; the count shows N / 100 because the
+            trash is capped at TRASH_MAX_ENTRIES = 100 (core/trash.py, ADR-011) —
+            past it the oldest entries are permanently evicted. */}
         <div className="shrink-0 border-t border-stone-200">
           <button
             onClick={onOpenTrash}
-            title="Open the trash (recover deleted papers)"
+            title="Open the trash (recover deleted papers) · capped at 100"
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-stone-600 transition-colors hover:bg-stone-200"
           >
             <span>🗑</span>
             <span>Trash</span>
-            <span className="ml-auto text-xs text-stone-400">{trashCount}</span>
+            <span className="ml-auto text-xs text-stone-400">{trashCount} / 100</span>
           </button>
         </div>
       </div>

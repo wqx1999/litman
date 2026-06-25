@@ -125,11 +125,14 @@ export default function App() {
 
   // A single transient toast (dangling wikilink, failed save, project linked).
   // Last write wins; `variant` tints the dot (default neutral 'info').
-  const [toast, setToast] = useState<{ message: string; variant: ToastVariant } | null>(
-    null,
-  )
+  const [toast, setToast] = useState<{
+    message: string
+    variant: ToastVariant
+    sticky?: boolean
+  } | null>(null)
   const notify = useCallback(
-    (msg: string, variant: ToastVariant = 'info') => setToast({ message: msg, variant }),
+    (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) =>
+      setToast({ message: msg, variant, sticky: opts?.sticky }),
     [],
   )
 
@@ -297,14 +300,14 @@ export default function App() {
   // Multi-dimensional filter: cross-dimension AND, within-dimension OR.
   const visible = useMemo(() => {
     let out = scoped
-    // STATUS (single, OR) with dropped default-hide preserved: when nothing is
-    // ticked, `all` still suppresses dropped; reading/recent-read server views
-    // already exclude it.
+    // STATUS (single, OR). `all` now shows dropped too — "all" means all, so a
+    // dropped paper is never a ghost (invisible but still rotting in the vault).
+    // It is rendered muted + tagged in the list instead (see BrowsePanel). The
+    // reading/recent-read server smart-lists still exclude dropped, so the
+    // active reading pipeline stays clean.
     const st = filters.status
     if (st.size > 0) {
       out = out.filter((p) => p.status != null && st.has(p.status))
-    } else if (listMode === 'all') {
-      out = out.filter((p) => p.status !== 'dropped')
     }
     // PRIORITY, TYPE (single, OR).
     for (const field of SINGLE_FILTER_FIELDS) {
@@ -770,9 +773,16 @@ export default function App() {
         let msg = `Restored “${res.paperId}”`
         if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
         const missing = Object.keys(res.missingRepos).length
-        if (missing)
-          msg += ` · ${missing} repo(s) need re-clone in CLI: lit trash restore -y / lit health-check`
-        notify(msg, 'success')
+        if (missing) {
+          // The 1:1 code repo(s) were hard-deleted on rm and the GUI deliberately
+          // does NOT re-clone (decision b) — warn prominently and don't auto-
+          // dismiss, since the code-clones link now dangles until the CLI
+          // re-clones it.
+          msg += ` · ⚠ ${missing} code repo(s) were deleted and NOT re-cloned — finish in the CLI: lit trash restore -y (or lit health-check)`
+          notify(msg, 'warning', { sticky: true })
+        } else {
+          notify(msg, 'success')
+        }
         // The restored paper is back in papers/ and out of trash: refresh both.
         loadTrash()
         loadList(listMode)
@@ -912,12 +922,14 @@ export default function App() {
         onToggleDark={toggleDark}
         onProjectsOpenChange={setProjectsOpen}
         onShowShortcuts={toggleCheatSheet}
+        trashMode={trashMode}
       />
       <div className="flex min-h-0 flex-1">
         {trashMode ? (
           <TrashView
             entries={trashEntries}
             loading={trashLoading}
+            vaultName={vaults?.active ?? ''}
             onExit={exitTrash}
             onRestore={restoreFromTrash}
             restoringEntry={restoringEntry}
@@ -1014,6 +1026,7 @@ export default function App() {
         <Toast
           message={toast.message}
           variant={toast.variant}
+          sticky={toast.sticky}
           onDismiss={() => setToast(null)}
         />
       )}

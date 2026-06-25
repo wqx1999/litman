@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none
 from litman.core.cite import format_acs
+from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
@@ -203,13 +204,20 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
     """Full metadata for one paper (same loader ``lit show`` uses)."""
     vault = _vault(request)
     try:
-        return find_paper(vault, paper_id)
+        meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CorruptMetadataError as exc:
         # The paper exists; its metadata is broken. That is a server-side
         # data problem (500), not a missing resource (404).
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # Derived display hint (not persisted): which code-clones links are dangling
+    # — codes/<name>/ gone — so the cockpit marks them instead of showing a
+    # deleted codebase as live. Same criterion as lit health-check (invariant #12).
+    meta["code-clones-missing"] = missing_code_clones(
+        vault, meta.get("code-clones") or []
+    )
+    return meta
 
 
 @router.get("/paper/{paper_id}/cite")

@@ -23,6 +23,9 @@ function tabLabel(paperId: string, kind: TrashTab['kind']): string {
 interface Props {
   entries: TrashEntry[]
   loading: boolean
+  /** Active vault's name — shown in the banner so the per-vault scope of the
+   * trash stays visible (the vault switcher is hidden in trash mode). */
+  vaultName: string
   /** Leave trash mode (back to the library). */
   onExit: () => void
   /** Restore one entry — App runs the POST + refreshes; resolves so the row can
@@ -42,6 +45,7 @@ interface Props {
 export default function TrashView({
   entries,
   loading,
+  vaultName,
   onExit,
   onRestore,
   restoringEntry,
@@ -146,7 +150,10 @@ export default function TrashView({
   const selectedEntry = entries.find((e) => e.entryName === selected) ?? null
 
   return (
-    <div className="flex h-full flex-col">
+    // `min-w-0 flex-1` so this fills the App's flex row (the normal 3-pane each
+    // sizes itself; this single wrapper would otherwise shrink to content width
+    // and leave the rest of the row blank).
+    <div className="flex h-full min-w-0 flex-1 flex-col">
       {/* Persistent warm banner — the deliberate amber exception to the cool-gray
           palette, pinned for dark mode so it stays readable. */}
       <div className="flex shrink-0 items-center gap-3 border-b border-amber-200 bg-amber-100 px-4 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
@@ -157,8 +164,11 @@ export default function TrashView({
           ← Back to library
         </button>
         <span className="font-medium">
-          🗑 Trash · {entries.length} item{entries.length === 1 ? '' : 's'} · this
-          vault only · restores back here
+          {/* Cap is TRASH_MAX_ENTRIES = 100 (core/trash.py, ADR-011): hardcoded
+              by design, no flag — safe to mirror as a literal. Past 100 the
+              oldest entries are permanently evicted (ring eviction). */}
+          🗑 Trash{vaultName ? ` · ${vaultName}` : ''} · {entries.length} / 100 ·
+          restores back here (oldest auto-removed past 100)
         </span>
       </div>
 

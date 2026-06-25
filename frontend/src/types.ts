@@ -32,6 +32,10 @@ export interface PaperMeta extends IndexPaper {
   contradicts?: string[]
   'contradicted-by'?: string[]
   'code-clones'?: string[]
+  /** Derived by the server (get_paper): the subset of `code-clones` whose
+   * codes/<name>/ is gone on disk, so the cockpit can mark them as missing.
+   * Absent on the trash-inspector path (that endpoint does not annotate it). */
+  'code-clones-missing'?: string[]
 }
 
 /** The smart-list views the server computes (sorted by recency / read-date). */
