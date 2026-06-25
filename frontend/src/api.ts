@@ -3,6 +3,7 @@
 
 import type {
   FixedEnums,
+  HealthIssue,
   IndexPaper,
   PaperMeta,
   ProjectEntry,
@@ -265,6 +266,14 @@ export function fetchProjects(): Promise<ProjectEntry[]> {
 
 export function fetchVaults(): Promise<VaultsPayload> {
   return getJSON<VaultsPayload>('/api/vaults')
+}
+
+/** Run every health-check probe and return the flat findings list — the pure-read
+ * mirror of `lit health-check` (the GET never re-locks / fixes / stamps the
+ * registry). On demand only (Tier-2: reads all metadata server-side), so the
+ * caller fetches this when the user opens the health panel, never on page load. */
+export function fetchHealth(): Promise<HealthIssue[]> {
+  return getJSON<HealthIssue[]>('/api/health')
 }
 
 /** Switch the active vault through the `lit vault use` backend (3c-2). GLOBAL:

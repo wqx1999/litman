@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { IndexPaper, ProjectEntry, VaultsPayload } from '../types'
+import type {
+  ActivityLogEntry,
+  HealthIssue,
+  IndexPaper,
+  ProjectEntry,
+  VaultsPayload,
+} from '../types'
 import type { Candidate } from '../search'
-import { createProject, deleteProject } from '../api'
+import { createProject, deleteProject, fetchHealth } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import logoUrl from '../assets/litman-logo.png'
@@ -44,6 +50,18 @@ interface Props {
    * the otherwise hidden `?` convention — without it the shortcuts are
    * undiscoverable (you can't learn `?` opens them if nothing points at it). */
   onShowShortcuts: () => void
+  /** Session activity log (newest last) that the log panel renders newest-first.
+   * App owns the buffer so every `notify` auto-records (observability slice). */
+  activityLog: ActivityLogEntry[]
+  /** A new log entry has arrived since the panel was last opened — lights a dot
+   * on the log icon. */
+  logUnread: boolean
+  /** Clear the unread dot — called when the activity-log panel opens. */
+  onLogOpened: () => void
+  /** Report whether either observability panel (log / health) is open, so App's
+   * shortcut modal-guard suppresses global keys while one is up — mirrors
+   * onProjectsOpenChange. Without it ⌥-write shortcuts fire behind the panel. */
+  onObservabilityOpenChange: (open: boolean) => void
   /** In trash mode, hide the library-scoped controls (vault switch, Projects,
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
@@ -76,14 +94,67 @@ export default function TopBar({
   onToggleDark,
   onProjectsOpenChange,
   onShowShortcuts,
+  activityLog,
+  logUnread,
+  onLogOpened,
+  onObservabilityOpenChange,
   trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
+  // Only one of the two observability panels is open at a time; opening either
+  // closes the other. Opening the log also clears the unread dot.
+  const [panel, setPanel] = useState<null | 'log' | 'health'>(null)
+  // Health result lifted above the panel so the shield's count badge survives a
+  // panel close (`null` = never run yet → no badge). On-demand only: runHealth
+  // fires when the panel opens, never on mount (run_all_checks is Tier-2).
+  const [healthIssues, setHealthIssues] = useState<HealthIssue[] | null>(null)
+  const [healthLoading, setHealthLoading] = useState(false)
+  const [healthError, setHealthError] = useState<string | null>(null)
+
+  const runHealth = () => {
+    setHealthLoading(true)
+    setHealthError(null)
+    fetchHealth()
+      .then(setHealthIssues)
+      .catch((err) =>
+        setHealthError(err instanceof Error ? err.message : String(err)),
+      )
+      .finally(() => setHealthLoading(false))
+  }
+
+  const openLog = () => {
+    setPanel('log')
+    onLogOpened()
+  }
+  const openHealth = () => {
+    setPanel('health')
+    runHealth() // re-run on every open so the report is current (on demand)
+  }
+  const closePanel = () => setPanel(null)
+
+  // Badge counts off the last run (ruling 1): error wins (rose), else warning
+  // (amber), else nothing. Empty until the first run.
+  const errorCount = healthIssues?.filter((i) => i.severity === 'error').length ?? 0
+  const warningCount =
+    healthIssues?.filter((i) => i.severity === 'warning').length ?? 0
+  const badge =
+    errorCount > 0
+      ? { count: errorCount, cls: 'bg-rose-500' }
+      : warningCount > 0
+        ? { count: warningCount, cls: 'bg-amber-500' }
+        : null
 
   // Mirror the manager's open state up so App's shortcut modal-guard sees it.
   useEffect(() => {
     onProjectsOpenChange(showProjects)
   }, [showProjects, onProjectsOpenChange])
+
+  // Same mirror for the observability panels: while either is open, App's
+  // anyModalOpen must be true so global write-shortcuts (⌥R/⌥P) don't fire
+  // behind the panel and the panel's own Esc handler owns the key.
+  useEffect(() => {
+    onObservabilityOpenChange(panel !== null)
+  }, [panel, onObservabilityOpenChange])
 
   // Focus mode turns the header into an auto-hiding overlay (macOS fullscreen
   // menu-bar idiom): it detaches to `absolute`, slides up out of view, and
@@ -233,6 +304,54 @@ export default function TopBar({
           focus/dark/help cluster pinned to the right edge (the SearchBox's
           flex-grow normally does that). */}
       {trashMode && <div className="flex-1" />}
+
+      {/* Observability cluster (log + health), left of the focus/dark/help
+          group. Both are workspace-level, so they sit here in BOTH modes. */}
+      <button
+        type="button"
+        onClick={openLog}
+        title="Activity log — recent actions this session"
+        aria-label="Activity log"
+        className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
+      >
+        <IconLog />
+        {logUnread && (
+          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-rose-400 ring-2 ring-stone-50" />
+        )}
+      </button>
+
+      <button
+        type="button"
+        onClick={openHealth}
+        title="Health check — audit library consistency"
+        aria-label="Health check"
+        className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
+      >
+        <IconShield />
+        {badge && (
+          <span
+            className={`absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-semibold leading-none text-white ring-2 ring-stone-50 ${badge.cls}`}
+          >
+            {badge.count}
+          </span>
+        )}
+      </button>
+
+      {panel === 'log' && (
+        <ActivityLogPanel entries={activityLog} onClose={closePanel} />
+      )}
+      {panel === 'health' && (
+        <HealthPanel
+          issues={healthIssues}
+          loading={healthLoading}
+          error={healthError}
+          onRerun={runHealth}
+          onClose={closePanel}
+        />
+      )}
+
+      {/* Hairline divider between the observability cluster and the view toggles. */}
+      <div className="mx-0.5 h-5 w-px shrink-0 bg-stone-200" />
 
       <button
         type="button"
@@ -613,6 +732,249 @@ function NewProjectDialog({
   )
 }
 
+/** Per-severity accent for a health finding — readable in both themes (these
+ * hues sit outside the inverted `stone` ramp, so no `dark:` variant is needed).
+ * `dot` tints the leading marker, `text` the severity label. */
+const SEVERITY_STYLE: Record<
+  HealthIssue['severity'],
+  { dot: string; text: string }
+> = {
+  error: { dot: 'bg-rose-500', text: 'text-rose-600' },
+  warning: { dot: 'bg-amber-500', text: 'text-amber-600' },
+  info: { dot: 'bg-sky-500', text: 'text-sky-600' },
+}
+
+const SEVERITY_ORDER: Record<HealthIssue['severity'], number> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** The health-check report panel (D1). Mirrors the ProjectManager shell — a
+ * portaled `fixed inset-0` backdrop + an `animate-grow-in` card — so it auto-
+ * themes to dark via the inverted `stone` ramp + the global `.dark .bg-white`
+ * rule (no manual `dark:` variants). The fetch is owned by TopBar (the count
+ * badge must outlive a panel close); this is the presentational view of that
+ * result. Groups by `category` (server/registry order preserved) then orders
+ * each group's rows error→warning→info. Esc + click-outside close. */
+function HealthPanel({
+  issues,
+  loading,
+  error,
+  onRerun,
+  onClose,
+}: {
+  issues: HealthIssue[] | null
+  loading: boolean
+  error: string | null
+  onRerun: () => void
+  onClose: () => void
+}) {
+  // Stable, category-first grouping: walk the (registry-ordered) list once so the
+  // first-seen category order is preserved, then sort each bucket by severity.
+  const groups: Array<[string, HealthIssue[]]> = []
+  if (issues) {
+    const byCat = new Map<string, HealthIssue[]>()
+    for (const issue of issues) {
+      const bucket = byCat.get(issue.category)
+      if (bucket) bucket.push(issue)
+      else {
+        const fresh = [issue]
+        byCat.set(issue.category, fresh)
+        groups.push([issue.category, fresh])
+      }
+    }
+    for (const [, bucket] of groups) {
+      bucket.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
+    }
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="flex max-h-[70vh] w-[34rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-stone-900">Health check</h2>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={onRerun}
+            className="rounded-md px-2 py-0.5 text-[11px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
+          >
+            {loading ? 'Running…' : 'Re-run'}
+          </button>
+        </div>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Audits library consistency (read-only). Fixes still run from the CLI:
+          <span className="font-mono text-stone-600"> lit health-check --fix</span>.
+        </p>
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
+          {loading && (
+            <div className="px-3 py-6 text-center text-xs text-stone-400">
+              Running checks…
+            </div>
+          )}
+          {!loading && error && (
+            <div className="px-3 py-6 text-center text-xs text-rose-600">
+              {error}
+            </div>
+          )}
+          {!loading && !error && issues && issues.length === 0 && (
+            <div className="px-3 py-6 text-center text-sm font-medium text-emerald-600">
+              ✓ No issues
+            </div>
+          )}
+          {!loading &&
+            !error &&
+            groups.map(([category, bucket]) => (
+              <div
+                key={category}
+                className="border-b border-stone-100 last:border-b-0"
+              >
+                <div className="bg-stone-50 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  {category} · {bucket.length}
+                </div>
+                {bucket.map((issue, i) => (
+                  <div
+                    key={i}
+                    className="flex gap-2 px-3 py-2 last:border-b-0"
+                  >
+                    <span
+                      className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${SEVERITY_STYLE[issue.severity].dot}`}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm text-stone-800">{issue.message}</div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+                        <span
+                          className={`font-semibold uppercase ${SEVERITY_STYLE[issue.severity].text}`}
+                        >
+                          {issue.severity}
+                        </span>
+                        {issue.paper_id && (
+                          <span className="font-mono text-stone-400">
+                            {issue.paper_id}
+                          </span>
+                        )}
+                      </div>
+                      {issue.hint && (
+                        <div className="mt-0.5 text-[11px] italic text-stone-400">
+                          {issue.hint}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/** Per-variant glyph for an activity-log row. */
+const LOG_GLYPH: Record<ToastVariant, { ch: string; cls: string }> = {
+  success: { ch: '✓', cls: 'text-emerald-500' },
+  error: { ch: '✗', cls: 'text-rose-500' },
+  warning: { ch: '⚠', cls: 'text-amber-500' },
+  info: { ch: 'ℹ', cls: 'text-sky-500' },
+}
+
+function _logTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
+/** The session activity-log panel (D2). Same portaled, auto-theming shell as
+ * HealthPanel / ProjectManager. Renders the buffer newest-first with a per-
+ * variant glyph + local HH:MM:SS time. "No activity yet" when empty. Esc +
+ * click-outside close. */
+function ActivityLogPanel({
+  entries,
+  onClose,
+}: {
+  entries: ActivityLogEntry[]
+  onClose: () => void
+}) {
+  // Newest-first without mutating the source buffer.
+  const ordered = entries.slice().reverse()
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Activity log</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Recent actions this session (newest first). Cleared on refresh.
+        </p>
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
+          {ordered.length === 0 && (
+            <div className="px-3 py-6 text-center text-xs text-stone-400">
+              No activity yet.
+            </div>
+          )}
+          {ordered.map((e, i) => {
+            const glyph = LOG_GLYPH[e.variant]
+            return (
+              <div
+                key={i}
+                className="flex items-start gap-2 border-b border-stone-100 px-3 py-2 last:border-b-0"
+              >
+                <span className={`mt-px shrink-0 text-sm ${glyph.cls}`}>
+                  {glyph.ch}
+                </span>
+                <span className="shrink-0 font-mono text-[11px] tabular-nums text-stone-400">
+                  {_logTime(e.ts)}
+                </span>
+                <span className="min-w-0 text-sm text-stone-700">{e.message}</span>
+              </div>
+            )
+          })}
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 const ICON = 'h-[18px] w-[18px]'
 const SVG_PROPS = {
   className: ICON,
@@ -685,6 +1047,27 @@ function IconSun() {
     <svg {...SVG_PROPS}>
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  )
+}
+
+/** Clock-with-rewind — the session activity history (D2). */
+function IconLog() {
+  return (
+    <svg {...SVG_PROPS}>
+      <path d="M3 3v5h5" />
+      <path d="M3.05 11A9 9 0 1 0 6 5.3L3 8" />
+      <path d="M12 8v4l3 2" />
+    </svg>
+  )
+}
+
+/** Shield-with-check — the library health check (D1). */
+function IconShield() {
+  return (
+    <svg {...SVG_PROPS}>
+      <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
+      <path d="M9 12l2 2 4-4" />
     </svg>
   )
 }

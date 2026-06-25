@@ -23,6 +23,7 @@ import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
 import type {
+  ActivityLogEntry,
   FixedEnums,
   IndexPaper,
   PaperMeta,
@@ -130,11 +131,24 @@ export default function App() {
     variant: ToastVariant
     sticky?: boolean
   } | null>(null)
+  // Session activity log: every notify (toast) also appends here so a GUI-only
+  // user has a scrollback the last-write-wins toast can't give. In-memory ring
+  // (cap 200, newest kept), cleared on refresh (AC4 — no persistence, no second
+  // write口 to disk, invariant #16). `logUnread` lights a dot on the log icon
+  // until the panel is opened.
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([])
+  const [logUnread, setLogUnread] = useState(false)
   const notify = useCallback(
-    (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) =>
-      setToast({ message: msg, variant, sticky: opts?.sticky }),
+    (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) => {
+      setToast({ message: msg, variant, sticky: opts?.sticky })
+      setActivityLog((prev) =>
+        [...prev, { ts: Date.now(), variant, message: msg }].slice(-200),
+      )
+      setLogUnread(true)
+    },
     [],
   )
+  const markLogRead = useCallback(() => setLogUnread(false), [])
 
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
@@ -204,6 +218,10 @@ export default function App() {
   // guard can suppress global shortcuts while a blocking surface is open.
   const [cockpitModalOpen, setCockpitModalOpen] = useState(false)
   const [projectsOpen, setProjectsOpen] = useState(false)
+  // True while either observability panel (activity log / health) is open, so
+  // the shortcut dispatcher's modal guard suppresses global write-shortcuts
+  // behind them — mirrors projectsOpen.
+  const [observabilityOpen, setObservabilityOpen] = useState(false)
   // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
   // so registering it doesn't re-render; a state copy drives the hook's deps.
   const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
@@ -876,6 +894,7 @@ export default function App() {
     pendingVault !== null ||
     cockpitModalOpen ||
     projectsOpen ||
+    observabilityOpen ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -922,6 +941,10 @@ export default function App() {
         onToggleDark={toggleDark}
         onProjectsOpenChange={setProjectsOpen}
         onShowShortcuts={toggleCheatSheet}
+        activityLog={activityLog}
+        logUnread={logUnread}
+        onLogOpened={markLogRead}
+        onObservabilityOpenChange={setObservabilityOpen}
         trashMode={trashMode}
       />
       <div className="flex min-h-0 flex-1">

@@ -8,6 +8,7 @@ ADR-017). The vault is read from ``request.app.state.vault`` (set by
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
-from litman.core.checks import all_fixed_enums, fixed_enum_allows_none
+from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
@@ -124,6 +125,30 @@ def get_papers(
             ),
         )
     return [project_paper(p) for p in _smart_list(vault, view)]
+
+
+@router.get("/health")
+def get_health(request: Request) -> list[dict[str, Any]]:
+    """Run every health-check probe and return the flat ``Issue[]`` list.
+
+    Mirrors ``lit health-check`` (``run_all_checks``: registry drift / schema /
+    dangling refs / code-clone integrity / index-vs-disk reconciliation, etc.),
+    so a pure-GUI user can self-audit library consistency (ADR-017). Each issue
+    serializes to the five Issue fields (``category`` / ``severity`` /
+    ``paper_id`` / ``message`` / ``hint``); the panel groups by category and
+    colors by severity.
+
+    RED LINE — this endpoint is *only* read (invariant #16): it never re-locks
+    TRUTH, never auto-fixes, and never stamps ``last_health_check_at`` on the
+    registry. Those are the write side effects of the CLI ``health_check_cmd``;
+    the GET surfaces findings only. Repair still goes through
+    ``lit health-check --fix``. Tier-2 cost (reads every ``metadata.yaml`` via
+    ``list_papers``), so the frontend runs it on demand, never on page load.
+    """
+    vault = _vault(request)
+    papers = list_papers(vault)
+    issues = run_all_checks(vault, papers)
+    return [dataclasses.asdict(i) for i in issues]
 
 
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:

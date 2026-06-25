@@ -1,6 +1,8 @@
 // TS mirror of the server payloads. Field names match the YAML metadata schema
 // and the INDEX thin projection exactly (hyphenated keys kept verbatim).
 
+import type { ToastVariant } from './ui/Toast'
+
 /** The INDEX.json / `lit list --format json` thin projection (12 fields). */
 export interface IndexPaper {
   id: string
@@ -128,6 +130,27 @@ export interface TrashEntry {
   entryName: string
   /** Number of 1:1 hard-deleted repos a restore would surface for re-clone. */
   orphanRepoCount: number
+}
+
+/** One finding from GET /api/health (a serialized core.checks.Issue). `category`
+ * groups; `severity` colors; `paper_id`/`hint` are shown when present. Matches the
+ * dataclass field names verbatim (snake_case is fine — this payload is consumed,
+ * not authored). */
+export interface HealthIssue {
+  category: string
+  severity: 'error' | 'warning' | 'info'
+  paper_id: string | null
+  message: string
+  hint: string | null
+}
+
+/** One entry in the in-memory session activity log (the PyMOL-style history that
+ * `notify` feeds). `ts` is `Date.now()` ms (rendered as local HH:MM:SS); `variant`
+ * picks the glyph. Never persisted — a page refresh clears the buffer (AC4). */
+export interface ActivityLogEntry {
+  ts: number
+  variant: ToastVariant
+  message: string
 }
 
 /** The POST /api/trash/{entry}/restore summary — what the rebuild touched.
