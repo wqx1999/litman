@@ -1472,25 +1472,32 @@ def check_project_path_exists(
 def check_project_references(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Project ``REFERENCES.md`` / ``litman_reflib/`` ↔ membership (ledger #3).
+    """Project ``REFERENCES.md`` / ``litman_reflib/`` / ``litman_code/`` ↔ membership (ledger #3).
 
     For each configured project whose directory is reachable (bounded-stat),
-    compare the derived ``<project_dir>/litman_reflib/`` against the project's
-    membership set (papers whose ``projects`` field contains the name):
+    compare the derived project-side artifacts against the project's membership
+    set (papers whose ``projects`` field contains the name):
 
     * the generated ``REFERENCES.md`` content vs the freshly rendered content;
-    * the ``litman_reflib/<id>`` symlink set vs the membership ids.
+    * the ``litman_reflib/<id>`` symlink set vs the membership ids;
+    * the ``litman_code/<repo>`` symlink set vs the repos bound (via
+      ``code-clones``) by member papers whose clone is present locally.
 
-    Either mismatch is a klass-A drift (the derived artifact is a pure function
-    of metadata). Full-tier: needs per-paper ``projects`` + ``relevance``
-    (REFERENCES.md embeds the relevance annotation). Repair is the shared regen
-    (``rebuild_all_project_refs`` + ``rebuild_all_project_links``). Only checked
-    when the project dir is definitely present — an unreachable / not-yet-
-    mounted dir is left to ``project_path_exists`` (ledger #5), not flagged as
-    content drift here.
+    Any mismatch is a klass-A drift (the derived artifact is a pure function of
+    metadata). The code-symlink arm specifically catches the
+    ``lit code add``/``link``/``unlink`` staleness window: those commands mutate
+    ``code-clones`` and refresh the symlinks via ``refresh_project_code_links``,
+    so a leftover mismatch means the refresh was bypassed (hand-edit, partial
+    write, an older binary). Full-tier: needs per-paper ``projects`` /
+    ``relevance`` / ``code-clones`` (REFERENCES.md embeds relevance). Repair is
+    the shared regen (``rebuild_all_project_refs`` + ``rebuild_all_project_links``,
+    which rebuilds BOTH symlink hubs). Only checked when the project dir is
+    definitely present — an unreachable / not-yet-mounted dir is left to
+    ``project_path_exists`` (ledger #5), not flagged as content drift here.
     """
     from litman.commands._drift import _exists_bounded
     from litman.core.config import load_config
+    from litman.core.project_link import CODE_SUBDIR
     from litman.core.project_refs import (
         LITERATURE_SUBDIR,
         REFERENCES_FILENAME,
@@ -1523,10 +1530,9 @@ def check_project_references(
             continue
 
         reflib = project_dir / LITERATURE_SUBDIR
+        member_papers = _papers_for_project(papers, name)
         member_ids = {
-            str(p.get("id"))
-            for p in _papers_for_project(papers, name)
-            if p.get("id")
+            str(p.get("id")) for p in member_papers if p.get("id")
         }
 
         # 1) REFERENCES.md content vs freshly rendered (banner timestamp is the
@@ -1612,6 +1618,50 @@ def check_project_references(
                     paper_id=missing,
                     message=(
                         f"project {name!r} membership implies a litman_reflib "
+                        f"symlink for {missing!r} but it is missing"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+
+        # 3) litman_code/<repo> symlink set vs derived code-clone membership.
+        #    Parallel to the litman_reflib block: expected = every repo bound
+        #    (code-clones) by a member paper whose codes/<repo>/repo clone is
+        #    present locally (mirrors rebuild_all_project_links, which skips
+        #    absent clones — a missing clone is owned by
+        #    check_code_clone_integrity / `lit code restore-all`).
+        expected_repos: set[str] = set()
+        for p in member_papers:
+            for repo_name in p.get("code-clones") or []:
+                if (vault / "codes" / str(repo_name) / "repo").exists():
+                    expected_repos.add(str(repo_name))
+        code_dir = project_dir / CODE_SUBDIR
+        code_link_names: set[str] = set()
+        if code_dir.is_dir():
+            for entry in code_dir.iterdir():
+                if entry.is_symlink():
+                    code_link_names.add(entry.name)
+        for extra in sorted(code_link_names - expected_repos):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"{code_dir / extra} symlink has no matching code-clone "
+                        f"membership in project {name!r} (stale project link)"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+        for missing in sorted(expected_repos - code_link_names):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} membership implies a litman_code "
                         f"symlink for {missing!r} but it is missing"
                     ),
                     hint="run `lit health-check --fix` to rebuild project links",

@@ -130,6 +130,100 @@ def _papers_using_repo_in_project(
     return matched
 
 
+def reconcile_project_code_links(
+    vault: Path,
+    project: str,
+    project_dir: Path,
+    papers: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Make ``<project_dir>/litman_code/`` match the derived code-clone truth.
+
+    The project-side ``litman_code/<repo>`` symlinks are a pure function of
+    ``(membership, code-clones, clone-presence)``: every repo bound (via
+    ``code-clones``) by some paper tagged with ``project`` whose
+    ``codes/<repo>/repo`` clone is present locally should have exactly one
+    symlink, and nothing else should. This reconciles the on-disk symlink set
+    to that expected set — creating the missing, removing the orphaned —
+    without the full-vault wipe ``rebuild_all_project_links`` performs.
+    Idempotent.
+
+    Clone presence is a same-vault fact (``codes/`` lives under the vault), so a
+    missing clone reliably means "not restored locally", not a transient mount
+    blip — matching ``link_paper_to_project`` / ``rebuild_all_project_links``,
+    which likewise skip symlinks for absent clones (a bound-but-missing clone is
+    owned by invariant #12 / ``lit code restore-all``).
+
+    Returns ``{"created": [...], "removed": [...]}`` (sorted repo names).
+    """
+    expected: dict[str, Path] = {}
+    for p in papers:
+        if project not in (p.get("projects") or []):
+            continue
+        for repo_name in p.get("code-clones") or []:
+            repo_target = (vault / "codes" / repo_name / "repo").resolve()
+            if repo_target.exists():
+                expected[repo_name] = repo_target
+
+    code_dir = project_dir / CODE_SUBDIR
+    on_disk: set[str] = set()
+    if code_dir.is_dir():
+        for child in code_dir.iterdir():
+            if child.is_symlink():
+                on_disk.add(child.name)
+
+    created: list[str] = []
+    for repo_name, repo_target in expected.items():
+        if repo_name not in on_disk and make_relative_symlink(
+            code_dir / repo_name, repo_target
+        ):
+            created.append(repo_name)
+    removed: list[str] = []
+    for repo_name in on_disk - set(expected):
+        if remove_link_if_present(code_dir / repo_name):
+            removed.append(repo_name)
+    return {"created": sorted(created), "removed": sorted(removed)}
+
+
+def refresh_project_code_links(
+    vault: Path, paper_id: str
+) -> dict[str, dict[str, list[str]]]:
+    """Re-derive ``litman_code/`` symlinks for every project ``paper_id`` is in.
+
+    The seam that keeps the project-side code symlinks in step with a paper's
+    ``code-clones`` after a ``lit code add`` / ``link`` / ``unlink`` (and the
+    ``lit code rm`` cascade). Previously only ``lit link`` / ``--rebuild-all``
+    materialized these symlinks, so a repo bound *after* the paper was last
+    linked never got one (and a repo unbound afterwards never lost it). Reads
+    fresh, post-mutation metadata; a pure derived refresh that never mutates
+    metadata. Skips projects not registered in ``lit-config.yaml`` or whose
+    directory is absent on this machine (those are owned by the
+    ``project_path_exists`` health check).
+
+    Returns ``{project: {"created": [...], "removed": [...]}}`` for the
+    projects actually reconciled.
+    """
+    papers = list_papers(vault)
+    paper = next((p for p in papers if p.get("id") == paper_id), None)
+    if paper is None:
+        return {}
+    projects = paper.get("projects") or []
+    if not projects:
+        return {}
+    registry = load_config(vault).projects
+    out: dict[str, dict[str, list[str]]] = {}
+    for project in projects:
+        project_dir_str = registry.get(project)
+        if not project_dir_str:
+            continue
+        project_dir = Path(project_dir_str).expanduser()
+        if not project_dir.is_dir():
+            continue
+        out[project] = reconcile_project_code_links(
+            vault, project, project_dir, papers
+        )
+    return out
+
+
 def link_paper_to_project(
     vault: Path,
     paper_id: str,
