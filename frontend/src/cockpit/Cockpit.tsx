@@ -1013,8 +1013,12 @@ function WriteCockpit({
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
-  // Persisted until the selected paper changes so the user actually reads them.
+  // Auto-dismissed after a few seconds (long enough to read a couple of lines)
+  // so it behaves like a transient toast, not a banner that sticks until the
+  // paper changes. `citeWarnTimer` lets a re-Cite reset the countdown instead
+  // of letting an older timer clear the fresh warning early.
   const [citeWarn, setCiteWarn] = useState<string[] | null>(null)
+  const citeWarnTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // A structured write is in flight — disables the write controls so a second
   // click can't race the first (the backend serialises, but a double-fire would
   // toast a confusing intermediate state).
@@ -1046,6 +1050,7 @@ function WriteCockpit({
   useEffect(() => {
     setCopied(null)
     setCiteWarn(null)
+    if (citeWarnTimer.current) clearTimeout(citeWarnTimer.current)
     setShowUnread(false)
     setShowDrop(false)
     setOpenField(null)
@@ -1082,6 +1087,12 @@ function WriteCockpit({
       setCopied('citation')
       setCiteWarn(warnings.length ? warnings : null)
       setTimeout(() => setCopied(null), 1200)
+      // Restart the warning countdown each Cite so a fresh banner gets its full
+      // dwell time and an in-flight older timer can't clear it early.
+      if (citeWarnTimer.current) clearTimeout(citeWarnTimer.current)
+      if (warnings.length) {
+        citeWarnTimer.current = setTimeout(() => setCiteWarn(null), 8000)
+      }
     } catch {
       /* no clipboard / fetch failure — silently ignore */
     }
