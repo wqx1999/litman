@@ -19,6 +19,11 @@ export interface IndexPaper {
   'read-date': string | null
 }
 
+/** GET /api/doc-mtimes payload: per-paper notes/discussion file mtimes (epoch
+ * seconds, null when absent). Used ONLY by the resync diff to detect free-form
+ * edits made outside the GUI; never rendered. */
+export type DocMtimes = Record<string, { notes: number | null; discussion: number | null }>
+
 /** Full metadata.yaml for one paper (superset of IndexPaper). */
 export interface PaperMeta extends IndexPaper {
   authors?: string[]

@@ -2,6 +2,7 @@
 // they resolve against whatever host:port `lit gui` bound to.
 
 import type {
+  DocMtimes,
   FixedEnums,
   HealthIssue,
   IndexPaper,
@@ -165,6 +166,14 @@ export function fetchDiscussion(id: string): Promise<string | null> {
 
 export function fetchTaxonomy(): Promise<Taxonomy> {
   return getJSON<Taxonomy>('/api/taxonomy')
+}
+
+/** Per-paper notes/discussion file mtimes — the pure-read change-detection feed
+ * for the resync diff (epoch seconds, null when absent). Part of the resync
+ * sweep only; the GUI compares it against its previous snapshot to surface
+ * notes/discussion edits made outside the GUI. */
+export function fetchDocMtimes(): Promise<DocMtimes> {
+  return getJSON<DocMtimes>('/api/doc-mtimes')
 }
 
 /** The status/priority/type whitelists (+ allowsNone) backing the cockpit

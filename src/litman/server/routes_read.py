@@ -151,6 +151,36 @@ def get_health(request: Request) -> list[dict[str, Any]]:
     return [dataclasses.asdict(i) for i in issues]
 
 
+def _stat_mtime(path: Path) -> float | None:
+    """st_mtime (epoch seconds) or None when the file is absent — one stat, no read."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+@router.get("/doc-mtimes")
+def get_doc_mtimes(request: Request) -> dict[str, dict[str, float | None]]:
+    """Per-paper notes.md / discussion.md mtimes (epoch seconds), for change detection.
+
+    PURE READ (invariant #16): stat only — never reads file contents, never writes.
+    One entry per paper currently in the vault (same enumeration get_health uses,
+    list_papers); each value is Path.stat().st_mtime, or null when absent. The webUI
+    resync diff compares this against its previous in-memory snapshot to surface
+    notes/discussion edits made OUTSIDE the GUI (agents write these files directly —
+    there is no lit command to hook). O(papers) stats per call; fine for single-user.
+    """
+    vault = _vault(request)
+    out: dict[str, dict[str, float | None]] = {}
+    for paper in list_papers(vault):
+        paper_dir = vault / "papers" / paper["id"]
+        out[paper["id"]] = {
+            "notes": _stat_mtime(paper_dir / "notes.md"),
+            "discussion": _stat_mtime(paper_dir / "discussion.md"),
+        }
+    return out
+
+
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:
     """A short, match-centered slice of a matched markdown line for a dropdown row.
 

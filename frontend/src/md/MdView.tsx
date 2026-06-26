@@ -57,6 +57,10 @@ interface Props {
   onDraftChange: (tabKey: string, draft: string) => void
   /** A successful save: the edit session ends; App drops the entry. */
   onEndEdit: (tabKey: string) => void
+  /** A successful save bumped this paper's notes/discussion mtime. App advances
+   * its doc-mtime baseline so the next resync diff does NOT mislabel the user's
+   * own GUI edit as an external "notes updated" change (D2). */
+  onSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
 }
 
 // Per-tab scroll position for the rendered markdown, kept for the session so a
@@ -109,6 +113,7 @@ export default function MdView({
   onBeginEdit,
   onDraftChange,
   onEndEdit,
+  onSaved,
 }: Props) {
   // The current on-disk text (null = file absent / not loaded yet). The render
   // html is derived from it; edit mode seeds its textarea from it.
@@ -268,6 +273,10 @@ export default function MdView({
     const put = doc === 'notes' ? putNotes : putDiscussion
     try {
       await put(paperId, draft)
+      // Suppress this GUI write from the next resync diff (D2): advance App's
+      // doc-mtime baseline so the bumped file mtime is not read as an external
+      // edit. Done before the reload so a slow reload can't race a resync.
+      onSaved?.(paperId, doc)
       // Re-fetch so the canonical on-disk text shows (notes gets the wikilink
       // reminder re-inserted server-side; reflecting that keeps a follow-up edit
       // from re-stripping it).
@@ -282,7 +291,7 @@ export default function MdView({
     } finally {
       setSaving(false)
     }
-  }, [doc, draft, paperId, saving, onNotify, onEndEdit, tabKey])
+  }, [doc, draft, paperId, saving, onNotify, onEndEdit, onSaved, tabKey])
 
   const cancelEdit = useCallback(() => onEndEdit(tabKey), [onEndEdit, tabKey])
 

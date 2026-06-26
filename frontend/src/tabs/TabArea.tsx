@@ -27,6 +27,8 @@ interface Props {
   onMdBeginEdit: (tabKey: string, seed: string) => void
   onMdDraftChange: (tabKey: string, draft: string) => void
   onMdEndEdit: (tabKey: string) => void
+  /** A successful md save — App advances its doc-mtime baseline (D2). */
+  onMdSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
 }
 
 export default function TabArea({
@@ -43,6 +45,7 @@ export default function TabArea({
   onMdBeginEdit,
   onMdDraftChange,
   onMdEndEdit,
+  onMdSaved,
 }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
@@ -112,6 +115,7 @@ export default function TabArea({
             onBeginEdit={onMdBeginEdit}
             onDraftChange={onMdDraftChange}
             onEndEdit={onMdEndEdit}
+            onSaved={onMdSaved}
           />
         )}
       </div>

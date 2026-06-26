@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  fetchDocMtimes,
   fetchFixedEnums,
   fetchPaper,
   fetchPapers,
@@ -26,6 +27,7 @@ import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
 import type {
   ActivityLogEntry,
+  DocMtimes,
   FixedEnums,
   IndexPaper,
   PaperMeta,
@@ -91,6 +93,138 @@ function useDarkMode(): readonly [boolean, () => void] {
   return [dark, toggle] as const
 }
 
+// --- Resync change-log diff (pure) -----------------------------------------
+// A resync (focus / visibility / manual refresh) pulls fresh vault state; this
+// diffs it against the previous in-memory snapshot and synthesizes one activity-
+// log entry per net change made OUTSIDE the GUI (a `lit` command, an agent
+// writing notes.md). Pure read — no writes (invariant #16); see the task spec
+// §5.2 and §9 (D3/D4/D7).
+
+/** The state a resync diffs: the last-seen truth vs the freshly-fetched truth. */
+interface ResyncSnapshot {
+  papers: IndexPaper[]
+  taxonomy: Taxonomy | null
+  projects: ProjectEntry[]
+  trash: TrashEntry[]
+  mtimes: DocMtimes | null
+}
+
+// Per-paper tag arrays, with the singular label used in the message. `data` has
+// NO trailing-s to strip, so it is spelled out (not derived from the key).
+const RESYNC_TAG_FIELDS: ReadonlyArray<{
+  key: 'topics' | 'methods' | 'data' | 'projects'
+  label: string
+}> = [
+  { key: 'topics', label: 'topic' },
+  { key: 'methods', label: 'method' },
+  { key: 'data', label: 'data' },
+  { key: 'projects', label: 'project' },
+]
+
+// Taxonomy keys the diff inspects (D3): `projects` is owned by the projects-
+// registry diff (so it is excluded here — no duplicate entry), and the fixed
+// enums (type/status/priority) are never diffed.
+const RESYNC_TAXONOMY_KEYS: ReadonlyArray<'topics' | 'methods' | 'data'> = [
+  'topics',
+  'methods',
+  'data',
+]
+
+/** Null/empty scalar → em dash (D7), e.g. `priority — → B`. */
+function resyncScalar(v: string | null | undefined): string {
+  return v == null || v === '' ? '—' : v
+}
+
+function diffResync(
+  prev: ResyncSnapshot,
+  fresh: ResyncSnapshot,
+): ActivityLogEntry[] {
+  // Structured changes have no real timestamp → stamp detection time. Free-form
+  // (notes/discussion) changes carry the file mtime. appendLog sorts the batch
+  // by ts ascending (D4) so the panel orders them sensibly.
+  const now = Date.now()
+  const out: ActivityLogEntry[] = []
+  const add = (message: string, variant: ToastVariant = 'info') =>
+    out.push({ ts: now, variant, message })
+
+  // Papers: add / remove (→ trashed when it lands in trash) / per-survivor diff.
+  const prevById = new Map(prev.papers.map((p) => [p.id, p]))
+  const freshById = new Map(fresh.papers.map((p) => [p.id, p]))
+  const trashedIds = new Set(fresh.trash.map((t) => t.paperId))
+
+  for (const p of fresh.papers) {
+    if (!prevById.has(p.id)) add(`+ ${p.id} added`, 'success')
+  }
+  for (const p of prev.papers) {
+    if (!freshById.has(p.id)) {
+      add(trashedIds.has(p.id) ? `🗑 ${p.id} trashed` : `− ${p.id} removed`)
+    }
+  }
+  for (const [id, f] of freshById) {
+    const p = prevById.get(id)
+    if (!p) continue
+    if (f.status !== p.status)
+      add(`${id}: status ${resyncScalar(p.status)} → ${resyncScalar(f.status)}`)
+    if (f.priority !== p.priority)
+      add(`${id}: priority ${resyncScalar(p.priority)} → ${resyncScalar(f.priority)}`)
+    if (f.type !== p.type)
+      add(`${id}: type ${resyncScalar(p.type)} → ${resyncScalar(f.type)}`)
+    const prevRead = p['read-date']
+    const freshRead = f['read-date']
+    if (!prevRead && freshRead) add(`${id}: marked read`)
+    else if (prevRead && !freshRead) add(`${id}: read-date cleared`)
+    for (const { key, label } of RESYNC_TAG_FIELDS) {
+      const before = new Set(p[key] ?? [])
+      const after = new Set(f[key] ?? [])
+      for (const v of after) if (!before.has(v)) add(`${id}: +${label} ${v}`)
+      for (const v of before) if (!after.has(v)) add(`${id}: −${label} ${v}`)
+    }
+  }
+
+  // Taxonomy (topics/methods/data only — D3).
+  if (prev.taxonomy && fresh.taxonomy) {
+    for (const key of RESYNC_TAXONOMY_KEYS) {
+      const before = new Set(prev.taxonomy[key] ?? [])
+      const after = new Set(fresh.taxonomy[key] ?? [])
+      for (const v of after) if (!before.has(v)) add(`taxonomy: +${key} ${v}`)
+      for (const v of before) if (!after.has(v)) add(`taxonomy: −${key} ${v}`)
+    }
+  }
+
+  // Projects registry (owns project add/remove — D3; a rename reads as one
+  // removed + one added, which is acceptable).
+  const prevProjects = new Set(prev.projects.map((p) => p.name))
+  const freshProjects = new Set(fresh.projects.map((p) => p.name))
+  for (const name of freshProjects)
+    if (!prevProjects.has(name)) add(`project: + ${name}`)
+  for (const name of prevProjects)
+    if (!freshProjects.has(name)) add(`project: − ${name}`)
+
+  // Doc mtimes: a notes/discussion edit made outside the GUI bumps the file
+  // mtime. Only papers tracked in the previous snapshot are compared — a brand-
+  // new paper is already covered by its "+ added" entry, so its file is not
+  // double-logged. The entry ts is the real edit time (mtime × 1000).
+  if (prev.mtimes && fresh.mtimes) {
+    for (const [id, before] of Object.entries(prev.mtimes)) {
+      const after = fresh.mtimes[id]
+      if (!after) continue
+      if (after.notes != null && (before.notes == null || after.notes > before.notes))
+        out.push({ ts: after.notes * 1000, variant: 'info', message: `${id}: notes updated` })
+      if (
+        after.discussion != null &&
+        (before.discussion == null || after.discussion > before.discussion)
+      )
+        out.push({
+          ts: after.discussion * 1000,
+          variant: 'info',
+          message: `${id}: discussion appended`,
+        })
+    }
+  }
+
+  return out
+}
+
 export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
@@ -152,6 +286,18 @@ export default function App() {
   )
   const markLogRead = useCallback(() => setLogUnread(false), [])
 
+  // Silent log sink for resync-diff entries: appends to the same ring + lights
+  // the unread dot like notify, but does NOT toast (a resync can yield dozens of
+  // entries — see §5.2). Each batch is sorted ts-ascending first (D4) so the
+  // panel (newest-first) interleaves mtime-stamped notes entries and detection-
+  // time structured entries sensibly.
+  const appendLog = useCallback((entries: ActivityLogEntry[]) => {
+    if (entries.length === 0) return
+    const sorted = [...entries].sort((a, b) => a.ts - b.ts)
+    setActivityLog((prev) => [...prev, ...sorted].slice(-200))
+    setLogUnread(true)
+  }, [])
+
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTab, setActiveTab] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -204,6 +350,50 @@ export default function App() {
   const [trashLoading, setTrashLoading] = useState(false)
   const [restoringEntry, setRestoringEntry] = useState<string | null>(null)
 
+  // --- Resync diff baseline (activity-log change detection) ----------------
+  // doResync diffs the previously-seen vault state against fresh data. These
+  // refs are the baseline. The four state-backed ones are MIRRORED from state
+  // via tiny effects (D1), so EVERY commit path (mount, refreshAfterWrite,
+  // confirmRemove, restoreFromTrash, reloadForVault) advances the baseline
+  // automatically — a resync-only snapshot would re-log a GUI self-write as an
+  // external change. docMtimes is the exception: never rendered, so it is a
+  // ref-only baseline seeded on mount + advanced in doResync and on a GUI md
+  // save (D2). DIFF against the full INDEX (allPapers), never the filtered list.
+  const allPapersRef = useRef<IndexPaper[]>([])
+  const taxonomyRef = useRef<Taxonomy | null>(null)
+  const projectsRef = useRef<ProjectEntry[]>([])
+  const trashRef = useRef<TrashEntry[]>([])
+  useEffect(() => {
+    allPapersRef.current = allPapers
+  }, [allPapers])
+  useEffect(() => {
+    taxonomyRef.current = taxonomy
+  }, [taxonomy])
+  useEffect(() => {
+    projectsRef.current = projects
+  }, [projects])
+  useEffect(() => {
+    trashRef.current = trashEntries
+  }, [trashEntries])
+  const docMtimesRef = useRef<DocMtimes | null>(null)
+  // Flipped true only after the mount seed Promise.all settles (D5), so the
+  // first resync has a real baseline (never logs every paper as "+ added").
+  const resyncReadyRef = useRef(false)
+
+  // After a GUI md save (MdView, save-on-close, save-on-vault-switch) advance the
+  // doc-mtime baseline to "now" (≥ the file's just-written mtime, single-machine
+  // localhost so no clock skew) so the next resync diff sees no increase and does
+  // NOT mislabel the user's own edit as external (D2). No-op until seeded.
+  const bumpDocMtime = useCallback((paperId: string, doc: 'notes' | 'discussion') => {
+    const cur = docMtimesRef.current
+    if (!cur) return
+    const next = { ...(cur[paperId] ?? { notes: null, discussion: null }) }
+    next[doc] = Date.now() / 1000
+    // Clone-on-write, not in-place: an in-flight doResync holds this object as its
+    // prev.mtimes baseline; replacing the ref leaves that snapshot untouched.
+    docMtimesRef.current = { ...cur, [paperId]: next }
+  }, [])
+
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
   const [cockpitCollapsed, setCockpitCollapsed] = useState(false)
@@ -255,7 +445,7 @@ export default function App() {
   // after any delete / restore so the count stays live.
   const loadTrash = useCallback(() => {
     setTrashLoading(true)
-    fetchTrash()
+    return fetchTrash()
       .then(setTrashEntries)
       .catch(() => setTrashEntries([]))
       .finally(() => setTrashLoading(false))
@@ -263,14 +453,33 @@ export default function App() {
 
   useEffect(() => {
     fetchVaults().then(setVaults)
-    fetchProjects().then(setProjects)
-    fetchTaxonomy().then(setTaxonomy)
     fetchFixedEnums().then(setFixedEnums)
-    // Full INDEX (no view) backs global id/title matching + title lookup for
-    // notes/discussion hits — independent of which smart-list the middle list
-    // is showing.
-    fetchPapers().then(setAllPapers)
-    loadTrash()
+    // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
+    // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
+    // resync never diffs against an empty baseline (which would log every paper
+    // as "+ added"). The four state-backed refs seed themselves via the mirror
+    // effects above; docMtimesRef (never rendered) is seeded here directly. The
+    // full INDEX (no view) also backs global id/title matching + wikilink lookup.
+    void Promise.all([
+      fetchPapers().then(setAllPapers),
+      fetchTaxonomy().then(setTaxonomy),
+      fetchProjects().then(setProjects),
+      loadTrash(),
+      fetchDocMtimes().then((m) => {
+        docMtimesRef.current = m
+      }),
+    ])
+      .then(() => {
+        // Open the diff gate ONLY when the whole seed succeeded. On a partial
+        // failure (e.g. papers rejects while doc-mtimes resolves) leave it shut:
+        // the first resync then takes the seed-only branch and the second one
+        // diffs correctly — self-heal instead of logging every paper as "+ added".
+        resyncReadyRef.current = true
+      })
+      .catch(() => {
+        // Swallow the rejected Promise.all so it isn't an unhandled rejection;
+        // the gate stays false and a later resync re-seeds.
+      })
   }, [loadTrash])
 
   useEffect(() => {
@@ -422,18 +631,74 @@ export default function App() {
 
   // Re-pull every on-disk-derived view so changes made OUTSIDE the GUI (a CLI
   // command, an agent writing notes.md, a project registered from the terminal)
-  // surface without a manual browser refresh. Non-destructive — unlike
+  // surface without a manual browser refresh, AND synthesize an activity-log
+  // entry per net change (diff vs the snapshot refs). Non-destructive — unlike
   // reloadForVault it keeps open tabs / selection / filters; it only re-reads:
-  // the papers + current list (refreshAfterWrite), the taxonomy + projects
-  // (refreshVocab), the vault registry, the trash, and the active md tab (token
-  // bump). A pure read sweep — no writes, so invariant #16 is untouched.
-  const doResync = useCallback(() => {
-    refreshAfterWrite()
-    refreshVocab()
-    fetchVaults().then(setVaults)
-    loadTrash()
-    setMdReloadToken((t) => t + 1)
-  }, [refreshAfterWrite, refreshVocab, loadTrash])
+  // the full INDEX + current list, the taxonomy + projects, the trash, the
+  // doc-mtimes, the vault registry, and the active md tab (token bump). A pure
+  // read sweep — no writes, so invariant #16 is untouched. The diff runs ONLY
+  // here (the resync path), never in the direct refreshAfterWrite a GUI write
+  // fires, so a GUI action is not double-logged (red line #3).
+  const doResync = useCallback(async () => {
+    // Snapshot the last-seen truth BEFORE fresh data lands; the refs are kept
+    // mirrored from every commit path (D1), so this is the true prior baseline.
+    const prev: ResyncSnapshot = {
+      papers: allPapersRef.current,
+      taxonomy: taxonomyRef.current,
+      projects: projectsRef.current,
+      trash: trashRef.current,
+      mtimes: docMtimesRef.current,
+    }
+    // The first sweep (or the first after a vault switch reset docMtimes) just
+    // seeds — no baseline to diff against yet (D5).
+    const canDiff = resyncReadyRef.current && docMtimesRef.current !== null
+    const listView = SMART_VIEWS.has(listMode)
+      ? (listMode as SmartListView)
+      : undefined
+    try {
+      const [freshAll, freshList, freshTax, freshProjects, freshTrash, freshMtimes, freshVaults] =
+        await Promise.all([
+          fetchPapers(),
+          fetchPapers(listView),
+          fetchTaxonomy(),
+          fetchProjects(),
+          fetchTrash(),
+          fetchDocMtimes(),
+          fetchVaults(),
+        ])
+      if (canDiff) {
+        appendLog(
+          diffResync(prev, {
+            papers: freshAll,
+            taxonomy: freshTax,
+            projects: freshProjects,
+            trash: freshTrash,
+            mtimes: freshMtimes,
+          }),
+        )
+      }
+      // Commit through the same setters the rest of the app uses (the mirror
+      // effects advance the diff refs from here); docMtimesRef is ref-only.
+      setAllPapers(freshAll)
+      setPapers(freshList)
+      setTaxonomy(freshTax)
+      setProjects(freshProjects)
+      setTrashEntries(freshTrash)
+      setVaults(freshVaults)
+      docMtimesRef.current = freshMtimes
+      resyncReadyRef.current = true
+      if (selectedId) {
+        fetchPaper(selectedId)
+          .then(setCockpitPaper)
+          .catch(() => setCockpitPaper(null))
+      }
+      setMdReloadToken((t) => t + 1)
+    } catch {
+      // A failed sweep is a no-op: leave the UI and the diff baseline untouched
+      // (a transient fetch error must not wipe the view or desync the baseline);
+      // the next resync retries.
+    }
+  }, [listMode, selectedId, appendLog])
 
   // Auto-resync when the browser regains focus / the tab becomes visible — the
   // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
@@ -624,6 +889,7 @@ export default function App() {
       if (tab && tab.kind !== 'pdf' && entry) {
         const put = tab.kind === 'notes' ? putNotes : putDiscussion
         await put(tab.paperId, entry.draft)
+        bumpDocMtime(tab.paperId, tab.kind) // D2: this is a GUI md save too
       } else {
         await handlesRef.current.get(key)?.flush()
       }
@@ -638,7 +904,7 @@ export default function App() {
     setSavingClose(false)
     setPendingClose(null)
     removeTab(key)
-  }, [pendingClose, removeTab, tabs])
+  }, [pendingClose, removeTab, tabs, bumpDocMtime])
 
   const confirmDiscard = useCallback(() => {
     const key = pendingClose
@@ -775,9 +1041,11 @@ export default function App() {
       if (tab && tab.kind !== 'pdf') {
         const put = tab.kind === 'notes' ? putNotes : putDiscussion
         await put(tab.paperId, entry.draft)
+        bumpDocMtime(tab.paperId, tab.kind) // D2: GUI md save (covers a switch
+        // that then fails before reloadForVault resets the baseline).
       }
     }
-  }, [tabs])
+  }, [tabs, bumpDocMtime])
 
   // Reload everything for the now-active vault and reset per-vault view state
   // (the old vault's tabs / selection / filters / scope no longer apply).
@@ -799,6 +1067,9 @@ export default function App() {
     // The trash is per-vault: leave trash mode and re-pull the new vault's trash.
     setTrashMode(false)
     setRestoringEntry(null)
+    // The doc-mtime baseline is per-vault; drop it so the first resync in the new
+    // vault seeds afresh instead of diffing it against the old vault's mtimes.
+    docMtimesRef.current = null
     fetchVaults().then(setVaults)
     fetchProjects().then(setProjects)
     fetchTaxonomy().then(setTaxonomy)
@@ -1092,6 +1363,7 @@ export default function App() {
               onMdBeginEdit={mdBeginEdit}
               onMdDraftChange={mdDraftChange}
               onMdEndEdit={mdEndEdit}
+              onMdSaved={bumpDocMtime}
             />
             <Cockpit
               paper={cockpitPaper}
