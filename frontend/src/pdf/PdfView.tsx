@@ -23,6 +23,17 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 // A WeakSet so a destroyed document's manager is GC'd without leaking here.
 const wrappedManagers = new WeakSet<object>()
 
+// Per-tab reading position (scroll offset + zoom), kept for the session so that
+// switching away from a PDF tab and back returns to where you were reading
+// instead of snapping to page 1 — TabArea mounts only the active tab, so every
+// switch unmounts/reloads this view (scrollTop resets, scale resets to default).
+// Keyed by the tab key (`pdf:<paperId>`); scrollTop is in scaled pixels, so the
+// scale is stored alongside and re-applied before the offset is restored, or the
+// offset would land at the wrong place. Memory-only (cleared on a full reload),
+// mirroring the app's other session-only state (the activity log); also resumes
+// the position when the same paper is reopened later in the session.
+const viewPositions = new Map<string, { scrollTop: number; scale: number }>()
+
 // The PDF-tool modes the keyboard shortcuts can switch to, mirroring EditMode
 // below. Exposed on the handle so the global shortcut dispatcher (V/H/T/D/Esc)
 // can drive the active PDF tab without reaching into its internals — it calls
@@ -293,6 +304,10 @@ export default function PdfView({
   // Mirror of noteDraft so the commit callbacks (stable identity) read fresh text.
   const noteDraftRef = useRef(noteDraft)
   noteDraftRef.current = noteDraft
+  // True while restoring a saved scroll offset on load: gates the scroll listener
+  // so pdf_viewer's own load-time scroll-to-top doesn't overwrite the saved
+  // position in viewPositions before we've reapplied it.
+  const restoringRef = useRef(false)
 
   // Which annotation type the colour/size actions target: the selected editor in
   // selection mode (the popover is showing), else the active creation tool.
@@ -532,9 +547,17 @@ export default function PdfView({
     const viewerEl = viewerElRef.current
     if (!container || !viewerEl) return
 
+    // Restore this tab's last reading position (scroll + zoom) if we have one;
+    // otherwise open at the default scale, top of page 1.
+    const savedView = tabKey ? viewPositions.get(tabKey) : undefined
+    const initialScale = savedView?.scale ?? DEFAULT_SCALE
+    // Suppress scroll-position saves until the restore reapplies the offset, so
+    // pdf_viewer's load-time scroll-to-top can't clobber the saved value.
+    restoringRef.current = !!savedView
+
     setError(null)
     setPageCount(0)
-    setScale(DEFAULT_SCALE)
+    setScale(initialScale)
     setEditMode('none')
     setHasSelection(false)
     setSelectedType(null)
@@ -607,12 +630,36 @@ export default function PdfView({
       setNoteDraft(ed?.comment?.text ?? '')
     }
 
-    // Apply the initial scale once pages are laid out (currentScale before
-    // pagesinit is ignored by pdf_viewer).
+    // Restore the saved scroll offset (and scale). Event-driven, NOT polled:
+    // reading scrollHeight every frame forces a synchronous reflow, and doing
+    // that during pdf.js's heaviest initial layout/render contends for the main
+    // thread and visibly slows the open. Instead we set the offset at two fixed
+    // points, each O(1):
+    //   - pagesinit: page geometry is established, so set scale then an early
+    //     offset set (one rAF) — usually enough and avoids a visible top→pos jump.
+    //   - pagesloaded: all pages are laid out (scroll range final), so re-set in
+    //     case the early attempt clamped, plus one rAF re-assert in case
+    //     pdf_viewer's own page-1 scroll lands just after us. Scroll-saving
+    //     reopens (restoringRef) only after that final reapply.
+    const applyOffset = (last: boolean) => {
+      if (cancelled || !savedView) return
+      container.scrollTop = savedView.scrollTop
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        container.scrollTop = savedView.scrollTop
+        if (last) restoringRef.current = false
+      })
+    }
     const onPagesInit = () => {
-      viewer.currentScale = DEFAULT_SCALE
+      viewer.currentScale = initialScale
+      requestAnimationFrame(() => applyOffset(false))
+    }
+    const onPagesLoaded = () => {
+      if (savedView) applyOffset(true)
+      else restoringRef.current = false
     }
     eventBus.on('pagesinit', onPagesInit)
+    eventBus.on('pagesloaded', onPagesLoaded)
 
     // pdf.js's embedded PDFViewer does NOT itself act on `switchannotationeditormode`
     // (only the full viewer.html app wires that). We wire it so pdf.js's built-in
@@ -751,7 +798,20 @@ export default function PdfView({
 
     return () => {
       cancelled = true
+      // Remember where the user was reading so a tab switch (which unmounts this
+      // view) returns here instead of page 1. containerRef is still live during
+      // cleanup; scaleRef holds the latest zoom. Saved together so the scaled
+      // scrollTop restores against matching geometry. Skipped if a restore is
+      // still in flight (switched away before it landed) so we don't overwrite
+      // the saved offset with the transient load-time top.
+      if (tabKey && containerRef.current && !restoringRef.current) {
+        viewPositions.set(tabKey, {
+          scrollTop: containerRef.current.scrollTop,
+          scale: scaleRef.current,
+        })
+      }
       eventBus.off('pagesinit', onPagesInit)
+      eventBus.off('pagesloaded', onPagesLoaded)
       eventBus.off('switchannotationeditormode', onSwitchMode)
       eventBus.off('annotationeditormodechanged', onModeChanged)
       eventBus.off('editingstateschanged', onEditingStates)
@@ -827,7 +887,7 @@ export default function PdfView({
         teardown()
       }
     }
-  }, [paperId, pdfSrc, readOnly])
+  }, [paperId, pdfSrc, readOnly, tabKey])
 
   // Ctrl/Cmd + wheel zooms the PDF instead of the browser page (also catches
   // trackpad pinch, which fires wheel events with ctrlKey set). Plain wheel is
@@ -1012,13 +1072,26 @@ export default function PdfView({
 
   // Scrolling the page stack moves annotations out from under the tooltip's
   // (wrapper-relative) anchor, so drop it on scroll; the next hover re-shows it.
+  // Also persist the reading position on every scroll so a tab switch returns
+  // here — saving live (not only in the unmount cleanup, where reading scrollTop
+  // off a detaching node is less reliable) keeps the latest offset in the map.
+  // The current zoom is stored alongside (scrollTop is scaled pixels), so a zoom
+  // — which itself shifts scrollTop and fires this — is captured too.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const onScroll = () => clearHover()
+    const onScroll = () => {
+      clearHover()
+      if (tabKey && !restoringRef.current) {
+        viewPositions.set(tabKey, {
+          scrollTop: el.scrollTop,
+          scale: scaleRef.current,
+        })
+      }
+    }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [clearHover])
+  }, [clearHover, tabKey])
 
   const saveLabel = saving ? 'Saving…' : savedFlash && !dirty ? 'Saved ✓' : 'Save'
 

@@ -20,6 +20,9 @@ interface Props {
   /** The active md tab's lifted edit session (App-owned), or undefined when the
    * active tab is not an md tab or is not being edited. */
   mdDraft?: MdDraft
+  /** Bumped by a resync-from-disk so the active md tab re-reads its file (CLI/
+   * agent edits to notes.md / discussion.md). Forwarded to MdView. */
+  mdReloadToken?: number
   /** Forwarded md edit-session callbacks (App owns the per-tab draft map). */
   onMdBeginEdit: (tabKey: string, seed: string) => void
   onMdDraftChange: (tabKey: string, draft: string) => void
@@ -36,6 +39,7 @@ export default function TabArea({
   onNotify,
   mdJump,
   mdDraft,
+  mdReloadToken,
   onMdBeginEdit,
   onMdDraftChange,
   onMdEndEdit,
@@ -104,6 +108,7 @@ export default function TabArea({
               mdJump && mdJump.key === active.key ? mdJump.query : undefined
             }
             draftEntry={mdDraft}
+            reloadToken={mdReloadToken}
             onBeginEdit={onMdBeginEdit}
             onDraftChange={onMdDraftChange}
             onEndEdit={onMdEndEdit}

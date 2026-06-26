@@ -159,6 +159,12 @@ export default function App() {
   // and highlight inside it. Keyed by tab so only that doc highlights.
   const [mdJump, setMdJump] = useState<{ key: string; query: string } | null>(null)
 
+  // Bumped on a resync-from-disk so the active md tab (notes/discussion) re-reads
+  // its file — CLI/agent edits to notes.md don't reach an already-open tab
+  // otherwise. The draft (mdDrafts, App-owned) is independent of the rendered
+  // text, so MdView refetching the file never clobbers an in-progress GUI edit.
+  const [mdReloadToken, setMdReloadToken] = useState(0)
+
   // Flush handles for mounted PDF tabs, used to prompt Save / Don't-save when a
   // tab with unsaved annotations is closed. Only the active PDF tab is mounted
   // (TabArea renders one tab), so at most one entry is live.
@@ -413,6 +419,55 @@ export default function App() {
     refreshVocab()
     refreshAfterWrite()
   }, [refreshVocab, refreshAfterWrite])
+
+  // Re-pull every on-disk-derived view so changes made OUTSIDE the GUI (a CLI
+  // command, an agent writing notes.md, a project registered from the terminal)
+  // surface without a manual browser refresh. Non-destructive — unlike
+  // reloadForVault it keeps open tabs / selection / filters; it only re-reads:
+  // the papers + current list (refreshAfterWrite), the taxonomy + projects
+  // (refreshVocab), the vault registry, the trash, and the active md tab (token
+  // bump). A pure read sweep — no writes, so invariant #16 is untouched.
+  const doResync = useCallback(() => {
+    refreshAfterWrite()
+    refreshVocab()
+    fetchVaults().then(setVaults)
+    loadTrash()
+    setMdReloadToken((t) => t + 1)
+  }, [refreshAfterWrite, refreshVocab, loadTrash])
+
+  // Auto-resync when the browser regains focus / the tab becomes visible — the
+  // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
+  // fires on app switch, `visibilitychange` on browser-tab switch; they can both
+  // fire on one return, so a short throttle coalesces them into one sweep. (A
+  // background agent writing while the GUI stays focused won't trip this — use
+  // the TopBar refresh button, which calls doResync directly, for that.)
+  const lastResyncRef = useRef(0)
+  useEffect(() => {
+    const onReturn = () => {
+      const now = Date.now()
+      if (now - lastResyncRef.current < 800) return
+      lastResyncRef.current = now
+      doResync()
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onReturn()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [doResync])
+
+  // Manual refresh (TopBar button): force an immediate sweep (bypass the throttle)
+  // and confirm with a toast — this is the explicit-feedback path, whereas the
+  // focus-driven sweep stays silent so alt-tabbing doesn't spam toasts.
+  const manualResync = useCallback(() => {
+    lastResyncRef.current = Date.now()
+    doResync()
+    notify('Refreshed from disk.', 'success')
+  }, [doResync, notify])
 
   const openTab = useCallback(
     (id: string, kind: TabKind) => {
@@ -971,6 +1026,7 @@ export default function App() {
         onSelectResult={onSearchSelect}
         focusMode={focusMode}
         onToggleFocus={toggleFocus}
+        onRefresh={manualResync}
         onProjectsChanged={refreshProjects}
         onSwitchVault={switchVault}
         onRegisterVault={onRegisterVault}
@@ -1032,6 +1088,7 @@ export default function App() {
               onNotify={notify}
               mdJump={mdJump}
               mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
+              mdReloadToken={mdReloadToken}
               onMdBeginEdit={mdBeginEdit}
               onMdDraftChange={mdDraftChange}
               onMdEndEdit={mdEndEdit}

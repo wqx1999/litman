@@ -30,6 +30,10 @@ interface Props {
   onSelectResult: (candidate: Candidate) => void
   focusMode: boolean
   onToggleFocus: () => void
+  /** Force an immediate resync-from-disk (manual refresh button) so changes made
+   * outside the GUI — a CLI command, an agent writing notes — surface on demand.
+   * The focus-driven sweep does this automatically; this is the explicit path. */
+  onRefresh: () => void
   /** Refresh the registered-project list + papers after a create/delete (P4). */
   onProjectsChanged: () => void
   /** Switch the active vault (3c-2) — App handles the confirm + re-fetch. */
@@ -97,6 +101,7 @@ export default function TopBar({
   onSelectResult,
   focusMode,
   onToggleFocus,
+  onRefresh,
   onProjectsChanged,
   onSwitchVault,
   onRegisterVault,
@@ -347,8 +352,18 @@ export default function TopBar({
           flex-grow normally does that). */}
       {trashMode && <div className="flex-1" />}
 
-      {/* Observability cluster (log + health), left of the focus/dark/help
-          group. Both are workspace-level, so they sit here in BOTH modes. */}
+      {/* Observability cluster (refresh + log + health), left of the focus/dark/
+          help group. All workspace-level, so they sit here in BOTH modes. */}
+      <button
+        type="button"
+        onClick={onRefresh}
+        title="Refresh from disk — pull in changes made via the CLI"
+        aria-label="Refresh from disk"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
+      >
+        <IconRefresh />
+      </button>
+
       <button
         type="button"
         onClick={openLog}
@@ -1456,6 +1471,18 @@ function IconSun() {
     <svg {...SVG_PROPS}>
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  )
+}
+
+/** Two circular arrows — refresh / resync the views from disk. */
+function IconRefresh() {
+  return (
+    <svg {...SVG_PROPS}>
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+      <path d="M3 21v-5h5" />
     </svg>
   )
 }

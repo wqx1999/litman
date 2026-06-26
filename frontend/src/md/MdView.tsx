@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import {
@@ -40,6 +47,10 @@ interface Props {
   /** The lifted edit session for this tab (App-owned), or undefined when not
    * editing. Controlled: a present value puts the view in edit mode. */
   draftEntry?: MdDraft
+  /** Bumped by the host on a resync-from-disk so this view re-reads its file
+   * (e.g. a CLI/agent rewrote notes.md). Skipped while editing — the draft is
+   * the source of truth then. */
+  reloadToken?: number
   /** Begin editing: App records {draft: seed, savedText: seed}. */
   onBeginEdit: (tabKey: string, seed: string) => void
   /** A keystroke in the textarea: App updates the lifted draft. */
@@ -47,6 +58,12 @@ interface Props {
   /** A successful save: the edit session ends; App drops the entry. */
   onEndEdit: (tabKey: string) => void
 }
+
+// Per-tab scroll position for the rendered markdown, kept for the session so a
+// tab switch (which unmounts this view — TabArea mounts only the active tab)
+// returns to where you were reading instead of the top. Keyed by tab key;
+// memory-only (cleared on a full reload), mirroring the PDF view's viewPositions.
+const mdScrollPositions = new Map<string, number>()
 
 // [[paper-id]] → a marker anchor we delegate-click below. Done on the raw
 // markdown (before marked) so the link text renders normally; the data-paper
@@ -88,6 +105,7 @@ export default function MdView({
   highlightQuery,
   onNotify,
   draftEntry,
+  reloadToken = 0,
   onBeginEdit,
   onDraftChange,
   onEndEdit,
@@ -133,6 +151,50 @@ export default function MdView({
       cancelled = true
     }
   }, [paperId, doc, readOnly])
+
+  // Re-read the file when the host bumps reloadToken (a resync-from-disk: the CLI
+  // or an agent rewrote this doc). The MOUNT run is skipped (firstReloadRef) — the
+  // load effect above already fetched then — so a tab opened while reloadToken is
+  // already > 0 (a focus resync happened earlier) does NOT double-fetch + double-
+  // parse. Subsequent bumps refetch. Skipped while editing (the App-owned draft is
+  // the source of truth) and in read-only/trash mode (a trashed file is immutable).
+  // Only `text` is touched, never the draft, so an in-progress GUI edit is safe.
+  const firstReloadRef = useRef(true)
+  useEffect(() => {
+    if (firstReloadRef.current) {
+      firstReloadRef.current = false
+      return
+    }
+    if (editing || readOnly) return
+    let cancelled = false
+    const load = doc === 'notes' ? fetchNotes : fetchDiscussion
+    load(paperId).then((fresh) => {
+      if (!cancelled) setText(fresh)
+    })
+    return () => {
+      cancelled = true
+    }
+    // Only reloadToken drives this refetch; paperId/doc/editing/readOnly are read
+    // for the current value but must not themselves re-trigger it (the mount
+    // effect owns paperId/doc loads; entering edit must not reload).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken])
+
+  // Restore this tab's saved scroll position once the rendered markdown is on
+  // screen (a tab switch unmounts this view, so without this it reopens at the
+  // top). useLayoutEffect so the offset is set before paint — no visible jump.
+  // Once per mount (restoredRef). Skipped when a search opened this doc — the
+  // highlight effect below owns the scroll then (jump to the first match).
+  const restoredRef = useRef(false)
+  useLayoutEffect(() => {
+    if (restoredRef.current || editing || !loaded || text === null) return
+    if (highlightQuery?.trim()) return
+    const el = contentRef.current
+    if (!el) return
+    restoredRef.current = true
+    const saved = tabKey ? mdScrollPositions.get(tabKey) : undefined
+    if (saved) el.scrollTop = saved
+  }, [loaded, text, editing, highlightQuery, tabKey])
 
   // After the markdown renders, mark every occurrence of the search query and
   // scroll the first into view (a search hit opened this doc). Runs again when
@@ -323,6 +385,10 @@ export default function MdView({
           }`}
           onClick={handleClick}
           onDoubleClick={enterEdit}
+          onScroll={(e) => {
+            // Remember the reading position for this tab so a switch returns here.
+            if (tabKey) mdScrollPositions.set(tabKey, e.currentTarget.scrollTop)
+          }}
           dangerouslySetInnerHTML={{ __html: html }}
         />
       )}
