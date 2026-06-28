@@ -37,14 +37,19 @@ from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.ripple import _ripple_replacements
 from litman.core.taxonomy import (
     ALL_DICTS,
-    USER_DICTS,
     USER_DICT_TO_METADATA_FIELD,
+    USER_DICTS,
     add_taxonomy_values,
     find_referencing_papers,
     parse_taxonomy,
-    reject_projects_write as _reject_projects_write,
     remove_taxonomy_value,
+    rename_taxonomy_value,
     update_user_dict_section,
+)
+from litman.core.taxonomy import (
+    reject_projects_write as _reject_projects_write,
+)
+from litman.core.taxonomy import (
     validate_user_dict as _validate_user_dict,
 )
 from litman.core.views import render_index
@@ -228,48 +233,11 @@ def taxonomy_rename_cmd(
     vault_name: str | None,
 ) -> None:
     """Rename a value in a user dict and ripple to all referencing papers."""
-    _reject_projects_write(dict_name)
-    _validate_user_dict(dict_name)
-    if old == new:
-        raise TaxonomyError("`old` and `new` are identical — nothing to do.")
-    if not new.strip():
-        raise TaxonomyError("`new` value cannot be empty.")
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
-    current = parsed[dict_name]
-    if old not in current:
-        raise TaxonomyError(
-            f"{old!r} is not registered in {dict_name}. "
-            f"Run `lit taxonomy list {dict_name}` to inspect."
-        )
-    if new in current:
-        raise TaxonomyError(
-            f"{new!r} is already in {dict_name}. "
-            f"Use `lit taxonomy merge {dict_name} {old} --into {new}` to fold them."
-        )
-
-    new_body = [new if v == old else v for v in current]
-    new_taxonomy_text = update_user_dict_section(text, dict_name, new_body)
-
-    field = USER_DICT_TO_METADATA_FIELD[dict_name]
-    n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, field, {old: new}
-    )
-
-    fresh_index = render_index(all_papers, now_iso())
-
-    with staged_write(vault, op_id=f"taxonomy-rename-{dict_name}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        for relpath, content in staged_meta_paths:
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", fresh_index)
-
-    if n_changed > 0:
-        # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
-        # INDEX + views recomputed together. The staged INDEX.json above is the
-        # crash-safety layer. project_refs=False keeps behavior identical
-        # (taxonomy commands govern topics/methods/data, never project refs).
-        reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+    # Single write path (invariant #16): validation + atomic rename + derived
+    # rebuild all live in core.taxonomy.rename_taxonomy_value, shared with the
+    # webUI's PUT /api/taxonomy/{key}. The command only renders the result.
+    n_changed, _ = rename_taxonomy_value(vault, dict_name, old, new)
 
     console.print(
         f"[bold green]✓ Renamed[/] {escape(dict_name)}: "
@@ -367,7 +335,7 @@ def taxonomy_merge_cmd(
     new_taxonomy_text = update_user_dict_section(text, dict_name, remaining)
 
     field = USER_DICT_TO_METADATA_FIELD[dict_name]
-    replacements = {s: dest for s in sources_to_remove}
+    replacements = dict.fromkeys(sources_to_remove, dest)
 
     # Cascade-with-confirm (M15): rewriting many papers' metadata changes
     # their semantics, so gate it behind a confirmation. Scope = union of

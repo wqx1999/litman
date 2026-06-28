@@ -181,6 +181,12 @@ def test_no_write_command_calls_write_index_without_rebuild_views() -> None:
     one helper. We assert every write-command module that touches the INDEX
     (``render_index``/``write_index``) also imports ``reconcile_derived`` — so
     the views rebuild can never be silently dropped.
+
+    ``litman.commands.project`` is intentionally absent: its rename / set-path /
+    add / rm logic was hoisted into ``core.project_link`` (shared with the webUI,
+    invariant #16), so the command module is now a thin delegator that no longer
+    touches the INDEX. The funnel routing for those writes is guarded at its new
+    home below.
     """
     import importlib
 
@@ -190,7 +196,6 @@ def test_no_write_command_calls_write_index_without_rebuild_views() -> None:
         "litman.commands.rename",
         "litman.commands.rm",
         "litman.commands.taxonomy",
-        "litman.commands.project",
         "litman.commands.trash",
     ):
         mod = importlib.import_module(mod_name)
@@ -205,6 +210,31 @@ def test_no_write_command_calls_write_index_without_rebuild_views() -> None:
         # transaction; the funnel still owns the on-disk INDEX + views rebuild.
         assert not hasattr(mod, "rebuild_views"), mod_name
         assert not hasattr(mod, "write_index"), mod_name
+
+
+def test_core_write_modules_route_index_rebuild_through_funnel() -> None:
+    """Funnel guarantee at the core layer: the core modules that took over the
+    INDEX-rebuild responsibility from the thin command wrappers (``core.taxonomy``
+    rename/rm, ``core.project_link`` rename/set-path/add/rm) must route every
+    post-commit rebuild through ``reconcile_derived``.
+
+    These modules import ``reconcile_derived`` LAZILY inside each function (to
+    break a core import cycle), so a module-level ``hasattr`` check would not see
+    it. We assert on the source text instead: any module that renders the INDEX
+    (``render_index``) must also reference ``reconcile_derived`` — and must not
+    reach for the bare ``write_index`` / ``rebuild_views`` back-doors.
+    """
+    import importlib
+    import inspect
+
+    for mod_name in ("litman.core.taxonomy", "litman.core.project_link"):
+        mod = importlib.import_module(mod_name)
+        src = inspect.getsource(mod)
+        if "render_index" not in src:
+            continue
+        assert "reconcile_derived" in src, mod_name
+        assert "write_index" not in src, mod_name
+        assert "rebuild_views" not in src, mod_name
 
 
 # ---------------------------------------------------------------------------

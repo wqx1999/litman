@@ -34,6 +34,7 @@ import {
   postRevisit,
   postUnread,
   putMetadata,
+  renameTaxonomyValue,
   unlinkProject,
 } from '../api'
 
@@ -473,6 +474,23 @@ function IconTrash() {
   )
 }
 
+function IconPencil() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  )
+}
+
 /** Dictionary editor for one controlled-vocab field (problem 2). Lists every
  * registered value with its in-use count (from the loaded INDEX) and a delete
  * affordance; deletion routes through a default-No confirm into the
@@ -484,6 +502,7 @@ function ManageDialog({
   countFor,
   busy,
   onDelete,
+  onRename,
   onClose,
 }: {
   field: string
@@ -491,15 +510,17 @@ function ManageDialog({
   countFor: (value: string) => number
   busy: boolean
   onDelete: (value: string) => Promise<void>
+  onRename: (old: string, next: string) => Promise<void>
   onClose: () => void
 }) {
-  // The value awaiting delete confirmation (null = the list view).
+  // The value awaiting delete confirmation, or being renamed (null = list view).
   const [pending, setPending] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<string | null>(null)
   const sorted = vocabulary.slice().sort((a, b) => a.localeCompare(b))
-  // While a delete confirm is open (or a delete is in flight), gate the list's
-  // controls so a keyboard-tab onto a row behind the confirm can't swap the
-  // delete target out from under it.
-  const blocked = busy || pending != null
+  // While a delete confirm or rename dialog is open (or a write is in flight),
+  // gate the list's controls so a keyboard-tab onto a row behind the nested
+  // dialog can't swap the target out from under it.
+  const blocked = busy || pending != null || renaming != null
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -508,14 +529,15 @@ function ManageDialog({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && !pending) onClose()
+          if (e.key === 'Escape' && !pending && !renaming) onClose()
         }}
         className="flex max-h-[70vh] w-[24rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Manage {field}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Deleting a value removes it from the {field} vocabulary and untags it
-          from every paper. This cannot be undone.
+          Rename a value to fix a typo or merge wording — it updates everywhere
+          it is used. Deleting a value removes it from the {field} vocabulary and
+          untags it from every paper. Both cannot be undone.
         </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
@@ -533,6 +555,16 @@ function ManageDialog({
                 <span className="text-[11px] text-stone-400">
                   used by {countFor(v)}
                 </span>
+                <button
+                  type="button"
+                  aria-label={`Rename ${field} ${v}`}
+                  title={`Rename “${v}”`}
+                  disabled={blocked}
+                  onClick={() => setRenaming(v)}
+                  className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-accent-50 hover:text-accent-600 disabled:opacity-40"
+                >
+                  <IconPencil />
+                </button>
                 <button
                   type="button"
                   aria-label={`Delete ${field} ${v}`}
@@ -570,6 +602,114 @@ function ManageDialog({
           }}
         />
       )}
+      {renaming != null && (
+        <RenameValueDialog
+          field={field}
+          value={renaming}
+          count={countFor(renaming)}
+          existing={vocabulary}
+          busy={busy}
+          onCancel={() => setRenaming(null)}
+          onConfirm={async (next) => {
+            await onRename(renaming, next)
+            setRenaming(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Rename a controlled-vocab value (prefilled with the current value). Mirrors
+ * DeleteValueConfirm's shell; the input autofocuses and selects so a typo fix is
+ * one keystroke. A blank or unchanged value, or one that collides with another
+ * registered value (case-sensitive, matching the backend), disables Save — the
+ * collision hint nudges toward delete/merge instead. Sits above the Manage
+ * dialog (z-[60]); Escape cancels and the backdrop stops click-through so
+ * dismissing it keeps the Manage dialog open. */
+function RenameValueDialog({
+  field,
+  value,
+  count,
+  existing,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  field: string
+  value: string
+  count: number
+  existing: string[]
+  busy: boolean
+  onCancel: () => void
+  onConfirm: (next: string) => void
+}) {
+  const [next, setNext] = useState(value)
+  const trimmed = next.trim()
+  const collides = trimmed !== value && existing.includes(trimmed)
+  const canSubmit = trimmed.length > 0 && trimmed !== value && !collides && !busy
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Rename “{value}”?</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          Updates the {field} vocabulary
+          {count > 0
+            ? ` and re-tags ${count} paper${count === 1 ? '' : 's'}`
+            : ''}
+          . This cannot be undone.
+        </p>
+        <input
+          autoFocus
+          type="text"
+          value={next}
+          disabled={busy}
+          onChange={(e) => setNext(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
+          }}
+          className="mt-3 w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+        />
+        {collides && (
+          <p className="mt-1.5 text-[11px] text-rose-500">
+            “{trimmed}” already exists — delete one instead of renaming onto it.
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(trimmed)}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Renaming…' : 'Rename'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1160,6 +1300,18 @@ function WriteCockpit({
     return runWrite(() => deleteTaxonomyValue(field, value), true)
   }
 
+  // Rename a controlled-vocab value through the `lit taxonomy rename` backend.
+  // vocabChanged=true so the Manage list + every field dropdown refresh; the
+  // INDEX re-pull keeps "used by N" and the selected paper's own tags in sync
+  // with the cascade. Returned so the rename dialog can await it before closing.
+  function renameValue(
+    field: 'topics' | 'methods' | 'data',
+    old: string,
+    next: string,
+  ): Promise<void> {
+    return runWrite(() => renameTaxonomyValue(field, old, next), true)
+  }
+
   // In-use count for a value, read off the loaded INDEX (no round-trip). Backs
   // the Manage list's "used by N" and the delete confirm's wording.
   function countValue(
@@ -1582,6 +1734,7 @@ function WriteCockpit({
           countFor={(v) => countValue(manageField, v)}
           busy={writing}
           onDelete={(v) => deleteValue(manageField, v)}
+          onRename={(old, next) => renameValue(manageField, old, next)}
           onClose={() => setManageField(null)}
         />
       )}

@@ -34,9 +34,15 @@ from litman.core.project_link import (
     add_project,
     link_paper_to_project,
     remove_project,
+    rename_project,
+    set_project_path,
     unlink_paper_from_project,
 )
-from litman.core.taxonomy import add_taxonomy_values, remove_taxonomy_value
+from litman.core.taxonomy import (
+    add_taxonomy_values,
+    remove_taxonomy_value,
+    rename_taxonomy_value,
+)
 from litman.core.vault_registry import (
     add_vault,
     apply_vault_use,
@@ -540,6 +546,47 @@ async def delete_taxonomy(
     return {"ok": True, "changed": n_changed}
 
 
+@router.put("/taxonomy/{key}")
+async def put_taxonomy(request: Request, key: str) -> dict[str, object]:
+    """Rename a controlled-vocabulary value through the ``lit taxonomy rename``
+    backend.
+
+    Body JSON ``{"old": str, "new": str}``. ``old``/``new`` ride in the body (not
+    the path) because a controlled value may contain ``/`` (it would break path
+    routing); only ``key`` (a safe dict name) is a path segment. Reaches the
+    filesystem only through :func:`litman.core.taxonomy.rename_taxonomy_value`
+    (the same core the CLI calls), which renames the value in TAXONOMY.md and
+    cascades it to every referencing paper's metadata in one atomic staged_write,
+    then rebuilds INDEX + views (invariant #16: no second write path). Semantics-
+    preserving, so there is no confirmation to skip.
+
+    ``key`` must be a user-extensible dict (topics / methods / data); an unknown
+    key, a fixed-enum key, ``projects`` (path-bound, use ``PUT /api/projects``),
+    ``old`` == ``new``, an empty ``new``, an unregistered ``old``, or a ``new``
+    that already exists (merge, don't rename) surface as TaxonomyError → 400.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    old = payload.get("old")
+    new = payload.get("new")
+    if not isinstance(old, str) or not old.strip():
+        raise HTTPException(status_code=400, detail="old must be a non-empty string.")
+    if not isinstance(new, str) or not new.strip():
+        raise HTTPException(status_code=400, detail="new must be a non-empty string.")
+
+    vault = request.app.state.vault
+    try:
+        n_changed, _ = rename_taxonomy_value(vault, key, old, new)
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "changed": n_changed}
+
+
 @router.delete("/projects/{name}")
 async def delete_project(request: Request, name: str) -> dict[str, object]:
     """Delete a project through the ``lit project rm`` backend.
@@ -561,6 +608,80 @@ async def delete_project(request: Request, name: str) -> dict[str, object]:
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "changed": n_changed}
+
+
+@router.put("/projects/{name}")
+async def put_project(request: Request, name: str) -> dict[str, object]:
+    """Rename a project through the ``lit project rename`` backend.
+
+    Body JSON ``{"new": str}`` (``name`` in the path is the current name). Reaches
+    the filesystem only through :func:`litman.core.project_link.rename_project`
+    (the same core ``lit project rename`` calls): renames across BOTH truth
+    sources (TAXONOMY.md + lit-config.yaml key, path carried over), every
+    referencing paper's ``projects`` field + the paired ``relevance-<name>``, and
+    INDEX, then rebuilds views/by-project/ + symlinks + REFERENCES.md in one
+    funnel (invariant #16: no second write path). Semantics-preserving, so there
+    is no confirmation to skip.
+
+    An empty new name, ``old`` == ``new``, an unregistered current name, or a new
+    name that already exists surface as TaxonomyError → 400.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    new = payload.get("new")
+    if not isinstance(new, str) or not new.strip():
+        raise HTTPException(status_code=400, detail="new must be a non-empty string.")
+
+    vault = request.app.state.vault
+    try:
+        n_changed, _ = rename_project(vault, name, new)
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "changed": n_changed}
+
+
+@router.put("/projects/{name}/path")
+async def put_project_path(request: Request, name: str) -> dict[str, object]:
+    """Re-point a project's on-disk path through the ``lit project set-path``
+    backend.
+
+    Body JSON ``{"path": str}`` (absolute). For when the user has already moved
+    the project folder and wants the registry to point at the new location.
+    Reaches the filesystem only through
+    :func:`litman.core.project_link.set_project_path` (the same core ``lit project
+    set-path`` calls): a config-only write (papers reference the project by NAME).
+    Like the CLI, it does NOT physically move the directory and does NOT rebuild
+    symlinks — those are recreated on demand via the rebuild-views action
+    (invariant #16: no second write path). The raw path is passed through with
+    only ``~`` expanded; ``set_project_path`` rejects a relative path rather than
+    resolving it against the server's opaque cwd, then validates + normalizes it.
+
+    A relative / missing / not-a-directory path, or an unregistered project,
+    surface as TaxonomyError → 400. ``changed`` is ``False`` when the project
+    already points at that path (no-op).
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    path = payload.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise HTTPException(status_code=400, detail="path must be a non-empty string.")
+
+    vault = request.app.state.vault
+    try:
+        result = set_project_path(vault, name, Path(path).expanduser())
+    except TaxonomyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "path": result["path"], "changed": result["changed"]}
 
 
 @router.put("/vaults/active")

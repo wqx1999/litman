@@ -29,6 +29,8 @@ from ruamel.yaml import YAML
 
 pytest.importorskip("fastapi")
 
+from datetime import UTC
+
 from fastapi.testclient import TestClient
 
 from litman.cli import cli
@@ -311,12 +313,12 @@ def test_post_read_second_call_is_noop(vault_with_paper: tuple[Path, str]) -> No
 
 def test_post_read_default_today(vault_with_paper: tuple[Path, str]) -> None:
     """No body → today (matches `lit read` with no --date)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     vault, paper_id = vault_with_paper
     resp = _client(vault).post(f"/api/paper/{paper_id}/read")
     assert resp.status_code == 200
-    today = datetime.now(timezone.utc).astimezone().date().isoformat()
+    today = datetime.now(UTC).astimezone().date().isoformat()
     assert _meta(vault, paper_id)["read-date"] == today
 
 
@@ -757,8 +759,8 @@ def _seed_second_paper(vault: Path, paper_id: str) -> None:
     The taxonomy-delete cascade must rewrite EVERY referencing paper, so the
     A4 assertion needs ≥2 papers tagged with the same value.
     """
-    from litman.core.views import write_index
     from litman.core.document import list_papers
+    from litman.core.views import write_index
 
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True)
@@ -911,8 +913,8 @@ def test_delete_project_cascades_and_keeps_dir(
     (TRUTH) + both truth sources, reprojects INDEX, tears down the
     litman_reflib symlink + REFERENCES.md (DERIVED) — but NEVER removes the
     project directory itself."""
-    from litman.core.taxonomy import parse_taxonomy
     from litman.core.config import load_config
+    from litman.core.taxonomy import parse_taxonomy
 
     vault, paper_id = vault_with_paper
     project_dir = tmp_path / "pepforge"
@@ -968,6 +970,309 @@ def test_delete_project_unregistered_400(
     resp = _client(vault).delete("/api/projects/ghost")
     assert resp.status_code == 400
     assert "not registered" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/taxonomy/{key} — rename a controlled value (tag rename)
+# ---------------------------------------------------------------------------
+
+
+def test_put_taxonomy_renames_and_cascades(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """A4 core: renaming a tag value rewrites it in EVERY referencing paper's
+    metadata.yaml (TRUTH), reprojects each INDEX entry (DERIVED), and replaces
+    it in TAXONOMY.md — old gone, new present."""
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, paper_id = vault_with_paper
+    paper2 = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper2)
+    _register_topic(vault, "peptied")  # deliberate typo to fix
+
+    client = _client(vault)
+    for pid in (paper_id, paper2):
+        r = client.put(
+            f"/api/paper/{pid}/metadata", json={"addTag": {"topics": ["peptied"]}}
+        )
+        assert r.status_code == 200, r.text
+
+    resp = client.put("/api/taxonomy/topics", json={"old": "peptied", "new": "peptide"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": 2}
+
+    # TRUTH: both papers re-tagged with the corrected value …
+    assert _meta(vault, paper_id)["topics"] == ["peptide"]
+    assert _meta(vault, paper2)["topics"] == ["peptide"]
+    # … DERIVED: both INDEX projections reprojected to match …
+    assert _index_paper(vault, paper_id)["topics"] == ["peptide"]
+    assert _index_paper(vault, paper2)["topics"] == ["peptide"]
+    # … and TAXONOMY.md swapped old → new.
+    parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text())
+    assert "peptied" not in parsed["topics"]
+    assert "peptide" in parsed["topics"]
+
+
+def test_put_taxonomy_unregistered_old_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Renaming a value that is not registered → TaxonomyError → 400."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).put(
+        "/api/taxonomy/topics", json={"old": "ghost", "new": "spirit"}
+    )
+    assert resp.status_code == 400
+    assert "not registered" in resp.json()["detail"]
+
+
+def test_put_taxonomy_new_already_exists_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Renaming onto an existing value is a merge, not a rename → 400 that points
+    the user at `lit taxonomy merge`."""
+    vault, _ = vault_with_paper
+    _register_topic(vault, "alpha")
+    _register_topic(vault, "beta")
+    resp = _client(vault).put(
+        "/api/taxonomy/topics", json={"old": "alpha", "new": "beta"}
+    )
+    assert resp.status_code == 400
+    assert "merge" in resp.json()["detail"]
+
+
+def test_put_taxonomy_projects_key_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """projects is path-bound: renaming it must redirect to PUT /api/projects."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).put(
+        "/api/taxonomy/projects", json={"old": "a", "new": "b"}
+    )
+    assert resp.status_code == 400
+    assert "lit project" in resp.json()["detail"]
+
+
+def test_put_taxonomy_empty_new_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """An empty/blank new value is a client bug → 400 (no write)."""
+    vault, _ = vault_with_paper
+    _register_topic(vault, "alpha")
+    resp = _client(vault).put(
+        "/api/taxonomy/topics", json={"old": "alpha", "new": "   "}
+    )
+    assert resp.status_code == 400
+
+
+def test_put_taxonomy_value_with_slash_renames(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """old/new ride in the BODY (not the path) specifically so a value containing
+    '/' survives routing. Guard that end-to-end: a slash value renames with TRUTH
+    + DERIVED both following."""
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, paper_id = vault_with_paper
+    old = "deep-learning/cnn"
+    new = "deep-learning/transformers"
+    _register_topic(vault, old)
+    client = _client(vault)
+    r = client.put(
+        f"/api/paper/{paper_id}/metadata", json={"addTag": {"topics": [old]}}
+    )
+    assert r.status_code == 200, r.text
+
+    resp = client.put("/api/taxonomy/topics", json={"old": old, "new": new})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": 1}
+    assert _meta(vault, paper_id)["topics"] == [new]
+    parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text())
+    assert old not in parsed["topics"]
+    assert new in parsed["topics"]
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/projects/{name} — rename a project
+# ---------------------------------------------------------------------------
+
+
+def test_put_project_renames_across_truth_and_relevance(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A4 core: renaming a project rewrites BOTH truth sources (TAXONOMY +
+    config key, path carried over), the linked paper's projects field + the
+    paired relevance-<name> annotation, and reprojects INDEX."""
+    from litman.core.config import load_config
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, paper_id = vault_with_paper
+    project_dir = tmp_path / "pepforge"
+    _register_project(vault, "pepforge", project_dir)
+    client = _client(vault)
+
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "relevance": "core baseline"},
+    )
+    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    assert _meta(vault, paper_id)["relevance-pepforge"] == "core baseline"
+
+    resp = client.put("/api/projects/pepforge", json={"new": "pepcodec"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": 1}
+
+    meta = _meta(vault, paper_id)
+    # TRUTH: paper field renamed + relevance annotation carried over under the
+    # new key (no orphan left behind) …
+    assert meta["projects"] == ["pepcodec"]
+    assert meta["relevance-pepcodec"] == "core baseline"
+    assert "relevance-pepforge" not in meta
+    # … both registry truth sources renamed, path carried over unchanged …
+    cfg = load_config(vault)
+    assert "pepforge" not in cfg.projects
+    assert cfg.projects["pepcodec"] == str(project_dir)
+    parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text())
+    assert "pepforge" not in parsed["projects"]
+    assert "pepcodec" in parsed["projects"]
+    # … and DERIVED reprojected.
+    assert _index_paper(vault, paper_id)["projects"] == ["pepcodec"]
+
+
+def test_put_project_unregistered_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Renaming a project that is not registered → TaxonomyError → 400."""
+    vault, _ = vault_with_paper
+    resp = _client(vault).put("/api/projects/ghost", json={"new": "spirit"})
+    assert resp.status_code == 400
+    assert "not registered" in resp.json()["detail"]
+
+
+def test_put_project_duplicate_new_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Renaming onto an already-registered project name → 400 (no half-merge)."""
+    vault, _ = vault_with_paper
+    _register_project(vault, "alpha", tmp_path / "alpha")
+    _register_project(vault, "beta", tmp_path / "beta")
+    resp = _client(vault).put("/api/projects/alpha", json={"new": "beta"})
+    assert resp.status_code == 400
+    assert "already registered" in resp.json()["detail"]
+
+
+def test_put_project_empty_new_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """An empty/blank new name is a client bug → 400."""
+    vault, _ = vault_with_paper
+    _register_project(vault, "alpha", tmp_path / "alpha")
+    resp = _client(vault).put("/api/projects/alpha", json={"new": "   "})
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/projects/{name}/path — re-point a project's on-disk path (set-path)
+# ---------------------------------------------------------------------------
+
+
+def test_put_project_path_updates_config_only(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A4 core: re-pointing a project's path is a config-only write — the
+    registry now points at the new dir, and papers (which store the NAME) are
+    untouched."""
+    from litman.core.config import load_config
+
+    vault, paper_id = vault_with_paper
+    old_dir = tmp_path / "old_loc"
+    new_dir = tmp_path / "new_loc"
+    new_dir.mkdir()
+    _register_project(vault, "pepforge", old_dir)
+    client = _client(vault)
+    client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+
+    resp = client.put(
+        "/api/projects/pepforge/path", json={"path": str(new_dir)}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["changed"] is True
+    assert body["path"] == str(new_dir)
+
+    # Config re-pointed; the paper's membership (by NAME) is unchanged.
+    assert load_config(vault).projects["pepforge"] == str(new_dir)
+    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+
+
+def test_put_project_path_noop_when_same(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Re-pointing to the path it already has is a benign no-op (changed=False),
+    not an error."""
+    vault, _ = vault_with_paper
+    project_dir = tmp_path / "pepforge"
+    _register_project(vault, "pepforge", project_dir)
+    resp = _client(vault).put(
+        "/api/projects/pepforge/path", json={"path": str(project_dir)}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["changed"] is False
+
+
+def test_put_project_path_unregistered_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Re-pointing an unregistered project → TaxonomyError → 400."""
+    vault, _ = vault_with_paper
+    target = tmp_path / "somewhere"
+    target.mkdir()
+    resp = _client(vault).put(
+        "/api/projects/ghost/path", json={"path": str(target)}
+    )
+    assert resp.status_code == 400
+    assert "not registered" in resp.json()["detail"]
+
+
+def test_put_project_path_nonexistent_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A path that does not exist → 400 (no silent registration of a dead path)."""
+    vault, _ = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    resp = _client(vault).put(
+        "/api/projects/pepforge/path", json={"path": str(tmp_path / "missing")}
+    )
+    assert resp.status_code == 400
+    assert "does not exist" in resp.json()["detail"]
+
+
+def test_put_project_path_relative_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A relative path is rejected (the server cwd is opaque), not resolved."""
+    vault, _ = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    resp = _client(vault).put(
+        "/api/projects/pepforge/path", json={"path": "relative/dir"}
+    )
+    assert resp.status_code == 400
+    assert "absolute" in resp.json()["detail"]
+
+
+def test_put_project_path_is_file_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """A path that exists but is a file, not a directory → 400."""
+    vault, _ = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    f = tmp_path / "afile.txt"
+    f.write_text("x", encoding="utf-8")
+    resp = _client(vault).put(
+        "/api/projects/pepforge/path", json={"path": str(f)}
+    )
+    assert resp.status_code == 400
+    assert "not a directory" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,13 @@ import type {
   VaultsPayload,
 } from '../types'
 import type { Candidate } from '../search'
-import { createProject, deleteProject, fetchHealth } from '../api'
+import {
+  createProject,
+  deleteProject,
+  fetchHealth,
+  renameProject,
+  setProjectPath,
+} from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import logoUrl from '../assets/litman-logo.png'
@@ -476,9 +482,12 @@ function ProjectManager({
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
-  // The project awaiting delete confirmation, the new-project dialog toggle, and
-  // whether a delete is in flight (gates the controls).
+  // The project awaiting delete confirmation, being renamed, or having its path
+  // re-pointed; the new-project dialog toggle; and whether a write is in flight
+  // (all gate the list controls).
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [pendingRename, setPendingRename] = useState<ProjectEntry | null>(null)
+  const [pendingSetPath, setPendingSetPath] = useState<ProjectEntry | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -501,8 +510,48 @@ function ProjectManager({
     }
   }
 
+  async function doRename(oldName: string, newName: string) {
+    setBusy(true)
+    try {
+      await renameProject(oldName, newName)
+      notify(`Renamed project to “${newName}”.`, 'success')
+      onChanged()
+      setPendingRename(null)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error')
+      // Keep the dialog open so the user can fix the name.
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doSetPath(name: string, path: string) {
+    setBusy(true)
+    try {
+      const res = await setProjectPath(name, path)
+      notify(
+        res.changed
+          ? `“${name}” now points at ${res.path}. If the folder wasn't moved with its links, rebuild views.`
+          : `“${name}” already points there.`,
+        res.changed ? 'success' : 'info',
+      )
+      onChanged()
+      setPendingSetPath(null)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error')
+      // Keep the dialog open so the user can fix the path.
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const sorted = projects.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked = busy || pendingDelete != null || showNew
+  const blocked =
+    busy ||
+    pendingDelete != null ||
+    pendingRename != null ||
+    pendingSetPath != null ||
+    showNew
 
   return createPortal(
     <div
@@ -512,14 +561,22 @@ function ProjectManager({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && !pendingDelete && !showNew) onClose()
+          if (
+            e.key === 'Escape' &&
+            !pendingDelete &&
+            !pendingRename &&
+            !pendingSetPath &&
+            !showNew
+          )
+            onClose()
         }}
         className="flex max-h-[70vh] w-[28rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Projects</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Register a project, or remove one. Removing unlinks it from every paper
-          and tears down its reflib links, but leaves the project folder on disk.
+          Register a project, rename it, or re-point its folder if you moved it.
+          Removing unlinks it from every paper and tears down its reflib links,
+          but always leaves the project folder on disk.
         </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
@@ -544,6 +601,26 @@ function ProjectManager({
                 <span className="text-[11px] text-stone-400">
                   {countFor(p.name)} papers
                 </span>
+                <button
+                  type="button"
+                  aria-label={`Rename project ${p.name}`}
+                  title={`Rename project “${p.name}”`}
+                  disabled={blocked}
+                  onClick={() => setPendingRename(p)}
+                  className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-accent-50 hover:text-accent-600 disabled:opacity-40"
+                >
+                  <IconPencil />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Change path for project ${p.name}`}
+                  title={`Re-point “${p.name}” at a new folder`}
+                  disabled={blocked}
+                  onClick={() => setPendingSetPath(p)}
+                  className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-accent-50 hover:text-accent-600 disabled:opacity-40"
+                >
+                  <IconMove />
+                </button>
                 <button
                   type="button"
                   aria-label={`Delete project ${p.name}`}
@@ -584,6 +661,24 @@ function ProjectManager({
           busy={busy}
           onCancel={() => setPendingDelete(null)}
           onConfirm={() => doDelete(pendingDelete)}
+        />
+      )}
+      {pendingRename != null && (
+        <RenameProjectDialog
+          project={pendingRename}
+          count={countFor(pendingRename.name)}
+          existing={projects.map((p) => p.name)}
+          busy={busy}
+          onCancel={() => setPendingRename(null)}
+          onConfirm={(next) => doRename(pendingRename.name, next)}
+        />
+      )}
+      {pendingSetPath != null && (
+        <SetProjectPathDialog
+          project={pendingSetPath}
+          busy={busy}
+          onCancel={() => setPendingSetPath(null)}
+          onConfirm={(path) => doSetPath(pendingSetPath.name, path)}
         />
       )}
       {showNew && (
@@ -663,6 +758,199 @@ function DeleteProjectConfirm({
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
             Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Rename a project (prefilled with the current name). Mirrors NewProjectDialog's
+ * shell; the input autofocuses + selects. A blank/unchanged name, or one that
+ * collides with another registered project, disables Save. The path is carried
+ * over unchanged — the backend renames across both truth sources + every paper.
+ * Escape cancels and the backdrop stops click-through so dismissing it keeps the
+ * ProjectManager open. */
+function RenameProjectDialog({
+  project,
+  count,
+  existing,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  project: ProjectEntry
+  count: number
+  existing: string[]
+  busy: boolean
+  onCancel: () => void
+  onConfirm: (next: string) => void
+}) {
+  const [next, setNext] = useState(project.name)
+  const trimmed = next.trim()
+  const collides = trimmed !== project.name && existing.includes(trimmed)
+  const canSubmit =
+    trimmed.length > 0 && trimmed !== project.name && !collides && !busy
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">
+          Rename “{project.name}”?
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Renames it everywhere
+          {count > 0
+            ? ` — re-tags ${count} paper${count === 1 ? '' : 's'}`
+            : ''}
+          . The folder on disk and its path are unchanged.
+        </p>
+        <input
+          autoFocus
+          type="text"
+          value={next}
+          disabled={busy}
+          onChange={(e) => setNext(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
+          }}
+          className={`${INPUT} mt-3`}
+        />
+        {collides && (
+          <p className="mt-1.5 text-[11px] text-rose-500">
+            “{trimmed}” already exists — pick another name.
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(trimmed)}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Renaming…' : 'Rename'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Re-point a project's on-disk path (set-path). For when the folder was moved
+ * manually and the registry needs to follow. Prefilled with the current path;
+ * the new path must be absolute + already exist + be a directory server-side, so
+ * a bad path surfaces the backend's TaxonomyError verbatim and the dialog stays
+ * open for correction. Copy makes clear this does NOT move the folder. Escape
+ * cancels; the backdrop stops click-through so dismissing keeps the manager open. */
+function SetProjectPathDialog({
+  project,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  project: ProjectEntry
+  busy: boolean
+  onCancel: () => void
+  onConfirm: (path: string) => void
+}) {
+  const [path, setPath] = useState(project.path ?? '')
+  const trimmed = path.trim()
+  const canSubmit = trimmed.length > 0 && !busy
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onCancel()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">
+          Path for “{project.name}”
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Points the registry at where the folder lives now. This does NOT move
+          the folder — move it yourself first, then paste the new location here.
+        </p>
+        <label className="mt-4 flex flex-col gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            Absolute path
+          </span>
+          <input
+            autoFocus
+            type="text"
+            value={path}
+            disabled={busy}
+            placeholder="/work/you/Project/pepforge"
+            onChange={(e) => setPath(e.target.value)}
+            onFocus={(e) => e.target.select()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
+            }}
+            className={`${INPUT} font-mono`}
+          />
+          <span className="text-[11px] text-stone-400">
+            the folder itself, must already exist
+          </span>
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(trimmed)}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Saving…' : 'Save path'}
           </button>
         </div>
       </div>
@@ -1433,6 +1721,42 @@ function IconTrash() {
       aria-hidden
     >
       <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
+    </svg>
+  )
+}
+
+/** Pencil — rename affordance, matching the cockpit's Manage-dialog rename. */
+function IconPencil() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  )
+}
+
+/** Folder with an arrow — "re-point at a new location" (set-path). */
+function IconMove() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v3M3 7v10a2 2 0 0 0 2 2h6M16 16l3 3-3 3M19 19h-6" />
     </svg>
   )
 }

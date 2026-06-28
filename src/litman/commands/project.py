@@ -37,25 +37,24 @@ from rich.markup import escape
 from rich.table import Table
 from ruamel.yaml import YAML
 
-from litman.core.atomic import staged_write
-from litman.core.confirm import _confirm_destructive
 from litman.core.config import config_to_yaml_dict, load_config
-from litman.core.correctors import reconcile_derived
-from litman.core.dates import now_iso
+from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.project_link import add_project, remove_project
+from litman.core.project_link import (
+    add_project,
+    remove_project,
+    rename_project,
+    set_project_path,
+)
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
 )
-from litman.core.ripple import _ripple_replacements
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
-    update_user_dict_section,
 )
-from litman.core.views import render_index
 from litman.exceptions import TaxonomyError
 
 console = Console()
@@ -268,64 +267,15 @@ def project_rename_cmd(
     policy as lit taxonomy rename. The project's on-disk path is
     carried over unchanged under the new key.
     """
-    old = old.strip()
-    new = new.strip()
-    if not new:
-        raise TaxonomyError("`new` project name cannot be empty.")
-    if old == new:
-        raise TaxonomyError("`old` and `new` are identical — nothing to do.")
-
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
-    config = load_config(vault)
-
-    known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
-    if old not in known:
-        raise TaxonomyError(
-            f"Project {old!r} is not registered. "
-            "Run `lit project list` to inspect."
-        )
-    if new in known:
-        raise TaxonomyError(
-            f"Project {new!r} is already registered. "
-            "Pick a different name or `lit project rm` the conflicting one."
-        )
-
-    new_taxonomy_values = [
-        new if v == old else v for v in parsed[_PROJECTS_DICT]
-    ]
-    new_taxonomy_text = update_user_dict_section(
-        text, _PROJECTS_DICT, new_taxonomy_values
-    )
-
-    new_projects = {
-        (new if k == old else k): v for k, v in config.projects.items()
-    }
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, _PROJECTS_DICT, {old: new}, rename_relevance=True
-    )
-    fresh_index = render_index(all_papers, now_iso())
-
-    with staged_write(vault, op_id=f"project-rename-{old}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        stage.write_text("lit-config.yaml", new_config_text)
-        for relpath, content in staged_meta_paths:
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", fresh_index)
-
-    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
-    # INDEX + views/by-project/ (new name in, old name out) + every project's
-    # symlinks + REFERENCES.md, all recomputed together from the committed
-    # TRUTH. project_refs=True because a rename touches the project side
-    # (mirrors the pre-funnel command's rebuild_all_project_{links,refs}).
-    # The staged INDEX.json above is the crash-safety layer; the funnel
-    # reloads config (= the just-committed new_projects) for the project side.
-    reconcile_derived(vault, project_refs=True)
+    # Single write path (invariant #16): validation + atomic dual-write +
+    # derived rebuild all live in core.project_link.rename_project, shared with
+    # the webUI's PUT /api/projects/{name}. The command only renders the result.
+    n_changed, _ = rename_project(vault, old, new)
 
     console.print(
-        f"[bold green]✓ Renamed[/] project {escape(old)} → {escape(new)}"
+        f"[bold green]✓ Renamed[/] project {escape(old.strip())} → "
+        f"{escape(new.strip())}"
     )
     console.print(
         f"  Updated [bold]{n_changed}[/] paper"
@@ -364,43 +314,23 @@ def project_set_path_cmd(
     rebuild hint because the registry change does NOT physically move the
     directory.
     """
-    name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    config = load_config(vault)
+    # Single write path (invariant #16): validation + atomic config write live in
+    # core.project_link.set_project_path, shared with the webUI's
+    # PUT /api/projects/{name}/path. The command only renders the result.
+    result = set_project_path(vault, name, new_path)
+    name_str = result["name"]
+    new_path_str = result["path"]
 
-    if name not in config.projects:
-        raise TaxonomyError(
-            f"Project {name!r} is not registered in lit-config.yaml. "
-            "Run `lit project list` to inspect, or "
-            f"`lit project add {name} --path <abs-path>` to register it."
-        )
-    if not new_path.exists():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {new_path}`)."
-        )
-    if not new_path.is_dir():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} is not a directory."
-        )
-
-    new_path_str = str(new_path)
-    if config.projects[name] == new_path_str:
+    if not result["changed"]:
         console.print(
-            f"[yellow]No-op:[/] {escape(name)} already points at "
+            f"[yellow]No-op:[/] {escape(name_str)} already points at "
             f"{escape(new_path_str)}."
         )
         return
 
-    new_projects = dict(config.projects)
-    new_projects[name] = new_path_str
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    with staged_write(vault, op_id=f"project-set-path-{name}") as stage:
-        stage.write_text("lit-config.yaml", new_config_text)
-
     console.print(
-        f"[bold green]✓ Updated[/] {escape(name)} → {escape(new_path_str)}"
+        f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}"
     )
     console.print(
         "[dim]ℹ If the project directory wasn't physically moved, run "

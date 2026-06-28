@@ -359,6 +359,36 @@ export function deleteProject(
   return mutateJSON(`/api/projects/${encodeURIComponent(name)}`, 'DELETE')
 }
 
+/** Rename a project through the `lit project rename` backend (atomic rename
+ * across both truth sources + every paper's `projects` field + the paired
+ * `relevance-<name>`; the on-disk path is carried over unchanged). `changed`
+ * counts the papers rewritten. Throws the backend's TaxonomyError (400)
+ * verbatim on rejection (unregistered / duplicate / empty). */
+export function renameProject(
+  name: string,
+  newName: string,
+): Promise<{ ok: boolean; changed: number }> {
+  return mutateJSON(`/api/projects/${encodeURIComponent(name)}`, 'PUT', {
+    new: newName,
+  })
+}
+
+/** Re-point a project's on-disk path through the `lit project set-path` backend
+ * (config-only — papers reference the project by NAME, so nothing else changes).
+ * For when the folder was moved manually and the registry needs to follow. The
+ * directory is NOT moved and symlinks are NOT rebuilt (use rebuild-views for
+ * that). `path` must be absolute + already exist + be a directory; a bad path
+ * surfaces the backend's TaxonomyError (400) verbatim. `changed` is false when
+ * the project already points there (no-op). */
+export function setProjectPath(
+  name: string,
+  path: string,
+): Promise<{ ok: boolean; path: string; changed: boolean }> {
+  return mutateJSON(`/api/projects/${encodeURIComponent(name)}/path`, 'PUT', {
+    path,
+  })
+}
+
 /** Register a new controlled-vocab value through the `lit taxonomy add` backend
  * (register-first per invariant #2). This only registers the value; the caller
  * then attaches it via `putMetadata` addTag (two-step inline-create). */
@@ -382,6 +412,22 @@ export function deleteTaxonomyValue(
     `/api/taxonomy/${encodeURIComponent(key)}?value=${encodeURIComponent(value)}`,
     'DELETE',
   )
+}
+
+/** Rename a controlled-vocab value through the `lit taxonomy rename` backend
+ * (atomic dictionary + reference rewrite per invariant #2). `old`/`new` ride in
+ * the body, not the path, because a value may contain '/'. `changed` is the count
+ * of papers rewritten. Throws the backend's TaxonomyError (400) verbatim on
+ * rejection (unregistered `old`, or a `new` that already exists → use merge). */
+export function renameTaxonomyValue(
+  key: string,
+  old: string,
+  next: string,
+): Promise<{ ok: boolean; changed: number }> {
+  return mutateJSON(`/api/taxonomy/${encodeURIComponent(key)}`, 'PUT', {
+    old,
+    new: next,
+  })
 }
 
 // --- Trash (recoverable-delete bin) — read-only library + restore (Phase 4.9) -
