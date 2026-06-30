@@ -61,9 +61,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from ruamel.yaml import YAML
 
 from litman.core.id import find_case_fold_collision
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import VaultRegistryError
 
 # Env var that, when set, overrides the platformdirs default. Point at a
@@ -83,9 +83,10 @@ REGISTRY_FILENAME = "vaults.yaml"
 # ``is_valid_vault_name`` so a future reader sees the reason.
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+)
 
 
 def registry_path() -> Path:

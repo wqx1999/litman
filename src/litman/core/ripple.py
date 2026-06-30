@@ -28,16 +28,16 @@ import io
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
-
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.taxonomy import replace_value_in_field
+from litman.core.yaml_pool import ThreadLocalYAML
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:

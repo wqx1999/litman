@@ -16,7 +16,6 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
-from ruamel.yaml import YAML
 
 from litman.core.config import (
     CONFIG_FILENAME,
@@ -25,14 +24,16 @@ from litman.core.config import (
     load_config,
 )
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError
 
 console = Console()
 
 # ruamel writer configured to match the seed style.
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+)
 
 
 @click.group("config")

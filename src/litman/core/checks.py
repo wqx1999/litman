@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
@@ -57,9 +57,10 @@ from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError, VaultRegistryError
 
-_yaml = YAML(typ="safe")
+_yaml = ThreadLocalYAML(typ="safe")
 
 # ---------------------------------------------------------------------------
 # Issue type

@@ -30,28 +30,29 @@ from typing import Any
 import click
 from rich.console import Console
 from rich.markup import escape
-from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
 from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
-from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
+from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.project_refs import write_references_md
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ModifyError, PaperNotFoundError
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 # Fields the user must NOT modify via `lit modify`. id is changed via
 # `lit rename` (M2.6) which also renames the paper dir; the audit fields

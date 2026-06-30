@@ -29,12 +29,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAMLError
 
 from litman.core.id import derive_keyword_alternatives
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError
 
-_yaml_safe = YAML(typ="safe")
+_yaml_safe = ThreadLocalYAML(typ="safe")
 
 # Resolver-URL / scheme prefixes that wrap an otherwise-bare DOI. Matched
 # case-insensitively; the DOI body after the prefix is preserved as-is.

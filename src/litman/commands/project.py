@@ -35,7 +35,6 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
-from ruamel.yaml import YAML
 
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive
@@ -55,14 +54,16 @@ from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
 )
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 _PROJECTS_DICT = "projects"
 

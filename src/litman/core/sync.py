@@ -29,14 +29,13 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
-
 from litman.core.dates import now_iso
 from litman.core.locking import ensure_truth_locked
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import SyncError
 
 RCLONE_BIN = "rclone"
@@ -64,9 +63,10 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     SYNC_STATE_FILENAME,
 )
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+)
 
 
 # ---------------------------------------------------------------------------

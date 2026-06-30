@@ -30,8 +30,6 @@ import io
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
-
 from litman.core.atomic import staged_write
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
@@ -51,16 +49,18 @@ from litman.core.taxonomy import (
     update_user_dict_section,
 )
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
 
 _PROJECTS_DICT = "projects"
 
 CODE_SUBDIR = "litman_code"
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 
 class LinkError(LitmanError):

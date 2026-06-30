@@ -29,12 +29,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import CodeError, PaperNotFoundError
 
 # Directory layout constants.
@@ -70,12 +71,13 @@ def missing_code_clones(vault: Path, names: list[str]) -> list[str]:
         and not (codes_dir / name / REPO_META_FILENAME).is_file()
     ]
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
-_yaml.preserve_quotes = True
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+    preserve_quotes=True,
+)
 
-_yaml_safe = YAML(typ="safe")
+_yaml_safe = ThreadLocalYAML(typ="safe")
 
 
 # ---------------------------------------------------------------------------
