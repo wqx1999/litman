@@ -32,48 +32,36 @@ Claude Code skills.
 
 A few things worth knowing up front:
 
-1. **Don't move a vault or project folder by hand.** Links (symlinks, project
-   bridges, the registry) are path-based and will break. If you must move one,
-   run `lit health-check` afterwards to find and repair what broke.
+1. **Don't move a vault or project folder by hand.** The symlinks, project
+   bridges, and registry that hold it together are path-based; if you must move
+   one, run `lit health-check` afterward to repair what broke.
 2. **Figure/table reading needs a multimodal model.** A text-only model falls
-   back to plain-text extraction (pypdf) and cannot see figures or
-   image-based tables — don't ask it "what does Fig./Table N show?" without a
-   vision or OCR backend attached.
+   back to plain-text extraction and can't see figures or image-based tables.
 3. **Don't edit metadata files by hand.** Change papers, taxonomy, and config
-   through the web UI or by asking your AI agent — both go through validated
-   `lit` commands that keep cross-references intact.
-4. **Windows users.** Symlink-based features (browsing views, project bridges)
-   require administrator privileges; all other commands work regardless.
-   [WSL](https://learn.microsoft.com/en-us/windows/wsl/) is recommended.
+   through the web UI or your AI agent — both go through validated `lit` commands.
+4. **Windows users.** Symlink features (browsing views, project bridges) need
+   administrator privileges; [WSL](https://learn.microsoft.com/en-us/windows/wsl/)
+   is recommended.
 
 ## Key Features
 
-1. **Long-term reliable local knowledge vault.** Everything is plain
-   text on your filesystem — YAML metadata, markdown notes, original
-   PDFs. No cloud database, no proprietary container format. Back it up
-   anywhere, read every file as plain text, `grep` the whole library.
+1. **Plain files you own.** Your whole library is plain text on disk — YAML
+   metadata, markdown notes, original PDFs. No cloud database, no lock-in: back
+   it up anywhere, `grep` the lot.
 
-2. **Consistent by design.** Topics, methods, projects, and data
-   sources are governed by a shared `TAXONOMY.md` controlled vocabulary.
-   Atomic operations keep cross-references clean as the library grows,
-   and `lit health-check` catches any drift before it accumulates.
+2. **Consistent by design.** A shared `TAXONOMY.md` governs topics, methods,
+   projects, and sources; atomic writes plus `lit health-check` keep
+   cross-references clean as the library grows.
 
-3. **Paper ↔ project ↔ code triangle.** One paper can be bound to
-   multiple projects without duplication; each project gets its own
-   symlinked working folder and an auto-generated `REFERENCES.md`. Each
-   paper can also be bound to its official code repository, cloned
-   inside the vault. Metadata fields and symlinks together form an
-   explicit, navigable knowledge graph — no manual upkeep required.
+3. **Paper ↔ project ↔ code.** Bind one paper to many projects (each gets a
+   symlinked folder and an auto-generated `REFERENCES.md`) and to its cloned
+   code repo — an explicit knowledge graph with no manual upkeep.
 
-4. **AI drives the CLI; you drive the agent.** The `lit` CLI is litman's
-   complete capability surface, but it's built to be operated by an AI agent,
-   not typed by hand. Two bundled Claude Code skills (`lit-library` for
-   ingestion and retrieval, `lit-reading` for reading assistance) teach the
-   agent to run it from plain-English requests; the agent emits structured
-   JSON and the CLI validates every write, so your library stays correct even
-   when the model isn't perfect. A web UI (`lit gui`) covers everyday
-   browsing, reading, and annotation — a friendly subset of what the agent
-   can do.
+4. **Web UI + AI agent over one validated core.** Browse, read, and annotate in
+   the web UI (`lit gui`); for anything more, ask Claude Code in plain English
+   and the bundled `lit-library` / `lit-reading` skills drive the full CLI.
+   Every write is validated, so the library stays correct even when the model
+   isn't.
 
 ---
 
