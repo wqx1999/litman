@@ -20,10 +20,8 @@ binding logic is testable without spinning up a real git clone every time.
 from __future__ import annotations
 
 import io
-import os
 import re
 import shutil
-import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +32,7 @@ from ruamel.yaml import YAMLError
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
+from litman.core.locking import rmtree
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import CodeError, PaperNotFoundError
@@ -857,19 +856,6 @@ def bump_repo_updated_at(vault: Path, repo_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _clear_readonly(func, path, _exc):  # type: ignore[no-untyped-def]
-    """``shutil.rmtree`` onexc handler: clear a read-only bit and retry.
-
-    On Windows ``.git`` objects are frequently marked read-only, which
-    makes ``os.unlink`` raise ``PermissionError`` mid-walk. Clearing the
-    write bit and retrying the failed op lets the removal proceed. A no-op
-    on POSIX (files are already writable); harmless if the retry still
-    fails, in which case the original error re-raises to the caller.
-    """
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
-
-
 def delete_repo(vault: Path, repo_name: str) -> None:
     """Permanently delete ``codes/<repo_name>/`` from disk.
 
@@ -893,7 +879,7 @@ def delete_repo(vault: Path, repo_name: str) -> None:
             "Run `lit code list` to see available repos."
         )
     try:
-        shutil.rmtree(repo_root, onexc=_clear_readonly)
+        rmtree(repo_root)
     except OSError as err:
         raise CodeError(
             f"Failed to fully delete {repo_root}: {err}. The directory may "

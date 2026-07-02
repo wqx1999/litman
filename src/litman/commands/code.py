@@ -11,7 +11,6 @@ preserved in its ``repo-meta.yaml``).
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from litman.core.code import (
 )
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import rmtree
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.exceptions import CodeError, PaperNotFoundError
 
@@ -251,7 +251,7 @@ def code_add_cmd(
             bound_now = bind_paper_to_repo(vault, paper_id, repo_name)
     except Exception:
         if repo_root.exists():
-            shutil.rmtree(repo_root, ignore_errors=True)
+            rmtree(repo_root, ignore_errors=True)
         raise
 
     # `--move` consumes the source — but only HERE, after the import fully
@@ -261,7 +261,7 @@ def code_add_cmd(
     # source last is what closes the data-loss window (bug-report 2026-06-01 #7).
     if move_src and not use_url and src_path is not None:
         try:
-            shutil.rmtree(src_path)
+            rmtree(src_path)
         except OSError as e:
             console.print(
                 f"[yellow]warning:[/] imported into the vault, but could not "

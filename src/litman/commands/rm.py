@@ -57,7 +57,6 @@ Atomicity layers:
 from __future__ import annotations
 
 import io
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -74,6 +73,7 @@ from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import rmtree
 from litman.core.notes import (
     annotate_deleted_wikilinks,
     enumerate_markdown_files,
@@ -473,7 +473,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     # will flag the orphan dir.
     try:
         if purge:
-            shutil.rmtree(plan.paper_dir)
+            rmtree(plan.paper_dir)
         else:
             move_to_trash(vault, paper_id, orphan_repos=plan.orphan_repos)
     except OSError as e:
@@ -492,7 +492,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         repo_root = vault / CODES_DIRNAME / repo_name
         if repo_root.is_dir():
             try:
-                shutil.rmtree(repo_root)
+                rmtree(repo_root)
             except OSError as e:
                 warnings.append(
                     f"could not remove orphan repo {repo_root}: {e}. "

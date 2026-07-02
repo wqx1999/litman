@@ -51,6 +51,7 @@ from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import now_iso
 from litman.core.document import list_papers
+from litman.core.locking import rmtree
 from litman.core.notes import (
     deannotate_deleted_wikilinks,
     enumerate_markdown_files,
@@ -701,7 +702,7 @@ def empty_trash(vault: Path) -> int:
             if child.is_symlink() or child.is_file():
                 child.unlink()
             elif child.is_dir():
-                shutil.rmtree(child)
+                rmtree(child)
                 n += 1  # count only entry folders, never the sidecars
         except OSError:
             continue
@@ -731,7 +732,7 @@ def enforce_cap(vault: Path, cap: int = TRASH_MAX_ENTRIES) -> list[str]:
     evicted: list[str] = []
     for entry in entries[cap:]:
         try:
-            shutil.rmtree(entry.entry_path)
+            rmtree(entry.entry_path)
             _sidecar_path(entry.entry_path).unlink(missing_ok=True)
         except Exception:
             continue

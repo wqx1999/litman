@@ -3,8 +3,11 @@
 Three schema/governance-critical TRUTH files are kept read-only via
 ``os.chmod`` so manual ``vim``-save / ``rm`` / Finder edits hit friction and
 the "do not hand-touch this, go through `lit`" signal, while every ``lit``
-command keeps working — they write through ``os.replace()`` (rename), which
-ignores the read-only bit on the *overwritten* target and re-locks after.
+command keeps working — they write through ``os.replace()`` (rename). On POSIX
+the rename ignores the read-only bit on the *overwritten* target; on Windows
+``os.replace`` (``MoveFileEx``) refuses a read-only destination, so the write
+path unlocks the target immediately before the replace (:func:`unlock_truth_file`)
+and re-locks after.
 
 Locked: ``papers/<id>/metadata.yaml``, ``TAXONOMY.md`` (vault root),
 ``papers/<id>/paper.pdf``. NOT locked: ``notes.md`` / ``discussion.md`` /
@@ -24,6 +27,7 @@ The lock is a per-machine property — it does not round-trip Google Drive
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -49,6 +53,19 @@ def _chmod_readonly(path: Path) -> None:
         os.chmod(path, 0o444)
 
 
+def _chmod_writable(path: Path) -> None:
+    """Clear ``path``'s read-only lock, cross-platform (inverse of
+    :func:`_chmod_readonly`).
+
+    POSIX: ``0o644``. Windows: ``stat.S_IWRITE`` clears the read-only
+    attribute so ``os.replace`` will overwrite the file.
+    """
+    if sys.platform == "win32":
+        os.chmod(path, stat.S_IWRITE)
+    else:
+        os.chmod(path, 0o644)
+
+
 def lock_truth_file(path: Path) -> None:
     """Make a single TRUTH file read-only.
 
@@ -61,6 +78,21 @@ def lock_truth_file(path: Path) -> None:
     if not path.exists():
         return
     _chmod_readonly(path)
+
+
+def unlock_truth_file(path: Path) -> None:
+    """Clear the read-only lock on a single TRUTH file (inverse of
+    :func:`lock_truth_file`).
+
+    Needed before ``os.replace`` overwrites a locked TRUTH file on Windows,
+    where ``os.replace`` (``MoveFileEx``) refuses a read-only destination and
+    raises ``PermissionError`` (``WinError 5``). On POSIX the rename ignores
+    the target's mode, so this is a harmless no-op there. No-op if ``path``
+    does not exist (e.g. a first-time create, or a paper with no ``paper.pdf``).
+    """
+    if not path.exists():
+        return
+    _chmod_writable(path)
 
 
 def is_truth_lockable(vault: Path, target: Path) -> bool:
@@ -135,3 +167,40 @@ def ensure_truth_locked(vault: Path) -> int:
                 n += 1
 
     return n
+
+
+# ---------------------------------------------------------------------------
+# Read-only-tolerant tree deletion — the delete-through-the-lock counterpart.
+# ---------------------------------------------------------------------------
+
+
+def _clear_readonly_onexc(func, path, _exc):  # type: ignore[no-untyped-def]
+    """``shutil.rmtree`` ``onexc`` handler: clear a read-only bit and retry.
+
+    On Windows a read-only file makes ``os.unlink`` raise ``PermissionError``
+    mid-walk — this covers both the locked TRUTH files (``metadata.yaml`` /
+    ``paper.pdf`` / ``TAXONOMY.md``) and read-only ``.git`` objects. Clearing
+    the write bit and retrying the failed op lets the removal proceed. A no-op
+    on POSIX, where ``rmtree`` ignores a child file's mode (deletion is
+    governed by the parent dir's write bit); harmless if the retry still fails,
+    in which case the original error re-raises to the caller.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def rmtree(path: Path, *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` that tolerates read-only children, cross-platform.
+
+    Every litman deletion that can hit a locked TRUTH file (or a cloned repo's
+    read-only ``.git``) must funnel through here, not bare ``shutil.rmtree``:
+    on Windows ``os.unlink`` refuses a read-only file, so a tree containing any
+    locked file would otherwise fail to delete. On POSIX this behaves exactly
+    like ``shutil.rmtree``. ``ignore_errors`` swallows a still-failing removal
+    (best-effort cleanup) rather than raising.
+    """
+    try:
+        shutil.rmtree(path, onexc=_clear_readonly_onexc)
+    except OSError:
+        if not ignore_errors:
+            raise

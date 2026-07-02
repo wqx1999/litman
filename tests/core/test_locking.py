@@ -8,11 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from litman.core import locking
 from litman.core.library import create_vault
 from litman.core.locking import (
     ensure_truth_locked,
     is_truth_lockable,
     lock_truth_file,
+    rmtree,
+    unlock_truth_file,
 )
 
 # The Windows read-only attribute does not produce the same POSIX
@@ -85,6 +88,29 @@ def test_lock_truth_file_idempotent(tmp_path: Path) -> None:
     lock_truth_file(target)  # second call on an already-locked file is fine
     if sys.platform != "win32":
         assert (target.stat().st_mode & 0o777) == 0o444
+
+
+# ---------------------------------------------------------------------------
+# unlock_truth_file
+# ---------------------------------------------------------------------------
+
+
+@_posix_only
+def test_unlock_truth_file_clears_readonly(tmp_path: Path) -> None:
+    """unlock reverses lock: a 0o444 TRUTH file becomes writable again."""
+    target = tmp_path / "metadata.yaml"
+    target.write_text("id: x\n", encoding="utf-8")
+    lock_truth_file(target)
+    assert not os.access(target, os.W_OK)
+
+    unlock_truth_file(target)
+
+    assert os.access(target, os.W_OK)
+
+
+def test_unlock_truth_file_missing_is_noop(tmp_path: Path) -> None:
+    """Unlocking a non-existent file does not raise (first-time create)."""
+    unlock_truth_file(tmp_path / "papers" / "x" / "metadata.yaml")  # no error
 
 
 # ---------------------------------------------------------------------------
@@ -200,3 +226,68 @@ def test_ensure_truth_locked_empty_papers_dir(tmp_path: Path) -> None:
     vault = create_vault(tmp_path)
     os.chmod(vault / "TAXONOMY.md", 0o644)
     assert ensure_truth_locked(vault) == 1
+
+
+# ---------------------------------------------------------------------------
+# rmtree — read-only-tolerant tree deletion (Windows os.unlink refuses a
+# read-only child; the onexc handler clears the bit and retries).
+# ---------------------------------------------------------------------------
+
+
+def test_clear_readonly_onexc_removes_readonly_file(tmp_path: Path) -> None:
+    """The onexc handler mirrors what rmtree's failed unlink hands off on
+    Windows: clear the read-only bit, then re-run the op (here os.unlink)."""
+    target = tmp_path / "metadata.yaml"
+    target.write_text("id: x\n", encoding="utf-8")
+    lock_truth_file(target)
+
+    locking._clear_readonly_onexc(os.unlink, str(target), None)
+
+    assert not target.exists()
+
+
+def test_rmtree_removes_tree_with_locked_truth_files(tmp_path: Path) -> None:
+    """A paper folder whose metadata.yaml / paper.pdf are locked read-only is
+    fully removed. (On POSIX a bare shutil.rmtree already succeeds; this pins
+    the intended API and the happy path for both platforms.)"""
+    paper_dir = tmp_path / "papers" / "2024_a"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text("id: 2024_a\n", encoding="utf-8")
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    lock_truth_file(paper_dir / "metadata.yaml")
+    lock_truth_file(paper_dir / "paper.pdf")
+
+    rmtree(paper_dir)
+
+    assert not paper_dir.exists()
+
+
+def test_rmtree_wires_the_readonly_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards the wiring: rmtree must pass the read-only onexc handler through
+    to shutil.rmtree so a read-only child is retried on Windows."""
+    captured: dict[str, object] = {}
+
+    def fake_rmtree(path: object, *, onexc: object = None) -> None:
+        captured["onexc"] = onexc
+
+    monkeypatch.setattr(locking.shutil, "rmtree", fake_rmtree)
+    rmtree(tmp_path)
+
+    assert captured["onexc"] is locking._clear_readonly_onexc
+
+
+def test_rmtree_ignore_errors_swallows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ignore_errors=True swallows a still-failing removal; default re-raises."""
+
+    def boom(path: object, *, onexc: object = None) -> None:
+        raise OSError("still locked")
+
+    monkeypatch.setattr(locking.shutil, "rmtree", boom)
+
+    rmtree(tmp_path, ignore_errors=True)  # no raise
+    with pytest.raises(OSError):
+        rmtree(tmp_path)

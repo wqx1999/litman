@@ -7,13 +7,12 @@ tests and future programmatic callers can drive it without going through Click.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import click
 from click.core import ParameterSource
 
-from litman.core.locking import lock_truth_file
+from litman.core.locking import lock_truth_file, rmtree
 from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
 from litman.core.views import write_index
 from litman.exceptions import (
@@ -94,7 +93,7 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
     except Exception:
         # Roll back: if we created the root, remove the half-built tree.
         if created_root and vault.exists():
-            shutil.rmtree(vault, ignore_errors=True)
+            rmtree(vault, ignore_errors=True)
         raise
 
     return vault

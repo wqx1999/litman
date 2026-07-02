@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -522,29 +521,8 @@ def test_delete_repo_wraps_rmtree_failure_in_codeerror(
         delete_repo(vault, "ToDelete")
 
 
-def test_clear_readonly_clears_bit_and_retries(tmp_path: Path) -> None:
-    """The rmtree onexc handler chmods the path writable, then retries.
-
-    Locks the cross-platform contract: on Windows a read-only ``.git``
-    object makes ``os.unlink`` raise, and the handler must clear the write
-    bit and re-invoke the failed op rather than give up.
-    """
-    from litman.core.code import _clear_readonly
-
-    target = tmp_path / "ro.txt"
-    target.write_text("x")
-    target.chmod(stat.S_IREAD)
-
-    retried: list[Path] = []
-
-    def retry(p: Path) -> None:
-        retried.append(p)
-        p.unlink()
-
-    _clear_readonly(retry, target, None)
-
-    assert retried == [target]
-    assert not target.exists()
+# The rmtree read-only onexc handler now lives in core/locking.py; its unit
+# coverage moved to tests/core/test_locking.py (test_clear_readonly_onexc_*).
 
 
 # ---------------------------------------------------------------------------

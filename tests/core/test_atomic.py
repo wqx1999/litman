@@ -446,6 +446,94 @@ def test_T13_recovery_relocks_truth_file(
     assert not _os.access(truth_target, _os.W_OK)
 
 
+# --- T14/T15: overwrite a read-only TRUTH file under Windows os.replace ----
+# On Windows os.replace (MoveFileEx) refuses to overwrite a read-only
+# destination and raises PermissionError (WinError 5), unlike POSIX rename
+# which ignores the target's mode. Every `lit` write funnels through
+# staged_write and overwrites the read-only metadata.yaml / TAXONOMY.md /
+# paper.pdf, so both the clean-commit (_promote) and roll-forward (recovery)
+# paths must unlock the target before the replace. Simulate the win32 refusal
+# on POSIX CI by wrapping os.replace.
+
+
+def _windows_like_replace(real_replace):
+    """Wrap os.replace to mimic win32 MoveFileEx: refuse a read-only dst."""
+
+    def _replace(src, dst):
+        if _os.path.exists(dst) and not _os.access(dst, _os.W_OK):
+            raise PermissionError(5, "Access is denied (simulated win32)")
+        return real_replace(src, dst)
+
+    return _replace
+
+
+@pytest.mark.skipif(
+    _sys.platform == "win32", reason="simulates win32 os.replace on POSIX CI"
+)
+def test_T14_promote_over_readonly_truth_windows_semantics(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clean-commit path: _promote overwrites a locked read-only metadata.yaml
+    even when os.replace refuses a read-only dst (unlock-before-replace)."""
+    from litman.core.locking import lock_truth_file
+
+    target = vault / "papers" / "2024_A_b" / "metadata.yaml"
+    target.parent.mkdir(parents=True)
+    target.write_text("id: 2024_A_b\nrev: 1\n", encoding="utf-8")
+    lock_truth_file(target)
+    assert not _os.access(target, _os.W_OK)  # locked read-only
+
+    monkeypatch.setattr(
+        _atomic.os, "replace", _windows_like_replace(_os.replace)
+    )
+
+    with staged_write(vault) as stage:
+        stage.write_text(
+            "papers/2024_A_b/metadata.yaml", "id: 2024_A_b\nrev: 2\n"
+        )
+
+    assert target.read_text() == "id: 2024_A_b\nrev: 2\n"
+    assert not _os.access(target, _os.W_OK)  # re-locked after promotion
+    assert list((vault / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.skipif(
+    _sys.platform == "win32", reason="simulates win32 os.replace on POSIX CI"
+)
+def test_T15_recovery_over_readonly_truth_windows_semantics(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Roll-forward path: recovery overwrites a locked read-only metadata.yaml
+    even when os.replace refuses a read-only dst (unlock-before-replace)."""
+    from litman.core.locking import lock_truth_file
+
+    target = vault / "papers" / "2024_A_b" / "metadata.yaml"
+    target.parent.mkdir(parents=True)
+    target.write_text("id: 2024_A_b\nrev: 1\n", encoding="utf-8")
+    lock_truth_file(target)
+
+    # Stage + write the COMMITTED sentinel, then crash before _promote (as T13).
+    sw = StagedWrite(vault, op_id="op-T15")
+    sw.__enter__()
+    sw.write_text("papers/2024_A_b/metadata.yaml", "id: 2024_A_b\nrev: 2\n")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._write_sentinel()
+    op_dir = vault / ".litman-staging" / "op-T15"
+    assert (op_dir / "COMMITTED").exists()
+
+    monkeypatch.setattr(
+        _atomic.os, "replace", _windows_like_replace(_os.replace)
+    )
+
+    results = recover_staging(vault)
+    assert len(results) == 1
+    assert results[0].kind == "rolled_forward"
+    assert not op_dir.exists()
+    assert target.read_text() == "id: 2024_A_b\nrev: 2\n"
+    assert not _os.access(target, _os.W_OK)  # re-locked during recovery
+
+
 # --- T6: all promoted, crash before op-dir rmtree ------------------------
 
 
