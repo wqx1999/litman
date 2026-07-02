@@ -17,7 +17,7 @@
 
 </div>
 
-**Local-first, AI-augmented literature management CLI.**
+**Local-first, AI-augmented literature manager.**
 
 A local knowledge base for research papers, stored as plain files on your
 disk. Papers link explicitly to projects, code repositories, and each other
@@ -39,9 +39,9 @@ A few things worth knowing up front:
    back to plain-text extraction (pypdf) and cannot see figures or
    image-based tables — don't ask it "what does Fig./Table N show?" without a
    vision or OCR backend attached.
-3. **Don't edit metadata by hand.** Use `lit` commands to modify papers,
-   taxonomy, and config — or ask an AI agent if you're unsure which command
-   to use.
+3. **Don't edit metadata files by hand.** Change papers, taxonomy, and config
+   through the web UI or by asking your AI agent — both go through validated
+   `lit` commands that keep cross-references intact.
 4. **Windows users.** Symlink-based features (browsing views, project bridges)
    require administrator privileges; all other commands work regardless.
    [WSL](https://learn.microsoft.com/en-us/windows/wsl/) is recommended.
