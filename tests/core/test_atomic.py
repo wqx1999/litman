@@ -927,3 +927,32 @@ def test_recover_staging_swallows_stray_file_unlink_failure(
 
     monkeypatch.setattr(Path, "unlink", boom_unlink)
     assert recover_staging(vault) == []
+
+
+# --- Nested staged dirs get their directory entries fsync'd (durability) --
+
+
+def test_nested_staged_dirs_are_dir_fsynced(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nested staged relpath dir-fsyncs its intermediate staging dirs.
+
+    On POSIX a newly-created file ``d/f`` is only crash-durable once ``d`` is
+    fsync'd too. Real callers stage ``papers/<id>/metadata.yaml``, so the
+    intermediate ``staging_root/papers`` and ``staging_root/papers/<id>`` dirs
+    must be dir-fsync'd before the COMMITTED sentinel — otherwise a power loss
+    could drop the nested dirent and strand the staged copy. Record every
+    ``_fsync_dir`` target and assert those two dirs are among them.
+    """
+    synced: list[Path] = []
+    monkeypatch.setattr(
+        "litman.core.atomic._fsync_dir", lambda p: synced.append(Path(p))
+    )
+
+    with staged_write(vault, op_id="op-nested-fsync") as stage:
+        stage.write_text("papers/2024_Foo/metadata.yaml", "id: 2024_Foo\n")
+        stage.write_text("INDEX.json", "{}\n")
+        root = stage.staging_root
+
+    assert root / "papers" / "2024_Foo" in synced
+    assert root / "papers" in synced

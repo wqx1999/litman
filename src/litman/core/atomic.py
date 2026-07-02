@@ -392,9 +392,35 @@ class StagedWrite:
         self._promote()
 
     def _fsync_staged_files(self) -> None:
-        """fsync every staged file so roll-forward can replay them."""
+        """fsync every staged file *and* the staging dirs that hold them.
+
+        ``_fsync_file`` makes a staged file's data durable, but on POSIX a
+        newly-created file ``d/f`` is only crash-durable once ``d`` is fsync'd
+        too. Staged relpaths are frequently nested (``papers/<id>/metadata.yaml``)
+        and ``_stage`` freshly mkdirs those intermediate dirs, so without also
+        fsyncing each ancestor up to ``staging_root`` a power loss after the
+        COMMITTED sentinel could drop a nested directory entry — leaving
+        recovery unable to find the staged copy. ``staging_root`` itself is also
+        fsync'd by ``_write_manifest`` / ``_write_sentinel``; re-fsyncing it here
+        is harmless and idempotent.
+        """
+        root = self.staging_root
+        dirs_to_sync: set[Path] = set()
         for staging_path, _ in self._staged.values():
             _fsync_file(staging_path)
+            parent = staging_path.parent
+            # Walk parent → … → staging_root (inclusive); the membership guard
+            # bounds the loop even if a path somehow sat outside the root.
+            while parent == root or root in parent.parents:
+                dirs_to_sync.add(parent)
+                if parent == root:
+                    break
+                parent = parent.parent
+        # Deepest first: flush a child's dirent before its parent's.
+        for directory in sorted(
+            dirs_to_sync, key=lambda p: len(p.parts), reverse=True
+        ):
+            _fsync_dir(directory)
 
     def _write_manifest(self) -> None:
         """Write + fsync the promotion-order manifest, then fsync the dir.

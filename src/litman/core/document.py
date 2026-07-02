@@ -112,7 +112,11 @@ def list_papers(vault: Path) -> list[dict[str, Any]]:
             # unparseable / empty metadata.yaml. So a paper dropped here is
             # still reported by `lit health-check`.
             continue
-        if not metadata:
+        if not isinstance(metadata, dict) or not metadata:
+            # A metadata.yaml whose top-level YAML is a sequence / scalar (not a
+            # mapping) parses without error but is not a paper dict; drop it like
+            # empty/corrupt so a downstream ``.get`` never explodes far from the
+            # bad file. check_paper_dir_validity owns surfacing the finding.
             continue
         results.append(metadata)
     return results

@@ -193,12 +193,17 @@ def code_add_cmd(
 
     use_url = _is_url(source)
 
+    derived_name: str | None = None
     if use_url:
         clone_url = source
         if depth is None:
             depth = load_config(vault).default_clone_depth
-        derived_name = derive_repo_name(clone_url)
         src_path: Path | None = None
+        if repo_name is None:
+            # Derive only when --name is absent: derive_repo_name RAISES on an
+            # underivable URL, so an explicit --name must skip derivation
+            # entirely (otherwise --name could never rescue such a URL).
+            derived_name = derive_repo_name(clone_url)
     else:
         src_path = Path(source).expanduser().resolve()
         if not src_path.is_dir():
@@ -206,9 +211,11 @@ def code_add_cmd(
                 f"Source is neither a recognised clone URL nor an existing "
                 f"local directory: {source!r}."
             )
-        derived_name = src_path.name
+        if repo_name is None:
+            derived_name = src_path.name
 
     if repo_name is None:
+        assert derived_name is not None  # set above whenever repo_name is None
         repo_name = derived_name
         if not is_valid_repo_name(repo_name):
             raise CodeError(
@@ -229,6 +236,10 @@ def code_add_cmd(
         )
 
     if paper_id is not None:
+        # Pre-clone fail-fast: resolve_paper_input already established the paper
+        # exists, but re-check here so an absent paper aborts BEFORE the
+        # expensive clone/import + mkdir below (bind_paper_to_repo re-validates,
+        # but only runs after the clone). Same expensive-op ordering as --move.
         paper_meta = vault / "papers" / paper_id / "metadata.yaml"
         if not paper_meta.is_file():
             raise PaperNotFoundError(

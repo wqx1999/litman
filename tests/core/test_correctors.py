@@ -1,14 +1,9 @@
-"""Unit tests for the three M30 drift correctors (core/correctors.py).
+"""Unit tests for the M30 drift correctors (core/correctors.py).
 
-Phase 1 extracts ``regen`` / ``resolve`` / ``annotate`` as standalone,
-testable functions (not yet wired into the CLI). These tests pin their
-contracts:
+These tests pin the corrector contracts:
 
 * regen rebuilds INDEX.json + views from the on-disk metadata truth.
 * annotate marks ``[[id]]`` → ``[[id]] (deleted)`` in place, never deleting.
-* resolve prompts with the configured default and honors the bounded-stat
-  confirmation gate (a non-``False`` stat is not actionable drift; non-TTY
-  never mutates).
 """
 
 from __future__ import annotations
@@ -19,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from litman.core import correctors
-from litman.core.checks import Issue
 from litman.core.library import create_vault
 
 
@@ -299,132 +293,3 @@ def test_annotate_surfaces_unreadable_note(
     err = capsys.readouterr().err
     assert "could not read" in err
     assert "2024_B_Bad" in err
-
-
-# ---------------------------------------------------------------------------
-# resolve
-# ---------------------------------------------------------------------------
-
-
-def _issue() -> Issue:
-    return Issue(
-        category="project_path_exists",
-        severity="warning",
-        paper_id=None,
-        message="project 'pep' path does not exist: /gone",
-    )
-
-
-def test_resolve_tty_yes_returns_true() -> None:
-    answer = correctors.resolve(
-        _issue(),
-        default_yes=True,
-        stdin_is_tty=lambda: True,
-        confirm_fn=lambda *a, **kw: True,
-    )
-    assert answer is True
-
-
-def test_resolve_tty_no_returns_false() -> None:
-    answer = correctors.resolve(
-        _issue(),
-        default_yes=True,
-        stdin_is_tty=lambda: True,
-        confirm_fn=lambda *a, **kw: False,
-    )
-    assert answer is False
-
-
-def test_resolve_default_is_passed_through() -> None:
-    """The destructive-default policy reaches click.confirm."""
-    seen: dict[str, object] = {}
-
-    def _confirm(text: str, default: bool = False) -> bool:
-        seen["default"] = default
-        return default
-
-    correctors.resolve(
-        _issue(),
-        default_yes=False,
-        stdin_is_tty=lambda: True,
-        confirm_fn=_confirm,
-    )
-    assert seen["default"] is False
-
-
-def test_resolve_non_tty_never_prompts() -> None:
-    called = {"confirm": False}
-
-    def _confirm(*a: object, **kw: object) -> bool:
-        called["confirm"] = True
-        return True
-
-    answer = correctors.resolve(
-        _issue(),
-        default_yes=True,
-        stdin_is_tty=lambda: False,
-        confirm_fn=_confirm,
-    )
-    assert answer is False
-    assert called["confirm"] is False
-
-
-def test_resolve_unknown_stat_is_not_actionable() -> None:
-    """A None (slow/dropped mount) stat must not drive a prompt (ADR-014)."""
-    called = {"confirm": False}
-
-    def _confirm(*a: object, **kw: object) -> bool:
-        called["confirm"] = True
-        return True
-
-    answer = correctors.resolve(
-        _issue(),
-        default_yes=True,
-        status={"/gone": None},
-        paths=["/gone"],
-        stdin_is_tty=lambda: True,
-        confirm_fn=_confirm,
-    )
-    assert answer is False
-    assert called["confirm"] is False
-
-
-def test_resolve_present_path_is_not_drift() -> None:
-    answer = correctors.resolve(
-        _issue(),
-        default_yes=True,
-        status={"/here": True},
-        paths=["/here"],
-        stdin_is_tty=lambda: True,
-        confirm_fn=lambda *a, **kw: True,
-    )
-    assert answer is False
-
-
-def test_resolve_confirmed_absence_prompts() -> None:
-    answer = correctors.resolve(
-        _issue(),
-        default_yes=True,
-        status={"/gone": False},
-        paths=["/gone"],
-        stdin_is_tty=lambda: True,
-        confirm_fn=lambda *a, **kw: True,
-    )
-    assert answer is True
-
-
-def test_resolve_paths_without_status_raises() -> None:
-    """Probe ownership is the caller's: ``paths`` requires ``status``.
-
-    ``resolve`` never runs its own bounded-stat (Phase 2 wires a single shared
-    0.5s budget upstream). Passing ``paths`` without ``status`` is a caller
-    bug, not a silent self-probe.
-    """
-    with pytest.raises(ValueError, match="requires status"):
-        correctors.resolve(
-            _issue(),
-            default_yes=True,
-            paths=["/gone"],
-            stdin_is_tty=lambda: True,
-            confirm_fn=lambda *a, **kw: True,
-        )

@@ -22,27 +22,34 @@ import click
 from rich.console import Console
 
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.exceptions import LitmanError
 
 console = Console()
 
 _DEFAULT_PORT = 8765
+_MAX_PORT = 65535
 
 
 def _find_free_port(start: int) -> int:
     """Return the first free TCP port at or above ``start`` on 127.0.0.1.
 
     Probes by binding a socket; a busy port raises ``OSError`` and we step to
-    the next one. Never errors out on a busy port (Jupyter model) — the caller
-    prints whatever port we land on.
+    the next one (Jupyter model) — the caller prints whatever port we land on.
+    Raises ``LitmanError`` only if the whole ``[start, 65535]`` range is busy
+    (rather than stepping past 65535, where ``bind`` would raise OverflowError).
     """
     port = start
-    while True:
+    while port <= _MAX_PORT:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.bind(("127.0.0.1", port))
                 return port
             except OSError:
                 port += 1
+    raise LitmanError(
+        f"No free TCP port available in [{start}, {_MAX_PORT}] on 127.0.0.1. "
+        "Free a port or pass an explicit --port."
+    )
 
 
 @click.command("gui")

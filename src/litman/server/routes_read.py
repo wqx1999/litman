@@ -266,6 +266,14 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
         # The paper exists; its metadata is broken. That is a server-side
         # data problem (500), not a missing resource (404).
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not meta:
+        # find_paper returns {} for an empty / comment-only metadata.yaml; treat
+        # that as a missing resource (mirrors get_trash_metadata) rather than
+        # serving 200 with an empty body.
+        raise HTTPException(
+            status_code=404,
+            detail=f"No usable metadata for paper {paper_id!r} (file is empty).",
+        )
     # Derived display hint (not persisted): which code-clones links are dangling
     # — codes/<name>/ gone — so the cockpit marks them instead of showing a
     # deleted codebase as live. Same criterion as lit health-check (invariant #12).

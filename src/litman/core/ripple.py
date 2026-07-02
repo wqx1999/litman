@@ -32,6 +32,7 @@ from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.taxonomy import replace_value_in_field
 from litman.core.yaml_pool import ThreadLocalYAML
+from litman.exceptions import TaxonomyError
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -186,6 +187,13 @@ def _ripple_removals(
             continue
         changed = False
         current = rt_metadata.get(field) or []
+        if not isinstance(current, list):
+            raise TaxonomyError(
+                f"papers/{paper_id}/metadata.yaml field {field!r} is "
+                f"{type(current).__name__}, not a list — refusing to ripple "
+                "(a scalar value would be corrupted character-by-character). "
+                "Fix the field by hand or via `lit modify`."
+            )
         if value in current:
             rt_metadata[field] = [v for v in current if v != value]
             changed = True

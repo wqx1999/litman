@@ -157,11 +157,15 @@ def launch_pdf(
                 stdin=subprocess.DEVNULL,
             )
             return (configured_viewer, "configured")
-        except FileNotFoundError as e:
+        except OSError as e:
+            # Broad OSError, not just FileNotFoundError: a configured viewer that
+            # is a directory / not executable / permission-denied raises other
+            # OSError subclasses. Re-map to FileNotFoundError so open.py's exit-2
+            # handler catches it instead of dumping a raw traceback.
             raise FileNotFoundError(
-                f"Configured pdf_viewer {configured_viewer!r} not found on "
-                "PATH. Install it, or update default_pdf_viewer in "
-                "lit-config.yaml."
+                f"Configured pdf_viewer {configured_viewer!r} could not be "
+                "launched (not found on PATH, not executable, or not a file). "
+                "Install it, or update default_pdf_viewer in lit-config.yaml."
             ) from e
 
     viewer = detect_platform_viewer()
@@ -190,6 +194,18 @@ def launch_pdf(
         return ("os.startfile", "platform")
 
     if viewer == "xdg-open" and is_headless():
+        # On WSL a headless xdg-open is the norm; prefer wslview (which opens the
+        # Windows host's PDF viewer) before declaring no display available —
+        # otherwise this headless guard preempts the documented WSL fallback.
+        wslview = shutil.which("wslview")
+        if wslview is not None:
+            subprocess.Popen(
+                [wslview, str(pdf_path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            return ("wslview", "wsl-fallback")
         # Reuse FileNotFoundError (not a new exception): open.py already maps
         # it to exit 2 + "PDF path:" print, the documented "no usable viewer
         # in this session" behavior. A LitmanError subclass would map to exit
@@ -211,8 +227,9 @@ def launch_pdf(
             stdin=subprocess.DEVNULL,
         )
         return (viewer, source)
-    except FileNotFoundError as e:
+    except OSError as e:
         raise FileNotFoundError(
-            f"Platform PDF viewer {viewer!r} disappeared between probe "
-            "and launch — unusual environment."
+            f"Platform PDF viewer {viewer!r} could not be launched "
+            f"({e.__class__.__name__}) between probe and launch — unusual "
+            "environment."
         ) from e

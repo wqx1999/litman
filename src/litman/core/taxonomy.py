@@ -178,6 +178,14 @@ def replace_value_in_field(
     current = metadata.get(field)
     if not current:
         return False
+    if not isinstance(current, list):
+        paper_id = metadata.get("id", "?")
+        raise TaxonomyError(
+            f"papers/{paper_id}/metadata.yaml field {field!r} is "
+            f"{type(current).__name__}, not a list — refusing to rewrite "
+            "(a scalar value would be corrupted character-by-character). "
+            "Fix the field by hand or via `lit modify`."
+        )
     new_list: list = []
     seen: set = set()
     changed = False

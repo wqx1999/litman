@@ -45,7 +45,7 @@ from litman.core.dedup import (
 )
 from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.locking import lock_truth_file
+from litman.core.locking import lock_truth_file, rmtree
 from litman.core.notes import WIKILINK_REMINDER
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
@@ -394,12 +394,9 @@ def add_cmd(
                 f"Paper folder already exists: {paper_dir}. "
                 "Use a different --id or remove the existing folder first."
             )
-        if year is None or not family:
-            # Should not happen given the derive_id path above, but defensive.
-            raise AddError(
-                f"Paper folder already exists: {paper_dir} and collision "
-                "resolution requires year + family. Pass --id explicitly."
-            )
+        # Reaching here means the non-override path, where year is guarded
+        # non-None above (371); narrow int|None -> int for _resolve_collision.
+        assert year is not None
         paper_id = _resolve_collision(
             vault,
             paper_id,
@@ -454,7 +451,10 @@ def add_cmd(
         lock_truth_file(paper_dir / "paper.pdf")
     except Exception:
         if paper_dir.exists():
-            shutil.rmtree(paper_dir, ignore_errors=True)
+            # locking.rmtree (not bare shutil): metadata.yaml / paper.pdf may
+            # already be chmod'd read-only above, which Windows os.unlink refuses
+            # — clear the bit via onexc so the half-built dir is fully removed.
+            rmtree(paper_dir, ignore_errors=True)
         raise
 
     # Vault is consistent: the new paper dir is fully committed (the rollback

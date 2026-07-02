@@ -19,12 +19,24 @@ from rich.console import Console
 from litman.core.cite import format_acs
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 
 err_console = Console(stderr=True)
 
 
 @click.command("cite")
-@click.argument("paper_id")
+@click.argument(
+    "paper_id", required=False, shell_complete=complete_paper_id
+)
+@click.option(
+    "--paper-doi",
+    "paper_doi",
+    default=None,
+    help=(
+        "Reverse-lookup the paper by DOI instead of supplying the id. "
+        "Mutually exclusive with the positional paper id."
+    ),
+)
 @click.option(
     "--library",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
@@ -40,15 +52,23 @@ err_console = Console(stderr=True)
     help="Vault name from ~/.config/litman/vaults.yaml. "
     "Mutually exclusive with --library.",
 )
-def cite_cmd(paper_id: str, library: Path | None, vault_name: str | None) -> None:
+def cite_cmd(
+    paper_id: str | None,
+    paper_doi: str | None,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
     """Print a compact ACS-style citation for PAPER_ID.
 
-    The form is ``<journal abbrev.> <year>, <volume>, <pages>.`` with no author
-    list or title — the version you drop on a presentation slide. The journal
-    abbreviation comes from a shipped ISO4 table; an unknown journal is printed
-    verbatim with a warning on stderr so you can verify it.
+    The paper id accepts a full id or a unique case-insensitive substring, or
+    omit it and pass --paper-doi <DOI> instead (parity with `lit show` /
+    `lit open`). The form is ``<journal abbrev.> <year>, <volume>, <pages>.``
+    with no author list or title — the version you drop on a presentation slide.
+    The journal abbreviation comes from a shipped ISO4 table; an unknown journal
+    is printed verbatim with a warning on stderr so you can verify it.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     # find_paper raises PaperNotFoundError / CorruptMetadataError (both
     # LitmanError subclasses), which `main()` renders as a friendly one-liner.
     meta = find_paper(vault, paper_id)

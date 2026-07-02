@@ -77,13 +77,15 @@ def vault_group() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _vault_summary(vault_path: Path) -> dict[str, Any]:
-    """Compute paper count + on-disk byte total for a registered vault.
+def _vault_summary(vault_path: Path, *, with_size: bool = True) -> dict[str, Any]:
+    """Compute paper count (+ optional on-disk byte total) for a vault.
 
     Paper count comes from ``INDEX.json`` (cheap, accurate). If the
     index is missing or unparseable we fall back to counting non-hidden
-    subdirs of ``papers/``. Size is a recursive filesystem walk — O(N
-    file stats), tolerable for ``lit vault info`` which runs on demand.
+    subdirs of ``papers/``. The byte total is a recursive filesystem walk
+    — O(N file stats) — so it is computed only when ``with_size`` is set:
+    ``lit vault list`` needs the count alone and must not pay a full walk
+    for every registered vault, while ``lit vault info`` runs on demand.
     """
     paper_count = 0
     index_path = vault_path / "INDEX.json"
@@ -104,13 +106,14 @@ def _vault_summary(vault_path: Path) -> dict[str, Any]:
             paper_count = 0
 
     total_bytes = 0
-    for p in vault_path.rglob("*"):
-        if not p.is_file():
-            continue
-        try:
-            total_bytes += p.stat().st_size
-        except OSError:
-            continue
+    if with_size:
+        for p in vault_path.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                total_bytes += p.stat().st_size
+            except OSError:
+                continue
 
     return {"papers": paper_count, "bytes": total_bytes}
 
@@ -276,7 +279,7 @@ def vault_list_cmd() -> None:
         active_marker = "[bold green]✓[/]" if entry.is_active else ""
         vault_path = Path(entry.path)
         if vault_path.is_dir():
-            paper_count = str(_vault_summary(vault_path)["papers"])
+            paper_count = str(_vault_summary(vault_path, with_size=False)["papers"])
         else:
             paper_count = "[red]?[/]"
         table.add_row(

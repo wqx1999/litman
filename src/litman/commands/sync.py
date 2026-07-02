@@ -174,7 +174,7 @@ def sync_setup_cmd(
         for r in remotes:
             console.print(f"  - {escape(r)}")
         remote_name = click.prompt(
-            "Remote name", type=str, default=remotes[0] if remotes else None
+            "Remote name", type=str, default=remotes[0]
         ).strip()
     else:
         remote_name = remote_arg.strip()
@@ -196,10 +196,17 @@ def sync_setup_cmd(
     else:
         remote_path = path_arg.strip()
 
+    # Preserve a hand-set `sync.exclude_repos` across a re-run of setup: the
+    # command exposes no flag for it and write_sync_to_config rewrites the whole
+    # `sync:` block, so re-pointing the remote/path must not silently reset it.
+    existing_cfg = load_config(vault)
+    prior_exclude = (
+        existing_cfg.sync.exclude_repos if existing_cfg.sync is not None else False
+    )
     payload = SetupPayload(
         remote=remote_name,
         path=remote_path,
-        exclude_repos=False,
+        exclude_repos=prior_exclude,
     )
     write_sync_to_config(config_path, payload)
 

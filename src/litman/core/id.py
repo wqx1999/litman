@@ -256,9 +256,6 @@ def derive_keyword_alternatives(title: str, n: int = 3) -> list[str]:
     out: list[str] = []
     for offset in range(1, len(tokens)):
         window = tokens[offset:offset + _KEYWORD_TOP_N]
-        if not window:
-            break
-        window = list(window)
         window[0] = _capitalize_first(window[0])
         candidate = _truncate_at_hyphen("-".join(window), _KEYWORD_MAX_LEN)
         if candidate in seen:

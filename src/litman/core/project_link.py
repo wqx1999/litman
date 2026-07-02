@@ -239,8 +239,12 @@ def link_paper_to_project(
         2. Load paper's metadata; refuse if paper missing.
         3. Update metadata:
            - Append project to ``projects`` if absent (deduped).
-           - Set ``relevance-<project>`` if ``relevance`` was provided
-             AND the field isn't already populated by the user.
+           - Set ``relevance-<project>`` when an explicit ``relevance`` is
+             provided — this OVERWRITES any existing note (the CLI
+             ``--relevance`` flag is "set in one shot"). Left untouched only
+             when ``relevance`` is ``None`` (the flag was omitted); the
+             ``!= existing_relevance`` check is an idempotency guard, not a
+             don't-clobber guard.
            - Bump ``updated-at`` if anything actually changed.
         4. Re-render INDEX.json (in-memory splice on the modified copy).
         5. staged_write(metadata + INDEX.json).

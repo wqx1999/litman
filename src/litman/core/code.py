@@ -529,7 +529,16 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     # importing it at module load would widen core.code's import graph.
     from litman.core.project_link import refresh_project_code_links
 
-    refresh_project_code_links(vault, paper_id)
+    try:
+        refresh_project_code_links(vault, paper_id)
+    except OSError:
+        # Best-effort convenience symlinks: the paper↔repo bind is already
+        # committed (staged_write above). A symlink fs fault must NOT propagate
+        # — code_add's except would otherwise roll back by rmtree'ing the
+        # just-cloned repo, leaving the committed code-clones entry dangling. A
+        # stale/missing symlink self-heals on the next bind/link, and
+        # `lit health-check` surfaces any project-symlink drift.
+        pass
     return changed
 
 
@@ -627,7 +636,14 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     # for us). Same derived-refresh seam as bind. See refresh_project_code_links.
     from litman.core.project_link import refresh_project_code_links
 
-    refresh_project_code_links(vault, paper_id)
+    try:
+        refresh_project_code_links(vault, paper_id)
+    except OSError:
+        # Best-effort symlink teardown: the unbind is already committed
+        # (staged_write above). A symlink fs fault must not propagate — the
+        # metadata change stands and a stale symlink self-heals / is surfaced
+        # by `lit health-check`.
+        pass
     return changed
 
 
@@ -661,7 +677,11 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
             # The try only reads + parses, so these are the only failures
             # possible — let any other (programming) error propagate.
             continue
-        if not meta:
+        if not isinstance(meta, dict):
+            # Empty/None or a non-mapping top-level YAML (list/scalar): skip like
+            # every other metadata reader (corruption is surfaced by
+            # health-check). Guards the .get below from an AttributeError on a
+            # truthy non-dict.
             continue
         clones = meta.get("code-clones") or []
         if repo_name not in clones:

@@ -134,8 +134,8 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
         elif result["mode"] == "skipped":
             done.append(f"skill {name} (skipped — symlinked dir left in place)")
     for shell in shells:
-        uninstall_completion(shell, home)
-        done.append(f"completion ({shell})")
+        if uninstall_completion(shell, home)["removed"]:
+            done.append(f"completion ({shell})")
     if reg_present and remove_registry()["removed"]:
         done.append("vault registry")
 

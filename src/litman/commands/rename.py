@@ -296,7 +296,13 @@ def rename_cmd(
     replacement = f"[[{new}]]"
     note_updates: dict[str, str] = {}  # vault-relative path → new content
     for md_path in enumerate_markdown_files(vault):
-        text = md_path.read_text(encoding="utf-8")
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Best-effort (mirrors rm.py / restore_from_trash F22): skip an
+            # unreadable note rather than abort the whole rename; a missed
+            # wikilink rewrite is surfaced by health-check.
+            continue
         if needle in text:
             note_updates[str(md_path.relative_to(vault))] = text.replace(
                 needle, replacement

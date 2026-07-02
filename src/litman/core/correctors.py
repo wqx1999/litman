@@ -7,35 +7,33 @@ ADR-015 separates *detection* (one tagged check registry) from *correction*
   already in TRUTH, so the fix is to drop it and recompute. Lossless; any
   over-deletion self-heals on the next scan once a flaky mount returns.
 * **resolve** — klass B-ext (truth↔external dir). litman cannot pick which
-  side is right, so it prompts the user. Reuses the mount-safe bounded-stat
-  (ADR-014) so a hung HPC mount never looks like a deleted directory.
+  side is right, so it prompts the user, reusing the mount-safe bounded-stat
+  (ADR-014) so a hung HPC mount never looks like a deleted directory. This
+  mode is NOT implemented in this module: the bespoke ``[Y/n]`` prompts live
+  in ``commands/_drift.py`` (a generic ``resolve()`` extraction was prototyped
+  and then dropped as a duplicate of that working machinery).
 * **annotate** — klass B-auth (truth↔authored prose). The target is
   hand-written notes / relation fields, NOT regenerable: only mark in place
   (``[[X]]`` → ``[[X]] (deleted)``), never delete the prose.
 
-Phase 1 extracts these as standalone, unit-testable functions. They are NOT
-yet wired into ``cli.py`` / ``health.py`` (that is Phase 2); the bespoke
-prompt copies in ``commands/_drift.py`` stay in place and working until then.
+``regen`` / ``regen_index_drop_ids`` / ``annotate`` are wired into ``cli.py``
+/ ``health.py``; B-external resolution stays in ``commands/_drift.py``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
-import click
 from rich.console import Console
 
-from litman.commands._drift import _default_tty_probe
+from litman.core import views
 from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
-from litman.core import views
 
 __all__ = [
     "reconcile_derived",
     "regen",
     "regen_index_drop_ids",
-    "resolve",
     "annotate",
 ]
 
@@ -178,90 +176,6 @@ def regen_index_drop_ids(vault: Path, dead_ids: list[str]) -> int:
     if not dead_ids:
         return 0
     return views.rewrite_index_dropping_ids(vault, set(dead_ids))
-
-
-# ---------------------------------------------------------------------------
-# resolve — klass B-ext (truth↔external dir): prompt; litman cannot pick a side
-# ---------------------------------------------------------------------------
-
-
-def resolve(
-    issue: Issue,
-    *,
-    default_yes: bool,
-    status: dict[str, bool | None] | None = None,
-    paths: list[str] | None = None,
-    prompt: str | None = None,
-    stdin_is_tty: Callable[[], bool] | None = None,
-    confirm_fn: Callable[..., bool] | None = None,
-) -> bool:
-    """Prompt the user to resolve a B-external drift; return True iff they consent.
-
-    Check-agnostic generalization of the ``[Y/n]`` machinery currently
-    duplicated in ``commands/_drift.py``. **Probe ownership is the caller's**:
-    when a mount probe gates the prompt (``paths`` is given), the caller MUST
-    also pass the bounded-stat ``status`` for those paths. ``resolve`` never
-    runs its own :func:`_exists_bounded` — Phase 2 wires every B-external check
-    through a single shared 0.5s bounded-stat budget (spec §7), so a corrector
-    silently re-statting here would double-charge that budget and split the
-    mount probe across two call sites. Passing the verdict in keeps the probe
-    in exactly one place.
-
-    The caller also supplies the destructive-default policy:
-
-    * Destructive-but-lossless prunes (dangling registry entry) pass
-      ``default_yes=True``.
-    * Irreversible cascades (``project rm``) pass ``default_yes=False`` so a
-      reflexive Enter never triggers them.
-
-    Resolution rules:
-
-    * If ``paths`` is given and *none* of the paths resolved (per ``status``)
-      to a definite ``False`` (i.e. all ``True`` or ``None``/unknown), there is
-      no confirmed drift to resolve → return ``False`` without prompting. A
-      ``None`` from a slow / dropped mount must never drive a destructive
-      prompt (ADR-014).
-    * Non-TTY → never prompt, never mutate: return ``False`` (the caller's
-      automation path reports to stderr and defers to an explicit fix command).
-    * TTY → ask ``[Y/n]`` (default per ``default_yes``); return the answer.
-
-    Args:
-        issue: The drift finding (its ``message`` seeds the default prompt).
-        default_yes: Default for the confirm; ``True`` = destructive-lossless.
-        status: Bounded-stat result (from :func:`_exists_bounded`) keyed by
-            path. Required whenever ``paths`` is given — ``resolve`` does not
-            probe the filesystem itself.
-        paths: Paths whose ``status`` must show a definite ``False`` for the
-            drift to count as confirmed. Omit ``paths`` (and ``status``) to
-            skip the confirmation gate (caller already established the drift).
-        prompt: Override the prompt text (defaults to a generic resolve line).
-        stdin_is_tty: TTY-probe indirection for tests.
-        confirm_fn: ``click.confirm`` indirection for tests.
-
-    Raises:
-        ValueError: if ``paths`` is given without a corresponding ``status``
-            (probe ownership is the caller's — see above).
-    """
-    probe = stdin_is_tty or _default_tty_probe
-    confirm = confirm_fn or click.confirm
-
-    if paths is not None:
-        if status is None:
-            raise ValueError(
-                "resolve(paths=...) requires status=...: the caller owns the "
-                "bounded-stat probe (shared 0.5s budget); resolve never stats."
-            )
-        if not any(status.get(p) is False for p in paths):
-            # No path is a confirmed absence — unknown (None) / present (True)
-            # is not actionable drift.
-            return False
-
-    if not probe():
-        # Automation: never mutate without consent. Caller reports + defers.
-        return False
-
-    text = prompt or f"{issue.message} — resolve now?"
-    return bool(confirm(text, default=default_yes))
 
 
 # ---------------------------------------------------------------------------

@@ -109,7 +109,9 @@ def find_paper_by_doi(
             # so these are the only failures possible; any other (programming)
             # error propagates.
             continue
-        if not meta:
+        if not isinstance(meta, dict):
+            # Non-mapping top-level YAML (list/scalar) parses cleanly but has no
+            # ``.get``; skip like empty/corrupt (health-check owns the finding).
             continue
         existing = meta.get("doi") or ""
         if existing and normalize_doi(str(existing)) == target:

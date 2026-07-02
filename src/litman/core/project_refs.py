@@ -55,6 +55,21 @@ def _format_year(year: Any) -> str:
     return str(year)
 
 
+def _year_sort_key(paper: dict[str, Any]) -> int:
+    """Descending-year sort key tolerant of schema-less non-numeric years.
+
+    ``year`` is not enum-gated — ``lit modify --set year=inpress`` (or
+    ``2021a`` / ``forthcoming``) stores the raw string verbatim — so a bare
+    ``int()`` can raise ValueError and poison the sort of an entire project's
+    REFERENCES.md. An unparseable / missing year sorts last (0), mirroring
+    ``_format_year``'s ``str()`` tolerance.
+    """
+    try:
+        return -int(paper["year"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
 def _papers_for_project(papers: list[dict[str, Any]], project: str) -> list[dict[str, Any]]:
     """Filter papers whose ``projects`` list contains ``project``.
 
@@ -85,12 +100,7 @@ def _group_by_priority(
         key = pr if pr in _PRIORITY_ORDER else None
         buckets.setdefault(key, []).append(p)
     for key, group in buckets.items():
-        group.sort(
-            key=lambda x: (
-                -(int(x["year"]) if x.get("year") not in (None, "") else 0),
-                str(x.get("id", "")),
-            )
-        )
+        group.sort(key=lambda x: (_year_sort_key(x), str(x.get("id", ""))))
     return buckets
 
 

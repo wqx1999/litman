@@ -512,7 +512,7 @@ def check_paper_dir_validity(
                         hint="rewrite metadata.yaml as a key: value mapping",
                     )
                 )
-            elif isinstance(data, dict):
+            else:
                 meta_id = data.get("id")
                 if meta_id and meta_id != child.name:
                     out.append(

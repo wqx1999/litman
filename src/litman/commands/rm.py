@@ -417,7 +417,14 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
     for md_path in enumerate_markdown_files(vault):
         if md_path.parent.name == paper_id:
             continue
-        text = md_path.read_text(encoding="utf-8")
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Best-effort, mirroring restore_from_trash (trash.py, F22): skip a
+            # non-UTF-8 / unreadable note so one bad file cannot block every
+            # `lit rm`. A missed `(deleted)` annotation is left to health-check
+            # — not a silent-skip violation (same reviewed trade-off).
+            continue
         annotated = annotate_deleted_wikilinks(text, paper_id)
         if annotated != text:
             note_updates[str(md_path.relative_to(vault))] = annotated
@@ -471,12 +478,14 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     # ----- Phase 2: paper-folder removal (purge or trash) -----
     # If this fails partway, INDEX has already been updated; health-check
     # will flag the orphan dir.
+    moved_ok = True
     try:
         if purge:
             rmtree(plan.paper_dir)
         else:
             move_to_trash(vault, paper_id, orphan_repos=plan.orphan_repos)
     except OSError as e:
+        moved_ok = False
         # The staged metadata + INDEX write already committed: the library now
         # considers the paper gone. A filesystem failure here leaves the folder
         # on disk as an orphan — no data loss, brief inconsistency. Record it
@@ -488,17 +497,25 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         )
 
     # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
-    for repo_name in plan.orphan_repos:
-        repo_root = vault / CODES_DIRNAME / repo_name
-        if repo_root.is_dir():
-            try:
-                rmtree(repo_root)
-            except OSError as e:
-                warnings.append(
-                    f"could not remove orphan repo {repo_root}: {e}. "
-                    "Its binding is already cleared; run "
-                    "`lit health-check --fix` to finish the cleanup."
-                )
+    # Gated on Phase 2 succeeding: when a move-to-trash failed, the paper's
+    # restore sidecar (which carries each orphan repo's upstream URL) was rolled
+    # back inside move_to_trash, so hard-deleting the repos here would destroy
+    # the only remaining copy of that URL — irrecoverable. Skipping lets the
+    # next `lit rm` retry cleanly: repo-meta is still on disk, so discover
+    # re-captures the URL into a fresh sidecar. (On a clean move / purge,
+    # moved_ok is True and the 1:1 orphans are removed as before.)
+    if moved_ok:
+        for repo_name in plan.orphan_repos:
+            repo_root = vault / CODES_DIRNAME / repo_name
+            if repo_root.is_dir():
+                try:
+                    rmtree(repo_root)
+                except OSError as e:
+                    warnings.append(
+                        f"could not remove orphan repo {repo_root}: {e}. "
+                        "Its binding is already cleared; run "
+                        "`lit health-check --fix` to finish the cleanup."
+                    )
 
     # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
     if plan.projects:

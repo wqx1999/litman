@@ -93,29 +93,35 @@ def scan_code_urls(pdf_path: Path) -> list[dict]:
     first_page: dict[str, int] = {}
     counts: dict[str, int] = {}
 
-    for page_index, page in enumerate(pages):
-        page_number = page_index + 1
-        try:
-            text = page.extract_text() or ""
-        except Exception:
-            # A single unreadable page must not abort the whole scan, nor
-            # leak an exception to the caller.
-            continue
-
-        for line in text.splitlines():
-            if not _CODE_HOST_RE.search(line):
+    try:
+        for page_index, page in enumerate(pages):
+            page_number = page_index + 1
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                # A single unreadable page must not abort the whole scan, nor
+                # leak an exception to the caller.
                 continue
-            for raw_token in _URL_TOKEN_RE.findall(line):
-                if not _CODE_HOST_RE.search(raw_token):
+
+            for line in text.splitlines():
+                if not _CODE_HOST_RE.search(line):
                     continue
-                norm = _normalize_url(raw_token)
-                if not norm:
-                    continue
-                if norm not in counts:
-                    order.append(norm)
-                    first_page[norm] = page_number
-                    counts[norm] = 0
-                counts[norm] += 1
+                for raw_token in _URL_TOKEN_RE.findall(line):
+                    if not _CODE_HOST_RE.search(raw_token):
+                        continue
+                    norm = _normalize_url(raw_token)
+                    if not norm:
+                        continue
+                    if norm not in counts:
+                        order.append(norm)
+                        first_page[norm] = page_number
+                        counts[norm] = 0
+                    counts[norm] += 1
+    except Exception:
+        # Honor the documented "never raises" contract: a lazy pypdf failure
+        # while iterating the page tree (resolution / decryption) degrades to
+        # the partial result gathered so far rather than propagating.
+        pass
 
     candidates = [
         {"url": url, "page": first_page[url], "count": counts[url]}
