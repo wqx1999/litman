@@ -21,9 +21,10 @@
 
 A local knowledge base for research papers, stored as plain files on your
 disk. Papers link explicitly to projects, code repositories, and each other
-through structured metadata and symlinks. Bundled Claude Code skills let an
-AI agent operate the CLI on your behalf; every command works equally well
-typed by hand.
+through structured metadata and symlinks. Use it through a web UI for everyday
+browsing, reading, and annotation — and, for anything the UI doesn't cover,
+just ask an AI agent, which drives the full `lit` CLI for you via the bundled
+Claude Code skills.
 
 ---
 
@@ -64,12 +65,15 @@ A few things worth knowing up front:
    inside the vault. Metadata fields and symlinks together form an
    explicit, navigable knowledge graph — no manual upkeep required.
 
-4. **AI-native CLI.** Two bundled Claude Code skills (`lit-library` for
-   ingestion and retrieval, `lit-reading` for reading assistance) teach
-   an agent how to navigate the vault and operate the CLI on your
-   behalf. The agent emits structured JSON; the CLI validates and
-   writes the data — your library stays correct even when the model
-   isn't perfect.
+4. **AI drives the CLI; you drive the agent.** The `lit` CLI is litman's
+   complete capability surface, but it's built to be operated by an AI agent,
+   not typed by hand. Two bundled Claude Code skills (`lit-library` for
+   ingestion and retrieval, `lit-reading` for reading assistance) teach the
+   agent to run it from plain-English requests; the agent emits structured
+   JSON and the CLI validates every write, so your library stays correct even
+   when the model isn't perfect. A web UI (`lit gui`) covers everyday
+   browsing, reading, and annotation — a friendly subset of what the agent
+   can do.
 
 ---
 
@@ -82,8 +86,8 @@ Don't have pipx? See [pipx.pypa.io](https://pipx.pypa.io).
 **From PyPI** (recommended):
 
 ```bash
-pipx install litman   # first install
-pipx upgrade litman   # update
+pipx install 'litman[web]'   # first install (includes the web UI)
+pipx upgrade litman          # update
 ```
 
 **From a local clone** (development):
@@ -92,11 +96,11 @@ pipx upgrade litman   # update
 # first install
 git clone https://github.com/wqx1999/litman.git
 cd litman
-pipx install .
+pipx install '.[web]'
 
 # update (pull latest code first)
 git pull
-pipx install --force .
+pipx install --force '.[web]'
 ```
 
 Then run the one-shot setup wizard:
@@ -130,41 +134,17 @@ delete that directory by hand if you also want the data gone.
 
 ## Quick start
 
-### With an AI agent
-
-```
-Create a new vault at /work/me/.
-Add ~/Downloads/attention_is_all_you_need.pdf to my vault.
-Show me all papers tagged with topic: transformer.
-Tag 2017_Vaswani_Attention with topic: attention.
-Link 2017_Vaswani_Attention to project MyResearchProject.
-Remove 2017_Vaswani_Attention from my vault.
-```
-
-### CLI
-
 ```bash
-# create a vault (pass the parent dir; CLI creates the subdir and registers it)
-lit init /work/me/
-
-# add a paper
-lit add ~/Downloads/attention_is_all_you_need.pdf --doi 10.48550/arXiv.1706.03762
-
-# browse
-lit list
-lit show 2017_Vaswani_Attention
-
-# tag
-lit taxonomy add topics transformer
-lit modify 2017_Vaswani_Attention --add-tag topics=transformer
-
-# link to a project
-lit link 2017_Vaswani_Attention --project MyResearchProject
-
-# remove
-lit rm 2017_Vaswani_Attention
+lit init /work/me/    # create a vault (pass the parent dir; lit creates + registers the subdir)
+lit gui               # open the web UI — browse, read, annotate, tag, and link papers
 ```
 
+The web UI covers everyday browsing, reading, and annotation — a friendly subset
+of everything litman can do. For anything it doesn't cover (adding papers,
+taxonomy edits, project links, health checks, ...), just ask your Claude Code
+agent in plain English ("add this paper and tag it transformer") and the bundled
+skills drive the full CLI for you. The complete command set the agent operates
+is in the [command reference](docs/4-commands.md).
 
 ---
 
