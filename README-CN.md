@@ -94,6 +94,25 @@ pipx install --force .
 lit setup   # 交互式向导：shell 补全 → Claude Code skill → vault 设置 →（可选）云同步
 ```
 
+## 卸载
+
+分两步，注意顺序——先 `lit uninstall`（趁 `lit` 命令还在），再 pipx：
+
+```bash
+lit uninstall          # 删除内置 skill、shell 补全、vault 注册表
+pipx uninstall litman  # 删除 lit CLI 本体
+```
+
+`lit uninstall` 会先列出将删除的内容并请你确认——加 `--dry-run` 预览、加 `-y` 跳过。
+
+如果是从本地克隆安装的，删完 CLI 后再删掉克隆下来的仓库目录：
+
+```bash
+rm -rf path/to/litman   # 你 git clone 的那个目录
+```
+
+以上都不会碰你的 vault（论文、PDF、笔记、标注）；如果连数据也要删，请手动删除那个目录。
+
 ## 快速上手
 
 ### 通过 AI agent

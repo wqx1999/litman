@@ -105,6 +105,29 @@ Then run the one-shot setup wizard:
 lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync
 ```
 
+## Uninstall
+
+Run two steps, in order — `lit uninstall` first (while the `lit` command still
+exists), then pipx:
+
+```bash
+lit uninstall          # removes bundled skills, shell completion, and the vault registry
+pipx uninstall litman  # removes the lit CLI itself
+```
+
+`lit uninstall` lists exactly what it will delete and asks first — pass
+`--dry-run` to preview or `-y` to skip the prompt.
+
+If you installed from a local clone, also delete the cloned repo folder once the
+CLI is gone:
+
+```bash
+rm -rf path/to/litman   # the directory you git-cloned into
+```
+
+Your vault (papers, PDFs, notes, annotations) is never touched by any of this;
+delete that directory by hand if you also want the data gone.
+
 ## Quick start
 
 ### With an AI agent
