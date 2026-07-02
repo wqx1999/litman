@@ -123,16 +123,13 @@ delete that directory by hand if you also want the data gone.
 ## Quick start
 
 ```bash
-lit init /work/me/    # create a vault (pass the parent dir; lit creates + registers the subdir)
-lit gui               # open the web UI — browse, read, annotate, tag, and link papers
+lit gui   # open the web UI — browse, read, annotate, tag, and link papers
 ```
 
-The web UI covers everyday browsing, reading, and annotation — a friendly subset
-of everything litman can do. For anything it doesn't cover (adding papers,
-taxonomy edits, project links, health checks, ...), just ask your Claude Code
-agent in plain English ("add this paper and tag it transformer") and the bundled
-skills drive the full CLI for you. The complete command set the agent operates
-is in the [command reference](docs/4-commands.md).
+That's it — `lit setup` already created your vault. The web UI handles everyday
+browsing, reading, and annotation; for anything more (adding papers, taxonomy
+edits, project links), ask your Claude Code agent in natural language or see the
+[command reference](docs/4-commands.md).
 
 ---
 

@@ -112,14 +112,12 @@ rm -rf path/to/litman   # 你 git clone 的那个目录
 ## 快速上手
 
 ```bash
-lit init /work/me/    # 创建 vault（传父目录；lit 创建并注册子目录）
-lit gui               # 打开 Web UI —— 浏览、阅读、批注、打标签、链接项目
+lit gui   # 打开 Web UI —— 浏览、阅读、批注、打标签、链接项目
 ```
 
-Web UI 覆盖日常的浏览、阅读、批注，是 litman 全部能力的一个友好子集。UI 覆盖不到
-的操作（添加论文、编辑 taxonomy、链接项目、健康检查……），直接用自然语言问你的
-Claude Code agent（"把这篇论文加进来并打上 transformer 标签"），内置 skill 会替你
-驱动完整的 CLI。agent 操作的完整命令集都在[命令参考](docs/4-commands.md)里。
+就这样——`lit setup` 已经帮你建好了 vault。Web UI 覆盖日常的浏览、阅读、批注；
+更多操作（添加论文、编辑 taxonomy、链接项目）用自然语言问你的 Claude Code agent，
+或查看[命令参考](docs/4-commands.md)。
 
 ---
 
