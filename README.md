@@ -74,8 +74,8 @@ Don't have pipx? See [pipx.pypa.io](https://pipx.pypa.io).
 **From PyPI** (recommended):
 
 ```bash
-pipx install 'litman[web]'   # first install (includes the web UI)
-pipx upgrade litman          # update
+pipx install litman   # first install
+pipx upgrade litman   # update
 ```
 
 **From a local clone** (development):
@@ -84,11 +84,11 @@ pipx upgrade litman          # update
 # first install
 git clone https://github.com/wqx1999/litman.git
 cd litman
-pipx install '.[web]'
+pipx install .
 
 # update (pull latest code first)
 git pull
-pipx install --force '.[web]'
+pipx install --force .
 ```
 
 Then run the one-shot setup wizard:

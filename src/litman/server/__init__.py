@@ -5,8 +5,9 @@ backends the CLI uses (invariant #16 / ADR-016 / ADR-017). Phase 0 wires
 only the read endpoints; structured + whitelist writes land in later phases.
 
 This module imports fastapi at module scope, so it must NEVER be imported by
-``litman.cli`` / ``import litman`` at top level (invariant #5). ``commands/gui``
-imports :func:`create_app` lazily, behind the extra-installed guard.
+``litman.cli`` / ``import litman`` at top level (invariant #5 — the CLI's
+startup path stays fastapi-free even though fastapi is now a core dependency).
+``commands/gui`` imports :func:`create_app` lazily inside the command body.
 """
 
 from __future__ import annotations

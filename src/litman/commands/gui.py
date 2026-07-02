@@ -1,11 +1,11 @@
 """``lit gui`` — launch the litman webUI (M-web-gui).
 
 Starts a localhost-only FastAPI + uvicorn server serving the vendored SPA and
-the read/write API over the active vault. The server stack lives in the
-``litman[web]`` optional extra; the CLI itself stays fastapi-free (invariant
-#5), so fastapi/uvicorn/the server module are imported *inside* the command
-body, behind the extra-installed guard. Importing this module must not pull
-fastapi in.
+the read/write API over the active vault. fastapi + uvicorn are core
+dependencies (the web UI is a first-class interface, ADR-018), but the CLI's
+startup path stays fastapi-free (invariant #5): fastapi/uvicorn/the server
+module are imported *inside* the command body, so importing this module — or
+any other ``lit`` command — must not pull fastapi in.
 
 bind 127.0.0.1 only — HPC users tunnel via ``ssh -L`` (the command prints a
 copy-pasteable tunnel line). A busy port is never fatal: the port finder walks
@@ -78,21 +78,22 @@ def gui_cmd(
 ) -> None:
     """Launch the litman webUI (browse / read PDFs / annotate) on localhost.
 
-    Requires the ``litman[web]`` extra (fastapi + uvicorn). On HPC, tunnel the
-    printed port with ``ssh -L`` and open the URL in your local browser.
+    On HPC, tunnel the printed port with ``ssh -L`` and open the URL in your
+    local browser.
     """
+    # fastapi + uvicorn are core dependencies, so this import normally always
+    # succeeds; the guard only fires on a corrupted install, and points at a
+    # reinstall rather than a (no-longer-existing) optional extra.
     try:
         import uvicorn
     except ImportError:
         console.print(
-            "[bold red]error:[/] the webUI needs the optional [bold]web[/] extra "
-            "(fastapi + uvicorn), which is not installed."
+            "[bold red]error:[/] the web UI needs fastapi + uvicorn, which are "
+            "missing from this install."
         )
-        # Escape the brackets so Rich renders the literal "litman[web]" rather
-        # than treating "[web]" as a (vanishing) markup tag.
         console.print(
-            r"Install it with:  pipx install 'litman\[web]'  "
-            r"(or pip install 'litman\[web]')"
+            "Reinstall litman:  pipx install --force litman  "
+            "(or pip install --force-reinstall litman)"
         )
         raise SystemExit(1) from None
 

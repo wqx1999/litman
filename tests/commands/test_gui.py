@@ -1,6 +1,8 @@
-"""Tests for ``lit gui`` — import isolation, the extra-missing guard, and the
-free-port finder. These run WITHOUT fastapi installed (the helper + guard are
-fastapi-free by design, invariant #5)."""
+"""Tests for ``lit gui`` — import isolation, the missing-uvicorn guard, and the
+free-port finder. fastapi + uvicorn are core dependencies now, but the CLI's
+startup path and this command's guard stay fastapi-free by design (invariant
+#5): the import-isolation test proves that, and the guard test simulates a
+corrupted install where uvicorn is missing anyway."""
 
 from __future__ import annotations
 
@@ -31,11 +33,11 @@ def test_cli_import_does_not_load_fastapi() -> None:
 
 
 # ---------------------------------------------------------------------------
-# A1(b) — extra-missing guard: friendly message + non-zero exit
+# A1(b) — missing-uvicorn guard (corrupted install): friendly message + exit
 # ---------------------------------------------------------------------------
 
 
-def test_gui_without_web_extra_errors_with_hint(
+def test_gui_without_uvicorn_errors_with_hint(
     monkeypatch,
 ) -> None:
     real_import = builtins.__import__
@@ -49,7 +51,8 @@ def test_gui_without_web_extra_errors_with_hint(
 
     result = CliRunner().invoke(gui_cmd, [])
     assert result.exit_code != 0
-    assert "litman[web]" in result.output
+    # Points at a reinstall, not the (removed) optional extra.
+    assert "reinstall litman" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
