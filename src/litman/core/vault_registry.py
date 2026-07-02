@@ -61,9 +61,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from ruamel.yaml import YAML
 
 from litman.core.id import find_case_fold_collision
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import VaultRegistryError
 
 # Env var that, when set, overrides the platformdirs default. Point at a
@@ -83,9 +83,10 @@ REGISTRY_FILENAME = "vaults.yaml"
 # ``is_valid_vault_name`` so a future reader sees the reason.
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+)
 
 
 def registry_path() -> Path:
@@ -435,6 +436,40 @@ def set_active(reg: VaultRegistry, name: str) -> VaultRegistry:
         v.model_copy(update={"is_active": (v.name == name)}) for v in reg.vaults
     ]
     return VaultRegistry(vaults=updated)
+
+
+def apply_vault_use(name: str, *, require_path: bool = False) -> VaultEntry:
+    """Switch the active vault to ``name`` and persist — the shared backend for
+    ``lit vault use`` and the webUI ``PUT /api/vaults/active``.
+
+    Loads the registry, marks ``name`` active (all others inactive), saves, and
+    returns the now-active entry. Centralising the load+set+save here keeps the
+    CLI and the GUI on one switch path so they can never drift.
+
+    When ``require_path`` is True the target's path must exist and be a directory
+    *before* the switch is persisted — for the GUI, which repoints a live server
+    at the new path and would break on a stale registry entry. The CLI keeps the
+    lenient default (``require_path=False``): switching to a vault whose path is
+    temporarily unavailable stays allowed.
+
+    Raises:
+        VaultRegistryError: ``name`` is not in the registry, or ``require_path``
+            is set and the path is missing / not a directory.
+    """
+    reg = load_registry()
+    entry = find_by_name(reg, name)
+    if entry is None:
+        raise VaultRegistryError(
+            f"No vault named {name!r} in the registry. Run `lit vault list` "
+            "to see what's registered."
+        )
+    if require_path and not Path(entry.path).expanduser().is_dir():
+        raise VaultRegistryError(
+            f"Vault {name!r} path does not exist or is not a directory: "
+            f"{entry.path}. Not switching."
+        )
+    save_registry(set_active(reg, name))
+    return entry
 
 
 def mark_health_checked(reg: VaultRegistry, name: str, ts: str) -> VaultRegistry:

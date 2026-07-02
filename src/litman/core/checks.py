@@ -43,19 +43,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAMLError
 
 from litman.core.atomic import cleanup_stale_staging
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
-from litman.core.dates import is_iso_date, is_iso_datetime
+from litman.core.dates import (
+    date_ordering_violations,
+    is_iso_date,
+    is_iso_datetime,
+)
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError, VaultRegistryError
 
-_yaml = YAML(typ="safe")
+_yaml = ThreadLocalYAML(typ="safe")
 
 # ---------------------------------------------------------------------------
 # Issue type
@@ -208,6 +213,30 @@ def fixed_enum_allows_none(field: str) -> bool:
     its unevaluated state is the explicit value ``inbox``."""
     return field in _OPTIONAL_FIXED_ENUMS
 
+
+# Display order for ``status``: a curation lifecycle (inbox → skim → deep-read,
+# then dropped), not alphabetical. The other two have no natural order, so they
+# are sorted. This is the order the webUI dropdowns render (one source, not a
+# second list hard-coded in the frontend).
+_STATUS_ORDER: tuple[str, ...] = ("inbox", "skim", "deep-read", "dropped")
+
+
+def all_fixed_enums() -> dict[str, list[str]]:
+    """Every fixed-enum field's allowed values, in display order.
+
+    Public accessor over the private ``_FIXED_ENUM_VALUES`` table so the webUI
+    can populate its status / priority / type dropdowns from the SAME source
+    ``check_schema`` / ``lit modify --set`` validate against (no second list in
+    the frontend). ``status`` follows the curation-lifecycle order; ``priority``
+    and ``type`` are sorted. ``None``-as-legal is reported separately via
+    :func:`fixed_enum_allows_none`.
+    """
+    return {
+        "status": list(_STATUS_ORDER),
+        "priority": sorted(_FIXED_ENUM_VALUES["priority"]),
+        "type": sorted(_FIXED_ENUM_VALUES["type"]),
+    }
+
 # Forward + reverse relation fields (ADR-012). Sourced from the shared
 # RELATION_PAIRS map so dangling-ref scans cover reverse fields too.
 _REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
@@ -326,6 +355,26 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                         hint=f"correct via `lit modify {pid} --set {field}=<YYYY-MM-DD>`",
                     )
                 )
+        # Date-ordering (invariant #11): read-date ≤ last-revisited ≤ today,
+        # and a last-revisited implies a read-date. Shares date_ordering_
+        # violations with the modify-time guard so the two cannot drift. The
+        # format loop above already reported unparseable values, which the
+        # helper skips.
+        for msg in date_ordering_violations(
+            p.get("read-date"), p.get("last-revisited")
+        ):
+            out.append(
+                Issue(
+                    category="schema",
+                    severity="error",
+                    paper_id=pid,
+                    message=msg,
+                    hint=(
+                        "read-date is the first-read stamp; correct via "
+                        f"`lit modify {pid} --set read-date=<YYYY-MM-DD>`"
+                    ),
+                )
+            )
     return out
 
 
@@ -1424,25 +1473,32 @@ def check_project_path_exists(
 def check_project_references(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Project ``REFERENCES.md`` / ``litman_reflib/`` ↔ membership (ledger #3).
+    """Project ``REFERENCES.md`` / ``litman_reflib/`` / ``litman_code/`` ↔ membership (ledger #3).
 
     For each configured project whose directory is reachable (bounded-stat),
-    compare the derived ``<project_dir>/litman_reflib/`` against the project's
-    membership set (papers whose ``projects`` field contains the name):
+    compare the derived project-side artifacts against the project's membership
+    set (papers whose ``projects`` field contains the name):
 
     * the generated ``REFERENCES.md`` content vs the freshly rendered content;
-    * the ``litman_reflib/<id>`` symlink set vs the membership ids.
+    * the ``litman_reflib/<id>`` symlink set vs the membership ids;
+    * the ``litman_code/<repo>`` symlink set vs the repos bound (via
+      ``code-clones``) by member papers whose clone is present locally.
 
-    Either mismatch is a klass-A drift (the derived artifact is a pure function
-    of metadata). Full-tier: needs per-paper ``projects`` + ``relevance``
-    (REFERENCES.md embeds the relevance annotation). Repair is the shared regen
-    (``rebuild_all_project_refs`` + ``rebuild_all_project_links``). Only checked
-    when the project dir is definitely present — an unreachable / not-yet-
-    mounted dir is left to ``project_path_exists`` (ledger #5), not flagged as
-    content drift here.
+    Any mismatch is a klass-A drift (the derived artifact is a pure function of
+    metadata). The code-symlink arm specifically catches the
+    ``lit code add``/``link``/``unlink`` staleness window: those commands mutate
+    ``code-clones`` and refresh the symlinks via ``refresh_project_code_links``,
+    so a leftover mismatch means the refresh was bypassed (hand-edit, partial
+    write, an older binary). Full-tier: needs per-paper ``projects`` /
+    ``relevance`` / ``code-clones`` (REFERENCES.md embeds relevance). Repair is
+    the shared regen (``rebuild_all_project_refs`` + ``rebuild_all_project_links``,
+    which rebuilds BOTH symlink hubs). Only checked when the project dir is
+    definitely present — an unreachable / not-yet-mounted dir is left to
+    ``project_path_exists`` (ledger #5), not flagged as content drift here.
     """
     from litman.commands._drift import _exists_bounded
     from litman.core.config import load_config
+    from litman.core.project_link import CODE_SUBDIR
     from litman.core.project_refs import (
         LITERATURE_SUBDIR,
         REFERENCES_FILENAME,
@@ -1475,10 +1531,9 @@ def check_project_references(
             continue
 
         reflib = project_dir / LITERATURE_SUBDIR
+        member_papers = _papers_for_project(papers, name)
         member_ids = {
-            str(p.get("id"))
-            for p in _papers_for_project(papers, name)
-            if p.get("id")
+            str(p.get("id")) for p in member_papers if p.get("id")
         }
 
         # 1) REFERENCES.md content vs freshly rendered (banner timestamp is the
@@ -1564,6 +1619,50 @@ def check_project_references(
                     paper_id=missing,
                     message=(
                         f"project {name!r} membership implies a litman_reflib "
+                        f"symlink for {missing!r} but it is missing"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+
+        # 3) litman_code/<repo> symlink set vs derived code-clone membership.
+        #    Parallel to the litman_reflib block: expected = every repo bound
+        #    (code-clones) by a member paper whose codes/<repo>/repo clone is
+        #    present locally (mirrors rebuild_all_project_links, which skips
+        #    absent clones — a missing clone is owned by
+        #    check_code_clone_integrity / `lit code restore-all`).
+        expected_repos: set[str] = set()
+        for p in member_papers:
+            for repo_name in p.get("code-clones") or []:
+                if (vault / "codes" / str(repo_name) / "repo").exists():
+                    expected_repos.add(str(repo_name))
+        code_dir = project_dir / CODE_SUBDIR
+        code_link_names: set[str] = set()
+        if code_dir.is_dir():
+            for entry in code_dir.iterdir():
+                if entry.is_symlink():
+                    code_link_names.add(entry.name)
+        for extra in sorted(code_link_names - expected_repos):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"{code_dir / extra} symlink has no matching code-clone "
+                        f"membership in project {name!r} (stale project link)"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+        for missing in sorted(expected_repos - code_link_names):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} membership implies a litman_code "
                         f"symlink for {missing!r} but it is missing"
                     ),
                     hint="run `lit health-check --fix` to rebuild project links",

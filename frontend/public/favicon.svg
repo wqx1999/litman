@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- macOS-style squircle in the app accent blue (#007aff), with a Lucide
+       "book-open" glyph so the favicon shares the line-icon language of the
+       in-app TopBar icons. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a98ff"/>
+      <stop offset="1" stop-color="#007aff"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7.5" fill="url(#bg)"/>
+  <g transform="translate(7.3 7.3) scale(0.72)"
+     fill="none" stroke="#ffffff" stroke-width="2.6"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 7v14"/>
+    <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>
+  </g>
+</svg>

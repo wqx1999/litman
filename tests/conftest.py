@@ -16,7 +16,10 @@ from pathlib import Path
 
 import pytest
 
+from litman.core.document import list_papers
+from litman.core.library import create_vault
 from litman.core.vault_registry import REGISTRY_ENV_VAR
+from litman.core.views import write_index
 
 
 def _build_text_pdf(pages: Sequence[Sequence[str]]) -> bytes:
@@ -93,6 +96,52 @@ def make_text_pdf(tmp_path: Path) -> Callable[..., Path]:
         return path
 
     return _make
+
+
+@pytest.fixture
+def vault_with_paper(tmp_path: Path) -> tuple[Path, str]:
+    """Vault containing one paper with the canonical M2.0 metadata schema.
+
+    INDEX.json is rebuilt from the on-disk metadata so the derived projection
+    matches the paper (the GUI read endpoints read INDEX.json directly, and
+    the modify command tests assert post-write INDEX state).
+    """
+    vault = create_vault(tmp_path)
+    paper_id = "2024_Foo_Bar"
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+
+    # Hand-crafted minimal metadata matching what `lit add` writes today.
+    meta = (paper_dir / "metadata.yaml")
+    meta.write_text(
+        "id: 2024_Foo_Bar\n"
+        "title: Foo Bar\n"
+        "authors:\n"
+        "  - Foo, Alice\n"
+        "year: 2024\n"
+        "journal: Test J.\n"
+        "doi: 10.1/x\n"
+        "arxiv-id:\n"
+        "github:\n"
+        "created-at: '2026-04-28T10:00:00+02:00'\n"
+        "updated-at: '2026-04-28T10:00:00+02:00'\n"
+        "projects: []\n"
+        "topics: []\n"
+        "methods: []\n"
+        "data: []\n"
+        "type: research\n"
+        "status: inbox\n"
+        "priority: B\n"
+        "read-date:\n"
+        "last-revisited:\n"
+        "related: []\n"
+        "contradicts: []\n"
+        "extends: []\n"
+        "code-clones: []\n",
+        encoding="utf-8",
+    )
+    write_index(vault, list_papers(vault))
+    return vault, paper_id
 
 
 @pytest.fixture(autouse=True)

@@ -30,26 +30,29 @@ from typing import Any
 import click
 from rich.console import Console
 from rich.markup import escape
-from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
+from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
-from litman.core.dates import now_iso
-from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
+from litman.core.dates import date_ordering_violations, now_iso
+from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.project_refs import write_references_md
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ModifyError, PaperNotFoundError
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 # Fields the user must NOT modify via `lit modify`. id is changed via
 # `lit rename` (M2.6) which also renames the paper dir; the audit fields
@@ -404,6 +407,26 @@ def _apply_modify(
         if key in RELATION_TAG_FIELDS:
             relation_ops.append(("rm", key, value))
 
+    # Date-ordering guard (invariant #11): when this op touched read-date or
+    # last-revisited, the resulting pair must stay consistent — neither in the
+    # future, a revisit implies a first read, and read-date never postdates
+    # last-revisited. Gated on the diff so an unrelated edit (e.g. --set
+    # priority=A) is never blocked by pre-existing data; surfacing pre-existing
+    # ordering issues is health-check's job, not this write's. `lit read`'s
+    # idempotence stops the common overwrite foot-gun; this catches the
+    # `lit modify` / hand-edit paths.
+    if any(k in ("read-date", "last-revisited") for k, _, _ in diffs):
+        violations = date_ordering_violations(
+            metadata.get("read-date"), metadata.get("last-revisited")
+        )
+        if violations:
+            raise ModifyError(
+                "Refusing to write: "
+                + "; ".join(violations)
+                + ". read-date is the immutable first-read stamp; log a return "
+                "visit with `lit revisit` instead."
+            )
+
     # ----- ADR-012 auto double-write -----
     # For each relation tag the user wrote, mirror it onto the opposite
     # paper's paired field within the SAME transaction. The originating
@@ -519,10 +542,41 @@ def _apply_modify(
     # derived artifacts (litman_reflib/<id> symlink + REFERENCES.md) must be
     # rebuilt too — otherwise `--add-tag projects=X` writes member TRUTH while
     # the project dir stays stale. Gate on the projects diff so an unrelated
-    # modify (e.g. `--set priority=A`) does not pay the rebuild-all cost.
+    # modify on a non-member paper does not pay the rebuild-all cost.
     projects_changed = any(key == "projects" for key, _, _ in diffs)
     fresh_papers = list_papers(vault)
     reconcile_derived(vault, papers=fresh_papers, project_refs=projects_changed)
+
+    # REFERENCES.md renders more than just membership: it groups by `priority`
+    # and prints each member's `title`/`authors`/`year` + the per-project
+    # `relevance-<project>` annotation. So editing any of those on a paper that
+    # belongs to a project leaves that project's REFERENCES.md stale even though
+    # membership is unchanged (the `projects_changed` gate above misses it).
+    # Surgically regenerate ONLY the affected paper's own projects, reusing the
+    # in-memory paper list — no rebuild-all, no extra disk scan. The
+    # `projects_changed` case already rebuilt every project above (and is the
+    # only path that must also refresh a project the paper was just removed
+    # from), so skip it here. Best-effort like rebuild_all_project_refs: a
+    # project whose dir is missing on this machine is silently skipped.
+    if not projects_changed:
+        refs_fields_changed = any(
+            key in {"priority", "title", "authors", "year"}
+            or key.startswith("relevance-")
+            for key, _, _ in diffs
+        )
+        member_projects = metadata.get("projects") or []
+        if refs_fields_changed and member_projects:
+            registry = load_config(vault).projects
+            for proj in member_projects:
+                project_dir_str = registry.get(proj)
+                if not project_dir_str:
+                    continue
+                project_dir = Path(project_dir_str).expanduser()
+                if not project_dir.is_dir():
+                    continue
+                write_references_md(
+                    vault, proj, project_dir, papers=fresh_papers
+                )
 
     # ----- Output -----
     console.print(f"[bold green]✓ Modified[/] {paper_id}")

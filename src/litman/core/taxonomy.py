@@ -26,6 +26,13 @@ makes that mapping explicit so callers don't hard-code it.
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+from litman.core.atomic import staged_write
+from litman.core.dates import now_iso
+from litman.core.document import list_papers
+from litman.core.views import render_index
+from litman.exceptions import TaxonomyError
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
 FIXED_DICTS: tuple[str, ...] = ("type", "status", "priority")
@@ -187,3 +194,231 @@ def replace_value_in_field(
     if changed:
         metadata[field] = new_list
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Write core: register new user-dict value(s) (shared by `lit taxonomy add`
+# and the webUI `POST /api/taxonomy/{key}` — invariant #16 one write path)
+# ---------------------------------------------------------------------------
+
+
+def reject_projects_write(dict_name: str) -> None:
+    """Hard-deprecate generic ``projects`` writes (M15).
+
+    ``projects`` carries a path binding in lit-config.yaml, so a write through
+    the generic taxonomy path would be a half-update footgun (TAXONOMY.md
+    changed, config map not). The dedicated ``lit project`` group / the
+    ``add_project`` core keeps both truth sources atomic.
+    """
+    if dict_name == "projects":
+        raise TaxonomyError(
+            "'projects' has path binding requirements; use `lit project` "
+            "instead.\n"
+            "  add:    lit project add <name> --path <abs-path>\n"
+            "  rename: lit project rename <old> <new>\n"
+            "  rm:     lit project rm <name>"
+        )
+
+
+def validate_user_dict(dict_name: str) -> None:
+    """Reject unknown dicts and fixed enums (writable subcommands only)."""
+    if dict_name in FIXED_DICTS:
+        raise TaxonomyError(
+            f"Cannot modify fixed-enum dict {dict_name!r}. "
+            "Fixed enums (type, status, priority) require a code release "
+            "because the app's enum lists must change in lockstep."
+        )
+    if dict_name not in USER_DICTS:
+        raise TaxonomyError(
+            f"Unknown dict {dict_name!r}. "
+            f"User-extensible dicts: {', '.join(USER_DICTS)}."
+        )
+
+
+def add_taxonomy_values(
+    vault: Path, dict_name: str, values: tuple[str, ...]
+) -> tuple[list[str], list[str]]:
+    """Register new value(s) in a user dict (atomic TAXONOMY.md write).
+
+    The single backend for both ``lit taxonomy add`` and the webUI's
+    ``POST /api/taxonomy/{key}`` (invariant #16: one write path, register-first
+    per invariant #2). Already-present values are silent no-ops; the dict body
+    is rewritten in sorted order. Only TAXONOMY.md is touched (registering a
+    value never ripples into any paper's metadata).
+
+    Returns:
+        ``(added, skipped)`` — values newly registered vs already present.
+
+    Raises:
+        TaxonomyError: ``dict_name`` is ``projects`` (use ``add_project``),
+            a fixed enum, an unknown dict, or any value is empty.
+    """
+    reject_projects_write(dict_name)
+    validate_user_dict(dict_name)
+
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    current = parse_taxonomy(text)[dict_name]
+
+    added: list[str] = []
+    skipped: list[str] = []
+    new_set = set(current)
+    for v in values:
+        v = v.strip()
+        if not v:
+            raise TaxonomyError("Empty value is not allowed.")
+        if v in new_set:
+            skipped.append(v)
+            continue
+        new_set.add(v)
+        added.append(v)
+
+    if not added:
+        return added, skipped
+
+    new_text = update_user_dict_section(text, dict_name, sorted(new_set))
+    with staged_write(vault, op_id=f"taxonomy-add-{dict_name}") as stage:
+        stage.write_text("TAXONOMY.md", new_text)
+
+    return added, skipped
+
+
+def remove_taxonomy_value(
+    vault: Path, dict_name: str, value: str
+) -> tuple[int, list[str]]:
+    """Remove a user-dict value, cascading the removal to every referencing paper.
+
+    The single backend for the WRITE half of both ``lit taxonomy rm`` and the
+    webUI's ``DELETE /api/taxonomy/{key}`` (invariant #16: one validate + write
+    path). Drops ``value`` from TAXONOMY.md and from each referencing paper's
+    metadata.yaml in one atomic staged_write (TAXONOMY.md + staged metas +
+    INDEX.json), then rebuilds INDEX + views together through the shared
+    ``reconcile_derived`` funnel.
+
+    Confirm-free by design: the cascade-with-confirm gate (``_confirm_destructive``)
+    and console output stay in the ``lit taxonomy rm`` command; the GUI's confirm
+    dialog is the confirmation on the server path.
+
+    Returns:
+        ``(n_changed, referencing_ids)`` — count of papers whose metadata was
+        rewritten and the sorted ids that referenced ``value`` before removal.
+
+    Raises:
+        TaxonomyError: ``dict_name`` is ``projects`` (use ``remove_project``),
+            a fixed enum, an unknown dict, or ``value`` is not registered.
+    """
+    # Local imports avoid a core import-cycle at module load: core.ripple imports
+    # this module (replace_value_in_field), and reconcile_derived → core.checks
+    # imports this module too. Mirrors core.project_link's lazy reconcile import.
+    from litman.core.correctors import reconcile_derived
+    from litman.core.ripple import _ripple_removals
+
+    reject_projects_write(dict_name)
+    validate_user_dict(dict_name)
+
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    current = parse_taxonomy(text)[dict_name]
+    if value not in current:
+        raise TaxonomyError(f"{value!r} is not registered in {dict_name}.")
+
+    papers = list_papers(vault)
+    referencing = find_referencing_papers(papers, dict_name, value)
+
+    new_body = [v for v in current if v != value]
+    new_text = update_user_dict_section(text, dict_name, new_body)
+
+    n_changed, staged_meta_paths, all_papers = _ripple_removals(
+        vault, USER_DICT_TO_METADATA_FIELD[dict_name], value
+    )
+    fresh_index = render_index(all_papers, now_iso())
+
+    with staged_write(vault, op_id=f"taxonomy-rm-{dict_name}") as stage:
+        stage.write_text("TAXONOMY.md", new_text)
+        for relpath, content in staged_meta_paths:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", fresh_index)
+
+    if n_changed > 0:
+        # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
+        # INDEX + views recomputed together. The staged INDEX.json above is the
+        # crash-safety layer. project_refs=False keeps behavior identical
+        # (taxonomy commands govern topics/methods/data, never project refs).
+        reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+
+    return n_changed, referencing
+
+
+def rename_taxonomy_value(
+    vault: Path, dict_name: str, old: str, new: str
+) -> tuple[int, list[str]]:
+    """Rename a user-dict value, rippling to every referencing paper.
+
+    The single backend for the WRITE half of both ``lit taxonomy rename`` and the
+    webUI's ``PUT /api/taxonomy/{key}`` (invariant #16: one validate + write
+    path). Renames ``old`` → ``new`` in TAXONOMY.md and in each referencing
+    paper's metadata.yaml in one atomic staged_write (TAXONOMY.md + staged metas
+    + INDEX.json), then rebuilds INDEX + views together through the shared
+    ``reconcile_derived`` funnel. Semantics-preserving (no data loss), so the CLI
+    runs it confirm-free — there is no destructive gate to skip on the GUI path.
+
+    Returns:
+        ``(n_changed, referencing_ids)`` — count of papers whose metadata was
+        rewritten and the sorted ids that referenced ``old`` before the rename.
+
+    Raises:
+        TaxonomyError: ``dict_name`` is ``projects`` (use ``rename_project``),
+            a fixed enum, an unknown dict; ``old`` == ``new``; ``new`` is empty;
+            ``old`` is not registered; or ``new`` is already registered (merge,
+            don't rename).
+    """
+    # Local imports avoid a core import-cycle at module load: core.ripple imports
+    # this module (replace_value_in_field), and reconcile_derived → core.checks
+    # imports this module too. Mirrors remove_taxonomy_value above.
+    from litman.core.correctors import reconcile_derived
+    from litman.core.ripple import _ripple_replacements
+
+    reject_projects_write(dict_name)
+    validate_user_dict(dict_name)
+    if old == new:
+        raise TaxonomyError("`old` and `new` are identical — nothing to do.")
+    if not new.strip():
+        raise TaxonomyError("`new` value cannot be empty.")
+
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    current = parse_taxonomy(text)[dict_name]
+    if old not in current:
+        raise TaxonomyError(
+            f"{old!r} is not registered in {dict_name}. "
+            f"Run `lit taxonomy list {dict_name}` to inspect."
+        )
+    if new in current:
+        raise TaxonomyError(
+            f"{new!r} is already in {dict_name}. "
+            f"Use `lit taxonomy merge {dict_name} {old} --into {new}` to fold them."
+        )
+
+    papers = list_papers(vault)
+    referencing = find_referencing_papers(papers, dict_name, old)
+
+    new_body = [new if v == old else v for v in current]
+    new_text = update_user_dict_section(text, dict_name, new_body)
+
+    field = USER_DICT_TO_METADATA_FIELD[dict_name]
+    n_changed, staged_meta_paths, all_papers = _ripple_replacements(
+        vault, field, {old: new}
+    )
+    fresh_index = render_index(all_papers, now_iso())
+
+    with staged_write(vault, op_id=f"taxonomy-rename-{dict_name}") as stage:
+        stage.write_text("TAXONOMY.md", new_text)
+        for relpath, content in staged_meta_paths:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", fresh_index)
+
+    if n_changed > 0:
+        # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
+        # INDEX + views recomputed together. The staged INDEX.json above is the
+        # crash-safety layer. project_refs=False keeps behavior identical
+        # (taxonomy commands govern topics/methods/data, never project refs).
+        reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+
+    return n_changed, referencing

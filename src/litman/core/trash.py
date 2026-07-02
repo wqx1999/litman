@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
@@ -60,6 +60,7 @@ from litman.core.project_link import CODE_SUBDIR
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TrashError
 
 TRASH_DIRNAME = ".trash"
@@ -71,18 +72,20 @@ TRASH_DIRNAME = ".trash"
 # (invariant #13: deletion is rare).
 TRASH_MAX_ENTRIES = 100
 
-_yaml = YAML(typ="safe")
-_yaml_dump = YAML()
-_yaml_dump.indent(mapping=2, sequence=4, offset=2)
-_yaml_dump.default_flow_style = False
+_yaml = ThreadLocalYAML(typ="safe")
+_yaml_dump = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+)
 
 # Round-trip writer for restore's symmetric reverse-edge rebuild: it edits
 # opposite papers' / repos' existing metadata, so comments and quoting must
 # survive (mirrors the writer rm.py uses for the inverse teardown).
-_yaml_rt = YAML()
-_yaml_rt.indent(mapping=2, sequence=4, offset=2)
-_yaml_rt.preserve_quotes = True
-_yaml_rt.default_flow_style = False
+_yaml_rt = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 
 def _dump_rt_to_string(data: dict[str, Any]) -> str:

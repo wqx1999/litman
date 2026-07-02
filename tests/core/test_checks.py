@@ -14,9 +14,12 @@ from pathlib import Path
 import pytest
 
 from litman.core.checks import (
+    all_fixed_enums,
     check_config_readable,
     check_schema,
     check_taxonomy_drift,
+    fixed_enum_allows_none,
+    fixed_enum_values,
     run_all_checks,
     run_push_integrity_errors,
 )
@@ -125,9 +128,14 @@ def test_schema_malformed_semantic_date_errors(
 
 @pytest.mark.parametrize("field", ["read-date", "last-revisited"])
 def test_schema_semantic_date_none_and_valid_ok(vault: Path, field: str) -> None:
-    # None (not yet read/revisited) and a strict date both pass.
+    # None (not yet read/revisited) and a strict date both pass the format gate.
     assert check_schema(vault, [_minimal_paper(**{field: None})]) == []
-    assert check_schema(vault, [_minimal_paper(**{field: "2026-05-30"})]) == []
+    # last-revisited needs a read-date alongside it to satisfy the ordering
+    # rule (a revisit presupposes a first read); read-date alone is fine.
+    extra = {"read-date": "2026-05-01"} if field == "last-revisited" else {}
+    assert check_schema(
+        vault, [_minimal_paper(**{field: "2026-05-30", **extra})]
+    ) == []
 
 
 # ---------------------------------------------------------------------------
@@ -278,3 +286,29 @@ def test_push_gate_excludes_unreadable_registry(
     ), "fixture must trigger a registry-unreadable error"
     gate = run_push_integrity_errors(vault, papers)
     assert all(i.category != "vault_registry_drift" for i in gate)
+
+
+# ---------------------------------------------------------------------------
+# all_fixed_enums accessor (webUI /api/fixed-enums source, Phase 3b)
+# ---------------------------------------------------------------------------
+
+
+def test_all_fixed_enums_shape_and_order() -> None:
+    """The public accessor exposes the three enums in display order, agreeing
+    with the per-field accessors the write path uses (one source, no drift)."""
+    enums = all_fixed_enums()
+    assert set(enums) == {"status", "priority", "type"}
+
+    # status: curation lifecycle order (not alphabetical), required.
+    assert enums["status"] == ["inbox", "skim", "deep-read", "dropped"]
+    assert fixed_enum_allows_none("status") is False
+
+    # priority / type: sorted, optional (None legal).
+    assert enums["priority"] == ["A", "B", "C"]
+    assert enums["type"] == sorted(enums["type"])
+    assert fixed_enum_allows_none("priority") is True
+    assert fixed_enum_allows_none("type") is True
+
+    # Values agree with the private table via the per-field accessor.
+    for field, values in enums.items():
+        assert set(values) == set(fixed_enum_values(field))

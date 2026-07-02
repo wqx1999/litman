@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from litman.core.code import missing_code_clones
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
@@ -108,3 +109,15 @@ def show_cmd(
     notes_status = "" if notes_file.is_file() else "  [bold red](missing!)[/]"
     console.print(f"[dim]PDF:  [/] {pdf_file}{pdf_status}")
     console.print(f"[dim]Notes:[/] {notes_file}{notes_status}")
+
+    # Code-clones: one line per bound repo, with the same (missing!) marker used
+    # for PDF/Notes when codes/<name>/ is gone (the dangling-link case lit
+    # health-check flags under invariant #12). The link is kept by design (it
+    # records the re-clone target); this only stops it from reading as live.
+    code_clones = meta.get("code-clones") or []
+    if code_clones:
+        gone = set(missing_code_clones(vault, code_clones))
+        codes_dir = vault / "codes"
+        for name in code_clones:
+            status = "  [bold red](missing!)[/]" if name in gone else ""
+            console.print(f"[dim]Code: [/] {codes_dir / name}{status}")

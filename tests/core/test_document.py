@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from ruamel.yaml import YAML
 
 from litman.core.document import (
@@ -194,3 +193,34 @@ def test_load_yaml_or_raise_on_non_utf8(tmp_path: Path) -> None:
     path.write_bytes(b"id: \xff\xfe not utf-8\n")
     with pytest.raises(CorruptMetadataError):
         load_yaml_or_raise(path, YAML())
+
+
+def test_concurrent_read_metadata_does_not_corrupt(vault: Path) -> None:
+    # Regression for the live-sync crash: two threads reading metadata at once
+    # (as /api/papers and /api/doc-mtimes do) must never raise. Pre-fix this
+    # surfaced as an AttributeError escaping list_papers' YAMLError guard.
+    import threading
+
+    for i in range(6):
+        _write_paper(vault, f"2020_Author{i}_Title", title=f"Paper {i}", year=2020)
+    files = sorted((vault / "papers").glob("*/metadata.yaml"))
+
+    errors: list[str] = []
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        barrier.wait()
+        for _ in range(80):
+            for f in files:
+                try:
+                    read_metadata(f)
+                except Exception as exc:  # record any escape
+                    errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []

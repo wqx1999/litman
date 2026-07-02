@@ -20,10 +20,12 @@ from rich.console import Console
 
 from litman import __version__
 from litman.commands.add import add_cmd
+from litman.commands.cite import cite_cmd
 from litman.commands.code import code_group
 from litman.commands.config import config_group
 from litman.commands.drop import drop_cmd
 from litman.commands.export import export_cmd
+from litman.commands.gui import gui_cmd
 from litman.commands.health import health_check_cmd
 from litman.commands.init import init_cmd
 from litman.commands.install_completion import install_completion_cmd
@@ -86,13 +88,13 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
      ("setup", "init", "vault", "install-completion", "install-skill", "help")),
     ("Papers",
      ("add", "list", "show", "search", "related", "open", "pdf-text",
-      "modify", "rename", "rm")),
+      "cite", "modify", "rename", "rm")),
     ("Reading status",
      ("read", "skim", "promote", "revisit", "drop")),
     ("Linking & organization",
      ("link", "unlink", "project", "code", "taxonomy")),
     ("Maintenance",
-     ("health-check", "refresh-views", "trash", "sync", "export", "config")),
+     ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui")),
 )
 
 
@@ -529,6 +531,7 @@ cli.add_command(init_cmd)
 cli.add_command(add_cmd)
 cli.add_command(list_cmd)
 cli.add_command(show_cmd)
+cli.add_command(cite_cmd)
 cli.add_command(search_cmd)
 cli.add_command(related_cmd)
 cli.add_command(open_cmd)
@@ -555,6 +558,7 @@ cli.add_command(unlink_cmd)
 cli.add_command(sync_group)
 cli.add_command(vault_group)
 cli.add_command(export_cmd)
+cli.add_command(gui_cmd)
 
 
 @cli.command(hidden=True)

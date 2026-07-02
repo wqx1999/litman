@@ -35,17 +35,17 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
-from ruamel.yaml import YAML
 
-from litman.commands.taxonomy import _ripple_removals, _ripple_replacements
-from litman.core.atomic import staged_write
-from litman.core.confirm import _confirm_destructive
 from litman.core.config import config_to_yaml_dict, load_config
-from litman.core.correctors import reconcile_derived
-from litman.core.dates import now_iso
+from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.project_link import CODE_SUBDIR
+from litman.core.project_link import (
+    add_project,
+    remove_project,
+    rename_project,
+    set_project_path,
+)
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
@@ -53,17 +53,17 @@ from litman.core.project_refs import (
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
-    update_user_dict_section,
 )
-from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 _PROJECTS_DICT = "projects"
 
@@ -150,9 +150,8 @@ def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
         path_type=Path,
     ),
     help=(
-        "Absolute on-disk path to the project's working directory. "
-        "Must already exist and be a directory (typo defense — no "
-        "placeholder registration)."
+        "Full path to an existing folder (the folder itself, not its "
+        "parent). litman does not create it."
     ),
 )
 @_library_option
@@ -163,55 +162,18 @@ def project_add_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Register a new project (dual-write TAXONOMY.md + lit-config.yaml).
+    """Link a project NAME to an existing folder (nothing is created).
 
-    Both truth sources are updated in a single atomic staged_write so a
-    crash never leaves the name in one but not the other.
+    NAME is a label papers tag with; it may differ from the folder's own
+    name. --path is the full path to that folder (not its parent), which
+    must already exist.
     """
-    name = name.strip()
-    if not name:
-        raise TaxonomyError("Project name cannot be empty.")
-    if not project_path.exists():
-        raise TaxonomyError(
-            f"Path {str(project_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {project_path}`), "
-            "then re-run — placeholder registration is intentionally "
-            "not allowed."
-        )
-    if not project_path.is_dir():
-        raise TaxonomyError(
-            f"Path {str(project_path)!r} is not a directory."
-        )
-
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
-    config = load_config(vault)
-
-    registered_names = set(parsed[_PROJECTS_DICT]) | set(config.projects)
-    if name in registered_names:
-        existing_path = config.projects.get(name)
-        raise TaxonomyError(
-            f"Project {name!r} is already registered"
-            + (f" → {existing_path}" if existing_path else "")
-            + ". Use `lit project set-path "
-            f"{name} <new-path>` to change its path, or "
-            f"`lit project rename {name} <new-name>` to rename it."
-        )
-
-    new_taxonomy_text = update_user_dict_section(
-        text, _PROJECTS_DICT, sorted(parsed[_PROJECTS_DICT] + [name])
-    )
-    new_projects = dict(config.projects)
-    new_projects[name] = str(project_path)
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    with staged_write(vault, op_id=f"project-add-{name}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        stage.write_text("lit-config.yaml", new_config_text)
+    summary = add_project(vault, name, project_path)
 
     console.print(
-        f"[bold green]✓ Registered[/] {escape(name)} → "
-        f"{escape(str(project_path))}"
+        f"[bold green]✓ Registered[/] {escape(summary['name'])} → "
+        f"{escape(summary['path'])}"
     )
 
 
@@ -306,64 +268,15 @@ def project_rename_cmd(
     policy as lit taxonomy rename. The project's on-disk path is
     carried over unchanged under the new key.
     """
-    old = old.strip()
-    new = new.strip()
-    if not new:
-        raise TaxonomyError("`new` project name cannot be empty.")
-    if old == new:
-        raise TaxonomyError("`old` and `new` are identical — nothing to do.")
-
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
-    config = load_config(vault)
-
-    known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
-    if old not in known:
-        raise TaxonomyError(
-            f"Project {old!r} is not registered. "
-            "Run `lit project list` to inspect."
-        )
-    if new in known:
-        raise TaxonomyError(
-            f"Project {new!r} is already registered. "
-            "Pick a different name or `lit project rm` the conflicting one."
-        )
-
-    new_taxonomy_values = [
-        new if v == old else v for v in parsed[_PROJECTS_DICT]
-    ]
-    new_taxonomy_text = update_user_dict_section(
-        text, _PROJECTS_DICT, new_taxonomy_values
-    )
-
-    new_projects = {
-        (new if k == old else k): v for k, v in config.projects.items()
-    }
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, _PROJECTS_DICT, {old: new}, rename_relevance=True
-    )
-    fresh_index = render_index(all_papers, now_iso())
-
-    with staged_write(vault, op_id=f"project-rename-{old}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        stage.write_text("lit-config.yaml", new_config_text)
-        for relpath, content in staged_meta_paths:
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", fresh_index)
-
-    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
-    # INDEX + views/by-project/ (new name in, old name out) + every project's
-    # symlinks + REFERENCES.md, all recomputed together from the committed
-    # TRUTH. project_refs=True because a rename touches the project side
-    # (mirrors the pre-funnel command's rebuild_all_project_{links,refs}).
-    # The staged INDEX.json above is the crash-safety layer; the funnel
-    # reloads config (= the just-committed new_projects) for the project side.
-    reconcile_derived(vault, project_refs=True)
+    # Single write path (invariant #16): validation + atomic dual-write +
+    # derived rebuild all live in core.project_link.rename_project, shared with
+    # the webUI's PUT /api/projects/{name}. The command only renders the result.
+    n_changed, _ = rename_project(vault, old, new)
 
     console.print(
-        f"[bold green]✓ Renamed[/] project {escape(old)} → {escape(new)}"
+        f"[bold green]✓ Renamed[/] project {escape(old.strip())} → "
+        f"{escape(new.strip())}"
     )
     console.print(
         f"  Updated [bold]{n_changed}[/] paper"
@@ -402,43 +315,23 @@ def project_set_path_cmd(
     rebuild hint because the registry change does NOT physically move the
     directory.
     """
-    name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    config = load_config(vault)
+    # Single write path (invariant #16): validation + atomic config write live in
+    # core.project_link.set_project_path, shared with the webUI's
+    # PUT /api/projects/{name}/path. The command only renders the result.
+    result = set_project_path(vault, name, new_path)
+    name_str = result["name"]
+    new_path_str = result["path"]
 
-    if name not in config.projects:
-        raise TaxonomyError(
-            f"Project {name!r} is not registered in lit-config.yaml. "
-            "Run `lit project list` to inspect, or "
-            f"`lit project add {name} --path <abs-path>` to register it."
-        )
-    if not new_path.exists():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {new_path}`)."
-        )
-    if not new_path.is_dir():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} is not a directory."
-        )
-
-    new_path_str = str(new_path)
-    if config.projects[name] == new_path_str:
+    if not result["changed"]:
         console.print(
-            f"[yellow]No-op:[/] {escape(name)} already points at "
+            f"[yellow]No-op:[/] {escape(name_str)} already points at "
             f"{escape(new_path_str)}."
         )
         return
 
-    new_projects = dict(config.projects)
-    new_projects[name] = new_path_str
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    with staged_write(vault, op_id=f"project-set-path-{name}") as stage:
-        stage.write_text("lit-config.yaml", new_config_text)
-
     console.print(
-        f"[bold green]✓ Updated[/] {escape(name)} → {escape(new_path_str)}"
+        f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}"
     )
     console.print(
         "[dim]ℹ If the project directory wasn't physically moved, run "
@@ -479,7 +372,7 @@ def project_rm_cmd(
     """
     name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    text, parsed = _load_taxonomy(vault)
+    _, parsed = _load_taxonomy(vault)
     config = load_config(vault)
 
     known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
@@ -526,59 +419,11 @@ def project_rm_cmd(
             console.print("[dim]Aborted. Nothing changed.[/]")
             return
 
-    # Build the post-removal truth sources.
-    new_taxonomy_values = [
-        v for v in parsed[_PROJECTS_DICT] if v != name
-    ]
-    new_taxonomy_text = update_user_dict_section(
-        text, _PROJECTS_DICT, new_taxonomy_values
-    )
-    new_projects = {
-        k: v for k, v in config.projects.items() if k != name
-    }
-    new_config_text = _config_with_projects(vault, new_projects)
-
-    n_changed, staged_meta_paths, all_papers = _ripple_removals(
-        vault, _PROJECTS_DICT, name, drop_relevance=True
-    )
-    fresh_index = render_index(all_papers, now_iso())
-
-    with staged_write(vault, op_id=f"project-rm-{name}") as stage:
-        stage.write_text("TAXONOMY.md", new_taxonomy_text)
-        stage.write_text("lit-config.yaml", new_config_text)
-        for relpath, content in staged_meta_paths:
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", fresh_index)
-
-    # Post-commit derived rebuild via the shared funnel (M30 Phase 4):
-    # INDEX + views/by-project/ (the removed project drops out) recomputed
-    # together. project_refs=False: the removed project's own symlinks +
-    # REFERENCES.md are torn down explicitly below, and no other project's
-    # membership changed — behavior identical to the pre-funnel command.
-    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
-
-    # Post-commit teardown of the project's on-disk artifacts. Mirrors the
-    # unlink pattern: filesystem-mutating, cheap to redo, recoverable.
-    if project_dir is not None and project_dir.is_dir():
-        literature_dir = project_dir / LITERATURE_SUBDIR
-        if literature_dir.is_dir():
-            for child in literature_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
-            refs = literature_dir / REFERENCES_FILENAME
-            if refs.exists():
-                refs.unlink()
-        # Symmetric teardown of litman_code/ (parallel to rm.py's
-        # _teardown_project_links). The project is gone, so every
-        # litman_code/<repo> symlink is an orphan — no shared-lib retention
-        # judgment needed. Without this, those symlinks become permanent
-        # orphans that no later rebuild_all_project_links revisits (the project
-        # is already out of the registry), violating invariant #14.
-        code_dir = project_dir / CODE_SUBDIR
-        if code_dir.is_dir():
-            for child in code_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
+    # The cascade write (dual TAXONOMY + config rewrite, metadata + INDEX, derived
+    # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI
+    # DELETE endpoint shares the exact write path (invariant #16). The command
+    # keeps only the confirm gate + console output.
+    n_changed, _ = remove_project(vault, name)
 
     console.print(
         f"[bold green]✓ Removed[/] project {escape(name)}."

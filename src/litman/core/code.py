@@ -29,12 +29,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import CodeError, PaperNotFoundError
 
 # Directory layout constants.
@@ -50,12 +51,33 @@ DEFAULT_CLONE_DEPTH = 1  # `git clone --depth 1`; `--depth 0` means "no shallow"
 # `cd -<name>` and shell-flag parsing.
 _VALID_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
-_yaml.preserve_quotes = True
 
-_yaml_safe = YAML(typ="safe")
+def missing_code_clones(vault: Path, names: list[str]) -> list[str]:
+    """Return the ``code-clones`` names whose clone is gone from disk.
+
+    A name is "missing" when ``codes/<name>/repo-meta.yaml`` does not exist —
+    the same "dangling ref" criterion
+    :func:`litman.core.checks.check_code_clone_integrity` enforces for
+    invariant #12. Shared so the CLI (``lit show``), the webUI cockpit, and
+    ``lit health-check`` all agree on what a dangling code-clone link is.
+    Order-preserving; empty / non-string names are skipped (never valid repos).
+    """
+    codes_dir = vault / CODES_DIRNAME
+    return [
+        name
+        for name in names
+        if isinstance(name, str)
+        and name
+        and not (codes_dir / name / REPO_META_FILENAME).is_file()
+    ]
+
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+    preserve_quotes=True,
+)
+
+_yaml_safe = ThreadLocalYAML(typ="safe")
 
 
 # ---------------------------------------------------------------------------
@@ -476,26 +498,40 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
         repo_meta["updated-at"] = now
         repo_changed = True
 
-    if not (paper_changed or repo_changed):
-        return False
+    changed = paper_changed or repo_changed
+    if changed:
+        # Build the INDEX.json re-render only if the paper side actually
+        # changed; the repo-side change does not affect INDEX.json contents.
+        rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
+        rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
 
-    # Build the INDEX.json re-render only if the paper side actually changed;
-    # the repo-side change does not affect INDEX.json contents.
-    rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
-    rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
+        with staged_write(
+            vault, op_id=f"code-bind-{paper_id}-{repo_name}"
+        ) as stage:
+            if paper_changed:
+                stage.write_text(
+                    rel_paper_meta, _dump_yaml_to_string(paper_meta)
+                )
+                all_papers = list_papers(vault)
+                all_papers = [p for p in all_papers if p.get("id") != paper_id]
+                all_papers.append(dict(paper_meta))
+                stage.write_text(
+                    "INDEX.json", render_index(all_papers, now_iso())
+                )
+            if repo_changed:
+                stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
 
-    with staged_write(vault, op_id=f"code-bind-{paper_id}-{repo_name}") as stage:
-        if paper_changed:
-            stage.write_text(rel_paper_meta, _dump_yaml_to_string(paper_meta))
-            all_papers = list_papers(vault)
-            all_papers = [p for p in all_papers if p.get("id") != paper_id]
-            all_papers.append(dict(paper_meta))
-            stage.write_text(
-                "INDEX.json", render_index(all_papers, now_iso())
-            )
-        if repo_changed:
-            stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
-    return True
+    # Keep the project-side litman_code/ symlinks in sync with the (possibly
+    # just-updated) code-clones — otherwise a repo bound after the paper was
+    # last `lit link`ed never gets its symlink. Runs even on the idempotent
+    # no-op so a previously-stale symlink self-heals (mirrors
+    # link_paper_to_project, which refreshes symlinks regardless of whether
+    # metadata changed). Lazy import: project_link pulls config/views, so
+    # importing it at module load would widen core.code's import graph.
+    from litman.core.project_link import refresh_project_code_links
+
+    refresh_project_code_links(vault, paper_id)
+    return changed
 
 
 def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
@@ -564,26 +600,36 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
             repo_meta["updated-at"] = now
             repo_changed = True
 
-    if not (paper_changed or repo_changed):
-        return False
+    changed = paper_changed or repo_changed
+    if changed:
+        rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
+        rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
 
-    rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
-    rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
+        with staged_write(
+            vault, op_id=f"code-unbind-{paper_id}-{repo_name}"
+        ) as stage:
+            if paper_changed:
+                stage.write_text(
+                    rel_paper_meta, _dump_yaml_to_string(paper_meta)
+                )
+                all_papers = list_papers(vault)
+                all_papers = [p for p in all_papers if p.get("id") != paper_id]
+                all_papers.append(dict(paper_meta))
+                stage.write_text(
+                    "INDEX.json", render_index(all_papers, now_iso())
+                )
+            if repo_changed:
+                stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
 
-    with staged_write(
-        vault, op_id=f"code-unbind-{paper_id}-{repo_name}"
-    ) as stage:
-        if paper_changed:
-            stage.write_text(rel_paper_meta, _dump_yaml_to_string(paper_meta))
-            all_papers = list_papers(vault)
-            all_papers = [p for p in all_papers if p.get("id") != paper_id]
-            all_papers.append(dict(paper_meta))
-            stage.write_text(
-                "INDEX.json", render_index(all_papers, now_iso())
-            )
-        if repo_changed:
-            stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
-    return True
+    # Tear down the now-orphaned project-side litman_code/ symlink(s): the repo
+    # is gone from this paper's code-clones, so for each project the paper is in
+    # the symlink must go unless another linked paper still binds the repo
+    # (reconcile keys off live membership, so the keep/remove decision is made
+    # for us). Same derived-refresh seam as bind. See refresh_project_code_links.
+    from litman.core.project_link import refresh_project_code_links
+
+    refresh_project_code_links(vault, paper_id)
+    return changed
 
 
 def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
@@ -641,6 +687,16 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
                 f"papers/{pid}/metadata.yaml", _dump_yaml_to_string(m)
             )
         stage.write_text("INDEX.json", index_json)
+
+    # Drop the project-side litman_code/ symlink for every paper we just
+    # stripped (the caller is about to delete the clone, so the symlinks would
+    # otherwise dangle). reconcile keys off the freshly written membership —
+    # no paper binds the repo anymore — so the symlink is removed regardless of
+    # whether the clone dir still exists at this point.
+    from litman.core.project_link import refresh_project_code_links
+
+    for pid, _ in affected:
+        refresh_project_code_links(vault, pid)
     return [pid for pid, _ in affected]
 
 

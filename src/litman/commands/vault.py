@@ -34,12 +34,12 @@ from litman.core.sync import humanize_bytes
 from litman.core.vault_registry import (
     VaultEntry,
     add_vault,
+    apply_vault_use,
     find_active,
     find_by_name,
     load_registry,
     remove_vault,
     save_registry,
-    set_active,
 )
 from litman.exceptions import VaultRegistryError
 
@@ -228,12 +228,7 @@ def vault_use_cmd(name: str) -> None:
     Subsequent lit commands without an explicit --library /
     --vault / $LIT_LIBRARY will resolve to this vault.
     """
-    registry = load_registry()
-    updated = set_active(registry, name)
-    save_registry(updated)
-
-    entry = find_by_name(updated, name)
-    assert entry is not None
+    entry = apply_vault_use(name)
     console.print(
         Panel.fit(
             f"[bold green]Active vault:[/] {escape(name)}\n"

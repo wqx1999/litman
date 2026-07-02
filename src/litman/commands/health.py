@@ -75,7 +75,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     ),
     "index_vs_disk": "INDEX.json vs papers/ on disk",
     "views_vs_metadata": "Views (by-*/) vs metadata",
-    "project_references": "Project REFERENCES.md / litman_reflib vs membership",
+    "project_references": "Project REFERENCES.md / litman_reflib / litman_code vs membership",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",

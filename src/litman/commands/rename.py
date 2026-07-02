@@ -39,7 +39,6 @@ from typing import Any
 import click
 from rich.console import Console
 from rich.markup import escape
-from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
@@ -52,14 +51,16 @@ from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.relations import ALL_REF_FIELDS
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import PaperNotFoundError, RenameError
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 # Metadata.yaml list fields that hold paper-id references, forward and
 # reverse (ADR-012). Renaming an id must rewrite it inside reverse fields

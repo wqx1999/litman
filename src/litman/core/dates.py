@@ -82,3 +82,69 @@ def now_iso() -> str:
     ``%Y%m%dT%H%M%SZ`` entry-name stamp, which stays local to that module.
     """
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def today_iso() -> str:
+    """Local calendar date as a strict ``YYYY-MM-DD`` string.
+
+    The default stamp for the user-typed semantic date fields ``read-date``
+    (``lit read``) and ``last-revisited`` (``lit revisit``). Distinct from
+    :func:`now_iso`, which carries seconds + timezone for the machine audit
+    stamps. Centralised so the two sugar commands and the date-ordering guard
+    share one definition of "today".
+    """
+    return datetime.now(timezone.utc).astimezone().date().isoformat()
+
+
+def _as_iso_date_str(value: object) -> str | None:
+    """Normalise a metadata date value to ``YYYY-MM-DD``, or None.
+
+    ruamel round-trips an unquoted YAML date into a ``datetime.date``; the
+    sugar commands write quoted strings. Accept both and return the canonical
+    string; return None for empty / unparseable input — a format breach is
+    reported separately by :func:`is_iso_date` in ``check_schema``, so the
+    ordering guard simply skips what it cannot compare.
+    """
+    if value is None or value == "":
+        return None
+    s = value.isoformat() if isinstance(value, date) else str(value)
+    return s if is_iso_date(s) else None
+
+
+def date_ordering_violations(
+    read_date: object, last_revisited: object, today: str | None = None
+) -> list[str]:
+    """Return one human-readable string per read-date / last-revisited breach.
+
+    The single rule shared by the modify-time guard (which raises
+    ``ModifyError``) and ``check_schema`` (which emits ``Issue`` records), so
+    the two paths cannot drift (review F28 spirit). Empty list = consistent.
+    The contract, per invariant #11:
+
+    * neither date may be in the future;
+    * ``last-revisited`` implies a ``read-date`` (a revisit presupposes a
+      first read);
+    * ``read-date`` (the immutable first-read stamp) cannot postdate
+      ``last-revisited``.
+
+    Zero-padded ``YYYY-MM-DD`` strings order correctly under ``<`` / ``>``.
+    """
+    rd = _as_iso_date_str(read_date)
+    lr = _as_iso_date_str(last_revisited)
+    today = today or today_iso()
+    out: list[str] = []
+    if rd and rd > today:
+        out.append(f"read-date {rd} is in the future (today is {today})")
+    if lr and lr > today:
+        out.append(f"last-revisited {lr} is in the future (today is {today})")
+    if lr and not rd:
+        out.append(
+            "last-revisited is set but read-date is not — a revisit "
+            "presupposes a first read"
+        )
+    if rd and lr and rd > lr:
+        out.append(
+            f"read-date {rd} is after last-revisited {lr} — the first read "
+            "cannot postdate a revisit"
+        )
+    return out

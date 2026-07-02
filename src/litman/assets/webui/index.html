@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>litman</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // No-FOUC theme init: apply `.dark` before React mounts so the first
+      // paint already matches the saved (or system) preference.
+      (function () {
+        try {
+          var t = localStorage.getItem('litman-theme')
+          if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark')
+          }
+        } catch (e) {}
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-CBYoiCgR.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-n8N74J1i.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

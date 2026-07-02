@@ -58,13 +58,13 @@ from __future__ import annotations
 
 import io
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import click
 from rich.console import Console
 from rich.markup import escape
-from ruamel.yaml import YAML
 
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
@@ -88,14 +88,16 @@ from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
 from litman.core.views import render_index
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import PaperNotFoundError, RmError
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.preserve_quotes = True
-_yaml.default_flow_style = False
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    preserve_quotes=True,
+    default_flow_style=False,
+)
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -291,6 +293,240 @@ def _teardown_project_links(
             continue
 
 
+# ---------------------------------------------------------------------------
+# Core: discover the impact set (pure read) + execute the delete (writes)
+#
+# Split out of rm_cmd so BOTH the CLI and the webUI DELETE route drive the
+# identical delete path (invariant #16: the GUI opens no second write path).
+# discover_rm_impact backs the CLI confirm + --dry-run AND the GUI confirm
+# dialog's cascade preview; execute_rm performs the writes with no console I/O
+# and no confirmation (the caller — CLI prompt or GUI dialog — gates it).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RmPlan:
+    """Everything the delete would touch, computed without writing anything."""
+
+    vault: Path
+    paper_id: str
+    title: str
+    paper_dir: Path
+    target_meta: dict[str, Any]
+    now: str
+    registry: dict[str, str]
+    # External→A edges to clear: opposite paper-id → new metadata.yaml text.
+    cascade_ref_updates: dict[str, str]
+    touched_ref_ids: set[str]
+    # Repos that stay (1:N): codes/<repo>/repo-meta.yaml relpath → new text.
+    cascade_repo_updates: dict[str, str]
+    # Repos orphaned (1:1): repo name → upstream url; their dir is hard-deleted.
+    orphan_repos: dict[str, str]
+    projects: list[str]
+    # Referencing notes/discussion to tag `(deleted)`: relpath → annotated text.
+    note_updates: dict[str, str]
+    new_index: str
+    n_relations: int
+
+    @property
+    def repos_unbound(self) -> list[str]:
+        """Bare repo names for the 1:N survivors (keyed by repo-meta relpath)."""
+        return sorted(k.split("/")[1] for k in self.cascade_repo_updates)
+
+
+@dataclass
+class RmResult:
+    """What a completed delete actually did (for the caller to report)."""
+
+    paper_id: str
+    purged: bool
+    touched_ref_ids: set[str]
+    repos_unbound: int
+    orphan_repos: list[str]
+    projects: list[str]
+    note_files: list[str]
+    evicted: list[str]
+    # Post-commit filesystem hiccups (locked dir, unremovable repo). Collected
+    # rather than printed so the CLI and the route each surface them their way.
+    warnings: list[str]
+
+
+def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
+    """Compute the full delete impact set for ``paper_id`` WITHOUT writing.
+
+    Pure read: resolves + validates the paper, then enumerates every external→A
+    edge that would be cleared, the repos that would be unbound (1:N) or
+    orphaned (1:1), the projects that would be unlinked, and the referencing
+    notes that would be tagged. Raises :class:`RmError` for an invalid id /
+    missing metadata and :class:`PaperNotFoundError` for an absent paper.
+
+    ``paper_id`` must already be the exact id (the CLI resolves substrings /
+    DOIs before calling; the route validates the path segment).
+    """
+    if not is_valid_id(paper_id):
+        raise RmError(
+            f"Invalid paper id {paper_id!r}. Run `lit list` to see valid ids."
+        )
+
+    paper_dir = vault / "papers" / paper_id
+    if not paper_dir.is_dir():
+        raise PaperNotFoundError(
+            f"No paper with id {paper_id!r} in vault {vault}. "
+            "Run `lit list` to see available ids."
+        )
+
+    meta_path = paper_dir / "metadata.yaml"
+    if not meta_path.is_file():
+        raise RmError(
+            f"Paper folder {paper_dir} has no metadata.yaml — cannot rm "
+            "safely. Inspect the directory and remove manually if needed."
+        )
+    target_meta = load_yaml_or_raise(meta_path, _yaml)
+    if target_meta is None:
+        target_meta = {}
+
+    # ----- Relationship-network discovery (structured fields only) -----
+    ref_opposites = {
+        oid for oid, _ in _opposite_ref_targets(target_meta) if oid != paper_id
+    }
+    code_clones = [str(r) for r in (target_meta.get("code-clones") or [])]
+    projects = [str(p) for p in (target_meta.get("projects") or [])]
+    n_relations = len(ref_opposites) + len(code_clones) + len(projects)
+
+    now = now_iso()
+    registry = load_config(vault).projects
+
+    # ----- Build cascade updates (always; teardown is the default now) -----
+    safe_papers = list_papers(vault)
+    cascade_ref_updates, touched_ref_ids = _build_cascade_ref_updates(
+        vault, target_meta, paper_id, now, safe_papers
+    )
+    cascade_repo_updates, orphan_repos = _build_cascade_code_updates(
+        vault, target_meta, paper_id, now
+    )
+
+    # ----- Drop the target from the in-memory paper list (for INDEX) -----
+    surviving = [p for p in safe_papers if p.get("id") != paper_id]
+    new_index = render_index(surviving, now)
+
+    # ----- Annotate referencing notes/discussion with `(deleted)` (M24) -----
+    # Scan every tracked markdown file; stage only those whose text actually
+    # changed. The deleted paper's own notes ride into trash unchanged — they
+    # are filtered out so we never stage a write against a path about to move.
+    note_updates: dict[str, str] = {}  # vault-relative path → annotated text
+    for md_path in enumerate_markdown_files(vault):
+        if md_path.parent.name == paper_id:
+            continue
+        text = md_path.read_text(encoding="utf-8")
+        annotated = annotate_deleted_wikilinks(text, paper_id)
+        if annotated != text:
+            note_updates[str(md_path.relative_to(vault))] = annotated
+
+    title = target_meta.get("title") or "(no title)"
+    return RmPlan(
+        vault=vault,
+        paper_id=paper_id,
+        title=str(title),
+        paper_dir=paper_dir,
+        target_meta=target_meta,
+        now=now,
+        registry=registry,
+        cascade_ref_updates=cascade_ref_updates,
+        touched_ref_ids=touched_ref_ids,
+        cascade_repo_updates=cascade_repo_updates,
+        orphan_repos=orphan_repos,
+        projects=projects,
+        note_updates=note_updates,
+        new_index=new_index,
+        n_relations=n_relations,
+    )
+
+
+def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
+    """Execute the delete computed by :func:`discover_rm_impact`.
+
+    Stages the cascade metadata + INDEX in one ``staged_write``, then moves the
+    paper folder to ``.trash/`` (or hard-deletes it when ``purge``), hard-deletes
+    orphan repos, tears down project symlinks, and rebuilds derived artifacts.
+    Returns the counts the caller reports. Post-commit filesystem failures are
+    collected into ``RmResult.warnings`` rather than printed. NO console output,
+    NO confirmation — the caller gates the destruction (the CLI prompt or the
+    GUI dialog), mirroring how ``delete_project`` treats the dialog as the
+    confirmation (invariant #16).
+    """
+    vault = plan.vault
+    paper_id = plan.paper_id
+    warnings: list[str] = []
+
+    # ----- Phase 1: staged commit of all file content updates -----
+    with staged_write(vault, op_id=f"rm-{paper_id}") as stage:
+        for pid, content in plan.cascade_ref_updates.items():
+            stage.write_text(f"papers/{pid}/metadata.yaml", content)
+        for relpath, content in plan.cascade_repo_updates.items():
+            stage.write_text(relpath, content)
+        for relpath, content in plan.note_updates.items():
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", plan.new_index)
+
+    # ----- Phase 2: paper-folder removal (purge or trash) -----
+    # If this fails partway, INDEX has already been updated; health-check
+    # will flag the orphan dir.
+    try:
+        if purge:
+            shutil.rmtree(plan.paper_dir)
+        else:
+            move_to_trash(vault, paper_id, orphan_repos=plan.orphan_repos)
+    except OSError as e:
+        # The staged metadata + INDEX write already committed: the library now
+        # considers the paper gone. A filesystem failure here leaves the folder
+        # on disk as an orphan — no data loss, brief inconsistency. Record it
+        # (invariant #1: never silent) instead of crashing.
+        warnings.append(
+            f"could not remove {plan.paper_dir}: {e}. "
+            "Metadata + INDEX are already updated; run "
+            "`lit health-check --fix` to clear the orphan folder."
+        )
+
+    # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
+    for repo_name in plan.orphan_repos:
+        repo_root = vault / CODES_DIRNAME / repo_name
+        if repo_root.is_dir():
+            try:
+                shutil.rmtree(repo_root)
+            except OSError as e:
+                warnings.append(
+                    f"could not remove orphan repo {repo_root}: {e}. "
+                    "Its binding is already cleared; run "
+                    "`lit health-check --fix` to finish the cleanup."
+                )
+
+    # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
+    if plan.projects:
+        _teardown_project_links(
+            vault, plan.target_meta, paper_id, plan.registry, list_papers(vault)
+        )
+
+    # ----- Phase 3c: post-commit derived rebuild via the shared funnel -----
+    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+
+    # ----- Ring eviction (trash only): keep at most TRASH_MAX_ENTRIES -----
+    evicted: list[str] = []
+    if not purge:
+        evicted = enforce_cap(vault)
+
+    return RmResult(
+        paper_id=paper_id,
+        purged=purge,
+        touched_ref_ids=plan.touched_ref_ids,
+        repos_unbound=len(plan.cascade_repo_updates),
+        orphan_repos=sorted(plan.orphan_repos),
+        projects=list(plan.projects),
+        note_files=sorted(plan.note_updates),
+        evicted=evicted,
+        warnings=warnings,
+    )
+
+
 @click.command("rm")
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
@@ -372,98 +608,43 @@ def rm_cmd(
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
 
-    if not is_valid_id(paper_id):
-        raise RmError(
-            f"Invalid paper id {paper_id!r}. Run `lit list` to see valid ids."
-        )
-
-    paper_dir = vault / "papers" / paper_id
-    if not paper_dir.is_dir():
-        raise PaperNotFoundError(
-            f"No paper with id {paper_id!r} in vault {vault}. "
-            "Run `lit list` to see available ids."
-        )
-
-    meta_path = paper_dir / "metadata.yaml"
-    if not meta_path.is_file():
-        raise RmError(
-            f"Paper folder {paper_dir} has no metadata.yaml — cannot rm "
-            "safely. Inspect the directory and remove manually if needed."
-        )
-    target_meta = load_yaml_or_raise(meta_path, _yaml)
-    if target_meta is None:
-        target_meta = {}
-
-    # ----- Relationship-network discovery (structured fields only) -----
-    ref_opposites = {
-        oid for oid, _ in _opposite_ref_targets(target_meta) if oid != paper_id
-    }
-    code_clones = [str(r) for r in (target_meta.get("code-clones") or [])]
-    projects = [str(p) for p in (target_meta.get("projects") or [])]
-    n_relations = len(ref_opposites) + len(code_clones) + len(projects)
+    # Discovery + cascade computation (pure read) is shared with the webUI
+    # route via discover_rm_impact; it raises RmError / PaperNotFoundError for
+    # an invalid or missing paper, same as the inline checks did before.
+    plan = discover_rm_impact(vault, paper_id)
 
     # ----- Confirmation -----
     # --dry-run is a preview: skip the destructive confirmation entirely (we
     # print the impact set + exit below before any write).
-    title = target_meta.get("title") or "(no title)"
     if not skip_confirm and not dry_run:
         action = "permanently delete" if purge else "move to .trash/"
-        if n_relations:
+        if plan.n_relations:
             console.print(
-                f"This paper is linked with [bold]{n_relations}[/] "
-                f"entr{'y' if n_relations == 1 else 'ies'} in {escape(str(vault))}."
+                f"This paper is linked with [bold]{plan.n_relations}[/] "
+                f"entr{'y' if plan.n_relations == 1 else 'ies'} in "
+                f"{escape(str(vault))}."
             )
             console.print(
                 f"  [dim](run 'lit show {escape(paper_id)}' to inspect them)[/]"
             )
         console.print(f"[bold yellow]About to {action}:[/]")
         console.print(f"  id     : {escape(paper_id)}")
-        console.print(f"  title  : {escape(str(title))}")
+        console.print(f"  title  : {escape(str(plan.title))}")
         if purge:
             console.print(
                 f"This permanently removes "
-                f"{escape(str(paper_dir.relative_to(vault)))}/ "
+                f"{escape(str(plan.paper_dir.relative_to(vault)))}/ "
                 "and updates INDEX/views. [bold red]Not recoverable.[/]"
             )
         else:
             console.print(
-                f"This moves {escape(str(paper_dir.relative_to(vault)))}/ "
+                f"This moves {escape(str(plan.paper_dir.relative_to(vault)))}/ "
                 "into .trash/ and updates INDEX/views. "
                 "Recover with [bold]lit trash restore[/]."
             )
         if not click.confirm("Delete?", default=False):
             console.print("[dim]Aborted. No changes made.[/]")
             return
-
-    now = now_iso()
-    registry = load_config(vault).projects
-
-    # ----- Build cascade updates (always; teardown is the default now) -----
-    safe_papers = list_papers(vault)
-    cascade_ref_updates, touched_ref_ids = _build_cascade_ref_updates(
-        vault, target_meta, paper_id, now, safe_papers
-    )
-    cascade_repo_updates, orphan_repos = _build_cascade_code_updates(
-        vault, target_meta, paper_id, now
-    )
-
-    # ----- Drop the target from the in-memory paper list (for INDEX) -----
-    surviving = [p for p in safe_papers if p.get("id") != paper_id]
-    new_index = render_index(surviving, now)
-
-    # ----- Annotate referencing notes/discussion with `(deleted)` (M24) -----
-    # Scan every tracked markdown file; stage only those whose text actually
-    # changed (mirrors rename's wikilink-rewrite pattern). The deleted paper's
-    # own notes ride into trash unchanged — they are filtered out so we never
-    # stage a write against a path that's about to move.
-    note_updates: dict[str, str] = {}  # vault-relative path → annotated text
-    for md_path in enumerate_markdown_files(vault):
-        if md_path.parent.name == paper_id:
-            continue
-        text = md_path.read_text(encoding="utf-8")
-        annotated = annotate_deleted_wikilinks(text, paper_id)
-        if annotated != text:
-            note_updates[str(md_path.relative_to(vault))] = annotated
 
     # ----- Dry-run: print the full impact set, then exit without writing -----
     if dry_run:
@@ -472,35 +653,31 @@ def rm_cmd(
             f"[bold]Would {verb}:[/] {escape(paper_id)} "
             "[dim](dry-run)[/]"
         )
-        console.print(f"  title  : {escape(str(title))}")
-        if touched_ref_ids:
+        console.print(f"  title  : {escape(str(plan.title))}")
+        if plan.touched_ref_ids:
             console.print(
                 "  Would clear references in: "
-                f"[dim]{escape(', '.join(sorted(touched_ref_ids)))}[/]"
+                f"[dim]{escape(', '.join(sorted(plan.touched_ref_ids)))}[/]"
             )
-        if cascade_repo_updates:
-            # Keys are vault-relative paths (codes/<repo>/repo-meta.yaml);
-            # show the bare repo name to match the post-commit message and the
-            # orphan_repos line above.
-            repo_names = sorted(k.split("/")[1] for k in cascade_repo_updates)
+        if plan.cascade_repo_updates:
             console.print(
                 "  Would unbind from repos (still bound by others): "
-                f"[dim]{escape(', '.join(repo_names))}[/]"
+                f"[dim]{escape(', '.join(plan.repos_unbound))}[/]"
             )
-        if orphan_repos:
+        if plan.orphan_repos:
             console.print(
                 "  Would remove orphan repos: "
-                f"[dim]{escape(', '.join(sorted(orphan_repos)))}[/]"
+                f"[dim]{escape(', '.join(sorted(plan.orphan_repos)))}[/]"
             )
-        if projects:
+        if plan.projects:
             console.print(
                 "  Would unlink from projects: "
-                f"[dim]{escape(', '.join(sorted(projects)))}[/]"
+                f"[dim]{escape(', '.join(sorted(plan.projects)))}[/]"
             )
-        if note_updates:
+        if plan.note_updates:
             console.print(
                 "  Would tag referencing notes: "
-                f"[dim]{escape(', '.join(sorted(note_updates)))}[/]"
+                f"[dim]{escape(', '.join(sorted(plan.note_updates)))}[/]"
             )
         console.print(
             "[dim]Dry-run only — nothing deleted. "
@@ -508,71 +685,13 @@ def rm_cmd(
         )
         return
 
-    # ----- Phase 1: staged commit of all file content updates -----
-    with staged_write(vault, op_id=f"rm-{paper_id}") as stage:
-        for pid, content in cascade_ref_updates.items():
-            stage.write_text(f"papers/{pid}/metadata.yaml", content)
-        for relpath, content in cascade_repo_updates.items():
-            stage.write_text(relpath, content)
-        for relpath, content in note_updates.items():
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", new_index)
-
-    # ----- Phase 2: paper-folder removal (purge or trash) -----
-    # If this fails partway, INDEX has already been updated; health-check
-    # will flag the orphan dir.
-    try:
-        if purge:
-            shutil.rmtree(paper_dir)
-        else:
-            move_to_trash(vault, paper_id, orphan_repos=orphan_repos)
-    except OSError as e:
-        # The staged metadata + INDEX write already committed above: the
-        # library now considers the paper gone. A filesystem failure here
-        # (Windows file lock, permissions) leaves the folder on disk as an
-        # orphan — no data loss, but a brief inconsistency. Surface it
-        # (invariant #1: never silent) and point at the repair tool instead
-        # of crashing with a raw traceback.
-        console.print(
-            f"[yellow]warning:[/] could not remove "
-            f"{escape(str(paper_dir))}: {escape(str(e))}\n"
-            "  Metadata + INDEX are already updated; run "
-            "`lit health-check --fix` to clear the orphan folder."
-        )
-
-    # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
-    for repo_name in orphan_repos:
-        repo_root = vault / CODES_DIRNAME / repo_name
-        if repo_root.is_dir():
-            try:
-                shutil.rmtree(repo_root)
-            except OSError as e:
-                # Best-effort, post-commit: the repo's binding was already
-                # cleared in the staged write. A locked / unremovable repo dir
-                # (Windows .git packfiles, antivirus) must not crash a delete
-                # that already succeeded on the metadata side (invariant #1).
-                console.print(
-                    f"[yellow]warning:[/] could not remove orphan repo "
-                    f"{escape(str(repo_root))}: {escape(str(e))}\n"
-                    "  Its binding is already cleared; run "
-                    "`lit health-check --fix` to finish the cleanup."
-                )
-
-    # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
-    if projects:
-        _teardown_project_links(
-            vault, target_meta, paper_id, registry, list_papers(vault)
-        )
-
-    # ----- Phase 3c: post-commit derived rebuild via the shared funnel -----
-    # INDEX + views recomputed together (M30 Phase 4); the staged INDEX.json
-    # above is the crash-safety layer. project_refs=False: the removed paper's
-    # project side was already torn down by _teardown_project_links above —
-    # behavior unchanged from the pre-funnel command.
-    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+    # ----- Execute (shared with the webUI route via execute_rm) -----
+    result = execute_rm(plan, purge=purge)
 
     # ----- Output -----
-    if purge:
+    for warning in result.warnings:
+        console.print(f"[yellow]warning:[/] {escape(warning)}")
+    if result.purged:
         console.print(
             f"[bold green]✓ Purged[/] {escape(paper_id)} [dim](permanent)[/]"
         )
@@ -581,41 +700,39 @@ def rm_cmd(
             f"[bold green]✓ Trashed[/] {escape(paper_id)} "
             f"[dim](recover via `lit trash restore {escape(paper_id)}`)[/]"
         )
-        # Ring eviction: keep at most TRASH_MAX_ENTRIES; surface what we
-        # permanently dropped (never silent — invariant #1).
-        evicted = enforce_cap(vault)
-        if evicted:
+        # Ring eviction: surface what we permanently dropped (never silent).
+        if result.evicted:
             console.print(
                 f"  [yellow]Trash at cap ({TRASH_MAX_ENTRIES}); "
                 f"permanently removed oldest: "
-                f"{escape(', '.join(evicted))}[/]"
+                f"{escape(', '.join(result.evicted))}[/]"
             )
-    if touched_ref_ids:
-        n = len(touched_ref_ids)
+    if result.touched_ref_ids:
+        n = len(result.touched_ref_ids)
         console.print(
             f"  Cleared references in [bold]{n}[/] paper"
             f"{'s' if n != 1 else ''} "
-            f"[dim]({escape(', '.join(sorted(touched_ref_ids)))})[/]"
+            f"[dim]({escape(', '.join(sorted(result.touched_ref_ids)))})[/]"
         )
-    if cascade_repo_updates:
-        n = len(cascade_repo_updates)
+    if result.repos_unbound:
+        n = result.repos_unbound
         console.print(
             f"  Unbound from [bold]{n}[/] repo{'s' if n != 1 else ''} "
             "[dim](still bound by other papers)[/]"
         )
-    if orphan_repos:
-        n = len(orphan_repos)
+    if result.orphan_repos:
+        n = len(result.orphan_repos)
         console.print(
             f"  Removed [bold]{n}[/] orphan repo{'s' if n != 1 else ''} "
-            f"[dim]({escape(', '.join(sorted(orphan_repos)))})[/]"
+            f"[dim]({escape(', '.join(sorted(result.orphan_repos)))})[/]"
         )
-    if projects:
+    if result.projects:
         console.print(
-            f"  Unlinked from [bold]{len(projects)}[/] project"
-            f"{'s' if len(projects) != 1 else ''}"
+            f"  Unlinked from [bold]{len(result.projects)}[/] project"
+            f"{'s' if len(result.projects) != 1 else ''}"
         )
-    if note_updates:
-        n = len(note_updates)
+    if result.note_files:
+        n = len(result.note_files)
         console.print(
             f"  Tagged [bold]{n}[/] referencing note{'s' if n != 1 else ''} "
             f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"

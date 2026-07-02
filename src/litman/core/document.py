@@ -12,12 +12,17 @@ from typing import Any
 from ruamel.yaml import YAML, YAMLError
 
 from litman.core.id import is_valid_id
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import CorruptMetadataError, PaperNotFoundError
 
-_yaml_safe = YAML(typ="safe")
+# A ruamel ``YAML`` instance is not thread-safe and the ``lit gui`` server reads
+# metadata from a threadpool (live-sync fires ``/api/papers`` and
+# ``/api/doc-mtimes`` together) — see :mod:`litman.core.yaml_pool` for why this
+# must be per-thread rather than a shared module-level loader.
+_yaml_safe = ThreadLocalYAML(typ="safe")
 
 
-def load_yaml_or_raise(path: Path, loader: YAML) -> Any:
+def load_yaml_or_raise(path: Path, loader: YAML | ThreadLocalYAML) -> Any:
     """Load a YAML file with ``loader``, converting read / parse failure into
     a path-carrying :class:`CorruptMetadataError` instead of a raw ``OSError``
     / ``UnicodeDecodeError`` / ruamel ``YAMLError`` traceback.

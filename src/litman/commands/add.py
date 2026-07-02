@@ -33,7 +33,6 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
-from ruamel.yaml import YAML
 
 from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
@@ -48,16 +47,18 @@ from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file
 from litman.core.notes import WIKILINK_REMINDER
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
 from litman.importers.llm import parse_llm_json, parse_llm_json_text
 
 console = Console()
 
-_yaml = YAML()
-_yaml.indent(mapping=2, sequence=4, offset=2)
-_yaml.default_flow_style = False
-_yaml.preserve_quotes = True
+_yaml = ThreadLocalYAML(
+    indent={"mapping": 2, "sequence": 4, "offset": 2},
+    default_flow_style=False,
+    preserve_quotes=True,
+)
 
 
 def _build_metadata(

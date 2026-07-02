@@ -30,46 +30,6 @@ _yaml = YAML(typ="safe")
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def vault_with_paper(tmp_path: Path) -> tuple[Path, str]:
-    """Vault containing one paper with the canonical M2.0 metadata schema."""
-    vault = create_vault(tmp_path)
-    paper_id = "2024_Foo_Bar"
-    paper_dir = vault / "papers" / paper_id
-    paper_dir.mkdir(parents=True)
-
-    # Hand-crafted minimal metadata matching what `lit add` writes today.
-    meta = (paper_dir / "metadata.yaml")
-    meta.write_text(
-        "id: 2024_Foo_Bar\n"
-        "title: Foo Bar\n"
-        "authors:\n"
-        "  - Foo, Alice\n"
-        "year: 2024\n"
-        "journal: Test J.\n"
-        "doi: 10.1/x\n"
-        "arxiv-id:\n"
-        "github:\n"
-        "created-at: '2026-04-28T10:00:00+02:00'\n"
-        "updated-at: '2026-04-28T10:00:00+02:00'\n"
-        "projects: []\n"
-        "topics: []\n"
-        "methods: []\n"
-        "data: []\n"
-        "type: research\n"
-        "status: inbox\n"
-        "priority: B\n"
-        "read-date:\n"
-        "last-revisited:\n"
-        "related: []\n"
-        "contradicts: []\n"
-        "extends: []\n"
-        "code-clones: []\n",
-        encoding="utf-8",
-    )
-    return vault, paper_id
-
-
 def _read_meta(vault: Path, paper_id: str) -> dict[str, Any]:
     return _yaml.load(
         (vault / "papers" / paper_id / "metadata.yaml").read_text()

@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from ruamel.yaml import YAML
 
+from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError
 
 # Canonical filename — matches the seed written by ``lit init`` and the
@@ -49,7 +49,7 @@ DEFAULT_UNIQUE_KEYS: tuple[str, ...] = ("doi", "arxiv-id")
 DEFAULT_CLONE_DEPTH = 1
 DEFAULT_CODES_IGNORE_PATTERNS: tuple[str, ...] = ("repo/",)
 
-_yaml = YAML(typ="safe")
+_yaml = ThreadLocalYAML(typ="safe")
 
 
 class SyncConfig(BaseModel):
