@@ -195,6 +195,84 @@ def installed_skill_names(
     }
 
 
+def uninstall_skill(
+    name: str,
+    parent_dir: Path = DEFAULT_PARENT_DIR,
+) -> dict[str, Any]:
+    """Remove one bundled skill's files from ``parent_dir/name/``.
+
+    Symmetric with :func:`install_skill`: only files that belong to the
+    bundled skill are deleted; any file the user added next to ``SKILL.md``
+    is left in place. The directory is removed only if it ends up empty;
+    otherwise it is kept and the surviving files are reported.
+
+    Args:
+        name: Bundled skill subdirectory name (e.g. ``"lit-library"``).
+        parent_dir: Directory that holds the skill's own subdir. Defaults
+            to ``~/.claude/skills/``.
+
+    Returns:
+        A summary dict with keys ``name`` (str), ``target`` (Path),
+        ``removed`` (list of deleted filenames), ``mode``
+        (``"removed"`` = dir gone | ``"kept"`` = dir kept with leftovers |
+        ``"skipped"`` = target is a symlink, left untouched |
+        ``"absent"`` = nothing was there), ``leftover`` (list of filenames
+        left behind).
+    """
+    target = parent_dir / name
+    if target.is_symlink():
+        # A symlinked skill dir points outside the tree we manage: deleting
+        # "through" it could reach files elsewhere, and rmdir on a symlink
+        # errors. Leave it entirely untouched.
+        return {
+            "name": name,
+            "target": target,
+            "removed": [],
+            "mode": "skipped",
+            "leftover": [],
+        }
+    if not target.exists():
+        return {
+            "name": name,
+            "target": target,
+            "removed": [],
+            "mode": "absent",
+            "leftover": [],
+        }
+
+    # Which filenames belong to the bundled skill? Only those get deleted.
+    # If the bundled resources cannot be located (unknown name / broken
+    # install) fall back to deleting nothing so we never over-remove.
+    try:
+        bundled = {item.name for item in _iter_skill_files(bundled_skill_root(name))}
+    except SkillInstallError:
+        bundled = set()
+
+    removed: list[str] = []
+    for child in sorted(target.iterdir(), key=lambda c: c.name):
+        if child.is_file() and child.name in bundled:
+            child.unlink()
+            removed.append(child.name)
+
+    leftover = sorted(c.name for c in target.iterdir())
+    if not leftover:
+        target.rmdir()
+        return {
+            "name": name,
+            "target": target,
+            "removed": removed,
+            "mode": "removed",
+            "leftover": [],
+        }
+    return {
+        "name": name,
+        "target": target,
+        "removed": removed,
+        "mode": "kept",
+        "leftover": leftover,
+    }
+
+
 def install_all_skills(
     parent_dir: Path = DEFAULT_PARENT_DIR,
     overwrite: bool = False,

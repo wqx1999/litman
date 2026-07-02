@@ -119,6 +119,33 @@ def registry_path_default() -> Path:
     return Path(user_config_dir(REGISTRY_APP_NAME)) / REGISTRY_FILENAME
 
 
+def remove_registry() -> dict[str, object]:
+    """Delete the ``vaults.yaml`` registry file, honouring the same path
+    resolution as :func:`registry_path` (so ``$LITMAN_REGISTRY_DIR`` is
+    respected). Used by ``lit uninstall`` for a clean teardown.
+
+    This de-registers every vault (removes the *pointers*), but does NOT
+    touch any vault directory on disk — papers, PDFs, notes and
+    annotations are left exactly where they are. The containing config
+    directory is removed only if it becomes empty.
+
+    Returns ``{"path", "removed", "dir_removed"}``.
+    """
+    path = registry_path()
+    if not path.is_file():
+        return {"path": path, "removed": False, "dir_removed": False}
+    path.unlink()
+    dir_removed = False
+    parent = path.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            dir_removed = True
+    except OSError:
+        pass
+    return {"path": path, "removed": True, "dir_removed": dir_removed}
+
+
 def is_valid_vault_name(name: str) -> bool:
     """Filesystem-safe + cross-vault-wikilink-safe name check.
 

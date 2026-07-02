@@ -28,8 +28,8 @@ same help as `lit <cmd> --help`.
 
 A few commands do **not** take `--library` / `--vault`, because they create a
 vault, target the registry, or touch no vault at all: `init`, `setup`,
-`install-completion`, `install-skill`, `pdf-text`, `help`, and every `lit vault`
-subcommand.
+`install-completion`, `install-skill`, `uninstall`, `pdf-text`, `help`, and
+every `lit vault` subcommand.
 
 **Vault discovery chain.** When a command needs a vault and you give no explicit
 override, `lit` resolves one in this order (first hit wins):
@@ -147,6 +147,26 @@ lit install-skill --skill lit-reading
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
 | `--parent-dir <path>` | Install directory. Default: where Claude Code auto-discovers skills. |
 | `--force` | Overwrite files inside an existing target. Files not part of the bundled skill are left in place. |
+
+### `lit uninstall`
+
+Reverse of `lit setup`: remove the bundled skills, the shell-completion block,
+and the vault registry (the list of vault names/paths). It does not remove the
+`lit` CLI itself — a running command can't delete its own pipx environment — so
+it prints the final `pipx uninstall litman` step for you to run. Your vault
+directories (papers, PDFs, notes, annotations) are never touched; only the
+registry pointers to them are dropped. Skill directories are removed file by
+file, so any file you added next to `SKILL.md` is left in place.
+
+```
+lit uninstall
+lit uninstall --dry-run
+```
+
+| Flag | What it does |
+|---|---|
+| `--dry-run` | Show what would be removed; change nothing. |
+| `-y` / `--yes` | Skip the confirmation prompt. |
 
 ---
 

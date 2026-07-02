@@ -39,6 +39,16 @@ SENTINEL = "# lit-completion (do not edit)"
 SUPPORTED_SHELLS: tuple[str, ...] = ("bash", "zsh", "fish")
 
 
+def _read_lenient(path: Path) -> str:
+    """Read a shell rc file without choking on non-UTF-8 bytes.
+
+    ``surrogateescape`` round-trips arbitrary bytes losslessly, so a
+    strip-and-rewrite preserves any non-UTF-8 content the user keeps in
+    their rc file rather than mangling or crashing on it.
+    """
+    return path.read_bytes().decode("utf-8", "surrogateescape")
+
+
 class _ShellPlan(NamedTuple):
     """Where the completion block lives, and what to write."""
 
@@ -90,14 +100,16 @@ def _install_block(plan: _ShellPlan) -> bool:
     target = plan.target_path
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        existing = target.read_text(encoding="utf-8")
+        existing = _read_lenient(target)
         if SENTINEL in existing:
             return False
         new_content = existing
         if not new_content.endswith("\n"):
             new_content += "\n"
         new_content += plan.block
-        target.write_text(new_content, encoding="utf-8")
+        # surrogateescape re-encode preserves any non-UTF-8 bytes the user
+        # already had in their rc file byte-for-byte.
+        target.write_bytes(new_content.encode("utf-8", "surrogateescape"))
         return True
     target.write_text(plan.block, encoding="utf-8")
     return True
@@ -126,7 +138,55 @@ def completion_installed(shell: str, home: Path | None = None) -> bool:
     """
     plan = _build_plan(shell, home or Path.home())
     target = plan.target_path
-    return target.is_file() and SENTINEL in target.read_text(encoding="utf-8")
+    return target.is_file() and SENTINEL in _read_lenient(target)
+
+
+def uninstall_completion(shell: str, home: Path | None = None) -> dict[str, object]:
+    """Remove the lit completion block for ``shell``. Reverse of install.
+
+    bash/zsh: strips the sentinel block (and the blank separator line the
+    install inserted before it) from ~/.bashrc / ~/.zshrc, leaving every
+    other line untouched. The rc file is never deleted, even if it ends up
+    empty. fish: the block lives in its own ``lit.fish`` file, so that file
+    is deleted when the block is all it holds (else the block is stripped
+    and the file kept).
+
+    Returns ``{"shell", "target", "removed"}`` where ``removed`` is True
+    iff a block was found and stripped (False = nothing to do).
+    """
+    plan = _build_plan(shell, home or Path.home())
+    target = plan.target_path
+    if not (target.is_file() and SENTINEL in _read_lenient(target)):
+        return {"shell": shell, "target": target, "removed": False}
+
+    lines = _read_lenient(target).splitlines(keepends=True)
+    out: list[str] = []
+    found = False
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == SENTINEL:
+            found = True
+            # Drop the blank separator line the install inserted before it.
+            if out and out[-1].strip() == "":
+                out.pop()
+            i += 1  # skip the sentinel line
+            if i < len(lines):  # skip the single eval/source line that follows
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+
+    if not found:
+        # The sentinel exists only as a substring of some other line, not as
+        # a block of ours — leave the file byte-for-byte untouched.
+        return {"shell": shell, "target": target, "removed": False}
+
+    remaining = "".join(out)
+    if shell == "fish" and remaining.strip() == "":
+        target.unlink()
+    else:
+        target.write_bytes(remaining.encode("utf-8", "surrogateescape"))
+    return {"shell": shell, "target": target, "removed": True}
 
 
 @click.command("install-completion")

@@ -50,6 +50,7 @@ from litman.commands.skim import skim_cmd
 from litman.commands.sync import sync_group
 from litman.commands.taxonomy import taxonomy_group
 from litman.commands.trash import trash_group
+from litman.commands.uninstall import uninstall_cmd
 from litman.commands.vault import vault_group
 from litman.exceptions import LitmanError
 
@@ -85,7 +86,8 @@ def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
 # never silently hidden) — add it to the right section when you add it.
 _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Setup & vaults",
-     ("setup", "init", "vault", "install-completion", "install-skill", "help")),
+     ("setup", "init", "vault", "install-completion", "install-skill",
+      "uninstall", "help")),
     ("Papers",
      ("add", "list", "show", "search", "related", "open", "pdf-text",
       "cite", "modify", "rename", "rm")),
@@ -553,6 +555,7 @@ cli.add_command(code_group)
 cli.add_command(config_group)
 cli.add_command(install_skill_cmd)
 cli.add_command(install_completion_cmd)
+cli.add_command(uninstall_cmd)
 cli.add_command(link_cmd)
 cli.add_command(unlink_cmd)
 cli.add_command(sync_group)
