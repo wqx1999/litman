@@ -600,8 +600,10 @@ def test_T8_unrecoverable_tear_preserves_evidence(
     assert lost_rel in (r.message or "")
     # Mutating recoverer DID roll the siblings forward → completed
     # past-tense voice with the real promoted count (2), not pending.
-    assert "已 roll-forward 同 op 内其余 2 个文件" in (r.message or "")
-    assert "可 roll-forward" not in (r.message or "")
+    assert "rolled the other 2 file(s) in the same op forward" in (
+        r.message or ""
+    )
+    assert "can be rolled forward" not in (r.message or "")
     # Evidence preserved — op dir NOT deleted.
     assert op_dir.exists()
     # Sibling recoverable files still rolled forward.

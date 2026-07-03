@@ -195,9 +195,9 @@ def _manifest_unreadable_message(op_id: str) -> str:
     drift between the two call sites.
     """
     return (
-        f"撕裂的提交 {op_id} 的 MANIFEST.json 不可读，"
-        f"无法自动恢复；已保留 .litman-staging/{op_id}/ 作为证据，"
-        "请人工检查"
+        f"torn commit {op_id}: its MANIFEST.json is unreadable, so it "
+        f"cannot be recovered automatically; kept .litman-staging/{op_id}/ "
+        "as evidence — please inspect it by hand"
     )
 
 
@@ -225,19 +225,20 @@ def _unrecoverable_message(
     """
     if mode == "done":
         roll_forward_clause = (
-            f"已 roll-forward 同 op 内其余 {recovered} 个文件，并保留 "
-            f".litman-staging/{op_id}/ 作为证据，请人工检查"
+            f"rolled the other {recovered} file(s) in the same op forward, "
+            f"and kept .litman-staging/{op_id}/ as evidence — please inspect "
+            "it by hand"
         )
     else:
         roll_forward_clause = (
-            f"可 roll-forward 同 op 内其余 {recovered} 个文件"
-            f"（运行 lit health-check --fix 后）；已保留 "
-            f".litman-staging/{op_id}/ 作为证据，请人工检查"
+            f"the other {recovered} file(s) in the same op can be rolled "
+            f"forward (after running lit health-check --fix); kept "
+            f".litman-staging/{op_id}/ as evidence — please inspect it by hand"
         )
     return (
-        f"撕裂的提交 {op_id} 不可恢复："
-        f"{len(lost)} 个文件在 staging 与 target 双缺失 "
-        f"({', '.join(lost)})；{roll_forward_clause}"
+        f"torn commit {op_id} is unrecoverable: "
+        f"{len(lost)} file(s) missing from both staging and target "
+        f"({', '.join(lost)}); {roll_forward_clause}"
     )
 
 
@@ -254,14 +255,17 @@ def _promote_failed_message(
     the evidence, and the next ``lit`` command retries.
     """
     recovered_clause = (
-        f"（本次已成功 roll-forward {recovered} 个）" if recovered else ""
+        f" ({recovered} rolled forward successfully this pass)"
+        if recovered
+        else ""
     )
     return (
-        f"撕裂的提交 {op_id} 本次未能补完："
-        f"{len(failed)} 个文件 promote 失败 "
-        f"({', '.join(failed)})，可能是底层存储暂时不可写；"
-        f"已保留 .litman-staging/{op_id}/ 与暂存副本，"
-        f"下次任意 lit 命令会自动重试{recovered_clause}"
+        f"torn commit {op_id} could not be completed this pass: "
+        f"{len(failed)} file(s) failed to promote "
+        f"({', '.join(failed)}), likely because the underlying storage is "
+        f"temporarily unwritable; kept .litman-staging/{op_id}/ and the "
+        f"staged copies — the next lit command will retry automatically"
+        f"{recovered_clause}"
     )
 
 
@@ -604,7 +608,8 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
         kind="rolled_forward",
         n_files=promoted,
         message=(
-            f"已自动补完撕裂的提交 {op_id}（{promoted} 个文件 roll-forward）"
+            f"auto-completed torn commit {op_id} "
+            f"({promoted} file(s) rolled forward)"
         ),
     )
 

@@ -864,9 +864,9 @@ def test_stale_staging_unrecoverable_uses_pending_voice(vault: Path) -> None:
     assert issues[0].severity == "error"
     assert issues[0].category == "stale_staging_unrecoverable"
     # Pending voice with the real recoverable count (1), not 0, not done.
-    assert "可 roll-forward 同 op 内其余 1 个文件" in msg
-    assert "（运行 lit health-check --fix 后）" in msg
-    assert "已 roll-forward" not in msg
+    assert "the other 1 file(s) in the same op can be rolled forward" in msg
+    assert "(after running lit health-check --fix)" in msg
+    assert "rolled the other" not in msg
     assert "papers/2024_L/metadata.yaml" in msg
     # No promotion happened — read-only probe must not touch the target.
     assert not (vault / "papers" / "2024_L").exists()
