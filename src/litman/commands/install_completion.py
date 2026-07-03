@@ -170,7 +170,13 @@ def uninstall_completion(shell: str, home: Path | None = None) -> dict[str, obje
             if out and out[-1].strip() == "":
                 out.pop()
             i += 1  # skip the sentinel line
-            if i < len(lines):  # skip the single eval/source line that follows
+            # Skip the eval/source line that follows — but ONLY if it really is
+            # ours. If a user manually deleted the eval line and left the
+            # sentinel, the next line is their own content; blindly skipping it
+            # would eat a line of their rc. The magic string is always present
+            # in our line, so it is a reliable discriminator (never over-remove,
+            # matching uninstall_skill's "only delete what we recognise").
+            if i < len(lines) and "_LIT_COMPLETE" in lines[i]:
                 i += 1
             continue
         out.append(lines[i])

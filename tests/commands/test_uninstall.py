@@ -327,6 +327,38 @@ def test_uninstall_completion_sentinel_substring_only(tmp_path: Path) -> None:
     assert bashrc.read_text(encoding="utf-8") == before  # untouched
 
 
+def test_uninstall_completion_keeps_user_line_when_eval_manually_removed(
+    tmp_path: Path,
+) -> None:
+    """Never over-remove: if the user deleted the eval line but left the
+    sentinel, the line now following the sentinel is THEIR content and must
+    survive. Only the sentinel (and any blank separator) is stripped.
+    """
+    bashrc = tmp_path / ".bashrc"
+    # Sentinel present, but the eval line is gone — the user's own line sits
+    # directly beneath the sentinel comment.
+    bashrc.write_text(
+        "export BEFORE=1\n"
+        "\n"
+        "# lit-completion (do not edit)\n"
+        "export MY_API_KEY=secret123\n"
+        "export AFTER=2\n",
+        encoding="utf-8",
+    )
+
+    result = uninstall_completion("bash", tmp_path)
+
+    assert result["removed"] is True
+    body = bashrc.read_text(encoding="utf-8")
+    # The sentinel (and its preceding blank) are gone...
+    assert "lit-completion" not in body
+    # ...but the user's line that merely happened to follow it is untouched.
+    assert "export MY_API_KEY=secret123" in body
+    assert "export BEFORE=1" in body
+    assert "export AFTER=2" in body
+    assert body == "export BEFORE=1\nexport MY_API_KEY=secret123\nexport AFTER=2\n"
+
+
 def test_uninstall_completion_zsh_strips_block(tmp_path: Path) -> None:
     zshrc = tmp_path / ".zshrc"
     zshrc.write_text("alias ll='ls -l'\n", encoding="utf-8")
