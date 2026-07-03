@@ -1,10 +1,11 @@
 # Architecture
 
-litman is built in four layers: the data on disk, the Python package, the `lit`
-CLI, and an optional Claude Code layer on top. Each layer depends only on the
-one below it, so each keeps working when the layers above it are absent. This
-page describes them from the bottom up, because the upper layers only make sense
-once you know what they act on.
+litman is built in four layers: the data on disk, the Python package, the
+interfaces that drive it — the `lit` CLI and the `lit gui` Web UI — and an
+optional Claude Code layer on top. Each layer depends only on the one below it,
+so each keeps working when the layers above it are absent. This page describes
+them from the bottom up, because the upper layers only make sense once you know
+what they act on.
 
 ## The vault: where everything lives (Layer 1)
 
@@ -64,13 +65,13 @@ vault stays a single sync target. The vault itself is registered in a small
 registry that lives outside any vault, and exactly one registered vault is active
 at a time. (The registry is described in [3-concepts.md](3-concepts.md).)
 
-## The litman package and the lit CLI (Layers 2 and 3)
+## The litman package and its interfaces (Layers 2 and 3)
 
-These two layers are both code inside the `litman` package, so the split between
-them is one of responsibility, not location. Layer 2 is the logic that does the
-work. Layer 3 is the typed-command surface on top of it: it parses what you
-type, calls into Layer 2 to do the work, and formats the result for the
-terminal.
+These layers are all code inside the `litman` package, so the split between them
+is one of responsibility, not location. Layer 2 is the logic that does the work.
+Layer 3 is the interface surface on top of it — the `lit` CLI and the `lit gui`
+Web UI — which takes what you ask for, calls into Layer 2 to do the work, and
+presents the result.
 
 **Layer 2 is the importable logic**, callable from any Python script with no CLI
 involved. It is organised into three parts:
@@ -98,6 +99,21 @@ on every invocation.
 
 The CLI is the lowest layer a user needs. It runs with no agent, no API key, and
 no network for any data operation.
+
+**The Web UI is a second interface over the same core.** Running `lit gui` starts
+a local web server and opens a three-pane browser app — a classification tree, a
+tabbed PDF reader, and a context panel — the everyday front door for reading,
+annotating, and curating. It is a wrapper, not a parallel system: its read
+endpoints call the same `core/` functions the CLI uses (`list_papers`,
+`find_vault`, the INDEX reader), and each structured write routes back through
+the same command code paths a `lit` command would run, so the browser is never a
+second way to write to the vault. The only files it writes directly are a small
+whitelist — PDF annotations embedded in the paper, `notes.md`, and
+`discussion.md` — each through the same atomic staged write. What the UI exposes
+is a subset of the CLI, and a growing one: the everyday operations have UI
+controls, while the rest stay on the `lit` command line (or the agent). The CLI
+remains the complete surface — unplug the Web UI and every operation still works
+from `lit`.
 
 ## Claude Code orchestration (Layer 4)
 
@@ -133,8 +149,12 @@ layers and back up:
    and `INDEX.json` is regenerated in the same operation.
 4. The CLI reports what changed.
 
-A **read** (a `lit list` or `lit show`, or an agent gathering context) goes the
-other way and is ordered for cost:
+A structured write started from the Web UI follows this same path: the browser
+calls the identical code a `lit` command would, so the staging and atomic promote
+(steps 2–3) are the same no matter which interface began the write.
+
+A **read** (a `lit list` or `lit show`, the Web UI loading the library, or an
+agent gathering context) goes the other way and is ordered for cost:
 
 1. Start from `INDEX.json`, the thin projection of every paper. One file read
    narrows the candidates.
@@ -152,6 +172,6 @@ reach the relevant papers without reading the whole vault.
 | Layer | What it is (real names) | Role | Needed for data ops? |
 |---|---|---|---|
 | 4 | Claude Code + `lit-library` / `lit-reading` skills | Translate requests into `lit` commands, run them, report back | No, pure convenience |
-| 3 | `cli.py` + `commands/` (Click + Rich) | The `lit` command surface: parse, dispatch, format, drift hook | Yes |
+| 3 | `cli.py` + `commands/` (Click + Rich); the `lit gui` web server + `assets/webui/` | The interfaces over the core: the `lit` CLI and the Web UI, both wrapping the same code paths | The CLI, yes; the Web UI is an alternative front end |
 | 2 | `core/` + `importers/` + `exporters/` | Business logic, importable as a plain library | Yes |
 | 1 | `papers/`, `TAXONOMY.md`, `lit-config.yaml` (truth) + `INDEX.json`, `views/` (derived) | The source of truth and its projections | Yes, it is the data |

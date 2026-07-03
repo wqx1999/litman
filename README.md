@@ -22,8 +22,8 @@
 A local knowledge base for research papers, stored as plain files on your
 disk. Papers link explicitly to projects, code repositories, and each other
 through structured metadata and symlinks. Use it through a web UI for everyday
-browsing, reading, and annotation — and, for anything the UI doesn't cover,
-just ask an AI agent, which drives the full `lit` CLI for you via the bundled
+browsing, reading, and annotation — and, for anything the UI doesn't cover, run
+the `lit` CLI yourself, or ask an AI agent to drive it for you via the bundled
 Claude Code skills.
 
 ---

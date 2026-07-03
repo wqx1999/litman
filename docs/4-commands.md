@@ -324,6 +324,28 @@ lit pdf-text <pdf> --pages 1-3,5
 |---|---|
 | `--pages <spec>` | 1-based pages to extract, e.g. `1-3`, `1`, `1-3,5`. Omit for the whole document. |
 
+### `lit cite`
+
+Print a compact, presentation-ready citation for one paper to stdout as a single
+clean line, so `lit cite <id> | pbcopy` (or `| xclip`) copies a paste-ready
+string. The form is `<journal abbrev.> <year>, <volume>, <pages>.` — ACS-style,
+with no author list or title, the version you drop on a slide. Accepts a full id,
+a unique substring, or `--paper-doi`.
+
+```
+lit cite <id>
+lit cite <id> | pbcopy
+lit cite --paper-doi 10.1038/...
+```
+
+| Flag | What it does |
+|---|---|
+| `--paper-doi <doi>` | Look the paper up by DOI instead of id. Mutually exclusive with the positional id. |
+
+The journal abbreviation comes from a shipped ISO4 table; an unknown journal is
+printed verbatim with a warning on **stderr** (never mixed into the piped
+citation). Other caveats (missing volume/pages, preprint venue) go to stderr too.
+
 ### `lit modify`
 
 Edit fields on a paper's `metadata.yaml`. Writes `metadata.yaml` (refreshing
@@ -676,3 +698,26 @@ lit config show --format yaml
 | `show` | Print the parsed, validated config, reflecting the *effective* values after schema defaults fill in any omitted fields. `--format [table\|yaml]` chooses a Rich table (default) or the canonical YAML form. |
 
 See [3-concepts.md](3-concepts.md) §1.4 for what each config field controls.
+
+### `lit gui`
+
+Launch the litman Web UI — a localhost browser app for browsing, reading PDFs,
+annotating, and everyday curation. It serves the active vault and binds
+`127.0.0.1` only; on HPC it prints a ready-to-paste `ssh -L` tunnel line so you
+can open the printed URL in your local browser. If the default port is busy it
+walks upward to the next free one (Jupyter-style) and prints the port it landed
+on.
+
+```
+lit gui
+lit gui --port 9000
+```
+
+| Flag | What it does |
+|---|---|
+| `--port <n>` | Port to bind. Default `8765`; auto-increments if busy. |
+
+The Web UI drives a growing subset of the commands on this page through the same
+code paths — this page (the CLI) stays the complete surface. The web server
+(fastapi + uvicorn) ships as a core dependency; a corrupted install missing it
+prints a `pipx install --force litman` hint.

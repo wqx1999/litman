@@ -25,28 +25,39 @@ every step.
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.
 
-## Two ways to do everything
+## Three surfaces, used where each fits
 
-Each step is shown two ways:
+litman is a human–machine tool, so most steps below can be done more than one
+way. Reach for whichever fits the moment:
 
+- 🖥️ **Web UI** — the browser app you open with `lit gui`: a classification tree,
+  a tabbed PDF reader, and a context panel. This is the human's home for reading,
+  annotating, and everyday curation — where you spend most of a reading day.
 - 🤖 **Agent** — what you say in Claude Code. The bundled skills (`lit-library`
-  for the write side, `lit-reading` for the read side) translate your sentence
-  into the exact `lit` command shown right below it.
-- ⌨️ **Command line** — the `lit` command you run yourself.
+  for the write side, `lit-reading` for the read side) turn your sentence into the
+  exact `lit` command, and the agent does the heavier lifting too: extracting
+  metadata, drafting notes, traversing the links between papers.
+- ⌨️ **CLI** — the `lit` command you type yourself. It is the complete surface
+  underneath the other two; drop to it whenever you want precision or a script.
 
-They are equivalent. Use whichever you prefer, and mix them freely. Steps that
-have to happen before any agent is involved (installing the tool) are marked
-command-line only.
+Read and tag in the UI, hand bigger jobs to the agent, drop to the CLI when you
+want control — and mix them freely; all three drive the same validated core. The
+Web UI covers the everyday reading and curation and keeps growing; whatever it
+does not cover yet, the agent or the CLI always can. A couple of steps (installing
+the tool, importing a PDF) start from the agent or command line by nature, and
+are marked so.
 
 ## The fields you maintain while reading
 
 `lit add` fills a paper's identity (title, authors, year, DOI) automatically and
-leaves the rest empty. The fields below are the ones **you** fill as you read.
-Keeping them current while the paper is fresh in your head is the single habit
-that makes the library searchable later, so build the muscle memory now: tag as
-you read, not in a cleanup pass three months on.
+leaves the rest empty. The fields below are the ones **you** fill as you read. In
+the Web UI these are the controls in the context panel; the commands in the table
+are what they run underneath (and what you type, or ask the agent for). Keeping
+them current while the paper is fresh in your head is the single habit that makes
+the library searchable later, so build the muscle memory now: tag as you read,
+not in a cleanup pass three months on.
 
-| Field | What it captures | How you set it | Controlled by |
+| Field | What it captures | Underlying `lit` command | Controlled by |
 |---|---|---|---|
 | `type` | what kind of paper it is | `lit modify --set type=research` | fixed enum |
 | `status` | where it is in your reading | `lit skim` / `lit promote` / `lit drop` | fixed enum |
@@ -70,9 +81,9 @@ You do these three steps once per machine (steps 1–2) and once per project
 
 ## 1. Install litman
 
-Command-line only — you install the tool before any agent can use it. litman
-installs with [pipx](https://pipx.pypa.io/), which keeps it in its own isolated
-environment and puts `lit` on your PATH:
+Command-line only — you install the tool before any agent or Web UI can use it.
+litman installs with [pipx](https://pipx.pypa.io/), which keeps it in its own
+isolated environment and puts `lit` on your PATH:
 
 ```console
 $ pipx install litman
@@ -81,7 +92,9 @@ $ lit --version          # confirms lit is installed and on your PATH
 
 (Plain `pip install litman` works too if you manage your own environment.)
 
-**To remove it:** `pipx uninstall litman`.
+**To remove it:** run `lit uninstall` first — it strips the agent skills, the
+shell completion, and the vault registry while leaving your papers untouched —
+then `pipx uninstall litman` to remove the CLI itself.
 
 ## 2. Set up your library
 
@@ -92,7 +105,7 @@ it so future commands find it automatically.
 🤖 **Agent:** *"set up a new litman library under ~/research"* → runs the command
 below.
 
-⌨️ **Command line:**
+⌨️ **CLI:**
 
 ```console
 $ lit init ~/research
@@ -119,14 +132,16 @@ bibliography. The directory must already exist.
 🤖 **Agent:** *"register a project called peptide-design at ~/projects/peptide-design"*
 → runs the command below.
 
-⌨️ **Command line:**
+⌨️ **CLI:**
 
 ```console
 $ lit project add peptide-design --path ~/projects/peptide-design
 ```
 
 This registers the project in both truth sources (the TAXONOMY and the config)
-in one step. You can now use `peptide-design` as a `projects` value.
+in one step. You can now use `peptide-design` as a `projects` value. (Projects
+can also be created and renamed from the Web UI once it is running; the command
+above is the quickest way during first-run setup.)
 
 **To remove it:** `lit project rm peptide-design`. This untags every paper that
 referenced it and drops it from the registry, after a `[y/N]` confirmation.
@@ -140,8 +155,10 @@ PepINVENT, from import to its second read.
 
 ## 4. Add the paper
 
-`lit add` needs the PDF file (litman manages papers you have already obtained;
-it does not download them) and a metadata source. There are two sources:
+Adding a paper is where the agent earns its keep: it reads the PDF and pulls out
+the metadata, so this step lives on the agent or the command line. `lit add` needs
+the PDF file (litman manages papers you have already obtained; it does not
+download them) and a metadata source. There are two sources:
 
 - `--doi` — fetch the metadata from CrossRef. No model involved.
 - `--from-llm-json` — the agent reads the PDF, extracts the metadata to JSON,
@@ -152,7 +169,7 @@ it does not download them) and a metadata source. There are two sources:
 and runs `lit add --from-llm-json` (or `--doi` for a clean DOI), passing the id
 you named.
 
-⌨️ **Command line:**
+⌨️ **CLI:**
 
 ```console
 $ lit add ~/Downloads/pepinvent.pdf --doi 10.1039/D4SC07642G --id 2025_Geylan_PepINVENT
@@ -176,7 +193,8 @@ Add the second paper the same way, so the list has more than one row:
 $ lit add ~/Downloads/pocketxmol.pdf --doi 10.1016/j.cell.2026.01.003 --id 2026_Peng_PocketXMol
 ```
 
-`lit list` shows where everything stands:
+`lit list` shows where everything stands (in the Web UI this is the paper list in
+the left pane):
 
 ```console
 $ lit list
@@ -194,17 +212,22 @@ $ lit list
 **To remove a paper:** preview the impact with `lit rm 2025_Geylan_PepINVENT
 --dry-run` first, then `lit rm 2025_Geylan_PepINVENT` moves it to the trash after
 a `Delete? [y/N]` prompt. It stays recoverable with `lit trash restore
-2025_Geylan_PepINVENT`; `--purge` deletes permanently instead.
+2025_Geylan_PepINVENT`; `--purge` deletes permanently instead. (The Web UI can
+soft-delete and restore too.)
 
 ## 5. Start reading
 
 litman tracks where a paper is in your reading with its `status`. A fresh paper
 is `inbox`. Mark it `skim` when you start, `deep-read` when you commit to it.
 
+🖥️ **Web UI:** open the paper and set its status from the context panel — `skim`
+when you start, `deep-read` when you commit. You are reading the PDF in the same
+window, so it is one click away.
+
 🤖 **Agent:** *"I'm starting to skim PepINVENT"* → `lit skim`; later *"I'm doing a
 deep read of it"* → `lit promote`.
 
-⌨️ **Command line:**
+⌨️ **CLI:**
 
 ```console
 $ lit skim 2025_Geylan_PepINVENT
@@ -220,11 +243,14 @@ Each paper has a `discussion.md` — your running log of questions, objections, 
 working-through while you read. Keep it open and write to it as things occur to
 you.
 
+🖥️ **Web UI:** the reader has a discussion tab beside the PDF. Jot questions and
+objections there as they occur, without leaving the page.
+
 🤖 **Agent:** talk through the paper in Claude Code. When you say *"note that down"*
 or work through a question, the `lit-reading` skill appends the exchange to
 `discussion.md`.
 
-⌨️ **Manual:** open
+✏️ **By hand:** open
 `~/research/literature_vault/papers/2025_Geylan_PepINVENT/discussion.md` and
 write.
 
@@ -234,28 +260,31 @@ agent) can read the conclusion without wading through the back-and-forth.
 
 ## 7. Maintain the fields and write notes
 
-This is where the cheat-sheet at the top becomes a habit. As you understand the
-paper, fill in what it is and tag what it covers.
+As you understand the paper, record what it is, tag what it covers, and write your
+summary. This is the everyday curation the Web UI is built for.
 
-Set the scalar fields directly:
+🖥️ **Web UI:** in the paper's context panel, set `type` and `priority` from their
+dropdowns and add `topics` / `methods` tags — type a new value and it is
+registered in the TAXONOMY on the spot. Write the summary straight into the notes
+tab. You are already reading the PDF right there, so nothing pulls you out of the
+paper.
 
-🤖 **Agent:** *"PepINVENT is a research paper, priority A"* → the two commands below.
+🤖 **Agent:** *"PepINVENT is a research paper, priority A; tag topics
+peptide-design and de-novo-design, method reinforcement-learning; then summarize
+it into its notes"* → the skill registers any missing taxonomy values, sets the
+fields, and drafts the summary into `notes.md`. Review and edit the draft; it is a
+starting point, not the final word.
 
-⌨️ **Command line:**
+⌨️ **CLI:** the same, one operation at a time. The scalar fields set directly:
 
 ```console
 $ lit modify 2025_Geylan_PepINVENT --set type=research
 $ lit modify 2025_Geylan_PepINVENT --set priority=A
 ```
 
-Tag the controlled-vocabulary fields. These are **register-first**: a value must
-exist in the TAXONOMY before it can be tagged onto a paper. Do both steps (or let
-the agent do both):
-
-🤖 **Agent:** *"tag PepINVENT with topics peptide-design and de-novo-design, method
-reinforcement-learning"* → the skill registers any missing values, then tags.
-
-⌨️ **Command line:**
+The controlled-vocabulary fields are **register-first**: a value must exist in the
+TAXONOMY before it can be tagged onto a paper, so register then tag (this is what
+the UI's type-a-new-value and the agent both do for you underneath):
 
 ```console
 $ lit taxonomy add topics peptide-design de-novo-design
@@ -272,16 +301,9 @@ The metadata is schema-less, so you can also record anything else with a plain
 $ lit modify 2025_Geylan_PepINVENT --set relevance-peptide-design="Baseline generator for the macrocycle work."
 ```
 
-Now write the summary into `notes.md`:
-
-🤖 **Agent:** *"summarize PepINVENT into its notes"* → the `lit-reading` skill drafts
-a structured summary into `notes.md`. Review and edit it; the draft is a starting
-point, not the final word.
-
-⌨️ **Manual:** edit
-`~/research/literature_vault/papers/2025_Geylan_PepINVENT/notes.md` yourself. A
-`[[2026_Peng_PocketXMol]]` wikilink in the prose creates a tracked cross-paper
-link (and `lit rename` keeps it valid if either id changes later).
+However you write `notes.md`, a `[[2026_Peng_PocketXMol]]` wikilink in the prose
+creates a tracked cross-paper link (and `lit rename` keeps it valid if either id
+changes later).
 
 **To undo a tag or field:** `lit modify 2025_Geylan_PepINVENT --rm-tag
 topics=de-novo-design` removes one tag; `lit modify ... --set priority=` (empty
@@ -289,12 +311,16 @@ value) clears a scalar.
 
 ## 8. Finish: link to the project and clone the code
 
-When you have finished the read, stamp it and connect it to your work.
+When you have finished the read, stamp it, connect it to your project, and pull in
+its code.
 
-🤖 **Agent:** *"I've finished PepINVENT — link it to peptide-design and clone its repo"*
-→ the three commands below.
+🖥️ **Web UI:** mark the read complete and link the paper to `peptide-design` from
+the context panel — the read stamp and the project link are both there.
 
-⌨️ **Command line:**
+🤖 **Agent:** *"I've finished PepINVENT — link it to peptide-design with relevance
+'Baseline macrocycle generator.' and clone its repo"* → the three commands below.
+
+⌨️ **CLI:**
 
 ```console
 $ lit read 2025_Geylan_PepINVENT
@@ -304,20 +330,22 @@ $ lit code add https://github.com/MolecularAI/PepINVENT --paper 2025_Geylan_PepI
 
 `lit read` stamps `read-date` (the first-read marker). `lit link` tags the
 project, drops a reference under `~/projects/peptide-design/litman_reflib/`, and
-regenerates that project's `REFERENCES.md`. `lit code add` clones the repository
-into the vault and binds it to the paper in both directions at once.
+regenerates that project's `REFERENCES.md`. Cloning the code (`lit code add`) is an
+agent/CLI step — it fetches a git repository into the vault and binds it to the
+paper in both directions at once.
 
 **To undo:** `lit unlink 2025_Geylan_PepINVENT --project peptide-design` reverses
 the link; `lit code rm PepINVENT --cascade` removes the clone and unbinds it.
 
 ## 9. Export a bibliography
 
-When you cite the paper, export the project's references as BibTeX. The cite key
-is the paper id, so `\cite{2025_Geylan_PepINVENT}` works across machines.
+Exporting a `.bib` is an agent/CLI step. When you cite the paper, export the
+project's references as BibTeX; the cite key is the paper id, so
+`\cite{2025_Geylan_PepINVENT}` works across machines.
 
 🤖 **Agent:** *"export a bib file for peptide-design"* → runs the command below.
 
-⌨️ **Command line:**
+⌨️ **CLI:**
 
 ```console
 $ lit export --project peptide-design -o ~/projects/peptide-design/refs.bib
@@ -326,6 +354,10 @@ $ lit export --project peptide-design -o ~/projects/peptide-design/refs.bib
 Re-run the same command to update the file as you link more papers. `lit export
 --all` exports the whole library. (There is nothing to undo — the `.bib` is a
 projection, not vault state; delete the file if you no longer want it.)
+
+For a single paste-ready citation instead of a whole file — the kind you drop on a
+slide — `lit cite 2025_Geylan_PepINVENT` prints one clean line to stdout, and the
+Web UI shows the same per-paper Cite button.
 
 ## 10. Come back: the second read
 
@@ -338,18 +370,21 @@ the companion to the `read-date` you stamped in step 8:
   time you return.
 
 The pair lets you tell a paper you read once and were done with from one you keep
-returning to. `lit revisit` writes today into `last-revisited` — it does not touch
-`read-date`, and it does not open the PDF; it only records the date.
+returning to. Marking a revisit writes today into `last-revisited` — it does not
+touch `read-date`, and it does not open the PDF; it only records the date.
+
+🖥️ **Web UI:** open the paper and hit revisit in the context panel; it stamps
+today into `last-revisited`.
 
 🤖 **Agent:** *"I'm re-reading PepINVENT"* → `lit revisit`.
 
-⌨️ **Command line:**
+⌨️ **CLI:**
 
 ```console
 $ lit revisit 2025_Geylan_PepINVENT
 ```
 
-Run it whenever you come back to the paper (not at any particular point in the
+Do it whenever you come back to the paper (not at any particular point in the
 re-read — it just marks the day). Same-day repeats do nothing, and `--date
 2026-05-01` backdates an older revisit. Add to `notes.md` and `discussion.md` as
 you re-read, exactly as before.
@@ -359,6 +394,7 @@ you re-read, exactly as before.
 ## Where to go next
 
 That is the whole daily loop. The second paper, PocketXMol, runs through the same
-steps whenever you are ready to read it. For anything beyond this path — multiple
-libraries, cloud sync, TAXONOMY housekeeping, health checks — see
-[4-commands.md](4-commands.md), or just ask the agent.
+steps whenever you are ready to read it. Open `lit gui` to browse and read it all
+in one place. For anything beyond this path — multiple libraries, cloud sync,
+TAXONOMY housekeeping, health checks — see [4-commands.md](4-commands.md), or just
+ask the agent.

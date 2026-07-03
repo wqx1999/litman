@@ -46,21 +46,35 @@ trustworthy as the judgement behind each paper they act on.
 litman is built as three layers, described here from the top (what you touch)
 down to the bottom (what keeps the library honest).
 
-### Top layer: a CLI, with an optional Claude Code skill
+### Top layer: how you touch the library
 
-litman is a command-line tool. Every operation on the library is a dedicated
-`lit` subcommand (see [4-commands.md](4-commands.md)), and the CLI is complete
-on its own.
+You reach the library three ways, and all three go through the same validated
+core.
 
-We recommend driving it through Claude Code, which makes managing the library
-faster. litman ships two orchestration skills (`lit-library` for the write side,
-`lit-reading` for the read side) that let you work in plain language instead of
-memorising flags, and an agent traverses the links between papers, code, and
-projects far faster than reading them by hand, so it reaches the right context
-for a task without scanning the whole library.
+**The Web UI is the everyday front door.** Running `lit gui` opens a three-pane
+browser interface — a classification tree on the left, a tabbed PDF reader in the
+middle, a context panel on the right — for the things you do most: browsing,
+reading, annotating, and taking notes. Day to day, this is where you work, and
+you rarely need to think about commands at all.
+
+**The CLI is the foundation everything else rests on.** Every operation on the
+library is a dedicated `lit` subcommand (see [4-commands.md](4-commands.md)), and
+the CLI is complete on its own. It runs with no GUI, no agent, and no API key, so
+the library stays fully operable even with a weak language model or none at all.
+The Web UI and the agent are both wrappers over these same commands — never a
+second path that writes to the vault directly — so nothing they do can bypass the
+checks the CLI enforces.
+
+**A Claude Code skill is the optional layer on top.** For anything past everyday
+browsing, we recommend driving litman through Claude Code, which makes managing
+the library faster. litman ships two orchestration skills (`lit-library` for the
+write side, `lit-reading` for the read side) that let you work in plain language
+instead of memorising flags, and an agent traverses the links between papers,
+code, and projects far faster than reading them by hand, so it reaches the right
+context for a task without scanning the whole library.
 
 The agent works by typing the `lit` commands for you and reporting what each one
-did. It only ever proposes the command. The CLI is what validates the input and
+did. It only ever proposes the command; the CLI is what validates the input and
 writes the data, so a hallucinated or malformed value is rejected before it
 reaches disk rather than quietly corrupting the library.
 

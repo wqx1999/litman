@@ -12,8 +12,10 @@ The field tables below tag each field on four attributes:
 
 - **Controlled** — the value must be a registered TAXONOMY value (only the
   classification fields are), otherwise it is free.
-- **Written by** — you (through a `lit` command) or the machine (maintained for
-  you, never set by hand).
+- **Written by** — you or the machine. A *you*-written field is one you set
+  through a `lit` command — whether you type it, click it in the Web UI, or have
+  an agent issue it, it is the same command underneath. A *machine*-written field
+  is maintained for you and never set by hand.
 - **On disk** — read-only locked, plain-writable, or derived (regenerated, so a
   hand edit is overwritten). How litman holds each file is covered in
   [2-architecture.md](2-architecture.md).
@@ -87,12 +89,12 @@ maintains them), the last two are semantic (you mark them through a command).
 | `read-date` | you (`lit read`) | the first time you finish a deep read | The "finished reading" marker. |
 | `last-revisited` | you (`lit revisit`) | when you re-open a paper that already has a `read-date` | The "came back to it" marker. |
 
-You normally never type `lit read` or `lit revisit`. In Claude Code the
-lit-reading skill stamps them for you: `lit read` when you say you finished a
-paper, `lit revisit` when you say you re-opened a finished one. The hinge is
-`read-date`. A paper without one is still on its first read, so finishing it
-stamps `read-date`, not `last-revisited`, and continuing an unfinished read is
-never a revisit.
+You rarely set these by hand. The Web UI stamps them from its read /
+revisit buttons, and in Claude Code the lit-reading skill stamps them when you
+say you finished or re-opened a paper — both routed through `lit read` /
+`lit revisit`. The hinge is `read-date`. A paper without one is still on its
+first read, so finishing it stamps `read-date`, not `last-revisited`, and
+continuing an unfinished read is never a revisit.
 
 All four are ISO 8601 with a timezone offset (`2026-04-27T17:05:00+02:00`).
 File `mtime` and git history cannot stand in for them (a `cp -r` resets
