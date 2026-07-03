@@ -13,6 +13,13 @@ plain-file vault — one folder per paper holding the PDF, a `metadata.yaml`, an
 notes. It ships two Claude Code skills so you can drive it, but every command
 also works typed by hand. The CLI, not you, is the source of truth.
 
+The human's everyday front door is a **web UI** (`lit gui`) for browsing,
+reading, and annotation; you operate the *same* vault through the `lit` CLI. When
+a request is really "let me look around," point them at `lit gui` — and handle
+everything the UI doesn't cover (adding papers, taxonomy edits, project/code
+links, single-paper curation) yourself. Both surfaces write through the same
+validated CLI core, so nothing you do and nothing they click can diverge.
+
 ## The one rule that governs everything
 
 **You never write vault files directly.** You propose a `lit` command (or emit
@@ -39,6 +46,8 @@ that only **reads** it to `lit-reading`.
 |---|---|
 | Create a vault | `lit init <parent-dir>` |
 | One-shot setup (completion, skill, vault, sync) | `lit setup` |
+| Open the human's web UI | `lit gui` |
+| Reverse setup (remove skills/completion/registry) | `lit uninstall` |
 | Add a paper | `lit add <pdf-path> --doi <doi>` |
 | Browse / inspect | `lit list` · `lit show <id>` |
 | Search notes / find related | `lit search <query>` · `lit related <id>` |
@@ -70,7 +79,7 @@ Non-negotiable. Violating any of these corrupts the library or its trust model.
 5. **Figure/table questions need a multimodal backend.** A text-only model falls
    back to pypdf text extraction and cannot see figures or image-based tables.
 
-(The full 15-invariant list lives in the repo's `dev_docs/invariants.md`.)
+(The full 16-invariant list lives in the repo's `dev_docs/invariants.md`.)
 
 ## The vault at a glance
 
