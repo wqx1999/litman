@@ -380,19 +380,23 @@ def smartlist_vault(
     The base ``vault_with_paper`` paper (``2024_Foo_Bar``) is unread + inbox,
     so it is a ``reading``/``backlog`` member already. We add:
 
-    - an unread + skim paper (still a reading member — skim is NOT dropped),
+    - an unread + skim paper (a reading member),
     - a read (read-date set) + deep-read paper (a recent-read member),
-    - a dropped paper (excluded from every smart-list).
+    - an unread + dropped paper (a reading member — dropped is muted in the GUI,
+      NOT hidden; smart-list membership is by read-date, not status),
+    - a read + dropped paper (a recent-read member, same reasoning).
 
-    ``updated-at`` is staggered so the recency order is deterministic without
-    touching pdf mtimes. INDEX.json is rebuilt so the no-view path stays sane.
+    ``updated-at`` / ``read-date`` are staggered so the recency / read-date
+    order is deterministic without touching pdf mtimes. INDEX.json is rebuilt
+    so the no-view path stays sane.
     """
     vault, base_id = vault_with_paper
     ids = {
         "unread_inbox": base_id,
         "unread_skim": "2023_Skim_Paper",
         "read_deep": "2022_Read_Paper",
-        "dropped": "2021_Dropped_Paper",
+        "dropped": "2021_Dropped_Paper",  # unread + dropped
+        "dropped_read": "2019_Dropped_Read_Paper",  # read + dropped
     }
     _seed_paper(
         vault, ids["unread_skim"],
@@ -409,23 +413,32 @@ def smartlist_vault(
         title="Dropped Paper", year=2021, status="dropped", priority="C",
         **{"read-date": None, "updated-at": "'2026-05-10T10:00:00+02:00'"},
     )
+    _seed_paper(
+        vault, ids["dropped_read"],
+        title="Dropped Read Paper", year=2019, status="dropped", priority="C",
+        **{"read-date": "2026-05-25", "updated-at": "'2026-05-25T10:00:00+02:00'"},
+    )
     write_index(vault, list_papers(vault))
     return vault, ids
 
 
-def test_view_reading_excludes_read_and_dropped(
+def test_view_reading_includes_unread_dropped(
     smartlist_vault: tuple[Path, dict[str, str]],
 ) -> None:
+    """reading = unread (by read-date); dropped is INCLUDED (muted in the GUI),
+    never hidden, so a set-aside paper does not silently vanish from the list.
+    Only papers with a read-date drop out (into recent-read)."""
     vault, ids = smartlist_vault
     resp = _client(vault).get("/api/papers?view=reading")
     assert resp.status_code == 200
     got = [p["id"] for p in resp.json()]
 
-    # membership: unread inbox + unread skim, NOT the read one, NOT the dropped.
+    # membership: every unread paper, dropped or not; read papers excluded.
     assert ids["unread_inbox"] in got
-    assert ids["unread_skim"] in got  # skim is reading, not dropped
-    assert ids["read_deep"] not in got
-    assert ids["dropped"] not in got
+    assert ids["unread_skim"] in got  # skim is unread → reading
+    assert ids["dropped"] in got  # unread + dropped stays in reading, muted
+    assert ids["read_deep"] not in got  # has a read-date
+    assert ids["dropped_read"] not in got  # dropped but read → recent-read
 
     # order: recency DESC over the same recency_key the CLI uses.
     papers = {p["id"]: p for p in list_papers(vault)}
@@ -437,16 +450,19 @@ def test_view_reading_excludes_read_and_dropped(
     assert got == expected
 
 
-def test_view_recent_read_only_read_non_dropped_date_desc(
+def test_view_recent_read_includes_read_dropped_date_desc(
     smartlist_vault: tuple[Path, dict[str, str]],
 ) -> None:
+    """recent-read = read (read-date set); dropped is INCLUDED (muted), so a
+    paper read then set aside stays visible here. Ordered read-date DESC."""
     vault, ids = smartlist_vault
     resp = _client(vault).get("/api/papers?view=recent-read")
     assert resp.status_code == 200
     got = [p["id"] for p in resp.json()]
 
-    # only the read, non-dropped paper qualifies.
-    assert got == [ids["read_deep"]]
+    # both read papers qualify — the dropped one too; unread papers excluded.
+    # read-date DESC: dropped_read (2026-05-25) then read_deep (2026-05-20).
+    assert got == [ids["dropped_read"], ids["read_deep"]]
 
 
 def test_view_backlog_is_reading_reversed(
@@ -461,16 +477,16 @@ def test_view_backlog_is_reading_reversed(
     assert backlog == list(reversed(reading))
 
 
-def test_view_reading_matches_cli_unread_recent_minus_dropped(
+def test_view_reading_matches_cli_unread_recent(
     smartlist_vault: tuple[Path, dict[str, str]],
 ) -> None:
     """A5 equivalence: ``view=reading`` == ``lit list --unread --sort recent``
-    on the same vault, after removing dropped papers from the CLI output.
+    on the same vault, with NO dropped pruning.
 
     ``lit list --unread`` keeps every unread paper (including dropped ones,
-    which still have an empty read-date), so we drop status==dropped from the
-    CLI id order before comparing -- that is the literal "same result, dropped
-    pruned" contract.
+    which still have an empty read-date), and ``view=reading`` now does the
+    same (dropped stays, muted in the GUI), so the two id orders match directly
+    -- one ranking, one membership rule (read-date), no second sort path.
     """
     vault, _ = smartlist_vault
 
@@ -482,7 +498,7 @@ def test_view_reading_matches_cli_unread_recent_minus_dropped(
     )
     assert cli_res.exit_code == 0, cli_res.output
     cli_papers = json.loads(cli_res.output)
-    cli_ids = [p["id"] for p in cli_papers if p.get("status") != "dropped"]
+    cli_ids = [p["id"] for p in cli_papers]
 
     api_ids = [
         p["id"] for p in _client(vault).get("/api/papers?view=reading").json()
@@ -507,6 +523,22 @@ def test_view_invalid_value_is_400(
     vault, _ = smartlist_vault
     resp = _client(vault).get("/api/papers?view=bogus")
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Dropped surfaces inline (muted) in reading/recent-read — there is no dedicated
+# dropped view (the earlier "Dropped bin" idea was dropped for inline display).
+# ---------------------------------------------------------------------------
+
+
+def test_view_dropped_is_now_400(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """Regression: ``?view=dropped`` is NOT a valid smart-list. Dropped papers
+    surface inline (muted) in reading/recent-read by read-date, so there is no
+    dedicated dropped view — requesting one is a 400 like any unknown view."""
+    vault, _ = smartlist_vault
+    assert _client(vault).get("/api/papers?view=dropped").status_code == 400
 
 
 def test_recency_key_ranks_pdf_mtime_vs_updated_at(

@@ -53,7 +53,9 @@ import Toast, { type ToastVariant } from './ui/Toast'
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
 // Single-value fields filter on `p[f]` (string | null); array fields filter on
-// `p[f]` (string[]). Status carries the dropped-default-hide special case.
+// `p[f]` (string[]). Status is filtered in the `visible` pipeline like the rest
+// now — dropped is never hidden; every view (all/reading/recent-read) shows it,
+// muted, so a set-aside paper never vanishes from the list.
 const SINGLE_FILTER_FIELDS: Array<'priority' | 'type'> = ['priority', 'type']
 const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
   'topics',
@@ -529,8 +531,8 @@ export default function App() {
 
   // `scoped` is ONLY the project filter now; the all/dropped status logic moved
   // into `visible` so every dimension composes through one AND pipeline. The
-  // smart-lists (reading/recent-read) already came pre-ordered + dropped-free
-  // from the server, so project scope is the only narrowing applied here.
+  // smart-lists (reading/recent-read) already came pre-ordered from the server
+  // (dropped included, muted), so project scope is the only narrowing here.
   const scoped = useMemo(() => {
     if (!projectScope) return papers
     return papers.filter((p) => (p.projects || []).includes(projectScope))
@@ -539,11 +541,11 @@ export default function App() {
   // Multi-dimensional filter: cross-dimension AND, within-dimension OR.
   const visible = useMemo(() => {
     let out = scoped
-    // STATUS (single, OR). `all` now shows dropped too — "all" means all, so a
-    // dropped paper is never a ghost (invisible but still rotting in the vault).
-    // It is rendered muted + tagged in the list instead (see BrowsePanel). The
-    // reading/recent-read server smart-lists still exclude dropped, so the
-    // active reading pipeline stays clean.
+    // STATUS (single, OR). Every view shows dropped now — "all" means all, and
+    // reading/recent-read keep a dropped paper in place (unread → reading, read
+    // → recent-read) so it is never a ghost (invisible but still rotting in the
+    // vault). It is rendered muted + tagged in the list instead (see
+    // BrowsePanel) — the grey pile IS the anti-drift signal.
     const st = filters.status
     if (st.size > 0) {
       out = out.filter((p) => p.status != null && st.has(p.status))

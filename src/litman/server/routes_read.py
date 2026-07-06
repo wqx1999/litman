@@ -65,26 +65,25 @@ _SMART_LIST_VIEWS = frozenset({"reading", "recent-read", "backlog"})
 def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
     """Order ``list_papers`` for one smart-list view.
 
-    - ``reading``     = unread, not dropped, recency DESC.
-    - ``recent-read`` = read (read-date set), not dropped, read-date DESC.
-    - ``backlog``     = unread, not dropped, recency ASC (same membership as
-      ``reading`` in reverse — the tail of the unread list).
+    - ``reading``     = unread, recency DESC.
+    - ``recent-read`` = read (read-date set), read-date DESC.
+    - ``backlog``     = unread, recency ASC (same membership as ``reading`` in
+      reverse — the tail of the unread list).
+
+    Dropped papers are NOT filtered out: a dropped paper stays in ``reading``
+    (if unread) or ``recent-read`` (if read), rendered muted in the GUI, so
+    setting a paper aside never makes it vanish from the list (anti-drift).
+    Membership is purely read-date-based; ``status`` only changes row styling.
     """
     papers = list_papers(vault)
     if view == "recent-read":
-        read = [
-            p for p in papers
-            if p.get("read-date") and p.get("status") != "dropped"
-        ]
+        read = [p for p in papers if p.get("read-date")]
         # str ISO sort is fine; list.sort is stable so equal read-dates keep
         # the incoming id-ascending order from list_papers as a tiebreak.
         read.sort(key=lambda p: str(p.get("read-date") or ""), reverse=True)
         return read
 
-    unread = [
-        p for p in papers
-        if not p.get("read-date") and p.get("status") != "dropped"
-    ]
+    unread = [p for p in papers if not p.get("read-date")]
     unread.sort(
         key=lambda p: recency_key(vault, p),
         reverse=(view == "reading"),
