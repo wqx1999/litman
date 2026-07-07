@@ -82,19 +82,25 @@ You do these three steps once per machine (steps 1–2) and once per project
 ## 1. Install litman
 
 Command-line only — you install the tool before any agent or Web UI can use it.
-litman installs with [pipx](https://pipx.pypa.io/), which keeps it in its own
-isolated environment and puts `lit` on your PATH:
+One line installs litman and everything it needs, and puts `lit` on your PATH:
 
 ```console
-$ pipx install litman
+$ curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
 $ lit --version          # confirms lit is installed and on your PATH
 ```
 
-(Plain `pip install litman` works too if you manage your own environment.)
+On Windows, run the PowerShell one-liner instead:
+
+```console
+> powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+```
+
+Prefer [pipx](https://pipx.pypa.io/)? `pipx install litman` works too.
 
 **To remove it:** run `lit uninstall` first — it strips the agent skills, the
 shell completion, and the vault registry while leaving your papers untouched —
-then `pipx uninstall litman` to remove the CLI itself.
+then remove the CLI with `uv tool uninstall litman` (or `pipx uninstall litman`
+if you used pipx).
 
 ## 2. Set up your library
 

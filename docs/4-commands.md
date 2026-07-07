@@ -152,8 +152,9 @@ lit install-skill --skill lit-reading
 
 Reverse of `lit setup`: remove the bundled skills, the shell-completion block,
 and the vault registry (the list of vault names/paths). It does not remove the
-`lit` CLI itself — a running command can't delete its own pipx environment — so
-it prints the final `pipx uninstall litman` step for you to run. Your vault
+`lit` CLI itself — a running command can't delete its own environment — so it
+prints the final CLI-removal step (`uv tool uninstall litman` or `pipx uninstall
+litman`, depending on how you installed it) for you to run. Your vault
 directories (papers, PDFs, notes, annotations) are never touched; only the
 registry pointers to them are dropped. Skill directories are removed file by
 file, so any file you added next to `SKILL.md` is left in place.
@@ -720,4 +721,5 @@ lit gui --port 9000
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server
 (fastapi + uvicorn) ships as a core dependency; a corrupted install missing it
-prints a `pipx install --force litman` hint.
+prints a reinstall hint (`uv tool install --force litman` or `pipx install
+--force litman`).

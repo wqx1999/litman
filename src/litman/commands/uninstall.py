@@ -1,16 +1,17 @@
 """``lit uninstall`` — reverse ``lit setup`` (teardown counterpart).
 
-Removes the artifacts ``lit setup`` placed OUTSIDE the pipx venv:
+Removes the artifacts ``lit setup`` placed OUTSIDE the tool venv (uv or pipx):
 
 * the bundled Claude Code skills (``~/.claude/skills/lit-*``),
 * the shell tab-completion block(s),
 * the vault registry (``vaults.yaml`` — the list of vault names/paths).
 
 It deliberately does NOT remove the ``lit`` CLI itself: a running command
-cannot cleanly delete the pipx environment it is executing from, so the
-final ``pipx uninstall litman`` step is printed for the user to run. It
-also NEVER touches vault data — papers, PDFs, notes and annotations stay
-exactly where they are; only the registry pointers to them are dropped.
+cannot cleanly delete the environment it is executing from, so the final
+CLI-removal step (``uv tool uninstall litman`` / ``pipx uninstall litman``)
+is printed for the user to run. It also NEVER touches vault data — papers,
+PDFs, notes and annotations stay exactly where they are; only the registry
+pointers to them are dropped.
 """
 
 from __future__ import annotations
@@ -32,10 +33,11 @@ from litman.core.vault_registry import registry_path, remove_registry
 
 console = Console()
 
-_PIPX_STEP = (
+_REMOVE_CLI_STEP = (
     "Remove the CLI itself (a running command can't delete its own\n"
-    "pipx environment):\n"
-    "  [bold]pipx uninstall litman[/]"
+    "environment) — use whichever installed it:\n"
+    "  [bold]uv tool uninstall litman[/]   [dim](installed with uv)[/]\n"
+    "  [bold]pipx uninstall litman[/]      [dim](installed with pipx)[/]"
 )
 
 _VAULT_SAFE = (
@@ -67,7 +69,8 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     annotations are never touched.
 
     This does NOT uninstall the lit CLI, because a running command can't
-    delete its own pipx environment. Finish with: pipx uninstall litman.
+    delete its own environment. Finish with `uv tool uninstall litman` or
+    `pipx uninstall litman`, depending on how you installed it.
 
     Use --dry-run to preview, -y/--yes to skip the confirmation.
     """
@@ -96,7 +99,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
         console.print(
             Panel.fit(
                 "Nothing to remove — no bundled skills, shell completion, or "
-                "vault registry found.\n\n" + _PIPX_STEP,
+                "vault registry found.\n\n" + _REMOVE_CLI_STEP,
                 title="lit uninstall",
                 border_style="yellow",
             )
@@ -113,7 +116,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
 
     if dry_run:
         console.print("[dim](dry run — nothing was changed.)[/]")
-        console.print(Panel.fit(_PIPX_STEP, border_style="cyan"))
+        console.print(Panel.fit(_REMOVE_CLI_STEP, border_style="cyan"))
         return
 
     if not yes:
@@ -141,7 +144,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
 
     out = ["[bold green]Removed:[/]"]
     out += [f"  [green]•[/] {escape(x)}" for x in done]
-    out += ["", _VAULT_SAFE, "", _PIPX_STEP]
+    out += ["", _VAULT_SAFE, "", _REMOVE_CLI_STEP]
     console.print(
         Panel.fit("\n".join(out), title="lit uninstall", border_style="green")
     )

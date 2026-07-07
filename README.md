@@ -67,11 +67,31 @@ A few things worth knowing up front:
 
 ## Install
 
-litman is a Python CLI tool. Install with **pipx** so `lit` is permanently
-available in every shell, isolated from your other Python environments.
-Don't have pipx? See [pipx.pypa.io](https://pipx.pypa.io).
+litman is a Python CLI tool. One line installs it and everything it needs:
 
-**From PyPI** (recommended):
+**macOS / Linux:**
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+```
+
+Then run the one-shot setup wizard:
+
+```bash
+lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync
+```
+
+Re-run the install command any time to upgrade.
+
+**Alternative: pipx**
+
+Prefer [pipx](https://pipx.pypa.io)?
 
 ```bash
 pipx install litman   # first install
@@ -91,20 +111,15 @@ git pull
 pipx install --force .
 ```
 
-Then run the one-shot setup wizard:
-
-```bash
-lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync
-```
-
 ## Uninstall
 
 Run two steps, in order — `lit uninstall` first (while the `lit` command still
-exists), then pipx:
+exists), then remove the CLI with whichever installer you used:
 
 ```bash
-lit uninstall          # removes bundled skills, shell completion, and the vault registry
-pipx uninstall litman  # removes the lit CLI itself
+lit uninstall              # removes bundled skills, shell completion, and the vault registry
+uv tool uninstall litman   # if you installed with uv / the install script
+pipx uninstall litman      # if you installed with pipx
 ```
 
 `lit uninstall` lists exactly what it will delete and asks first — pass

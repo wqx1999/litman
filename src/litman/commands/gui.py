@@ -99,8 +99,8 @@ def gui_cmd(
             "missing from this install."
         )
         console.print(
-            "Reinstall litman:  pipx install --force litman  "
-            "(or pip install --force-reinstall litman)"
+            "Reinstall litman:  uv tool install --force litman  "
+            "(or pipx install --force litman)"
         )
         raise SystemExit(1) from None
 

@@ -223,7 +223,11 @@ def test_uninstall_registered_in_help(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("HOME", str(tmp_path))
     result = CliRunner().invoke(cli, ["uninstall", "--help"])
     assert result.exit_code == 0
-    assert "pipx uninstall litman" in result.output
+    # help names the installer-neutral CLI-removal step; collapse whitespace so
+    # click's line-wrapping can't split the phrases.
+    normalized = " ".join(result.output.split())
+    assert "uv tool uninstall litman" in normalized
+    assert "pipx uninstall litman" in normalized
 
 
 # --------------------------------------------------------------------------
