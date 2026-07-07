@@ -302,6 +302,9 @@ def add_cmd(
     required. Refuses on duplicate DOI, derives a canonical id, and
     creates papers/<id>/ containing paper.pdf, metadata.yaml,
     and an empty notes.md.
+
+    The source PDF is moved into the vault: the original file is removed
+    after a successful ingest.
     """
     if (doi is None) == (from_llm_json is None):
         raise AddError(
@@ -488,9 +491,11 @@ def add_cmd(
     # Remove the source PDF (mv semantics). Tolerate failure: a successful
     # ingest must not be reported as failure just because the source could not
     # be removed (e.g. read-only source dir).
+    source_removed = True
     try:
         pdf_path.unlink()
     except OSError as exc:
+        source_removed = False
         console.print(
             f"[yellow]Warning:[/] could not remove source PDF "
             f"{str(pdf_path)!r} ({exc.__class__.__name__}); paper was still "
@@ -549,6 +554,13 @@ def add_cmd(
         "\\[/code_candidates]"
     )
 
+    # mv semantics: tell the user the source PDF is now in the vault, not a
+    # copy. Only claim it when the unlink above actually succeeded — a
+    # read-only source dir already printed a warning and left the file behind.
+    source_line = (
+        "\n[dim]Source PDF moved into the vault.[/]" if source_removed else ""
+    )
+
     # Escape every interpolated metadata value (review F24): a title / journal
     # / author / url carrying Rich markup like "[/]" or "[red]" would otherwise
     # raise MarkupError here — AFTER the paper is ingested and the source PDF
@@ -562,6 +574,7 @@ def add_cmd(
             f"[bold]Year:[/] {escape(str(parsed['year']))}    "
             f"[bold]Journal:[/] {escape(str(parsed['journal']))}\n"
             f"[bold]Authors:[/] {escape(author_summary)}"
+            f"{source_line}"
             f"{code_block}",
             title="lit add",
             border_style="green",

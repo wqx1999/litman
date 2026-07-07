@@ -116,6 +116,10 @@ def test_add_creates_paper_folder(
     # disappearing is the user-visible "ingest succeeded" signal.
     assert not fake_pdf.exists()
 
+    # D2: the success panel states the mv semantics explicitly so the source
+    # file "disappearing" reads as intended, not as data loss.
+    assert "Source PDF moved into the vault" in result.output
+
 
 @pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX read-only bit semantics"
