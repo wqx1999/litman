@@ -228,6 +228,13 @@ function diffResync(
   return out
 }
 
+/** A fetch that failed at the network level (connection refused, tunnel down)
+ * rejects with a TypeError; an HTTP error Response reaches the api helpers,
+ * which throw a plain Error. Only the former means "server unreachable". */
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError
+}
+
 export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
   // The newer litman version on PyPI (null = up to date / unknown). Read once on
@@ -266,6 +273,15 @@ export default function App() {
   // INDEX). Stays true across vault switches: reloadForVault re-fetches without
   // clearing, so allPapers is always a real (possibly stale-for-a-tick) INDEX.
   const [allLoaded, setAllLoaded] = useState(false)
+  // Server reachability. Set when a read-path fetch fails at the network level
+  // (server down, SSH tunnel dropped — fetch rejects with a TypeError), cleared
+  // by the next successful read. Drives the top-center banner plus a 5s retry
+  // loop below. An HTTP error status deliberately does NOT trip this: that is
+  // a server bug, not a disconnect, and keeps its existing error paths.
+  const [disconnected, setDisconnected] = useState(false)
+  // The current list fetch failed — BrowsePanel renders an explicit failure
+  // line instead of an empty state that would read as "no papers".
+  const [listFailed, setListFailed] = useState(false)
   // notes/discussion hits from /api/search (debounced, async). The token guards
   // against an earlier slower response overwriting a newer one.
   const [serverHits, setServerHits] = useState<SearchHit[]>([])
@@ -448,7 +464,15 @@ export default function App() {
     setLoadingList(true)
     const view = SMART_VIEWS.has(mode) ? (mode as SmartListView) : undefined
     fetchPapers(view)
-      .then(setPapers)
+      .then((ps) => {
+        setPapers(ps)
+        setListFailed(false)
+        setDisconnected(false)
+      })
+      .catch((err) => {
+        setListFailed(true)
+        if (isNetworkError(err)) setDisconnected(true)
+      })
       .finally(() => setLoadingList(false))
   }, [])
 
@@ -464,8 +488,16 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    fetchVaults().then(setVaults)
-    fetchFixedEnums().then(setFixedEnums)
+    fetchVaults()
+      .then(setVaults)
+      .catch((err) => {
+        if (isNetworkError(err)) setDisconnected(true)
+      })
+    fetchFixedEnums()
+      .then(setFixedEnums)
+      .catch((err) => {
+        if (isNetworkError(err)) setDisconnected(true)
+      })
     // Update-check badge: pure cache read, best-effort (a failure just leaves
     // the dot off — this is a passive reminder, never blocking).
     fetchVersion()
@@ -496,9 +528,11 @@ export default function App() {
         // diffs correctly — self-heal instead of logging every paper as "+ added".
         resyncReadyRef.current = true
       })
-      .catch(() => {
+      .catch((err) => {
         // Swallow the rejected Promise.all so it isn't an unhandled rejection;
-        // the gate stays false and a later resync re-seeds.
+        // the gate stays false and a later resync re-seeds. A network-level
+        // failure additionally raises the disconnected banner.
+        if (isNetworkError(err)) setDisconnected(true)
       })
   }, [loadTrash])
 
@@ -716,16 +750,21 @@ export default function App() {
       setVaults(freshVaults)
       docMtimesRef.current = freshMtimes
       resyncReadyRef.current = true
+      // A whole sweep landed — the server is reachable again.
+      setDisconnected(false)
+      setListFailed(false)
       if (selectedId) {
         fetchPaper(selectedId)
           .then(setCockpitPaper)
           .catch(() => setCockpitPaper(null))
       }
       setMdReloadToken((t) => t + 1)
-    } catch {
-      // A failed sweep is a no-op: leave the UI and the diff baseline untouched
-      // (a transient fetch error must not wipe the view or desync the baseline);
-      // the next resync retries.
+    } catch (err) {
+      // A failed sweep is a data no-op: leave the UI and the diff baseline
+      // untouched (a transient fetch error must not wipe the view or desync
+      // the baseline); the next resync retries. A network-level failure raises
+      // the disconnected banner (cleared by the next successful sweep).
+      if (isNetworkError(err)) setDisconnected(true)
     }
   }, [listMode, selectedId, appendLog])
 
@@ -753,6 +792,16 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [doResync])
+
+  // While disconnected, re-run the sweep every 5s so recovery is automatic
+  // (banner clears, data refreshes) without waiting for a focus switch or a
+  // manual refresh. The interval exists only while the banner is up: a
+  // successful sweep flips `disconnected` off, which tears it down.
+  useEffect(() => {
+    if (!disconnected) return
+    const t = setInterval(() => void doResync(), 5000)
+    return () => clearInterval(t)
+  }, [disconnected, doResync])
 
   // Manual refresh (TopBar button): force an immediate sweep (bypass the throttle)
   // and confirm with a toast — this is the explicit-feedback path, whereas the
@@ -1318,6 +1367,16 @@ export default function App() {
     // and slides in/out from the top edge (see TopBar) so the reading area
     // reclaims the header's height.
     <div className="relative flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
+      {/* Server-unreachable banner: floats top-center above everything, lives
+       * exactly as long as `disconnected` (the 5s retry loop clears it). Amber
+       * needs explicit dark: overrides — unlike stone it is not ramp-inverted
+       * by the .dark block in index.css. */}
+      {disconnected && (
+        <div className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm text-amber-800 shadow-md ring-1 ring-amber-200 dark:bg-amber-950/70 dark:text-amber-200 dark:ring-amber-900">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+          Can't reach the litman server — retrying…
+        </div>
+      )}
       <TopBar
         vaults={vaults}
         updateAvailable={updateLatest}
@@ -1364,6 +1423,7 @@ export default function App() {
               scoped={scoped}
               visible={visible}
               vaultEmpty={vaultEmpty}
+              loadFailed={listFailed}
               loading={loadingList}
               projects={projectNames}
               projectScope={projectScope}
