@@ -76,7 +76,7 @@ echo $LIT_LIBRARY                           # if set, that's the vault
 lit list --format json | head -1            # confirms vault is reachable
 ```
 
-If `lit` is missing: tell the user `pipx install -e /path/to/litman_dev/litman/` or activate the `litman` conda env. Do NOT try to install it yourself.
+If `lit` is missing: tell the user to install it — `curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh` (or `uv tool install litman` / `pipx install litman`). Do NOT try to install it yourself.
 
 ## When to use lit-library vs other skills
 
@@ -456,7 +456,7 @@ Rules:
 2. **Never** suggest hand-editing `TAXONOMY.md` or `lit-config.yaml`'s `projects:` map. Use `lit taxonomy {rm,rename,merge}` for topics/methods/data ([J]) and `lit project {add,rename,set-path,rm}` for projects ([H]). Tagging requires the value registered first.
 3. **Never** assume the vault is git-tracked. It is deliberately not.
 4. **Never** store API keys in `lit-config.yaml`. The CLI calls no LLM API — that's the agent's job, via the JSON-file bridge.
-5. **Never** install / uninstall litman or modify its conda env. If `lit` is missing, tell the user and stop.
+5. **Never** install / uninstall litman or modify its installation. If `lit` is missing, tell the user and stop.
 6. **Cross-reference in-vault papers with `[[paper-id]]` wikilinks, then verify each against the filesystem.** When notes mention another paper in this vault, write it as a `[[paper-id]]` wikilink — **never backticks or plain text**, which escape `lit rm`'s `(deleted)` tagging and `lit health-check`'s dangling detection, leaving a silent dead link when the target is removed. When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (`lit show X` resolves, or it appears in `lit list`). If not, write it as `[[X]] (deleted)` — **never emit a bare `[[X]]` for a paper not in the vault.**
 7. **Never** set a reverse relation field (`extended-by` / `contradicted-by`) by hand — drive only the forward field and let the CLI maintain the pair ([E]).
 
@@ -491,6 +491,6 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit code rm <repo> --cascade` | Retire a repo (last citer only — [C.3]) |
 | `lit health-check` | Vault consistency report |
 | `lit rename <old> <new>` | Atomic id rename with cascade |
-| `lit rm <id> [--cascade] [--purge]` | Soft-delete (trash) or purge |
+| `lit rm <id> [--purge]` | Soft-delete (trash) or purge |
 | `lit trash {list,restore,empty}` | Trash bin; `restore` rebuilds relations + re-clones ([I]) |
 | `lit config show` | Print parsed `lit-config.yaml` |
