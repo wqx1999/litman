@@ -452,6 +452,8 @@ export default function App() {
   // confirm) is open, so the shortcut dispatcher's modal guard suppresses global
   // write-shortcuts behind it — mirrors projectsOpen / observabilityOpen.
   const [vaultManagerOpen, setVaultManagerOpen] = useState(false)
+  // Same mirror for the agent panel (picker / copy box).
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false)
   // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
   // so registering it doesn't re-render; a state copy drives the hook's deps.
   const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
@@ -1340,6 +1342,7 @@ export default function App() {
     projectsOpen ||
     observabilityOpen ||
     vaultManagerOpen ||
+    agentPanelOpen ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -1430,6 +1433,7 @@ export default function App() {
         logUnread={logUnread}
         onLogOpened={markLogRead}
         onObservabilityOpenChange={setObservabilityOpen}
+        onAgentOpenChange={setAgentPanelOpen}
         trashMode={trashMode}
       />
       <div className="flex min-h-0 flex-1">

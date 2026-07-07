@@ -129,14 +129,15 @@ rm -rf path/to/litman   # 你 git clone 的那个目录
 ```bash
 lit gui             # 打开 Web UI —— 浏览、阅读、批注、打标签、链接项目
 lit gui --window    # 同上，但开成独立应用窗口（无地址栏）
+lit agent           # 在库目录里启动你的 AI agent（claude 等）
 ```
 
 `lit gui` 会自动打开浏览器（`--no-browser` 可关；无图形界面的机器上只打印
 URL 和 SSH 隧道命令）。想要双击图标启动，跑一次 `lit gui --make-shortcut`。
 
 就这样——`lit setup` 已经帮你建好了 vault。Web UI 覆盖日常的浏览、阅读、批注；
-更多操作（添加论文、编辑 taxonomy、链接项目）用自然语言问你的 Claude Code agent，
-或查看[命令参考](docs/4-commands.md)。
+更多操作（添加论文、编辑 taxonomy、链接项目）用 `lit agent` 启动 agent 后用
+自然语言吩咐，或查看[命令参考](docs/4-commands.md)。
 
 ---
 

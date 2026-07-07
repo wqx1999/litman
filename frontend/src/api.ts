@@ -298,6 +298,34 @@ export function fetchHealth(): Promise<HealthIssue[]> {
   return getJSON<HealthIssue[]>('/api/health')
 }
 
+/** The configured agent launchers (lit-config.yaml `agents:`) + the default. */
+export interface AgentsPayload {
+  agents: string[]
+  default: string
+}
+
+export function fetchAgents(): Promise<AgentsPayload> {
+  return getJSON<AgentsPayload>('/api/agents')
+}
+
+/** The launch endpoint's outcome: `spawned` = a native terminal window opened
+ * on the server's machine; `copy` = it couldn't (headless / remote server), and
+ * `command` carries the `lit agent …` line for the user's own terminal. */
+export interface AgentLaunchResult {
+  ok: boolean
+  mode: 'spawned' | 'copy'
+  agent: string
+  command: string
+}
+
+/** Launch a configured agent in a terminal at the vault. Sends the agent NAME
+ * only — the command always comes from the server-side config (ADR-020); an
+ * absent name launches the default agent. Throws the backend's verbatim
+ * message (400) on an unknown name. */
+export function launchAgent(name?: string): Promise<AgentLaunchResult> {
+  return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
+}
+
 /** Switch the active vault through the `lit vault use` backend (3c-2). GLOBAL:
  * sets the registry's active vault (affects `lit` in every terminal without an
  * explicit --library/$LIT_LIBRARY) and repoints the running server in place, no

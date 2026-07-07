@@ -140,6 +140,7 @@ delete that directory by hand if you also want the data gone.
 ```bash
 lit gui             # open the web UI — browse, read, annotate, tag, and link papers
 lit gui --window    # same, in a standalone app window (no address bar)
+lit agent           # start your AI agent (claude, ...) in the vault directory
 ```
 
 `lit gui` opens your browser automatically (`--no-browser` to skip; on headless
@@ -148,8 +149,8 @@ desktop entry, run `lit gui --make-shortcut` once.
 
 That's it — `lit setup` already created your vault. The web UI handles everyday
 browsing, reading, and annotation; for anything more (adding papers, taxonomy
-edits, project links), ask your Claude Code agent in natural language or see the
-[command reference](docs/4-commands.md).
+edits, project links), run `lit agent` and ask your agent in natural language,
+or see the [command reference](docs/4-commands.md).
 
 ---
 

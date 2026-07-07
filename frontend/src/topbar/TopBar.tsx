@@ -11,10 +11,13 @@ import type { Candidate } from '../search'
 import {
   createProject,
   deleteProject,
+  fetchAgents,
   fetchHealth,
+  launchAgent,
   renameProject,
   setProjectPath,
 } from '../api'
+import type { AgentLaunchResult } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import logoUrl from '../assets/litman-logo.png'
@@ -86,6 +89,9 @@ interface Props {
    * shortcut modal-guard suppresses global keys while one is up — mirrors
    * onProjectsOpenChange. Without it ⌥-write shortcuts fire behind the panel. */
   onObservabilityOpenChange: (open: boolean) => void
+  /** Same mirror for the agent panel (picker / copy box) — the modal-guard
+   * red line applies to every TopBar overlay. */
+  onAgentOpenChange: (open: boolean) => void
   /** In trash mode, hide the library-scoped controls (vault switch, Projects,
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
@@ -127,6 +133,7 @@ export default function TopBar({
   logUnread,
   onLogOpened,
   onObservabilityOpenChange,
+  onAgentOpenChange,
   trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
@@ -162,6 +169,48 @@ export default function TopBar({
   }
   const closePanel = () => setPanel(null)
 
+  // Agent launcher: one configured agent → the button launches it directly;
+  // several → a picker panel. A launch that can't pop a terminal window on the
+  // server's machine (headless / remote) comes back as mode "copy" and the
+  // panel shows the `lit agent …` line to paste into the user's own terminal.
+  const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
+  const [agentBusy, setAgentBusy] = useState(false)
+
+  const handleLaunch = (res: AgentLaunchResult) => {
+    if (res.mode === 'spawned') {
+      setAgentUi(null)
+      notify(`Launched ${res.agent} in a terminal window`, 'success')
+    } else {
+      setAgentUi({ kind: 'copy', agent: res.agent, command: res.command })
+    }
+  }
+
+  const openAgent = () => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    fetchAgents()
+      .then((info) => {
+        if (info.agents.length <= 1) return launchAgent().then(handleLaunch)
+        setAgentUi({ kind: 'picker', agents: info.agents, default: info.default })
+      })
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+      .finally(() => setAgentBusy(false))
+  }
+
+  const pickAgent = (name: string) => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    launchAgent(name)
+      .then(handleLaunch)
+      .catch((err) => {
+        setAgentUi(null)
+        notify(err instanceof Error ? err.message : String(err), 'error')
+      })
+      .finally(() => setAgentBusy(false))
+  }
+
   // Badge counts off the last run (ruling 1): error wins (rose), else warning
   // (amber), else nothing. Empty until the first run.
   const errorCount = healthIssues?.filter((i) => i.severity === 'error').length ?? 0
@@ -191,6 +240,11 @@ export default function TopBar({
   useEffect(() => {
     onObservabilityOpenChange(panel !== null)
   }, [panel, onObservabilityOpenChange])
+
+  // Same mirror for the agent panel.
+  useEffect(() => {
+    onAgentOpenChange(agentUi !== null)
+  }, [agentUi, onAgentOpenChange])
 
   // Focus mode turns the header into an auto-hiding overlay (macOS fullscreen
   // menu-bar idiom): it detaches to `absolute`, slides up out of view, and
@@ -431,6 +485,27 @@ export default function TopBar({
           error={healthError}
           onRerun={runHealth}
           onClose={closePanel}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={openAgent}
+        disabled={agentBusy}
+        title="Launch your AI agent in the vault (lit agent)"
+        aria-label="Launch agent"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"
+      >
+        <IconAgent />
+      </button>
+
+      {agentUi && (
+        <AgentPanel
+          ui={agentUi}
+          busy={agentBusy}
+          onPick={pickAgent}
+          onClose={() => setAgentUi(null)}
+          notify={notify}
         />
       )}
 
@@ -1697,6 +1772,107 @@ function ActivityLogPanel({
   )
 }
 
+/** The agent launcher's overlay: pick which configured agent to start, or —
+ * when the server can't pop a terminal window — the `lit agent …` line to
+ * copy into the user's own terminal. */
+type AgentUi =
+  | { kind: 'picker'; agents: string[]; default: string }
+  | { kind: 'copy'; agent: string; command: string }
+
+function AgentPanel({
+  ui,
+  busy,
+  onPick,
+  onClose,
+  notify,
+}: {
+  ui: AgentUi
+  busy: boolean
+  onPick: (name: string) => void
+  onClose: () => void
+  notify: (msg: string, variant?: ToastVariant) => void
+}) {
+  const copyCommand = (command: string) => {
+    navigator.clipboard
+      .writeText(command)
+      .then(() => notify('Command copied', 'success'))
+      .catch(() => notify('Copy failed — select the text and copy it', 'error'))
+  }
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        {ui.kind === 'picker' ? (
+          <>
+            <h2 className="text-sm font-semibold text-stone-900">Launch agent</h2>
+            <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+              Starts the agent in the vault directory.
+            </p>
+            <div className="mt-3 overflow-hidden rounded-lg border border-stone-200">
+              {ui.agents.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onPick(name)}
+                  className="flex w-full items-center justify-between border-b border-stone-100 px-3 py-2 text-left text-sm text-stone-700 transition-colors last:border-b-0 hover:bg-stone-50 disabled:opacity-50"
+                >
+                  <span className="font-mono">{name}</span>
+                  {name === ui.default && (
+                    <span className="text-[10px] uppercase tracking-wide text-stone-400">
+                      default
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-sm font-semibold text-stone-900">
+              Run in your local terminal
+            </h2>
+            <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+              No terminal window can be opened from here. Paste this where you
+              normally run {ui.agent}:
+            </p>
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+              <code className="min-w-0 flex-1 truncate font-mono text-sm text-stone-800">
+                {ui.command}
+              </code>
+              <button
+                type="button"
+                onClick={() => copyCommand(ui.command)}
+                className="shrink-0 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900"
+              >
+                Copy
+              </button>
+            </div>
+          </>
+        )}
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 const ICON = 'h-[18px] w-[18px]'
 const SVG_PROPS = {
   className: ICON,
@@ -1849,6 +2025,16 @@ function IconShield() {
     <svg {...SVG_PROPS}>
       <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
       <path d="M9 12l2 2 4-4" />
+    </svg>
+  )
+}
+
+/** Terminal window with a prompt — launch the configured AI agent. */
+function IconAgent() {
+  return (
+    <svg {...SVG_PROPS}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9.5l3 2.5-3 2.5M12.5 15.5H17" />
     </svg>
   )
 }

@@ -21,6 +21,7 @@ from rich.console import Console
 
 from litman import __version__
 from litman.commands.add import add_cmd
+from litman.commands.agent import agent_cmd
 from litman.commands.cite import cite_cmd
 from litman.commands.code import code_group
 from litman.commands.config import config_group
@@ -99,7 +100,7 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
      ("link", "unlink", "project", "code", "taxonomy")),
     ("Maintenance",
      ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui",
-      "self-update")),
+      "agent", "self-update")),
 )
 
 
@@ -624,6 +625,7 @@ cli.add_command(sync_group)
 cli.add_command(vault_group)
 cli.add_command(export_cmd)
 cli.add_command(gui_cmd)
+cli.add_command(agent_cmd)
 cli.add_command(self_update_cmd)
 
 

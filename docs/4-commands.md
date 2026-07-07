@@ -729,3 +729,38 @@ code paths — this page (the CLI) stays the complete surface. The web server
 (fastapi + uvicorn) ships as a core dependency; a corrupted install missing it
 prints a reinstall hint (`uv tool install --force litman` or `pipx install
 --force litman`).
+
+### `lit agent`
+
+Start your AI agent inside the vault — one command instead of opening a
+terminal, `cd`-ing to the vault, and running the agent by hand. It executes
+the command configured in `lit-config.yaml`'s `agents:` map with the active
+vault as working directory, and hands the session fully over to the agent
+(Ctrl-C and exit belong to the agent, not to `lit`).
+
+```
+lit agent          # launch the default agent (fresh vaults: claude)
+lit agent codex    # launch a named entry from the agents: map
+```
+
+| Argument | What it does |
+|---|---|
+| `NAME` (optional) | Which `agents:` entry to launch. Omitted, it launches `default_agent`. |
+
+Add an agent CLI by adding one line under `agents:` in `lit-config.yaml`; the
+command may carry arguments:
+
+```yaml
+agents:
+  claude: claude
+  claude-resume: claude --continue
+  codex: codex
+default_agent: claude
+```
+
+An unknown NAME, an agent command missing from PATH, or a `default_agent`
+pointing at no `agents:` entry each fail with a one-line error. The Web UI's
+agent button launches the same configured entries: on a machine with a
+display it opens the agent in a new terminal window; when the server runs on
+a remote box (HPC) it shows the `lit agent` line to copy into your own
+terminal.
