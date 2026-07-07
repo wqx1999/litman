@@ -126,7 +126,7 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 | Cue | Command |
 |---|---|
-| Direct id | `lit show <id>` (or `--format json` for the full field set, all authors, every edge) |
+| Direct id | `lit show <id>` (or `--format json` for the full field set, every edge) |
 | Author ("Pandi 那篇") | `lit list --author <cue> --format json` |
 | Title ("标题里带 X 的") | `lit list --title <substr> --format json` |
 | Topic / method ("the GAT one") | Tier-2 discovery below (`lit list --topic X --format json`) |
