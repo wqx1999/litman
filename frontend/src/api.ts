@@ -277,6 +277,19 @@ export function fetchVaults(): Promise<VaultsPayload> {
   return getJSON<VaultsPayload>('/api/vaults')
 }
 
+/** Running litman version + the latest available release (or null when none /
+ * unknown). PURE READ of the server's update-check cache — the request path
+ * never hits PyPI; the server's startup task populates the cache. Backs the
+ * TopBar update dot. */
+export interface VersionInfo {
+  current: string
+  latest: string | null
+}
+
+export function fetchVersion(): Promise<VersionInfo> {
+  return getJSON<VersionInfo>('/api/version')
+}
+
 /** Run every health-check probe and return the flat findings list — the pure-read
  * mirror of `lit health-check` (the GET never re-locks / fixes / stamps the
  * registry). On demand only (Tier-2: reads all metadata server-side), so the

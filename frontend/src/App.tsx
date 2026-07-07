@@ -9,6 +9,7 @@ import {
   fetchTrash,
   fetchSearch,
   fetchVaults,
+  fetchVersion,
   putActiveVault,
   putDiscussion,
   putNotes,
@@ -229,6 +230,9 @@ function diffResync(
 
 export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
+  // The newer litman version on PyPI (null = up to date / unknown). Read once on
+  // mount from the server's update-check cache; drives the TopBar update dot.
+  const [updateLatest, setUpdateLatest] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -456,6 +460,11 @@ export default function App() {
   useEffect(() => {
     fetchVaults().then(setVaults)
     fetchFixedEnums().then(setFixedEnums)
+    // Update-check badge: pure cache read, best-effort (a failure just leaves
+    // the dot off — this is a passive reminder, never blocking).
+    fetchVersion()
+      .then((v) => setUpdateLatest(v.latest))
+      .catch(() => {})
     // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
     // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
     // resync never diffs against an empty baseline (which would log every paper
@@ -1290,6 +1299,7 @@ export default function App() {
     <div className="relative flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
       <TopBar
         vaults={vaults}
+        updateAvailable={updateLatest}
         projects={projects}
         allPapers={allPapers}
         search={search}

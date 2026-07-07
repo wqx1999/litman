@@ -21,6 +21,9 @@ import logoUrl from '../assets/litman-logo.png'
 
 interface Props {
   vaults: VaultsPayload | null
+  /** The newer litman version available on PyPI (null = up to date / unknown).
+   * From the read-only /api/version cache; drives the update dot on the logo. */
+  updateAvailable?: string | null
   /** Registered projects backing the global Projects manager (P4). */
   projects: ProjectEntry[]
   /** Full INDEX projection — backs the delete-project confirm's "N papers" count. */
@@ -98,6 +101,7 @@ interface Props {
  * that future vault operations will join. */
 export default function TopBar({
   vaults,
+  updateAvailable,
   projects,
   allPapers,
   search,
@@ -270,12 +274,29 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <img
-        src={logoUrl}
-        alt="litman"
-        title="litman"
-        className="h-6 w-auto shrink-0 select-none"
-      />
+      <div
+        className="relative shrink-0"
+        title={
+          updateAvailable
+            ? `litman ${updateAvailable} available — run \`lit self-update\``
+            : 'litman'
+        }
+      >
+        <img
+          src={logoUrl}
+          alt="litman"
+          className="h-6 w-auto select-none"
+        />
+        {updateAvailable && (
+          <span
+            aria-label={`Update available: litman ${updateAvailable}`}
+            className="pointer-events-none absolute -right-1 -top-1 h-2.5 w-2.5"
+          >
+            <span className="absolute inset-0 rounded-full bg-accent-500 animate-update-halo" />
+            <span className="absolute inset-0 rounded-full bg-accent-500 ring-2 ring-stone-50" />
+          </span>
+        )}
+      </div>
 
       {!trashMode && (
       <>

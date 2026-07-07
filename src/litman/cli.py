@@ -44,6 +44,7 @@ from litman.commands.rename import rename_cmd
 from litman.commands.revisit import revisit_cmd
 from litman.commands.rm import rm_cmd
 from litman.commands.search import search_cmd
+from litman.commands.self_update import self_update_cmd
 from litman.commands.setup import setup_cmd
 from litman.commands.show import show_cmd
 from litman.commands.skim import skim_cmd
@@ -96,7 +97,8 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Linking & organization",
      ("link", "unlink", "project", "code", "taxonomy")),
     ("Maintenance",
-     ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui")),
+     ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui",
+      "self-update")),
 )
 
 
@@ -140,6 +142,7 @@ class LitGroup(click.Group):
         # the nudge is a passive reminder, not a guarantee on every exit path.
         if cmd_name not in self._DRIFT_SKIP:
             self._emit_staleness_nudge()
+            self._emit_update_nudge()
         return result
 
     def _run_drift_hook(self) -> None:
@@ -484,6 +487,41 @@ class LitGroup(click.Group):
         except Exception:
             pass
 
+    @staticmethod
+    def _emit_update_nudge() -> None:
+        """Post-dispatch PyPI update nudge (task-self-update D2).
+
+        A passive one-liner on stderr when a newer litman is on PyPI. Sibling of
+        :meth:`_emit_staleness_nudge`, wired at the same post-dispatch point, but
+        with a STRICTER gate: interactive TTY only AND not opted out. On a
+        non-TTY (agent pipe) or opt-out there is zero network, zero cache read,
+        zero output (invariant: the agent is a pipe consumer and must stay
+        uncluttered — red line AC5).
+
+        The whole machinery lives behind that gate: the TTL-gated network refresh
+        (one ≤2s urllib GET only when the cache is stale) fires here, then the
+        nudge reads the freshened cache. Frequency is capped at once per 24h via
+        ``last_nudged_at`` in the cache. Wrapped so any failure degrades to a
+        silent skip and never crashes the user's command.
+        """
+        try:
+            from litman.commands._drift import _default_tty_probe
+            from litman.core import update_check
+
+            if not _default_tty_probe() or update_check.opt_out():
+                return
+            update_check.refresh_cache_if_stale()
+            due = update_check.consume_nudge()
+            if due is None:
+                return
+            current, latest = due
+            Console(stderr=True).print(
+                f"[dim]tip: litman {latest} is available (you have {current}) "
+                "— run 'lit self-update'[/dim]"
+            )
+        except Exception:
+            pass
+
     def format_commands(
         self, ctx: click.Context, formatter: click.HelpFormatter
     ) -> None:
@@ -562,6 +600,7 @@ cli.add_command(sync_group)
 cli.add_command(vault_group)
 cli.add_command(export_cmd)
 cli.add_command(gui_cmd)
+cli.add_command(self_update_cmd)
 
 
 @cli.command(hidden=True)

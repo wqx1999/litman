@@ -126,6 +126,23 @@ def get_papers(
     return [project_paper(p) for p in _smart_list(vault, view)]
 
 
+@router.get("/version")
+def get_version() -> dict[str, str | None]:
+    """Current litman version + the latest available release, if any.
+
+    PURE READ (invariant #16): reads ONLY the local update-check cache — it never
+    fetches PyPI in the request path. ``latest`` is the newer version when the
+    cache shows one strictly greater than ``current``, else ``null`` (no cache,
+    stale/empty, already current, or opted out). The server's startup task
+    populates the cache; the TopBar shows a badge only when ``latest`` is set.
+    """
+    from litman import __version__
+    from litman.core.update_check import available_update
+
+    upd = available_update()
+    return {"current": __version__, "latest": upd[1] if upd else None}
+
+
 @router.get("/health")
 def get_health(request: Request) -> list[dict[str, Any]]:
     """Run every health-check probe and return the flat ``Issue[]`` list.

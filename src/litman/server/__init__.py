@@ -12,7 +12,10 @@ startup path stays fastapi-free even though fastapi is now a core dependency).
 
 from __future__ import annotations
 
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
@@ -28,6 +31,31 @@ from litman.server.routes_write import router as write_router
 _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """On real server startup, refresh the PyPI update-check cache in the
+    background (silent-fail) so a GUI-only user's version badge can populate
+    even if they never touch the CLI. The ``GET /api/version`` route only reads
+    the cache — the network never touches the request path (task-self-update D4).
+
+    Fires only when the server actually starts (uvicorn / a `with TestClient`
+    context), so a bare ``TestClient(create_app(...))`` used in tests never hits
+    the network. The refresh helper is itself TTL-gated + opt-out-aware + fully
+    silent; the daemon thread just keeps startup non-blocking.
+    """
+
+    def _refresh() -> None:
+        try:
+            from litman.core.update_check import refresh_cache_if_stale
+
+            refresh_cache_if_stale()
+        except Exception:
+            pass
+
+    threading.Thread(target=_refresh, daemon=True).start()
+    yield
+
+
 def create_app(vault: Path) -> FastAPI:
     """Build the FastAPI app bound to one vault.
 
@@ -35,7 +63,7 @@ def create_app(vault: Path) -> FastAPI:
     ``request.app.state.vault`` rather than hard-coding any path (invariant #3:
     discovery already happened in ``lit gui`` via ``find_vault``).
     """
-    app = FastAPI(title="litman webUI", version="0")
+    app = FastAPI(title="litman webUI", version="0", lifespan=_lifespan)
     app.state.vault = vault
 
     app.include_router(read_router)
