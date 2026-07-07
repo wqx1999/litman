@@ -292,7 +292,7 @@ lit show --paper-doi 10.1038/...             # DOI reverse-lookup
 
 Every `lit` command that takes a paper id (`show`, `open`, `modify`, `rm`, `rename`, `link`, `unlink`, `code link`, `code add --paper`, `code list --paper`) accepts (a) the full id, (b) a unique case-insensitive substring, or (c) `--paper-doi <DOI>` (mutually exclusive with positional / `--paper`). Ambiguous substrings (2+ matches) print the candidate list and exit non-zero. `lit rename <old> <new>` is the one exception: no `--paper-doi` (two positionals would be ambiguous).
 
-For "find a paper I read last month about X", filter by date with `lit list --read-since YYYY-MM-DD` (read-date lower-bound) or `--added-since YYYY-MM-DD` (created-at lower-bound), combined with `--topic` / `--project`. For large vaults filter via `--topic` / `--project` first. For **author** cues use `lit list --author <cue>` — the JSON rows don't include `authors`.
+For "find a paper I read last month about X", filter by date with `lit list --read-since YYYY-MM-DD` (read-date lower-bound) or `--added-since YYYY-MM-DD` (created-at lower-bound), combined with `--topic` / `--project`. For large vaults filter via `--topic` / `--project` first. For **author** cues use `lit list --author <cue>`, or read the `authors` field straight off the JSON rows.
 
 ---
 

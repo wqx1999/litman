@@ -50,7 +50,15 @@ def _index_papers(vault: Path) -> list[dict[str, Any]] | None:
     except (OSError, json.JSONDecodeError):
         return None
     papers = payload.get("papers")
-    return papers if isinstance(papers, list) else None
+    if not isinstance(papers, list):
+        return None
+    # Schema-staleness guard: a pre-1.1.1 INDEX.json predates `authors` in the
+    # thin projection. Treat it as "not available" so the caller re-projects
+    # live off metadata.yaml — the API always serves the current schema; the
+    # on-disk INDEX catches up on the vault's next write / refresh-views.
+    if papers and isinstance(papers[0], dict) and "authors" not in papers[0]:
+        return None
+    return papers
 
 
 # The three left-nav smart-lists. Their membership/ordering depends on

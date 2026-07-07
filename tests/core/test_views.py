@@ -1,8 +1,10 @@
 """Unit tests for the INDEX projection (``core/views.py``).
 
-Focused on the M31 change: ``read-date`` joins ``INDEX_PAPER_FIELDS`` as a
-scalar (absent -> null, NOT []), while ``created-at`` and ``authors`` stay
-out of the thin projection (invariant #10 / spec §7).
+Covers the M31 change (``read-date`` joins ``INDEX_PAPER_FIELDS`` as a
+scalar: absent -> null, NOT []) and the v1.1.1 revision: ``authors`` joins
+the thin projection as a list field (absent -> []) so the GUI quick-search
+and ``lit list --format json`` consumers can match/read authors without a
+per-paper load. ``created-at`` stays out (spec §7).
 """
 
 from __future__ import annotations
@@ -17,9 +19,17 @@ def test_index_fields_contain_read_date() -> None:
     assert "read-date" in INDEX_PAPER_FIELDS
 
 
-def test_index_fields_exclude_created_at_and_authors() -> None:
+def test_index_fields_exclude_created_at() -> None:
     assert "created-at" not in INDEX_PAPER_FIELDS
-    assert "authors" not in INDEX_PAPER_FIELDS
+
+
+def test_index_fields_contain_authors_as_list_field() -> None:
+    # v1.1.1: authors joined the projection. List semantics — absent -> [].
+    assert "authors" in INDEX_PAPER_FIELDS
+    assert project_paper({"id": "p1"})["authors"] == []
+    assert project_paper({"id": "p1", "authors": ["Smith, J."]})["authors"] == [
+        "Smith, J."
+    ]
 
 
 def test_project_paper_passes_through_read_date() -> None:

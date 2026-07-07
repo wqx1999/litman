@@ -41,10 +41,13 @@ SCALAR_VIEW_FIELDS: dict[str, str] = {
 
 # Per-paper fields included in INDEX.json. A summary projection of
 # metadata.yaml — AI consumers can `cat` the source file for fields not
-# listed here.
+# listed here. `authors` joined in v1.1.1 (it was deliberately out of the
+# original thin projection) so both the GUI quick-search and `lit list
+# --format json` consumers can match/read authors without a per-paper load.
 INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "id",
     "title",
+    "authors",
     "year",
     "type",
     "priority",
@@ -59,7 +62,7 @@ INDEX_PAPER_FIELDS: tuple[str, ...] = (
 
 # Fields stored as lists in metadata.yaml — emitted as `[]` when absent so
 # downstream consumers don't have to special-case None.
-_LIST_FIELDS = {"topics", "projects", "methods", "data"}
+_LIST_FIELDS = {"authors", "topics", "projects", "methods", "data"}
 
 # Date-typed scalar fields. The YAML safe-loader parses "2026-05-26" into a
 # datetime.date (not a string), which json.dumps cannot serialize — coerce

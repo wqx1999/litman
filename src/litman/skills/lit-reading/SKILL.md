@@ -122,7 +122,7 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 ### Locate-by-cue (the user names a paper)
 
-**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / year / type / priority / status / topics / projects / methods / data / doi / read-date; for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
+**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / authors / year / type / priority / status / topics / projects / methods / data / doi / read-date; for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
 
 | Cue | Command |
 |---|---|
@@ -346,7 +346,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | Command | Why this skill calls it | Tier |
 |---|---|---|
 | `lit list [--format json] [--topic/--author/--title/--status/--project ...] [--unread] [--sort recent] [--limit N]` | locate / bounded retrieval / resume / triage / roundup; `--title` = title-substring cue, `--limit` = top-N | 1 (read) |
-| `lit show <id> [--format json]` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud; `--format json` returns the FULL field set (all authors, every edge), beyond the INDEX projection | 1 (read) |
+| `lit show <id> [--format json]` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud; `--format json` returns the FULL field set (every edge, relevance fields), beyond the INDEX projection | 1 (read) |
 | `lit search <query> [--in notes,discussion] [--limit N]` | the ONLY path to your own free-form notes / discussion ("我在 notes 里写过 X 吗"); returns `{id,file,line,snippet}` per matched line; `--limit` caps the hit count | 1 (read) |
 | `lit related <id> [--by edges|taxonomy] [--min-shared N]` | knowledge-graph neighbours ("跟这篇相关的还有哪些"): explicit edges first, then shared-topic/method, each with a `via` reason | 1 (read) |
 | `lit vault list` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
