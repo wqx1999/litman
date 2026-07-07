@@ -1,7 +1,8 @@
-// Ranking + merge for the 4-scope search typeahead. Pure (no React, no JSX) so
-// it feeds BOTH the dropdown (sliced to the top few) and the middle-list filter
-// (the full matched id set). id/title are matched here instantly off the loaded
-// INDEX; notes/discussion hits arrive async from /api/search and merge in.
+// Ranking + merge for the search typeahead. Pure (no React, no JSX) so it
+// feeds BOTH the dropdown (sliced to the top few) and the middle-list filter
+// (the full matched id set). The metadata scopes (id/title/author/doi/year)
+// are matched here instantly off the loaded INDEX; notes/discussion hits
+// arrive async from /api/search and merge in.
 
 import type { IndexPaper, SearchHit, SearchScope } from './types'
 
@@ -13,43 +14,58 @@ export interface Candidate {
   id: string
   title: string | null
   scope: SearchScope
-  /** Lower is better: 0 id-exact · 1 id/title-prefix · 2 id/title-substring ·
-   * 3 notes-substring · 4 discussion-substring. */
+  /** Lower is better: 0 id-exact · 1 id/title-prefix · 2 metadata-substring
+   * (title/id/author/doi/year) · 3 notes-substring · 4 discussion-substring. */
   rank: number
-  /** Matched markdown line (notes/discussion scopes); '' for id/title. */
+  /** Matched markdown line (notes/discussion scopes), the matched author or
+   * DOI (author/doi scopes); '' otherwise. */
   snippet: string
   /** 1-based line of the match in the .md (notes/discussion scopes only), so the
    * picker can open that doc and scroll to it. Absent for id/title. */
   line?: number
 }
 
-// Secondary sort within a rank tier: prefer id, then title, then notes, then
-// discussion, so an id-prefix edges out a title-prefix at the same rank.
+// Secondary sort within a rank tier: prefer id, then title, then the other
+// metadata scopes, then notes, then discussion — so an id-prefix edges out a
+// title-prefix at the same rank, and a title-substring an author-substring.
 const SCOPE_ORDER: Record<SearchScope, number> = {
   id: 0,
   title: 1,
-  notes: 2,
-  discussion: 3,
+  author: 2,
+  doi: 3,
+  year: 4,
+  notes: 5,
+  discussion: 6,
 }
 
-/** Classify a client-side id/title match. Mirrors the spec ordering: id exact >
- * id/title prefix > id/title substring. Returns null when neither field hits. */
+/** Classify a client-side metadata match. Mirrors the spec ordering: id exact >
+ * id/title prefix > metadata substring (title, id, then author / doi / year —
+ * id and title stay the primary handles). Author and doi match as substrings
+ * (the snippet carries what matched); year only on the exact 4-digit string
+ * ("202" matching half the vault would be noise). Null when nothing hits. */
 function clientMatch(
-  id: string,
-  title: string | null,
+  p: IndexPaper,
   q: string,
-): { rank: number; scope: SearchScope } | null {
-  const lid = id.toLowerCase()
-  const lt = (title ?? '').toLowerCase()
-  if (lid === q) return { rank: 0, scope: 'id' }
-  if (lid.startsWith(q)) return { rank: 1, scope: 'id' }
-  if (lt && lt.startsWith(q)) return { rank: 1, scope: 'title' }
-  if (lt && lt.includes(q)) return { rank: 2, scope: 'title' }
-  if (lid.includes(q)) return { rank: 2, scope: 'id' }
+): { rank: number; scope: SearchScope; snippet: string } | null {
+  const lid = p.id.toLowerCase()
+  const lt = (p.title ?? '').toLowerCase()
+  if (lid === q) return { rank: 0, scope: 'id', snippet: '' }
+  if (lid.startsWith(q)) return { rank: 1, scope: 'id', snippet: '' }
+  if (lt && lt.startsWith(q)) return { rank: 1, scope: 'title', snippet: '' }
+  if (lt && lt.includes(q)) return { rank: 2, scope: 'title', snippet: '' }
+  if (lid.includes(q)) return { rank: 2, scope: 'id', snippet: '' }
+  const author = (p.authors ?? []).find((a) => a.toLowerCase().includes(q))
+  if (author) return { rank: 2, scope: 'author', snippet: author }
+  if (p.doi && p.doi.toLowerCase().includes(q)) {
+    return { rank: 2, scope: 'doi', snippet: p.doi }
+  }
+  if (p.year != null && q === String(p.year)) {
+    return { rank: 2, scope: 'year', snippet: '' }
+  }
   return null
 }
 
-/** Merge instant id/title matches (over the full INDEX) with async server
+/** Merge instant metadata matches (over the full INDEX) with async server
  * notes/discussion hits into one ranked, de-duplicated list — one entry per
  * paper, keeping its highest-ranked scope. Empty/whitespace query → []. */
 export function mergeCandidates(
@@ -70,9 +86,9 @@ export function mergeCandidates(
   }
 
   for (const p of papers) {
-    const m = clientMatch(p.id, p.title, q)
+    const m = clientMatch(p, q)
     if (m) {
-      consider({ id: p.id, title: p.title, scope: m.scope, rank: m.rank, snippet: '' })
+      consider({ id: p.id, title: p.title, scope: m.scope, rank: m.rank, snippet: m.snippet })
     }
   }
   for (const h of serverHits) {

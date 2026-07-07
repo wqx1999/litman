@@ -26,6 +26,13 @@ export interface ShortcutDeps {
   /** Jump straight to the Nth center tab (1-based). Out-of-range = no-op. */
   activateTabByIndex: (n: number) => void
 
+  // --- Tier 1: middle-list navigation (global, focus-guarded) -------------
+  /** Move the paper-list selection down/up by one (J/K). Clamped at the ends;
+   * J with nothing selected starts at the first row, K at the last. */
+  moveSelection: (delta: 1 | -1) => void
+  /** Open the selected paper's PDF tab (Enter). No-op without a selection. */
+  openSelected: () => void
+
   // --- Cheat sheet (`?`) ---------------------------------------------------
   cheatSheetOpen: boolean
   toggleCheatSheet: () => void
@@ -52,8 +59,9 @@ export interface ShortcutDeps {
 /** Is focus currently inside a text-entry surface? Bare single-keys and
  * ⌥-combos must not fire there (typing "H" in notes must not switch a PDF tool;
  * ⌥-combos can compose characters / move the caret in a field). Covers <input>,
- * <textarea>, and any contentEditable host. */
-function isEditingTarget(el: EventTarget | null): boolean {
+ * <textarea>, and any contentEditable host. Exported for the SearchBox's own
+ * bare-key listener (`/`), which needs the identical guard. */
+export function isEditingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false
   const tag = el.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA') return true
@@ -102,6 +110,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleRight,
     activateAdjacentTab,
     activateTabByIndex,
+    moveSelection,
+    openSelected,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -203,7 +213,32 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // Reject any modifier so e.g. Ctrl+F (page find) is never swallowed.
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
 
+      // --- Enter — open the selected paper's PDF ---------------------------
+      // Only on inert targets: a focused button / link / select keeps its
+      // native Enter activation (this would otherwise double-fire — e.g.
+      // activate the control AND open a tab).
+      if (e.key === 'Enter') {
+        const t = e.target
+        if (
+          t instanceof HTMLElement &&
+          ['BUTTON', 'A', 'SELECT', 'SUMMARY'].includes(t.tagName)
+        ) {
+          return
+        }
+        e.preventDefault()
+        openSelected()
+        return
+      }
+
       switch (e.code) {
+        case 'KeyJ':
+          e.preventDefault()
+          moveSelection(1)
+          return
+        case 'KeyK':
+          e.preventDefault()
+          moveSelection(-1)
+          return
         case 'KeyF':
           e.preventDefault()
           toggleFocus()
@@ -272,6 +307,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleRight,
     activateAdjacentTab,
     activateTabByIndex,
+    moveSelection,
+    openSelected,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,

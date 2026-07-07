@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
@@ -181,6 +181,17 @@ export default function BrowsePanel({
   // Level-2 disclosure: which dimension groups are expanded. Empty = all
   // collapsed (the default).
   const [openGroups, setOpenGroups] = useState<Set<FacetKey>>(new Set())
+
+  // Keep the selection visible when it moves without a click (the J/K keyboard
+  // navigation): nudge the selected row into view. block:'nearest' = no scroll
+  // at all while the row is already visible, so mouse selection never jumps.
+  const listRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!selectedId) return
+    listRef.current
+      ?.querySelector('[data-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId])
 
   const toggleGroup = (key: FacetKey) =>
     setOpenGroups((prev) => {
@@ -482,7 +493,7 @@ export default function BrowsePanel({
         </div>
 
         {/* Paper list */}
-        <div className="min-h-0 flex-1 overflow-auto bg-white py-1">
+        <div ref={listRef} className="min-h-0 flex-1 overflow-auto bg-white py-1">
           {loading && <div className="p-3 text-sm text-stone-500">Loading…</div>}
           {/* Three empty states, in precedence order: the list fetch failed
            * (server unreachable — never masquerade as an empty library), a
@@ -522,6 +533,7 @@ export default function BrowsePanel({
             return (
               <div
                 key={p.id}
+                data-selected={selected || undefined}
                 className={`mx-2 my-0.5 overflow-hidden rounded-xl ring-1 transition-[background-color,box-shadow] duration-300 ease-fluid ${
                   selected
                     ? 'bg-accent-50 shadow-[0_1px_8px_rgba(0,122,255,0.10)] ring-accent-200/70'

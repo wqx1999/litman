@@ -1344,6 +1344,29 @@ export default function App() {
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
 
+  // J/K walk the middle-list selection through the same rows BrowsePanel
+  // renders (`visible` — every filter applied), Enter opens the selection's
+  // PDF. Clamped at the ends; J with nothing selected starts at the first
+  // row, K at the last. BrowsePanel scrolls the moved selection into view.
+  const moveSelection = useCallback(
+    (delta: 1 | -1) => {
+      if (visible.length === 0) return
+      const idx = selectedId ? visible.findIndex((p) => p.id === selectedId) : -1
+      const next =
+        idx === -1
+          ? delta === 1
+            ? 0
+            : visible.length - 1
+          : Math.min(visible.length - 1, Math.max(0, idx + delta))
+      const target = visible[next]
+      if (target && target.id !== selectedId) selectPaper(target.id)
+    },
+    [visible, selectedId, selectPaper],
+  )
+  const openSelected = useCallback(() => {
+    if (selectedId) openPdf(selectedId)
+  }, [selectedId, openPdf])
+
   useKeyboardShortcuts({
     anyModalOpen,
     toggleFocus,
@@ -1352,6 +1375,8 @@ export default function App() {
     toggleRight,
     activateAdjacentTab,
     activateTabByIndex,
+    moveSelection,
+    openSelected,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,

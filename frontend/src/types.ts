@@ -3,10 +3,12 @@
 
 import type { ToastVariant } from './ui/Toast'
 
-/** The INDEX.json / `lit list --format json` thin projection (12 fields). */
+/** The INDEX.json / `lit list --format json` thin projection (13 fields). */
 export interface IndexPaper {
   id: string
   title: string | null
+  /** "Family, Given" strings; `[]` when absent (list-field projection rule). */
+  authors: string[]
   year: number | null
   type: string | null
   priority: string | null
@@ -26,7 +28,6 @@ export type DocMtimes = Record<string, { notes: number | null; discussion: numbe
 
 /** Full metadata.yaml for one paper (superset of IndexPaper). */
 export interface PaperMeta extends IndexPaper {
-  authors?: string[]
   journal?: string | null
   'arxiv-id'?: string | null
   github?: string | null
@@ -48,9 +49,17 @@ export interface PaperMeta extends IndexPaper {
 /** The smart-list views the server computes (sorted by recency / read-date). */
 export type SmartListView = 'reading' | 'recent-read' | 'backlog'
 
-/** Where a search term matched. `id`/`title` are resolved client-side off the
- * loaded INDEX; `notes`/`discussion` come from /api/search. */
-export type SearchScope = 'id' | 'title' | 'notes' | 'discussion'
+/** Where a search term matched. `id`/`title`/`author`/`doi`/`year` are
+ * resolved client-side off the loaded INDEX; `notes`/`discussion` come from
+ * /api/search. */
+export type SearchScope =
+  | 'id'
+  | 'title'
+  | 'author'
+  | 'doi'
+  | 'year'
+  | 'notes'
+  | 'discussion'
 
 /** One notes/discussion hit from /api/search (one per paper, notes preferred). */
 export interface SearchHit {

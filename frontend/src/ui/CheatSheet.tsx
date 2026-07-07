@@ -72,6 +72,16 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Papers list & search',
+    note: 'Move through the middle list; Enter opens the PDF.',
+    rows: [
+      { chords: [['J']], action: 'Next paper' },
+      { chords: [['K']], action: 'Previous paper' },
+      { chords: [['Enter']], action: 'Open the selected paper' },
+      { chords: [['/']], action: 'Focus search' },
+    ],
+  },
+  {
     title: 'Tabs',
     note: 'Switch the open document tabs.',
     rows: [
