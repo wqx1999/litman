@@ -81,6 +81,9 @@ include = ["litman*"]
 # patterns the asset tree is dropped because it carries no Python sources.
 "litman" = [
     "assets/webui/*", "assets/webui/**/*",
+    # Desktop-shortcut icons (`lit gui --make-shortcut`); resolved at runtime
+    # via importlib.resources.
+    "assets/icons/*",
 ]
 # Bundle the journal abbreviation table (CC0, used by `lit cite` / the webUI
 # cite endpoint). Without this the wheel drops the CSV (no Python sources in

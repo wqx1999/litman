@@ -84,7 +84,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx
 Then run the one-shot setup wizard:
 
 ```bash
-lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync
+lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync → desktop shortcut
 ```
 
 Re-run the install command any time to upgrade.
@@ -138,8 +138,13 @@ delete that directory by hand if you also want the data gone.
 ## Quick start
 
 ```bash
-lit gui   # open the web UI — browse, read, annotate, tag, and link papers
+lit gui             # open the web UI — browse, read, annotate, tag, and link papers
+lit gui --window    # same, in a standalone app window (no address bar)
 ```
+
+`lit gui` opens your browser automatically (`--no-browser` to skip; on headless
+boxes it prints the URL and an SSH tunnel line instead). For a double-click
+desktop entry, run `lit gui --make-shortcut` once.
 
 That's it — `lit setup` already created your vault. The web UI handles everyday
 browsing, reading, and annotation; for anything more (adding papers, taxonomy

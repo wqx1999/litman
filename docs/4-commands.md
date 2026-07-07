@@ -56,11 +56,11 @@ on Windows.
 
 ### `lit setup`
 
-Interactive first-run wizard. Chains four optional steps behind simple prompts:
+Interactive first-run wizard. Chains five optional steps behind simple prompts:
 (1) shell tab-completion, (2) agent skill install, (3) create your first vault,
-(4) cloud sync. Each step just runs the matching standalone command, so anything
-the wizard does you can also do or redo directly. TTY-only; for scripted
-onboarding call the individual commands.
+(4) cloud sync, (5) desktop shortcut. Each step just runs the matching
+standalone command, so anything the wizard does you can also do or redo
+directly. TTY-only; for scripted onboarding call the individual commands.
 
 ```
 lit setup
@@ -704,19 +704,25 @@ See [3-concepts.md](3-concepts.md) §1.4 for what each config field controls.
 
 Launch the litman Web UI — a localhost browser app for browsing, reading PDFs,
 annotating, and everyday curation. It serves the active vault and binds
-`127.0.0.1` only; on HPC it prints a ready-to-paste `ssh -L` tunnel line so you
-can open the printed URL in your local browser. If the default port is busy it
-walks upward to the next free one (Jupyter-style) and prints the port it landed
-on.
+`127.0.0.1` only. When your session has a display, the UI also opens in your
+browser automatically; on a headless box (HPC) it never tries — it prints a
+ready-to-paste `ssh -L` tunnel line so you can open the printed URL in your
+local browser. If the default port is busy it walks upward to the next free
+one (Jupyter-style) and prints the port it landed on.
 
 ```
 lit gui
 lit gui --port 9000
+lit gui --window           # standalone app window (Chrome/Edge, no address bar)
+lit gui --make-shortcut    # create a desktop shortcut, then exit
 ```
 
 | Flag | What it does |
 |---|---|
 | `--port <n>` | Port to bind. Default `8765`; auto-increments if busy. |
+| `--no-browser` | Don't open a browser automatically. |
+| `--window` | Open in a Chrome/Edge/Chromium app window (no address bar) instead of a browser tab. Falls back to a normal tab if none is installed. |
+| `--make-shortcut` | Create a desktop shortcut — applications menu (Linux), Start Menu (Windows), `~/Applications` (macOS) — that runs `lit gui --window`, then exit without starting the server. Re-running refreshes it. |
 
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server

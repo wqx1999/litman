@@ -77,7 +77,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx
 然后运行一次性安装向导：
 
 ```bash
-lit setup   # 交互式向导：shell 补全 → Claude Code skill → vault 设置 →（可选）云同步
+lit setup   # 交互式向导：shell 补全 → Claude Code skill → vault 设置 →（可选）云同步 → 桌面快捷方式
 ```
 
 任何时候重跑安装命令即可升级。
@@ -127,8 +127,12 @@ rm -rf path/to/litman   # 你 git clone 的那个目录
 ## 快速上手
 
 ```bash
-lit gui   # 打开 Web UI —— 浏览、阅读、批注、打标签、链接项目
+lit gui             # 打开 Web UI —— 浏览、阅读、批注、打标签、链接项目
+lit gui --window    # 同上，但开成独立应用窗口（无地址栏）
 ```
+
+`lit gui` 会自动打开浏览器（`--no-browser` 可关；无图形界面的机器上只打印
+URL 和 SSH 隧道命令）。想要双击图标启动，跑一次 `lit gui --make-shortcut`。
 
 就这样——`lit setup` 已经帮你建好了 vault。Web UI 覆盖日常的浏览、阅读、批注；
 更多操作（添加论文、编辑 taxonomy、链接项目）用自然语言问你的 Claude Code agent，

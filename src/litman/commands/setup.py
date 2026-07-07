@@ -1,10 +1,11 @@
 """``lit setup`` — interactive first-run onboarding wizard (M27).
 
-A pure orchestrator: it chains the four standalone onboarding commands
-(install-completion / install-skill / init / sync setup) behind a single
-"press a few enters" TTY flow. It implements NO new functionality — every
-step delegates to the existing command via ``ctx.invoke``, so the wizard
-and the standalone commands can never drift.
+A pure orchestrator: it chains the five standalone onboarding commands
+(install-completion / install-skill / init / sync setup / gui
+--make-shortcut) behind a single "press a few enters" TTY flow. It
+implements NO new functionality — every step delegates to the existing
+command via ``ctx.invoke``, so the wizard and the standalone commands can
+never drift.
 
 Only runs interactively (invariant #5: the CLI is fully usable without the
 wizard; ADR-007: agents/automation take the non-TTY path via the standalone
@@ -23,6 +24,7 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
+from litman.commands.gui import display_available, gui_cmd, shortcut_path
 from litman.commands.init import init_cmd
 from litman.commands.install_completion import (
     SUPPORTED_SHELLS,
@@ -56,16 +58,18 @@ def _stdin_is_tty() -> bool:
 def setup_cmd(ctx: click.Context) -> None:
     """Interactive first-run onboarding wizard.
 
-    Chains four optional steps behind simple prompts:
+    Chains five optional steps behind simple prompts:
       1. shell tab-completion    (default: yes)
       2. agent skill             (default: Claude Code)
       3. create your first vault (default: yes, if you have none)
       4. cloud sync              (default: no)
+      5. desktop shortcut        (default: yes, if the session has a display)
 
     Every step just runs the matching standalone command, so anything the
     wizard does you can also do or redo directly: lit install-completion,
-    lit install-skill, lit init, lit sync setup. Automation should call
-    those directly — this wizard only runs in an interactive terminal.
+    lit install-skill, lit init, lit sync setup, lit gui --make-shortcut.
+    Automation should call those directly — this wizard only runs in an
+    interactive terminal.
     """
     if not _stdin_is_tty():
         raise LitmanError(
@@ -75,16 +79,18 @@ def setup_cmd(ctx: click.Context) -> None:
             "  lit install-completion <shell>\n"
             "  lit install-skill\n"
             "  lit init <parent-dir>\n"
-            "  lit sync setup"
+            "  lit sync setup\n"
+            "  lit gui --make-shortcut"
         )
 
     console.print(
         Panel.fit(
-            "This wizard chains four optional steps:\n"
+            "This wizard chains five optional steps:\n"
             "  1. shell tab-completion\n"
             "  2. agent skill (Claude Code)\n"
             "  3. create your first vault\n"
-            "  4. cloud sync\n\n"
+            "  4. cloud sync\n"
+            "  5. desktop shortcut\n\n"
             "[dim]Press Enter to accept each [default]. Ctrl-C to bail.[/]",
             title="lit setup",
             border_style="cyan",
@@ -98,6 +104,7 @@ def setup_cmd(ctx: click.Context) -> None:
     _step_skill(ctx, did, skipped)
     _step_vault(ctx, did, skipped)
     _step_sync(ctx, did, skipped)
+    _step_shortcut(ctx, did, skipped)
 
     _print_summary(did, skipped)
 
@@ -105,7 +112,7 @@ def setup_cmd(ctx: click.Context) -> None:
 def _step_completion(
     ctx: click.Context, did: list[str], skipped: list[str]
 ) -> None:
-    console.rule("[bold]Step 1/4 — shell completion")
+    console.rule("[bold]Step 1/5 — shell completion")
     shell = detect_shell()
     if shell is None:
         console.print(
@@ -131,7 +138,7 @@ def _step_completion(
 def _step_skill(
     ctx: click.Context, did: list[str], skipped: list[str]
 ) -> None:
-    console.rule("[bold]Step 2/4 — agent skill")
+    console.rule("[bold]Step 2/5 — agent skill")
 
     # Re-run idempotency: install_skill_cmd defaults to force=False and the
     # underlying install_all_skills raises SkillInstallError on the first
@@ -198,7 +205,7 @@ def _step_skill(
 def _step_vault(
     ctx: click.Context, did: list[str], skipped: list[str]
 ) -> None:
-    console.rule("[bold]Step 3/4 — create a vault")
+    console.rule("[bold]Step 3/5 — create a vault")
     reg = load_registry()
 
     if not reg.vaults:
@@ -271,7 +278,7 @@ def _prompt_vault_name(reg, default: str) -> str:
 def _step_sync(
     ctx: click.Context, did: list[str], skipped: list[str]
 ) -> None:
-    console.rule("[bold]Step 4/4 — cloud sync")
+    console.rule("[bold]Step 4/5 — cloud sync")
     if shutil.which("rclone") is None:
         console.print(
             "[yellow]rclone not found on PATH.[/] Install it "
@@ -303,6 +310,35 @@ def _step_sync(
         skipped.append("sync (declined)")
 
 
+def _step_shortcut(
+    ctx: click.Context, did: list[str], skipped: list[str]
+) -> None:
+    console.rule("[bold]Step 5/5 — desktop shortcut")
+    target = shortcut_path()
+    if target.exists():
+        console.print(
+            f"[dim]Desktop shortcut already exists ({target}); skipping. "
+            "Re-create anytime: [bold]lit gui --make-shortcut[/][/]"
+        )
+        skipped.append("shortcut (already exists)")
+        return
+    if not display_available():
+        console.print(
+            "[dim]No graphical display in this session; skipping. Run "
+            "[bold]lit gui --make-shortcut[/] from a desktop session.[/]"
+        )
+        skipped.append("shortcut (headless session)")
+        return
+    if click.confirm(
+        "Create a desktop shortcut? (runs: lit gui --make-shortcut)",
+        default=True,
+    ):
+        ctx.invoke(gui_cmd, make_shortcut=True)
+        did.append("desktop shortcut")
+    else:
+        skipped.append("shortcut (declined)")
+
+
 def _print_summary(did: list[str], skipped: list[str]) -> None:
     lines = ["[bold green]Setup complete.[/]", ""]
     if did:
@@ -317,7 +353,8 @@ def _print_summary(did: list[str], skipped: list[str]) -> None:
         "(or open the interface with lit gui).",
         "",
         "[dim]Re-run any step directly anytime: lit install-completion / "
-        "lit install-skill / lit init / lit sync setup.[/]",
+        "lit install-skill / lit init / lit sync setup / "
+        "lit gui --make-shortcut.[/]",
     ]
     console.print(
         Panel.fit("\n".join(lines), title="lit setup", border_style="green")

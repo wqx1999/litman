@@ -64,6 +64,27 @@ def pretend_no_skills_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def pin_step5_to_auto_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin step 5 (desktop shortcut) to its no-prompt auto-skip branch.
+
+    The step probes machine-global state — an existing shortcut under
+    XDG_DATA_HOME / APPDATA and the DISPLAY env — so on a workstation with a
+    display (or a shortcut already created) it would consume an extra scripted
+    ``input`` answer and silently break every pre-existing test here. Step-5
+    tests override these two attributes explicitly.
+    """
+    monkeypatch.setattr(
+        "litman.commands.setup.shortcut_path",
+        lambda: tmp_path / "pin-step5" / "litman.desktop",
+    )
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: False
+    )
+
+
 def _force_tty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "litman.commands.setup._stdin_is_tty", lambda: True
@@ -96,6 +117,7 @@ def test_setup_non_tty_errors() -> None:
         "install-skill",
         "init",
         "sync setup",
+        "gui --make-shortcut",
     ):
         assert cmd in out
 
@@ -408,3 +430,91 @@ def _make_recording_stub(calls: list[dict]):
         calls.append(dict(kwargs))
 
     return _stub
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — desktop shortcut (task-gui-desktop-entry D4)
+# ---------------------------------------------------------------------------
+
+
+def test_setup_step5_skips_when_shortcut_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    existing = tmp_path / "apps" / "litman.desktop"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("[Desktop Entry]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "litman.commands.setup.shortcut_path", lambda: existing
+    )
+    # Display present: proves the exists-probe short-circuits BEFORE any
+    # prompt (input script carries no 5th answer).
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "already exists" in result.output
+    assert "shortcut (already exists)" in result.output
+
+
+def test_setup_step5_headless_skips_without_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    # autouse pin: no existing shortcut + display_available -> False.
+    # Input carries no 5th answer — a prompt would exhaust it and abort.
+    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "shortcut (headless session)" in result.output
+
+
+def test_setup_step5_prompt_names_underlying_command_and_declines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\nn\n")
+    assert result.exit_code == 0, result.output
+    # Wizard prompts must surface the underlying command.
+    assert "lit gui --make-shortcut" in result.output
+    assert "shortcut (declined)" in result.output
+
+
+def test_setup_step5_accept_creates_shortcut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_tty(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    # One which-stub serves both steps: no rclone (step 4 auto-skips) and a
+    # deterministic `lit` path for the shortcut's Exec line.
+    monkeypatch.setattr(
+        "litman.commands.setup.shutil.which",
+        lambda name: "/opt/lit/bin/lit" if name == "lit" else None,
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    dest = tmp_path / "xdg" / "applications" / "litman.desktop"
+    monkeypatch.setattr(
+        "litman.commands.setup.shortcut_path", lambda: dest
+    )
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\ny\n")
+    assert result.exit_code == 0, result.output
+    assert dest.is_file()
+    assert '"/opt/lit/bin/lit" gui --window' in dest.read_text(
+        encoding="utf-8"
+    )
+    assert "desktop shortcut" in result.output
