@@ -180,10 +180,10 @@ def find_vault(explicit: Path | None = None) -> Path:
             return parent
 
     raise LibraryNotFoundError(
-        "No vault found. Run `lit init <parent-dir>` to create one (it "
-        "registers automatically), or `lit vault add <name> <path>` to "
-        "register an existing vault. Advanced: set $LIT_LIBRARY or pass "
-        "--library <vault-path>."
+        "No vault found. New to litman? Run `lit setup`. Or create a vault "
+        "directly with `lit init <parent-dir>` (it registers automatically), "
+        "or `lit vault add <name> <path>` to register an existing vault. "
+        "Advanced: set $LIT_LIBRARY or pass --library <vault-path>."
     )
 
 

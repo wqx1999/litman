@@ -561,6 +561,8 @@ class LitGroup(click.Group):
 def cli() -> None:
     """litman — local-first, AI-augmented literature management CLI.
 
+    New here? Run lit setup.
+
     Run lit help COMMAND (or lit COMMAND --help) for command-specific
     help, e.g. lit help code add.
     """

@@ -313,6 +313,9 @@ def _print_summary(did: list[str], skipped: list[str]) -> None:
         lines += [f"  [dim]•[/] {x}" for x in skipped]
     lines += [
         "",
+        "[bold]Next:[/] add your first paper — lit add <pdf> --doi <doi> "
+        "(or open the interface with lit gui).",
+        "",
         "[dim]Re-run any step directly anytime: lit install-completion / "
         "lit install-skill / lit init / lit sync setup.[/]",
     ]
