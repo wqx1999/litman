@@ -260,6 +260,12 @@ export default function App() {
   // but over the WHOLE library (a global quick-jump), not just the current
   // smart-list — so we keep the full INDEX separate from the list-mode `papers`.
   const [allPapers, setAllPapers] = useState<IndexPaper[]>([])
+  // Whether the full INDEX has been fetched successfully at least once. Gates
+  // the vault-empty distinction (an unfetched or failed [] must never read as
+  // "your vault is empty" — that state belongs only to a confirmed 0-paper
+  // INDEX). Stays true across vault switches: reloadForVault re-fetches without
+  // clearing, so allPapers is always a real (possibly stale-for-a-tick) INDEX.
+  const [allLoaded, setAllLoaded] = useState(false)
   // notes/discussion hits from /api/search (debounced, async). The token guards
   // against an earlier slower response overwriting a newer one.
   const [serverHits, setServerHits] = useState<SearchHit[]>([])
@@ -472,7 +478,10 @@ export default function App() {
     // effects above; docMtimesRef (never rendered) is seeded here directly. The
     // full INDEX (no view) also backs global id/title matching + wikilink lookup.
     void Promise.all([
-      fetchPapers().then(setAllPapers),
+      fetchPapers().then((ps) => {
+        setAllPapers(ps)
+        setAllLoaded(true)
+      }),
       fetchTaxonomy().then(setTaxonomy),
       fetchProjects().then(setProjects),
       loadTrash(),
@@ -547,6 +556,11 @@ export default function App() {
     return papers.filter((p) => (p.projects || []).includes(projectScope))
   }, [papers, projectScope])
 
+  // A truly empty vault: the full INDEX was fetched and holds zero papers.
+  // Distinct from "the current view/filters match nothing" — BrowsePanel shows
+  // a getting-started card for the former and a plain no-match line otherwise.
+  const vaultEmpty = allLoaded && allPapers.length === 0
+
   // Multi-dimensional filter: cross-dimension AND, within-dimension OR.
   const visible = useMemo(() => {
     let out = scoped
@@ -617,7 +631,10 @@ export default function App() {
         .catch(() => setCockpitPaper(null))
     }
     loadList(listMode)
-    fetchPapers().then(setAllPapers)
+    fetchPapers().then((ps) => {
+      setAllPapers(ps)
+      setAllLoaded(true)
+    })
   }, [selectedId, loadList, listMode])
 
   // After a write that changes the shared vocabulary (a new taxonomy value, a
@@ -691,6 +708,7 @@ export default function App() {
       // Commit through the same setters the rest of the app uses (the mirror
       // effects advance the diff refs from here); docMtimesRef is ref-only.
       setAllPapers(freshAll)
+      setAllLoaded(true)
       setPapers(freshList)
       setTaxonomy(freshTax)
       setProjects(freshProjects)
@@ -1085,7 +1103,10 @@ export default function App() {
     fetchProjects().then(setProjects)
     fetchTaxonomy().then(setTaxonomy)
     fetchFixedEnums().then(setFixedEnums)
-    fetchPapers().then(setAllPapers)
+    fetchPapers().then((ps) => {
+      setAllPapers(ps)
+      setAllLoaded(true)
+    })
     loadList(listMode)
     loadTrash()
   }, [loadList, listMode, loadTrash])
@@ -1342,6 +1363,7 @@ export default function App() {
             <BrowsePanel
               scoped={scoped}
               visible={visible}
+              vaultEmpty={vaultEmpty}
               loading={loadingList}
               projects={projectNames}
               projectScope={projectScope}

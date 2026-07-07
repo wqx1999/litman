@@ -35,6 +35,9 @@ interface Props {
   scoped: IndexPaper[]
   /** Papers to render in the list (all filters applied in App). */
   visible: IndexPaper[]
+  /** True vault-empty (full INDEX fetched, zero papers) — renders the
+   * getting-started card instead of the plain no-match empty state. */
+  vaultEmpty: boolean
   loading: boolean
   projects: string[]
   projectScope: string | null
@@ -147,6 +150,7 @@ function orderedEntries(
 export default function BrowsePanel({
   scoped,
   visible,
+  vaultEmpty,
   loading,
   projects,
   projectScope,
@@ -476,8 +480,28 @@ export default function BrowsePanel({
         {/* Paper list */}
         <div className="min-h-0 flex-1 overflow-auto bg-white py-1">
           {loading && <div className="p-3 text-sm text-stone-500">Loading…</div>}
-          {!loading && visible.length === 0 && (
-            <div className="p-3 text-sm text-stone-400">No papers.</div>
+          {/* Two empty states: a truly empty vault gets a getting-started card
+           * (the GUI has no add flow — point at the terminal / the agent, and
+           * surface add's move semantics); everything else (filters, search,
+           * smart-list, project scope matching nothing) stays a short no-match
+           * line. Mirrors the CLI's own empty-vault guidance in list.py. */}
+          {!loading && visible.length === 0 && !vaultEmpty && (
+            <div className="p-3 text-sm text-stone-400">No papers match.</div>
+          )}
+          {!loading && vaultEmpty && (
+            <div className="mx-2 my-3 rounded-xl bg-stone-100/80 p-4 text-sm text-stone-500 ring-1 ring-stone-200/80">
+              <div className="mb-2 font-medium text-stone-700">
+                No papers in your vault yet.
+              </div>
+              <div>Add your first paper from the terminal:</div>
+              <div className="my-2 w-fit rounded-lg bg-stone-200/70 px-2.5 py-1.5 font-mono text-xs text-stone-700">
+                lit add &lt;pdf&gt; --doi &lt;doi&gt;
+              </div>
+              <div>…or ask your coding agent to add it for you.</div>
+              <div className="mt-2.5 text-xs text-stone-400">
+                add moves the source PDF into the vault.
+              </div>
+            </div>
           )}
           {visible.map((p) => {
             const selected = p.id === selectedId
