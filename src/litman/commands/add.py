@@ -60,6 +60,29 @@ _yaml = ThreadLocalYAML(
     preserve_quotes=True,
 )
 
+# PDF magic number. A valid PDF opens with "%PDF-"; readers tolerate a little
+# junk before it, so sniff the first block rather than demanding offset 0.
+_PDF_MAGIC = b"%PDF-"
+_PDF_SNIFF_BYTES = 1024
+
+
+def _looks_like_pdf(path: Path) -> bool:
+    """True if the file carries the PDF magic number in its first block.
+
+    `lit add` copies the PDF into the vault and then unlinks the source (mv
+    semantics), so ingesting a non-PDF — a renamed .txt, a truncated download,
+    an HTML error page saved as .pdf — would land junk in the vault AND remove
+    the only copy of the source. This guard runs before any vault write so the
+    source stays put on rejection. An unreadable file counts as "not a PDF";
+    the caller turns a False into a friendly error.
+    """
+    try:
+        with path.open("rb") as f:
+            head = f.read(_PDF_SNIFF_BYTES)
+    except OSError:
+        return False
+    return _PDF_MAGIC in head
+
 
 def _build_metadata(
     parsed: dict[str, Any],
@@ -310,6 +333,16 @@ def add_cmd(
         raise AddError(
             "Provide exactly one of --doi <doi> or --from-llm-json <path>. "
             "These flags are mutually exclusive."
+        )
+
+    # Validate the file is a PDF before any network fetch or vault write. Both
+    # ingest paths (--doi / --from-llm-json) pass through here, and the source
+    # is unlinked on success, so a non-PDF must fail while the source is still
+    # untouched — never after the vault has been written or the source removed.
+    if not _looks_like_pdf(pdf_path):
+        raise AddError(
+            f"{str(pdf_path)!r} does not look like a PDF (missing the %PDF- "
+            "header). Pass the paper's PDF file."
         )
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))

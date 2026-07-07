@@ -657,6 +657,40 @@ def test_add_nonexistent_pdf_rejected_by_click(
     assert "doi" not in mock_crossref
 
 
+def test_add_rejects_non_pdf_before_touching_vault(
+    vault: Path,
+    mock_crossref: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    """A renamed .txt (no %PDF- header) is refused before any fetch or vault
+    write, and the source file survives (D4).
+
+    Guards mv semantics: `lit add` unlinks the source on success, so a non-PDF
+    must fail while the source is still the user's only copy.
+    """
+    not_pdf = tmp_path / "not-really.pdf"
+    not_pdf.write_text("This is a plain text file, not a PDF.\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(not_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, AddError)
+    assert "does not look like a PDF" in str(result.exception)
+    # Validation runs before the CrossRef fetch — no network call happened.
+    assert "doi" not in mock_crossref
+    # Source untouched; nothing written into the vault.
+    assert not_pdf.exists()
+    assert not (vault / "papers" / _PAPER_ID).exists()
+    assert list((vault / "papers").iterdir()) == []
+
+
 def test_add_missing_year_raises_id_error(
     vault: Path,
     fake_pdf: Path,
