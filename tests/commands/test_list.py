@@ -666,3 +666,75 @@ def test_list_limit_json_unaffected_by_title_fix(vault: Path) -> None:
     result = _invoke(vault, "--year", "2024", "--limit", "1", "--format", "json")
     payload = json.loads(result.output)
     assert len(payload) == 1
+
+
+# ---------------------------------------------------------------------------
+# D7: interactive-TTY row cap for the default (id) sort
+# ---------------------------------------------------------------------------
+
+
+def _seed_n_papers(vault: Path, n: int) -> None:
+    """Seed n papers with zero-padded, id-sortable names 2000_A_0001..000n."""
+    for i in range(1, n + 1):
+        _seed_paper(
+            vault, f"2000_A_{i:04d}",
+            year=2000, type="research", status="inbox", priority="B",
+            title=f"Paper number {i}",
+        )
+
+
+def test_list_tty_cap_default_sort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default (id) sort on an interactive TTY caps the table at 30 rows, with a
+    title + caption pointing at --limit / --format json for the rest."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: True)
+    result = _invoke(v)
+    assert result.exit_code == 0
+    assert "showing 30 of 35" in result.output
+    assert "--format json" in result.output  # caption hint
+    # id-asc order: the first paper shows; rows 31-35 are cut.
+    assert "2000_A_0001" in result.output
+    assert "2000_A_0035" not in result.output
+
+
+def test_list_no_tty_cap_when_piped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red line: non-TTY (piped / agent / redirected) output is never capped."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: False)
+    result = _invoke(v)
+    assert result.exit_code == 0
+    assert "showing 30 of 35" not in result.output
+    assert "Papers (35 of 35)" in result.output
+    assert "2000_A_0035" in result.output
+
+
+def test_list_json_never_capped_on_tty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red line: --format json returns the full list even on a TTY."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: True)
+    result = _invoke(v, "--format", "json")
+    payload = json.loads(result.output)
+    assert len(payload) == 35
+
+
+def test_list_explicit_limit_overrides_tty_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red line: an explicit --limit is the user's own bound and disables the
+    30-row TTY cap (--limit 40 shows all 35)."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: True)
+    result = _invoke(v, "--limit", "40")
+    assert result.exit_code == 0
+    assert "showing 30 of 35" not in result.output
+    assert "2000_A_0035" in result.output

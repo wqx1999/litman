@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,22 @@ _TITLE_MAX = 60
 # implies top-N — printing hundreds of rows defeats the intent. JSON output
 # is NOT capped so agent retrieval still gets the full ranked list.
 _RECENT_TABLE_CAP = 10
+
+# Row cap for the DEFAULT (id) sort in the table view, applied ONLY on an
+# interactive terminal so a large vault does not scroll off-screen. Piped /
+# redirected output (non-TTY = agent, `| less`, `> file`) and --format json
+# stay full-length, so agent-visible behavior is unchanged.
+_TTY_TABLE_CAP = 30
+
+
+def _stdout_isatty() -> bool:
+    """Whether stdout is an interactive terminal.
+
+    Wrapped in a function so tests can force the value; the table row cap keys
+    off it, and the guarantee is that piped / redirected output is never
+    truncated (only the human-facing terminal view is).
+    """
+    return sys.stdout.isatty()
 
 
 def _format_cell(value: Any) -> str:
@@ -289,17 +306,31 @@ def list_cmd(
             )
         return
 
-    # Table display only: with --sort recent and NO explicit --limit, cap the
-    # visible rows at _RECENT_TABLE_CAP so the terminal isn't flooded (the JSON
-    # branch already returned full-length above). An explicit --limit is the
-    # user's own bound and takes precedence — never silently shrink it to the
-    # cap, and never label the title with the cap when --limit set the count.
+    # Table display caps (the JSON branch already returned full-length above).
+    # Both are suppressed by an explicit --limit (the user's own bound) — never
+    # silently shrink it to a cap, and never label the title with a cap when
+    # --limit set the count.
+    #   - --sort recent → top-N "most engaged" (_RECENT_TABLE_CAP), any output.
+    #   - default (id) sort on an interactive TTY → cap at _TTY_TABLE_CAP so a
+    #     300-paper vault doesn't flood the terminal. Non-TTY (piped / agent /
+    #     redirected) stays full-length, so agent-visible behavior is unchanged.
+    caption: str | None = None
     recent_capped = (
         sort_by == "recent" and limit is None and n_matched > _RECENT_TABLE_CAP
+    )
+    tty_capped = (
+        not recent_capped
+        and limit is None
+        and n_matched > _TTY_TABLE_CAP
+        and _stdout_isatty()
     )
     if recent_capped:
         filtered = filtered[:_RECENT_TABLE_CAP]
         title = f"Papers (recent {_RECENT_TABLE_CAP} of {n_matched})"
+    elif tty_capped:
+        filtered = filtered[:_TTY_TABLE_CAP]
+        title = f"Papers (showing {_TTY_TABLE_CAP} of {n_matched})"
+        caption = "--limit N or --format json to see all"
     elif limit is not None and limit < n_matched:
         # --limit cut the result short: distinguish shown count from the true
         # match count so the "1" of `--limit 1` never masquerades as the match.
@@ -307,7 +338,7 @@ def list_cmd(
     else:
         title = f"Papers ({n_matched} of {len(all_papers)})"
 
-    table = Table(title=title, show_lines=False)
+    table = Table(title=title, caption=caption, show_lines=False)
     table.add_column("id", style="cyan", no_wrap=True)
     table.add_column("year", justify="right")
     table.add_column("type")
