@@ -79,8 +79,6 @@ Non-negotiable. Violating any of these corrupts the library or its trust model.
 5. **Figure/table questions need a multimodal backend.** A text-only model falls
    back to pypdf text extraction and cannot see figures or image-based tables.
 
-(The full 16-invariant list lives in the repo's `dev_docs/invariants.md`.)
-
 ## The vault at a glance
 
 ```
