@@ -19,7 +19,7 @@ rendering, friendly error wording).
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from litman.core.vault_registry import (
     find_active,
     find_by_name,
     load_registry,
+    mark_health_checked,
     remove_vault,
     save_registry,
 )
@@ -199,6 +200,15 @@ def vault_add_cmd(
         imported_from=imported_from,
         imported_at=imported_at,
         set_active=set_active_flag,
+    )
+    # Mirror `lit init` (review F17): the dir was validated as a real vault
+    # above, so start its health-check staleness clock now. Otherwise
+    # last_health_check_at=None reads as "never checked == stale" and the
+    # post-command nudge fires on the very first command after registering.
+    updated = mark_health_checked(
+        updated,
+        name,
+        datetime.now(timezone.utc).isoformat(),
     )
     save_registry(updated)
 
