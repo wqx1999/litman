@@ -116,6 +116,10 @@ export interface VaultEntry {
 
 export interface VaultsPayload {
   active: string | null
+  /** The vault this server is actually bound to, or null when it started with no
+   * vault (welcome-page mode). Distinct from `active` (the registry's active
+   * name): the frontend keys the welcome page off this, not `active`. */
+  served: string | null
   vaults: VaultEntry[]
 }
 

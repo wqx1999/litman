@@ -42,6 +42,7 @@ import type {
   VaultsPayload,
 } from './types'
 import TopBar from './topbar/TopBar'
+import WelcomePage from './welcome/WelcomePage'
 import TrashView from './trash/TrashView'
 import SwitchVaultDialog from './topbar/SwitchVaultDialog'
 import BrowsePanel from './nav/BrowsePanel'
@@ -237,6 +238,11 @@ function isNetworkError(err: unknown): boolean {
 
 export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
+  // The vault this server is serving: `undefined` = not yet known (pre-bootstrap),
+  // `null` = none (render the welcome page), a string = a real vault (render the
+  // normal three-column view). Gates the mount seed + list load so a no-vault
+  // server never fires a storm of 409s behind the welcome page.
+  const [served, setServed] = useState<string | null | undefined>(undefined)
   // The newer litman version on PyPI (null = up to date / unknown). Read once on
   // mount from the server's update-check cache; drives the TopBar update dot.
   const [updateLatest, setUpdateLatest] = useState<string | null>(null)
@@ -489,12 +495,29 @@ export default function App() {
       .finally(() => setTrashLoading(false))
   }, [])
 
-  useEffect(() => {
-    fetchVaults()
-      .then(setVaults)
+  // Bootstrap: learn which vault (if any) the server is serving. This runs
+  // BEFORE the heavy seed below so a no-vault server renders the welcome page
+  // instead of firing a storm of 409s. Re-run by the welcome page after it
+  // creates or opens a vault (which flips `served` and mounts the normal view).
+  const bootstrap = useCallback(() => {
+    return fetchVaults()
+      .then((v) => {
+        setVaults(v)
+        setServed(v.served)
+      })
       .catch((err) => {
         if (isNetworkError(err)) setDisconnected(true)
       })
+  }, [])
+
+  useEffect(() => {
+    void bootstrap()
+  }, [bootstrap])
+
+  useEffect(() => {
+    // Only seed once a real vault is being served: `undefined` = still
+    // bootstrapping, `null` = welcome page (no vault to seed from).
+    if (!served) return
     fetchFixedEnums()
       .then(setFixedEnums)
       .catch((err) => {
@@ -536,11 +559,12 @@ export default function App() {
         // failure additionally raises the disconnected banner.
         if (isNetworkError(err)) setDisconnected(true)
       })
-  }, [loadTrash])
+  }, [served, loadTrash])
 
   useEffect(() => {
+    if (!served) return
     loadList(listMode)
-  }, [listMode, loadList])
+  }, [served, listMode, loadList])
 
   // Debounced notes/discussion search. id/title match instantly off allPapers
   // (no network); only the markdown scopes need the server. An empty query
@@ -1389,6 +1413,15 @@ export default function App() {
     cockpit: shortcutCockpit,
     notify,
   })
+
+  // Welcome page: no vault to serve (fresh install, or the active registry entry
+  // moved). Rendered in place of the whole three-column view; creating or opening
+  // a vault re-runs bootstrap, which flips `served` and mounts the normal view.
+  // (All hooks above run unconditionally — this branch only gates rendering.)
+  if (served === undefined) return null // pre-bootstrap; sub-100ms on localhost
+  if (served === null) {
+    return <WelcomePage vaults={vaults} onEnter={() => void bootstrap()} />
+  }
 
   return (
     // `relative` anchors the focus-mode TopBar, which detaches to `absolute`

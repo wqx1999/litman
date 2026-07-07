@@ -724,6 +724,11 @@ lit gui --make-shortcut    # create a desktop shortcut, then exit
 | `--window` | Open in a Chrome/Edge/Chromium app window (no address bar) instead of a browser tab. Falls back to a normal tab if none is installed. |
 | `--make-shortcut` | Create a desktop shortcut — applications menu (Linux), Start Menu (Windows), `~/Applications` (macOS) — that runs `lit gui --window`, then exit without starting the server. Re-running refreshes it. |
 
+On a fresh install with no vault yet, `lit gui` still starts and shows a welcome
+page that creates your first library right in the browser — no terminal step. It
+also appears if the active vault's folder has moved, letting you create a new
+library or open a registered one.
+
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server
 (fastapi + uvicorn) ships as a core dependency; a corrupted install missing it

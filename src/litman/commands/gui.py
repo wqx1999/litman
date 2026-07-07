@@ -37,7 +37,7 @@ import click
 from rich.console import Console
 
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.exceptions import LitmanError
+from litman.exceptions import LibraryNotFoundError, LitmanError
 
 console = Console()
 
@@ -351,17 +351,33 @@ def gui_cmd(
 
     from litman.server import create_app
 
-    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    # No vault to serve → start in welcome-page mode (vault=None) so a fresh
+    # install can create a library from the browser (task-gui-welcome). But an
+    # explicit --library / --vault that fails to resolve is a real mistake the
+    # user should see, so re-raise it rather than silently dropping to welcome.
+    explicit = resolve_library_or_vault(library, vault_name)
+    try:
+        vault: Path | None = find_vault(explicit)
+    except LibraryNotFoundError:
+        if explicit is not None:
+            raise
+        vault = None
 
     actual_port = _find_free_port(port if port is not None else _DEFAULT_PORT)
     user = getpass.getuser()
     host = socket.gethostname()
     url = f"http://127.0.0.1:{actual_port}"
 
-    console.print(
-        f"[green]litman webUI[/] serving vault [bold]{vault}[/] "
-        f"on [bold]{url}[/]"
-    )
+    if vault is not None:
+        console.print(
+            f"[green]litman webUI[/] serving vault [bold]{vault}[/] "
+            f"on [bold]{url}[/]"
+        )
+    else:
+        console.print(
+            f"[green]litman webUI[/] on [bold]{url}[/]\n"
+            "[dim]No vault yet — open the URL to create your library.[/]"
+        )
     console.print(
         "[dim]SSH tunnel (run on your local machine):[/]\n"
         f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"

@@ -17,8 +17,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from litman.server.routes_agent import router as agent_router
@@ -30,6 +30,21 @@ from litman.server.routes_write import router as write_router
 # The vendored SPA build lands here once `frontend/build.sh` has run; it does
 # not exist until Phase 1, so the factory guards on its presence.
 _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
+
+# API endpoints that must work with NO active vault, so a freshly installed user
+# who runs `lit gui` before creating a library lands on the welcome page and can
+# create or open one from there (task-gui-welcome). Everything else under
+# ``/api/`` returns 409 until a vault is served — the SPA + its assets (served
+# off ``/``) always pass, so the welcome page itself loads.
+_NO_VAULT_ALLOWED = frozenset(
+    {
+        ("GET", "/api/vaults"),
+        ("POST", "/api/vaults"),
+        ("POST", "/api/vaults/create"),
+        ("PUT", "/api/vaults/active"),
+        ("GET", "/api/version"),
+    }
+)
 
 
 @asynccontextmanager
@@ -57,15 +72,34 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-def create_app(vault: Path) -> FastAPI:
-    """Build the FastAPI app bound to one vault.
+def create_app(vault: Path | None) -> FastAPI:
+    """Build the FastAPI app bound to one vault (or none yet).
 
     The vault is stashed on ``app.state.vault`` so route handlers reach it via
     ``request.app.state.vault`` rather than hard-coding any path (invariant #3:
     discovery already happened in ``lit gui`` via ``find_vault``).
+
+    ``vault`` is ``None`` when ``lit gui`` found no vault to serve (fresh install,
+    or the active registry entry points at a moved directory). The server still
+    starts so the SPA can render the welcome page; the ``_guard_no_vault``
+    middleware then 409s every vault-dependent route until the welcome flow
+    creates or opens one (which repoints ``app.state.vault`` in place, no restart).
     """
     app = FastAPI(title="litman webUI", version="0", lifespan=_lifespan)
     app.state.vault = vault
+
+    @app.middleware("http")
+    async def _guard_no_vault(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if (
+            request.app.state.vault is None
+            and request.url.path.startswith("/api/")
+            and (request.method, request.url.path) not in _NO_VAULT_ALLOWED
+        ):
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "No active vault yet — create or open one first."},
+            )
+        return await call_next(request)
 
     app.include_router(read_router)
     app.include_router(write_router)

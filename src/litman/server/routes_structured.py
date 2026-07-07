@@ -22,6 +22,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
+from litman.commands.init import apply_init
 from litman.commands.modify import _apply_modify
 from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
@@ -29,6 +30,7 @@ from litman.commands.rm import discover_rm_impact, execute_rm
 from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
+from litman.core.library import DEFAULT_VAULT_NAME
 from litman.core.project_link import (
     LinkError,
     add_project,
@@ -52,6 +54,7 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.exceptions import (
+    LitmanError,
     ModifyError,
     PaperNotFoundError,
     RmError,
@@ -766,6 +769,63 @@ async def post_vault(request: Request) -> dict[str, object]:
     entry = find_by_name(reg, name)
     assert entry is not None  # just added
     return {"ok": True, "name": entry.name, "path": entry.path, "active": entry.is_active}
+
+
+@router.post("/vaults/create")
+async def create_vault_route(request: Request) -> dict[str, object]:
+    """Create a NEW vault directory and register it, via the ``lit init`` backend.
+
+    Body JSON ``{"parent_dir": str, "name"?: str}``. Same core path as
+    ``lit init`` (:func:`litman.commands.init.apply_init`, invariant #16):
+    ``create_vault`` → ``add_vault`` → ``mark_health_checked`` → ``save_registry``.
+    The first vault created becomes active; when it does, the running server is
+    repointed in place (``app.state.vault``) so the GUI slides from the welcome
+    page straight into the new (empty) vault with no restart. This is the one
+    route that repoints a *no-vault* server, so it is whitelisted in the no-vault
+    middleware guard.
+
+    RED LINE: only a filesystem ``parent_dir`` + optional ``name`` are accepted —
+    never a command. ``parent_dir`` is ``expanduser``'d and must be an existing
+    directory (a missing parent is a 400, never a silent multi-level ``mkdir``).
+    Any backend failure (parent missing, target non-empty, name clash) surfaces
+    as a 400 with the core's verbatim message preserved as ``detail``.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    parent_raw = payload.get("parent_dir")
+    if not isinstance(parent_raw, str) or not parent_raw.strip():
+        raise HTTPException(
+            status_code=400, detail="parent_dir must be a non-empty string."
+        )
+    name = payload.get("name")
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise HTTPException(
+            status_code=400, detail="name must be a non-empty string when provided."
+        )
+
+    parent = Path(parent_raw).expanduser()
+    try:
+        vault, entry = apply_init(parent, name or DEFAULT_VAULT_NAME)
+    except LitmanError as exc:
+        # ParentNotFoundError / VaultExistsError / VaultRegistryError all subclass
+        # LitmanError; the core message is already user-facing.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # First vault → active → repoint this server in place so the next request
+    # (the frontend's re-fetch) serves the new vault, no restart.
+    if entry.is_active:
+        request.app.state.vault = vault
+    return {
+        "ok": True,
+        "name": entry.name,
+        "path": str(vault),
+        "active": entry.is_active,
+    }
 
 
 @router.delete("/vaults/{name}")

@@ -440,11 +440,20 @@ def get_projects(request: Request) -> list[dict[str, str]]:
 
 @router.get("/vaults")
 def get_vaults(request: Request) -> dict[str, Any]:
-    """Registry entries plus which one is active (for the switch-vault dropdown)."""
+    """Registry entries plus which one is active (for the switch-vault dropdown).
+
+    ``served`` is the vault this running server is actually bound to, or ``None``
+    when it started with no vault (welcome-page mode). It is distinct from
+    ``active`` (the registry's active *name*): a server can start in no-vault
+    mode even while the registry names an active entry whose path has moved, so
+    the frontend keys the welcome page off ``served``, not ``active``.
+    """
     reg = load_registry()
     active = find_active(reg)
+    served = request.app.state.vault
     return {
         "active": active.name if active else None,
+        "served": str(served) if served is not None else None,
         "vaults": [
             {"name": v.name, "path": v.path, "active": v.is_active}
             for v in reg.vaults

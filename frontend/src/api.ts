@@ -326,6 +326,22 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
   return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
 }
 
+/** Create a NEW vault directory + register it, through the `lit init` backend
+ * (the welcome-page flow). Sends a filesystem `parentDir` + optional `name` only
+ * — never a command (ADR-020). The first vault becomes active and repoints the
+ * running server in place, so the GUI slides from the welcome page into the new
+ * empty vault with no restart. Throws the backend's verbatim message (400) on a
+ * missing parent directory, a non-empty target, or a name clash. */
+export function createVault(
+  parentDir: string,
+  name?: string,
+): Promise<{ ok: boolean; name: string; path: string; active: boolean }> {
+  return mutateJSON('/api/vaults/create', 'POST', {
+    parent_dir: parentDir,
+    ...(name ? { name } : {}),
+  })
+}
+
 /** Switch the active vault through the `lit vault use` backend (3c-2). GLOBAL:
  * sets the registry's active vault (affects `lit` in every terminal without an
  * explicit --library/$LIT_LIBRARY) and repoints the running server in place, no
