@@ -78,3 +78,23 @@ def test_help_command_leaf_rejects_subcommand() -> None:
     result = runner.invoke(cli, ["help", "read", "read"])
     assert result.exit_code != 0
     assert "no subcommands" in result.output.lower()
+
+
+def test_unknown_command_suggests_did_you_mean() -> None:
+    """A mistyped command name gets a did-you-mean hint; the UsageError exit
+    code (2) is unchanged so agent error handling is unaffected (D6)."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["lst"])
+    assert result.exit_code == 2
+    assert "No such command 'lst'" in result.output
+    assert "Did you mean" in result.output
+    assert "list" in result.output
+
+
+def test_unknown_command_no_close_match_omits_hint() -> None:
+    """A command name with no near-miss keeps the plain UsageError message."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["zzzzzzzz"])
+    assert result.exit_code == 2
+    assert "No such command 'zzzzzzzz'" in result.output
+    assert "Did you mean" not in result.output

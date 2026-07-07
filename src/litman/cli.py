@@ -12,6 +12,7 @@ normal Python tracebacks (they indicate bugs, not user errors).
 from __future__ import annotations
 
 import sys
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,27 @@ class LitGroup(click.Group):
             self._emit_staleness_nudge()
             self._emit_update_nudge()
         return result
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Append a did-you-mean hint when a command name is mistyped.
+
+        Click's default raises a bare "No such command 'lst'." UsageError.
+        We augment the message with the closest real command names (difflib)
+        and re-raise the SAME UsageError — exception type and exit code (2)
+        are unchanged, so an agent parsing the failure is unaffected. During
+        resilient parsing (shell completion) Click never raises here, so
+        completion is untouched.
+        """
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError as exc:
+            typed = args[0] if args else ""
+            matches = get_close_matches(typed, self.list_commands(ctx), n=3)
+            if matches and exc.message:
+                exc.message = f"{exc.message} Did you mean: {', '.join(matches)}?"
+            raise
 
     def _run_drift_hook(self) -> None:
         """Tier-1 pre-dispatch drift hook (M28; unified detection M30 Phase 2).

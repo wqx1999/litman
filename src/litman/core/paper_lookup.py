@@ -28,6 +28,7 @@ resolution — the ergonomics shim lives entirely in commands/.
 from __future__ import annotations
 
 import os
+from difflib import get_close_matches
 from pathlib import Path
 
 import click
@@ -78,10 +79,16 @@ def resolve_paper_id(vault: Path, query: str) -> str:
     matches = [pid for pid in all_ids if q_lower in pid.lower()]
 
     if not matches:
-        raise PaperNotFoundError(
-            f"No paper matching {query!r} in vault {vault.name!r}. "
-            "Run `lit list` to see available ids."
-        )
+        # A non-substring typo (e.g. "2020_Vaswni") lands here. Offer the
+        # closest ids as a did-you-mean before falling back to `lit list`.
+        # Message-only: the exception type / exit code are unchanged, so an
+        # agent parsing failures is unaffected.
+        msg = f"No paper matching {query!r} in vault {vault.name!r}. "
+        suggestions = get_close_matches(query, all_ids, n=3)
+        if suggestions:
+            msg += f"Did you mean: {', '.join(suggestions)}? "
+        msg += "Run `lit list` to see available ids."
+        raise PaperNotFoundError(msg)
     if len(matches) == 1:
         return matches[0]
     raise PaperNotFoundError(
