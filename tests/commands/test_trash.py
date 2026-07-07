@@ -346,7 +346,10 @@ def test_trash_empty_already_empty(vault: Path) -> None:
     assert "already empty" in result.output
 
 
-def test_trash_empty_prompt_aborts(vault: Path) -> None:
+def test_trash_empty_prompt_aborts(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _write_paper(vault, "2024_Foo")
     runner = CliRunner()
     runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
@@ -357,6 +360,27 @@ def test_trash_empty_prompt_aborts(vault: Path) -> None:
     assert result.exit_code == 0
     assert "Aborted" in result.output
     # Trash entry still there.
+    trash_root = vault / TRASH_DIRNAME
+    assert any(p.is_dir() for p in trash_root.iterdir())
+
+
+def test_trash_empty_non_tty_without_yes_refused(vault: Path) -> None:
+    """D8: `echo y | lit trash empty` must NOT bypass the confirm.
+
+    A non-tty stdin without --yes is refused without reading stdin, so a
+    stray piped "y" cannot permanently empty the trash. CliRunner's stdin is
+    not a tty, so the piped input reproduces the pipe / CI case exactly.
+    """
+    _write_paper(vault, "2024_Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--library", str(vault)], input="y\n"
+    )
+    assert result.exit_code != 0
+    assert "pass --yes" in result.output
+    # Trash entry still present — nothing was emptied.
     trash_root = vault / TRASH_DIRNAME
     assert any(p.is_dir() for p in trash_root.iterdir())
 

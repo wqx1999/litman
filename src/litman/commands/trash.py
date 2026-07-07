@@ -32,6 +32,7 @@ from litman.core.code import (
     write_repo_meta,
 )
 from litman.core.config import load_config
+from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -380,21 +381,25 @@ def trash_empty_cmd(
         )
         return
 
-    if not skip_confirm:
-        console.print(
-            f"[bold yellow]About to permanently delete[/] "
-            f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'}:"
+    # Route the confirm through the shared _confirm_destructive (same gate
+    # taxonomy/project/rm use): --yes proceeds silently, a non-tty stdin
+    # without --yes is refused WITHOUT reading stdin (so `echo y | lit trash
+    # empty` can no longer bypass the prompt), and an interactive tty renders
+    # the warning block + a default-No prompt.
+    warning_lines = [
+        f"[bold yellow]About to permanently delete[/] "
+        f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'}:"
+    ]
+    for e in entries[:10]:
+        warning_lines.append(
+            f"  - {escape(e.paper_id)} [dim]({escape(e.deleted_at)})[/]"
         )
-        for e in entries[:10]:
-            console.print(
-                f"  - {escape(e.paper_id)} [dim]({escape(e.deleted_at)})[/]"
-            )
-        if len(entries) > 10:
-            console.print(f"  ... and {len(entries) - 10} more")
-        console.print("[bold red]Not recoverable.[/]")
-        if not click.confirm("Continue?", default=False):
-            console.print("[dim]Aborted. Trash unchanged.[/]")
-            return
+    if len(entries) > 10:
+        warning_lines.append(f"  ... and {len(entries) - 10} more")
+    warning_lines.append("[bold red]Not recoverable.[/]")
+    if not _confirm_destructive(warning_lines, yes=skip_confirm):
+        console.print("[dim]Aborted. Trash unchanged.[/]")
+        return
 
     n = empty_trash(vault)
     console.print(

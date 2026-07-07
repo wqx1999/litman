@@ -207,7 +207,10 @@ def test_rm_does_not_touch_unrelated_papers(vault: Path) -> None:
 # ===========================================================================
 
 
-def test_rm_no_relations_deletes_after_confirm(vault: Path) -> None:
+def test_rm_no_relations_deletes_after_confirm(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     result = runner.invoke(
@@ -219,7 +222,10 @@ def test_rm_no_relations_deletes_after_confirm(vault: Path) -> None:
     assert "is linked with" not in result.output
 
 
-def test_rm_has_relations_reports_total_and_pointer(vault: Path) -> None:
+def test_rm_has_relations_reports_total_and_pointer(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _write_paper(vault, "2024_Target", related=["2024_B"], extends=["2024_C"])
     _write_paper(vault, "2024_B", related=["2024_Target"])
     _write_paper(vault, "2024_C", extended_by=["2024_Target"])
@@ -240,9 +246,12 @@ def test_rm_has_relations_reports_total_and_pointer(vault: Path) -> None:
     assert "2024_C" not in result.output
 
 
-def test_rm_refuse_is_zero_mutation(vault: Path, tmp_path: Path) -> None:
+def test_rm_refuse_is_zero_mutation(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Refuse must touch NOTHING across all three link substrates
     # (literature ref, code, project) — spec red line "拒绝则零改动".
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     project_dir = tmp_path / "myproj"
     project_dir.mkdir()
     config_path = vault / "lit-config.yaml"
@@ -602,7 +611,10 @@ def test_rm_yes_non_interactive_with_relations(vault: Path) -> None:
     assert _read_meta(vault, "2024_Holder")["related"] == []
 
 
-def test_rm_prompt_y_proceeds(vault: Path) -> None:
+def test_rm_prompt_y_proceeds(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     result = runner.invoke(
@@ -613,7 +625,10 @@ def test_rm_prompt_y_proceeds(vault: Path) -> None:
     assert "About to move to .trash/" in result.output
 
 
-def test_rm_prompt_n_aborts(vault: Path) -> None:
+def test_rm_prompt_n_aborts(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     result = runner.invoke(
@@ -625,7 +640,10 @@ def test_rm_prompt_n_aborts(vault: Path) -> None:
     assert "Aborted" in result.output
 
 
-def test_rm_prompt_default_is_no(vault: Path) -> None:
+def test_rm_prompt_default_is_no(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _write_paper(vault, "2024_Foo_Bar")
     runner = CliRunner()
     # Empty input (just Enter) should treat default=False as "no".
@@ -633,6 +651,25 @@ def test_rm_prompt_default_is_no(vault: Path) -> None:
         cli, ["rm", "2024_Foo_Bar", "--library", str(vault)], input="\n"
     )
     assert result.exit_code == 0, result.output
+    assert (vault / "papers" / "2024_Foo_Bar").is_dir()
+
+
+def test_rm_purge_non_tty_without_yes_refused(vault: Path) -> None:
+    """D8: `echo y | lit rm X --purge` must NOT bypass the confirm.
+
+    A non-tty stdin without -y is refused WITHOUT reading stdin (exit
+    non-zero) so a stray piped "y" cannot force the most dangerous delete;
+    the paper is left in place. CliRunner's stdin is not a tty, so the piped
+    input here reproduces the pipe / CI heredoc case exactly.
+    """
+    _write_paper(vault, "2024_Foo_Bar")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["rm", "2024_Foo_Bar", "--purge", "--library", str(vault)],
+        input="y\n",
+    )
+    assert result.exit_code != 0
+    assert "pass --yes" in result.output
     assert (vault / "papers" / "2024_Foo_Bar").is_dir()
 
 

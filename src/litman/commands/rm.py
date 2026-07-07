@@ -68,6 +68,7 @@ from rich.markup import escape
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.config import load_config
+from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
@@ -632,34 +633,40 @@ def rm_cmd(
 
     # ----- Confirmation -----
     # --dry-run is a preview: skip the destructive confirmation entirely (we
-    # print the impact set + exit below before any write).
-    if not skip_confirm and not dry_run:
+    # print the impact set + exit below before any write). Route the real
+    # confirm through the shared _confirm_destructive (same gate taxonomy/
+    # project rm use): --yes proceeds silently, a non-tty stdin without --yes
+    # is refused WITHOUT reading stdin (so `echo y | lit rm X --purge` can no
+    # longer bypass the prompt), and an interactive tty renders the warning
+    # block + a default-No prompt.
+    if not dry_run:
         action = "permanently delete" if purge else "move to .trash/"
+        warning_lines: list[str] = []
         if plan.n_relations:
-            console.print(
+            warning_lines.append(
                 f"This paper is linked with [bold]{plan.n_relations}[/] "
                 f"entr{'y' if plan.n_relations == 1 else 'ies'} in "
                 f"{escape(str(vault))}."
             )
-            console.print(
+            warning_lines.append(
                 f"  [dim](run 'lit show {escape(paper_id)}' to inspect them)[/]"
             )
-        console.print(f"[bold yellow]About to {action}:[/]")
-        console.print(f"  id     : {escape(paper_id)}")
-        console.print(f"  title  : {escape(str(plan.title))}")
+        warning_lines.append(f"[bold yellow]About to {action}:[/]")
+        warning_lines.append(f"  id     : {escape(paper_id)}")
+        warning_lines.append(f"  title  : {escape(str(plan.title))}")
         if purge:
-            console.print(
+            warning_lines.append(
                 f"This permanently removes "
                 f"{escape(str(plan.paper_dir.relative_to(vault)))}/ "
                 "and updates INDEX/views. [bold red]Not recoverable.[/]"
             )
         else:
-            console.print(
+            warning_lines.append(
                 f"This moves {escape(str(plan.paper_dir.relative_to(vault)))}/ "
                 "into .trash/ and updates INDEX/views. "
                 "Recover with [bold]lit trash restore[/]."
             )
-        if not click.confirm("Delete?", default=False):
+        if not _confirm_destructive(warning_lines, yes=skip_confirm):
             console.print("[dim]Aborted. No changes made.[/]")
             return
 
