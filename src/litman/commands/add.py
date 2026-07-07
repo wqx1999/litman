@@ -69,7 +69,7 @@ def _build_metadata(
     """Assemble the full metadata.yaml dict in design-doc field order.
 
     Schema-less by intent (§7.3): unknown-yet fields are emitted as ``None`` /
-    ``[]`` so the user can fill them later in ``lit edit`` / ``lit modify``.
+    ``[]`` so the user can fill them later with ``lit modify``.
 
     The audit fields ``created-at`` and ``updated-at`` are technical (machine-
     maintained); ``read-date`` and ``last-revisited`` are semantic (user-set).
