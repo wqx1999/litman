@@ -72,7 +72,7 @@ export default function WelcomePage({
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-stone-100 px-4 py-10 text-stone-800 antialiased">
       <div className="w-full max-w-md animate-grow-in rounded-2xl bg-white p-8 shadow-xl ring-1 ring-stone-200">
         <div className="flex flex-col items-center text-center">
-          <img src={logoUrl} alt="litman" className="h-14 w-14 rounded-xl" />
+          <img src={logoUrl} alt="litman" className="h-12 w-auto select-none" />
           <h1 className="mt-4 text-lg font-semibold text-stone-900">
             Create your library
           </h1>
