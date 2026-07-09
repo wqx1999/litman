@@ -738,34 +738,29 @@ prints a reinstall hint (`uv tool install --force litman` or `pipx install
 ### `lit agent`
 
 Start your AI agent inside the vault — one command instead of opening a
-terminal, `cd`-ing to the vault, and running the agent by hand. It executes
-the command configured in `lit-config.yaml`'s `agents:` map with the active
-vault as working directory, and hands the session fully over to the agent
-(Ctrl-C and exit belong to the agent, not to `lit`).
+terminal, `cd`-ing to the vault, and running the agent by hand. It launches
+the agent's command with the active vault as working directory and hands the
+session fully over to the agent (Ctrl-C and exit belong to the agent, not to
+`lit`).
 
 ```
-lit agent          # launch the default agent (fresh vaults: claude)
-lit agent codex    # launch a named entry from the agents: map
+lit agent                       # launch the default agent (Claude Code)
+lit agent claude                # launch a named agent from the catalog
+lit agent --set-default claude  # record the machine-level default agent
 ```
 
-| Argument | What it does |
+| Argument / Flag | What it does |
 |---|---|
-| `NAME` (optional) | Which `agents:` entry to launch. Omitted, it launches `default_agent`. |
+| `NAME` (optional) | Which agent to launch. Omitted, it launches the default agent. |
+| `--set-default NAME` | Record NAME as the machine-level default agent (used by a bare `lit agent` and the GUI agent button), then exit. |
 
-Add an agent CLI by adding one line under `agents:` in `lit-config.yaml`; the
-command may carry arguments:
+The default agent is machine-level, not per-vault: it is recorded in
+`preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
+agent panel, or `lit agent --set-default`. Claude Code is the supported agent;
+more agents arrive in a later release.
 
-```yaml
-agents:
-  claude: claude
-  claude-resume: claude --continue
-  codex: codex
-default_agent: claude
-```
-
-An unknown NAME, an agent command missing from PATH, or a `default_agent`
-pointing at no `agents:` entry each fail with a one-line error. The Web UI's
-agent button launches the same configured entries: on a machine with a
-display it opens the agent in a new terminal window; when the server runs on
-a remote box (HPC) it shows the `lit agent` line to copy into your own
+An unknown NAME, or an agent command missing from PATH, fails with a one-line
+error. The Web UI's agent button launches the same default agent: on a machine
+with a display it opens the agent in a new terminal window; when the server
+runs on a remote box (HPC) it shows the `lit agent` line to copy into your own
 terminal.

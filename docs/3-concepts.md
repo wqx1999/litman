@@ -432,8 +432,6 @@ view with `lit config show`.
 | `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). |
 | `projects` | dict[string, string] | `{}` | `lit link`, `lit unlink`, `lit refresh-views`. Project name to directory path. Must be populated (via `lit project add`) before `lit link`. |
 | `sync` | object or null | `null` | `lit sync`. `null` means sync is not configured. Populated by `lit sync setup`. |
-| `agents` | dict[string, string] | `{"claude": "claude"}` | `lit agent`, the GUI agent button. Agent name to the command line that starts it (may carry arguments, e.g. `claude --continue`); runs with the vault as working directory. |
-| `default_agent` | string | `"claude"` | `lit agent` with no NAME, the GUI agent button. Must be a key of `agents`. |
 
 The nested `sync` object:
 

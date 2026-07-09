@@ -24,7 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError
@@ -48,8 +48,6 @@ DEFAULT_VIEW_DEFINITIONS: tuple[str, ...] = (
 DEFAULT_UNIQUE_KEYS: tuple[str, ...] = ("doi", "arxiv-id")
 DEFAULT_CLONE_DEPTH = 1
 DEFAULT_CODES_IGNORE_PATTERNS: tuple[str, ...] = ("repo/",)
-DEFAULT_AGENTS: dict[str, str] = {"claude": "claude"}
-DEFAULT_AGENT = "claude"
 
 _yaml = ThreadLocalYAML(typ="safe")
 
@@ -185,35 +183,6 @@ class LitConfig(BaseModel):
             "`lit sync push/pull/status` operate against it."
         ),
     )
-    agents: dict[str, str] = Field(
-        default_factory=lambda: dict(DEFAULT_AGENTS),
-        description=(
-            "Agent name → command line for `lit agent` (and the GUI agent "
-            "button). The command may carry arguments (e.g. 'claude "
-            "--continue'); it is shlex-split and run with the vault as "
-            "working directory. Adding an agent CLI (codex, opencode, ...) "
-            "is one entry here — never code (ADR-020)."
-        ),
-    )
-    default_agent: str = Field(
-        default=DEFAULT_AGENT,
-        description=(
-            "Which `agents` entry a bare `lit agent` (and the GUI agent "
-            "button) launches. Must be a key of `agents`."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _default_agent_is_registered(self) -> LitConfig:
-        """A bare ``lit agent`` must resolve — reject a dangling default."""
-        if self.default_agent not in self.agents:
-            configured = ", ".join(sorted(self.agents)) or "(none)"
-            raise ValueError(
-                f"default_agent '{self.default_agent}' is not defined under "
-                f"'agents' (configured: {configured}). Add it to the agents "
-                "map or point default_agent at an existing entry."
-            )
-        return self
 
 
 def load_config(vault: Path) -> LitConfig:
@@ -252,6 +221,13 @@ def load_config(vault: Path) -> LitConfig:
             f"{path} must contain a YAML mapping at the top level, got "
             f"{type(raw).__name__}."
         )
+    # Legacy per-vault agent keys from the unreleased agent-launch cycle
+    # (task-agent-launch, never shipped to PyPI). Agent config moved to the
+    # machine-level preferences.yaml (task-agent-onboarding); drop the old
+    # keys silently so a dogfood vault seeded with them still loads under
+    # ``extra="forbid"``.
+    raw.pop("agents", None)
+    raw.pop("default_agent", None)
     try:
         return LitConfig.model_validate(raw)
     except ValidationError as e:

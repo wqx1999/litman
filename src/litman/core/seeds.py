@@ -124,17 +124,4 @@ projects: {{}}
 #     remote: my-gdrive          # rclone remote name (see `rclone listremotes`)
 #     path: litman-vault/        # path inside the remote
 #     exclude_repos: false       # skip codes/*/repo/ on sync (M6.2)
-
-# Agent launchers for `lit agent` (and the GUI agent button): name → command.
-# The command runs with the vault as working directory and may carry
-# arguments. Adding an agent CLI is one line, e.g.:
-#   agents:
-#     claude: claude
-#     claude-resume: claude --continue
-#     codex: codex
-agents:
-  claude: claude
-
-# Which `agents` entry a bare `lit agent` launches.
-default_agent: claude
 """

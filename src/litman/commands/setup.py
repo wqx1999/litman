@@ -34,6 +34,7 @@ from litman.commands.install_completion import (
 )
 from litman.commands.install_skill import install_skill_cmd
 from litman.commands.sync import sync_setup_cmd
+from litman.core import agent_prefs
 from litman.core.config import load_config
 from litman.core.library import DEFAULT_VAULT_NAME, find_vault
 from litman.core.skill import installed_skill_names, list_bundled_skills
@@ -146,6 +147,15 @@ def _step_skill(
     # prompt so wizard users can refresh skills (e.g., after a litman
     # upgrade ships updated skill content) without dropping to the
     # standalone command. Mirrors feedback_wizard_mirrors_command_flags.
+    # Keep CLI setup and GUI onboarding on one machine-level default agent so
+    # `lit setup` clears the GUI red dot too. preferences.yaml is machine-
+    # global config, NOT a vault TRUTH/DERIVED surface — invariant #16 (the
+    # WebUI structured-write whitelist) does not apply. Called on every path
+    # where the Claude Code skill ends up present (freshly installed or
+    # already there); NOT when the user skips the step outright.
+    def _record_claude_default() -> None:
+        agent_prefs.save_default_agent("claude")
+
     bundled = set(list_bundled_skills())
     already = installed_skill_names()
     if already:
@@ -158,9 +168,11 @@ def _step_skill(
                 "Reinstall (overwrite with the bundled version)?",
                 default=False,
             ):
+                _record_claude_default()
                 skipped.append("skill (already installed)")
                 return
             ctx.invoke(install_skill_cmd, force=True)
+            _record_claude_default()
             did.append("skill (reinstalled, Claude Code)")
             return
         missing = bundled - already
@@ -178,9 +190,11 @@ def _step_skill(
             "bundled version)?",
             default=True,
         ):
+            _record_claude_default()
             skipped.append("skill (partially installed)")
             return
         ctx.invoke(install_skill_cmd, force=True)
+        _record_claude_default()
         did.append("skill (refreshed, Claude Code)")
         return
 
@@ -199,6 +213,7 @@ def _step_skill(
         skipped.append("skill (declined)")
         return
     ctx.invoke(install_skill_cmd)  # installs all bundled Claude Code skills
+    _record_claude_default()
     did.append("skill (Claude Code)")
 
 

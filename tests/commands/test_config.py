@@ -183,6 +183,37 @@ def test_load_config_omitted_fields_take_defaults(vault: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# D0 — per-vault agent config retired to machine-level preferences.yaml
+# (task-agent-onboarding, AC4). LitConfig no longer carries agents /
+# default_agent; the loader silently drops the legacy keys so a dogfood vault
+# seeded with them under the unreleased agent-launch cycle still loads.
+# ---------------------------------------------------------------------------
+
+
+def test_litconfig_has_no_agent_fields() -> None:
+    fields = set(LitConfig.model_fields)
+    assert "agents" not in fields
+    assert "default_agent" not in fields
+
+
+def test_load_config_drops_legacy_agent_keys(vault: Path) -> None:
+    """A config carrying the retired agents:/default_agent: keys still loads —
+    the loader pops them before the extra='forbid' schema sees them."""
+    _overwrite_config(
+        vault,
+        "library_name: dogfood\n"
+        "agents:\n"
+        "  claude: claude\n"
+        "  codex: codex\n"
+        "default_agent: codex\n",
+    )
+    cfg = load_config(vault)
+    assert cfg.library_name == "dogfood"
+    assert not hasattr(cfg, "agents")
+    assert not hasattr(cfg, "default_agent")
+
+
+# ---------------------------------------------------------------------------
 # CLI: lit config show
 # ---------------------------------------------------------------------------
 
