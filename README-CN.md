@@ -109,7 +109,7 @@ pipx install --force .
 分两步，注意顺序——先 `lit uninstall`（趁 `lit` 命令还在），再按你的安装方式删除 CLI：
 
 ```bash
-lit uninstall              # 删除内置 skill、shell 补全、vault 注册表
+lit uninstall              # 删除内置 skill、桌面快捷方式、shell 补全、vault 注册表、agent 偏好
 uv tool uninstall litman   # 若用 uv / 安装脚本安装
 pipx uninstall litman      # 若用 pipx 安装
 ```

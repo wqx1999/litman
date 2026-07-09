@@ -95,7 +95,13 @@ On Windows, run the PowerShell one-liner instead:
 > powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
 ```
 
-Prefer [pipx](https://pipx.pypa.io/)? `pipx install litman` works too.
+Prefer [pipx](https://pipx.pypa.io/)? `pipx install litman` works too (then run
+`lit gui --make-shortcut` once to get the shortcut).
+
+The one-line installer also drops a **litman** shortcut — on your Desktop
+(Windows) or in your applications menu (Linux/macOS). Double-click it to launch
+straight into the browser app, where the welcome page creates your first library
+and the agent button sets up your AI agent — no `lit setup` needed.
 
 **To remove it:** run `lit uninstall` first — it strips the agent skills, the
 shell completion, and the vault registry while leaving your papers untouched —

@@ -149,19 +149,18 @@ def _resolve_lit_executable() -> str:
 
 
 def shortcut_path() -> Path:
-    """Where the desktop shortcut lives on this platform."""
+    """Where the desktop shortcut lives on this platform.
+
+    Windows lands on the actual Desktop (``%USERPROFILE%\\Desktop``) so the
+    icon is visible the moment the installer finishes — the install script
+    creates it, and a fresh install is meant to be started by double-clicking
+    it, not by running ``lit setup``. macOS uses ``~/Applications`` and Linux
+    the applications menu, each platform's own launcher home (a ``.desktop``
+    file on the Linux Desktop would need a manual "trust" step).
+    """
     if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA") or str(
-            Path.home() / "AppData" / "Roaming"
-        )
-        return (
-            Path(appdata)
-            / "Microsoft"
-            / "Windows"
-            / "Start Menu"
-            / "Programs"
-            / "litman.lnk"
-        )
+        userprofile = os.environ.get("USERPROFILE") or str(Path.home())
+        return Path(userprofile) / "Desktop" / "litman.lnk"
     if sys.platform == "darwin":
         return Path.home() / "Applications" / "litman.app"
     data_home = os.environ.get("XDG_DATA_HOME") or str(
@@ -248,7 +247,7 @@ def _write_shortcut_win32(target: Path, lit: str) -> None:
     except (OSError, subprocess.CalledProcessError) as e:
         detail = getattr(e, "stderr", "") or str(e)
         raise LitmanError(
-            f"Could not create the Start Menu shortcut: {detail.strip()}"
+            f"Could not create the desktop shortcut: {detail.strip()}"
         ) from e
 
 

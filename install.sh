@@ -37,12 +37,25 @@ else
     uv tool install litman
 fi
 
-# Verify the CLI runs. PATH may not include the tool bin dir yet in this run, so
-# fall back to its absolute location.
+# Resolve how to call lit (PATH may not include the tool bin dir yet this run).
 if command -v lit >/dev/null 2>&1; then
-    lit --version
+    lit_cmd="lit"
 elif [ -x "$TOOL_BIN/lit" ]; then
-    "$TOOL_BIN/lit" --version
+    lit_cmd="$TOOL_BIN/lit"
+else
+    lit_cmd=""
+fi
+
+if [ -n "$lit_cmd" ]; then
+    "$lit_cmd" --version
+    # Create the launcher (apps menu / Applications) so litman can be started by
+    # double-click — no `lit setup` needed (the app builds the library and picks
+    # the agent itself). Best-effort: never fail the install over a shortcut.
+    if "$lit_cmd" gui --make-shortcut >/dev/null 2>&1; then
+        info "Created a 'litman' launcher you can double-click to start."
+    else
+        info "note: could not create the launcher; run 'lit gui --make-shortcut' later."
+    fi
 else
     info "warning: could not locate the 'lit' executable to verify it."
 fi
@@ -52,4 +65,5 @@ if [ "$installed_uv" -eq 1 ]; then
     info "uv was just installed. Open a new shell (or 'source' your shell rc)"
     info "so that 'lit' is on your PATH."
 fi
-info "Next step:  lit setup"
+info "Done. Double-click the 'litman' launcher, or run 'lit gui'."
+info "(Optional) 'lit setup' adds shell completion and the agent skills."

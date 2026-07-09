@@ -23,7 +23,12 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from litman.commands.gui import _DEFAULT_PORT, _find_free_port, gui_cmd
+from litman.commands.gui import (
+    _DEFAULT_PORT,
+    _find_free_port,
+    gui_cmd,
+    shortcut_path,
+)
 
 # ---------------------------------------------------------------------------
 # A1(a) — importing the CLI must not pull fastapi into the process
@@ -270,11 +275,17 @@ def test_make_shortcut_linux_writes_desktop_file(
     assert "updated" in result2.output
 
 
+def test_shortcut_path_win32_is_on_desktop(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    assert shortcut_path() == tmp_path / "profile" / "Desktop" / "litman.lnk"
+
+
 def test_make_shortcut_win32_builds_powershell_command(
     monkeypatch, tmp_path, fake_lit_on_path
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
     runs: list[list[str]] = []
 
     def _fake_run(argv, **kw):
@@ -292,6 +303,8 @@ def test_make_shortcut_win32_builds_powershell_command(
     script = argv[-1]
     assert "CreateShortcut" in script
     assert "litman.lnk" in script
+    # Lands on the actual Desktop, not the Start Menu.
+    assert str(tmp_path / "profile" / "Desktop" / "litman.lnk") in script
     assert f"$s.TargetPath = '{fake_lit_on_path}'" in script
     assert "$s.Arguments = 'gui --window'" in script
     assert "litman.ico" in script

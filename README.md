@@ -117,7 +117,7 @@ Run two steps, in order — `lit uninstall` first (while the `lit` command still
 exists), then remove the CLI with whichever installer you used:
 
 ```bash
-lit uninstall              # removes bundled skills, shell completion, and the vault registry
+lit uninstall              # removes bundled skills, the desktop shortcut, shell completion, the vault registry, and agent preferences
 uv tool uninstall litman   # if you installed with uv / the install script
 pipx uninstall litman      # if you installed with pipx
 ```

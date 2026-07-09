@@ -39,19 +39,38 @@ if ($toolList -match '(?m)^litman') {
 
 # Verify the CLI runs. PATH may not include the tool bin dir yet in this run, so
 # fall back to its absolute location.
-if (Test-Cmd lit) {
-    lit --version
+$litExe = Join-Path $ToolBin "lit.exe"
+function Invoke-Lit {
+    if (Test-Cmd lit) { & lit @args }
+    elseif (Test-Path $litExe) { & $litExe @args }
+    else { throw "could not locate the 'lit' executable" }
+}
+
+try {
+    Invoke-Lit --version
+} catch {
+    Write-Host "warning: could not locate the 'lit' executable to verify it."
+}
+
+# Drop a desktop shortcut so the user can just double-click to start — no
+# `lit setup` needed (the app builds the library and picks the agent itself).
+# Best-effort: a native exe's nonzero exit does not throw, so check $LASTEXITCODE.
+$shortcutOk = $false
+try {
+    Invoke-Lit gui --make-shortcut | Out-Null
+    $shortcutOk = ($LASTEXITCODE -eq 0)
+} catch {
+    $shortcutOk = $false
+}
+if ($shortcutOk) {
+    Write-Host "Created a 'litman' shortcut on your Desktop."
 } else {
-    $litExe = Join-Path $ToolBin "lit.exe"
-    if (Test-Path $litExe) {
-        & $litExe --version
-    } else {
-        Write-Host "warning: could not locate the 'lit' executable to verify it."
-    }
+    Write-Host "note: could not create the desktop shortcut; run 'lit gui --make-shortcut' later."
 }
 
 Write-Host ""
 if ($installedUv) {
     Write-Host "uv was just installed. Open a new terminal so that 'lit' is on your PATH."
 }
-Write-Host "Next step:  lit setup"
+Write-Host "Done. Double-click the Desktop 'litman' icon to start."
+Write-Host "(Optional) 'lit setup' adds shell completion and the agent skills."
