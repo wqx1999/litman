@@ -326,6 +326,55 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
   return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
 }
 
+/** One agent's onboarding view: display name, whether litman supports it today
+ * (only Claude Code in v1.1.1 — the rest are greyed roadmap placeholders),
+ * whether its launch command is on PATH, and its official install page. Agent-
+ * agnostic by contract: no per-agent skill path ever appears here. */
+export interface AgentStatusEntry {
+  name: string
+  display: string
+  supported: boolean
+  detected: boolean
+  install_url: string
+}
+
+/** The agent-onboarding status — the single data source for the TopBar red dot
+ * and the setup panel. `needs_setup` is computed SERVER-SIDE (the red-dot
+ * condition); the client never re-derives the state machine. `skill_installed`
+ * reports the resolved default agent's skill. `default` is null until chosen. */
+export interface AgentStatus {
+  agents: AgentStatusEntry[]
+  default: string | null
+  skill_installed: boolean
+  needs_setup: boolean
+}
+
+/** The onboarding status (GET, pure read). Drives the red dot on load, so the
+ * caller fetches it when a vault is served, not on panel-open. */
+export function fetchAgentStatus(): Promise<AgentStatus> {
+  return getJSON<AgentStatus>('/api/agent/status')
+}
+
+/** Install the named agent's skill through the server-side catalog adapter.
+ * Sends the agent NAME only — the install target lives entirely server-side
+ * (ADR-020); any path in the body is ignored. An absent name targets the
+ * default agent. Throws the backend's verbatim message (400) for an unknown /
+ * unsupported agent. */
+export function installAgentSkill(
+  name?: string,
+): Promise<{ ok: boolean; agent: string; files: string[]; mode: string }> {
+  return mutateJSON('/api/agent/skill/install', 'POST', name ? { agent: name } : {})
+}
+
+/** Record the machine-level default agent (PUT). Sends the NAME only; the
+ * server validates it against the catalog. Throws the backend's verbatim
+ * message (400) for an unknown / unsupported agent. */
+export function setDefaultAgent(
+  name: string,
+): Promise<{ ok: boolean; default: string }> {
+  return mutateJSON('/api/agent/default', 'PUT', { agent: name })
+}
+
 /** Create a NEW vault directory + register it, through the `lit init` backend
  * (the welcome-page flow). Sends a filesystem `parentDir` + optional `name` only
  * — never a command (ADR-020). The first vault becomes active and repoints the

@@ -12,12 +12,15 @@ import {
   createProject,
   deleteProject,
   fetchAgents,
+  fetchAgentStatus,
   fetchHealth,
+  installAgentSkill,
   launchAgent,
   renameProject,
+  setDefaultAgent,
   setProjectPath,
 } from '../api'
-import type { AgentLaunchResult } from '../api'
+import type { AgentLaunchResult, AgentStatus } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import logoUrl from '../assets/litman-logo.png'
@@ -175,6 +178,22 @@ export default function TopBar({
   // panel shows the `lit agent …` line to paste into the user's own terminal.
   const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
+  // Machine-global onboarding status — the red-dot source. Fetched once when the
+  // TopBar mounts, which only happens while a vault is served (App gates the
+  // whole view on `served`), so this mirrors App's served-gated seed, NOT the
+  // on-demand Health fetch: the dot must be known on load, before any click.
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
+  useEffect(() => {
+    fetchAgentStatus()
+      .then(setAgentStatus)
+      .catch(() => {}) // best-effort: no status just means no red dot
+  }, [])
+
+  const refreshAgentStatus = () =>
+    fetchAgentStatus().then((s) => {
+      setAgentStatus(s)
+      return s
+    })
 
   const handleLaunch = (res: AgentLaunchResult) => {
     if (res.mode === 'spawned') {
@@ -187,6 +206,12 @@ export default function TopBar({
 
   const openAgent = () => {
     if (agentBusy) return
+    // Not configured yet → onboarding, never a launch (there's nothing to run).
+    // needs_setup is the server's single source of truth for the red dot.
+    if (agentStatus?.needs_setup) {
+      setAgentUi({ kind: 'setup', status: agentStatus })
+      return
+    }
     setAgentBusy(true)
     fetchAgents()
       .then((info) => {
@@ -208,6 +233,56 @@ export default function TopBar({
         setAgentUi(null)
         notify(err instanceof Error ? err.message : String(err), 'error')
       })
+      .finally(() => setAgentBusy(false))
+  }
+
+  // Re-pick the default agent from an already-configured state (the picker's
+  // "Change agent" link). Reuse the loaded status if present, else fetch.
+  const openSetup = () => {
+    if (agentBusy) return
+    if (agentStatus) {
+      setAgentUi({ kind: 'setup', status: agentStatus })
+      return
+    }
+    refreshAgentStatus()
+      .then((s) => setAgentUi({ kind: 'setup', status: s }))
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+  }
+
+  // Setup panel: install the agent's skill, then adopt it as the default, then
+  // re-read status so the open panel + red dot both reflect the new state.
+  const installSkillFor = (name: string) => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    installAgentSkill(name)
+      .then(() => setDefaultAgent(name))
+      .then(refreshAgentStatus)
+      .then((s) => {
+        setAgentUi({ kind: 'setup', status: s })
+        notify('Skill installed — your agent is ready', 'success')
+      })
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+      .finally(() => setAgentBusy(false))
+  }
+
+  // Setup panel: the skill is already installed → just adopt the agent as the
+  // machine-level default and re-read status (clears the red dot).
+  const chooseAgent = (name: string) => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    setDefaultAgent(name)
+      .then(refreshAgentStatus)
+      .then((s) => {
+        setAgentUi({ kind: 'setup', status: s })
+        notify(`${name} is now your default agent`, 'success')
+      })
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
       .finally(() => setAgentBusy(false))
   }
 
@@ -492,11 +567,21 @@ export default function TopBar({
         type="button"
         onClick={openAgent}
         disabled={agentBusy}
-        title="Launch your AI agent in the vault (lit agent)"
-        aria-label="Launch agent"
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"
+        title={
+          agentStatus?.needs_setup
+            ? 'Set up your AI agent'
+            : 'Launch your AI agent in the vault (lit agent)'
+        }
+        aria-label={agentStatus?.needs_setup ? 'Set up agent' : 'Launch agent'}
+        className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"
       >
         <IconAgent />
+        {agentStatus?.needs_setup && (
+          <span
+            aria-label="Agent setup needed"
+            className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-stone-50"
+          />
+        )}
       </button>
 
       {agentUi && (
@@ -504,6 +589,9 @@ export default function TopBar({
           ui={agentUi}
           busy={agentBusy}
           onPick={pickAgent}
+          onInstallSkill={installSkillFor}
+          onChooseAgent={chooseAgent}
+          onOpenSetup={openSetup}
           onClose={() => setAgentUi(null)}
           notify={notify}
         />
@@ -1772,10 +1860,14 @@ function ActivityLogPanel({
   )
 }
 
-/** The agent launcher's overlay: pick which configured agent to start, or —
- * when the server can't pop a terminal window — the `lit agent …` line to
- * copy into the user's own terminal. */
+/** The agent overlay's three shapes: the onboarding `setup` flow (pick + install
+ * the agent's skill), the `picker` (which configured agent to launch), or the
+ * `copy` box (when the server can't pop a terminal window, the `lit agent …`
+ * line to paste into the user's own terminal). All three are one `AgentUi`, so
+ * the single `onAgentOpenChange(agentUi !== null)` effect keeps every variant
+ * inside App's modal-guard (⌥ shortcuts can't punch through). */
 type AgentUi =
+  | { kind: 'setup'; status: AgentStatus }
   | { kind: 'picker'; agents: string[]; default: string }
   | { kind: 'copy'; agent: string; command: string }
 
@@ -1783,12 +1875,18 @@ function AgentPanel({
   ui,
   busy,
   onPick,
+  onInstallSkill,
+  onChooseAgent,
+  onOpenSetup,
   onClose,
   notify,
 }: {
   ui: AgentUi
   busy: boolean
   onPick: (name: string) => void
+  onInstallSkill: (name: string) => void
+  onChooseAgent: (name: string) => void
+  onOpenSetup: () => void
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
@@ -1810,7 +1908,15 @@ function AgentPanel({
         }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        {ui.kind === 'picker' ? (
+        {ui.kind === 'setup' ? (
+          <AgentSetup
+            status={ui.status}
+            busy={busy}
+            onInstallSkill={onInstallSkill}
+            onChooseAgent={onChooseAgent}
+            onLaunch={onPick}
+          />
+        ) : ui.kind === 'picker' ? (
           <>
             <h2 className="text-sm font-semibold text-stone-900">Launch agent</h2>
             <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
@@ -1834,6 +1940,14 @@ function AgentPanel({
                 </button>
               ))}
             </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onOpenSetup}
+              className="mt-3 text-xs font-medium text-accent-600 transition-colors hover:text-accent-700 disabled:opacity-50"
+            >
+              Change agent…
+            </button>
           </>
         ) : (
           <>
@@ -1870,6 +1984,116 @@ function AgentPanel({
       </div>
     </div>,
     document.body,
+  )
+}
+
+/** The onboarding step of the agent panel: a row per catalog agent, the one
+ * `supported` agent selectable with a state-driven action (get it → install
+ * skill → ready), the rest greyed "coming soon" placeholders (roadmap signal +
+ * stable layout). Everything is data-driven off the status payload — no agent
+ * name or skill path is hardcoded here (the red-line agent-agnostic frontend).
+ * Auto-themes via the inverted stone ramp + `.dark .bg-white`; no `dark:`. */
+function AgentSetup({
+  status,
+  busy,
+  onInstallSkill,
+  onChooseAgent,
+  onLaunch,
+}: {
+  status: AgentStatus
+  busy: boolean
+  onInstallSkill: (name: string) => void
+  onChooseAgent: (name: string) => void
+  onLaunch: (name: string) => void
+}) {
+  return (
+    <>
+      <h2 className="text-sm font-semibold text-stone-900">Set up your agent</h2>
+      <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+        litman writes to your library through an AI agent. Pick one, then install
+        its skill — the CLI keeps working without it.
+      </p>
+      <div className="mt-3 flex flex-col gap-2">
+        {status.agents.map((agent) =>
+          agent.supported ? (
+            <div
+              key={agent.name}
+              className="rounded-lg border border-stone-200 bg-stone-50 p-3"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-stone-800">
+                  {agent.display}
+                </span>
+                {!status.needs_setup && status.default === agent.name && (
+                  <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                    default
+                  </span>
+                )}
+              </div>
+              {!agent.detected ? (
+                <div className="mt-2 text-xs leading-relaxed text-stone-500">
+                  {agent.display} isn't installed.{' '}
+                  <a
+                    href={agent.install_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-accent-600 transition-colors hover:text-accent-700"
+                  >
+                    Get {agent.display} →
+                  </a>
+                </div>
+              ) : !status.skill_installed ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onInstallSkill(agent.name)}
+                  className="mt-2 rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                >
+                  {busy ? 'Installing…' : 'Install skill'}
+                </button>
+              ) : (
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-emerald-600">
+                    ✓ Ready
+                  </span>
+                  {status.needs_setup ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onChooseAgent(agent.name)}
+                      className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                    >
+                      Use {agent.display}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onLaunch(agent.name)}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                    >
+                      Launch now
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div
+              key={agent.name}
+              className="flex items-center justify-between rounded-lg border border-stone-200 px-3 py-2.5 opacity-60"
+            >
+              <span className="text-sm font-medium text-stone-400">
+                {agent.display}
+              </span>
+              <span className="text-[10px] uppercase tracking-wide text-stone-400">
+                coming soon
+              </span>
+            </div>
+          ),
+        )}
+      </div>
+    </>
   )
 }
 
