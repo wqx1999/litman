@@ -202,14 +202,19 @@ def _step_skill(
         "An agent skill lets Claude Code drive litman (optional; the CLI "
         "works fully without it)."
     )
-    # Numbered choice (not free-text): pick by number, default 1. When a
-    # second backend ships, add "3) <name>" here and map it below.
-    choice = click.prompt(
-        "Install agent skill?  1) Claude Code   2) skip",
-        type=click.IntRange(1, 2),
-        default=1,
+    console.print(
+        "[dim]More agents coming (Codex, Cursor, Gemini CLI, OpenCode); "
+        "manage agents anytime in the GUI. For now the skill targets "
+        "Claude Code.[/]"
     )
-    if choice == 2:
+    # A plain [Y/n] confirm, not a numbered menu: Claude Code is the only
+    # installable backend today, so a two-item "1) install / 2) skip" list
+    # merely dresses a yes/no up as a picker and reads ambiguously (users
+    # press "1" thinking it means skip). When a *second* installable backend
+    # ships, switch this back to a numbered choice.
+    if not click.confirm(
+        "Install the Claude Code agent skill now?", default=True
+    ):
         skipped.append("skill (declined)")
         return
     ctx.invoke(install_skill_cmd)  # installs all bundled Claude Code skills

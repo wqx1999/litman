@@ -136,7 +136,7 @@ def test_setup_decline_everything(
 
     runner = CliRunner()
     # completion no / skill skip / vault no. (sync auto-skips: rclone absent.)
-    result = runner.invoke(cli, ["setup"], input="n\n2\nn\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n")
     assert result.exit_code == 0, result.output
 
     # Nothing was registered.
@@ -161,7 +161,7 @@ def test_setup_creates_first_vault(
     runner = CliRunner()
     # completion no / skill skip / vault yes / accept default name / parent.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\n\n{parent}\n"
+        cli, ["setup"], input=f"n\nn\ny\n\n{parent}\n"
     )
     assert result.exit_code == 0, result.output
 
@@ -203,7 +203,7 @@ def test_setup_second_vault_uses_chosen_name(
     # completion no / skill skip / vault yes -> "create another" -> override
     # the suggested default with 'fork1' -> parent dir.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\nfork1\n{parent2}\n"
+        cli, ["setup"], input=f"n\nn\ny\nfork1\n{parent2}\n"
     )
     assert result.exit_code == 0, result.output
 
@@ -232,7 +232,7 @@ def test_setup_first_vault_custom_name(
     runner = CliRunner()
     # completion no / skill skip / vault yes / typed name / parent.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\npepforge_lib\n{parent}\n"
+        cli, ["setup"], input=f"n\nn\ny\npepforge_lib\n{parent}\n"
     )
     assert result.exit_code == 0, result.output
 
@@ -269,7 +269,7 @@ def test_setup_sync_when_configurable(
     runner = CliRunner()
     # completion no / skill skip / vault: have one -> "create another" no /
     # sync yes.
-    result = runner.invoke(cli, ["setup"], input="n\n2\nn\ny\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\ny\n")
     assert result.exit_code == 0, result.output
     assert calls == [{}]
 
@@ -311,7 +311,7 @@ def test_setup_sync_already_configured_reconfigure_default_no(
     runner = CliRunner()
     # completion no / skill skip / vault "create another" no / reconfigure:
     # press Enter (empty line) to accept the N default.
-    result = runner.invoke(cli, ["setup"], input="n\n2\nn\n\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n\n")
     assert result.exit_code == 0, result.output
 
     # Pressing Enter accepted default=False: no reconfiguration happened.
@@ -360,9 +360,9 @@ def test_setup_skill_step_offers_reinstall_when_installed_default_no(
     assert calls == []  # install_skill_cmd was NOT called
     assert "already installed" in result.output
     assert "Reinstall" in result.output
-    # The "1) Claude Code / 2) skip" picker only fires when nothing is
-    # installed; it must not appear in the already-installed branch.
-    assert "Install agent skill?" not in result.output
+    # The fresh-install [Y/n] confirm only fires when nothing is installed;
+    # it must not appear in the already-installed branch.
+    assert "Install the Claude Code agent skill now?" not in result.output
 
 
 def test_setup_skill_step_reinstall_yes_invokes_with_force(
@@ -396,6 +396,39 @@ def test_setup_skill_step_reinstall_yes_invokes_with_force(
     assert calls[0].get("force") is True
 
 
+def test_setup_skill_step_fresh_install_accepts_via_confirm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh-install branch (no skills present): the step is now a plain
+    [Y/n] confirm, not a numbered picker. Pressing Enter accepts the Yes
+    default -> installs the Claude Code skill WITHOUT --force and records the
+    machine-level default agent (so `lit setup` clears the GUI red dot too).
+    Also proves the 'more agents coming' roadmap note is shown."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    # pretend_no_skills_installed autouse fixture -> fresh-install branch.
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.install_skill_cmd",
+        _make_recording_stub(calls),
+    )
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.agent_prefs.save_default_agent",
+        lambda name: recorded.append(name),
+    )
+
+    runner = CliRunner()
+    # completion no / skill: press Enter to accept the Y default / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\n\nn\n")
+    assert result.exit_code == 0, result.output
+    assert calls == [{}]  # install_skill_cmd invoked WITHOUT force
+    assert recorded == ["claude"]  # machine-level default recorded
+    assert "coming" in result.output  # roadmap note for the placeholder agents
+
+
 def test_setup_completion_step_skips_when_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -412,7 +445,7 @@ def test_setup_completion_step_skips_when_installed(
     runner = CliRunner()
     # No line reserved for completion (it must not prompt): skill skip /
     # vault no.
-    result = runner.invoke(cli, ["setup"], input="2\nn\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\n")
     assert result.exit_code == 0, result.output
     assert "already installed" in result.output
 
@@ -455,7 +488,7 @@ def test_setup_step5_skips_when_shortcut_exists(
         "litman.commands.setup.display_available", lambda: True
     )
 
-    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\n")
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\n")
     assert result.exit_code == 0, result.output
     assert "already exists" in result.output
     assert "shortcut (already exists)" in result.output
@@ -469,7 +502,7 @@ def test_setup_step5_headless_skips_without_prompt(
     monkeypatch.setenv("SHELL", "/bin/bash")
     # autouse pin: no existing shortcut + display_available -> False.
     # Input carries no 5th answer — a prompt would exhaust it and abort.
-    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\n")
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\n")
     assert result.exit_code == 0, result.output
     assert "shortcut (headless session)" in result.output
 
@@ -484,7 +517,7 @@ def test_setup_step5_prompt_names_underlying_command_and_declines(
         "litman.commands.setup.display_available", lambda: True
     )
 
-    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\nn\n")
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\nn\n")
     assert result.exit_code == 0, result.output
     # Wizard prompts must surface the underlying command.
     assert "lit gui --make-shortcut" in result.output
@@ -511,7 +544,7 @@ def test_setup_step5_accept_creates_shortcut(
         "litman.commands.setup.display_available", lambda: True
     )
 
-    result = CliRunner().invoke(cli, ["setup"], input="n\n2\nn\ny\n")
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\ny\n")
     assert result.exit_code == 0, result.output
     assert dest.is_file()
     assert '"/opt/lit/bin/lit" gui --window' in dest.read_text(
