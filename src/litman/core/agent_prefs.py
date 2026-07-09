@@ -103,3 +103,29 @@ def save_default_agent(name: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(buf.getvalue(), encoding="utf-8")
     tmp.replace(path)
+
+
+def remove_prefs() -> dict[str, object]:
+    """Delete ``preferences.yaml``, honouring the same path resolution as
+    :func:`prefs_path`. Counterpart of
+    :func:`litman.core.vault_registry.remove_registry`, used by
+    ``lit uninstall`` so the machine-level default-agent choice does not
+    outlive the install. Removes the containing config dir too if it becomes
+    empty (so a lone ``preferences.yaml`` no longer keeps the dir alive after
+    the registry is gone).
+
+    Returns ``{"path", "removed", "dir_removed"}``.
+    """
+    path = prefs_path()
+    if not path.is_file():
+        return {"path": path, "removed": False, "dir_removed": False}
+    path.unlink()
+    dir_removed = False
+    parent = path.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            dir_removed = True
+    except OSError:
+        pass
+    return {"path": path, "removed": True, "dir_removed": dir_removed}

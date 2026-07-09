@@ -150,14 +150,15 @@ lit install-skill --skill lit-reading
 
 ### `lit uninstall`
 
-Reverse of `lit setup`: remove the bundled skills, the shell-completion block,
-and the vault registry (the list of vault names/paths). It does not remove the
-`lit` CLI itself — a running command can't delete its own environment — so it
-prints the final CLI-removal step (`uv tool uninstall litman` or `pipx uninstall
-litman`, depending on how you installed it) for you to run. Your vault
-directories (papers, PDFs, notes, annotations) are never touched; only the
-registry pointers to them are dropped. Skill directories are removed file by
-file, so any file you added next to `SKILL.md` is left in place.
+Reverse of `lit setup`: remove the bundled skills, the desktop shortcut, the
+shell-completion block, the vault registry (the list of vault names/paths), and
+the machine-level agent preferences. It does not remove the `lit` CLI itself — a
+running command can't delete its own environment — so it prints the final
+CLI-removal step (`uv tool uninstall litman` or `pipx uninstall litman`,
+depending on how you installed it) for you to run. Your vault directories
+(papers, PDFs, notes, annotations) are never touched; only the registry pointers
+to them are dropped. Skill directories are removed file by file, so any file you
+added next to `SKILL.md` is left in place.
 
 ```
 lit uninstall

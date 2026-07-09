@@ -187,6 +187,24 @@ def create_shortcut() -> tuple[Path, bool]:
     return target, existed
 
 
+def remove_shortcut() -> Path | None:
+    """Delete the desktop shortcut if present. Counterpart to
+    :func:`create_shortcut`, used by ``lit uninstall``.
+
+    Returns the path removed, or ``None`` when there was nothing there. The
+    macOS artifact is a ``.app`` bundle (a directory) so it is removed
+    recursively; the Linux ``.desktop`` and Windows ``.lnk`` are single files.
+    """
+    target = shortcut_path()
+    if not target.exists():
+        return None
+    if target.is_dir():  # macOS .app bundle
+        shutil.rmtree(target, ignore_errors=True)
+    else:
+        target.unlink()
+    return target
+
+
 def _write_shortcut_linux(target: Path, lit: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
