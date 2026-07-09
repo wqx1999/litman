@@ -25,7 +25,7 @@ from litman.core.agents import (
 
 def test_catalog_has_exactly_five_named_agents() -> None:
     names = [spec.name for spec in AGENTS]
-    assert names == ["claude", "codex", "cursor", "opencode", "zcode"]
+    assert names == ["claude", "codex", "cursor", "gemini", "opencode"]
     assert len(set(names)) == 5
 
 
@@ -141,7 +141,7 @@ def test_claude_skill_installed_routes_to_installed_skill_names(
     assert get_agent("claude").skill_installed() is True
 
 
-@pytest.mark.parametrize("name", ["codex", "cursor", "opencode", "zcode"])
+@pytest.mark.parametrize("name", ["codex", "cursor", "gemini", "opencode"])
 def test_unsupported_agent_adapters_raise_not_implemented(name: str) -> None:
     spec = get_agent(name)
     assert spec.supported is False

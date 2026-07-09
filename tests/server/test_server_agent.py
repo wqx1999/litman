@@ -142,16 +142,16 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
         "claude",
         "codex",
         "cursor",
+        "gemini",
         "opencode",
-        "zcode",
     ]
     supported = {e["name"]: e["supported"] for e in body["agents"]}
     assert supported == {
         "claude": True,
         "codex": False,
         "cursor": False,
+        "gemini": False,
         "opencode": False,
-        "zcode": False,
     }
     for e in body["agents"]:
         assert set(e) == {"name", "display", "supported", "detected", "install_url"}

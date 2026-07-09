@@ -9,7 +9,7 @@ endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
 v1.1.1 ships exactly one *supported* agent, Claude Code. The other four
-(Codex / Cursor / OpenCode / Zcode) exist here as ``supported=False``
+(Codex / Cursor / Gemini CLI / OpenCode) exist here as ``supported=False``
 placeholders so the picker renders a stable, greyed-out roadmap and so the
 seam is already N-agent shaped; v1.1.2 fills in their real adapters. Their
 adapter callables raise :class:`NotImplementedError` — generic code never
@@ -116,6 +116,16 @@ AGENTS: tuple[AgentSpec, ...] = (
         install_skill=_unsupported("cursor"),
     ),
     AgentSpec(
+        name="gemini",
+        display="Gemini CLI",
+        launch="gemini",
+        supported=False,
+        install_url="https://github.com/google-gemini/gemini-cli",
+        detect_bin="gemini",
+        skill_installed=_unsupported("gemini"),
+        install_skill=_unsupported("gemini"),
+    ),
+    AgentSpec(
         name="opencode",
         display="OpenCode",
         launch="opencode",
@@ -124,16 +134,6 @@ AGENTS: tuple[AgentSpec, ...] = (
         detect_bin="opencode",
         skill_installed=_unsupported("opencode"),
         install_skill=_unsupported("opencode"),
-    ),
-    AgentSpec(
-        name="zcode",
-        display="Zcode",
-        launch="zcode",
-        supported=False,
-        install_url="https://z.ai/",
-        detect_bin="zcode",
-        skill_installed=_unsupported("zcode"),
-        install_skill=_unsupported("zcode"),
     ),
 )
 
