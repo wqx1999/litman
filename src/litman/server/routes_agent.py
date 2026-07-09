@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import shlex
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from litman.core import agent_prefs, agents, terminal
 
@@ -126,7 +126,7 @@ async def launch_agent(request: Request) -> dict[str, object]:
 
 
 @router.get("/agent/status")
-def agent_status() -> dict[str, object]:
+def agent_status(response: Response) -> dict[str, object]:
     """Single data source for the GUI red dot + setup panel.
 
     ``needs_setup`` is the red-dot condition, computed server-side (the client
@@ -134,7 +134,15 @@ def agent_status() -> dict[str, object]:
 
         needs_setup == NOT( default chosen AND supported AND detected AND
                             skill_installed )
+
+    ``Cache-Control: no-store`` is mandatory: ``detected`` (is the agent binary
+    on PATH?) and ``skill_installed`` are live machine state that flips the
+    moment the user installs the agent CLI or its skill in a terminal. Without
+    it the browser serves a cached "not installed" body, so even a plain reload
+    keeps showing the red dot until a hard refresh (same reason paper.pdf sets
+    it — the resource is mutable). Localhost, so caching buys nothing anyway.
     """
+    response.headers["Cache-Control"] = "no-store"
     entries = [
         {
             "name": spec.name,

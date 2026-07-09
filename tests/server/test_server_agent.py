@@ -162,6 +162,15 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
     assert isinstance(body["needs_setup"], bool)
 
 
+def test_status_sets_no_store_cache_header(vault: Path) -> None:
+    """`detected` / `skill_installed` are live machine state; the browser must
+    never serve a cached body (else a plain reload keeps showing the red dot
+    until a hard refresh)."""
+    resp = _client(vault).get("/api/agent/status")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+
+
 def test_status_never_leaks_claude_skill_path(vault: Path) -> None:
     """The ~/.claude/skills filesystem path must never appear in the status
     contract (the install-url is docs.claude.com, which is fine — the red line

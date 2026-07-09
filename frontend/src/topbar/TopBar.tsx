@@ -195,6 +195,45 @@ export default function TopBar({
       return s
     })
 
+  // Re-read status and reflect it in both places it shows: the red dot (always,
+  // via refreshAgentStatus) and the setup panel if it happens to be open. Drives
+  // the auto-recheck-on-focus effect below and the panel's manual "Recheck"
+  // button. Best-effort — a failed re-read just leaves the last known state.
+  const recheckAgentStatus = () =>
+    refreshAgentStatus()
+      .then((s) => {
+        setAgentUi((ui) =>
+          ui?.kind === 'setup' ? { kind: 'setup', status: s } : ui,
+        )
+        return s
+      })
+      .catch(() => {})
+
+  // Auto-recheck when the browser regains focus / the tab becomes visible — the
+  // "go install the agent CLI (or its skill) in a terminal, come back to the
+  // browser" loop, so the red dot clears itself with no manual refresh. Mirrors
+  // App.tsx's auto-resync: `focus` fires on app switch, `visibilitychange` on
+  // tab switch (both can fire on one return, so an 800ms throttle coalesces).
+  // Empty deps is safe: the effect only calls stable setters + a module fetch.
+  const lastAgentRecheckRef = useRef(0)
+  useEffect(() => {
+    const onReturn = () => {
+      const now = Date.now()
+      if (now - lastAgentRecheckRef.current < 800) return
+      lastAgentRecheckRef.current = now
+      recheckAgentStatus()
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onReturn()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
+
   const handleLaunch = (res: AgentLaunchResult) => {
     if (res.mode === 'spawned') {
       setAgentUi(null)
@@ -592,6 +631,7 @@ export default function TopBar({
           onInstallSkill={installSkillFor}
           onChooseAgent={chooseAgent}
           onOpenSetup={openSetup}
+          onRecheck={recheckAgentStatus}
           onClose={() => setAgentUi(null)}
           notify={notify}
         />
@@ -1878,6 +1918,7 @@ function AgentPanel({
   onInstallSkill,
   onChooseAgent,
   onOpenSetup,
+  onRecheck,
   onClose,
   notify,
 }: {
@@ -1887,6 +1928,7 @@ function AgentPanel({
   onInstallSkill: (name: string) => void
   onChooseAgent: (name: string) => void
   onOpenSetup: () => void
+  onRecheck: () => void
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
@@ -1915,6 +1957,7 @@ function AgentPanel({
             onInstallSkill={onInstallSkill}
             onChooseAgent={onChooseAgent}
             onLaunch={onPick}
+            onRecheck={onRecheck}
           />
         ) : ui.kind === 'picker' ? (
           <>
@@ -1999,12 +2042,14 @@ function AgentSetup({
   onInstallSkill,
   onChooseAgent,
   onLaunch,
+  onRecheck,
 }: {
   status: AgentStatus
   busy: boolean
   onInstallSkill: (name: string) => void
   onChooseAgent: (name: string) => void
   onLaunch: (name: string) => void
+  onRecheck: () => void
 }) {
   return (
     <>
@@ -2093,6 +2138,16 @@ function AgentSetup({
           ),
         )}
       </div>
+      {/* Manual fallback for the rare case the focus/visibility auto-recheck
+          doesn't fire (e.g. a second monitor where this tab never lost focus). */}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onRecheck}
+        className="mt-3 text-xs font-medium text-stone-500 transition-colors hover:text-stone-700 disabled:opacity-50"
+      >
+        Installed it just now? Recheck
+      </button>
     </>
   )
 }
