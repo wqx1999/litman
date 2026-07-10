@@ -153,16 +153,20 @@ _FIRST_RUN_SENTINEL = "First Run"
 
 # Chromium reads these when it initializes a profile. Ours is a profile nobody
 # else uses, so switching the browser's own greeters off is configuration, not
-# a hack: sign-in, translate and save-password all belong to the browser
-# process and are unreachable from the page. The ``signin`` keys are the only
-# shot at Edge signing the profile into the Windows account on sight: Edge's
-# implicit sign-in is not upstream Chromium, and disabling it machine-wide
-# would need a policy key that reaches the user's ordinary browser too.
+# a hack: translate and save-password belong to the browser process and are
+# unreachable from the page.
+#
+# Every key here must be an *untracked* pref. Chromium signs the tracked ones
+# into `Secure Preferences`; writing one from outside fails the signature
+# check, so the browser restores its defaults and greets the user with a
+# "your settings were changed unexpectedly" banner — louder than the prompt it
+# was meant to silence. `signin.allowed_on_next_startup` is tracked. It is also
+# unnecessary: the `First Run` sentinel is what keeps Edge from signing the
+# profile into the Windows account.
 _PROFILE_PREFS: dict[str, Any] = {
     "browser": {"has_seen_welcome_page": True},
     "credentials_enable_service": False,
     "profile": {"password_manager_enabled": False},
-    "signin": {"allowed": False, "allowed_on_next_startup": False},
     "translate": {"enabled": False},
 }
 

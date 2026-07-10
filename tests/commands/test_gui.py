@@ -299,7 +299,10 @@ def test_gui_window_quiets_a_fresh_browser_profile(
     assert (profile / "First Run").is_file()
     prefs = json.loads((profile / "Default" / "Preferences").read_text())
     assert prefs["translate"]["enabled"] is False
-    assert prefs["signin"]["allowed"] is False
+    # Chromium signs its tracked prefs. Seeding one from outside fails the
+    # signature check, so the browser restores its defaults and says so in a
+    # banner — louder than the prompt the pref was meant to silence.
+    assert "signin" not in prefs
 
 
 def test_quiet_browser_profile_never_overwrites_the_users_settings(
