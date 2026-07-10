@@ -225,8 +225,8 @@ mkdocs serve
 
 [![rclone](https://img.shields.io/badge/rclone-Cloud_Sync_Engine-3F87E5?logo=rclone&logoColor=white)](https://rclone.org/)
 
-字标使用 [Nunito](https://fonts.google.com/specimen/Nunito)，作者 Vernon Adams、
-Cyreal、Jacques Le Bailly（SIL 开放字体许可证 1.1）。
+litman 字标改编自 [Nunito](https://fonts.google.com/specimen/Nunito)——由 Vernon Adams、
+Cyreal、Jacques Le Bailly 设计——把字形转为轮廓，并加了一点前倾。
 
 ## 许可证
 

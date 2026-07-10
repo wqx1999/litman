@@ -242,8 +242,9 @@ a vault gets backed up and moved between machines:
 
 [![rclone](https://img.shields.io/badge/rclone-Cloud_Sync_Engine-3F87E5?logo=rclone&logoColor=white)](https://rclone.org/)
 
-Wordmark set in [Nunito](https://fonts.google.com/specimen/Nunito), by Vernon Adams,
-Cyreal and Jacques Le Bailly (SIL Open Font License 1.1).
+The litman wordmark adapts [Nunito](https://fonts.google.com/specimen/Nunito) — by
+Vernon Adams, Cyreal and Jacques Le Bailly — outlining the letters and giving them
+a slight forward lean.
 
 ## License
 
