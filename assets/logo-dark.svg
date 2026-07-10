@@ -1,6 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="260" height="64" viewBox="0 0 260 64">
-<!-- litman wordmark. Nunito 700, outlines. One gesture, twice: the whole word
-     leans 4 degrees, the same angle the right page lifts off the spine. -->
+<!-- litman wordmark. Nunito 700, outlines, sheared 1 degree (skewX,
+     tan = 0.017514, pivoting on the baseline). It leans the same direction the
+     right page lifts off the spine in mark.svg, which leans 4 degrees — same
+     direction, not the same angle. Change one and re-judge the other. ADR-023. -->
   <g transform="translate(32 33) scale(0.94) translate(-32 -32)">
     <path d="M32 21 C 24 9 10 9 5 17 C 1.5 23 3.5 40 8 47 C 15 42 26 44 32 52 Z" fill="#f0f0f2" transform="translate(-1 0)"/>
     <path d="M32 21 C 40 9 54 9 59 17 C 62.5 23 60.5 40 56 47 C 49 42 38 44 32 52 Z" fill="#0a84ff" transform="translate(2.5 -4) rotate(4 32 36)"/>

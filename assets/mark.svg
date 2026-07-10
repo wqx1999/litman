@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<!-- litman mark. One 64x64 grid, one gesture: the right page lifts off
-     the spine and leans 4 degrees. The i's dot drifts the same way. -->
+<!-- litman mark. One 64x64 grid: the right page lifts off the spine and
+     leans 4 degrees. The wordmark leans the same direction, a quarter as far
+     (skewX 1 degree) — same direction, not the same angle. See ADR-023. -->
   <g transform="translate(32 33) scale(0.94) translate(-32 -32)">
     <path d="M32 21 C 24 9 10 9 5 17 C 1.5 23 3.5 40 8 47 C 15 42 26 44 32 52 Z" fill="#1c1c1e" transform="translate(-1 0)"/>
     <path d="M32 21 C 40 9 54 9 59 17 C 62.5 23 60.5 40 56 47 C 49 42 38 44 32 52 Z" fill="#007aff" transform="translate(2.5 -4) rotate(4 32 36)"/>
