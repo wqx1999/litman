@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import contextlib
 import getpass
-import json
 import os
 import shutil
 import socket
@@ -151,42 +150,25 @@ def remove_browser_profile() -> Path | None:
 # first run already happened.
 _FIRST_RUN_SENTINEL = "First Run"
 
-# Chromium reads these when it initializes a profile. Ours is a profile nobody
-# else uses, so switching the browser's own greeters off is configuration, not
-# a hack: translate and save-password belong to the browser process and are
-# unreachable from the page.
-#
-# Every key here must be an *untracked* pref. Chromium signs the tracked ones
-# into `Secure Preferences`; writing one from outside fails the signature
-# check, so the browser restores its defaults and greets the user with a
-# "your settings were changed unexpectedly" banner — louder than the prompt it
-# was meant to silence. `signin.allowed_on_next_startup` is tracked. It is also
-# unnecessary: the `First Run` sentinel is what keeps Edge from signing the
-# profile into the Windows account.
-_PROFILE_PREFS: dict[str, Any] = {
-    "browser": {"has_seen_welcome_page": True},
-    "credentials_enable_service": False,
-    "profile": {"password_manager_enabled": False},
-    "translate": {"enabled": False},
-}
-
-
 def _quiet_browser_profile(profile: Path) -> None:
-    """Seed a fresh app-window profile so the window opens without prompts.
+    """Mark a fresh app-window profile as one the browser has already run.
 
-    Writes only what is absent. Once the browser has run, ``Preferences`` is
-    its file and holds whatever the user has changed since — rewriting it every
-    launch would silently undo them. Best-effort: a profile we cannot seed
-    still opens a window, just a chattier one.
+    Two things follow from the sentinel, and the first is not cosmetic. Edge
+    restarts itself partway through a new profile's first run: the process we
+    spawned exits, :func:`_stop_server_when_window_closes` reads that as a
+    closed window, and the server dies between the page's HTML and its
+    scripts. The sentinel is also what keeps Edge from signing the profile
+    into the Windows account on sight.
+
+    The sentinel is all we write. Seeding Chromium's ``Preferences`` from
+    outside makes the browser announce that its settings were changed
+    unexpectedly — louder than the prompts it was meant to silence. The flags
+    in :func:`_app_window_argv` and the page's own ``translate="no"`` cover
+    what those preferences did. Best-effort: a profile we cannot seed still
+    opens a window, just a chattier one.
     """
     with contextlib.suppress(OSError):
         (profile / _FIRST_RUN_SENTINEL).touch(exist_ok=True)
-    prefs = profile / "Default" / "Preferences"
-    if prefs.exists():
-        return
-    with contextlib.suppress(OSError):
-        prefs.parent.mkdir(parents=True, exist_ok=True)
-        prefs.write_text(json.dumps(_PROFILE_PREFS), encoding="utf-8")
 
 
 def _app_window_argv(url: str) -> list[str] | None:

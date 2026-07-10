@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import builtins
 import importlib
-import json
 import re
 import shutil
 import socket
@@ -284,39 +283,28 @@ def test_gui_window_gives_the_browser_a_profile_of_its_own(
     assert "--disable-sync" in argv
 
 
-def test_gui_window_quiets_a_fresh_browser_profile(
+def test_gui_window_marks_a_fresh_browser_profile_as_already_run(
     gui_harness, chromium_on_path, vault_with_paper
 ) -> None:
-    # Sign-in, translate and save-password prompts live in the browser process
-    # and no page can reach them. The profile is ours alone, so we switch them
-    # off through the browser's own preferences file before it ever starts.
+    # Without the sentinel Edge restarts itself partway through a new profile's
+    # first run. The process we spawned exits, the watcher below reads that as
+    # a closed window, and the server dies between the page's HTML and its
+    # scripts — a blank window, then ERR_CONNECTION_REFUSED on reload.
     vault, _pid = vault_with_paper
 
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
 
     assert result.exit_code == 0, result.output
-    profile = browser_profile_dir()
-    assert (profile / "First Run").is_file()
-    prefs = json.loads((profile / "Default" / "Preferences").read_text())
-    assert prefs["translate"]["enabled"] is False
-    # Chromium signs its tracked prefs. Seeding one from outside fails the
-    # signature check, so the browser restores its defaults and says so in a
-    # banner — louder than the prompt the pref was meant to silence.
-    assert "signin" not in prefs
+    assert (browser_profile_dir() / "First Run").is_file()
 
 
-def test_quiet_browser_profile_never_overwrites_the_users_settings(
-    tmp_path,
-) -> None:
-    # Once the browser has run, Preferences is its file: it holds every setting
-    # the user has changed since. Reseeding it each launch would undo them.
-    prefs = tmp_path / "Default" / "Preferences"
-    prefs.parent.mkdir(parents=True)
-    prefs.write_text('{"translate": {"enabled": true}}', encoding="utf-8")
-
+def test_quiet_browser_profile_writes_nothing_else(tmp_path) -> None:
+    # Seeding Chromium's Preferences from outside makes the browser announce
+    # that its settings were changed unexpectedly — louder than the prompts it
+    # was meant to silence. The sentinel is the whole intervention.
     _quiet_browser_profile(tmp_path)
 
-    assert json.loads(prefs.read_text())["translate"]["enabled"] is True
+    assert [p.name for p in tmp_path.iterdir()] == ["First Run"]
 
 
 def test_quiet_browser_profile_survives_an_unwritable_profile(tmp_path) -> None:
