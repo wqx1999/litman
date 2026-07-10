@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import json
 import re
 import shutil
 import socket
@@ -29,6 +30,7 @@ from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
     _find_free_port,
+    _quiet_browser_profile,
     _stop_server_when_window_closes,
     browser_profile_dir,
     gui_cmd,
@@ -278,6 +280,51 @@ def test_gui_window_gives_the_browser_a_profile_of_its_own(
     # tab and a make-me-default prompt stacked on top of their library.
     assert "--no-first-run" in argv
     assert "--no-default-browser-check" in argv
+    assert "--disable-features=Translate" in argv
+    assert "--disable-sync" in argv
+
+
+def test_gui_window_quiets_a_fresh_browser_profile(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # Sign-in, translate and save-password prompts live in the browser process
+    # and no page can reach them. The profile is ours alone, so we switch them
+    # off through the browser's own preferences file before it ever starts.
+    vault, _pid = vault_with_paper
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    profile = browser_profile_dir()
+    assert (profile / "First Run").is_file()
+    prefs = json.loads((profile / "Default" / "Preferences").read_text())
+    assert prefs["translate"]["enabled"] is False
+    assert prefs["signin"]["allowed"] is False
+
+
+def test_quiet_browser_profile_never_overwrites_the_users_settings(
+    tmp_path,
+) -> None:
+    # Once the browser has run, Preferences is its file: it holds every setting
+    # the user has changed since. Reseeding it each launch would undo them.
+    prefs = tmp_path / "Default" / "Preferences"
+    prefs.parent.mkdir(parents=True)
+    prefs.write_text('{"translate": {"enabled": true}}', encoding="utf-8")
+
+    _quiet_browser_profile(tmp_path)
+
+    assert json.loads(prefs.read_text())["translate"]["enabled"] is True
+
+
+def test_quiet_browser_profile_survives_an_unwritable_profile(tmp_path) -> None:
+    # A profile we cannot seed still opens a window, just a chattier one — the
+    # seeding must never be the thing that stops `lit gui --window`.
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_text("", encoding="utf-8")
+
+    _quiet_browser_profile(not_a_dir)  # must not raise
+
+    assert not_a_dir.is_file()
 
 
 def test_gui_window_ties_the_server_to_the_window(

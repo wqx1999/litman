@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import getpass
+import json
 import os
 import shutil
 import socket
@@ -146,6 +147,44 @@ def remove_browser_profile() -> Path | None:
     return None if target.is_dir() else target
 
 
+# Chromium treats the presence of this file in the user-data-dir as proof that
+# first run already happened.
+_FIRST_RUN_SENTINEL = "First Run"
+
+# Chromium reads these when it initializes a profile. Ours is a profile nobody
+# else uses, so switching the browser's own greeters off is configuration, not
+# a hack: sign-in, translate and save-password all belong to the browser
+# process and are unreachable from the page. The ``signin`` keys are the only
+# shot at Edge signing the profile into the Windows account on sight: Edge's
+# implicit sign-in is not upstream Chromium, and disabling it machine-wide
+# would need a policy key that reaches the user's ordinary browser too.
+_PROFILE_PREFS: dict[str, Any] = {
+    "browser": {"has_seen_welcome_page": True},
+    "credentials_enable_service": False,
+    "profile": {"password_manager_enabled": False},
+    "signin": {"allowed": False, "allowed_on_next_startup": False},
+    "translate": {"enabled": False},
+}
+
+
+def _quiet_browser_profile(profile: Path) -> None:
+    """Seed a fresh app-window profile so the window opens without prompts.
+
+    Writes only what is absent. Once the browser has run, ``Preferences`` is
+    its file and holds whatever the user has changed since — rewriting it every
+    launch would silently undo them. Best-effort: a profile we cannot seed
+    still opens a window, just a chattier one.
+    """
+    with contextlib.suppress(OSError):
+        (profile / _FIRST_RUN_SENTINEL).touch(exist_ok=True)
+    prefs = profile / "Default" / "Preferences"
+    if prefs.exists():
+        return
+    with contextlib.suppress(OSError):
+        prefs.parent.mkdir(parents=True, exist_ok=True)
+        prefs.write_text(json.dumps(_PROFILE_PREFS), encoding="utf-8")
+
+
 def _app_window_argv(url: str) -> list[str] | None:
     """argv for a Chromium-family ``--app=`` window, or None if none found.
 
@@ -154,15 +193,18 @@ def _app_window_argv(url: str) -> list[str] | None:
 
     ``--user-data-dir`` is not a preference: it forces a browser instance of
     our own, which is the only reason ``proc.wait()`` can mean "the user closed
-    the window". The two suppression flags exist because a never-before-used
-    profile otherwise greets the user with a first-run tab and a
-    make-me-default prompt on top of their library.
+    the window". The suppression flags exist because a never-before-used
+    profile otherwise greets the user with a first-run tab, a make-me-default
+    prompt and a translate bubble on top of their library. The profile's
+    ``Preferences`` file quiets the rest (see :func:`_quiet_browser_profile`).
     """
     flags = [
         f"--app={url}",
         f"--user-data-dir={browser_profile_dir()}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
     ]
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
@@ -552,7 +594,9 @@ def gui_cmd(
                 webbrowser.open(url)
                 return
             try:
-                browser_profile_dir().mkdir(parents=True, exist_ok=True)
+                profile = browser_profile_dir()
+                profile.mkdir(parents=True, exist_ok=True)
+                _quiet_browser_profile(profile)
                 proc = subprocess.Popen(
                     app_argv,
                     stdout=subprocess.DEVNULL,
