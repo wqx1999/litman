@@ -55,6 +55,7 @@ lit = "litman.cli:main"
 Homepage = "https://github.com/wqx1999/litman"
 Repository = "https://github.com/wqx1999/litman"
 Documentation = "https://github.com/wqx1999/litman/blob/main/docs/0-readme.md"
+Changelog = "https://github.com/wqx1999/litman/blob/main/CHANGELOG.md"
 Issues = "https://github.com/wqx1999/litman/issues"
 
 # Single source of truth for the version: src/litman/__init__.py __version__.
