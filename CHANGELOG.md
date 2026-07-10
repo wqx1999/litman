@@ -57,6 +57,8 @@ behaviour, a minor release adds it, a major release breaks it.
 - An empty vault, and a lost connection to the server, now explain themselves in
   the GUI instead of showing an empty list or silently doing nothing.
 - The browser no longer offers to translate the GUI, which blanked the page.
+- A few GUI messages that appeared in Chinese are now in English, and the
+  mark-read toast names its undo key the way the `?` sheet does.
 - The `?` shortcut sheet no longer wraps its key captions.
 - `lit setup` signposts the next step for a first-time user.
 
