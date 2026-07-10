@@ -304,7 +304,7 @@ export default function App() {
   // Session activity log: every notify (toast) also appends here so a GUI-only
   // user has a scrollback the last-write-wins toast can't give. In-memory ring
   // (cap 200, newest kept), cleared on refresh (AC4 — no persistence, no second
-  // write口 to disk, invariant #16). `logUnread` lights a dot on the log icon
+  // write path to disk, invariant #16). `logUnread` lights a dot on the log icon
   // until the panel is opened.
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([])
   const [logUnread, setLogUnread] = useState(false)
@@ -1356,7 +1356,9 @@ export default function App() {
       ...cockpitHandle,
       triggerRead: () => {
         cockpitHandle.triggerRead()
-        notify('已标记已读 · ⌥⇧R 撤销')
+        // Modifiers spelled out, per the cheat sheet's own convention: a glyph
+        // is an extra decode step, and ⌥ names a key Windows keyboards lack.
+        notify('Marked read · Alt+Shift+R to undo')
       },
     }
   }, [cockpitHandle, notify])

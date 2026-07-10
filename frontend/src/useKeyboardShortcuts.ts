@@ -208,7 +208,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           // selection (preventDefault stops the OS menu-key / dead-key glyph).
           e.preventDefault()
           if (!selectedId || !cockpit) {
-            notify('未选中论文')
+            notify('No paper selected')
             return
           }
           action(cockpit)

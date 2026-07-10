@@ -15,10 +15,10 @@ export interface CockpitHandle {
   triggerUnread(): void
   /** status → promoted — same as picking it in the Status dropdown. */
   triggerPromote(): void
-  /** status → dropped via the existing二次确认 — same as the Status dropdown +
+  /** status → dropped via the existing confirm — same as the Status dropdown +
    *  the cockpit's own write guard surfacing the backend confirm. */
   triggerDrop(): void
-  /** Open the Tags母栏 (Topics pill) so the user can pick a value (no write). */
+  /** Open the Tags group (Topics pill) so the user can pick a value (no write). */
   openTags(): void
   /** Copy the paper-folder path — same as the Copy path button. */
   copyPath(): void
@@ -885,7 +885,7 @@ function UnreadConfirm({
 
 /** Default-No confirm for dropping a paper via the ⌥D shortcut (Phase 4). The
  * cockpit's Status dropdown drops without a prompt, but a one-keystroke ⌥D needs
- * a guard (AC B5 ②: "⌥D 二次确认"). On confirm it calls the SAME
+ * a guard (AC B5 ②: ⌥D must confirm). On confirm it calls the SAME
  * `setEnum('status','dropped')` write path the dropdown uses, so this adds a
  * confirmation step, not a second write path (invariant #16). Mirrors the macOS
  * modal shell of UnreadConfirm; Cancel autofocused, destructive button rose. */
@@ -1169,7 +1169,7 @@ function WriteCockpit({
   const [showUnread, setShowUnread] = useState(false)
   // Drop-confirm dialog (Phase 4): the ⌥D shortcut routes here so a one-keystroke
   // drop is guarded (the Status dropdown drops without a prompt; the shortcut
-  // needs the二次确认). On confirm it calls the existing setEnum write path.
+  // needs the confirm). On confirm it calls the existing setEnum write path.
   const [showDrop, setShowDrop] = useState(false)
   // The currently-open pill in the Tags group (topics/methods/data/projects), or
   // null. One field at a time: opening one collapses the others (problem 1/3).
@@ -1357,7 +1357,7 @@ function WriteCockpit({
 
   // Confirmed drop (Phase 4, ⌥D path): routes through the existing
   // setEnum('status','dropped') write, so the only addition over the dropdown is
-  // the preceding二次确认 (DropConfirm), not a second write path.
+  // the preceding confirm (DropConfirm), not a second write path.
   function doDrop() {
     setShowDrop(false)
     setEnum('status', 'dropped')
@@ -1387,10 +1387,11 @@ function WriteCockpit({
     triggerRead: markRead,
     // ↺ undo only makes sense once read; mirror the button's gate (it is hidden
     // until readDate != null). On an unread paper, undo-of-a-non-action is inert,
-    // so toast a subtle hint rather than no-op silently (误触看得见) — no write.
+    // so toast a subtle hint rather than no-op silently (a mis-key stays
+    // visible) — no write.
     triggerUnread: () => {
       if (readDate != null) setShowUnread(true)
-      else notify('尚未标记已读')
+      else notify('Not marked read yet')
     },
     // `lit promote` is sugar for status=deep-read (commands/promote.py); mirror
     // that exact value through the existing setEnum write rather than invent a
@@ -1636,7 +1637,7 @@ function WriteCockpit({
                   onClick={logRevisit}
                   title={
                     readDate == null
-                      ? '先标记已读 (mark as read first)'
+                      ? 'Mark as read first'
                       : 'Stamp a return visit (today)'
                   }
                   className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
