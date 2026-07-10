@@ -308,6 +308,11 @@ def test_make_shortcut_win32_builds_powershell_command(
     assert f"$s.TargetPath = '{fake_lit_on_path}'" in script
     assert "$s.Arguments = 'gui --window'" in script
     assert "litman.ico" in script
+    # Explorer caches the icon by the .ico's path, which never changes across
+    # upgrades — without this notification an upgraded user keeps the old
+    # artwork. It must run after Save() and must not be able to fail the write.
+    assert script.index("$s.Save()") < script.index("SHChangeNotify")
+    assert "try {" in script and "} catch { }" in script
 
 
 def test_make_shortcut_darwin_builds_app_bundle(

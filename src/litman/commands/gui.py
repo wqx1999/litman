@@ -219,6 +219,25 @@ def _write_shortcut_linux(target: Path, lit: str) -> None:
     )
 
 
+# Explorer caches shortcut icons by the icon FILE'S PATH, and litman.ico always
+# sits at the same path inside the install. Upgrading rewrites the bytes there,
+# so a user who had the old artwork keeps seeing it — deleting the .lnk does not
+# help, because the stale entry is keyed on the .ico, not the shortcut.
+# SHCNE_ASSOCCHANGED is the notification installers send to make the shell drop
+# those bitmaps. Best-effort: a shell that refuses to refresh must not fail the
+# shortcut we just wrote successfully.
+_SHELL_ICON_REFRESH = (
+    "; try { "
+    "Add-Type -Namespace Litman -Name Shell -MemberDefinition "
+    "'[DllImport(\"shell32.dll\")] public static extern void "
+    "SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);' "
+    "-ErrorAction Stop; "
+    # SHCNE_ASSOCCHANGED = 0x08000000, SHCNF_IDLIST = 0x0000
+    "[Litman.Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero) "
+    "} catch { }"
+)
+
+
 def _write_shortcut_win32(target: Path, lit: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -236,6 +255,7 @@ def _write_shortcut_win32(target: Path, lit: str) -> None:
         f"$s.IconLocation = '{q(_icon_path('litman.ico'))}'; "
         f"$s.WorkingDirectory = '{q(Path.home())}'; "
         "$s.Save()"
+        + _SHELL_ICON_REFRESH
     )
     try:
         subprocess.run(
