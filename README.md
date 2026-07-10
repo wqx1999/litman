@@ -41,10 +41,8 @@ curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
 ```
 
-The installer leaves a **litman** icon you can double-click — on the desktop on
-Windows, in Launchpad on macOS, in the applications menu on Linux. Or run
-`lit gui`. Everything else — your first library, your agent — the app sets up on
-the way in.
+Double-click the **litman** icon the installer creates — desktop on Windows,
+Launchpad on macOS, applications menu on Linux.
 
 <details>
 <summary>Install with pipx</summary>
