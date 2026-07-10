@@ -1,10 +1,11 @@
-<h1>LITerature MANager <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo1.png" width="120" align="right"/></h1>
-
-<br clear="all"/>
+<h1>LITerature MANager</h1>
 
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo2.png" width="58%" alt="LITMAN"/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero-dark.png"/>
+  <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero.png" width="52%" alt="litman"/>
+</picture>
 
 <p>
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
@@ -241,7 +242,8 @@ a vault gets backed up and moved between machines:
 
 [![rclone](https://img.shields.io/badge/rclone-Cloud_Sync_Engine-3F87E5?logo=rclone&logoColor=white)](https://rclone.org/)
 
-Octopus mascot generated with [Doubao](https://www.doubao.com/) (AI image generation).
+Wordmark set in [Nunito](https://fonts.google.com/specimen/Nunito), by Vernon Adams,
+Cyreal and Jacques Le Bailly (SIL Open Font License 1.1).
 
 ## License
 

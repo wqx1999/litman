@@ -25,6 +25,13 @@ INDEX="$ASSET_DIR/index.html"
 
 cd "$FRONTEND_DIR"
 
+# ../assets/ is the single source for the brand marks. These two are copies —
+# never hand-edit them. favicon.svg is the browser tab icon (public/ is copied
+# verbatim into the build); logo.svg is bundled into the first-run page.
+BRAND_DIR="$FRONTEND_DIR/../assets"
+cp "$BRAND_DIR/icon.svg" "$FRONTEND_DIR/public/favicon.svg"
+cp "$BRAND_DIR/logo.svg" "$FRONTEND_DIR/src/assets/logo.svg"
+
 if [ ! -d node_modules ]; then
   echo "[build.sh] node_modules missing — running npm install"
   npm install

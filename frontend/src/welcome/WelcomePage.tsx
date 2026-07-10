@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import { createVault, putActiveVault } from '../api'
 import type { VaultsPayload } from '../types'
-import logoUrl from '../assets/litman-logo.png'
+import logoUrl from '../assets/logo.svg'
 
 /** Full-screen first-run page shown when the server started with no vault to
  * serve (VaultsPayload.served === null): a fresh install, or an active registry
