@@ -1,8 +1,8 @@
 # litman
 
-litman is a local-first, AI-augmented manager for a research library you curate
-by hand. Each paper lives in one folder of plain files — the PDF, structured
-metadata, and your notes. Day to day you work in the **Web UI** (`lit gui`), a
+litman keeps every paper you read on your own computer, and lets an AI assistant
+do the filing. You curate the library by hand; each paper lives in one folder of
+plain files — the PDF, structured metadata, and your notes. Day to day you work in the **Web UI** (`lit gui`), a
 browser app for reading, annotating, and everyday curation; for anything beyond
 that, ask **Claude Code** in plain language and it runs the right command for
 you. Underneath both, the `lit` **command line** performs every operation itself
@@ -10,6 +10,19 @@ you. Underneath both, the `lit` **command line** performs every operation itself
 
 These pages are the full documentation set. This one tells you where to start and
 what each of the others is for.
+
+## Before you start
+
+1. **Don't move a vault or project folder by hand.** The symlinks, project
+   bridges, and registry that hold it together are path-based; if you must move
+   one, run `lit health-check` afterward to repair what broke.
+2. **Don't edit metadata files by hand.** Change papers, taxonomy, and config
+   through the Web UI or your AI agent — both go through validated `lit` commands.
+3. **Figure and table reading needs a multimodal model.** A text-only model falls
+   back to plain-text extraction and cannot see figures or image-based tables.
+4. **On Windows, the symlinked extras need Developer Mode** — the `views/`
+   browsing hubs and the project bridges. Without it litman skips them; metadata,
+   PDFs, notes, and everything else work normally.
 
 ## Start here
 
@@ -47,6 +60,7 @@ specific reference.
 | [3-concepts.md](3-concepts.md) | The field-by-field reference for `metadata.yaml`, `lit-config.yaml`, and `TAXONOMY.md`, plus a glossary of the terms the other pages use | You need to know exactly what a field means or which values it accepts |
 | [4-commands.md](4-commands.md) | Every `lit` subcommand, the shapes you call it in, and all of its flags, grouped as `lit --help` lists them | You need the full options for a command, or a command the tutorial skips |
 | [5-tutorial.md](5-tutorial.md) | One real paper taken through a complete everyday workflow, shown three ways — in the Web UI, as agent requests, and as `lit` commands | **You are getting started — begin here** |
+| [6-agent-benchmark.md](6-agent-benchmark.md) | How well eight models drive litman's agent layer, and how that was measured | You are choosing which model to point Claude Code at |
 
 Installation is the first step of the [tutorial](5-tutorial.md). For any single
 command, `lit <cmd> --help` is always the most current authority.

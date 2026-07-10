@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "litman"
 dynamic = ["version"]
-description = "Local-first, AI-augmented literature management CLI"
+description = "Keep every paper you read on your own computer, and let an AI assistant do the filing."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

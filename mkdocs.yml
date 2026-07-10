@@ -1,5 +1,5 @@
 site_name: litman
-site_description: Local-first, AI-augmented literature management CLI.
+site_description: Keep every paper you read on your own computer, and let an AI assistant do the filing.
 site_url: https://litman.readthedocs.io        # placeholder — update on first deploy
 repo_url: https://github.com/wqx1999/litman
 repo_name: wqx1999/litman
@@ -50,3 +50,4 @@ nav:
   - Concepts: 3-concepts.md
   - Commands: 4-commands.md
   - Tutorial: 5-tutorial.md
+  - Agent model benchmark: 6-agent-benchmark.md

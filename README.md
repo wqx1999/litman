@@ -1,11 +1,11 @@
-<h1>LITerature MANager</h1>
-
 <div align="center">
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero-dark.png"/>
-  <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero.png" width="52%" alt="litman"/>
+  <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero.png" width="52%" alt="litman — LITerature MANager"/>
 </picture>
+
+<p>LITerature MANager</p>
 
 <p>
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
@@ -14,61 +14,20 @@
 <img src="https://img.shields.io/badge/AI--native-Claude%20Code-D97757?logo=anthropic&logoColor=white" alt="AI-native: Claude Code"/>
 </p>
 
-<p><b>English</b> | <a href="README-CN.md">中文</a></p>
-
 </div>
 
-**Local-first, AI-augmented literature manager.**
+**Keep every paper you read on your own computer, and let an AI assistant do the
+filing.**
 
-A local knowledge base for research papers, stored as plain files on your
-disk. Papers link explicitly to projects, code repositories, and each other
-through structured metadata and symlinks. Use it through a web UI for everyday
-browsing, reading, and annotation — and, for anything the UI doesn't cover, run
-the `lit` CLI yourself, or ask an AI agent to drive it for you via the bundled
-Claude Code skills.
-
----
-
-## Know before you use
-
-A few things worth knowing up front:
-
-1. **Don't move a vault or project folder by hand.** The symlinks, project
-   bridges, and registry that hold it together are path-based; if you must move
-   one, run `lit health-check` afterward to repair what broke.
-2. **Figure/table reading needs a multimodal model.** A text-only model falls
-   back to plain-text extraction and can't see figures or image-based tables.
-3. **Don't edit metadata files by hand.** Change papers, taxonomy, and config
-   through the web UI or your AI agent — both go through validated `lit` commands.
-4. **Windows users.** Symlink features (browsing views, project bridges) need
-   administrator privileges; [WSL](https://learn.microsoft.com/en-us/windows/wsl/)
-   is recommended.
-
-## Key Features
-
-1. **Plain files you own.** Your whole library is plain text on disk — YAML
-   metadata, markdown notes, original PDFs. No cloud database, no lock-in: back
-   it up anywhere, `grep` the lot.
-
-2. **Consistent by design.** A shared `TAXONOMY.md` governs topics, methods,
-   projects, and sources; atomic writes plus `lit health-check` keep
-   cross-references clean as the library grows.
-
-3. **Paper ↔ project ↔ code.** Bind one paper to many projects (each gets a
-   symlinked folder and an auto-generated `REFERENCES.md`) and to its cloned
-   code repo — an explicit knowledge graph with no manual upkeep.
-
-4. **Web UI + AI agent over one validated core.** Browse, read, and annotate in
-   the web UI (`lit gui`); for anything more, ask Claude Code in plain English
-   and the bundled `lit-library` / `lit-reading` skills drive the full CLI.
-   Every write is validated, so the library stays correct even when the model
-   isn't.
+Open a paper, highlight it, write your notes beside it — everything stays in
+ordinary files and folders that you can read, copy, and back up yourself, with or
+without litman. For anything past reading, just say what you want — *add this
+paper*, *which ones did I read for the peptide project?* — and your AI assistant
+does it.
 
 ---
 
 ## Install
-
-litman is a Python CLI tool. One line installs it and everything it needs:
 
 **macOS / Linux:**
 
@@ -82,28 +41,26 @@ curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
 ```
 
-Then run the one-shot setup wizard:
+The installer leaves a **litman** icon you can double-click — on the desktop on
+Windows, in Launchpad on macOS, in the applications menu on Linux. Or run
+`lit gui`. Everything else — your first library, your agent — the app sets up on
+the way in.
+
+<details>
+<summary>Install with pipx</summary>
+
+[pipx](https://pipx.pypa.io) builds litman's environment from the Python already on
+your machine, so it needs **Python 3.12 or newer** on your `PATH`.
 
 ```bash
-lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync → desktop shortcut
+pipx install litman
+lit gui --make-shortcut    # the icon — the one-line installer does this step for you
 ```
 
-To upgrade, run `lit self-update` — or re-run the install command.
+</details>
 
-litman asks PyPI for the latest version number once a day and tells you when
-yours is out of date. `LITMAN_NO_UPDATE_CHECK=1` turns that off. No telemetry is
-sent.
-
-**Alternative: pipx**
-
-Prefer [pipx](https://pipx.pypa.io)?
-
-```bash
-pipx install litman   # first install
-pipx upgrade litman   # update
-```
-
-**From a local clone** (development):
+<details>
+<summary>Install from a local clone (development)</summary>
 
 ```bash
 # first install
@@ -116,122 +73,83 @@ git pull
 pipx install --force .
 ```
 
-## Uninstall
+</details>
 
-Run two steps, in order — `lit uninstall` first (while the `lit` command still
-exists), then remove the CLI with whichever installer you used:
+## The AI assistant
+
+Reading and annotating work on their own. The *just say what you want* layer runs
+on [Claude Code](https://claude.ai/code), which you install separately — litman
+ships the skills it drives, not a model.
+
+Claude Code works with whatever model you give it. We ran eight of them through 22
+everyday tasks:
+
+- **Recommended: an [Anthropic](https://www.anthropic.com) subscription.** Claude
+  Sonnet 4.6 and Haiku 4.5 both complete 97% of the tasks.
+- **Without one, [DeepSeek-V4](https://www.deepseek.com) scores highest of the
+  rest.**
+
+Every write is validated whatever the model, so a weaker one needs more turns but
+never corrupts the library. Method and per-model scores:
+[agent model benchmark](docs/6-agent-benchmark.md).
+
+## Update and uninstall
+
+<details>
+<summary>Update litman</summary>
+
+`lit self-update` upgrades litman through whichever tool installed it, uv or pipx.
+It prints `current → latest` and asks once.
+
+litman also asks PyPI for the newest version number once a day, and prints a line
+when yours is older. `LITMAN_NO_UPDATE_CHECK=1` switches that off —
+[what it checks](docs/4-commands.md#lit-self-update).
+
+</details>
+
+<details>
+<summary>Uninstall litman</summary>
+
+Two steps, in order, while the `lit` command still exists:
 
 ```bash
-lit uninstall              # removes bundled skills, the desktop shortcut, shell completion, the vault registry, and agent preferences
-uv tool uninstall litman   # if you installed with uv / the install script
-pipx uninstall litman      # if you installed with pipx
+lit uninstall              # bundled skills, desktop shortcut, shell completion, vault registry, agent preferences
+uv tool uninstall litman   # or: pipx uninstall litman
 ```
 
-`lit uninstall` lists exactly what it will delete and asks first — pass
-`--dry-run` to preview or `-y` to skip the prompt.
+`lit uninstall` lists what it will delete and asks first — `--dry-run` previews,
+`-y` skips the prompt. Your vault (papers, PDFs, notes, annotations) is never
+touched by any of this; delete that directory by hand if you want the data gone.
 
-If you installed from a local clone, also delete the cloned repo folder once the
-CLI is gone:
-
-```bash
-rm -rf path/to/litman   # the directory you git-cloned into
-```
-
-Your vault (papers, PDFs, notes, annotations) is never touched by any of this;
-delete that directory by hand if you also want the data gone.
-
-## Quick start
-
-```bash
-lit gui             # open the web UI — browse, read, annotate, tag, and link papers
-lit gui --window    # same, in a standalone app window (no address bar)
-lit agent           # start your AI agent (claude, ...) in the vault directory
-```
-
-`lit gui` opens your browser automatically (`--no-browser` to skip; on headless
-boxes it prints the URL and an SSH tunnel line instead). For a double-click
-desktop entry, run `lit gui --make-shortcut` once.
-
-That's it — `lit setup` already created your vault. The web UI handles everyday
-browsing, reading, and annotation; for anything more (adding papers, taxonomy
-edits, project links), run `lit agent` and ask your agent in natural language,
-or see the [command reference](docs/4-commands.md).
-
----
-
-## Agent model benchmark
-
-litman's agent layer (the bundled `lit-library` and `lit-reading` skills) is
-meant to work with whatever model you point Claude Code at, not only Anthropic's.
-To see how well different models drive it, we ran each one as the Claude Code
-backend and had it operate litman through the skills, over **22 everyday-workflow
-tasks** (add, read, tag, modify, link, export, taxonomy edits, health checks,
-...), 3 rounds each, on the **litman 1.0.0** codebase ([commit 876d11c](https://github.com/wqx1999/litman/commit/876d11c), June 2026).
-
-**What the score is.** Each task is a **single-turn prompt in a clean context**:
-a fresh agent gets one natural-language instruction and must complete it in that
-one turn, with no prior conversation and no follow-up. **TRR** (task-completion
-rate) is the fraction of tasks the resulting vault state passed; **RA** (routing
-accuracy) is how often the agent picked the correct skill for a request.
-
-**A low score does not mean the model cannot operate litman.** It means the model
-less often *one-shots* the task from a cold start. With more guidance (a more
-detailed request, or a few follow-up turns) a lower-scoring model can still do the
-same work. This is a deliberately hard zero-shot floor, not a ceiling.
-
-| Model | Task completion (TRR) | Routing (RA) |
-|:---|---:|---:|
-| [Claude Sonnet 4.6](https://www.anthropic.com) | 97% | 100% |
-| [Claude Haiku 4.5](https://www.anthropic.com) | 97% | 79% |
-| [DeepSeek-V4 Flash](https://www.deepseek.com) | 80% | 71% |
-| [DeepSeek-V4 Pro](https://www.deepseek.com) | 76% | 57% |
-| [MiniMax-M3](https://www.minimax.io) | 71% | 75% |
-| [GLM-5.1](https://z.ai/model-api) | 58% | 64% |
-| [MiMo-V2.5 Pro](https://mimo.mi.com/) | 26% | 0% |
-| [MiMo-V2.5](https://mimo.mi.com/) | 21% | 0% |
-
-TRR is the mean over the 22 auto-scored tasks across 3 rounds; network-dependent
-and multi-turn scenarios (code cloning, cloud sync, a multi-turn recovery case)
-are excluded from this single-turn score. Whatever the model scores, the data
-layer validates every write — a wrong command fails loudly rather than writing
-bad data into the vault, so a lower-scoring model needs more turns but never
-corrupts the library.
-
----
+</details>
 
 ## Documentation
 
 Full documentation lives under [`docs/`](docs/). New to litman? The
-[tutorial](docs/5-tutorial.md) covers about 80% of everyday use; for anything
-else, ask the agent or check the command reference. [docs/0-readme.md](docs/0-readme.md)
-maps out the whole set.
+[tutorial](docs/5-tutorial.md) covers about 80% of everyday use.
 
 | Topic | File |
 |---|---|
 | Start here — docs map | [docs/0-readme.md](docs/0-readme.md) |
 | Design philosophy | [docs/1-philosophy.md](docs/1-philosophy.md) |
 | Four-layer architecture | [docs/2-architecture.md](docs/2-architecture.md) |
-| Concepts and field reference (`metadata.yaml`, `lit-config.yaml`, `TAXONOMY.md`) | [docs/3-concepts.md](docs/3-concepts.md) |
+| Concepts and field reference | [docs/3-concepts.md](docs/3-concepts.md) |
 | Command reference | [docs/4-commands.md](docs/4-commands.md) |
 | Tutorial | [docs/5-tutorial.md](docs/5-tutorial.md) |
-
-Local-preview the docs as a static site:
-
-```bash
-pip install mkdocs mkdocs-material
-mkdocs serve
-```
+| Agent model benchmark | [docs/6-agent-benchmark.md](docs/6-agent-benchmark.md) |
 
 ## Acknowledgments
 
-This tool was developed in the [Süssmuth Lab](https://www.tu.berlin/en/biochemie/research/research-in-suessmuth-group), Technische Universität Berlin. Development was carried out with access to the [TU Berlin HPC cluster](https://www.tu.berlin/en/hpc-cluster/introduction-slurm-version).
+Developed in the [Süssmuth Lab](https://www.tu.berlin/en/biochemie/research/research-in-suessmuth-group),
+Technische Universität Berlin, with access to the
+[TU Berlin HPC cluster](https://www.tu.berlin/en/hpc-cluster/introduction-slurm-version).
 
-This project was built with the help of AI-powered development tools:
+Built with:
 
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Anthropic-d4a574?logo=anthropic&logoColor=white)](https://claude.ai/code)
 [![Cursor](https://img.shields.io/badge/Cursor-AI_Editor-000000?logo=cursor&logoColor=white)](https://cursor.sh)
 
-Core dependencies that make litman possible:
+Standing on:
 
 [![Click](https://img.shields.io/badge/Click-CLI_Framework-4B8BBE?logoColor=white)](https://click.palletsprojects.com/)
 [![ruamel.yaml](https://img.shields.io/badge/ruamel.yaml-YAML_Parser-FFDD54?logoColor=black)](https://pypi.org/project/ruamel.yaml/)
@@ -240,15 +158,9 @@ Core dependencies that make litman possible:
 [![Rich](https://img.shields.io/badge/Rich-Terminal_UI-FAD000?logoColor=black)](https://rich.readthedocs.io/)
 [![httpx](https://img.shields.io/badge/httpx-HTTP_Client-2D9CDB?logoColor=white)](https://www.python-httpx.org/)
 
-Cloud sync (`lit sync`) is powered by [rclone](https://rclone.org/), the external
-CLI that mirrors the vault to any cloud backend it supports — the backbone of how
-a vault gets backed up and moved between machines:
+Cloud sync runs on [rclone](https://rclone.org/), installed separately.
 
-[![rclone](https://img.shields.io/badge/rclone-Cloud_Sync_Engine-3F87E5?logo=rclone&logoColor=white)](https://rclone.org/)
-
-The litman wordmark adapts [Nunito](https://fonts.google.com/specimen/Nunito) — by
-Vernon Adams, Cyreal and Jacques Le Bailly — outlining the letters and giving them
-a slight forward lean.
+The litman wordmark is adapted from [Nunito](https://fonts.google.com/specimen/Nunito).
 
 ## License
 

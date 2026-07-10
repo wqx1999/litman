@@ -43,6 +43,14 @@ behaviour, a minor release adds it, a major release breaks it.
   terminal. Pass `--limit` for more.
 - `lit uninstall` now also removes the desktop shortcut, the machine-level
   preferences, and the browser profile the app window uses.
+- A shorter README. The agent model benchmark moved to
+  [docs/6-agent-benchmark.md](docs/6-agent-benchmark.md) and the usage caveats to
+  [docs/0-readme.md](docs/0-readme.md); the install instructions lead with the
+  one-line installer, and the pipx, source-install, update and uninstall routes
+  are folded away.
+- The Chinese README is gone. The documentation is English only.
+- The one-line description on the PyPI page, the documentation site and
+  `lit --help` now says what litman does in plain English.
 
 ### Fixed
 
@@ -61,6 +69,9 @@ behaviour, a minor release adds it, a major release breaks it.
   mark-read toast names its undo key the way the `?` sheet does.
 - The `?` shortcut sheet no longer wraps its key captions.
 - `lit setup` signposts the next step for a first-time user.
+- The Windows note claimed the symlink features need administrator rights and
+  pointed users at WSL. They need Developer Mode, and without it litman skips them
+  and carries on.
 
 ## 1.1.0 — 2026-07-06
 

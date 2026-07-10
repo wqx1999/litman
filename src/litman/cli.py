@@ -583,7 +583,8 @@ class LitGroup(click.Group):
 )
 @click.version_option(version=__version__, prog_name="lit")
 def cli() -> None:
-    """litman — local-first, AI-augmented literature management CLI.
+    """litman — keep every paper you read on your own computer, and let an AI
+    assistant do the filing.
 
     New here? Run lit setup.
 
