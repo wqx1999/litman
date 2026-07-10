@@ -17,7 +17,7 @@ import {
 } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
-import logoUrl from '../assets/litman-logo.png'
+import LitmanMark from '../ui/LitmanMark'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -270,12 +270,7 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <img
-        src={logoUrl}
-        alt="litman"
-        title="litman"
-        className="h-6 w-auto shrink-0 select-none"
-      />
+      <LitmanMark className="h-6 w-6 shrink-0 select-none text-stone-800" />
 
       {!trashMode && (
       <>
