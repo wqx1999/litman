@@ -218,6 +218,26 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
         return
       }
 
+      // --- Backquote — launch the agent (Shift optional) --------------------
+      // The key left of "1": the universal "summon a console" convention
+      // (Quake, VS Code, …), which is what launching the agent is.
+      //
+      // Accepted WITH OR WITHOUT Shift, so it sits above the Tier-1 modifier
+      // reject. The keycap is engraved `~` over `` ` `` and readers scan for
+      // the tilde, so the cheat sheet shows `~`; were Shift rejected, anyone
+      // following that label would press Shift+` and get silence. Precedent:
+      // `?` is itself Shift+/ and is handled the same way, above. Ctrl/Cmd are
+      // excluded at the top and Alt by the Tier-2 block, so only Shift can
+      // still be set here.
+      //
+      // Matched on e.code (physical position), so a layout printing another
+      // glyph on that key still fires.
+      if (e.code === 'Backquote') {
+        e.preventDefault()
+        openAgent?.()
+        return
+      }
+
       // --- Tier 1: bare single keys (no modifiers) -------------------------
       // Reject any modifier so e.g. Ctrl+F (page find) is never swallowed.
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
@@ -271,15 +291,6 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
         case 'Period':
           e.preventDefault()
           activateAdjacentTab(1)
-          return
-        // Backtick — the key left of "1". The universal "summon a console"
-        // convention (Quake, VS Code, …), which is exactly what launching the
-        // agent does. Bare, never Shift+` (that is `~`): the modifier reject
-        // above already guarantees it. Matched on e.code (physical position),
-        // so a layout that prints another glyph on that key still fires.
-        case 'Backquote':
-          e.preventDefault()
-          openAgent?.()
           return
       }
 

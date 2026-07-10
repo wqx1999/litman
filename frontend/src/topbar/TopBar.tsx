@@ -626,7 +626,7 @@ export default function TopBar({
         title={
           agentStatus?.needs_setup
             ? 'Set up your AI agent'
-            : 'Launch your AI agent in the vault (lit agent) — press `'
+            : 'Launch your AI agent in the vault (lit agent) — press ~'
         }
         aria-label={agentStatus?.needs_setup ? 'Set up agent' : 'Launch agent'}
         className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"

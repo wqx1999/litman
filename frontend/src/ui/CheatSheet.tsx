@@ -73,8 +73,12 @@ const SECTIONS: Section[] = [
   },
   {
     title: 'Agent',
-    note: 'Backtick — the key left of "1". Opens setup when no agent is configured.',
-    rows: [{ chords: [['`']], action: 'Launch your AI agent' }],
+    // Labelled `~`, not `` ` ``: the backtick glyph is near-invisible at keycap
+    // size, and the tilde is what the eye finds on the physical key. The
+    // dispatcher accepts the key with or without Shift, so this label cannot
+    // teach a press that does nothing.
+    note: 'The key left of "1", with or without Shift. Opens setup when no agent is configured.',
+    rows: [{ chords: [['~']], action: 'Launch your AI agent' }],
   },
   {
     title: 'Papers list & search',
