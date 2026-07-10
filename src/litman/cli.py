@@ -11,6 +11,7 @@ normal Python tracebacks (they indicate bugs, not user errors).
 
 from __future__ import annotations
 
+import os
 import sys
 from difflib import get_close_matches
 from pathlib import Path
@@ -695,8 +696,53 @@ def _force_utf8_output() -> None:
                 pass
 
 
+def _ensure_std_streams() -> None:
+    """Give the process real streams when Windows handed it none.
+
+    The desktop shortcut runs ``litw``, a windows-subsystem launcher, so the OS
+    attaches no console and CPython sets ``sys.stdout``/``sys.stderr`` to None.
+    Rich and uvicorn's logging both write to those streams; left as None the
+    first print raises inside a process that has nowhere to show the traceback.
+
+    Point them at a log file instead of ``os.devnull``, because hiding the
+    console also hides every error message: without this file a silent failure
+    to start leaves the user nothing to read. Truncated per launch — it is a
+    crash-diagnosis file, not an audit trail, and uvicorn logs a line per HTTP
+    request. ``os.devnull`` is the fallback: no console must never mean no
+    start, even on a box where the log dir cannot be created.
+
+    A no-op everywhere else, including piped/redirected POSIX runs, where both
+    streams are real objects.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    from platformdirs import user_log_dir
+
+    from litman.core.vault_registry import REGISTRY_APP_NAME
+
+    stream = None
+    try:
+        log_dir = Path(user_log_dir(REGISTRY_APP_NAME))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stream = open(  # noqa: SIM115 — lives for the process
+            log_dir / "litw.log", "w", encoding="utf-8", errors="replace", buffering=1
+        )
+    except OSError:
+        try:
+            stream = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+        except OSError:
+            return
+
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main() -> None:
     """Entry point invoked by the ``lit`` console script."""
+    _ensure_std_streams()
     _force_utf8_output()
     try:
         cli()

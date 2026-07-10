@@ -51,6 +51,13 @@ dev = [
 [project.scripts]
 lit = "litman.cli:main"
 
+# Same entry point, windows subsystem. On Windows the console window is decided
+# by the exe's PE header, not by the shortcut, so the desktop icon has to launch
+# a console-less twin or it drags a black box along behind the app window. POSIX
+# installers make this an ordinary script identical to `lit`.
+[project.gui-scripts]
+litw = "litman.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/wqx1999/litman"
 Repository = "https://github.com/wqx1999/litman"

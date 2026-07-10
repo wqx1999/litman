@@ -15,7 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
-from litman.commands.gui import remove_shortcut, shortcut_path
+from litman.commands.gui import browser_profile_dir, remove_shortcut, shortcut_path
 from litman.commands.install_completion import (
     _build_plan,
     _install_block,
@@ -192,6 +192,41 @@ def test_uninstall_yes_removes_everything(
     assert not (tmp_path / ".claude" / "skills" / "lit-library").exists()
     assert not completion_installed("bash", tmp_path)
     assert not reg.exists()
+
+
+def test_uninstall_removes_the_app_window_browser_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `lit gui --window` leaves tens of MB of Chromium state behind; an
+    # uninstall that keeps it is not an uninstall.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    _seed_artifacts(tmp_path)
+    profile = browser_profile_dir()
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Default" / "Preferences").write_text("{}", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "browser profile" in result.output
+    assert not profile.exists()
+
+
+def test_uninstall_dry_run_lists_but_keeps_the_browser_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    _seed_artifacts(tmp_path)
+    profile = browser_profile_dir()
+    profile.mkdir(parents=True)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "browser profile" in result.output
+    assert profile.exists()
 
 
 def test_uninstall_decline_aborts_without_removing(

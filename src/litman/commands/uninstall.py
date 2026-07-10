@@ -6,7 +6,8 @@ Removes the artifacts ``lit setup`` placed OUTSIDE the tool venv (uv or pipx):
 * the desktop shortcut (Start Menu ``.lnk`` / ``.desktop`` / ``.app``),
 * the shell tab-completion block(s),
 * the vault registry (``vaults.yaml`` — the list of vault names/paths),
-* the machine-level ``preferences.yaml`` (the chosen default agent).
+* the machine-level ``preferences.yaml`` (the chosen default agent),
+* the app-window browser profile (Chromium state for ``lit gui --window``).
 
 It deliberately does NOT remove the ``lit`` CLI itself: a running command
 cannot cleanly delete the environment it is executing from, so the final
@@ -25,7 +26,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-from litman.commands.gui import remove_shortcut, shortcut_path
+from litman.commands.gui import (
+    browser_profile_dir,
+    remove_browser_profile,
+    remove_shortcut,
+    shortcut_path,
+)
 from litman.commands.install_completion import (
     SUPPORTED_SHELLS,
     completion_installed,
@@ -69,9 +75,9 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
 
     Reverses the setup wizard: deletes the bundled Claude Code skills, the
     desktop shortcut, the shell tab-completion block, the vault registry (the
-    list of vault names/paths — NOT the vaults themselves), and the
-    machine-level agent preferences. Your papers, PDFs, notes and annotations
-    are never touched.
+    list of vault names/paths — NOT the vaults themselves), the machine-level
+    agent preferences, and the browser profile the app window uses. Your
+    papers, PDFs, notes and annotations are never touched.
 
     This does NOT uninstall the lit CLI, because a running command can't
     delete its own environment. Finish with `uv tool uninstall litman` or
@@ -90,6 +96,8 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     reg_present = reg.is_file()
     prefs = prefs_path()
     prefs_present = prefs.is_file()
+    profile = browser_profile_dir()
+    profile_present = profile.is_dir()
 
     plan_lines: list[str] = []
     if skills:
@@ -111,6 +119,12 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             "[bold]Agent preferences[/] [dim](machine-level default agent)[/]:"
         )
         plan_lines.append(f"  [red]•[/] {escape(str(prefs))}")
+    if profile_present:
+        plan_lines.append(
+            "[bold]App-window browser profile[/] "
+            "[dim](Chromium state for `lit gui --window`)[/]:"
+        )
+        plan_lines.append(f"  [red]•[/] {escape(str(profile))}")
 
     if not plan_lines:
         console.print(
@@ -165,6 +179,8 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     # that still holds preferences.yaml).
     if prefs_present and remove_prefs()["removed"]:
         done.append("agent preferences")
+    if profile_present and remove_browser_profile() is not None:
+        done.append("app-window browser profile")
 
     out = ["[bold green]Removed:[/]"]
     out += [f"  [green]•[/] {escape(x)}" for x in done]

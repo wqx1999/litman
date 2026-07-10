@@ -17,16 +17,22 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from click.testing import CliRunner
 
 from litman.commands.gui import (
     _DEFAULT_PORT,
+    _app_window_argv,
     _find_free_port,
+    _stop_server_when_window_closes,
+    browser_profile_dir,
     gui_cmd,
+    remove_browser_profile,
     shortcut_path,
 )
 
@@ -116,19 +122,61 @@ class _FakeTimer:
         pass
 
 
+class _FakeProc:
+    """subprocess.Popen stand-in for the app window. ``wait()`` blocks like the
+    real thing — until the window "closes", which in these tests only happens
+    when the command's cleanup terminates it."""
+
+    def __init__(self, argv) -> None:
+        self.argv = argv
+        self.returncode = None
+        self.terminated = False
+        self._closed = threading.Event()
+
+    def wait(self, timeout=None) -> int:
+        assert self._closed.wait(timeout=5), "window never closed"
+        self.returncode = 0
+        return 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._closed.set()
+
+
+class _FakeServer:
+    """uvicorn.Server stand-in: records that the window-watcher asked it to
+    stop. The real Server polls this same flag every 100ms."""
+
+    instances: ClassVar[list[_FakeServer]] = []
+
+    def __init__(self, *a, **k) -> None:
+        self.should_exit = False
+        self.ran = False
+        _FakeServer.instances.append(self)
+
+    def run(self) -> None:
+        self.ran = True
+
+
 @pytest.fixture
 def gui_harness(monkeypatch):
     """Neutralize every side effect of a full `lit gui` run and record the
-    browser-open calls. Returns (opened_urls, popen_argvs)."""
+    browser-open calls. Returns (opened_urls, spawned_procs)."""
     opened: list[str] = []
-    popens: list[list[str]] = []
+    procs: list[_FakeProc] = []
+    _FakeServer.instances.clear()
+
+    def _fake_popen(argv, **kw):
+        proc = _FakeProc(argv)
+        procs.append(proc)
+        return proc
+
     monkeypatch.setattr(threading, "Timer", _FakeTimer)
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
-    monkeypatch.setattr(
-        subprocess, "Popen", lambda argv, **kw: popens.append(argv)
-    )
-    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
-    return opened, popens
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+    monkeypatch.setattr("uvicorn.Config", lambda *a, **k: None)
+    return opened, procs
 
 
 def _served_url(output: str) -> str:
@@ -154,7 +202,7 @@ def test_gui_opens_browser_by_default_with_display(
 def test_gui_no_browser_suppresses_open(
     monkeypatch, gui_harness, vault_with_paper
 ) -> None:
-    opened, popens = gui_harness
+    opened, procs = gui_harness
     vault, _pid = vault_with_paper
     monkeypatch.setenv("DISPLAY", ":0")
 
@@ -163,13 +211,13 @@ def test_gui_no_browser_suppresses_open(
     )
 
     assert result.exit_code == 0, result.output
-    assert opened == [] and popens == []
+    assert opened == [] and procs == []
 
 
 def test_gui_headless_linux_never_opens(
     monkeypatch, gui_harness, vault_with_paper
 ) -> None:
-    opened, popens = gui_harness
+    opened, procs = gui_harness
     vault, _pid = vault_with_paper
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("DISPLAY", raising=False)
@@ -178,16 +226,13 @@ def test_gui_headless_linux_never_opens(
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
 
     assert result.exit_code == 0, result.output
-    assert opened == [] and popens == []
+    assert opened == [] and procs == []
     # 1.1.0 headless behavior unchanged: URL + tunnel line still printed.
     assert "SSH tunnel" in result.output
 
 
-def test_gui_window_uses_chromium_app_mode(
-    monkeypatch, gui_harness, vault_with_paper
-) -> None:
-    opened, popens = gui_harness
-    vault, _pid = vault_with_paper
+@pytest.fixture
+def chromium_on_path(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(
@@ -198,19 +243,107 @@ def test_gui_window_uses_chromium_app_mode(
         else None,
     )
 
+
+def test_gui_window_uses_chromium_app_mode(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
 
     assert result.exit_code == 0, result.output
     assert opened == []
-    assert popens == [
-        ["/usr/bin/google-chrome", f"--app={_served_url(result.output)}"]
-    ]
+    assert len(procs) == 1
+    argv = procs[0].argv
+    assert argv[0] == "/usr/bin/google-chrome"
+    assert f"--app={_served_url(result.output)}" in argv
+
+
+def test_gui_window_gives_the_browser_a_profile_of_its_own(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # Without --user-data-dir an already-running Chrome adopts the window and
+    # the process we spawned exits at once — which the watcher below would read
+    # as "the user closed the window" and kill the server a second after start.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    argv = procs[0].argv
+    assert f"--user-data-dir={browser_profile_dir()}" in argv
+    # A never-before-used profile otherwise greets the user with a first-run
+    # tab and a make-me-default prompt stacked on top of their library.
+    assert "--no-first-run" in argv
+    assert "--no-default-browser-check" in argv
+
+
+def test_gui_window_ties_the_server_to_the_window(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    """Closing the app window must stop the server. Here the command's own
+    cleanup closes it; the point is that gui_cmd wired *this* process to *this*
+    server, so the watcher fires."""
+    vault, _pid = vault_with_paper
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+    assert result.exit_code == 0, result.output
+
+    (server,) = _FakeServer.instances
+    assert server.ran
+    deadline = time.monotonic() + 5
+    while not server.should_exit and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.should_exit, "window closed but the server was never stopped"
+
+
+def test_gui_window_exit_closes_the_window(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # The other direction: Ctrl+C stops the server, which must not leave a dead
+    # shell of a window on screen. Safe only because the profile is ours alone.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert procs[0].terminated
+
+
+def test_gui_window_announces_the_lifecycle(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    vault, _pid = vault_with_paper
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+    assert "Close the window to stop the server" in result.output
+
+
+def test_gui_tab_mode_never_ties_the_server_to_a_browser(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # A terminal-launched tab keeps the plain Ctrl+C contract: we do not own
+    # the user's browser and must never stop on its account.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)] and procs == []
+    (server,) = _FakeServer.instances
+    assert server.should_exit is False
+    assert "Close the window" not in result.output
 
 
 def test_gui_window_falls_back_to_tab_when_no_chromium(
     monkeypatch, gui_harness, vault_with_paper
 ) -> None:
-    opened, popens = gui_harness
+    opened, procs = gui_harness
     vault, _pid = vault_with_paper
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("DISPLAY", ":0")
@@ -219,15 +352,91 @@ def test_gui_window_falls_back_to_tab_when_no_chromium(
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
 
     assert result.exit_code == 0, result.output
-    assert popens == []
+    assert procs == []
     assert opened == [_served_url(result.output)]
     assert "normal browser tab" in result.output
+    # No process to watch → the server must not adopt the window's lifecycle.
+    (server,) = _FakeServer.instances
+    assert server.should_exit is False
 
 
 def test_gui_window_and_no_browser_conflict() -> None:
     result = CliRunner().invoke(gui_cmd, ["--window", "--no-browser"])
     assert result.exit_code != 0
     assert "mutually exclusive" in result.output
+
+
+def test_stop_server_when_window_closes_sets_should_exit() -> None:
+    # The seam itself, driven directly: the real uvicorn.Server polls this same
+    # attribute every 100ms from its event loop.
+    proc, server = _FakeProc(["chrome"]), _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes, args=(proc, server), daemon=True
+    )
+    watcher.start()
+    assert server.should_exit is False  # still open
+    proc.terminate()  # the user closes the window
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+# ---------------------------------------------------------------------------
+# the app window's own browser profile
+# ---------------------------------------------------------------------------
+
+
+def test_browser_profile_dir_follows_the_registry_override(monkeypatch, tmp_path):
+    # Same seam as preferences.yaml, so the autouse _isolate_registry fixture
+    # keeps a real Chromium profile out of a developer's home for free.
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    assert browser_profile_dir().parent == tmp_path / "cfg"
+
+
+def test_browser_profile_dir_defaults_outside_the_config_dir(monkeypatch):
+    # Tens of MB of Chromium state must not ride along on a cloud-synced
+    # config dir next to vaults.yaml.
+    from litman.core.vault_registry import registry_path
+
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    assert browser_profile_dir().parent != registry_path().parent
+
+
+def test_remove_browser_profile_is_a_noop_when_absent() -> None:
+    assert remove_browser_profile() is None
+
+
+def test_remove_browser_profile_deletes_it() -> None:
+    profile = browser_profile_dir()
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Default" / "Preferences").write_text("{}", encoding="utf-8")
+
+    assert remove_browser_profile() == profile
+    assert not profile.exists()
+
+
+def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
+    # `open -na` asks Launch Services to start the app and returns immediately,
+    # so it can never own the window. Run the binary inside the bundle instead.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    binary = (
+        tmp_path
+        / "Applications"
+        / "Google Chrome.app"
+        / "Contents"
+        / "MacOS"
+        / "Google Chrome"
+    )
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert argv[0] == str(binary)
+    assert "open" not in argv
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +464,7 @@ def test_make_shortcut_linux_writes_desktop_file(
     def _boom(*a, **k):
         raise AssertionError("--make-shortcut must not start the server")
 
-    monkeypatch.setattr("uvicorn.run", _boom)
+    monkeypatch.setattr("uvicorn.Server", _boom)
 
     result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
     assert result.exit_code == 0, result.output
@@ -313,6 +522,55 @@ def test_make_shortcut_win32_builds_powershell_command(
     # artwork. It must run after Save() and must not be able to fail the write.
     assert script.index("$s.Save()") < script.index("SHChangeNotify")
     assert "try {" in script and "} catch { }" in script
+
+
+def test_make_shortcut_win32_targets_the_consoleless_twin(
+    monkeypatch, tmp_path
+) -> None:
+    # Windows reads "does this get a console window" off the exe's PE header,
+    # and no .lnk field overrides it — so the shortcut must run litw, not lit.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    exes = {"lit": r"C:\tools\lit.exe", "litw": r"C:\tools\litw.exe"}
+    monkeypatch.setattr(shutil, "which", lambda name: exes.get(name))
+    runs: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: (
+            runs.append(argv),
+            subprocess.CompletedProcess(argv, 0),
+        )[1],
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    script = runs[0][-1]
+    assert "litw.exe" in script
+    assert "$s.TargetPath = '" + str(Path(exes["litw"]).resolve()) + "'" in script
+
+
+def test_make_shortcut_win32_falls_back_to_lit_without_the_twin(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # An install predating litw: a console window is ugly, but a shortcut that
+    # refuses to exist is worse.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    runs: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: (
+            runs.append(argv),
+            subprocess.CompletedProcess(argv, 0),
+        )[1],
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+    assert f"$s.TargetPath = '{fake_lit_on_path}'" in runs[0][-1]
 
 
 def test_make_shortcut_darwin_builds_app_bundle(

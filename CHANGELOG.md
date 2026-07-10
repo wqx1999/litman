@@ -27,7 +27,8 @@ behaviour, a minor release adds it, a major release breaks it.
   desktop shortcut as part of the install. See the README for the command.
 - **`lit gui` opens your browser** automatically. `--no-browser` suppresses it,
   `--window` opens a chromeless app window, and `--make-shortcut` writes a desktop
-  entry.
+  entry. Closing the app window stops the server, and the desktop shortcut starts
+  it without a console window.
 - **Search matches authors, DOI and year**, in the CLI and the GUI. In the GUI
   list, `J` / `K` move the selection, `Enter` opens the paper, and `/` focuses
   search.
@@ -40,8 +41,8 @@ behaviour, a minor release adds it, a major release breaks it.
 - Your agent choice is stored once per machine rather than per vault.
 - `lit list` prints at most 30 rows when sorted by default on an interactive
   terminal. Pass `--limit` for more.
-- `lit uninstall` now also removes the desktop shortcut and machine-level
-  preferences.
+- `lit uninstall` now also removes the desktop shortcut, the machine-level
+  preferences, and the browser profile the app window uses.
 
 ### Fixed
 

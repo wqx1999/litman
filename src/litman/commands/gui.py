@@ -18,10 +18,19 @@ window instead of a tab). Headless sessions never attempt a browser launch —
 which is worse than the printed URL. ``--make-shortcut`` writes a desktop
 entry that runs ``lit gui --window`` and exits without starting the server
 (shared with ``lit setup`` step 5, ADR-019).
+
+``--window`` owns its browser: the app window is the application, so closing
+it stops the server, and Ctrl+C closes the window. Two things make that work
+and both are load-bearing — the dedicated ``--user-data-dir`` (see
+:func:`browser_profile_dir`) and the desktop shortcut running the console-less
+``litw`` twin (see :func:`_shortcut_executable`). A terminal-launched
+``lit gui`` (tab mode) keeps the plain Ctrl+C contract: what the terminal
+started, the terminal stops.
 """
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import os
 import shutil
@@ -32,11 +41,15 @@ import threading
 import webbrowser
 from importlib.resources import files
 from pathlib import Path
+from typing import Any
 
 import click
+from platformdirs import user_cache_dir
 from rich.console import Console
 
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import rmtree as _rmtree
+from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
 from litman.exceptions import LibraryNotFoundError, LitmanError
 
 console = Console()
@@ -94,22 +107,76 @@ def display_available() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+_BROWSER_PROFILE_DIRNAME = "browser-profile"
+
+
+def browser_profile_dir() -> Path:
+    """Chromium ``--user-data-dir`` for the ``--window`` app window.
+
+    A dedicated profile is what makes the process we spawn *be* the window.
+    Launch a Chromium against the user's normal profile and it hands the URL to
+    the already-running browser and exits within a second, so its exit says
+    nothing about whether the window is still open — a server tied to that exit
+    would die the instant it started.
+
+    The cache dir, not the config dir the registry lives in: this holds tens of
+    MB of Chromium's own state and must never ride along on a cloud-synced
+    config dir. ``$LITMAN_REGISTRY_DIR`` still overrides it, so the test
+    suite's ``_isolate_registry`` fixture keeps it out of a developer's real
+    home for free.
+    """
+    override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
+    if override:
+        return Path(override).expanduser() / _BROWSER_PROFILE_DIRNAME
+    return Path(user_cache_dir(REGISTRY_APP_NAME)) / _BROWSER_PROFILE_DIRNAME
+
+
+def remove_browser_profile() -> Path | None:
+    """Delete the app-window browser profile. Returns the path, or None.
+
+    Counterpart to :func:`browser_profile_dir`, used by ``lit uninstall`` so
+    the profile does not outlive the install. Returns None when there was
+    nothing to remove, or when something still holds it open (a running
+    browser on Windows) and the directory survived.
+    """
+    target = browser_profile_dir()
+    if not target.is_dir():
+        return None
+    _rmtree(target, ignore_errors=True)
+    return None if target.is_dir() else target
+
+
 def _app_window_argv(url: str) -> list[str] | None:
     """argv for a Chromium-family ``--app=`` window, or None if none found.
 
     ``--app=`` gives a standalone window without address/tab bars — the
     closest thing to a native app with zero new dependencies (ADR-019).
+
+    ``--user-data-dir`` is not a preference: it forces a browser instance of
+    our own, which is the only reason ``proc.wait()`` can mean "the user closed
+    the window". The two suppression flags exist because a never-before-used
+    profile otherwise greets the user with a first-run tab and a
+    make-me-default prompt on top of their library.
     """
+    flags = [
+        f"--app={url}",
+        f"--user-data-dir={browser_profile_dir()}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
         if exe:
-            return [exe, f"--app={url}"]
+            return [exe, *flags]
     if sys.platform == "darwin":
-        # Chrome/Edge on macOS are .app bundles, not on PATH.
+        # Chrome/Edge on macOS are .app bundles, not on PATH. Run the binary
+        # inside the bundle rather than `open -na`: `open` asks Launch Services
+        # to start the app and returns immediately, so it never owns the window.
         for app in ("Google Chrome", "Microsoft Edge"):
             for root in (Path("/Applications"), Path.home() / "Applications"):
-                if (root / f"{app}.app").exists():
-                    return ["open", "-na", app, "--args", f"--app={url}"]
+                binary = root / f"{app}.app" / "Contents" / "MacOS" / app
+                if binary.exists():
+                    return [str(binary), *flags]
     if sys.platform == "win32":
         # Edge ships with Win10+ but is not always on PATH.
         for env in ("ProgramFiles(x86)", "ProgramFiles"):
@@ -119,8 +186,20 @@ def _app_window_argv(url: str) -> list[str] | None:
                     Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
                 )
                 if exe_path.exists():
-                    return [str(exe_path), f"--app={url}"]
+                    return [str(exe_path), *flags]
     return None
+
+
+def _stop_server_when_window_closes(proc: subprocess.Popen[bytes], server: Any) -> None:
+    """Block until the app window exits, then ask uvicorn to shut down.
+
+    ``server`` is a ``uvicorn.Server`` (untyped here to keep uvicorn out of the
+    CLI import path, invariant #5). Its main loop polls ``should_exit`` every
+    100 ms, so setting the flag from this thread is the supported way to stop
+    it from outside the event loop.
+    """
+    proc.wait()
+    server.should_exit = True
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +225,34 @@ def _resolve_lit_executable() -> str:
         "Could not locate the `lit` executable to embed in the shortcut. "
         "Make sure `lit` is on PATH, then re-run: lit gui --make-shortcut"
     )
+
+
+def _shortcut_executable() -> str:
+    """The executable a desktop shortcut should run.
+
+    Windows decides whether a process gets a console window from the subsystem
+    field in the exe's own PE header, and no ``.lnk`` field overrides it —
+    ``lit.exe`` is a console app, so double-clicking the shortcut pops a black
+    box that outlives the window. ``litw.exe`` is the gui-scripts twin (same
+    entry point, windows subsystem), which is why the shortcut targets it.
+
+    Linux and macOS decide in the launcher instead (``Terminal=false``, an
+    ``.app`` stub), so they keep plain ``lit``.
+
+    Falling back to ``lit`` when the twin is missing — an install predating it,
+    or a launcher that skipped gui-scripts — is deliberate: a console window is
+    ugly, not fatal, and a shortcut that fails to exist is worse.
+    """
+    lit = _resolve_lit_executable()
+    if sys.platform != "win32":
+        return lit
+    on_path = shutil.which("litw")
+    if on_path:
+        return str(Path(on_path).resolve())
+    sibling = Path(lit).with_name("litw.exe")
+    if sibling.is_file():
+        return str(sibling)
+    return lit
 
 
 def shortcut_path() -> Path:
@@ -176,7 +283,7 @@ def create_shortcut() -> tuple[Path, bool]:
     """
     target = shortcut_path()
     existed = target.exists()
-    lit = _resolve_lit_executable()
+    lit = _shortcut_executable()
     if sys.platform == "win32":
         _write_shortcut_win32(target, lit)
     elif sys.platform == "darwin":
@@ -420,7 +527,16 @@ def gui_cmd(
         f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"
     )
 
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(vault), host="127.0.0.1", port=actual_port)
+    )
+
     browser_timer: threading.Timer | None = None
+    # The app window we spawned, if we spawned one. Appended from the timer
+    # thread, read in `finally` — a list because a plain name cannot be rebound
+    # across that boundary.
+    owned: list[subprocess.Popen[bytes]] = []
+
     if not no_browser and display_available():
         app_argv = _app_window_argv(url) if window else None
         if window and app_argv is None:
@@ -428,17 +544,34 @@ def gui_cmd(
                 "[dim]No Chrome/Edge/Chromium found for --window; opening a "
                 "normal browser tab instead.[/]"
             )
+        elif app_argv is not None:
+            console.print("[dim]Close the window to stop the server (or Ctrl+C).[/]")
 
         def _open() -> None:
-            if app_argv is not None:
-                subprocess.Popen(
+            if app_argv is None:
+                webbrowser.open(url)
+                return
+            try:
+                browser_profile_dir().mkdir(parents=True, exist_ok=True)
+                proc = subprocess.Popen(
                     app_argv,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
                 )
-            else:
+            except OSError:
+                # The browser vanished between the `which` probe and now. A tab
+                # is a worse window, but no window at all is worse still — and
+                # without a process to watch, the server keeps the Ctrl+C
+                # contract rather than exiting immediately.
                 webbrowser.open(url)
+                return
+            owned.append(proc)
+            threading.Thread(
+                target=_stop_server_when_window_closes,
+                args=(proc, server),
+                daemon=True,
+            ).start()
 
         # The server comes up sub-second; 1s keeps the browser from racing it.
         browser_timer = threading.Timer(1.0, _open)
@@ -446,8 +579,15 @@ def gui_cmd(
         browser_timer.start()
 
     try:
-        uvicorn.run(create_app(vault), host="127.0.0.1", port=actual_port)
+        server.run()
     finally:
         # No-op once fired; stops the open if server startup raised first.
         if browser_timer is not None:
             browser_timer.cancel()
+        # The other direction: the server stopped first (Ctrl+C, or a crash),
+        # so close the window it was serving rather than leave a dead shell on
+        # screen. Safe because the profile is ours alone — there are no other
+        # tabs to take down with it. A no-op when the window is already gone.
+        for proc in owned:
+            with contextlib.suppress(OSError):
+                proc.terminate()
