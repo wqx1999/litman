@@ -81,7 +81,10 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx
 lit setup   # 交互式向导：shell 补全 → Claude Code skill → vault 设置 →（可选）云同步 → 桌面快捷方式
 ```
 
-任何时候重跑安装命令即可升级。
+升级请运行 `lit self-update`，或者重跑安装命令。
+
+litman 每天会向 PyPI 查询一次最新版本号，你的版本过旧时会提示一句。设置
+`LITMAN_NO_UPDATE_CHECK=1` 可关闭。不发送任何遥测数据。
 
 **备选：pipx**
 

@@ -28,8 +28,8 @@ same help as `lit <cmd> --help`.
 
 A few commands do **not** take `--library` / `--vault`, because they create a
 vault, target the registry, or touch no vault at all: `init`, `setup`,
-`install-completion`, `install-skill`, `uninstall`, `pdf-text`, `help`, and
-every `lit vault` subcommand.
+`install-completion`, `install-skill`, `uninstall`, `self-update`, `pdf-text`,
+`help`, and every `lit vault` subcommand.
 
 **Vault discovery chain.** When a command needs a vault and you give no explicit
 override, `lit` resolves one in this order (first hit wins):
@@ -169,6 +169,37 @@ lit uninstall --dry-run
 |---|---|
 | `--dry-run` | Show what would be removed; change nothing. |
 | `-y` / `--yes` | Skip the confirmation prompt. |
+
+---
+
+### `lit self-update`
+
+Upgrade litman to the latest release on PyPI, through whichever tool installed
+it. It prints `current → latest`, asks once, then runs `uv tool upgrade litman`
+or `pipx upgrade litman`.
+
+Three installs it will not upgrade: an editable (development) checkout, a plain
+`pip install`, and a conda environment. Each one prints the command to run by
+hand instead. It never runs `pip install --upgrade` into the interpreter it is
+running in.
+
+```
+lit self-update
+lit self-update --yes
+```
+
+| Flag | What it does |
+|---|---|
+| `-y` / `--yes` | Skip the confirmation prompt. |
+
+**The daily check.** Once a day, any `lit` command may ask PyPI for the newest
+version number and print a line when yours is older. The answer is cached for
+24 hours at `<registry dir>/update-check.json`, the request times out after two
+seconds, and a failure — offline, slow, malformed — is swallowed silently.
+
+Set `LITMAN_NO_UPDATE_CHECK=1` to switch it off, cache and all. litman sends no
+telemetry: the request asks PyPI for a version number and says nothing about
+you.
 
 ---
 

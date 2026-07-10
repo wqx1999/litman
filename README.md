@@ -88,7 +88,11 @@ Then run the one-shot setup wizard:
 lit setup   # interactive wizard: shell completion → Claude Code skill → vault setup → (optional) cloud sync → desktop shortcut
 ```
 
-Re-run the install command any time to upgrade.
+To upgrade, run `lit self-update` — or re-run the install command.
+
+litman asks PyPI for the latest version number once a day and tells you when
+yours is out of date. `LITMAN_NO_UPDATE_CHECK=1` turns that off. No telemetry is
+sent.
 
 **Alternative: pipx**
 
