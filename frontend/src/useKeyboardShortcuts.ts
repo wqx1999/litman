@@ -33,6 +33,14 @@ export interface ShortcutDeps {
   /** Open the selected paper's PDF tab (Enter). No-op without a selection. */
   openSelected: () => void
 
+  // --- Tier 1: agent launch (global, focus-guarded) -----------------------
+  /** Open the AI agent: launch it in a terminal, or raise the onboarding panel
+   * when it is not configured yet — TopBar's button owns that branch and the
+   * shortcut reuses the same handler, so the two can never disagree. Null until
+   * TopBar registers its handle (the welcome page renders no TopBar), in which
+   * case the key is inert. */
+  openAgent: (() => void) | null
+
   // --- Cheat sheet (`?`) ---------------------------------------------------
   cheatSheetOpen: boolean
   toggleCheatSheet: () => void
@@ -112,6 +120,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     activateTabByIndex,
     moveSelection,
     openSelected,
+    openAgent,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -263,6 +272,15 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           e.preventDefault()
           activateAdjacentTab(1)
           return
+        // Backtick — the key left of "1". The universal "summon a console"
+        // convention (Quake, VS Code, …), which is exactly what launching the
+        // agent does. Bare, never Shift+` (that is `~`): the modifier reject
+        // above already guarantees it. Matched on e.code (physical position),
+        // so a layout that prints another glyph on that key still fires.
+        case 'Backquote':
+          e.preventDefault()
+          openAgent?.()
+          return
       }
 
       // 1–9 jump straight to the Nth center tab (main number row only). Bare
@@ -309,6 +327,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     activateTabByIndex,
     moveSelection,
     openSelected,
+    openAgent,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,

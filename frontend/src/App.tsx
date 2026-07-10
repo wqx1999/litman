@@ -460,6 +460,15 @@ export default function App() {
   const [vaultManagerOpen, setVaultManagerOpen] = useState(false)
   // Same mirror for the agent panel (picker / copy box).
   const [agentPanelOpen, setAgentPanelOpen] = useState(false)
+  // TopBar's agent opener, registered on mount, so the `` ` `` shortcut drives
+  // the same handler as the button. State (not a bare ref) because the shortcut
+  // hook takes it as a dep. The setState updater form is required: a function
+  // value would otherwise be mistaken for an updater and invoked.
+  const [openAgent, setOpenAgent] = useState<(() => void) | null>(null)
+  const registerAgentOpen = useCallback(
+    (open: (() => void) | null) => setOpenAgent(() => open),
+    [],
+  )
   // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
   // so registering it doesn't re-render; a state copy drives the hook's deps.
   const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
@@ -1404,6 +1413,7 @@ export default function App() {
     activateTabByIndex,
     moveSelection,
     openSelected,
+    openAgent,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -1467,6 +1477,7 @@ export default function App() {
         onLogOpened={markLogRead}
         onObservabilityOpenChange={setObservabilityOpen}
         onAgentOpenChange={setAgentPanelOpen}
+        onRegisterAgentOpen={registerAgentOpen}
         trashMode={trashMode}
       />
       <div className="flex min-h-0 flex-1">

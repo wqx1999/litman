@@ -95,6 +95,11 @@ interface Props {
   /** Same mirror for the agent panel (picker / copy box) — the modal-guard
    * red line applies to every TopBar overlay. */
   onAgentOpenChange: (open: boolean) => void
+  /** Hand App a stable opener for the agent button so the global `` ` ``
+   * shortcut and the button run the SAME code path (launch when configured,
+   * onboarding panel when not) — mirrors Cockpit's onRegisterHandle. Called
+   * with null on unmount. */
+  onRegisterAgentOpen: (open: (() => void) | null) => void
   /** In trash mode, hide the library-scoped controls (vault switch, Projects,
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
@@ -137,6 +142,7 @@ export default function TopBar({
   onLogOpened,
   onObservabilityOpenChange,
   onAgentOpenChange,
+  onRegisterAgentOpen,
   trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
@@ -262,6 +268,17 @@ export default function TopBar({
       )
       .finally(() => setAgentBusy(false))
   }
+
+  // `openAgent` is rebuilt every render (it closes over agentBusy/agentStatus),
+  // so register a STABLE wrapper once and let it read the live closure from a
+  // ref — registering openAgent directly would re-fire onRegisterAgentOpen on
+  // every render (Cockpit's actionsRef solves the same problem the same way).
+  const openAgentRef = useRef(openAgent)
+  openAgentRef.current = openAgent
+  useEffect(() => {
+    onRegisterAgentOpen(() => openAgentRef.current())
+    return () => onRegisterAgentOpen(null)
+  }, [onRegisterAgentOpen])
 
   const pickAgent = (name: string) => {
     if (agentBusy) return
@@ -609,7 +626,7 @@ export default function TopBar({
         title={
           agentStatus?.needs_setup
             ? 'Set up your AI agent'
-            : 'Launch your AI agent in the vault (lit agent)'
+            : 'Launch your AI agent in the vault (lit agent) — press `'
         }
         aria-label={agentStatus?.needs_setup ? 'Set up agent' : 'Launch agent'}
         className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"

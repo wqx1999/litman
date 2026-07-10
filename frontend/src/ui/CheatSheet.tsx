@@ -72,6 +72,13 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Agent',
+    note: 'Backtick — the key left of "1". Opens setup when no agent is configured.',
+    rows: [
+      { chords: [['`']], action: 'Launch your AI agent in the vault' },
+    ],
+  },
+  {
     title: 'Papers list & search',
     note: 'Move through the middle list; Enter opens the PDF.',
     rows: [
