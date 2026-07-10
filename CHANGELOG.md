@@ -56,6 +56,7 @@ behaviour, a minor release adds it, a major release breaks it.
   reported as overdue.
 - An empty vault, and a lost connection to the server, now explain themselves in
   the GUI instead of showing an empty list or silently doing nothing.
+- The browser no longer offers to translate the GUI, which blanked the page.
 - The `?` shortcut sheet no longer wraps its key captions.
 - `lit setup` signposts the next step for a first-time user.
 
