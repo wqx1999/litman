@@ -473,15 +473,23 @@ def apply_vault_use(name: str, *, require_path: bool = False) -> VaultEntry:
     returns the now-active entry. Centralising the load+set+save here keeps the
     CLI and the GUI on one switch path so they can never drift.
 
-    When ``require_path`` is True the target's path must exist and be a directory
-    *before* the switch is persisted — for the GUI, which repoints a live server
-    at the new path and would break on a stale registry entry. The CLI keeps the
-    lenient default (``require_path=False``): switching to a vault whose path is
-    temporarily unavailable stays allowed.
+    When ``require_path`` is True the target's path must still hold a vault —
+    its ``lit-config.yaml`` must be on disk — *before* the switch is persisted:
+    for the GUI, which repoints a live server at the new path and would break on
+    a stale registry entry. The sentinel is the config file, not the directory,
+    for the same reason the server's 410 guard stats the config file: a bare
+    directory at the registered path (an unrelated same-name folder, or the
+    carcass a pre-guard write left behind) is not the vault, and a switch that
+    "succeeds" onto one persists the global active — read by every ``lit``
+    command in every terminal — at a non-vault. It is also the same sentinel
+    :func:`add_vault` required at registration, so a vault can only fail it by
+    changing on disk afterwards. The CLI keeps the lenient default
+    (``require_path=False``): switching to a vault whose path is temporarily
+    unavailable stays allowed.
 
     Raises:
         VaultRegistryError: ``name`` is not in the registry, or ``require_path``
-            is set and the path is missing / not a directory.
+            is set and the path no longer holds a vault.
     """
     reg = load_registry()
     entry = find_by_name(reg, name)
@@ -490,10 +498,10 @@ def apply_vault_use(name: str, *, require_path: bool = False) -> VaultEntry:
             f"No vault named {name!r} in the registry. Run `lit vault list` "
             "to see what's registered."
         )
-    if require_path and not Path(entry.path).expanduser().is_dir():
+    if require_path and not (Path(entry.path).expanduser() / "lit-config.yaml").is_file():
         raise VaultRegistryError(
-            f"Vault {name!r} path does not exist or is not a directory: "
-            f"{entry.path}. Not switching."
+            f"Vault {name!r} is no longer at {entry.path} — no lit-config.yaml "
+            "there. Not switching."
         )
     save_registry(set_active(reg, name))
     return entry

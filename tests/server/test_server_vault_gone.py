@@ -275,6 +275,40 @@ def test_switch_to_a_moved_vault_is_refused(tmp_path: Path) -> None:
     assert client.get("/api/papers").status_code == 200
 
 
+def test_a_carcass_dir_is_marked_missing_and_refused(tmp_path: Path) -> None:
+    """One aliveness sentinel everywhere: the ``lit-config.yaml``.
+
+    A bare directory at the registered path — the ghost a pre-guard write left
+    behind, or an unrelated same-name folder that landed where the vault used to
+    be — is not the vault. The 410 guard already knew that
+    (``test_directory_without_lit_config_is_still_gone``); this pins that the
+    other two probes agree. Before they did, ``exists`` said true, the switch
+    SUCCEEDED, and the global registry active — read by every ``lit`` command in
+    every terminal — was persisted at a non-vault while every subsequent GUI
+    request answered 410 with no error at switch time.
+    """
+    beta, alpha = _register_pair(tmp_path)
+    app = create_app(beta)
+    client = TestClient(app)
+
+    _move_away(alpha, tmp_path / "alpha-moved")
+    (alpha / "papers").mkdir(parents=True)  # a directory, but not a vault
+
+    vaults = {v["name"]: v["exists"] for v in client.get("/api/vaults").json()["vaults"]}
+    assert vaults == {"beta": True, "alpha": False}
+
+    resp = client.put("/api/vaults/active", json={"name": "alpha"})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "alpha" in detail and str(alpha) in detail
+
+    # The worst half of the old behaviour: nothing was persisted. The global
+    # active still points at a real vault, and this server keeps serving.
+    assert find_active(load_registry()).name == "beta"
+    assert Path(app.state.vault).resolve() == beta.resolve()
+    assert client.get("/api/papers").status_code == 200
+
+
 def test_switch_succeeds_once_the_folder_is_put_back(tmp_path: Path) -> None:
     """The recovery a user reaches for first: undo the move. No restart."""
     beta, alpha = _register_pair(tmp_path)

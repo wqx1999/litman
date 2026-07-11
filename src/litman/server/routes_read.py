@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
+from litman.core.config import CONFIG_FILENAME
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
@@ -448,13 +449,16 @@ def get_vaults(request: Request) -> dict[str, Any]:
     mode even while the registry names an active entry whose path has moved, so
     the frontend keys the welcome page off ``served``, not ``active``.
 
-    Each entry carries ``exists``: whether its registered path is still a
-    directory, probed on every call (the registry stores paths, and a folder can
-    be moved or deleted behind litman's back at any moment). It is the same test
-    ``apply_vault_use(require_path=True)`` applies before it will switch, so a
-    vault reported ``exists: false`` is exactly a vault ``PUT /vaults/active``
-    would reject — the frontend marks it in the selector rather than letting the
-    user pick it and collect a 400.
+    Each entry carries ``exists``: whether its registered path still holds a
+    vault, probed on every call (the registry stores paths, and a folder can be
+    moved or deleted behind litman's back at any moment). The sentinel is the
+    ``lit-config.yaml`` — the same one the 410 middleware guard stats and the
+    same test ``apply_vault_use(require_path=True)`` applies before it will
+    switch, so a vault reported ``exists: false`` is exactly a vault ``PUT
+    /vaults/active`` would reject — the frontend marks it in the selector rather
+    than letting the user pick it and collect a 400. A bare directory (an
+    unrelated same-name folder at the old path) reads as missing, not as the
+    vault having come back.
     """
     reg = load_registry()
     active = find_active(reg)
@@ -467,7 +471,7 @@ def get_vaults(request: Request) -> dict[str, Any]:
                 "name": v.name,
                 "path": v.path,
                 "active": v.is_active,
-                "exists": Path(v.path).expanduser().is_dir(),
+                "exists": (Path(v.path).expanduser() / CONFIG_FILENAME).is_file(),
             }
             for v in reg.vaults
         ],

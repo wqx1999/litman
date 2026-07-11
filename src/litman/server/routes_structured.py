@@ -699,10 +699,13 @@ async def put_active_vault(request: Request) -> dict[str, object]:
     repointed in place: ``app.state.vault`` is updated so every later request
     hits the new vault without a restart.
 
-    ``require_path=True`` rejects a stale registry entry (vault moved or deleted)
-    with a 400 BEFORE the switch is persisted, so the global active is never left
-    pointing at a dead path. An unknown name also surfaces as VaultRegistryError
-    → 400.
+    ``require_path=True`` rejects a stale registry entry (vault moved or
+    deleted, or its path occupied by a directory that is not a vault) with a 400
+    BEFORE the switch is persisted, so the global active is never left pointing
+    at a dead path. The aliveness sentinel is the ``lit-config.yaml`` — the same
+    one the 410 middleware guard and ``GET /api/vaults``' ``exists`` flag stat,
+    so the three can never disagree about which vaults are switchable. An
+    unknown name also surfaces as VaultRegistryError → 400.
     """
     try:
         payload = await request.json()
