@@ -1,7 +1,7 @@
 # Agent model benchmark
 
 litman's agent layer — the bundled `lit-library` and `lit-reading` skills — is
-meant to work with whatever model you point Claude Code at, not only Anthropic's.
+meant to work with whatever model you point your agent at, not only Anthropic's.
 This page reports how well eight models drive it, and how the numbers were
 produced.
 
@@ -15,7 +15,8 @@ produced.
 ## Method
 
 Each model was run as the Claude Code backend and told to operate litman through
-the skills, over **22 everyday-workflow tasks** (add, read, tag, modify, link,
+the skills, over the suite's **22 auto-scored everyday-workflow tasks** (add,
+read, tag, modify, link,
 export, taxonomy edits, health checks, ...), 3 rounds each, on the **litman 1.0.0**
 codebase ([commit 876d11c](https://github.com/wqx1999/litman/commit/876d11c),
 June 2026).

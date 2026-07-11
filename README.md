@@ -11,7 +11,7 @@
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
 <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
 <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
-<img src="https://img.shields.io/badge/AI--native-Claude%20Code-D97757?logo=anthropic&logoColor=white" alt="AI-native: Claude Code"/>
+<img src="https://img.shields.io/badge/AI--native-agentic%20tool-D97757" alt="AI-native: agentic tool"/>
 </p>
 
 </div>
@@ -76,10 +76,14 @@ pipx install --force .
 ## The AI assistant
 
 Reading and annotating work on their own. The *just say what you want* layer runs
-on [Claude Code](https://claude.ai/code), which you install separately — litman
-ships the skills it drives, not a model.
+on an AI agent, which you install separately — litman ships the skills it
+drives, not a model.
 
-Claude Code works with whatever model you give it. We ran eight of them through 22
+[Claude Code](https://claude.ai/code) is the supported agent today. Codex,
+Cursor, Gemini CLI, and OpenCode are next: they already appear in litman's agent
+picker, greyed out until the release that turns them on.
+
+Your agent works with whatever model you give it. We ran eight of them through 22
 everyday tasks:
 
 - **Recommended: an [Anthropic](https://www.anthropic.com) subscription.** Claude
@@ -111,7 +115,7 @@ when yours is older. `LITMAN_NO_UPDATE_CHECK=1` switches that off —
 Two steps, in order, while the `lit` command still exists:
 
 ```bash
-lit uninstall              # bundled skills, desktop shortcut, shell completion, vault registry, agent preferences
+lit uninstall              # bundled skills, desktop shortcut, shell completion, vault registry, agent preferences, app-window browser profile
 uv tool uninstall litman   # or: pipx uninstall litman
 ```
 
@@ -150,6 +154,8 @@ Built with:
 Standing on:
 
 [![Click](https://img.shields.io/badge/Click-CLI_Framework-4B8BBE?logoColor=white)](https://click.palletsprojects.com/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Web_Server-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Uvicorn](https://img.shields.io/badge/Uvicorn-ASGI_Server-499848?logoColor=white)](https://www.uvicorn.org/)
 [![ruamel.yaml](https://img.shields.io/badge/ruamel.yaml-YAML_Parser-FFDD54?logoColor=black)](https://pypi.org/project/ruamel.yaml/)
 [![pypdf](https://img.shields.io/badge/pypdf-PDF_Extraction-EE4C2C?logoColor=white)](https://pypdf.readthedocs.io/)
 [![Pydantic](https://img.shields.io/badge/Pydantic-Data_Validation-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)

@@ -2,8 +2,7 @@
 
 Every operation on the library is a `lit` subcommand. This page documents each
 one: its purpose, the shapes you call it in, and every flag it accepts. The
-commands are grouped exactly as `lit --help` lists them, so the order here
-matches what you see in the terminal.
+commands are grouped as `lit --help` groups them.
 
 `lit <cmd> --help` is the always-current authority for any single command. This
 page mirrors it but adds the cross-command context the inline help cannot.
@@ -132,9 +131,9 @@ No flags beyond `-h`.
 
 ### `lit install-skill`
 
-Install the bundled Claude Code skills (`lit-library` for the write side,
+Install the bundled agent skills (`lit-library` for the write side,
 `lit-reading` for the read side). Both are optional — the CLI is fully usable
-without them. Copies files only; does not install Claude Code or configure any
+without them. Copies files only; does not install an agent or configure any
 keys.
 
 ```
@@ -145,14 +144,15 @@ lit install-skill --skill lit-reading
 | Flag | What it does |
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
-| `--parent-dir <path>` | Install directory. Default: where Claude Code auto-discovers skills. |
+| `--parent-dir <path>` | Install directory. Default: `~/.claude/skills`, where Claude Code auto-discovers them. |
 | `--force` | Overwrite files inside an existing target. Files not part of the bundled skill are left in place. |
 
 ### `lit uninstall`
 
 Reverse of `lit setup`: remove the bundled skills, the desktop shortcut, the
-shell-completion block, the vault registry (the list of vault names/paths), and
-the machine-level agent preferences. It does not remove the `lit` CLI itself — a
+shell-completion block, the vault registry (the list of vault names/paths), the
+machine-level agent preferences, and the browser profile used by the `lit gui
+--window` app window. It does not remove the `lit` CLI itself — a
 running command can't delete its own environment — so it prints the final
 CLI-removal step (`uv tool uninstall litman` or `pipx uninstall litman`,
 depending on how you installed it) for you to run. Your vault directories
@@ -211,7 +211,12 @@ Import a paper PDF into the vault. The metadata source is either `--doi`
 (CrossRef fetch) or `--from-llm-json` (an LLM-prepared JSON file); exactly one is
 required, and the CLI refuses both at once. Derives a canonical id
 (`<year>_<Family>_<Keyword>`), refuses on duplicate DOI, and creates
-`papers/<id>/` with `paper.pdf`, `metadata.yaml`, and an empty `notes.md`.
+`papers/<id>/` with `paper.pdf`, `metadata.yaml`, an empty `notes.md`, and an
+empty `discussion.md`.
+
+The source PDF is **moved**, not copied: once the import succeeds, the file you
+passed in is gone from where it was. Hand `lit add` a copy if you want to keep
+the original in place.
 
 ```
 lit add <pdf> --doi <doi>
@@ -287,8 +292,9 @@ lit show --paper-doi 10.1038/...
 ### `lit search`
 
 Case-insensitive substring search over your `notes.md` / `discussion.md` only —
-not the PDF full text, not trashed papers, not the `views/` symlinks. Each hit is
-one matched line. Defaults to JSON output (`{id, file, line, snippet}`).
+not the PDF full text, not trashed papers, not the `views/` symlinks, and not the
+`<!-- -->` comments litman seeds into those two files. Each hit is one matched
+line. Defaults to JSON output (`{id, file, line, snippet}`).
 
 ```
 lit search <query>
@@ -477,7 +483,8 @@ for what each field means.
 ### `lit link`
 
 Link a paper to a project: add the `projects` tag, write a symlink under
-`<project>/litman_reflib/<id>/`, and regenerate `<project>/REFERENCES.md`. The
+`<project>/litman_reflib/<id>/`, and regenerate
+`<project>/litman_reflib/REFERENCES.md`. The
 project must be registered in `lit-config.yaml` (via `lit project add`) and its
 directory must exist on disk **before** linking.
 
@@ -616,9 +623,9 @@ The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
 ### `lit health-check`
 
 Scan the whole vault for inconsistencies: dangling references, schema gaps, stale
-staging dirs, missing PDFs, dangling wikilinks, dangling vault-registry entries,
-missing project directories. Exits 0 on a clean vault, 1 if any issue is found
-(so it can gate cron / CI).
+staging dirs, missing PDFs, missing discussion logs, dangling wikilinks, dangling
+vault-registry entries, missing project directories. Exits 0 on a clean vault, 1
+if any issue is found (so it can gate cron / CI).
 
 ```
 lit health-check
@@ -627,7 +634,7 @@ lit health-check --fix
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata) and clean stale staging dirs / orphan trash sidecars. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata), clean stale staging dirs / orphan trash sidecars, and create any missing `discussion.md` (existing ones keep every section they hold). Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
 
 ### `lit refresh-views`
 
@@ -707,7 +714,7 @@ lit export --all --topic transformer --author wang
 | `--project <name>` | Export every paper linked to the project. Mutually exclusive with `--all`. |
 | `--all` | Export every paper in the vault. |
 | `-o`, `--output <file>` | Output path. Default `./refs.bib`. |
-| `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | The same filter set as `lit list` (within a flag OR, across flags AND). |
+| `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). |
 | `--force` | Overwrite a target file even without the litman sentinel (typically a hand-edited `.bib`). |
 | `--format [bibtex]` | Output format. Only `bibtex` is implemented. |
 
@@ -756,6 +763,14 @@ lit gui --make-shortcut    # create a desktop shortcut, then exit
 | `--window` | Open in a Chrome/Edge/Chromium app window (no address bar) instead of a browser tab. Falls back to a normal tab if none is installed. |
 | `--make-shortcut` | Create a desktop shortcut — Desktop (Windows), applications menu (Linux), `~/Applications` (macOS) — that runs `lit gui --window`, then exit without starting the server. Re-running refreshes it. The install script runs this for you, so a fresh install already has the shortcut. |
 
+In `--window` mode the app window *is* the application: closing it stops the
+server, and Ctrl-C stops the server and closes the window. It runs against a
+browser profile of its own, not your everyday one (`lit uninstall` removes that
+profile). A plain `lit gui` in a terminal keeps the ordinary contract — the tab
+is just a tab, and Ctrl-C in the terminal is what stops the server. On Windows
+the desktop shortcut targets `litw`, the console-less twin of `lit`, so
+double-clicking it opens no console box.
+
 On a fresh install with no vault yet, `lit gui` still starts and shows a welcome
 page that creates your first library right in the browser — no terminal step. It
 also appears if the active vault's folder has moved, letting you create a new
@@ -784,15 +799,17 @@ lit agent --set-default claude  # record the machine-level default agent
 | Argument / Flag | What it does |
 |---|---|
 | `NAME` (optional) | Which agent to launch. Omitted, it launches the default agent. |
-| `--set-default NAME` | Record NAME as the machine-level default agent (used by a bare `lit agent` and the GUI agent button), then exit. |
+| `--set-default NAME` | Record NAME as the machine-level default agent (used by a bare `lit agent` and the GUI agent button), then exit. Only a supported agent is accepted. |
 
 The default agent is machine-level, not per-vault: it is recorded in
 `preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
-agent panel, or `lit agent --set-default`. Claude Code is the supported agent;
-more agents arrive in a later release.
+agent panel, or `lit agent --set-default`. Claude Code is the supported agent
+today; Codex, Cursor, Gemini CLI, and OpenCode sit in the catalog greyed out, and
+turn on in a later release.
 
-An unknown NAME, or an agent command missing from PATH, fails with a one-line
-error. The Web UI's agent button launches the same default agent: on a machine
+Three things fail with a one-line error: a NAME that is not in the catalog, a
+catalog agent that is not supported yet, and a supported agent whose command is
+missing from PATH. The Web UI's agent button launches the same default agent: on a machine
 with a display it opens the agent in a new terminal window; when the server
 runs on a remote box (HPC) it shows the `lit agent` line to copy into your own
 terminal.

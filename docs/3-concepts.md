@@ -40,9 +40,11 @@ writes the **complete field skeleton**, filling every identity field CrossRef
 or the LLM resolved and leaving empty lists and `null`s for the rest, so a
 freshly added paper already contains every standard field. The schema is still
 **schema-less** at validation time: a field left empty, or removed entirely, is
-valid and read as "this dimension does not apply to this paper". Only `id` and
-`title` are structurally required, meaning their absence is the only thing
-`lit health-check` flags as a missing field.
+valid and read as "this dimension does not apply to this paper". What
+`lit health-check` insists on is narrow: `id`, `created-at`, and `updated-at`
+must be present and non-empty, and `status` must carry one of its enum values
+(`inbox` is the value for "not evaluated yet", so an empty `status` is an
+error). Everything else may be empty or absent.
 
 The whole file is **read-only locked** and every write is **atomic**. Edit it
 through `lit add`, `lit modify`, `lit link`, and the reading-lifecycle
@@ -56,7 +58,7 @@ JSON (`lit add --from-llm-json`). You rarely touch these after add.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `id` | string | required | Folder name. Format `<year>_<Family>_<Keyword>`. Change only via `lit rename`, which rewrites every back-reference. |
-| `title` | string | required | The paper's title, not normalized. |
+| `title` | string | required at add time | The paper's title, not normalized. |
 | `authors` | list[string] | `[]` | Each entry `"Family, Given"`. The first entry's family name drives id derivation. |
 | `year` | integer or null | null | Publication year. |
 | `journal` | string | `""` | Journal, conference, or preprint server. |
@@ -90,7 +92,7 @@ maintains them), the last two are semantic (you mark them through a command).
 | `last-revisited` | you (`lit revisit`) | when you re-open a paper that already has a `read-date` | The "came back to it" marker. |
 
 You rarely set these by hand. The Web UI stamps them from its read /
-revisit buttons, and in Claude Code the lit-reading skill stamps them when you
+revisit buttons, and the lit-reading skill stamps them when you
 say you finished or re-opened a paper — both routed through `lit read` /
 `lit revisit`. The hinge is `read-date`. A paper without one is still on its
 first read, so finishing it stamps `read-date`, not `last-revisited`, and
@@ -242,8 +244,8 @@ and `lit health-check` does not warn on unknown fields.
 `<vault>/codes/<repo-name>/repo-meta.yaml` annotates one cloned repository and
 records which papers it is bound to. The file is **not locked**. Its
 machine-maintained fields are written atomically by `lit code` commands. Its
-annotation fields you fill in by editing the file directly, then run
-`lit refresh-views`.
+annotation fields you fill in by editing the file directly; nothing is derived
+from them, so there is no rebuild to run afterwards.
 
 | Field | Type | Written by | Notes |
 |---|---|---|---|
@@ -416,8 +418,9 @@ from `TAXONOMY.md`, from every referencing `metadata.yaml`, and from
 ### 1.4 `lit-config.yaml` — library settings
 
 Each vault has one `lit-config.yaml` at its root, carrying library-level
-preferences. It is **writable** (you may hand-edit it, or let `lit config`,
-`lit sync setup`, and `lit project` write the parts they own). It is validated
+preferences. It is **writable** (you may hand-edit it, or let `lit sync setup`,
+`lit project`, and the Web UI's project controls write the parts they own —
+`lit config show` only prints it, there is no `lit config set`). It is validated
 against a strict schema that **forbids unknown keys**, so a typo fails at load
 time rather than silently falling back to a default. Print the live, parsed
 view with `lit config show`.
@@ -443,7 +446,7 @@ The nested `sync` object:
 
 Three things are deliberately absent from the schema: (1) LLM API keys,
 endpoints, or models (the agent manages its own auth and litman never makes an
-API call), (2) per-paper overrides (those belong in `metadata.yaml`), and
+LLM API call), (2) per-paper overrides (those belong in `metadata.yaml`), and
 (3) a default project (linking is always an explicit `lit link --project`).
 
 ### 1.5 `INDEX.json` — the derived read surface
@@ -464,9 +467,9 @@ Top-level structure:
 | `papers` | list[object] | One thin projection per paper, sorted by id. |
 | `by_doi` | dict[string, string] | Reverse map from normalized (lowercase) DOI to paper id. |
 
-Each entry in `papers` is a **12-field projection** of `metadata.yaml`, not the
-whole record: `id`, `title`, `year`, `type`, `priority`, `status`, `topics`,
-`projects`, `methods`, `data`, `doi`, `read-date`. A consumer narrows the
+Each entry in `papers` is a **13-field projection** of `metadata.yaml`, not the
+whole record: `id`, `title`, `authors`, `year`, `type`, `priority`, `status`,
+`topics`, `projects`, `methods`, `data`, `doi`, `read-date`. A consumer narrows the
 candidate set from this file, then opens a candidate's `metadata.yaml` for any
 field not in the projection. `lit list --format json` emits the same per-paper
 projection, so its schema never drifts from the index.
@@ -475,9 +478,12 @@ projection, so its schema never drifts from the index.
 
 ## 2. Fields outside the vault: the registry
 
-The registry is the one piece of litman state that lives outside any vault. It
-is a user-level file recording which vaults exist on this machine and which one
-is active. It is **not** part of a vault, so it is never synced with one.
+The registry is litman's state that lives outside any vault: a user-level file
+recording which vaults exist on this machine and which one is active. It is
+**not** part of a vault, so it is never synced with one. A second user-level
+file, `preferences.yaml`, sits next to it and holds your default agent — also
+machine-level, for the same reason (which agent you run is a property of the
+machine, not of a library).
 
 Location, highest precedence first:
 
@@ -500,12 +506,14 @@ The file holds a `vaults:` list. Each entry has these fields:
 
 Two invariants are enforced when the file loads: all names are unique, and at
 most one entry is active. The file is managed by `lit vault {add,use,remove}`
-and `lit init` (which registers the new vault and makes it active). It rejects
-unknown keys, so it is not meant to be hand-edited.
+and `lit init` (which registers the new vault and makes it active), and by the
+Web UI's vault controls, which call the same registry code. It rejects unknown
+keys, so it is not meant to be hand-edited.
 
 **Project-side references.** Linking a paper to a project writes two artifacts
 under the project directory, outside the vault: a `litman_reflib/<id>/` symlink
-back to the paper folder, and a generated `REFERENCES.md` reading list. Both
+back to the paper folder, and a generated `litman_reflib/REFERENCES.md` reading
+list. Both
 are derived and rebuilt by `lit link --rebuild-all`. They are not fields, but
 they are the project end of the paper-to-project binding.
 
@@ -523,9 +531,10 @@ resolves which vault to use in priority order: `--vault <name>`, then
 `--library <path>`, then `$LIT_LIBRARY`, then the active registered vault, then
 walking up from the current directory for a vault marker.
 
-**Paper folder.** Each paper lives in `<vault>/papers/<id>/`, containing at
-least `paper.pdf`, `metadata.yaml`, and `notes.md` (and `discussion.md` once
-you record a discussion).
+**Paper folder.** Each paper lives in `<vault>/papers/<id>/`, containing
+`paper.pdf`, `metadata.yaml`, `notes.md`, and `discussion.md`. `lit add` creates
+all four; the two markdown files start empty apart from a comment stating how
+each is written.
 
 **Paper id.** The on-disk handle for a paper: both the folder name and the
 value other places use to refer to it. Default format `<year>_<Family>_<Keyword>`

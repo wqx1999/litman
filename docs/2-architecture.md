@@ -2,7 +2,7 @@
 
 litman is built in four layers: the data on disk, the Python package, the
 interfaces that drive it — the `lit` CLI and the `lit gui` Web UI — and an
-optional Claude Code layer on top. Each layer depends only on the one below it,
+optional agent layer on top. Each layer depends only on the one below it,
 so each keeps working when the layers above it are absent. This page describes
 them from the bottom up, because the upper layers only make sense once you know
 what they act on.
@@ -25,7 +25,7 @@ discussion, the links between papers, and the code repositories cloned for it.
 │       ├── paper.pdf
 │       ├── metadata.yaml
 │       ├── notes.md
-│       └── discussion.md   # created when you first record a discussion
+│       └── discussion.md   # your discussion log, appended to over time
 │
 ├── codes/
 │   └── <repo-name>/
@@ -54,8 +54,9 @@ The files split into two kinds:
 
 You are not meant to hand-edit the vault. Three of the truth files
 (`metadata.yaml`, `TAXONOMY.md`, and `paper.pdf`) are held read-only on disk and
-change only through a `lit` command, which unlocks them, writes, and re-locks, so
-a stray editor save cannot corrupt them. The derived files regenerate
+change only through litman itself — a `lit` command, or the Web UI writing your
+PDF annotations — each of which unlocks the file, writes, and re-locks, so a
+stray editor save cannot corrupt them. The derived files regenerate
 themselves. That leaves `notes.md`, `discussion.md`, and `lit-config.yaml` as the
 files you edit directly.
 
@@ -107,29 +108,38 @@ annotating, and curating. It is a wrapper, not a parallel system: its read
 endpoints call the same `core/` functions the CLI uses (`list_papers`,
 `find_vault`, the INDEX reader), and each structured write routes back through
 the same command code paths a `lit` command would run, so the browser is never a
-second way to write to the vault. The only files it writes directly are a small
-whitelist — PDF annotations embedded in the paper, `notes.md`, and
+second way to write to the vault. The only vault files it writes directly are a
+small whitelist — PDF annotations embedded in the paper, `notes.md`, and
 `discussion.md` — each through the same atomic staged write. What the UI exposes
 is a subset of the CLI, and a growing one: the everyday operations have UI
 controls, while the rest stay on the `lit` command line (or the agent). The CLI
 remains the complete surface — unplug the Web UI and every operation still works
 from `lit`.
 
-## Claude Code orchestration (Layer 4)
+## Agent orchestration (Layer 4)
 
-The top layer is optional. litman ships two skills that Claude Code loads on
+The top layer is optional. litman ships two skills that an AI agent loads on
 demand:
 
 1. `lit-library` drives the write side (`add`, `modify`, `link`, `taxonomy`, and
    so on).
 2. `lit-reading` drives the read side (`search`, `show`, `related`, and so on).
 
-Claude Code picks a skill by matching your request against the skill's
+The agent picks a skill by matching your request against the skill's
 description, then orchestrates the work as a short loop: it translates the
 plain-language request into one or more `lit` commands, runs them for you, and
 reports what each one did. The style is active, not instructional. The agent
 types the commands itself rather than telling you what to type, and after each
 run it reports the result rather than leaving you to check.
+
+You reach this layer from either interface. `lit agent` starts the agent with
+the vault as its working directory, and the Web UI can install the skills and
+launch the agent for you. Which agent that is comes from a catalog held in the
+package: Claude Code is the supported entry today, with Codex, Cursor, Gemini
+CLI, and OpenCode listed and greyed out until the release that turns them on.
+Your choice is recorded in `preferences.yaml` next to the vault registry —
+machine-level, not per-vault, because which agent you run is a property of the
+machine.
 
 Two boundaries keep this safe. The agent only ever proposes the command. The CLI
 is what validates the input and writes the data, so a hallucinated or malformed
@@ -171,7 +181,7 @@ reach the relevant papers without reading the whole vault.
 
 | Layer | What it is (real names) | Role | Needed for data ops? |
 |---|---|---|---|
-| 4 | Claude Code + `lit-library` / `lit-reading` skills | Translate requests into `lit` commands, run them, report back | No, pure convenience |
+| 4 | An AI agent + `lit-library` / `lit-reading` skills | Translate requests into `lit` commands, run them, report back | No, pure convenience |
 | 3 | `cli.py` + `commands/` (Click + Rich); the `lit gui` web server + `assets/webui/` | The interfaces over the core: the `lit` CLI and the Web UI, both wrapping the same code paths | The CLI, yes; the Web UI is an alternative front end |
 | 2 | `core/` + `importers/` + `exporters/` | Business logic, importable as a plain library | Yes |
 | 1 | `papers/`, `TAXONOMY.md`, `lit-config.yaml` (truth) + `INDEX.json`, `views/` (derived) | The source of truth and its projections | Yes, it is the data |

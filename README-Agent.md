@@ -10,15 +10,18 @@
 
 litman is a **local-first literature manager** built as a `lit` CLI over a
 plain-file vault — one folder per paper holding the PDF, a `metadata.yaml`, and
-notes. It ships two Claude Code skills so you can drive it, but every command
-also works typed by hand. The CLI, not you, is the source of truth.
+notes. It ships two skills so you can drive it, but every command also works
+typed by hand. The CLI, not you, is the source of truth.
 
 The human's everyday front door is a **web UI** (`lit gui`) for browsing,
 reading, and annotation; you operate the *same* vault through the `lit` CLI. When
 a request is really "let me look around," point them at `lit gui` — and handle
-everything the UI doesn't cover (adding papers, taxonomy edits, project/code
-links, single-paper curation) yourself. Both surfaces write through the same
-validated CLI core, so nothing you do and nothing they click can diverge.
+what the UI does not reach (importing a PDF, binding a code repo, exporting a
+`.bib`, renaming a paper, relation edges, `taxonomy merge`, sync, purge)
+yourself. The UI already does metadata curation, tagging, project link/unlink,
+delete/restore, and vault management, so don't take those back off the human.
+Both surfaces write through the same validated CLI core, so nothing you do and
+nothing they click can diverge.
 
 ## The one rule that governs everything
 
@@ -33,21 +36,23 @@ command does a thing, run `lit <cmd> --help` rather than guessing a file edit.
 
 | Skill | Side | Covers |
 |---|---|---|
-| `lit-library` | write | `add`, `modify`, `link`/`unlink`, `taxonomy`, `code`, `rm`, `health-check` |
-| `lit-reading` | read | `list`, `show`, `search`, `related`, reading-assist over notes/PDF |
+| `lit-library` | curate | `add`, `modify`, `link`/`unlink`, `project`, `taxonomy`, `code`, `export`, `rm` / `trash restore`, `health-check`, browsing with `list` |
+| `lit-reading` | read | `show`, `search`, `related`, reading status, notes/discussion, reading-assist over the PDF |
 
-Claude Code selects a skill by matching the request against the skill
-description. Route anything that **changes** the vault to `lit-library`, anything
-that only **reads** it to `lit-reading`.
+Your agent selects a skill by matching the request against the skill
+description. Route library curation and management to `lit-library`; route
+anything about the paper the human is *reading* — discussing it, finding its
+neighbours, stamping reading status, writing notes — to `lit-reading`. The split
+is by intent, not by read-vs-write: `lit-reading` writes too.
 
 ## Key entry points (task → command, all verified against `lit --help`)
 
 | Task | Command |
 |---|---|
 | Create a vault | `lit init <parent-dir>` |
-| One-shot setup (completion, skill, vault, sync) | `lit setup` |
+| One-shot setup (completion, skills, vault, sync, desktop shortcut) | `lit setup` |
 | Open the human's web UI | `lit gui` |
-| Reverse setup (remove skills/completion/registry) | `lit uninstall` |
+| Reverse setup (remove skills/shortcut/completion/registry/agent prefs) | `lit uninstall` |
 | Add a paper | `lit add <pdf-path> --doi <doi>` |
 | Browse / inspect | `lit list` · `lit show <id>` |
 | Search notes / find related | `lit search <query>` · `lit related <id>` |
@@ -105,6 +110,7 @@ need their full text. The common case never walks hundreds of metadata files.
 | Exact field reference (`metadata.yaml`, `lit-config.yaml`, `TAXONOMY.md`) | [docs/3-concepts.md](docs/3-concepts.md) |
 | Every command and flag | [docs/4-commands.md](docs/4-commands.md) |
 | One paper taken through a full everyday workflow | [docs/5-tutorial.md](docs/5-tutorial.md) |
+| Which model to run you on | [docs/6-agent-benchmark.md](docs/6-agent-benchmark.md) |
 
 When the human asks "how do I X in lit," prefer this order: run `lit <cmd>
 --help`, then cite the relevant `docs/` page — don't reconstruct flags from

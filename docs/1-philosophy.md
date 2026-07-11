@@ -54,20 +54,24 @@ core.
 **The Web UI is the everyday front door.** Running `lit gui` opens a three-pane
 browser interface — a classification tree on the left, a tabbed PDF reader in the
 middle, a context panel on the right — for the things you do most: browsing,
-reading, annotating, and taking notes. Day to day, this is where you work, and
-you rarely need to think about commands at all.
+reading, annotating, taking notes, and the everyday curation around them — status
+and tags, delete and restore, projects, the taxonomy. What the UI exposes is a
+subset of the CLI, and a growing one. Day to day, this is where you work, and you
+rarely need to think about commands at all.
 
 **The CLI is the foundation everything else rests on.** Every operation on the
 library is a dedicated `lit` subcommand (see [4-commands.md](4-commands.md)), and
 the CLI is complete on its own. It runs with no GUI, no agent, and no API key, so
 the library stays fully operable even with a weak language model or none at all.
-The Web UI and the agent are both wrappers over these same commands — never a
-second path that writes to the vault directly — so nothing they do can bypass the
-checks the CLI enforces.
+For every structured change, the Web UI and the agent are wrappers over these
+same commands, so nothing they do can bypass the checks the CLI enforces. The one
+exception is a short whitelist of free-form files the Web UI writes itself — your
+PDF annotations, `notes.md`, and `discussion.md` — and even those go through the
+same atomic write.
 
-**A Claude Code skill is the optional layer on top.** For anything past everyday
-browsing, we recommend driving litman through Claude Code, which makes managing
-the library faster. litman ships two orchestration skills (`lit-library` for the
+**The agent is the optional layer on top.** For anything past everyday browsing,
+we recommend driving litman through an AI agent, which makes managing the
+library faster. litman ships two orchestration skills (`lit-library` for the
 write side, `lit-reading` for the read side) that let you work in plain language
 instead of memorising flags, and an agent traverses the links between papers,
 code, and projects far faster than reading them by hand, so it reaches the right
@@ -130,6 +134,6 @@ drift by hand, it prevents what it can and surfaces the rest.
 
 **The vault and its backup.** The vault is the central unit. You can register
 several (your own, a colleague's snapshot), but exactly one is active at a time.
-Because the vault is deliberately not under version control, history and backup
-are the job of remote sync: `lit sync` mirrors the active vault to a cloud
-target, so a lost machine never means a lost library.
+Because the vault is deliberately not under version control, backup is the job of
+remote sync: `lit sync` mirrors the active vault to a cloud target, so a lost
+machine never means a lost library.
