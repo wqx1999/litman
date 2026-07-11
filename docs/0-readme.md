@@ -13,7 +13,7 @@ what each of the others is for.
 
 ## Before you start
 
-1. **Don't move a vault or project folder by hand.** The symlinks, project
+1. **Don't move a vault or project folder by hand.** The links, project
    bridges, and registry that hold it together are path-based; if you must move
    one, run `lit health-check --fix` afterward to repair what broke.
 2. **Don't edit metadata files by hand.** Change papers and taxonomy through the
@@ -21,9 +21,10 @@ what each of the others is for.
    `lit-config.yaml` is the one settings file you may edit directly.
 3. **Figure and table reading needs a multimodal model.** A text-only model falls
    back to plain-text extraction and cannot see figures or image-based tables.
-4. **On Windows, the symlinked extras need Developer Mode** — the `views/`
-   browsing hubs and the project bridges. Without it litman skips them; metadata,
-   PDFs, notes, and everything else work normally.
+4. **Keep the library on an internal drive.** The `views/` browsing hubs and
+   the project bridges are folder links, which FAT32 / exFAT drives (most USB
+   sticks) and network shares cannot hold. On such drives litman says so once
+   and skips them; metadata, PDFs, notes, and everything else work normally.
 
 ## Start here
 

@@ -63,16 +63,18 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
-- **Windows: a healthy library is no longer reported as broken.** Without
-  Developer Mode, Windows refuses symbolic links, so `views/` and the shortcuts
-  `lit link` places in your project folders cannot be created. litman reported
-  every one of them as an error — about six per paper, several hundred for a real
-  library — and `lit health-check --fix` could not repair a single one. Those
-  shortcuts are conveniences; your papers, notes and search were never affected.
-  `lit health-check` now says so in one line and exits clean, and it tells you
-  that turning on Developer Mode enables the shortcuts — which needs no
-  administrator rights. The web UI says the same thing on startup, since that
-  message never reached anyone launching litman from the desktop icon.
+- **Windows: the browsing folders and project shortcuts now work out of the
+  box.** `views/` and the shortcuts `lit link` places in your project folders
+  are created as directory junctions on Windows — a native folder link that
+  needs no special mode and no administrator rights. Before, they silently
+  required a symbolic-link privilege nobody has by default, and litman
+  reported every missing one as an error — about six per paper, several
+  hundred for a real library — none of which `lit health-check --fix` could
+  repair. On a drive that cannot hold links at all (FAT32 / exFAT USB sticks,
+  network shares) litman now says so once, calmly — one info line in
+  `lit health-check`, which exits clean, and a dismissible note in the web
+  UI — and skips them: those shortcuts are conveniences, and papers, notes,
+  search, the web UI and the agent workflow all work without them.
 - **`lit search` no longer matches the comment lines litman seeds into your notes.**
   Searching a word that only appears in one of them (`wikilink`, say) returned a
   hit on every paper in the library. Comments are litman's, not yours, so they are
@@ -113,9 +115,9 @@ behaviour, a minor release adds it, a major release breaks it.
   mark-read toast names its undo key the way the `?` sheet does.
 - The `?` shortcut sheet no longer wraps its key captions.
 - `lit setup` signposts the next step for a first-time user.
-- The Windows note claimed the symlink features need administrator rights and
-  pointed users at WSL. They need Developer Mode, and without it litman skips them
-  and carries on.
+- The Windows note in the docs claimed the linked folders need administrator
+  rights and pointed users at WSL. They need neither — nor anything else: see
+  the junction change above.
 
 ## 1.1.0 — 2026-07-06
 
