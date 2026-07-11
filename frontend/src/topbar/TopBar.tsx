@@ -8,6 +8,7 @@ import type {
   VaultsPayload,
 } from '../types'
 import type { Candidate } from '../search'
+import { projectHealth } from '../projects'
 import {
   createProject,
   deleteProject,
@@ -842,17 +843,39 @@ function ProjectManager({
               No projects registered.
             </div>
           )}
-          {sorted.map((p) => (
+          {sorted.map((p) => {
+            const health = projectHealth(p.status)
+            return (
             <div
               key={p.name}
               className="flex items-center justify-between gap-2 border-b border-stone-100 px-3 py-2 last:border-b-0"
             >
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-stone-800">
-                  {p.name}
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-stone-800">
+                    {p.name}
+                  </span>
+                  {health && (
+                    <span
+                      title={health.title}
+                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        health.tone === 'missing'
+                          ? 'bg-rose-100 text-rose-700'
+                          : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {health.badge}
+                    </span>
+                  )}
                 </div>
-                <div className="truncate font-mono text-[11px] text-stone-400">
-                  {p.path}
+                <div
+                  className={`truncate font-mono text-[11px] ${
+                    health?.tone === 'missing'
+                      ? 'text-rose-400 line-through'
+                      : 'text-stone-400'
+                  }`}
+                >
+                  {p.path || 'no folder set'}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -891,7 +914,8 @@ function ProjectManager({
                 </button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
         <div className="mt-4 flex justify-between">
           <button

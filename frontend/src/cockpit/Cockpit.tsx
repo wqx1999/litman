@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FixedEnums, IndexPaper, PaperMeta, ProjectEntry, Taxonomy } from '../types'
+import { projectHealth } from '../projects'
+import type { ProjectHealth } from '../projects'
 
 /** Imperative handle the global keyboard shortcuts (⌥R/⌥⇧R/⌥P/⌥D/⌥T/⌥C/⌥⇧C)
  * use to drive the cockpit's existing curation actions on the selected paper.
@@ -269,6 +271,7 @@ function TagPanel({
   field,
   values,
   vocabulary,
+  note,
   busy,
   onAdd,
   onRemove,
@@ -279,6 +282,12 @@ function TagPanel({
   field: string
   values: string[] | undefined
   vocabulary: string[]
+  /** Per-value health marker, for a vocabulary whose entries can go bad behind
+   * litman's back. Only projects supply it (a project is bound to a folder, and
+   * the folder can move); a taxonomy value is just a word and cannot rot. A
+   * marked value stays listed and stays clickable — hiding it would be one more
+   * thing happening without the user being told, and attaching it fails loudly. */
+  note?: (value: string) => ProjectHealth | null
   busy: boolean
   onAdd: (value: string) => void
   onRemove: (value: string) => void
@@ -333,11 +342,13 @@ function TagPanel({
         )}
         {filtered.map((v) => {
           const on = attached.includes(v)
+          const health = note?.(v)
           return (
             <button
               key={v}
               type="button"
               disabled={busy}
+              title={health?.title}
               onClick={() => (on ? onRemove(v) : onAdd(v))}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
             >
@@ -347,6 +358,15 @@ function TagPanel({
                 ✓
               </span>
               <span className="truncate">{v}</span>
+              {health && (
+                <span
+                  className={`ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
+                    health.tone === 'missing' ? 'text-rose-600' : 'text-amber-600'
+                  }`}
+                >
+                  {health.badge}
+                </span>
+              )}
             </button>
           )
         })}
@@ -387,6 +407,7 @@ type TagFieldConfig = {
   label: string
   values: string[] | undefined
   vocabulary: string[]
+  note?: (value: string) => ProjectHealth | null
   onAdd: (value: string) => void
   onRemove: (value: string) => void
   onCreate?: (value: string) => void
@@ -445,6 +466,7 @@ function TagGroup({
           field={openCfg.key}
           values={openCfg.values}
           vocabulary={openCfg.vocabulary}
+          note={openCfg.note}
           busy={busy}
           onAdd={openCfg.onAdd}
           onRemove={openCfg.onRemove}
@@ -1710,6 +1732,12 @@ function WriteCockpit({
                   label: 'Projects',
                   values: paper.projects,
                   vocabulary: projects.map((p) => p.name),
+                  // A project whose folder has moved is refused by the link
+                  // backend, so say so in the list rather than on the click.
+                  note: (name: string) => {
+                    const p = projects.find((x) => x.name === name)
+                    return p ? projectHealth(p.status) : null
+                  },
                   onAdd: linkProj,
                   onRemove: unlinkProj,
                 },

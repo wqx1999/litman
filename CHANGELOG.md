@@ -67,6 +67,10 @@ behaviour, a minor release adds it, a major release breaks it.
   and the vault manager. Switching to one is refused with a message naming the
   path it lost; before, such a library was offered like any other, and picking it
   left the selector where it was and said nothing.
+- **A project whose folder has moved is marked `missing`** in the project manager
+  and in a paper's project picker, and one registered in only one of litman's two
+  records is marked `incomplete`. The CLI has always reported both; the GUI listed
+  them like any other project and only failed once you picked one.
 - `lit add` rejects a file that is not a PDF instead of ingesting it, and its help
   text now says plainly that the source file is **moved** into the vault, not
   copied.

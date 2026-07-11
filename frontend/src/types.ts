@@ -102,10 +102,19 @@ export interface FixedEnums {
   type: FixedEnumField
 }
 
+/** How a registered project stands, as `GET /api/projects` joins TAXONOMY.md's
+ * projects section against lit-config.yaml's projects map — the same join that
+ * backs `lit project list`. `path-missing` means the folder is no longer there;
+ * the two `-only` states mean the project is registered in one truth source but
+ * not the other. See `projectHealth` in projects.ts for what each means to the
+ * user. */
+export type ProjectStatus = 'ok' | 'path-missing' | 'config-only' | 'taxonomy-only'
+
 export interface ProjectEntry {
   name: string
+  /** Empty string for a `taxonomy-only` project: it has no path to show. */
   path: string
-  status: string
+  status: ProjectStatus
 }
 
 export interface VaultEntry {
