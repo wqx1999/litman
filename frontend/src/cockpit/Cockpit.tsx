@@ -286,7 +286,9 @@ function TagPanel({
    * litman's back. Only projects supply it (a project is bound to a folder, and
    * the folder can move); a taxonomy value is just a word and cannot rot. A
    * marked value stays listed and stays clickable — hiding it would be one more
-   * thing happening without the user being told, and attaching it fails loudly. */
+   * thing happening without the user being told. The title says what picking it
+   * means: a missing or taxonomy-only project refuses the link, a config-only
+   * one links but lands the tag outside the taxonomy. */
   note?: (value: string) => ProjectHealth | null
   busy: boolean
   onAdd: (value: string) => void
@@ -1732,8 +1734,9 @@ function WriteCockpit({
                   label: 'Projects',
                   values: paper.projects,
                   vocabulary: projects.map((p) => p.name),
-                  // A project whose folder has moved is refused by the link
-                  // backend, so say so in the list rather than on the click.
+                  // A project whose folder has moved (or is half-registered)
+                  // misbehaves on link — refused, or quietly deepening the
+                  // split — so say so in the list, not on the click.
                   note: (name: string) => {
                     const p = projects.find((x) => x.name === name)
                     return p ? projectHealth(p.status) : null

@@ -37,14 +37,19 @@ export function projectHealth(status: ProjectStatus): ProjectHealth | null {
     // arise from litman's own writes) — but lit-config.yaml has no `lit config
     // set`, hand-editing is its only mutation path, so both are reachable. The
     // titles name the file the project is absent from, because that is where the
-    // fix has to happen: re-pointing cannot repair either one.
+    // fix has to happen: re-pointing cannot repair either one. They also differ
+    // in what a link attempt does — taxonomy-only is refused (no folder to link
+    // into), config-only SUCCEEDS (the link backend resolves the config map
+    // only, never TAXONOMY) and quietly deepens the split — so the config-only
+    // title must not claim tagging is blocked.
     case 'config-only':
       return {
         tone: 'incomplete',
         badge: 'incomplete',
         title:
           'Has a folder in lit-config.yaml but is not listed in TAXONOMY.md. ' +
-          'Papers cannot be tagged with it until it is.',
+          'Tagging still works, but the tag lands outside the taxonomy — ' +
+          'list it in TAXONOMY.md to repair.',
       }
     case 'taxonomy-only':
       return {
