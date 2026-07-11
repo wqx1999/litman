@@ -27,6 +27,7 @@ skipped (ADR-005).
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +144,9 @@ def reconcile_project_code_links(
     ``code-clones``) by some paper tagged with ``project`` whose
     ``codes/<repo>/repo`` clone is present locally should have exactly one
     symlink, and nothing else should. This reconciles the on-disk symlink set
-    to that expected set — creating the missing, removing the orphaned —
+    to that expected set — creating the missing, removing the orphaned, and
+    re-pointing the dangling (a link whose name matches but whose target is
+    gone, e.g. after the vault moved, is treated as missing, not present) —
     without the full-vault wipe ``rebuild_all_project_links`` performs.
     Idempotent.
 
@@ -166,14 +169,22 @@ def reconcile_project_code_links(
 
     code_dir = project_dir / CODE_SUBDIR
     on_disk: set[str] = set()
+    resolving: set[str] = set()
     if code_dir.is_dir():
         for child in code_dir.iterdir():
             if child.is_symlink():
                 on_disk.add(child.name)
+                # exists() FOLLOWS the link. A dangling bridge (the vault —
+                # or the clone — moved out from under it) must count as
+                # ABSENT: by name it looks present and the create loop would
+                # skip it, leaving reconcile powerless on exactly the state
+                # it exists to repair. The upsert re-points it in place.
+                if child.exists():
+                    resolving.add(child.name)
 
     created: list[str] = []
     for repo_name, repo_target in expected.items():
-        if repo_name not in on_disk and make_relative_symlink(
+        if repo_name not in resolving and make_relative_symlink(
             code_dir / repo_name, repo_target
         ):
             created.append(repo_name)
@@ -182,6 +193,88 @@ def reconcile_project_code_links(
         if remove_link_if_present(code_dir / repo_name):
             removed.append(repo_name)
     return {"created": sorted(created), "removed": sorted(removed)}
+
+
+def find_dangling_bridges(
+    projects: dict[str, str],
+    dir_status: dict[str, bool | None],
+    exists_fn: Callable[[list[str]], dict[str, bool | None]],
+) -> dict[str, list[Path]]:
+    """Per project: bridge symlinks whose target is definitely gone.
+
+    The one shared detection core behind ``check_project_bridge_dangling``
+    (the cheap health check), the Tier-1 ``[Y/n]`` rebuild prompt, and the
+    server's switch-time heal — a single collector so the three can never
+    disagree about what "dangling" means.
+
+    A bridge is ``<project_dir>/litman_reflib/<id>`` or
+    ``<project_dir>/litman_code/<repo>``: a relative symlink that leaves the
+    project tree and re-enters the vault at the location the vault had when
+    the link was written. Moving the vault dangles every bridge at once while
+    the vault itself and each project stay individually healthy — which is
+    why nothing else sees it: ``check_project_references`` compares link
+    NAMES against membership, and the names still match.
+
+    Args:
+        projects: lit-config.yaml ``projects:`` map (name → path, raw).
+        dir_status: bounded-stat verdict per expanded project path (``True``
+            / ``False`` / ``None``). Only projects definitely present are
+            scanned — a missing dir is ``project_path_exists``'s finding, not
+            a bridge problem.
+        exists_fn: batch target probe keyed by path string
+            (``_exists_bounded`` in production — mount-safe per ADR-014).
+            ``Path.exists()`` FOLLOWS symlinks, so ``False`` on a just-listed
+            link means the TARGET is gone; ``None`` (slow / dropped mount) is
+            never counted as dangling.
+
+    Returns:
+        ``{project_name: [dangling link paths]}`` for projects with at least
+        one definitely-dangling bridge; insertion order follows sorted
+        project names, links sorted within each hub.
+    """
+    links: dict[str, list[Path]] = {}
+    for name in sorted(projects):
+        project_dir = Path(projects[name]).expanduser()
+        if dir_status.get(str(project_dir)) is not True:
+            continue
+        if not project_dir.is_dir():
+            continue
+        hub_links: list[Path] = []
+        try:
+            for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
+                hub = project_dir / sub
+                if not hub.is_dir():
+                    continue
+                for child in sorted(hub.iterdir()):
+                    if child.is_symlink():
+                        hub_links.append(child)
+        except OSError:
+            # A hub that vanishes or refuses listing between the bounded dir
+            # probe and this scan (dying mount, chmod'd hub): skip THIS
+            # project, keep scanning the rest. On the Tier-1 hot path an
+            # exception escaping here would take down the whole drift hook
+            # (its outer wrapper swallows everything, registry/project
+            # prompts included). Skipping one project's scan is the
+            # documented, bounded loss (invariant #14); Tier-2 health-check
+            # revisits it.
+            continue
+        if hub_links:
+            links[name] = hub_links
+
+    if not links:
+        return {}
+
+    target_status = exists_fn(
+        [str(p) for name_links in links.values() for p in name_links]
+    )
+    out: dict[str, list[Path]] = {}
+    for name, name_links in links.items():
+        dangling = [
+            p for p in name_links if target_status.get(str(p)) is False
+        ]
+        if dangling:
+            out[name] = dangling
+    return out
 
 
 def refresh_project_code_links(

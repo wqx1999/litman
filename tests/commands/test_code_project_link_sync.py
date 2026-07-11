@@ -282,3 +282,64 @@ def _papers(vault: Path) -> list[dict[str, Any]]:
     from litman.core.document import list_papers
 
     return list_papers(vault)
+
+
+# ---------------------------------------------------------------------------
+# reconcile — dangling links count as absent (the vault-moved state)
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_repoints_dangling_expected_link(
+    vault: Path, project_dir: Path
+) -> None:
+    """A dangling ``litman_code/<repo>`` link whose NAME matches the expected
+    set used to be skipped as "already present" — reconcile was powerless on
+    exactly the state it exists to repair. It must be re-pointed in place."""
+    from litman.core.document import list_papers
+    from litman.core.project_link import reconcile_project_code_links
+
+    _register(vault, "pepforge", project_dir)
+    _make_repo(vault, "alphafold", papers=["p1"])
+    _make_paper(vault, "p1", projects=["pepforge"], code_clones=["alphafold"])
+
+    # Plant a dangling link under the expected name — what a moved vault
+    # leaves behind: right name, dead target.
+    code_dir = project_dir / CODE_SUBDIR
+    code_dir.mkdir(parents=True, exist_ok=True)
+    link = code_dir / "alphafold"
+    link.symlink_to("../nowhere/alphafold")
+    assert link.is_symlink() and not link.exists()
+
+    result = reconcile_project_code_links(
+        vault, "pepforge", project_dir, list_papers(vault)
+    )
+
+    assert result["created"] == ["alphafold"]
+    assert link.exists()
+    assert link.resolve() == (vault / "codes" / "alphafold" / "repo").resolve()
+
+
+def test_reconcile_removes_dangling_orphan_link(
+    vault: Path, project_dir: Path
+) -> None:
+    """A dangling link with NO matching code-clone membership is an orphan —
+    removed, not resurrected (the removal arm must keep seeing dangling
+    entries even though the create arm now treats them as absent)."""
+    from litman.core.document import list_papers
+    from litman.core.project_link import reconcile_project_code_links
+
+    _register(vault, "pepforge", project_dir)
+    _make_paper(vault, "p1", projects=["pepforge"])  # binds no repos
+
+    code_dir = project_dir / CODE_SUBDIR
+    code_dir.mkdir(parents=True, exist_ok=True)
+    ghost = code_dir / "ghostrepo"
+    ghost.symlink_to("../nowhere/ghostrepo")
+    assert ghost.is_symlink() and not ghost.exists()
+
+    result = reconcile_project_code_links(
+        vault, "pepforge", project_dir, list_papers(vault)
+    )
+
+    assert result["removed"] == ["ghostrepo"]
+    assert not ghost.is_symlink()
