@@ -57,6 +57,10 @@ interface Props {
    * backend's verbatim VaultRegistryError so the form can show it inline. On
    * success App refreshes the list and, when `setActive`, reuses switchVault. */
   onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  /** Create a NEW vault dir under `parentDir` and register it (the `lit init`
+   * backend). Same contract as onRegisterVault: rejects with the backend's
+   * verbatim message so the form can show it inline. */
+  onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   /** Unregister a vault (registry entry only — the directory on disk is kept).
    * App handles the toast + list refresh; errors are toasted, not thrown. */
   onUnregisterVault: (name: string) => Promise<void>
@@ -133,6 +137,7 @@ export default function TopBar({
   onProjectsChanged,
   onSwitchVault,
   onRegisterVault,
+  onCreateVault,
   onUnregisterVault,
   switching,
   notify,
@@ -537,6 +542,7 @@ export default function TopBar({
         <VaultManager
           vaults={vaults}
           onRegisterVault={onRegisterVault}
+          onCreateVault={onCreateVault}
           onUnregisterVault={onUnregisterVault}
           onClose={() => setShowVaults(false)}
         />
@@ -1343,16 +1349,19 @@ function NewProjectDialog({
 function VaultManager({
   vaults,
   onRegisterVault,
+  onCreateVault,
   onUnregisterVault,
   onClose,
 }: {
   vaults: VaultsPayload | null
   onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   onUnregisterVault: (name: string) => Promise<void>
   onClose: () => void
 }) {
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
   const [showRegister, setShowRegister] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
   const [busy, setBusy] = useState(false)
 
   async function doUnregister(name: string) {
@@ -1367,7 +1376,7 @@ function VaultManager({
 
   const entries = vaults?.vaults ?? []
   const sorted = entries.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked = busy || pendingUnregister != null || showRegister
+  const blocked = busy || pendingUnregister != null || showRegister || showCreate
 
   return createPortal(
     <div
@@ -1377,15 +1386,16 @@ function VaultManager({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && !pendingUnregister && !showRegister) onClose()
+          if (e.key === 'Escape' && !pendingUnregister && !showRegister && !showCreate)
+            onClose()
         }}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Register an existing vault, or unregister one. Unregistering removes the
-          registry entry only — the vault folder on disk is kept. Switch vaults
-          from the selector in the toolbar.
+          Create a new vault, or register one that already exists. Unregistering
+          removes the registry entry only — the vault folder on disk is kept. Switch
+          vaults from the selector in the toolbar.
         </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
@@ -1444,15 +1454,25 @@ function VaultManager({
             </div>
           ))}
         </div>
-        <div className="mt-4 flex justify-between">
-          <button
-            type="button"
-            disabled={blocked}
-            onClick={() => setShowRegister(true)}
-            className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
-          >
-            + Register existing vault…
-          </button>
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => setShowCreate(true)}
+              className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
+            >
+              + New vault…
+            </button>
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => setShowRegister(true)}
+              className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+            >
+              + Register existing…
+            </button>
+          </div>
           <button
             type="button"
             disabled={blocked}
@@ -1481,6 +1501,16 @@ function VaultManager({
             // SwitchVaultDialog (via switchVault) — close this panel so that
             // confirm isn't stacked behind it.
             if (setActive) onClose()
+          }}
+        />
+      )}
+      {showCreate && (
+        <CreateVaultDialog
+          onCreateVault={onCreateVault}
+          onClose={() => setShowCreate(false)}
+          onCreated={(setActive) => {
+            setShowCreate(false)
+            if (setActive) onClose() // same reason as above: don't stack the confirm
           }}
         />
       )}
@@ -1690,6 +1720,159 @@ function RegisterVaultDialog({
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
             {busy ? 'Registering…' : 'Register'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Create a NEW vault: the `lit init` backend (POST /api/vaults/create), reachable
+ * from the manager rather than only from the first-run welcome page. Sibling of
+ * RegisterVaultDialog, and deliberately shaped like it — same shell, same inline
+ * verbatim-400, same "switch to it after" checkbox reusing App's switchVault.
+ *
+ * The two differ in what the path field means, which is the whole point of having
+ * two dialogs instead of one: Register takes the vault folder ITSELF (it must
+ * already hold a lit-config.yaml), while Create takes the PARENT and makes the
+ * folder under it. Getting that backwards is the easy mistake, so the field is
+ * labelled "Location", the name is a separate field, and the joined path is
+ * echoed back under both — the same three-part shape the welcome page uses.
+ *
+ * One name, not two: the folder created on disk and the registry entry share it.
+ * (`lit init --register-as` splits them; the GUI does not need to.) */
+function CreateVaultDialog({
+  onCreateVault,
+  onClose,
+  onCreated,
+}: {
+  onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
+  onClose: () => void
+  onCreated: (setActive: boolean) => void
+}) {
+  const [parentDir, setParentDir] = useState('~')
+  const [name, setName] = useState('')
+  const [setActive, setSetActive] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const canSubmit = parentDir.trim().length > 0 && name.trim().length > 0 && !busy
+
+  async function submit() {
+    if (!canSubmit) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onCreateVault(parentDir.trim(), name.trim(), setActive)
+      onCreated(setActive)
+    } catch (err) {
+      // Verbatim backend message inline (missing parent / target not empty / name
+      // already registered); keep the dialog open so the user can correct it.
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  const joined = `${parentDir.trim().replace(/\/+$/, '')}/${name.trim() || '<name>'}`
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onClose()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">New vault</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Creates the vault folder and registers it. The location must already
+          exist; the vault folder itself must not.
+        </p>
+        <div className="mt-4 flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Location
+            </span>
+            <input
+              type="text"
+              value={parentDir}
+              disabled={busy}
+              spellCheck={false}
+              placeholder="/work/you"
+              onChange={(e) => setParentDir(e.target.value)}
+              className={`${INPUT} font-mono`}
+            />
+            <span className="text-[11px] text-stone-400">
+              the folder to create the vault in
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Name
+            </span>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              disabled={busy}
+              spellCheck={false}
+              placeholder="literature_vault"
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit()
+              }}
+              className={INPUT}
+            />
+          </label>
+          <p className="truncate text-[11px] text-stone-400">
+            Creates <span className="font-mono text-stone-500">{joined}</span>
+          </p>
+          <label className="flex items-center gap-2 text-xs text-stone-600">
+            <input
+              type="checkbox"
+              checked={setActive}
+              disabled={busy}
+              onChange={(e) => setSetActive(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-400"
+            />
+            Switch to it after creating
+          </label>
+        </div>
+        {error && (
+          <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-[11px] leading-relaxed text-rose-600">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Creating…' : 'Create vault'}
           </button>
         </div>
       </div>

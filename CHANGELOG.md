@@ -20,6 +20,9 @@ behaviour, a minor release adds it, a major release breaks it.
   or without Shift. Press `?` for the full shortcut list.
 - **A welcome page.** `lit gui` now starts without a vault and offers to create
   your first library from the browser.
+- **New libraries can be created from the GUI**, not just your first one. The
+  vault manager now has **New vault** alongside **Register existing** — pick a
+  location and a name, and optionally switch to it once it is made.
 - **`lit self-update`** upgrades litman through whichever tool installed it (uv or
   pipx). litman also checks PyPI once a day and mentions when a newer version is
   out; set `LITMAN_NO_UPDATE_CHECK=1` to silence it. No telemetry is sent.

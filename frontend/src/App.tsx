@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
+  createVault,
   fetchDocMtimes,
   fetchFixedEnums,
   fetchPaper,
@@ -1270,6 +1271,26 @@ export default function App() {
     [notify, switchVault],
   )
 
+  // Create a NEW vault directory + register it — the `lit init` backend, the same
+  // route the welcome page uses. Until now that route was reachable only on the
+  // welcome page, i.e. only for a user who had no vault at all: once you had one,
+  // a second library could be made only from the CLI. Creating never switches you
+  // (only the very first vault becomes active), so `setActive` reuses the same
+  // switchVault flow onRegisterVault does — no new repoint logic. Rethrows so the
+  // dialog can show the backend's verbatim 400 (missing parent, non-empty target,
+  // name clash) inline.
+  const onCreateVault = useCallback(
+    async (parentDir: string, name: string, setActive: boolean) => {
+      const created = await createVault(parentDir, name)
+      notify(`Created vault “${created.name}” at ${created.path}.`, 'success')
+      await fetchVaults().then(setVaults)
+      // The first-ever vault is already active and the server already repointed
+      // itself; asking to switch to it would be a no-op confirm dialog.
+      if (setActive && !created.active) switchVault(created.name)
+    },
+    [notify, switchVault],
+  )
+
   const onUnregisterVault = useCallback(
     async (name: string) => {
       try {
@@ -1534,6 +1555,7 @@ export default function App() {
         onProjectsChanged={refreshProjects}
         onSwitchVault={switchVault}
         onRegisterVault={onRegisterVault}
+        onCreateVault={onCreateVault}
         onUnregisterVault={onUnregisterVault}
         switching={switchingVault}
         notify={notify}

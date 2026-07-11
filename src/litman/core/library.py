@@ -64,9 +64,15 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
 
     vault = parent / name
     if vault.exists() and any(vault.iterdir()):
+        # Whatever is sitting there is NOT necessarily a vault — it is just a
+        # non-empty directory, and it may well be a folder of the user's own
+        # files that happens to collide on name. So the advice is to go around
+        # it, never to clear it out. The two suggestions are also the two inputs
+        # the user has in front of them, in the CLI (--name / PARENT_DIR) and in
+        # the GUI's New-vault dialog (Name / Location) alike.
         raise VaultExistsError(
-            f"Target vault path already exists and is non-empty: {vault}. "
-            "Pick a different --name or remove the existing vault."
+            f"Target vault path already exists and is not empty: {vault}. "
+            "Pick a different name, or a different location."
         )
 
     # Track whether we created the root so we know whether to remove it on
