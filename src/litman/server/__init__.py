@@ -36,9 +36,9 @@ _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
 # either because none was ever created (welcome page) or because the one it was
 # serving vanished mid-session (see ``_guard_vault``). Both states are escaped
 # through the same doors: list the registry, register an existing directory,
-# create a new one, switch the active entry. Everything else under ``/api/`` is
-# refused — the SPA + its assets (served off ``/``) always pass, so the page
-# that offers those doors still loads.
+# create a new one, switch the active entry, drop a stale entry. Everything
+# else under ``/api/`` is refused — the SPA + its assets (served off ``/``)
+# always pass, so the page that offers those doors still loads.
 _VAULTLESS_ALLOWED = frozenset(
     {
         ("GET", "/api/vaults"),
@@ -48,6 +48,22 @@ _VAULTLESS_ALLOWED = frozenset(
         ("GET", "/api/version"),
     }
 )
+
+
+def _vaultless_allowed(method: str, path: str) -> bool:
+    """Is this request one of the doors out of the no-vault / gone-vault state?
+
+    ``DELETE /api/vaults/{name}`` carries the name in the path, so it cannot sit
+    in the exact-match set above. It belongs with the doors all the same: it is
+    a pure registry write (the route never touches the vault, and it refuses the
+    served vault itself with its own 409), and the vault manager — the very
+    dialog the gone-state banner opens — renders an Unregister button on every
+    row. Without this, that button answered with the middleware's complaint
+    about a *different* vault than the one clicked.
+    """
+    if (method, path) in _VAULTLESS_ALLOWED:
+        return True
+    return method == "DELETE" and path.startswith("/api/vaults/")
 
 
 @asynccontextmanager
@@ -121,10 +137,9 @@ def create_app(vault: Path | None) -> FastAPI:
         also refuses to mistake such a carcass for a real vault.
         """
         vault = request.app.state.vault
-        if request.url.path.startswith("/api/") and (
-            request.method,
-            request.url.path,
-        ) not in _VAULTLESS_ALLOWED:
+        if request.url.path.startswith("/api/") and not _vaultless_allowed(
+            request.method, request.url.path
+        ):
             if vault is None:
                 return JSONResponse(
                     status_code=409,

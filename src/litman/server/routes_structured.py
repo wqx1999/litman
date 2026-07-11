@@ -851,7 +851,10 @@ async def delete_vault(request: Request, name: str) -> dict[str, object]:
     """
     reg = load_registry()
     entry = find_by_name(reg, name)
-    if entry is not None:
+    # ``state.vault`` is None on a welcome-mode server (nothing is served, so
+    # nothing needs protecting) — the route is reachable there now that DELETE
+    # is one of the vaultless doors.
+    if entry is not None and request.app.state.vault is not None:
         served = Path(request.app.state.vault).expanduser().resolve()
         if Path(entry.path).expanduser().resolve() == served:
             raise HTTPException(

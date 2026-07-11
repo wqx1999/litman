@@ -4,8 +4,8 @@ Two surfaces:
 
 * ``create_app(None)`` — a server that started with no vault to serve. The
   ``_guard_vault`` middleware 409s every vault-dependent ``/api/`` route while
-  a short whitelist (vault list / create / open / version) stays reachable so the
-  welcome page can bootstrap and create a library.
+  a short whitelist (vault list / create / open / unregister / version) stays
+  reachable so the welcome page can bootstrap and create a library.
 * ``POST /api/vaults/create`` — the create-and-register endpoint, same core path
   as ``lit init`` (:func:`litman.commands.init.apply_init`). The first vault
   becomes active and repoints the running server in place (no restart).
@@ -73,6 +73,18 @@ def test_no_vault_allows_whitelisted_gets(path: str) -> None:
     """The welcome page's bootstrap reads (vault list + version) stay reachable."""
     resp = TestClient(create_app(None)).get(path)
     assert resp.status_code == 200
+
+
+def test_no_vault_allows_unregister(tmp_path: Path) -> None:
+    """Unregister is one of the vaultless doors (a pure registry write). With no
+    served vault there is nothing to protect, so the route's served-vault guard
+    must step aside — not crash on ``state.vault`` being None."""
+    vault = create_vault(tmp_path, name="stale")
+    save_registry(add_vault(load_registry(), "stale", vault))
+
+    resp = TestClient(create_app(None)).delete("/api/vaults/stale")
+    assert resp.status_code == 200
+    assert load_registry().vaults == []
 
 
 def test_no_vault_vaults_list_reports_served_null() -> None:

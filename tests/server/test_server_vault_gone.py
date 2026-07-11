@@ -205,6 +205,42 @@ def test_re_registering_the_new_path_recovers(tmp_path: Path) -> None:
     assert client.get("/api/papers").status_code == 200
 
 
+def test_gone_state_can_create_a_fresh_vault(tmp_path: Path) -> None:
+    """The fourth door: `lit init` through the GUI. A user whose library is
+    gone for good (deleted on purpose, disk replaced) escapes by making a new
+    one — the whitelist entry existed, this pins that the door actually opens."""
+    vault = create_vault(tmp_path, name="lib")
+    client = _client(vault)
+    _move_away(vault, tmp_path / "moved")
+
+    resp = client.post(
+        "/api/vaults/create", json={"parent_dir": str(tmp_path), "name": "fresh"}
+    )
+    assert resp.status_code == 200
+    assert (tmp_path / "fresh" / "lit-config.yaml").is_file()
+
+
+def test_gone_state_can_unregister_an_unrelated_entry(tmp_path: Path) -> None:
+    """Unregister is a pure registry write — the route never touches any vault
+    directory — and the manager the banner opens shows its button on every row.
+    It must not be answered with the middleware's complaint about the SERVED
+    vault when the user clicked a different one."""
+    beta, alpha = _register_pair(tmp_path)
+    client = _client(beta)
+    _move_away(beta, tmp_path / "beta-moved")  # the SERVED vault is gone
+
+    resp = client.delete("/api/vaults/alpha")
+    assert resp.status_code == 200
+    names = [v["name"] for v in client.get("/api/vaults").json()["vaults"]]
+    assert names == ["beta"]
+
+    # The served vault itself still refuses — with the route's own guard and
+    # its own reason (the server is bound to it), not the middleware's 410.
+    resp = client.delete("/api/vaults/beta")
+    assert resp.status_code == 409
+    assert "serv" in resp.json()["detail"].lower()
+
+
 # ===========================================================================
 # a REGISTERED but NOT served vault vanishes — the switch-vault path
 #
