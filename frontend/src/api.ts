@@ -307,6 +307,24 @@ export function fetchVersion(): Promise<VersionInfo> {
   return getJSON<VersionInfo>('/api/version')
 }
 
+/** What this host can do. Cheap enough to call on page load — unlike
+ * `/api/health`, which is Tier-2 and only runs when the user opens the panel.
+ *
+ * `symlink: false` means views/ and the litman_reflib / litman_code project
+ * shortcuts are not being created (Windows without Developer Mode, exFAT, some
+ * SMB mounts). The library itself is unaffected. A GUI-only user has no other
+ * way to learn this: the CLI prints a warning to stderr, and the desktop
+ * shortcut launches the console-less `litw` entry point, so that warning is
+ * shown to nobody. */
+export interface Capabilities {
+  symlink: boolean
+  platform: string
+}
+
+export function fetchCapabilities(): Promise<Capabilities> {
+  return getJSON<Capabilities>('/api/capabilities')
+}
+
 /** Run every health-check probe and return the flat findings list — the pure-read
  * mirror of `lit health-check` (the GET never re-locks / fixes / stamps the
  * registry). On demand only (Tier-2: reads all metadata server-side), so the

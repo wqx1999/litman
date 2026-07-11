@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   createVault,
+  fetchCapabilities,
   fetchDocMtimes,
   fetchFixedEnums,
   fetchPaper,
@@ -55,6 +56,11 @@ import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
+
+// Symlink advisory, dismissed for good. localStorage (not the server) because
+// this is a per-person "yes, I know" — nothing about the library changed, and a
+// second machine reading the same vault deserves to be told once too.
+const SYMLINK_NOTICE_DISMISSED = 'litman.symlinkNoticeDismissed'
 
 // Single-value fields filter on `p[f]` (string | null); array fields filter on
 // `p[f]` (string[]). Status is filtered in the `visible` pipeline like the rest
@@ -302,6 +308,13 @@ export default function App() {
   // open. Drives its own banner and shares the 5s retry loop, so putting the
   // folder back heals the session with no restart.
   const [vaultGone, setVaultGone] = useState(false)
+  // This host cannot create symlinks (Windows without Developer Mode, exFAT,
+  // some SMB mounts), so views/ and the litman_reflib / litman_code project
+  // shortcuts are silently absent. The library is FINE — this is an advisory,
+  // not an error, and it is the only channel a GUI-only user has: the CLI's
+  // warning goes to stderr and the desktop shortcut launches the console-less
+  // `litw`, so nobody ever sees it. Dismissable, and the dismissal sticks.
+  const [symlinkNotice, setSymlinkNotice] = useState<string | null>(null)
   // One place decides what a failed read means, so every catch site agrees.
   // Each verdict clears the other flag, so the banners are mutually exclusive
   // and the one showing is always the FRESHER fact: a 410 arrived over a
@@ -586,6 +599,16 @@ export default function App() {
     fetchVersion()
       .then((v) => setUpdateLatest(v.latest))
       .catch(() => {})
+    // Symlink-capability advisory: cheap (one cached probe server-side) so it
+    // can run on load, unlike the Tier-2 health panel. Best-effort — a failure
+    // just leaves the notice off; it must never block or error the boot path.
+    if (localStorage.getItem(SYMLINK_NOTICE_DISMISSED) !== '1') {
+      fetchCapabilities()
+        .then((c) => {
+          if (!c.symlink) setSymlinkNotice(c.platform)
+        })
+        .catch(() => {})
+    }
     // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
     // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
     // resync never diffs against an empty baseline (which would log every paper
@@ -1593,6 +1616,59 @@ export default function App() {
             Can't reach the litman server — retrying…
           </div>
         )
+      )}
+      {/* Symlink advisory. Sits BELOW the two fault banners (top-14, and it is
+       * not part of their either/or) because it is not a fault: the library is
+       * healthy, it just cannot be decorated with views/ and project shortcuts
+       * on this host. Stone, not red or amber — the colour is the message. On
+       * Windows the fix is one click and costs nothing, so lead with it; we
+       * deliberately never suggest running litman elevated (the server spawns
+       * agent processes, ADR-020). */}
+      {symlinkNotice && !vaultGone && !disconnected && (
+        <div className="fixed left-1/2 top-14 z-40 flex max-w-[min(46rem,92vw)] -translate-x-1/2 items-start gap-3 rounded-2xl bg-stone-100 py-2 pl-4 pr-2 text-sm text-stone-700 shadow-md ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:ring-stone-700">
+          <div className="min-w-0 py-0.5">
+            <span>
+              Symbolic links can't be created on this system, so{' '}
+              <span className="font-mono text-[0.85em]">views/</span> and the
+              project shortcuts aren't being made.{' '}
+              <span className="text-stone-500 dark:text-stone-400">
+                Your library is fine — every command, this app and the agent
+                workflow all work normally.
+              </span>
+            </span>
+            {symlinkNotice === 'win32' ? (
+              <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Turn on Developer Mode to enable them — it does not require
+                administrator rights. Settings → System → For developers.
+              </div>
+            ) : (
+              <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+                Common causes: an exFAT / FAT32 drive, or an SMB / WebDAV mount.
+              </div>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {symlinkNotice === 'win32' && (
+              <a
+                href="ms-settings:developers"
+                className="rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-stone-700 shadow-sm ring-1 ring-stone-200 transition duration-200 ease-fluid hover:bg-white dark:bg-stone-700 dark:text-stone-100 dark:ring-stone-600 dark:hover:bg-stone-600"
+              >
+                Open settings
+              </a>
+            )}
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => {
+                localStorage.setItem(SYMLINK_NOTICE_DISMISSED, '1')
+                setSymlinkNotice(null)
+              }}
+              className="rounded-full px-2 py-1 text-xs text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200 hover:text-stone-700 dark:text-stone-400 dark:hover:bg-stone-700 dark:hover:text-stone-100"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
       )}
       <TopBar
         vaults={vaults}

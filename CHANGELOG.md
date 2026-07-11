@@ -63,6 +63,16 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
+- **Windows: a healthy library is no longer reported as broken.** Without
+  Developer Mode, Windows refuses symbolic links, so `views/` and the shortcuts
+  `lit link` places in your project folders cannot be created. litman reported
+  every one of them as an error — about six per paper, several hundred for a real
+  library — and `lit health-check --fix` could not repair a single one. Those
+  shortcuts are conveniences; your papers, notes and search were never affected.
+  `lit health-check` now says so in one line and exits clean, and it tells you
+  that turning on Developer Mode enables the shortcuts — which needs no
+  administrator rights. The web UI says the same thing on startup, since that
+  message never reached anyone launching litman from the desktop icon.
 - **`lit search` no longer matches the comment lines litman seeds into your notes.**
   Searching a word that only appears in one of them (`wikilink`, say) returned a
   hit on every paper in the library. Comments are litman's, not yours, so they are
