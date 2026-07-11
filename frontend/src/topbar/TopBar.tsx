@@ -507,9 +507,13 @@ export default function TopBar({
       >
         {vaults?.active ? (
           vaults.vaults.map((v) => (
+            // A missing vault stays listed and stays selectable: hiding it would
+            // be one more thing happening without the user being told. Picking it
+            // fails loudly (the server refuses to switch to a path that is gone).
             <option key={v.name} value={v.name}>
               {v.name}
               {v.active ? ' (active)' : ''}
+              {v.exists ? '' : ' — missing'}
             </option>
           ))
         ) : (
@@ -1404,8 +1408,20 @@ function VaultManager({
                       active
                     </span>
                   )}
+                  {!v.exists && (
+                    <span
+                      title="No folder at this path — it was moved, renamed or deleted."
+                      className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700"
+                    >
+                      missing
+                    </span>
+                  )}
                 </div>
-                <div className="truncate font-mono text-[11px] text-stone-400">
+                <div
+                  className={`truncate font-mono text-[11px] ${
+                    v.exists ? 'text-stone-400' : 'text-rose-400 line-through'
+                  }`}
+                >
                   {v.path}
                 </div>
               </div>

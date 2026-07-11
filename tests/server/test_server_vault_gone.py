@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient
 from litman.core.library import create_vault
 from litman.core.vault_registry import (
     add_vault,
+    find_active,
     load_registry,
     save_registry,
 )
@@ -201,4 +202,91 @@ def test_re_registering_the_new_path_recovers(tmp_path: Path) -> None:
     assert client.post("/api/vaults", json={"name": "lib2", "path": str(moved)}).status_code == 200
     assert client.put("/api/vaults/active", json={"name": "lib2"}).status_code == 200
 
+    assert client.get("/api/papers").status_code == 200
+
+
+# ===========================================================================
+# a REGISTERED but NOT served vault vanishes — the switch-vault path
+#
+# The other half of the same accident, and the one the 410 guard cannot see: the
+# user is working in vault B when vault A's folder moves. Nothing the server is
+# bound to has changed, so no request is in the gone state — A is simply a
+# registry entry whose path is now a lie. Two things must hold:
+#
+# * ``PUT /vaults/active`` must REFUSE (``apply_vault_use(require_path=True)``
+#   validates before it persists), or the registry's global active — read by
+#   every ``lit`` command in every terminal — would be left pointing at nothing.
+# * ``GET /vaults`` must SAY SO up front (``exists``), so the selector can mark A
+#   missing instead of offering it as a normal choice and failing on the click.
+# ===========================================================================
+
+
+def _register_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """Serve ``beta`` (registry-active); register ``alpha`` alongside it."""
+    beta = create_vault(tmp_path, name="beta")
+    alpha = create_vault(tmp_path, name="alpha")
+    save_registry(add_vault(load_registry(), "beta", beta, set_active=True))
+    save_registry(add_vault(load_registry(), "alpha", alpha))
+    return beta, alpha
+
+
+def test_get_vaults_marks_a_moved_vault_missing(tmp_path: Path) -> None:
+    """`exists` is re-probed per call, so the selector can mark it before the click."""
+    beta, alpha = _register_pair(tmp_path)
+    client = _client(beta)
+
+    before = {v["name"]: v["exists"] for v in client.get("/api/vaults").json()["vaults"]}
+    assert before == {"beta": True, "alpha": True}
+
+    _move_away(alpha, tmp_path / "alpha-moved")
+
+    after = {v["name"]: v["exists"] for v in client.get("/api/vaults").json()["vaults"]}
+    assert after == {"beta": True, "alpha": False}
+
+
+def test_get_vaults_marks_the_served_vault_missing_too(tmp_path: Path) -> None:
+    """The gone state is visible in the manager as well as in the 410 banner."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    client = _client(vault)
+    _move_away(vault, tmp_path / "moved")
+
+    entry = client.get("/api/vaults").json()["vaults"][0]
+    assert entry["name"] == "lib"
+    assert entry["exists"] is False
+
+
+def test_switch_to_a_moved_vault_is_refused(tmp_path: Path) -> None:
+    """400 — and the refusal lands BEFORE the registry is written."""
+    beta, alpha = _register_pair(tmp_path)
+    app = create_app(beta)
+    client = TestClient(app)
+    _move_away(alpha, tmp_path / "alpha-moved")
+
+    resp = client.put("/api/vaults/active", json={"name": "alpha"})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "alpha" in detail and str(alpha) in detail  # names the path it lost
+
+    # Nothing moved: the global active still points at a vault that is really
+    # there, and this server keeps serving what it was serving.
+    assert find_active(load_registry()).name == "beta"
+    assert Path(app.state.vault).resolve() == beta.resolve()
+    assert client.get("/api/papers").status_code == 200
+
+
+def test_switch_succeeds_once_the_folder_is_put_back(tmp_path: Path) -> None:
+    """The recovery a user reaches for first: undo the move. No restart."""
+    beta, alpha = _register_pair(tmp_path)
+    app = create_app(beta)
+    client = TestClient(app)
+
+    moved = _move_away(alpha, tmp_path / "alpha-moved")
+    assert client.put("/api/vaults/active", json={"name": "alpha"}).status_code == 400
+
+    shutil.move(str(moved), str(alpha))  # the user drags it back
+
+    assert client.put("/api/vaults/active", json={"name": "alpha"}).status_code == 200
+    assert find_active(load_registry()).name == "alpha"
+    assert Path(app.state.vault).resolve() == alpha.resolve()
     assert client.get("/api/papers").status_code == 200

@@ -447,6 +447,14 @@ def get_vaults(request: Request) -> dict[str, Any]:
     ``active`` (the registry's active *name*): a server can start in no-vault
     mode even while the registry names an active entry whose path has moved, so
     the frontend keys the welcome page off ``served``, not ``active``.
+
+    Each entry carries ``exists``: whether its registered path is still a
+    directory, probed on every call (the registry stores paths, and a folder can
+    be moved or deleted behind litman's back at any moment). It is the same test
+    ``apply_vault_use(require_path=True)`` applies before it will switch, so a
+    vault reported ``exists: false`` is exactly a vault ``PUT /vaults/active``
+    would reject — the frontend marks it in the selector rather than letting the
+    user pick it and collect a 400.
     """
     reg = load_registry()
     active = find_active(reg)
@@ -455,7 +463,12 @@ def get_vaults(request: Request) -> dict[str, Any]:
         "active": active.name if active else None,
         "served": str(served) if served is not None else None,
         "vaults": [
-            {"name": v.name, "path": v.path, "active": v.is_active}
+            {
+                "name": v.name,
+                "path": v.path,
+                "active": v.is_active,
+                "exists": Path(v.path).expanduser().is_dir(),
+            }
             for v in reg.vaults
         ],
     }

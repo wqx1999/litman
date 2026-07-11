@@ -1241,7 +1241,13 @@ export default function App() {
       reloadForVault()
       setPendingVault(null)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err))
+      // A failed switch closes the confirm too: the server rejects a switch to a
+      // vault whose folder is gone, and pressing Switch again would fail the same
+      // way — leaving the dialog up reads as if nothing happened. Refresh the
+      // vault list on the way out so the selector marks it missing.
+      notify(err instanceof Error ? err.message : String(err), 'error')
+      setPendingVault(null)
+      fetchVaults().then(setVaults)
     } finally {
       setSwitchingVault(false)
     }

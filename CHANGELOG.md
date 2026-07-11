@@ -60,6 +60,10 @@ behaviour, a minor release adds it, a major release breaks it.
   never reached the real library. The GUI now says the library is gone, names the
   path, and offers to find it; every write is refused until it is found. Putting
   the folder back restores the session on its own.
+- **A library whose folder has moved is marked `missing`** in the vault selector
+  and the vault manager. Switching to one is refused with a message naming the
+  path it lost; before, such a library was offered like any other, and picking it
+  left the selector where it was and said nothing.
 - `lit add` rejects a file that is not a PDF instead of ingesting it, and its help
   text now says plainly that the source file is **moved** into the vault, not
   copied.

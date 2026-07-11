@@ -112,6 +112,10 @@ export interface VaultEntry {
   name: string
   path: string
   active: boolean
+  /** Whether `path` is still a directory, re-probed by the server on every
+   * `GET /api/vaults`. A vault whose folder was moved or deleted comes back
+   * false, and switching to it would be refused — the UI marks it missing. */
+  exists: boolean
 }
 
 export interface VaultsPayload {
