@@ -539,16 +539,6 @@ export default function TopBar({
         <IconVault />
       </button>
 
-      {showVaults && (
-        <VaultManager
-          vaults={vaults}
-          onRegisterVault={onRegisterVault}
-          onCreateVault={onCreateVault}
-          onUnregisterVault={onUnregisterVault}
-          onClose={() => setShowVaults(false)}
-        />
-      )}
-
       <button
         type="button"
         onClick={() => setShowProjects(true)}
@@ -581,6 +571,24 @@ export default function TopBar({
           focus/dark/help cluster pinned to the right edge (the SearchBox's
           flex-grow normally does that). */}
       {trashMode && <div className="flex-1" />}
+
+      {/* The vault manager renders in BOTH modes — deliberately outside the
+          !trashMode block that hides its toolbar button. The vault-gone
+          banner's "Find it" opens it through the registered opener, and a 410
+          can arrive in trash mode too (the trash routes sit behind the same
+          guard); gated with the button, that click would set state and render
+          nothing — a dead recovery button — and the stuck flag would then pop
+          the manager open from nowhere on leaving trash mode. A portal, so its
+          position in this JSX carries no layout meaning anyway. */}
+      {showVaults && (
+        <VaultManager
+          vaults={vaults}
+          onRegisterVault={onRegisterVault}
+          onCreateVault={onCreateVault}
+          onUnregisterVault={onUnregisterVault}
+          onClose={() => setShowVaults(false)}
+        />
+      )}
 
       {/* Observability cluster (refresh + log + health), left of the focus/dark/
           help group. All workspace-level, so they sit here in BOTH modes. */}
@@ -1444,7 +1452,7 @@ function VaultManager({
                   )}
                   {!v.exists && (
                     <span
-                      title="No folder at this path — it was moved, renamed or deleted."
+                      title="No library at this path — the folder was moved, renamed or deleted."
                       className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700"
                     >
                       missing

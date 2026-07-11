@@ -302,15 +302,20 @@ export default function App() {
   // open. Drives its own banner and shares the 5s retry loop, so putting the
   // folder back heals the session with no restart.
   const [vaultGone, setVaultGone] = useState(false)
-  // One place decides what a failed read means, so every catch site agrees. The
-  // two banners are mutually exclusive by construction: a 410 arrived over a
-  // working connection, which is itself proof the server is reachable.
+  // One place decides what a failed read means, so every catch site agrees.
+  // Each verdict clears the other flag, so the banners are mutually exclusive
+  // and the one showing is always the FRESHER fact: a 410 arrived over a
+  // working connection (proof the server is reachable), and a network error
+  // means nothing can currently back the claim that the library is gone — if
+  // the server comes back still missing it, the next sweep's 410 re-raises
+  // the red banner.
   const classifyFetchError = useCallback((err: unknown) => {
     if (isVaultGone(err)) {
       setVaultGone(true)
       setDisconnected(false)
     } else if (isNetworkError(err)) {
       setDisconnected(true)
+      setVaultGone(false)
     }
   }, [])
   // The current list fetch failed — BrowsePanel renders an explicit failure
@@ -513,21 +518,28 @@ export default function App() {
     [],
   )
 
-  const loadList = useCallback((mode: ListMode) => {
-    setLoadingList(true)
-    const view = SMART_VIEWS.has(mode) ? (mode as SmartListView) : undefined
-    fetchPapers(view)
-      .then((ps) => {
-        setPapers(ps)
-        setListFailed(false)
-        setDisconnected(false)
-      })
-      .catch((err) => {
-        setListFailed(true)
-        if (isNetworkError(err)) setDisconnected(true)
-      })
-      .finally(() => setLoadingList(false))
-  }, [])
+  const loadList = useCallback(
+    (mode: ListMode) => {
+      setLoadingList(true)
+      const view = SMART_VIEWS.has(mode) ? (mode as SmartListView) : undefined
+      fetchPapers(view)
+        .then((ps) => {
+          setPapers(ps)
+          setListFailed(false)
+          // A guarded read landed: the server answered AND the library is on
+          // disk (the 410 guard runs before every list route), so both banners
+          // can retire — not just the amber one.
+          setDisconnected(false)
+          setVaultGone(false)
+        })
+        .catch((err) => {
+          setListFailed(true)
+          classifyFetchError(err)
+        })
+        .finally(() => setLoadingList(false))
+    },
+    [classifyFetchError],
+  )
 
   // Refresh this vault's trash list (backs the left-nav footer count + the trash
   // view). Cheap (cap-100, one bounded call), so it is pulled on mount and again
@@ -536,9 +548,16 @@ export default function App() {
     setTrashLoading(true)
     return fetchTrash()
       .then(setTrashEntries)
-      .catch(() => setTrashEntries([]))
+      .catch((err) => {
+        // The empty fallback keeps the footer count harmless, but the failure
+        // itself must still be classified — the trash view may be the only
+        // thing being fetched (trash mode), and a 410 here has to raise the
+        // vault-gone banner like everywhere else.
+        classifyFetchError(err)
+        setTrashEntries([])
+      })
       .finally(() => setTrashLoading(false))
-  }, [])
+  }, [classifyFetchError])
 
   // Bootstrap: learn which vault (if any) the server is serving. This runs
   // BEFORE the heavy seed below so a no-vault server renders the welcome page
@@ -709,14 +728,20 @@ export default function App() {
     setFilters(emptyFilters())
   }, [])
 
-  const selectPaper = useCallback((id: string) => {
-    setSelectedId(id)
-    setCockpitLoading(true)
-    fetchPaper(id)
-      .then(setCockpitPaper)
-      .catch(() => setCockpitPaper(null))
-      .finally(() => setCockpitLoading(false))
-  }, [])
+  const selectPaper = useCallback(
+    (id: string) => {
+      setSelectedId(id)
+      setCockpitLoading(true)
+      fetchPaper(id)
+        .then(setCockpitPaper)
+        .catch((err) => {
+          classifyFetchError(err)
+          setCockpitPaper(null)
+        })
+        .finally(() => setCockpitLoading(false))
+    },
+    [classifyFetchError],
+  )
 
   // After a cockpit structured write: re-fetch the selected paper so the cockpit
   // reflects the change, AND refresh both the current smart-list (a status /
@@ -814,6 +839,11 @@ export default function App() {
       setProjects(freshProjects)
       setTrashEntries(freshTrash)
       setVaults(freshVaults)
+      // Track the server's binding, not just the registry list: a vault switch
+      // repoints the server, and the vault-gone banner names `served` — left
+      // stale, it would name the PREVIOUS library's (perfectly healthy) path
+      // if the current one later went missing.
+      setServed(freshVaults.served)
       docMtimesRef.current = freshMtimes
       resyncReadyRef.current = true
       // A whole sweep landed — the server is reachable and the library is back
@@ -1220,7 +1250,18 @@ export default function App() {
     // The doc-mtime baseline is per-vault; drop it so the first resync in the new
     // vault seeds afresh instead of diffing it against the old vault's mtimes.
     docMtimesRef.current = null
-    fetchVaults().then(setVaults)
+    // The switch that brought us here just succeeded, so the server answered
+    // and is bound to a live vault again — retire both banners now rather than
+    // leaving the red one to claim (for up to one 5s sweep) that the NEW
+    // library is the one that is gone.
+    setDisconnected(false)
+    setVaultGone(false)
+    fetchVaults().then((v) => {
+      setVaults(v)
+      // Keep `served` on the server's actual binding (see doResync) — this is
+      // the path the vault-gone banner would name.
+      setServed(v.served)
+    })
     fetchProjects().then(setProjects)
     fetchTaxonomy().then(setTaxonomy)
     fetchFixedEnums().then(setFixedEnums)
