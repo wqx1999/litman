@@ -606,3 +606,117 @@ def test_hook_corrupt_config_surfaces_finding(
     result = runner.invoke(cli, ["list"])
     flat = " ".join(result.output.split())
     assert "lit-config.yaml is unreadable" in flat
+
+
+# ---------------------------------------------------------------------------
+# Bridge drift (#3's cheap arm) — hook dispatch + end-to-end heal
+# ---------------------------------------------------------------------------
+
+
+def _seed_active_vault_with_dangling_bridge(
+    tmp_path: Path,
+) -> tuple[Path, Path]:
+    """An active vault whose project bridges dangle: linked, then MOVED.
+
+    Builds a vault with one paper linked into one project (INDEX kept
+    consistent so ``lit list`` runs cleanly), relocates the whole vault, and
+    registers the NEW location as the active entry — the exact post-recovery
+    state after the user re-registers a moved library. Returns
+    ``(moved_vault, project_dir)``.
+    """
+    from ruamel.yaml import YAML
+
+    from litman.core.correctors import reconcile_derived
+    from litman.core.project_link import rebuild_all_project_links
+
+    parent = tmp_path / "bridge_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    project_dir = tmp_path / "pepforge"
+    project_dir.mkdir()
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  pepforge: {project_dir}\n",
+        encoding="utf-8",
+    )
+
+    y = YAML()
+    paper_dir = vault / "papers" / "p1"
+    paper_dir.mkdir(parents=True)
+    with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
+        y.dump(
+            {
+                "id": "p1",
+                "title": "Test paper",
+                "authors": ["Doe, Jane"],
+                "year": 2024,
+                "doi": "10.test/p1",
+                "status": "inbox",
+                "priority": "B",
+                "type": "research",
+                "projects": ["pepforge"],
+                "topics": [],
+                "methods": [],
+                "code-clones": [],
+                "created-at": "2026-05-11T10:00:00+02:00",
+                "updated-at": "2026-05-11T10:00:00+02:00",
+            },
+            f,
+        )
+    reconcile_derived(vault, project_refs=False)  # INDEX + views current
+    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    assert (project_dir / "litman_reflib" / "p1").exists()
+
+    moved_parent = tmp_path / "bridge_moved"
+    moved_parent.mkdir()
+    moved = moved_parent / vault.name
+    vault.rename(moved)
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="v", path=str(moved), is_active=True)]
+        )
+    )
+    return moved, project_dir
+
+
+def test_hook_dispatches_bridge_corrector_when_dangling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``project_bridge_dangling`` fires → the hook dispatches its corrector
+    (and only because the category fired: the two sibling correctors are
+    stubbed to record and stay silent)."""
+    _seed_active_vault_with_dangling_bridge(tmp_path)
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        _drift,
+        "check_and_prompt_bridge_drift",
+        lambda *a, **kw: called.append("bridge"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert called == ["bridge"]
+
+
+def test_hook_bridge_heal_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No stubs anywhere: real cheap detection (through the hook's shared
+    bounded-stat threading), real corrector, real rebuild. ``lit list`` on a
+    just-recovered vault ends with every bridge re-pointing at the vault's
+    new location."""
+    moved, project_dir = _seed_active_vault_with_dangling_bridge(tmp_path)
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert "Rebuilt project links" in result.output
+    link = project_dir / "litman_reflib" / "p1"
+    assert link.is_symlink()
+    assert link.resolve() == (moved / "papers" / "p1").resolve()

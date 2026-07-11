@@ -208,10 +208,14 @@ class LitGroup(click.Group):
             # Single shared bounded-stat budget (spec §7 / verification task 3):
             # gather every path the cheap bounded-stat checks need (registry
             # vault paths + active-vault project map paths) and probe them with
-            # ONE _exists_bounded call. The two checks that would otherwise each
-            # probe (vault_registry_drift, project_path_exists) get the result
-            # threaded in via exists_status. Worst-case hung-mount cost is one
-            # 0.5s budget, not two.
+            # ONE _exists_bounded call. The three checks that would otherwise
+            # each probe (vault_registry_drift, project_path_exists,
+            # project_bridge_dangling — the last shares the same project-dir
+            # verdicts) get the result threaded in via exists_status. The
+            # bridge check's link-TARGET probe is its own second bounded call
+            # (the shared probe never stats link targets), so the worst-case
+            # hung-mount cost is two 0.5s budgets — not one, but still bounded
+            # and only paid when projects are configured.
             shared_status = self._cheap_shared_exists(vault)
 
             # Detection: run every cheap check. Vault-scoped checks need a vault
@@ -220,7 +224,11 @@ class LitGroup(click.Group):
             for spec in cheap_checks():
                 if vault is None and spec.category != "vault_registry_drift":
                     continue
-                if spec.category in ("vault_registry_drift", "project_path_exists"):
+                if spec.category in (
+                    "vault_registry_drift",
+                    "project_path_exists",
+                    "project_bridge_dangling",
+                ):
                     issues.extend(
                         spec.fn(
                             vault or Path("/nonexistent"),
@@ -261,6 +269,23 @@ class LitGroup(click.Group):
 
                 try:
                     check_and_prompt_project_drift()
+                except Exception:
+                    pass
+
+            # Bridge drift (#3's cheap arm): a moved library dangles every
+            # project's litman_reflib/litman_code symlink at once — this is
+            # the recovery seam after the user re-registers the found vault.
+            # The heal reads metadata (rebuild_all_project_links), so it is
+            # gated behind the corrector's [Y/n]: invariant #15 constrains
+            # hook-time DETECTION, not a consented repair (same precedent as
+            # the project-path heal above). Runs after project_path_exists so
+            # a re-pointed project dir is healed (and its bridges rebuilt)
+            # before this segment re-probes.
+            if "project_bridge_dangling" in categories:
+                from litman.commands._drift import check_and_prompt_bridge_drift
+
+                try:
+                    check_and_prompt_bridge_drift()
                 except Exception:
                     pass
 

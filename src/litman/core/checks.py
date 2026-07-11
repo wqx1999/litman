@@ -1692,6 +1692,87 @@ def _strip_references_banner(text: str) -> str:
     )
 
 
+def check_project_bridge_dangling(
+    vault: Path,
+    papers: list[dict[str, Any]],
+    *,
+    exists_status: dict[str, bool | None] | None = None,
+) -> list[Issue]:
+    """Project bridge symlinks still resolve (ledger #3's cheap arm; klass A).
+
+    The ``litman_reflib/<id>`` / ``litman_code/<repo>`` symlinks bridge a
+    project working directory into the vault ACROSS trees: their stored
+    relative target walks out of the project and back down to wherever the
+    vault was when the link was written. Moving the vault (or deleting a
+    linked target) dangles them — and the name-set comparison in
+    ``check_project_references`` cannot see it, because the names still match
+    membership. This check probes what names cannot say: does each bridge
+    still resolve?
+
+    Metadata-free (invariant #15): config projects map + hub directory
+    listings + a bounded-stat of the link targets — never a per-paper
+    ``metadata.yaml``. That earns it tier=cheap, so the Tier-1 hook surfaces
+    a moved library at the user's NEXT command (surface-drift-eagerly, M28)
+    instead of waiting for a manual ``health-check`` nobody remembers to run.
+
+    Mount-safe (ADR-014): targets are probed with the bounded stat; ``None``
+    (slow / dropped mount) is never flagged — only a definite ``False`` is
+    drift. Projects whose own directory is not definitely present are skipped
+    (``project_path_exists`` owns that finding).
+
+    One issue per project, not per link: a moved vault dangles every bridge
+    at once and the repair is a wholesale rebuild, so per-link issues would
+    repeat the same fact N times.
+
+    ``exists_status``: the Tier-1 hook threads its shared bounded-stat of the
+    project DIR paths in; the per-link target probe is always this check's
+    own second bounded call (the shared probe never stats link targets).
+    """
+    from litman.commands._drift import _exists_bounded
+    from litman.core.config import load_config
+    from litman.core.project_link import find_dangling_bridges
+
+    try:
+        config = load_config(vault)
+    except ConfigError:
+        # Owned by check_config_readable (same tier, fires in the same hook).
+        return []
+    if not config.projects:
+        return []
+
+    paths = {
+        name: str(Path(path_str).expanduser())
+        for name, path_str in config.projects.items()
+    }
+    if exists_status is None:
+        dir_status = _exists_bounded(list(paths.values()))
+    else:
+        dir_status = {p: exists_status.get(p) for p in paths.values()}
+
+    out: list[Issue] = []
+    for name, dangling in find_dangling_bridges(
+        dict(config.projects), dir_status, _exists_bounded
+    ).items():
+        out.append(
+            Issue(
+                category="project_bridge_dangling",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"project {name!r}: {len(dangling)} bridge "
+                    f"symlink{'s point' if len(dangling) != 1 else ' points'} "
+                    f"at nothing (e.g. {dangling[0]}) — the library, or what "
+                    "a link targeted, has moved"
+                ),
+                hint=(
+                    "run `lit health-check --fix` (or `lit refresh-views`) "
+                    "to rebuild project links"
+                ),
+            )
+        )
+    return out
+
+
 def check_relevance_orphan(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -2289,6 +2370,15 @@ def check_code_clone_integrity(
 #       Full: the missing-symlink direction needs per-paper tag values.
 #   project_references (#3) — project REFERENCES.md / litman_reflib (derived) ↔
 #       membership → klass=A, regen. Full (reads projects + relevance).
+#   project_bridge_dangling (#3's cheap arm) — the litman_reflib/litman_code
+#       bridge symlinks resolve to a live target. Disjoint from
+#       project_references by construction: that check compares link NAMES to
+#       membership and is blind to a link whose name matches but whose target
+#       moved (the vault-moved case). Cheap: config + hub listing +
+#       bounded-stat of link targets, no per-paper metadata (invariant #15) →
+#       tier=cheap, klass=A, regen (`--fix` regen repairs it; the Tier-1 hook
+#       gates the same rebuild behind a [Y/n] because rebuilding reads
+#       metadata).
 #   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
 #       the user/CLI to re-sync → klass=B-auth, correction=report.
 #   dangling_wikilinks — authored prose marked in place (`(deleted)`) →
@@ -2318,6 +2408,13 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("views_vs_metadata", check_views_vs_metadata, "full", "A", "regen"),
     CheckSpec(
         "project_references", check_project_references, "full", "A", "regen"
+    ),
+    CheckSpec(
+        "project_bridge_dangling",
+        check_project_bridge_dangling,
+        "cheap",
+        "A",
+        "regen",
     ),
     CheckSpec("dangling_refs", check_dangling_refs, "full", "B-auth", "report"),
     CheckSpec(

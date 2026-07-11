@@ -478,6 +478,48 @@ def test_project_references_unreachable_dir_skipped(
     assert check_project_references(vault, list_papers(vault)) == []
 
 
+# --- project_bridge_dangling (#3's cheap arm) --------------------------------
+
+
+def test_project_bridge_dangling_moved_vault_reported_and_fixed(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The state the name-set check is blind to: the vault moved, every
+    bridge dangles, yet every link NAME still matches membership. The cheap
+    check reports it and ``--fix``'s klass-A regen re-points the bridges."""
+    from litman.core.checks import check_project_bridge_dangling
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)  # builds litman_reflib + REFERENCES.md — bridges healthy
+    assert check_project_bridge_dangling(vault, []) == []
+
+    moved = tmp_path / "moved_vault"
+    vault.rename(moved)
+    link = proj / "litman_reflib" / "2024_Foo_Bar"
+    assert link.is_symlink() and not link.exists()  # dangling, name intact
+
+    issues = check_project_bridge_dangling(moved, [])
+    assert len(issues) == 1
+    assert issues[0].category == "project_bridge_dangling"
+    assert issues[0].severity == "error"
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(moved)])
+    flat = " ".join(result.output.split())
+    assert result.exit_code == 1
+    assert "myproj" in flat
+    assert "points at nothing" in flat  # n=1 → singular verb
+
+    runner.invoke(cli, ["health-check", "--fix", "--library", str(moved)])
+    assert link.is_symlink()
+    assert link.resolve() == (moved / "papers" / "2024_Foo_Bar").resolve()
+    assert check_project_bridge_dangling(moved, []) == []
+
+
 # --- dangling_refs ----------------------------------------------------------
 
 

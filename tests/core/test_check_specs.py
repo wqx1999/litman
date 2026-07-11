@@ -34,6 +34,7 @@ _EXPECTED_CATEGORIES = (
     "index_vs_disk",
     "views_vs_metadata",
     "project_references",
+    "project_bridge_dangling",
     "dangling_refs",
     "dangling_wikilinks",
     "relevance_orphan",
@@ -52,7 +53,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 19
+    assert len(_CHECK_REGISTRY) == 20
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -107,12 +108,15 @@ def test_cheap_set_is_the_two_b_ext_drifts_plus_index_and_config() -> None:
     bounded-stat — plus ``index_vs_disk`` (#1, klass-A, reads only the INDEX id
     set + the ``papers/`` directory listing) plus ``config_unreadable`` (review
     F6/F27, reads only the one ``lit-config.yaml`` file — the same bounded read
-    ``project_path_exists`` already does). None reads per-paper ``metadata.yaml``.
+    ``project_path_exists`` already does) plus ``project_bridge_dangling``
+    (#3's cheap arm: config + the two hub directory listings + a bounded-stat
+    of link targets). None reads per-paper ``metadata.yaml``.
     Pinned so no ``full`` check is mistakenly promoted into the hot path.
     """
     assert {spec.category for spec in cheap_checks()} == {
         "vault_registry_drift",
         "project_path_exists",
+        "project_bridge_dangling",
         "index_vs_disk",
         "config_unreadable",
     }
@@ -125,11 +129,14 @@ def test_index_vs_disk_is_cheap_klass_a_regen() -> None:
 
 
 def test_klass_a_set_is_the_three_derived_pairs() -> None:
-    """klass-A = the derived↔truth pairs: INDEX, views, project refs."""
+    """klass-A = the derived↔truth pairs: INDEX, views, project refs — the
+    last of which has two arms (the full name-set/content check and the cheap
+    target-resolution check, both repaired by the same regen)."""
     assert {spec.category for spec in klass_a_checks()} == {
         "index_vs_disk",
         "views_vs_metadata",
         "project_references",
+        "project_bridge_dangling",
     }
 
 
@@ -190,6 +197,71 @@ def test_project_path_exists_does_not_read_per_paper_metadata(
     # no metadata.yaml was touched. Either guard raising would fail the test.
     issues = checks.check_project_path_exists(vault, [])
     assert issues == []
+
+
+def test_project_bridge_dangling_is_cheap_klass_a_regen() -> None:
+    """Ledger #3's cheap arm: bridge resolution is cheap / klass-A / regen —
+    cheap so the Tier-1 hook surfaces a moved library at the next command,
+    klass-A/regen so ``health-check --fix`` repairs it with the shared
+    rebuild."""
+    spec = next(
+        s for s in _CHECK_REGISTRY if s.category == "project_bridge_dangling"
+    )
+    assert (spec.tier, spec.klass, spec.correction) == ("cheap", "A", "regen")
+
+
+def test_project_bridge_dangling_does_not_read_per_paper_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    """The bridge check must not open any ``metadata.yaml`` (invariant #15).
+
+    Mirrors ``test_project_path_exists_does_not_read_per_paper_metadata``, and
+    exercises the FIRING path — a real dangling bridge, so the hub listing,
+    the target probe, and the issue construction all run under the guard. The
+    rebuild that READS metadata is the corrector's business, gated behind the
+    user's [Y/n]; detection itself stays metadata-free.
+    """
+    vault = create_vault(tmp_path)
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\ntitle: Foo\n", encoding="utf-8"
+    )
+
+    proj_dir = tmp_path / "proj"
+    (proj_dir / "litman_reflib").mkdir(parents=True)
+    (proj_dir / "litman_reflib" / "2024_Foo_Bar").symlink_to(
+        "../nowhere/2024_Foo_Bar"
+    )
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  p: {proj_dir}\n",
+        encoding="utf-8",
+    )
+
+    real_read_text = Path.read_text
+    real_open = Path.open
+
+    def _guarded_read_text(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self.name == "metadata.yaml":
+            raise AssertionError(
+                f"cheap check read per-paper metadata (invariant #15): {self}"
+            )
+        return real_read_text(self, *args, **kwargs)
+
+    def _guarded_open(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self.name == "metadata.yaml":
+            raise AssertionError(
+                f"cheap check opened per-paper metadata (invariant #15): {self}"
+            )
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _guarded_read_text)
+    monkeypatch.setattr(Path, "open", _guarded_open)
+
+    issues = checks.check_project_bridge_dangling(vault, [])
+    assert len(issues) == 1
+    assert issues[0].category == "project_bridge_dangling"
 
 
 def test_klass_a_checks_returns_only_klass_a() -> None:
