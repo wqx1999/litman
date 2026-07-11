@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from litman.core.config import CONFIG_FILENAME
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_read import router as read_router
 from litman.server.routes_structured import router as structured_router
@@ -31,12 +32,14 @@ from litman.server.routes_write import router as write_router
 # not exist until Phase 1, so the factory guards on its presence.
 _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
 
-# API endpoints that must work with NO active vault, so a freshly installed user
-# who runs `lit gui` before creating a library lands on the welcome page and can
-# create or open one from there (task-gui-welcome). Everything else under
-# ``/api/`` returns 409 until a vault is served — the SPA + its assets (served
-# off ``/``) always pass, so the welcome page itself loads.
-_NO_VAULT_ALLOWED = frozenset(
+# API endpoints that must stay reachable when the server has no usable vault —
+# either because none was ever created (welcome page) or because the one it was
+# serving vanished mid-session (see ``_guard_vault``). Both states are escaped
+# through the same doors: list the registry, register an existing directory,
+# create a new one, switch the active entry. Everything else under ``/api/`` is
+# refused — the SPA + its assets (served off ``/``) always pass, so the page
+# that offers those doors still loads.
+_VAULTLESS_ALLOWED = frozenset(
     {
         ("GET", "/api/vaults"),
         ("POST", "/api/vaults"),
@@ -81,7 +84,7 @@ def create_app(vault: Path | None) -> FastAPI:
 
     ``vault`` is ``None`` when ``lit gui`` found no vault to serve (fresh install,
     or the active registry entry points at a moved directory). The server still
-    starts so the SPA can render the welcome page; the ``_guard_no_vault``
+    starts so the SPA can render the welcome page; the ``_guard_vault``
     middleware then 409s every vault-dependent route until the welcome flow
     creates or opens one (which repoints ``app.state.vault`` in place, no restart).
     """
@@ -89,16 +92,55 @@ def create_app(vault: Path | None) -> FastAPI:
     app.state.vault = vault
 
     @app.middleware("http")
-    async def _guard_no_vault(request: Request, call_next):  # type: ignore[no-untyped-def]
-        if (
-            request.app.state.vault is None
-            and request.url.path.startswith("/api/")
-            and (request.method, request.url.path) not in _NO_VAULT_ALLOWED
-        ):
-            return JSONResponse(
-                status_code=409,
-                content={"detail": "No active vault yet — create or open one first."},
-            )
+    async def _guard_vault(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Refuse vault-dependent routes when the bound vault is absent or gone.
+
+        Two distinct failures, deliberately given two distinct status codes so the
+        frontend cannot conflate them:
+
+        * **409** — no vault was ever served (``app.state.vault is None``). The SPA
+          renders the welcome page: *create your first library*.
+        * **410** — a vault WAS bound, but its ``lit-config.yaml`` is no longer on
+          disk: the user moved, renamed or deleted the directory while the GUI was
+          open. Telling that user to "create your first library" would invite them
+          to create a second one over the top, so it must never reach the welcome
+          branch.
+
+        Only 410 needs the extra stat, and it is one per ``/api/`` request. It
+        earns it by running BEFORE the route: without this guard a write into a
+        vanished vault does not fail, it *rebuilds* — ``staged_write`` mkdirs its
+        staging root with ``parents=True`` (core/atomic.py) and the commit mkdirs
+        the paper's parent the same way, so the write would silently reconstruct a
+        one-paper ghost library at the dead path while the real one sits elsewhere,
+        and report success. Reads were no better: a missing ``papers/`` makes
+        ``list_papers`` return ``[]``, which the GUI renders as *your library is
+        empty*. Both lies die here.
+
+        The ghost directory that a pre-guard write left behind has no
+        ``lit-config.yaml`` (``staged_write`` never writes one), so the sentinel
+        also refuses to mistake such a carcass for a real vault.
+        """
+        vault = request.app.state.vault
+        if request.url.path.startswith("/api/") and (
+            request.method,
+            request.url.path,
+        ) not in _VAULTLESS_ALLOWED:
+            if vault is None:
+                return JSONResponse(
+                    status_code=409,
+                    content={"detail": "No active vault yet — create or open one first."},
+                )
+            if not (vault / CONFIG_FILENAME).is_file():
+                return JSONResponse(
+                    status_code=410,
+                    content={
+                        "detail": (
+                            f"The library is no longer at {vault} — it was moved, "
+                            "renamed or deleted while litman was running."
+                        ),
+                        "path": str(vault),
+                    },
+                )
         return await call_next(request)
 
     app.include_router(read_router)

@@ -54,6 +54,12 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
+- **Moving or deleting your library while the GUI is open is no longer silent.**
+  litman kept serving the old location: the paper list came back empty, and saving
+  a note rebuilt a stub library at the dead path — so the note landed there and
+  never reached the real library. The GUI now says the library is gone, names the
+  path, and offers to find it; every write is refused until it is found. Putting
+  the folder back restores the session on its own.
 - `lit add` rejects a file that is not a PDF instead of ingesting it, and its help
   text now says plainly that the source file is **moved** into the vault, not
   copied.

@@ -100,6 +100,10 @@ interface Props {
    * onboarding panel when not) — mirrors Cockpit's onRegisterHandle. Called
    * with null on unmount. */
   onRegisterAgentOpen: (open: (() => void) | null) => void
+  /** Same idiom for the vault manager: hand App a stable opener so the vault-gone
+   * banner's button opens the SAME panel the toolbar's vault icon does. Called
+   * with null on unmount. */
+  onRegisterVaultManagerOpen: (open: (() => void) | null) => void
   /** In trash mode, hide the library-scoped controls (vault switch, Projects,
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
@@ -143,10 +147,17 @@ export default function TopBar({
   onObservabilityOpenChange,
   onAgentOpenChange,
   onRegisterAgentOpen,
+  onRegisterVaultManagerOpen,
   trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
   const [showVaults, setShowVaults] = useState(false)
+  // Hand the opener up to App (the vault-gone banner drives it). `setShowVaults`
+  // is stable, so unlike the agent opener this needs no ref to stay identity-safe.
+  useEffect(() => {
+    onRegisterVaultManagerOpen(() => setShowVaults(true))
+    return () => onRegisterVaultManagerOpen(null)
+  }, [onRegisterVaultManagerOpen])
   // Only one of the two observability panels is open at a time; opening either
   // closes the other. Opening the log also clears the unread dot.
   const [panel, setPanel] = useState<null | 'log' | 'health'>(null)

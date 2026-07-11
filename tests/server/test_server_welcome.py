@@ -3,7 +3,7 @@
 Two surfaces:
 
 * ``create_app(None)`` — a server that started with no vault to serve. The
-  ``_guard_no_vault`` middleware 409s every vault-dependent ``/api/`` route while
+  ``_guard_vault`` middleware 409s every vault-dependent ``/api/`` route while
   a short whitelist (vault list / create / open / version) stays reachable so the
   welcome page can bootstrap and create a library.
 * ``POST /api/vaults/create`` — the create-and-register endpoint, same core path

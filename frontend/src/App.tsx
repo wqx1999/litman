@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ApiError,
   fetchDocMtimes,
   fetchFixedEnums,
   fetchPaper,
@@ -231,9 +232,19 @@ function diffResync(
 
 /** A fetch that failed at the network level (connection refused, tunnel down)
  * rejects with a TypeError; an HTTP error Response reaches the api helpers,
- * which throw a plain Error. Only the former means "server unreachable". */
+ * which throw an ApiError. Only the former means "server unreachable". */
 function isNetworkError(err: unknown): boolean {
   return err instanceof TypeError
+}
+
+/** The server can no longer see the library it is bound to — the vault directory
+ * was moved, renamed or deleted while the GUI was open. The server's vault guard
+ * answers 410 before any route runs, so this arrives over a perfectly healthy
+ * connection: it is not a failed request, it is a lost library. Kept strictly
+ * apart from the 409 "no vault yet" that raises the welcome page — a user whose
+ * library merely moved must never be invited to create a new one on top of it. */
+function isVaultGone(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 410
 }
 
 export default function App() {
@@ -285,6 +296,22 @@ export default function App() {
   // loop below. An HTTP error status deliberately does NOT trip this: that is
   // a server bug, not a disconnect, and keeps its existing error paths.
   const [disconnected, setDisconnected] = useState(false)
+  // The library this server is bound to is no longer on disk (410 from the vault
+  // guard): the user moved, renamed or deleted the directory while the GUI was
+  // open. Drives its own banner and shares the 5s retry loop, so putting the
+  // folder back heals the session with no restart.
+  const [vaultGone, setVaultGone] = useState(false)
+  // One place decides what a failed read means, so every catch site agrees. The
+  // two banners are mutually exclusive by construction: a 410 arrived over a
+  // working connection, which is itself proof the server is reachable.
+  const classifyFetchError = useCallback((err: unknown) => {
+    if (isVaultGone(err)) {
+      setVaultGone(true)
+      setDisconnected(false)
+    } else if (isNetworkError(err)) {
+      setDisconnected(true)
+    }
+  }, [])
   // The current list fetch failed — BrowsePanel renders an explicit failure
   // line instead of an empty state that would read as "no papers".
   const [listFailed, setListFailed] = useState(false)
@@ -469,6 +496,14 @@ export default function App() {
     (open: (() => void) | null) => setOpenAgent(() => open),
     [],
   )
+  // Same idiom for TopBar's vault manager, so the vault-gone banner's button and
+  // the toolbar's vault icon open the one panel — the banner is a shortcut to an
+  // existing door, not a second door.
+  const [openVaultManager, setOpenVaultManager] = useState<(() => void) | null>(null)
+  const registerVaultManagerOpen = useCallback(
+    (open: (() => void) | null) => setOpenVaultManager(() => open),
+    [],
+  )
   // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
   // so registering it doesn't re-render; a state copy drives the hook's deps.
   const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
@@ -514,10 +549,8 @@ export default function App() {
         setVaults(v)
         setServed(v.served)
       })
-      .catch((err) => {
-        if (isNetworkError(err)) setDisconnected(true)
-      })
-  }, [])
+      .catch(classifyFetchError)
+  }, [classifyFetchError])
 
   useEffect(() => {
     void bootstrap()
@@ -527,11 +560,7 @@ export default function App() {
     // Only seed once a real vault is being served: `undefined` = still
     // bootstrapping, `null` = welcome page (no vault to seed from).
     if (!served) return
-    fetchFixedEnums()
-      .then(setFixedEnums)
-      .catch((err) => {
-        if (isNetworkError(err)) setDisconnected(true)
-      })
+    fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
     // Update-check badge: pure cache read, best-effort (a failure just leaves
     // the dot off — this is a passive reminder, never blocking).
     fetchVersion()
@@ -565,10 +594,11 @@ export default function App() {
       .catch((err) => {
         // Swallow the rejected Promise.all so it isn't an unhandled rejection;
         // the gate stays false and a later resync re-seeds. A network-level
-        // failure additionally raises the disconnected banner.
-        if (isNetworkError(err)) setDisconnected(true)
+        // failure additionally raises the disconnected banner, a vanished
+        // library the vault-gone one.
+        classifyFetchError(err)
       })
-  }, [served, loadTrash])
+  }, [served, loadTrash, classifyFetchError])
 
   useEffect(() => {
     if (!served) return
@@ -785,8 +815,10 @@ export default function App() {
       setVaults(freshVaults)
       docMtimesRef.current = freshMtimes
       resyncReadyRef.current = true
-      // A whole sweep landed — the server is reachable again.
+      // A whole sweep landed — the server is reachable and the library is back
+      // under the path it is bound to (moving the folder back heals the session).
       setDisconnected(false)
+      setVaultGone(false)
       setListFailed(false)
       if (selectedId) {
         fetchPaper(selectedId)
@@ -798,10 +830,12 @@ export default function App() {
       // A failed sweep is a data no-op: leave the UI and the diff baseline
       // untouched (a transient fetch error must not wipe the view or desync
       // the baseline); the next resync retries. A network-level failure raises
-      // the disconnected banner (cleared by the next successful sweep).
-      if (isNetworkError(err)) setDisconnected(true)
+      // the disconnected banner, a 410 the vault-gone one — both cleared by the
+      // next successful sweep. Keeping the stale list on screen is deliberate:
+      // it is the last thing that was true, and the banner says so.
+      classifyFetchError(err)
     }
-  }, [listMode, selectedId, appendLog])
+  }, [listMode, selectedId, appendLog, classifyFetchError])
 
   // Auto-resync when the browser regains focus / the tab becomes visible — the
   // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
@@ -828,15 +862,17 @@ export default function App() {
     }
   }, [doResync])
 
-  // While disconnected, re-run the sweep every 5s so recovery is automatic
+  // While either banner is up, re-run the sweep every 5s so recovery is automatic
   // (banner clears, data refreshes) without waiting for a focus switch or a
-  // manual refresh. The interval exists only while the banner is up: a
-  // successful sweep flips `disconnected` off, which tears it down.
+  // manual refresh. The interval exists only while a banner is up: a successful
+  // sweep flips both flags off, which tears it down. For the vault-gone banner
+  // this is what makes "put the folder back where it was" a complete fix — the
+  // session heals itself within 5s, no restart, no re-registration.
   useEffect(() => {
-    if (!disconnected) return
+    if (!disconnected && !vaultGone) return
     const t = setInterval(() => void doResync(), 5000)
     return () => clearInterval(t)
-  }, [disconnected, doResync])
+  }, [disconnected, vaultGone, doResync])
 
   // Manual refresh (TopBar button): force an immediate sweep (bypass the throttle)
   // and confirm with a toast — this is the explicit-feedback path, whereas the
@@ -1440,15 +1476,41 @@ export default function App() {
     // and slides in/out from the top edge (see TopBar) so the reading area
     // reclaims the header's height.
     <div className="relative flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
-      {/* Server-unreachable banner: floats top-center above everything, lives
-       * exactly as long as `disconnected` (the 5s retry loop clears it). Amber
-       * needs explicit dark: overrides — unlike stone it is not ramp-inverted
-       * by the .dark block in index.css. */}
-      {disconnected && (
-        <div className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm text-amber-800 shadow-md ring-1 ring-amber-200 dark:bg-amber-950/70 dark:text-amber-200 dark:ring-amber-900">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-          Can't reach the litman server — retrying…
+      {/* Vault-gone banner: the library this window is bound to is no longer on
+       * disk. Takes precedence over the disconnected banner (a 410 proves the
+       * server answered, so the two can never both be true). The list behind it
+       * is deliberately left on screen — it is the last thing that was true, and
+       * every write is refused server-side until the library is found again, so
+       * nothing stale can be acted on. Red, not amber: this one is not retrying
+       * its way out of a blip. Putting the folder back still heals it silently
+       * (the 5s sweep clears the banner); the button is for the other case. */}
+      {vaultGone ? (
+        <div className="fixed left-1/2 top-3 z-50 flex max-w-[min(44rem,92vw)] -translate-x-1/2 items-center gap-3 rounded-full bg-red-100 py-1.5 pl-4 pr-1.5 text-sm text-red-900 shadow-md ring-1 ring-red-200 dark:bg-red-950/80 dark:text-red-100 dark:ring-red-900">
+          <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
+          <span className="truncate">
+            This library is no longer at{' '}
+            <span className="font-mono text-[0.8em]">{served}</span> — it was moved,
+            renamed or deleted.
+          </span>
+          <button
+            type="button"
+            onClick={() => openVaultManager?.()}
+            className="shrink-0 rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-red-900 shadow-sm ring-1 ring-red-200 transition duration-200 ease-fluid hover:bg-white dark:bg-red-900/60 dark:text-red-50 dark:ring-red-800 dark:hover:bg-red-900"
+          >
+            Find it
+          </button>
         </div>
+      ) : (
+        /* Server-unreachable banner: floats top-center above everything, lives
+         * exactly as long as `disconnected` (the 5s retry loop clears it). Amber
+         * needs explicit dark: overrides — unlike stone it is not ramp-inverted
+         * by the .dark block in index.css. */
+        disconnected && (
+          <div className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm text-amber-800 shadow-md ring-1 ring-amber-200 dark:bg-amber-950/70 dark:text-amber-200 dark:ring-amber-900">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+            Can't reach the litman server — retrying…
+          </div>
+        )
       )}
       <TopBar
         vaults={vaults}
@@ -1480,6 +1542,7 @@ export default function App() {
         onObservabilityOpenChange={setObservabilityOpen}
         onAgentOpenChange={setAgentPanelOpen}
         onRegisterAgentOpen={registerAgentOpen}
+        onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
       />
       <div className="flex min-h-0 flex-1">

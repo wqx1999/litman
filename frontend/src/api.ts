@@ -16,10 +16,27 @@ import type {
   VaultsPayload,
 } from './types'
 
+/** An HTTP failure, carrying the status code so callers can branch on it.
+ *
+ * The message is what it always was (the backend's `detail` where there is one,
+ * the status line otherwise), so every existing `err.message` toast is unchanged.
+ * The status is what's new: App needs to tell a **410** — the served library is
+ * no longer on disk — apart from every other 4xx, because that one is not a
+ * failed action, it's a lost library. */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url)
   if (!resp.ok) {
-    throw new Error(`${url} → ${resp.status} ${resp.statusText}`)
+    throw new ApiError(`${url} → ${resp.status} ${resp.statusText}`, resp.status)
   }
   return (await resp.json()) as T
 }
@@ -51,7 +68,7 @@ async function mutateJSON<T>(
     } catch {
       /* non-JSON error body — keep the status-line fallback */
     }
-    throw new Error(detail)
+    throw new ApiError(detail, resp.status)
   }
   return (await resp.json()) as T
 }
