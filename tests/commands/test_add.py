@@ -16,6 +16,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.notes import has_discussion_reminder
 from litman.exceptions import (
     AddError,
     DuplicateDOIError,
@@ -111,6 +112,15 @@ def test_add_creates_paper_folder(
     assert (paper_dir / "paper.pdf").is_file()
     assert (paper_dir / "metadata.yaml").is_file()
     assert (paper_dir / "notes.md").is_file()
+
+    # The discussion log starts empty but present, carrying the append-format
+    # header the next writer reads: every paper folder has the same file set.
+    discussion = paper_dir / "discussion.md"
+    assert discussion.is_file()
+    body = discussion.read_text(encoding="utf-8")
+    assert body.startswith(f"# Discussion log for {paper_id}")
+    assert has_discussion_reminder(body)
+    assert os.access(discussion, os.W_OK)  # not truth-locked: the agent appends
 
     # Original PDF moved into the vault (mv semantics, not cp): the source
     # disappearing is the user-visible "ingest succeeded" signal.

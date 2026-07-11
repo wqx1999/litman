@@ -260,7 +260,8 @@ export default function MdView({
     if (readOnly) return
     // notes.md / discussion.md are create-or-overwrite, so editing is allowed
     // even when the file is absent (text === null) — a first edit starts blank
-    // and the save creates the file (lit add never scaffolds discussion.md).
+    // and the save creates the file. `lit add` scaffolds both, so absence now
+    // only means a paper older than the scaffold (health-check --fix backfills).
     // Wait for the fetch to settle (loaded) so an existing file seeds the
     // textarea from its real content, not a transient null.
     if (!loaded) return

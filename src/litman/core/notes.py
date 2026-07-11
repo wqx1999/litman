@@ -8,9 +8,10 @@ about which files participate in the wikilink graph.
 
 Wikilink scope (per design doc §5.1):
     * ``papers/<id>/notes.md``      — per-paper notes (always scaffolded)
-    * ``papers/<id>/discussion.md`` — per-paper discussion, created
-      on-demand (M21), so it is guarded with ``.is_file()`` and simply
-      absent for papers that have none.
+    * ``papers/<id>/discussion.md`` — per-paper discussion log, also scaffolded
+      by ``lit add``. Papers added before the scaffold landed have none until
+      ``lit health-check --fix`` backfills them, so it is still guarded with
+      ``.is_file()``.
 
 Anything outside these locations is the user's own thing and is left
 untouched by rename / rm / restore.
@@ -74,12 +75,45 @@ WIKILINK_REMINDER = (
 _WIKILINK_REMINDER_MARKER = "not backticks or plain text"
 
 
+# ---------------------------------------------------------------------------
+# Discussion scaffold (format anchor for the append-only log)
+# ---------------------------------------------------------------------------
+
+# Seeded into every discussion.md by ``lit add``, repaired by
+# ``lit health-check --fix`` and by the GUI's discussion PUT. Where the notes
+# reminder has to be healed back after every agent regeneration (notes.md is an
+# overwrite-style STATE snapshot), this one survives on its own: discussion.md
+# is the append-only LOG, so the header stays at the top of the file as the
+# format contract each writer reads before appending.
+#
+# The example ``[[paper-id]]`` sits INSIDE the HTML comment on purpose. Both
+# scanners that would otherwise mistake it for a real graph edge ignore comment
+# regions: ``check_dangling_wikilinks`` (core/checks.py) strips them before
+# matching, and ``search_notes`` (core/search.py) masks them before comparing.
+# The rewrite paths (``lit rm`` / ``lit rename``) deliberately preserve comments
+# and stay inert only because ``paper-id`` never resolves to a real paper — keep
+# the placeholder literal, never a real-looking id.
+DISCUSSION_FORMAT_REMINDER = (
+    "<!-- Append-only log: one `## YYYY-MM-DD HH:MM` section per discussion, "
+    "opening with **Question:**. Link another paper in this vault as "
+    "[[paper-id]] (a wikilink, not backticks or plain text) so lit rm and "
+    "lit health-check keep it tracked. -->"
+)
+
+# Distinctive phrase used to detect the discussion reminder. Deliberately NOT
+# :data:`_WIKILINK_REMINDER_MARKER` (which this reminder also happens to
+# contain): the two heal paths are file-scoped and must never take one file's
+# anchor for the other's.
+_DISCUSSION_REMINDER_MARKER = "Append-only log"
+
+
 def enumerate_markdown_files(vault: Path) -> Iterable[Path]:
     """Yield .md files in the wikilink scope (see module docstring).
 
     Both ``papers/<id>/notes.md`` and ``papers/<id>/discussion.md`` are
-    yielded when present. ``discussion.md`` is created on-demand (M21), so a
-    paper without one simply contributes only its ``notes.md``.
+    yielded when present. A paper added before the discussion scaffold landed
+    has no ``discussion.md`` until ``lit health-check --fix`` backfills it, so
+    it simply contributes only its ``notes.md``.
     """
     papers_dir = vault / "papers"
     if papers_dir.is_dir():
@@ -225,4 +259,91 @@ def heal_wikilink_reminder(vault: Path, paper_id: str) -> bool:
         return False
     with staged_write(vault, op_id=f"notes-reminder-{paper_id}") as stage:
         stage.write_text(f"papers/{paper_id}/notes.md", healed)
+    return True
+
+
+def has_discussion_reminder(text: str) -> bool:
+    """True when a discussion log still carries its append-format header.
+
+    The detection any caller outside this module should use (health-check's
+    ``discussion_scaffold`` check) — the marker phrase itself stays private so
+    its wording can change without breaking them.
+    """
+    return _DISCUSSION_REMINDER_MARKER in text
+
+
+def discussion_scaffold(paper_id: str) -> str:
+    """The body ``lit add`` seeds into a fresh ``papers/<id>/discussion.md``.
+
+    An H1 the GUI and the reader see, plus the format reminder every writer
+    (agent or human) reads before appending its dated section.
+    """
+    return f"# Discussion log for {paper_id}\n\n{DISCUSSION_FORMAT_REMINDER}\n"
+
+
+def ensure_discussion_scaffold(text: str, paper_id: str) -> str:
+    """Return ``text`` with the discussion format reminder guaranteed present.
+
+    Idempotent: when the reminder (detected via the distinctive
+    :data:`_DISCUSSION_REMINDER_MARKER` phrase) is already there, ``text`` comes
+    back unchanged so the caller can skip the write. An empty file becomes the
+    full :func:`discussion_scaffold`; otherwise the reminder is inserted right
+    after the first ``# `` H1, or an H1 + reminder are prepended when the log
+    has no heading (a hand-written or GUI-truncated file).
+    """
+    if _DISCUSSION_REMINDER_MARKER in text:
+        return text
+    if not text.strip():
+        return discussion_scaffold(paper_id)
+
+    lines = text.split("\n")
+    heading_idx = next(
+        (i for i, line in enumerate(lines) if line.startswith("# ")), None
+    )
+    if heading_idx is None:
+        return "\n".join(
+            [
+                f"# Discussion log for {paper_id}",
+                "",
+                DISCUSSION_FORMAT_REMINDER,
+                "",
+                *lines,
+            ]
+        )
+
+    head = lines[: heading_idx + 1]
+    tail = lines[heading_idx + 1 :]
+    # Drop a single existing blank right after the heading so the inserted
+    # block does not stack double blank lines.
+    if tail and tail[0] == "":
+        tail = tail[1:]
+    return "\n".join([*head, "", DISCUSSION_FORMAT_REMINDER, "", *tail])
+
+
+def heal_discussion_scaffold(vault: Path, paper_id: str) -> bool:
+    """Create ``papers/<id>/discussion.md``, or repair its format reminder.
+
+    The backfill path for vaults whose papers predate the scaffold (``lit add``
+    seeds it for every new paper) and the repair path for a log whose header was
+    edited away. Driven by ``lit health-check --fix`` via the
+    ``discussion_scaffold`` check. Returns ``True`` when the file was written,
+    ``False`` on a no-op (already scaffolded, or the paper dir is absent).
+    Appends nothing and rewrites nothing else: an existing log keeps its dated
+    sections verbatim.
+    """
+    from litman.core.atomic import staged_write
+
+    paper_dir = vault / "papers" / paper_id
+    if not paper_dir.is_dir():
+        return False
+    disc_path = paper_dir / "discussion.md"
+    if disc_path.is_file():
+        text = disc_path.read_text(encoding="utf-8")
+        healed = ensure_discussion_scaffold(text, paper_id)
+        if healed == text:
+            return False
+    else:
+        healed = discussion_scaffold(paper_id)
+    with staged_write(vault, op_id=f"discussion-scaffold-{paper_id}") as stage:
+        stage.write_text(f"papers/{paper_id}/discussion.md", healed)
     return True

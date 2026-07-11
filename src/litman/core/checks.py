@@ -53,7 +53,12 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.id import is_valid_id
-from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
+from litman.core.notes import (
+    enumerate_markdown_files,
+    has_discussion_reminder,
+    heal_discussion_scaffold,
+    parse_wikilink_target,
+)
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
@@ -133,8 +138,10 @@ class CheckSpec:
 # Phase 1 keeps this exactly as the historical set (stale_staging +
 # orphan_trash_sidecar). Broadening ``--fix`` to all klass-A regen is Phase 2;
 # until then this stays a literal so external ``--fix`` behavior is unchanged.
+# ``discussion_scaffold`` joins them as a third validity fix: creating a missing
+# empty log (or restoring its header) is a pure add, never an overwrite.
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
-    {"stale_staging", "orphan_trash_sidecar"}
+    {"stale_staging", "orphan_trash_sidecar", "discussion_scaffold"}
 )
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
@@ -402,8 +409,11 @@ def check_paper_dir_validity(
     * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename);
     * ``paper.pdf`` missing (``lit open`` depends on it; irreplaceable).
 
-    ``notes.md`` / ``discussion.md`` absence is NOT checked — empty/deleted is
-    a legitimate state (nothing in the system depends on them existing).
+    ``notes.md`` absence is NOT checked — empty/deleted is a legitimate state
+    (nothing in the system depends on it existing). ``discussion.md`` absence
+    is, but by its own check (:func:`check_discussion_scaffold`): its header
+    carries the append-format contract, so a paper without one is a paper whose
+    next discussion has no format to follow.
     """
     out: list[Issue] = []
     papers_dir = vault / "papers"
@@ -542,6 +552,78 @@ def check_paper_dir_validity(
                         "`lit open` cannot show it and the file is irreplaceable"
                     ),
                     hint="restore the PDF into the paper folder",
+                )
+            )
+    return out
+
+
+def check_discussion_scaffold(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``papers/<id>/discussion.md`` exists and carries its format reminder.
+
+    ``lit add`` seeds every new paper with an empty discussion log whose header
+    states the append format (one dated ``##`` section per discussion, wikilinks
+    for cross-references). That header is the contract the next writer — agent
+    or human — reads before appending, so a missing file or a stripped-out
+    reminder means the next discussion has nothing to follow.
+
+    Papers added before the scaffold landed have no ``discussion.md`` at all;
+    this is the check that surfaces them, and ``--fix`` backfills. Both findings
+    are ``info``: nothing is broken or lost, the anchor is just absent.
+
+    Auto-fixable and lossless — :func:`heal_discussion_scaffold` creates the
+    file or re-inserts the reminder, and never touches an existing dated
+    section.
+    """
+    out: list[Issue] = []
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        disc_path = vault / "papers" / paper_id / "discussion.md"
+        if not disc_path.is_file():
+            out.append(
+                Issue(
+                    category="discussion_scaffold",
+                    severity="info",
+                    paper_id=paper_id,
+                    message=(
+                        f"papers/{paper_id}/discussion.md is missing — "
+                        "the discussion log and its append-format header"
+                    ),
+                    hint="`lit health-check --fix` creates the empty log",
+                )
+            )
+            continue
+        try:
+            text = disc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Unreadable is a real finding, not a silent skip (invariant #14).
+            out.append(
+                Issue(
+                    category="discussion_scaffold",
+                    severity="warning",
+                    paper_id=paper_id,
+                    message=(
+                        f"papers/{paper_id}/discussion.md cannot be read "
+                        "(permissions, or not UTF-8)"
+                    ),
+                    hint="fix the file by hand — --fix will not overwrite it",
+                )
+            )
+            continue
+        if not has_discussion_reminder(text):
+            out.append(
+                Issue(
+                    category="discussion_scaffold",
+                    severity="info",
+                    paper_id=paper_id,
+                    message=(
+                        f"papers/{paper_id}/discussion.md has lost its "
+                        "append-format header"
+                    ),
+                    hint="`lit health-check --fix` re-inserts it",
                 )
             )
     return out
@@ -2404,6 +2486,16 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec(
         "paper_dir_validity", check_paper_dir_validity, "full", "validity", "report"
     ),
+    # Not klass A: the log is authored TRUTH, not a derived artifact, so `--fix`
+    # must not route it through the wholesale `regen` (which would report it
+    # healed while writing no file). It rides the validity-fix path instead.
+    CheckSpec(
+        "discussion_scaffold",
+        check_discussion_scaffold,
+        "full",
+        "validity",
+        "regen",
+    ),
     CheckSpec("index_vs_disk", check_index_vs_disk, "cheap", "A", "regen"),
     CheckSpec("views_vs_metadata", check_views_vs_metadata, "full", "A", "regen"),
     CheckSpec(
@@ -2556,10 +2648,30 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
     * ``stale_staging``  — drops every ``.litman-staging/<op-id>/`` entry.
     * ``orphan_trash_sidecar`` — deletes ``<entry>.meta.yaml`` files in
       ``.trash/`` whose entry dir is missing.
+    * ``discussion_scaffold`` — creates the missing ``discussion.md`` (or
+      re-inserts its append-format header) for each flagged paper. Additive
+      only: an existing log keeps every dated section it already holds.
     """
     counts: dict[str, int] = {}
 
     fixable_present = {i.category for i in issues if i.category in AUTO_FIXABLE_CATEGORIES}
+
+    if "discussion_scaffold" in fixable_present:
+        n = 0
+        for issue in issues:
+            if issue.category != "discussion_scaffold" or not issue.paper_id:
+                continue
+            try:
+                if heal_discussion_scaffold(vault, issue.paper_id):
+                    n += 1
+            except (OSError, UnicodeDecodeError):
+                # An unwritable folder or an unreadable (non-UTF-8) log must not
+                # abort the whole `--fix` and discard the fixes already applied
+                # — and the unreadable one is never blindly overwritten, which
+                # is what its finding promised. It stays flagged and is
+                # re-offered on the next health-check.
+                continue
+        counts["discussion_scaffold"] = n
 
     if "stale_staging" in fixable_present:
         counts["stale_staging"] = cleanup_stale_staging(vault)

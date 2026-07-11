@@ -28,6 +28,7 @@ from litman.core.checks import (
     check_dangling_refs,
     check_dangling_wikilinks,
     check_inbox_staleness,
+    check_discussion_scaffold,
     check_paper_dir_validity,
     check_pdf_viewer,
     check_project_config_consistency,
@@ -40,7 +41,7 @@ from litman.core.checks import (
 )
 from litman.core.document import list_papers
 from litman.core.library import create_vault
-from litman.core.notes import WIKILINK_REMINDER
+from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -58,7 +59,9 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
 
     Override individual fields via kwargs. Pass ``override_id=<str>`` to
     write a different value into the ``id`` field than the directory name
-    (used for id_consistency tests).
+    (used for id_consistency tests). Pass ``no_discussion=True`` to leave out
+    ``discussion.md`` (the pre-scaffold shape the discussion_scaffold check
+    flags).
     """
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +105,13 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     # to assert the missing-pdf finding can delete it).
     if not fields.get("no_pdf"):
         (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
+    # Same reasoning for the discussion log: `lit add` scaffolds it, so a
+    # fixture paper without one is not "complete" — it is the pre-scaffold shape
+    # the discussion_scaffold check exists to flag. Opt out with no_discussion.
+    if not fields.get("no_discussion"):
+        (paper_dir / "discussion.md").write_text(
+            discussion_scaffold(paper_id), encoding="utf-8"
+        )
 
 
 @pytest.fixture
@@ -260,13 +270,79 @@ def test_paper_dir_validity_missing_pdf_is_an_error(vault: Path) -> None:
     assert pdf[0].paper_id == "2024_Foo_Bar"
 
 
-def test_paper_dir_validity_notes_discussion_absence_not_flagged(vault: Path) -> None:
-    """notes.md / discussion.md absence is a legitimate state — not flagged."""
-    _write_paper(vault, "2024_Foo_Bar")  # writes metadata + pdf, no notes
+def test_paper_dir_validity_ignores_authored_markdown(vault: Path) -> None:
+    """This check never looks at the authored markdown.
+
+    notes.md absence stays a legitimate state (nothing depends on it existing);
+    discussion.md absence IS a finding, but ``check_discussion_scaffold``'s, not
+    this one's.
+    """
+    _write_paper(vault, "2024_Foo_Bar", no_discussion=True)  # metadata + pdf only
     paper_dir = vault / "papers" / "2024_Foo_Bar"
     assert not (paper_dir / "notes.md").exists()
     assert not (paper_dir / "discussion.md").exists()
     assert check_paper_dir_validity(vault, list_papers(vault)) == []
+
+
+# --- discussion_scaffold -----------------------------------------------------
+
+
+def test_discussion_scaffold_clean(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")  # the fixture scaffolds discussion.md
+    assert check_discussion_scaffold(vault, list_papers(vault)) == []
+
+
+def test_discussion_scaffold_flags_missing_file(vault: Path) -> None:
+    """A paper added before the scaffold landed has no discussion.md at all."""
+    _write_paper(vault, "2024_Foo_Bar", no_discussion=True)
+    issues = check_discussion_scaffold(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "discussion_scaffold"
+    assert issues[0].severity == "info"
+    assert issues[0].paper_id == "2024_Foo_Bar"
+
+
+def test_discussion_scaffold_flags_stripped_header(vault: Path) -> None:
+    """The log exists but its append-format header was edited away."""
+    _write_paper(vault, "2024_Foo_Bar")
+    disc = vault / "papers" / "2024_Foo_Bar" / "discussion.md"
+    disc.write_text("# Discussion log\n\n## 2026-07-11 10:00\n\nq\n", encoding="utf-8")
+    issues = check_discussion_scaffold(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert "append-format header" in issues[0].message
+
+
+def test_fix_backfills_discussion_and_keeps_the_log(vault: Path) -> None:
+    """--fix creates the missing log and restores a torn-out header — additively.
+
+    The paper with an existing (header-less) log keeps every dated section it
+    already holds: this fix only ever adds the anchor back.
+    """
+    _write_paper(vault, "2024_Foo_Bar", no_discussion=True)
+    _write_paper(vault, "2024_Baz_Qux")
+    torn = vault / "papers" / "2024_Baz_Qux" / "discussion.md"
+    torn.write_text(
+        "# Discussion log for 2024_Baz_Qux\n\n## 2026-06-30 09:27\n\n"
+        "**Question:** why does it work?\n",
+        encoding="utf-8",
+    )
+
+    issues = check_discussion_scaffold(vault, list_papers(vault))
+    assert len(issues) == 2
+    counts = apply_autofix(vault, issues)
+    assert counts["discussion_scaffold"] == 2
+
+    created = (vault / "papers" / "2024_Foo_Bar" / "discussion.md").read_text(
+        encoding="utf-8"
+    )
+    assert created.startswith("# Discussion log for 2024_Foo_Bar")
+
+    healed = torn.read_text(encoding="utf-8")
+    assert "## 2026-06-30 09:27" in healed
+    assert "**Question:** why does it work?" in healed
+
+    # And the vault is clean afterwards.
+    assert check_discussion_scaffold(vault, list_papers(vault)) == []
 
 
 # --- index_vs_disk (M30 #1) -------------------------------------------------
@@ -1297,7 +1373,7 @@ def test_apply_autofix_skips_non_fixable_categories(vault: Path) -> None:
 
 def test_auto_fixable_categories_constant() -> None:
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
-        {"stale_staging", "orphan_trash_sidecar"}
+        {"stale_staging", "orphan_trash_sidecar", "discussion_scaffold"}
     )
 
 

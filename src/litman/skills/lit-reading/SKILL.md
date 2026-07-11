@@ -22,7 +22,7 @@ lit-reading is read-first but **not** strictly read-only: it owns the *reading v
 2. **No state file.** There is no `lit focus` or `lit current`. The user tells you which paper is in scope, or you infer it from natural-language cues.
 3. **Vault path is discovered, never hardcoded.** Resolve via `$LIT_LIBRARY`, the active vault in `~/.config/litman/vaults.yaml`, or by walking up from the user's cwd for `lit-config.yaml`. Never paste a stale absolute path from prior sessions.
 4. **Multi-vault aware.** The user may have several registered vaults. If a paper id isn't in the active vault, check cross-vault wikilinks (`[[<vault>:<id>]]` syntax in notes) and `lit vault list` before giving up. *Reading* another vault is fine; **writing** is confined to the active vault.
-5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append).** You may regenerate-and-replace `<vault>/papers/<id>/notes.md` (the current-understanding STATE snapshot, agent-assisted, user-read-only) and append dated sections to `<vault>/papers/<id>/discussion.md` (the immutable LOG). **Never** write `metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `repo-meta.yaml` directly — chain to lit-library.
+5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append).** You may regenerate-and-replace `<vault>/papers/<id>/notes.md` (the current-understanding STATE snapshot, agent-assisted, user-read-only) and append dated sections to `<vault>/papers/<id>/discussion.md` (the immutable LOG). Both are scaffolded by `lit add` with an HTML-comment line stating their format — read it before you write, and never strip it. **Never** write `metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `repo-meta.yaml` directly — chain to lit-library.
 
 If any of these would be violated, push back and propose the right alternative ("let me chain to lit-library to run `lit add`" or "I can only summarise what's actually in the notes — should I read the PDF first?").
 
@@ -246,7 +246,7 @@ If a conversation produces a genuine conclusion, idea, or follow-up the user wan
 
 > "Should I append this to `papers/<id>/discussion.md`?"
 
-After explicit confirmation, **Write** (append, never overwrite) this format:
+After explicit confirmation, **read the top of `discussion.md` first** — `lit add` scaffolds it with an HTML-comment line stating the append format, and that line is the contract. Then **Write** (append, never overwrite) this format:
 
 ```markdown
 ## YYYY-MM-DD HH:MM
@@ -262,7 +262,7 @@ The ONE discipline:
 
 - `discussion.md` records **the distilled conclusion + the user's questions** (user's perspective first).
 - **The only constraint:** if you write **your own inference**, or cite a **number/section you did not verify against the PDF**, mark it (a `⚠` or short "not verified") so next time it isn't taken as the user's settled view. One reminder, not a tag system — do **not** add `[Discussed]` / `[Agent synthesis]` tags, three `?` classes, or a separate review phase.
-- **Trigger = user-explicit only.** Do not write proactively. Append, do not overwrite. If `discussion.md` doesn't exist, create it with a top-level `# Discussion log for <id>` header, then the dated section.
+- **Trigger = user-explicit only.** Do not write proactively. Append, do not overwrite. `discussion.md` already exists (`lit add` scaffolds it) — keep its `# Discussion log for <id>` heading and the format comment under it, and add your dated section below. On a pre-scaffold paper the file may be absent: create it with that same heading, then the dated section, and tell the user `lit health-check --fix` backfills the rest of the library.
 - **Action log (keep, do not extend):** after a `lit code add` (clone) or an unlink, append one `[Action log]` line (e.g. "Cloned <url> as codes/<name>"). Records clone/unlink only — do NOT extend it to metadata/TAXONOMY edits.
 - After writing, mention the file path you appended to.
 

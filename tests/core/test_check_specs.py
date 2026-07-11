@@ -31,6 +31,7 @@ from litman.core.checks import (
 _EXPECTED_CATEGORIES = (
     "schema",
     "paper_dir_validity",
+    "discussion_scaffold",
     "index_vs_disk",
     "views_vs_metadata",
     "project_references",
@@ -53,7 +54,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 20
+    assert len(_CHECK_REGISTRY) == 21
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -88,9 +89,11 @@ def test_every_spec_fn_has_check_signature() -> None:
 
 
 def test_auto_fixable_categories_unchanged() -> None:
-    """Phase 1 must NOT broaden ``--fix`` (that is Phase 2)."""
+    """``--fix`` stays the additive/lossless set: the two Phase-1 validity
+    cleanups plus the discussion scaffold. Broadening it to klass-A regen is
+    still Phase 2."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
-        {"stale_staging", "orphan_trash_sidecar"}
+        {"stale_staging", "orphan_trash_sidecar", "discussion_scaffold"}
     )
 
 

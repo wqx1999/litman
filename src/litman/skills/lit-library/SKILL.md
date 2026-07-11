@@ -13,7 +13,7 @@ Write side of litman. Read-side companion: **lit-reading**.
 2. **LLM never writes data files directly.** Extract metadata as JSON to a temp file, then call `lit add --from-llm-json <path>`. The CLI writes `papers/<id>/metadata.yaml`. Never write yaml/markdown into the vault yourself.
 3. **TAXONOMY is mutated only via `lit taxonomy {add,rename,merge,rm}`** (and `lit project` for the `projects` dict). Never hand-edit `TAXONOMY.md`.
 4. **Vault is NOT git-tracked.** The CLI handles atomicity — don't try to use git to roll back.
-5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append) only.** Every other file in `papers/<id>/` and `codes/<name>/` is CLI-mediated. Drive only the **forward** paper-to-paper relation fields (`related` / `extends` / `contradicts`); the CLI auto-maintains the reverse pair (`extended-by` / `contradicted-by`) — never set a reverse field by hand.
+5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append) only.** `lit add` scaffolds both, each with an HTML-comment line stating its format — read it before you write, and never strip it. Every other file in `papers/<id>/` and `codes/<name>/` is CLI-mediated. Drive only the **forward** paper-to-paper relation fields (`related` / `extends` / `contradicts`); the CLI auto-maintains the reverse pair (`extended-by` / `contradicted-by`) — never set a reverse field by hand.
 
 If a user request violates any of the above, push back and propose the CLI-mediated alternative.
 

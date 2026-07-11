@@ -11,15 +11,40 @@ Pure Layer-2 business logic: no CLI rendering, no LLM. The match is a fixed
 case-insensitive substring (invariant #5: weak / no LLM still works), not a
 vector or semantic search. ``paper.pdf`` full text, ``.trash/``, and the
 ``views/`` symlink hubs are out of scope — the search corpus is exactly the
-two authored markdown files per paper.
+two authored markdown files per paper, minus their HTML comments (the seeded
+format reminders are scaffolding, not something the user wrote).
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from litman.core.notes import enumerate_markdown_files
+
+# HTML comments are scaffolding, not authored content. Both scaffolds seed one
+# (notes.md the wikilink reminder, discussion.md the append-format reminder), so
+# a comment left in the corpus would return a hit on EVERY paper for a query
+# like "wikilink" or "append-only" — noise no user wrote. Same reasoning, same
+# regex as core/checks.py's dangling-wikilink scan, which strips comments for
+# the same reason.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _mask_html_comments(text: str) -> str:
+    """Blank out comment regions, preserving every character position.
+
+    Each commented-out character becomes a space and each newline stays a
+    newline, so the masked text has the same line count and the same columns as
+    the original — the hit's ``line`` number (which the Web UI uses to scroll
+    the reader to the match) keeps pointing at the real line.
+    """
+
+    def _blank(match: re.Match[str]) -> str:
+        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
+
+    return _HTML_COMMENT_RE.sub(_blank, text)
 
 
 def search_notes(
@@ -73,8 +98,15 @@ def search_notes(
             # whole search — skip it, mirroring list_papers' tolerance. The
             # corrupt-file finding is owned by `lit health-check`.
             continue
-        for lineno, raw_line in enumerate(text.splitlines(), start=1):
-            haystack = raw_line.lower() if case_insensitive else raw_line
+        # Match against the masked text, report the raw line: a line that mixes
+        # authored prose and a trailing comment still matches on its prose and
+        # still shows the user the line as it really reads on disk.
+        raw_lines = text.splitlines()
+        masked_lines = _mask_html_comments(text).splitlines()
+        for lineno, (raw_line, masked_line) in enumerate(
+            zip(raw_lines, masked_lines), start=1
+        ):
+            haystack = masked_line.lower() if case_insensitive else masked_line
             if needle in haystack:
                 hits.append(
                     {

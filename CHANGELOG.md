@@ -35,6 +35,12 @@ behaviour, a minor release adds it, a major release breaks it.
 - **Search matches authors, DOI and year**, in the CLI and the GUI. In the GUI
   list, `J` / `K` move the selection, `Enter` opens the paper, and `/` focuses
   search.
+- **Every paper now starts with a `discussion.md`.** `lit add` creates the log
+  empty, headed by a line stating how it is written: one dated section per
+  discussion, `[[paper-id]]` for cross-references. Your agent reads that line
+  before it appends, so discussions come out in one shape across the library.
+  `lit health-check` reports papers added before this (their log is missing) and
+  `--fix` creates it — existing logs keep every section they already hold.
 
 ### Changed
 
@@ -57,6 +63,10 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
+- **`lit search` no longer matches the comment lines litman seeds into your notes.**
+  Searching a word that only appears in one of them (`wikilink`, say) returned a
+  hit on every paper in the library. Comments are litman's, not yours, so they are
+  no longer part of the search corpus.
 - **Moving or deleting your library while the GUI is open is no longer silent.**
   litman kept serving the old location: the paper list came back empty, and saving
   a note rebuilt a stub library at the dead path — so the note landed there and

@@ -16,11 +16,16 @@ import os
 from pathlib import Path
 
 from litman.core.notes import (
+    DISCUSSION_FORMAT_REMINDER,
     WIKILINK_REMINDER,
     annotate_deleted_wikilinks,
     deannotate_deleted_wikilinks,
+    discussion_scaffold,
+    ensure_discussion_scaffold,
     ensure_wikilink_reminder,
     enumerate_markdown_files,
+    has_discussion_reminder,
+    heal_discussion_scaffold,
     heal_wikilink_reminder,
 )
 
@@ -148,7 +153,7 @@ def test_enumerate_yields_notes_and_discussion(tmp_path: Path) -> None:
 
 
 def test_enumerate_skips_absent_discussion(tmp_path: Path) -> None:
-    # discussion.md is created on-demand; absent → simply not yielded.
+    # A pre-scaffold paper has no discussion.md; absent → simply not yielded.
     d = _make_paper(tmp_path, "2024_A")
     (d / "notes.md").write_text("n\n", encoding="utf-8")
     paths = list(enumerate_markdown_files(tmp_path))
@@ -241,3 +246,95 @@ def test_heal_keeps_notes_writable(tmp_path: Path) -> None:
     notes.write_text("# 2024_A\n\nbody\n", encoding="utf-8")
     heal_wikilink_reminder(tmp_path, "2024_A")
     assert os.access(notes, os.W_OK)
+
+
+# ---------------------------------------------------------------------------
+# discussion scaffold (the append-only log's format anchor)
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_carries_heading_and_reminder() -> None:
+    body = discussion_scaffold("2024_A")
+    assert body.startswith("# Discussion log for 2024_A")
+    assert DISCUSSION_FORMAT_REMINDER in body
+    assert has_discussion_reminder(body)
+
+
+def test_scaffold_reminder_is_an_html_comment() -> None:
+    """The example ``[[paper-id]]`` must stay commented out.
+
+    Uncommented it would read as a real wikilink to a paper that does not exist
+    and health-check's dangling scan (which strips comment regions) would report
+    one dangling link per paper in the library.
+    """
+    assert DISCUSSION_FORMAT_REMINDER.startswith("<!--")
+    assert DISCUSSION_FORMAT_REMINDER.endswith("-->")
+    assert "[[paper-id]]" in DISCUSSION_FORMAT_REMINDER
+
+
+def test_ensure_discussion_is_idempotent() -> None:
+    body = discussion_scaffold("2024_A")
+    assert ensure_discussion_scaffold(body, "2024_A") == body
+
+
+def test_ensure_discussion_reinserts_after_heading() -> None:
+    text = "# Discussion log for 2024_A\n\n## 2026-07-11 10:00\n\n**Question:** q\n"
+    healed = ensure_discussion_scaffold(text, "2024_A")
+    lines = healed.split("\n")
+    assert lines[0] == "# Discussion log for 2024_A"
+    assert lines[2] == DISCUSSION_FORMAT_REMINDER
+    assert "**Question:** q" in healed  # the log itself is untouched
+
+
+def test_ensure_discussion_prepends_heading_when_absent() -> None:
+    healed = ensure_discussion_scaffold("loose prose, no heading\n", "2024_A")
+    assert healed.startswith("# Discussion log for 2024_A")
+    assert has_discussion_reminder(healed)
+    assert "loose prose, no heading" in healed
+
+
+def test_ensure_discussion_scaffolds_empty_file() -> None:
+    assert ensure_discussion_scaffold("", "2024_A") == discussion_scaffold("2024_A")
+
+
+def test_heal_discussion_creates_when_absent(tmp_path: Path) -> None:
+    _make_paper(tmp_path, "2024_A")  # the paper dir, nothing in it
+    disc = tmp_path / "papers" / "2024_A" / "discussion.md"
+    assert not disc.exists()
+    assert heal_discussion_scaffold(tmp_path, "2024_A") is True
+    assert has_discussion_reminder(disc.read_text(encoding="utf-8"))
+
+
+def test_heal_discussion_keeps_existing_sections(tmp_path: Path) -> None:
+    """Backfilling a header must never disturb what the user already wrote."""
+    _make_paper(tmp_path, "2024_A")
+    disc = tmp_path / "papers" / "2024_A" / "discussion.md"
+    disc.write_text(
+        "# Discussion log for 2024_A\n\n## 2026-06-30 09:27\n\n**Question:** why?\n",
+        encoding="utf-8",
+    )
+    assert heal_discussion_scaffold(tmp_path, "2024_A") is True
+    healed = disc.read_text(encoding="utf-8")
+    assert has_discussion_reminder(healed)
+    assert "## 2026-06-30 09:27" in healed
+    assert "**Question:** why?" in healed
+
+
+def test_heal_discussion_noop_when_scaffolded(tmp_path: Path) -> None:
+    _make_paper(tmp_path, "2024_A")
+    disc = tmp_path / "papers" / "2024_A" / "discussion.md"
+    body = discussion_scaffold("2024_A") + "\n## 2026-07-11 10:00\n\nkept.\n"
+    disc.write_text(body, encoding="utf-8")
+    assert heal_discussion_scaffold(tmp_path, "2024_A") is False
+    assert disc.read_text(encoding="utf-8") == body  # byte-identical
+
+
+def test_heal_discussion_noop_when_paper_absent(tmp_path: Path) -> None:
+    assert heal_discussion_scaffold(tmp_path, "2024_Nope") is False
+
+
+def test_heal_discussion_keeps_log_writable(tmp_path: Path) -> None:
+    # discussion.md is not truth-locked: the agent must be able to append again.
+    _make_paper(tmp_path, "2024_A")
+    heal_discussion_scaffold(tmp_path, "2024_A")
+    assert os.access(tmp_path / "papers" / "2024_A" / "discussion.md", os.W_OK)

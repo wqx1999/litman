@@ -14,7 +14,8 @@ Pipeline (M2.9 + M4.1):
     5. Create ``papers/<id>/``, atomically populated with::
        paper.pdf
        metadata.yaml
-       notes.md   (placeholder)
+       notes.md         (placeholder)
+       discussion.md    (empty log + its format reminder)
     6. Remove the source PDF (``mv`` semantics — file disappearing from the
        source dir is the user-visible success signal). The atomic block uses
        ``copy2`` so a mid-write failure does not strand the original; the
@@ -46,7 +47,7 @@ from litman.core.dedup import (
 from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
-from litman.core.notes import WIKILINK_REMINDER
+from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
@@ -323,8 +324,8 @@ def add_cmd(
     Source of metadata: either --doi (CrossRef fetch) or
     --from-llm-json <path> (LLM-prepared JSON file). Exactly one is
     required. Refuses on duplicate DOI, derives a canonical id, and
-    creates papers/<id>/ containing paper.pdf, metadata.yaml,
-    and an empty notes.md.
+    creates papers/<id>/ containing paper.pdf, metadata.yaml, an empty
+    notes.md, and an empty discussion.md.
 
     The source PDF is moved into the vault: the original file is removed
     after a successful ingest.
@@ -477,6 +478,13 @@ def add_cmd(
             f"{WIKILINK_REMINDER}\n\n"
             "(Personal notes go here.)\n",
             encoding="utf-8",
+        )
+        # The discussion log starts empty but not absent: its header carries the
+        # append-format contract every writer reads before adding a section, and
+        # a paper folder whose file set never varies is one less special case in
+        # the Web UI, the skills, and health-check.
+        (paper_dir / "discussion.md").write_text(
+            discussion_scaffold(paper_id), encoding="utf-8"
         )
         shutil.copy2(pdf_path, paper_dir / "paper.pdf")
         # Read-only lock the two new TRUTH files (M32). These are fresh

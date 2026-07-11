@@ -23,7 +23,10 @@ expected_end_state:
   - "index_has: title~PeptideBERT"
   - "index_has: title~Multi-Peptide"
   - "yaml_ne: papers/<peptidebert>/metadata.yaml :: read-date == null"   # lit read 打了戳（status 不变，没有 "read" 这个枚举）
-  - "path_exists: papers/<peptidebert>/discussion.md"
+  # `lit add` scaffolds discussion.md (v1.2.0), so "文件存在" 恒真、不再是证据。
+  # 锚一个 dated section（格式契约要求的 `## YYYY-MM-DD HH:MM`）：只有真写了才成立，
+  # 且不随 agent 用中英文蒸馏而漂移。同 B4。
+  - "vault_file_contains: papers/<peptidebert>/discussion.md :: ~## 20"
   - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has PepCodec"
   - "yaml_list_has: papers/<multipeptide>/metadata.yaml :: projects has PepCodec"
   - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: code-clones has <repo>"

@@ -29,6 +29,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.notes import discussion_scaffold
 from litman.core.vault_registry import (
     add_vault,
     save_registry,
@@ -110,6 +111,11 @@ def _seed_paper(vault: Path, paper_id: str, title: str = "Test") -> None:
         _yaml.dump(meta, f)
     (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4\n")
     (paper_dir / "notes.md").write_text("# notes\n", encoding="utf-8")
+    # `lit add` scaffolds the discussion log too; without it the
+    # discussion_scaffold check fires and a "clean vault" case is not clean.
+    (paper_dir / "discussion.md").write_text(
+        discussion_scaffold(paper_id), encoding="utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
