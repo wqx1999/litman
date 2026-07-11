@@ -360,3 +360,189 @@ def test_switch_succeeds_once_the_folder_is_put_back(tmp_path: Path) -> None:
     assert find_active(load_registry()).name == "alpha"
     assert Path(app.state.vault).resolve() == alpha.resolve()
     assert client.get("/api/papers").status_code == 200
+
+
+# ===========================================================================
+# the recovery's last loose end: project bridges heal on the completing switch
+# ===========================================================================
+
+
+def _link_paper_into_project(vault: Path, tmp_path: Path) -> Path:
+    """One paper linked into one project — healthy bridge. Returns the link."""
+    from ruamel.yaml import YAML
+
+    from litman.core.project_link import rebuild_all_project_links
+
+    project_dir = tmp_path / "pepforge"
+    project_dir.mkdir()
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  pepforge: {project_dir}\n",
+        encoding="utf-8",
+    )
+    paper_dir = vault / "papers" / "p1"
+    paper_dir.mkdir(parents=True)
+    with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
+        YAML().dump(
+            {
+                "id": "p1",
+                "title": "Test paper",
+                "authors": ["Doe, Jane"],
+                "year": 2024,
+                "doi": "10.test/p1",
+                "status": "inbox",
+                "priority": "B",
+                "type": "research",
+                "projects": ["pepforge"],
+                "topics": [],
+                "methods": [],
+                "code-clones": [],
+                "created-at": "2026-05-11T10:00:00+02:00",
+                "updated-at": "2026-05-11T10:00:00+02:00",
+            },
+            f,
+        )
+    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    link = project_dir / "litman_reflib" / "p1"
+    assert link.is_symlink() and link.exists()
+    return link
+
+
+def test_switch_to_recovered_vault_heals_project_bridges(tmp_path: Path) -> None:
+    """After `test_re_registering_the_new_path_recovers`'s flow the SERVER is
+    whole again — but every project's litman_reflib/litman_code bridge still
+    encodes the old location. A GUI-only user never runs the CLI command that
+    would offer the rebuild, so the switch that completes the recovery is
+    their only seam: it must re-point the bridges on its own."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault))
+    link = _link_paper_into_project(vault, tmp_path)
+    client = _client(vault)
+
+    moved = _move_away(vault, tmp_path / "moved")
+    assert link.is_symlink() and not link.exists()  # bridge dangles
+
+    assert (
+        client.post(
+            "/api/vaults", json={"name": "lib2", "path": str(moved)}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put("/api/vaults/active", json={"name": "lib2"}).status_code
+        == 200
+    )
+
+    assert link.is_symlink() and link.exists()
+    assert link.resolve() == (moved / "papers" / "p1").resolve()
+
+
+def test_switch_heal_touches_only_dangling_projects(tmp_path: Path) -> None:
+    """The consent-free heal is NARROWED to the projects that dangle.
+
+    ``rebuild_all_project_links`` wipes both hubs of every project it is
+    handed, so a full-map heal on this promptless path would clobber links a
+    healthy project's hub got from elsewhere (a sibling vault sharing the
+    project dir). Second project's hub holds one healthy link pointing
+    OUTSIDE the served vault: it must survive the switch untouched — same
+    inode, never unlinked-and-recreated."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault))
+    link = _link_paper_into_project(vault, tmp_path)
+
+    other = tmp_path / "otherproj"
+    (other / "litman_reflib").mkdir(parents=True)
+    foreign_target = tmp_path / "foreign_paper"
+    foreign_target.mkdir()
+    foreign_link = other / "litman_reflib" / "foreign"
+    foreign_link.symlink_to("../../foreign_paper")
+    assert foreign_link.exists()
+    ino_before = foreign_link.lstat().st_ino
+
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n"
+        f"  pepforge: {tmp_path / 'pepforge'}\n"
+        f"  other: {other}\n",
+        encoding="utf-8",
+    )
+
+    client = _client(vault)
+    moved = _move_away(vault, tmp_path / "moved")
+    assert (
+        client.post(
+            "/api/vaults", json={"name": "lib2", "path": str(moved)}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put("/api/vaults/active", json={"name": "lib2"}).status_code
+        == 200
+    )
+
+    # The dangling project healed...
+    assert link.exists()
+    assert link.resolve() == (moved / "papers" / "p1").resolve()
+    # ...and the healthy one was not even touched.
+    assert foreign_link.exists()
+    assert foreign_link.lstat().st_ino == ino_before
+
+
+def test_switch_heal_failure_does_not_fail_the_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The heal is best-effort by contract: the switch is already persisted
+    when it runs, so a rebuild blowing up must not turn the 200 into a 500 —
+    `lit health-check --fix` stays the fallback."""
+    import litman.core.project_link as project_link_mod
+
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault))
+    _link_paper_into_project(vault, tmp_path)
+    client = _client(vault)
+    moved = _move_away(vault, tmp_path / "moved")
+    assert (
+        client.post(
+            "/api/vaults", json={"name": "lib2", "path": str(moved)}
+        ).status_code
+        == 200
+    )
+
+    def _boom(*a: object, **kw: object) -> dict:
+        raise RuntimeError("rebuild exploded")
+
+    monkeypatch.setattr(project_link_mod, "rebuild_all_project_links", _boom)
+
+    resp = client.put("/api/vaults/active", json={"name": "lib2"})
+    assert resp.status_code == 200
+    assert find_active(load_registry()).name == "lib2"
+
+
+def test_switch_between_healthy_vaults_rebuilds_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Probe-gated: a plain switch between two healthy vaults must not touch
+    anyone's project directory — the heal fires only on a definitely-dangling
+    bridge."""
+    import litman.core.project_link as project_link_mod
+
+    lib1 = create_vault(tmp_path, name="lib1")
+    save_registry(add_vault(load_registry(), "lib1", lib1))
+    lib2 = create_vault(tmp_path, name="lib2")
+    save_registry(add_vault(load_registry(), "lib2", lib2))
+    _link_paper_into_project(lib2, tmp_path)  # healthy bridges on the target
+
+    # A recorder, not a raiser: the route deliberately swallows heal
+    # exceptions (a heal failure must not fail the switch), so a stub that
+    # raises would be silently absorbed and the test would pass either way.
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        project_link_mod,
+        "rebuild_all_project_links",
+        lambda *a, **kw: (calls.append(a), {})[1],
+    )
+
+    client = _client(lib1)
+    assert (
+        client.put("/api/vaults/active", json={"name": "lib2"}).status_code
+        == 200
+    )
+    assert calls == []

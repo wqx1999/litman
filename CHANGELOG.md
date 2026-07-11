@@ -67,6 +67,13 @@ behaviour, a minor release adds it, a major release breaks it.
   and the vault manager. Switching to one is refused with a message naming the
   path it lost; before, such a library was offered like any other, and picking it
   left the selector where it was and said nothing.
+- **Moving your library no longer silently breaks its project links.** The
+  `litman_reflib/` and `litman_code/` shortcuts that `lit link` places in your
+  project folders kept pointing at the library's old location, and
+  `lit health-check` reported all clear. Now the next `lit` command notices and
+  offers to rebuild them with one Enter, `lit health-check` reports them and
+  `--fix` repairs them, and switching to the found-again library in the GUI
+  rebuilds them on its own.
 - **A project whose folder has moved is marked `missing`** in the project manager
   and in a paper's project picker, and one registered in only one of litman's two
   records is marked `incomplete`. The CLI has always reported both; the GUI listed

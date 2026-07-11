@@ -725,6 +725,45 @@ async def put_active_vault(request: Request) -> dict[str, object]:
 
     target = Path(entry.path).expanduser()
     request.app.state.vault = target
+
+    # Bridge heal (ledger #3's cheap arm): this switch is how the GUI's
+    # vault-gone recovery ends — the user found the moved library,
+    # re-registered it, and switched here. The registry now points at the new
+    # location, but every project's litman_reflib/litman_code symlink still
+    # encodes the OLD one and dangles. A CLI user gets the Tier-1 [Y/n]
+    # rebuild at their next command; a GUI-only user never runs one, so this
+    # is their only seam. Probe-gated (only a definitely-dangling bridge
+    # triggers — a plain switch between healthy vaults rebuilds nothing) and
+    # best-effort: the switch is already persisted, so a heal failure must
+    # not turn a successful switch into a 500 — `lit health-check --fix`
+    # stays the fallback. Same detection collector and same repair pair, in
+    # the same order, as the CLI corrector and refresh-views — but NARROWED
+    # to the projects that actually dangle: this path has no [Y/n], and
+    # rebuild_all_project_links wipes both hubs of every project it is given,
+    # so handing it the full map would let a consent-free switch clobber
+    # links a healthy project got from elsewhere (blind review W1).
+    try:
+        from litman.commands._drift import _exists_bounded
+        from litman.core.config import load_config
+        from litman.core.project_link import (
+            find_dangling_bridges,
+            rebuild_all_project_links,
+        )
+        from litman.core.project_refs import rebuild_all_project_refs
+
+        projects = dict(load_config(target).projects)
+        if projects:
+            dir_status = _exists_bounded(
+                [str(Path(p).expanduser()) for p in projects.values()]
+            )
+            dangling = find_dangling_bridges(projects, dir_status, _exists_bounded)
+            if dangling:
+                affected = {proj: projects[proj] for proj in dangling}
+                rebuild_all_project_links(target, affected)
+                rebuild_all_project_refs(target, affected)
+    except Exception:
+        pass
+
     return {"ok": True, "active": name, "path": str(target)}
 
 
