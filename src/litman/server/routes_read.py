@@ -154,7 +154,12 @@ def get_version() -> dict[str, str | None]:
 
 @router.get("/capabilities")
 def get_capabilities(request: Request) -> dict[str, Any]:
-    """What this host can do — currently just: can it create symlinks?
+    """What this host can do — currently just: which folder-link mechanism works.
+
+    ``links`` is ``"symlink"`` (POSIX), ``"junction"`` (Windows) or ``"none"``
+    (a drive that cannot hold links at all — FAT32 / exFAT, network shares).
+    The SPA raises its advisory only on ``"none"``; both working mechanisms are
+    silent, fully-functional states.
 
     Cheap enough for the frontend to call on page load, which is the whole
     reason it is not folded into ``GET /health``: that endpoint is Tier-2 (it
@@ -164,20 +169,20 @@ def get_capabilities(request: Request) -> dict[str, Any]:
     project folders — the CLI's stderr warning goes nowhere, because the desktop
     shortcut launches the console-less ``litw`` entry point.
 
-    ``symlink_supported`` probes once per directory per process, so the
+    ``link_mechanism`` probes once per directory per process, so the
     long-lived server pays exactly one probe for the life of the process and
     every later boot of the SPA is answered from cache.
 
-    Not a TRUTH write (invariant #16): the probe creates a dangling symlink with
-    a dot-prefixed, pid-suffixed name and removes it in a ``finally``. It never
+    Not a TRUTH write (invariant #16): the probe creates a dot-prefixed,
+    pid-suffixed scratch entry and removes it in a ``finally``. It never
     touches metadata, INDEX, or anything under ``papers/``.
     """
     import sys
 
-    from litman.core.portable_link import symlink_supported
+    from litman.core.portable_link import link_mechanism
 
     return {
-        "symlink": symlink_supported(_vault(request)),
+        "links": link_mechanism(_vault(request)),
         "platform": sys.platform,
     }
 

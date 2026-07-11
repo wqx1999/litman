@@ -310,14 +310,16 @@ export function fetchVersion(): Promise<VersionInfo> {
 /** What this host can do. Cheap enough to call on page load — unlike
  * `/api/health`, which is Tier-2 and only runs when the user opens the panel.
  *
- * `symlink: false` means views/ and the litman_reflib / litman_code project
- * shortcuts are not being created (Windows without Developer Mode, exFAT, some
- * SMB mounts). The library itself is unaffected. A GUI-only user has no other
- * way to learn this: the CLI prints a warning to stderr, and the desktop
+ * `links` is which folder-link mechanism works in the served vault: 'symlink'
+ * (POSIX) and 'junction' (Windows) are both fully-functional silent states.
+ * 'none' means the drive cannot hold links at all (FAT32 / exFAT, network
+ * shares), so views/ and the litman_reflib / litman_code project shortcuts are
+ * not being created — the library itself is unaffected. A GUI-only user has no
+ * other way to learn this: the CLI prints a warning to stderr, and the desktop
  * shortcut launches the console-less `litw` entry point, so that warning is
  * shown to nobody. */
 export interface Capabilities {
-  symlink: boolean
+  links: 'symlink' | 'junction' | 'none'
   platform: string
 }
 
