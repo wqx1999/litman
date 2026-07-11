@@ -1677,7 +1677,10 @@ function RegisterVaultDialog({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
+          // Guarded like the backdrop and Cancel: this dialog is the error's
+          // only surface, so closing it mid-request would lose a late failure
+          // (setError on an unmounted component is a no-op).
+          if (e.key === 'Escape' && !busy) onClose()
         }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
@@ -1827,7 +1830,8 @@ function CreateVaultDialog({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
+          // Same guard as RegisterVaultDialog, same reason.
+          if (e.key === 'Escape' && !busy) onClose()
         }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >

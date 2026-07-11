@@ -1286,10 +1286,13 @@ export default function App() {
       // A failed switch closes the confirm too: the server rejects a switch to a
       // vault whose folder is gone, and pressing Switch again would fail the same
       // way — leaving the dialog up reads as if nothing happened. Refresh the
-      // vault list on the way out so the selector marks it missing.
+      // vault list on the way out so the selector marks it missing (best-effort:
+      // if the switch failed because the server died, this fetch dies with it).
       notify(err instanceof Error ? err.message : String(err), 'error')
       setPendingVault(null)
-      fetchVaults().then(setVaults)
+      fetchVaults()
+        .then(setVaults)
+        .catch(() => {})
     } finally {
       setSwitchingVault(false)
     }
@@ -1306,7 +1309,13 @@ export default function App() {
     async (name: string, path: string, setActive: boolean) => {
       await registerVault(name, path)
       notify(`Registered vault “${name}”.`, 'success')
-      await fetchVaults().then(setVaults)
+      // Best-effort: the register already succeeded, so a failure HERE must not
+      // propagate into the dialog's catch — it would render as if the register
+      // failed, contradicting the success toast, and a resubmit would then 400
+      // on the duplicate name. The next sweep repairs a stale list.
+      await fetchVaults()
+        .then(setVaults)
+        .catch(() => {})
       if (setActive) switchVault(name)
     },
     [notify, switchVault],
@@ -1324,7 +1333,12 @@ export default function App() {
     async (parentDir: string, name: string, setActive: boolean) => {
       const created = await createVault(parentDir, name)
       notify(`Created vault “${created.name}” at ${created.path}.`, 'success')
-      await fetchVaults().then(setVaults)
+      // Best-effort, same reason as onRegisterVault: the vault exists on disk
+      // now, so a failed list refresh must not reach the dialog as a failed
+      // create — resubmitting would 400 on the (real) name clash.
+      await fetchVaults()
+        .then(setVaults)
+        .catch(() => {})
       // The first-ever vault is already active and the server already repointed
       // itself; asking to switch to it would be a no-op confirm dialog.
       if (setActive && !created.active) switchVault(created.name)
