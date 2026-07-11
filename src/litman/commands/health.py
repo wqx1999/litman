@@ -80,7 +80,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "project_bridge_dangling": (
         "Project bridge symlinks (litman_reflib / litman_code) resolve to a live target"
     ),
-    "symlink_unsupported": "Symbolic links (views/ + project shortcuts)",
+    "links_unsupported": "Folder links (views/ + project shortcuts)",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",
@@ -210,10 +210,10 @@ def health_check_cmd(
     ``info`` findings do NOT gate the exit code. An info is by definition
     advisory: it names something the user may want to know, not something wrong
     with the library. The case that forced the distinction is
-    ``symlink_unsupported`` — a Windows box without Developer Mode has a
-    perfectly healthy vault it simply cannot decorate with symlinks, and exiting
-    1 forever over that would be telling the user their library is broken when
-    it is not.
+    ``links_unsupported`` — a vault on a drive that cannot hold folder links
+    (FAT32 / exFAT, network shares) is perfectly healthy, it simply cannot be
+    decorated with views/ and project shortcuts, and exiting 1 forever over
+    that would be telling the user their library is broken when it is not.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     papers = list_papers(vault)

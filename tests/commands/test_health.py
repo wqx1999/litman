@@ -1905,47 +1905,48 @@ def test_health_check_unregistered_library_does_not_refresh(
 
 
 # ===========================================================================
-# Symlink-less host (Windows without Developer Mode, exFAT, some SMB mounts)
+# Link-less drive (FAT32 / exFAT sticks, network shares — nowhere to store
+# POSIX symlinks or Windows junctions)
 #
-# The regression these pin: such a host cannot create ANY of litman's three
-# symlink kinds, so `views_vs_metadata` + `project_references` used to emit
+# The regression these pin: such a drive cannot hold ANY of litman's three
+# link kinds, so `views_vs_metadata` + `project_references` used to emit
 # ~6 errors per paper that `--fix` could not repair — a 50-paper library showed
 # ~300 permanently-red errors and exit 1, forever. That is an environment
 # limitation reported as library damage, and it is the thing that makes a new
-# Windows user conclude litman is broken and leave.
+# user conclude litman is broken and leave.
 # ===========================================================================
 
 
-def _no_symlinks(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fake the OS boundary, not litman's helpers — every layer above runs real."""
-    from litman.core.portable_link import reset_symlink_support_cache
+    from litman.core.portable_link import reset_link_probe_cache
 
     def boom(self: Path, target: Any, target_is_directory: bool = False) -> None:
-        raise OSError(1314, "A required privilege is not held by the client")
+        raise OSError(1, "Operation not permitted")
 
     monkeypatch.setattr(Path, "symlink_to", boom)
-    reset_symlink_support_cache()
+    reset_link_probe_cache()
 
 
 @pytest.fixture(autouse=True)
-def _reset_symlink_probe_cache() -> Any:
-    from litman.core.portable_link import reset_symlink_support_cache
+def _reset_link_probe_cache() -> Any:
+    from litman.core.portable_link import reset_link_probe_cache
 
-    reset_symlink_support_cache()
+    reset_link_probe_cache()
     yield
-    reset_symlink_support_cache()
+    reset_link_probe_cache()
 
 
-def _windows_user_vault(
+def _linkless_vault(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Path:
-    """A library built the way a Windows user without Developer Mode builds one.
+    """A library built the way it happens on a drive that cannot hold links.
 
-    Order matters and is the whole point: symlinks are dead BEFORE any derived
+    Order matters and is the whole point: links are dead BEFORE any derived
     state is written, exactly as they are for a real user. So `regen` (what
     `lit add` / `lit link` run) writes INDEX.json and REFERENCES.md — plain files,
-    which need no privilege — and silently skips every symlink. Building the
-    vault first and disabling symlinks after would leave the links on disk and
+    which any filesystem holds — and silently skips every link. Building the
+    vault first and disabling links after would leave the links on disk and
     test nothing.
     """
     from litman.core.correctors import regen
@@ -1967,28 +1968,28 @@ def _windows_user_vault(
         methods=["diffusion"],
     )
 
-    _no_symlinks(monkeypatch)
+    _no_links(monkeypatch)
     regen(vault)  # the derived write every command performs (INDEX + views + refs)
     return proj
 
 
-def test_symlinkless_host_reports_one_info_and_nothing_else(
+def test_linkless_drive_reports_one_info_and_nothing_else(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The whole point: a healthy library on a symlink-less host is GREEN.
+    """The whole point: a healthy library on a link-less drive is GREEN.
 
-    This paper expects 4 view symlinks + 1 project bridge, none of which can be
+    This paper expects 4 view links + 1 project bridge, none of which can be
     made. Before, that was 5 unfixable errors — and exit 1 — for one paper.
     """
     from litman.core.checks import run_all_checks
 
-    _windows_user_vault(vault, tmp_path, monkeypatch)
+    _linkless_vault(vault, tmp_path, monkeypatch)
     issues = run_all_checks(vault, list_papers(vault))
 
     assert [i for i in issues if i.category == "views_vs_metadata"] == []
     assert [i for i in issues if i.category == "project_references"] == []
 
-    advisories = [i for i in issues if i.category == "symlink_unsupported"]
+    advisories = [i for i in issues if i.category == "links_unsupported"]
     assert len(advisories) == 1
     assert advisories[0].severity == "info"
 
@@ -1998,31 +1999,34 @@ def test_symlinkless_host_reports_one_info_and_nothing_else(
     ]
 
 
-def test_symlinkless_host_health_check_cli_is_green(
+def test_linkless_drive_health_check_cli_is_green(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Through the real command: exit 0, and the user is told why views/ is empty."""
-    _windows_user_vault(vault, tmp_path, monkeypatch)
+    _linkless_vault(vault, tmp_path, monkeypatch)
 
     result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
     flat = " ".join(result.output.split())
 
     assert result.exit_code == 0, result.output
-    assert "symbolic links cannot be created here" in flat
+    assert "folder links cannot be created here" in flat
     assert "your library itself is fine" in flat
     # And NOT a wall of unfixable red.
-    assert "but the symlink is missing" not in flat
+    assert "but the link is missing" not in flat
     assert "membership implies a litman_reflib" not in flat
+    # And never a trip into system settings (the junction tier's whole point).
+    assert "Developer Mode" not in result.output
+    assert "administrator" not in result.output.lower()
 
 
-def test_symlinkless_host_still_reports_stale_links(
+def test_linkless_drive_still_reports_stale_links(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Suppression is one-directional.
 
-    Removing a symlink needs no privilege, so a leftover view is a REAL, FIXABLE
-    defect even here. Silencing it too would have been a much worse bug than the
-    one being fixed — it would hide damage instead of noise.
+    Removing a link works on any filesystem, so a leftover view is a REAL,
+    FIXABLE defect even here. Silencing it too would have been a much worse bug
+    than the one being fixed — it would hide damage instead of noise.
     """
     from litman.core.checks import check_views_vs_metadata
 
@@ -2031,7 +2035,7 @@ def test_symlinkless_host_still_reports_stale_links(
     stale_bucket.mkdir(parents=True)
     (stale_bucket / "2024_Foo_Bar").symlink_to("../../../papers/2024_Foo_Bar")
 
-    _no_symlinks(monkeypatch)
+    _no_links(monkeypatch)
     issues = check_views_vs_metadata(vault, list_papers(vault))
 
     assert len(issues) == 1
@@ -2039,10 +2043,11 @@ def test_symlinkless_host_still_reports_stale_links(
     assert "has no matching metadata tag" in issues[0].message
 
 
-def test_vault_can_symlink_but_project_drive_cannot(
+def test_vault_can_link_but_project_drive_cannot(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A vault on NTFS + a project on an exFAT drive: only the project goes quiet.
+    """A vault on an internal drive + a project on an exFAT stick: only the
+    project goes quiet.
 
     Probing once for the whole process would let the vault's verdict speak for a
     filesystem it knows nothing about, and the project's real drift would be
@@ -2051,8 +2056,8 @@ def test_vault_can_symlink_but_project_drive_cannot(
     from litman.core.checks import check_project_references, check_views_vs_metadata
     from litman.core.correctors import regen
     from litman.core.portable_link import (
-        _SYMLINK_SUPPORT,
-        reset_symlink_support_cache,
+        _LINK_MECHANISM,
+        reset_link_probe_cache,
     )
 
     proj = tmp_path / "exfat_proj"
@@ -2062,9 +2067,9 @@ def test_vault_can_symlink_but_project_drive_cannot(
     regen(vault)  # views + bridges all built for real
 
     # Now pin the verdicts: the vault can, the project cannot.
-    reset_symlink_support_cache()
-    _SYMLINK_SUPPORT[str(vault)] = True
-    _SYMLINK_SUPPORT[str(proj)] = False
+    reset_link_probe_cache()
+    _LINK_MECHANISM[str(vault)] = "symlink"
+    _LINK_MECHANISM[str(proj)] = "none"
 
     # Tear the project's bridge away; the vault's views stay intact.
     for child in (proj / "litman_reflib").iterdir():
@@ -2075,7 +2080,7 @@ def test_vault_can_symlink_but_project_drive_cannot(
     refs = [
         i
         for i in check_project_references(vault, list_papers(vault))
-        if "symlink for" in i.message
+        if "link for" in i.message
     ]
     assert refs == []
     # ...while the vault's views are still fully checked and still clean.

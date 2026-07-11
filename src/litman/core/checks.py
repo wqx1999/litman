@@ -59,7 +59,7 @@ from litman.core.notes import (
     heal_discussion_scaffold,
     parse_wikilink_target,
 )
-from litman.core.portable_link import symlink_hint, symlink_supported
+from litman.core.portable_link import links_supported, links_unsupported_hint
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
@@ -1087,23 +1087,23 @@ def check_dangling_wikilinks(
 def check_views_vs_metadata(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """``views/by-*/`` symlink hubs ↔ metadata (ledger #2; full, klass A).
+    """``views/by-*/`` link hubs ↔ metadata (ledger #2; full, klass A).
 
-    The ``views/by-{project,topic,method,status}/`` symlink hubs are a derived
+    The ``views/by-{project,topic,method,status}/`` link hubs are a derived
     projection of each paper's list/scalar tag fields (see ``core/views.py``).
     Out-of-band edits (manual ``rm`` of a paper, hand-edited tags) leave them
-    disagreeing with metadata. Full-tier because the "missing symlink"
+    disagreeing with metadata. Full-tier because the "missing link"
     direction needs the per-paper tag values (not in the thin INDEX
     projection). Repair is the shared klass-A regen (``rebuild_views``).
 
     Two directions, both ``error`` (a wrong view misleads the agent's
     bucket-based retrieval):
 
-    * **dangling / extra symlink** — a ``views/<view>/<bucket>/<id>`` entry
+    * **dangling / extra link** — a ``views/<view>/<bucket>/<id>`` entry
       whose owning paper no longer carries that tag value (or no longer
-      exists). The symlink claims a membership metadata does not.
-    * **missing symlink** — a paper's tag value implies a
-      ``views/<view>/<value>/<id>`` symlink that is absent on disk.
+      exists). The link claims a membership metadata does not.
+    * **missing link** — a paper's tag value implies a
+      ``views/<view>/<value>/<id>`` link that is absent on disk.
 
     Uses the same ``LIST_VIEW_FIELDS`` / ``SCALAR_VIEW_FIELDS`` /
     ``_safe_name`` mapping as the builder so detection and repair cannot drift.
@@ -1120,7 +1120,7 @@ def check_views_vs_metadata(
         # command / regen creates it.
         return []
 
-    can_symlink = symlink_supported(vault)
+    can_link = links_supported(vault)
 
     # Expected membership per view: {view_name: {(bucket, paper_id)}}.
     expected: dict[str, set[tuple[str, str]]] = {
@@ -1158,23 +1158,25 @@ def check_views_vs_metadata(
                     severity="error",
                     paper_id=pid,
                     message=(
-                        f"views/{view_name}/{bucket}/{pid} symlink has no "
+                        f"views/{view_name}/{bucket}/{pid} link has no "
                         "matching metadata tag (stale derived view)"
                     ),
                     hint="run `lit health-check --fix` to rebuild views from metadata",
                 )
             )
-        if not can_symlink:
-            # This host cannot create symlinks at all (Windows without Developer
-            # Mode, exFAT, some SMB mounts). Every expected view would report
-            # "missing" and `--fix` could not repair a single one — a 50-paper
-            # library would show ~300 permanently-red errors that no user action
-            # inside litman can clear. That is an environment capability, not
-            # library damage, and reporting it as damage is a lie that drives
-            # users away. `symlink_unsupported` says it once, as info.
+        if not can_link:
+            # This filesystem cannot hold folder links at all (FAT32 / exFAT,
+            # network shares — POSIX symlinks and Windows junctions both need
+            # link storage). Every expected view would report "missing" and
+            # `--fix` could not repair a single one — a 50-paper library would
+            # show ~300 permanently-red errors that no user action inside
+            # litman can clear. That is an environment capability, not library
+            # damage, and reporting it as damage is a lie that drives users
+            # away. `links_unsupported` says it once, as info.
             #
-            # The stale arm above is NOT suppressed: removing a symlink needs no
-            # privilege, so a leftover view is still a real, fixable defect.
+            # The stale arm above is NOT suppressed: removing a link works on
+            # any filesystem, so a leftover view is still a real, fixable
+            # defect.
             continue
 
         for bucket, pid in sorted(expected[view_name] - on_disk):
@@ -1185,7 +1187,7 @@ def check_views_vs_metadata(
                     paper_id=pid,
                     message=(
                         f"metadata implies views/{view_name}/{bucket}/{pid} "
-                        "but the symlink is missing (derived view out of date)"
+                        "but the link is missing (derived view out of date)"
                     ),
                     hint="run `lit health-check --fix` to rebuild views from metadata",
                 )
@@ -1581,19 +1583,19 @@ def check_project_references(
     set (papers whose ``projects`` field contains the name):
 
     * the generated ``REFERENCES.md`` content vs the freshly rendered content;
-    * the ``litman_reflib/<id>`` symlink set vs the membership ids;
-    * the ``litman_code/<repo>`` symlink set vs the repos bound (via
+    * the ``litman_reflib/<id>`` link set vs the membership ids;
+    * the ``litman_code/<repo>`` link set vs the repos bound (via
       ``code-clones``) by member papers whose clone is present locally.
 
     Any mismatch is a klass-A drift (the derived artifact is a pure function of
-    metadata). The code-symlink arm specifically catches the
+    metadata). The code-link arm specifically catches the
     ``lit code add``/``link``/``unlink`` staleness window: those commands mutate
-    ``code-clones`` and refresh the symlinks via ``refresh_project_code_links``,
+    ``code-clones`` and refresh the links via ``refresh_project_code_links``,
     so a leftover mismatch means the refresh was bypassed (hand-edit, partial
     write, an older binary). Full-tier: needs per-paper ``projects`` /
     ``relevance`` / ``code-clones`` (REFERENCES.md embeds relevance). Repair is
     the shared regen (``rebuild_all_project_refs`` + ``rebuild_all_project_links``,
-    which rebuilds BOTH symlink hubs). Only checked when the project dir is
+    which rebuilds BOTH link hubs). Only checked when the project dir is
     definitely present — an unreachable / not-yet-mounted dir is left to
     ``project_path_exists`` (ledger #5), not flagged as content drift here.
     """
@@ -1693,7 +1695,7 @@ def check_project_references(
                 )
             )
 
-        # 2) litman_reflib/<id> symlink set vs membership.
+        # 2) litman_reflib/<id> link set vs membership.
         link_ids: set[str] = set()
         if reflib.is_dir():
             for entry in reflib.iterdir():
@@ -1706,22 +1708,22 @@ def check_project_references(
                     severity="error",
                     paper_id=extra,
                     message=(
-                        f"{project_dir / LITERATURE_SUBDIR / extra} symlink has "
+                        f"{project_dir / LITERATURE_SUBDIR / extra} link has "
                         f"no matching membership in project {name!r}"
                     ),
                     hint="run `lit health-check --fix` to rebuild project links",
                 )
             )
-        # Probed on the PROJECT dir, not the vault: on Windows a vault on NTFS
-        # and a project folder on an exFAT drive give different answers, so one
-        # project can be reportable while another is not. When the host cannot
-        # create symlinks the bridges were never made, `--fix` cannot make them,
-        # and reporting one error per member paper is noise no user can clear —
-        # `symlink_unsupported` states it once instead. The `extra` arms above
-        # stay live: removing a symlink needs no privilege.
-        project_can_symlink = symlink_supported(project_dir)
+        # Probed on the PROJECT dir, not the vault: a vault on an internal
+        # drive and a project folder on an exFAT stick give different answers,
+        # so one project can be reportable while another is not. When the
+        # filesystem cannot hold links the bridges were never made, `--fix`
+        # cannot make them, and reporting one error per member paper is noise
+        # no user can clear — `links_unsupported` states it once instead. The
+        # `extra` arms above stay live: removing a link works anywhere.
+        project_can_link = links_supported(project_dir)
 
-        if project_can_symlink:
+        if project_can_link:
             for missing in sorted(member_ids - link_ids):
                 out.append(
                     Issue(
@@ -1730,13 +1732,13 @@ def check_project_references(
                         paper_id=missing,
                         message=(
                             f"project {name!r} membership implies a litman_reflib "
-                            f"symlink for {missing!r} but it is missing"
+                            f"link for {missing!r} but it is missing"
                         ),
                         hint="run `lit health-check --fix` to rebuild project links",
                     )
                 )
 
-        # 3) litman_code/<repo> symlink set vs derived code-clone membership.
+        # 3) litman_code/<repo> link set vs derived code-clone membership.
         #    Parallel to the litman_reflib block: expected = every repo bound
         #    (code-clones) by a member paper whose codes/<repo>/repo clone is
         #    present locally (mirrors rebuild_all_project_links, which skips
@@ -1760,13 +1762,13 @@ def check_project_references(
                     severity="error",
                     paper_id=None,
                     message=(
-                        f"{code_dir / extra} symlink has no matching code-clone "
+                        f"{code_dir / extra} link has no matching code-clone "
                         f"membership in project {name!r} (stale project link)"
                     ),
                     hint="run `lit health-check --fix` to rebuild project links",
                 )
             )
-        if project_can_symlink:
+        if project_can_link:
             for missing in sorted(expected_repos - code_link_names):
                 out.append(
                     Issue(
@@ -1775,7 +1777,7 @@ def check_project_references(
                         paper_id=None,
                         message=(
                             f"project {name!r} membership implies a litman_code "
-                            f"symlink for {missing!r} but it is missing"
+                            f"link for {missing!r} but it is missing"
                         ),
                         hint="run `lit health-check --fix` to rebuild project links",
                     )
@@ -1783,34 +1785,40 @@ def check_project_references(
     return out
 
 
-def check_symlink_support(
+def check_link_support(
     vault: Path,
     papers: list[dict[str, Any]],
 ) -> list[Issue]:
-    """Report — once — that this host cannot create symlinks.
+    """Report — once — that this filesystem cannot hold folder links.
 
     Not a drift check (klass ``env``): nothing is out of date and nothing is
-    broken. It states a capability of the machine, so that the *absence* of
+    broken. It states a capability of the drive, so that the *absence* of
     views/ and of the litman_reflib / litman_code shortcuts is explained rather
     than silent, while ``views_vs_metadata`` and ``project_references`` stay
     quiet about links they know cannot exist.
 
-    Severity is ``info`` on purpose, and ``health-check`` does not gate its exit
-    code on info: a Windows user without Developer Mode has a perfectly healthy
-    library, and must not be told otherwise.
+    This fires only where NO link mechanism works: POSIX symlinks and Windows
+    junctions both need a filesystem that stores links, which FAT32 / exFAT and
+    most network shares do not. It is a property of the drive, not of the
+    user's privileges — no setting, elevation or mode change would alter the
+    verdict, so the hint recommends none.
+
+    Severity is ``info`` on purpose, and ``health-check`` does not gate its
+    exit code on info: a library on such a drive is perfectly healthy, and must
+    not be told otherwise.
 
     Scopes probed: the vault (which owns ``views/``) and every configured
     project directory that exists (each owns its own bridges). They are probed
-    separately because they can live on different filesystems — a vault on NTFS
-    and a project on an exFAT drive disagree. All failing scopes collapse into a
-    single finding; the usual case (Developer Mode off) fails all of them at
-    once and deserves one line, not N.
+    separately because they can live on different filesystems — a vault on an
+    internal drive and a project on an exFAT stick disagree. All failing scopes
+    collapse into a single finding: a vault on such a drive fails all of them
+    at once and deserves one line, not N.
     """
     from litman.core.config import load_config
 
     scopes: list[str] = []
 
-    if vault.is_dir() and not symlink_supported(vault):
+    if vault.is_dir() and not links_supported(vault):
         scopes.append("the library (views/)")
 
     try:
@@ -1823,7 +1831,7 @@ def check_symlink_support(
             if not project_dir.is_dir():
                 # Unreachable / missing — project_path_exists owns that case.
                 continue
-            if not symlink_supported(project_dir):
+            if not links_supported(project_dir):
                 scopes.append(f"project {name!r} (litman_reflib / litman_code)")
 
     if not scopes:
@@ -1831,17 +1839,17 @@ def check_symlink_support(
 
     return [
         Issue(
-            category="symlink_unsupported",
+            category="links_unsupported",
             severity="info",
             paper_id=None,
             message=(
-                "symbolic links cannot be created here — "
+                "folder links cannot be created here — "
                 + ", ".join(scopes)
                 + ". Those shortcuts are skipped; your library itself is fine: "
                 "metadata.yaml and INDEX.json are authoritative, and every "
                 "command, the web UI and the agent workflow work normally."
             ),
-            hint=symlink_hint(),
+            hint=links_unsupported_hint(),
         )
     ]
 
@@ -1873,12 +1881,12 @@ def check_project_bridge_dangling(
     *,
     exists_status: dict[str, bool | None] | None = None,
 ) -> list[Issue]:
-    """Project bridge symlinks still resolve (ledger #3's cheap arm; klass A).
+    """Project bridge links still resolve (ledger #3's cheap arm; klass A).
 
-    The ``litman_reflib/<id>`` / ``litman_code/<repo>`` symlinks bridge a
+    The ``litman_reflib/<id>`` / ``litman_code/<repo>`` links bridge a
     project working directory into the vault ACROSS trees: their stored
-    relative target walks out of the project and back down to wherever the
-    vault was when the link was written. Moving the vault (or deleting a
+    target (relative on POSIX, absolute for Windows junctions) points at
+    wherever the vault was when the link was written. Moving the vault (or deleting a
     linked target) dangles them — and the name-set comparison in
     ``check_project_references`` cannot see it, because the names still match
     membership. This check probes what names cannot say: does each bridge
@@ -1935,7 +1943,7 @@ def check_project_bridge_dangling(
                 paper_id=None,
                 message=(
                     f"project {name!r}: {len(dangling)} bridge "
-                    f"symlink{'s point' if len(dangling) != 1 else ' points'} "
+                    f"link{'s point' if len(dangling) != 1 else ' points'} "
                     f"at nothing (e.g. {dangling[0]}) — the library, or what "
                     "a link targeted, has moved"
                 ),
@@ -2542,11 +2550,11 @@ def check_code_clone_integrity(
 #       Cheap: reads only INDEX ids + papers/ listing, no per-paper metadata
 #       (invariant #15) → tier=cheap. Tier-1 repairs it metadata-free.
 #   views_vs_metadata (#2) — views/by-*/ (derived) ↔ metadata → klass=A, regen.
-#       Full: the missing-symlink direction needs per-paper tag values.
+#       Full: the missing-link direction needs per-paper tag values.
 #   project_references (#3) — project REFERENCES.md / litman_reflib (derived) ↔
 #       membership → klass=A, regen. Full (reads projects + relevance).
 #   project_bridge_dangling (#3's cheap arm) — the litman_reflib/litman_code
-#       bridge symlinks resolve to a live target. Disjoint from
+#       bridge links resolve to a live target. Disjoint from
 #       project_references by construction: that check compares link NAMES to
 #       membership and is blind to a link whose name matches but whose target
 #       moved (the vault-moved case). Cheap: config + hub listing +
@@ -2554,11 +2562,12 @@ def check_code_clone_integrity(
 #       tier=cheap, klass=A, regen (`--fix` regen repairs it; the Tier-1 hook
 #       gates the same rebuild behind a [Y/n] because rebuilding reads
 #       metadata).
-#   symlink_unsupported — the ONLY klass=env entry: a capability of the host,
+#   links_unsupported — the ONLY klass=env entry: a capability of the host,
 #       not a state of the library. Nothing drifted, nothing is broken, and no
 #       correction exists (hence report + severity=info, which health-check does
-#       not gate its exit code on). It exists so that when a host cannot make
-#       symlinks — Windows without Developer Mode, exFAT, some SMB mounts —
+#       not gate its exit code on). It exists so that when a filesystem cannot
+#       hold folder links — POSIX symlinks and Windows junctions alike need
+#       link storage, which FAT32 / exFAT and most network shares lack —
 #       views_vs_metadata and project_references can go SILENT about links they
 #       know cannot exist, and the absence is still explained once instead of
 #       reported ~6x per paper as unfixable damage.
@@ -2610,8 +2619,8 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "regen",
     ),
     CheckSpec(
-        "symlink_unsupported",
-        check_symlink_support,
+        "links_unsupported",
+        check_link_support,
         "full",
         "env",
         "report",

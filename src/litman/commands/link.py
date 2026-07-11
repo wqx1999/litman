@@ -190,25 +190,26 @@ def link_cmd(
             )
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (already linked)")
-    body_lines.append(f"[dim]Paper symlink:[/] {result['paper_link']}")
+    body_lines.append(f"[dim]Paper link:[/] {result['paper_link']}")
     if result["code_links"]:
         body_lines.append(
-            f"[dim]Code symlinks:[/] {', '.join(escape(r) for r in result['code_links'])}"
+            f"[dim]Code links:[/] {', '.join(escape(r) for r in result['code_links'])}"
         )
     if result["code_links_skipped_missing_repo"]:
         body_lines.append(
-            f"[yellow]Code symlinks skipped (repo missing locally):[/] "
+            f"[yellow]Code links skipped (repo missing locally):[/] "
             f"{', '.join(escape(r) for r in result['code_links_skipped_missing_repo'])} "
             "[dim](run `lit code restore-all` then `lit link --rebuild-all`)[/]"
         )
-    if result.get("code_links_skipped_symlink_unsupported"):
-        # review F31: repo present, but this platform refuses symlinks — the
+    if result.get("code_links_skipped_links_unsupported"):
+        # review F31: repo present, but this filesystem cannot hold links — the
         # binding holds; restore-all would NOT help here.
         body_lines.append(
-            f"[yellow]Code symlinks skipped (symlinks unsupported here):[/] "
-            f"{', '.join(escape(r) for r in result['code_links_skipped_symlink_unsupported'])} "
-            "[dim](binding kept; symlinks need Developer Mode / a POSIX "
-            "filesystem)[/]"
+            f"[yellow]Code links skipped (this drive cannot hold folder "
+            f"links):[/] "
+            f"{', '.join(escape(r) for r in result['code_links_skipped_links_unsupported'])} "
+            "[dim](binding kept; keep the library and project on an internal "
+            "drive)[/]"
         )
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     if result["added_to_projects"] and not result["set_relevance"]:

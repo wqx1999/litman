@@ -36,7 +36,7 @@ _EXPECTED_CATEGORIES = (
     "views_vs_metadata",
     "project_references",
     "project_bridge_dangling",
-    "symlink_unsupported",
+    "links_unsupported",
     "dangling_refs",
     "dangling_wikilinks",
     "relevance_orphan",

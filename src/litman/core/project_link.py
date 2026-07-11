@@ -13,15 +13,15 @@ relative symlinks. A linked paper means three things in concert:
    (the git checkout, not the metadata wrapper).
 
 Atomicity: the metadata + INDEX.json write goes through ``staged_write``;
-symlink creation and REFERENCES.md regeneration are post-staging steps
+link creation and REFERENCES.md regeneration are post-staging steps
 (filesystem-mutating but cheap to redo, recoverable via
 ``lit link --rebuild-all``).
 
-Cross-platform: symlink creation routes through ``core.portable_link``,
-which gracefully degrades on filesystems that refuse symlinks (Windows
-without Developer Mode, FAT32, etc.). The metadata side of every
-operation succeeds regardless; only the convenience symlinks may be
-skipped (ADR-005).
+Cross-platform: link creation routes through ``core.portable_link``
+(relative symlinks on POSIX, junctions on Windows), which gracefully
+degrades on filesystems that cannot hold links (FAT32/exFAT, network
+shares). The metadata side of every operation succeeds regardless; only
+the convenience links may be skipped (ADR-005).
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.portable_link import (
-    make_relative_symlink,
+    make_portable_link,
     remove_link_if_present,
 )
 from litman.core.project_refs import (
@@ -184,7 +184,7 @@ def reconcile_project_code_links(
 
     created: list[str] = []
     for repo_name, repo_target in expected.items():
-        if repo_name not in resolving and make_relative_symlink(
+        if repo_name not in resolving and make_portable_link(
             code_dir / repo_name, repo_target
         ):
             created.append(repo_name)
@@ -412,12 +412,12 @@ def link_paper_to_project(
     paper_link_path, code_link_paths = _project_link_paths(
         project_dir, paper_id, code_clones
     )
-    make_relative_symlink(
+    make_portable_link(
         paper_link_path, (vault / "papers" / paper_id).resolve()
     )
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
-    code_links_symlink_unsupported: list[str] = []
+    code_links_unsupported: list[str] = []
     for repo_name, link_path in zip(code_clones, code_link_paths, strict=True):
         repo_target = (vault / "codes" / repo_name / "repo").resolve()
         if not repo_target.exists():
@@ -425,14 +425,14 @@ def link_paper_to_project(
             # `lit code restore-all`, then `lit link --rebuild-all`.
             code_links_missing_repo.append(repo_name)
             continue
-        if make_relative_symlink(link_path, repo_target):
+        if make_portable_link(link_path, repo_target):
             code_links_created.append(repo_name)
         else:
-            # review F31: the repo IS present; the platform refused the symlink
-            # (Windows w/o Developer Mode, FAT32/exFAT, ...). This is NOT a
-            # missing repo — directing the user to `restore-all` would be a
-            # dead end. Track it separately so the CLI gives accurate guidance.
-            code_links_symlink_unsupported.append(repo_name)
+            # review F31: the repo IS present; the filesystem refused the link
+            # (FAT32/exFAT, network shares). This is NOT a missing repo —
+            # directing the user to `restore-all` would be a dead end. Track it
+            # separately so the CLI gives accurate guidance.
+            code_links_unsupported.append(repo_name)
 
     # 7) REFERENCES.md
     refs_path = write_references_md(vault, project, project_dir)
@@ -447,7 +447,7 @@ def link_paper_to_project(
         "paper_link": paper_link_path,
         "code_links": code_links_created,
         "code_links_skipped_missing_repo": code_links_missing_repo,
-        "code_links_skipped_symlink_unsupported": code_links_symlink_unsupported,
+        "code_links_skipped_links_unsupported": code_links_unsupported,
         "references_md": refs_path,
     }
 
@@ -960,7 +960,7 @@ def rebuild_all_project_links(
             paper_dir = (vault / "papers" / pid).resolve()
             if not paper_dir.is_dir():
                 continue
-            if make_relative_symlink(
+            if make_portable_link(
                 project_dir / LITERATURE_SUBDIR / pid, paper_dir
             ):
                 n_paper_links += 1
@@ -968,7 +968,7 @@ def rebuild_all_project_links(
                 repo_target = (vault / "codes" / repo_name / "repo").resolve()
                 if not repo_target.exists():
                     continue
-                if make_relative_symlink(
+                if make_portable_link(
                     project_dir / CODE_SUBDIR / repo_name, repo_target
                 ):
                     n_code_links += 1

@@ -1,14 +1,15 @@
 """Derive INDEX.json and views/by-*/ from papers/*/metadata.yaml.
 
 The metadata files are the single source of truth; INDEX.json and the
-``views/by-{project,topic,method,status}/`` symlink hubs are regenerated
-wholesale by ``lit refresh-views``. Symlinks are relative so that
-``cp -r`` to a new machine still resolves them.
+``views/by-{project,topic,method,status}/`` link hubs are regenerated
+wholesale by ``lit refresh-views``. Links route through
+``core.portable_link``: relative symlinks on POSIX (so ``cp -r`` to a new
+machine still resolves them), junctions on Windows.
 
-On filesystems that refuse symlinks (Windows without Developer Mode,
-FAT32, etc.), the symlink hubs are silently skipped via
-``core.portable_link``'s graceful-degrade contract (ADR-005). INDEX.json
-and metadata.yaml stay authoritative regardless.
+On filesystems that cannot hold links (FAT32/exFAT, network shares), the
+link hubs are silently skipped via ``core.portable_link``'s
+graceful-degrade contract (ADR-005). INDEX.json and metadata.yaml stay
+authoritative regardless.
 
 INDEX.json is consumed primarily by AI assistants and programmatic tooling.
 Humans should browse via ``lit list`` (filterable, paginated) instead of
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from litman.core.dates import now_iso
-from litman.core.portable_link import make_relative_symlink
+from litman.core.portable_link import make_portable_link
 
 # Views whose tag values come from a list-typed metadata field.
 LIST_VIEW_FIELDS: dict[str, str] = {
@@ -306,7 +307,7 @@ def rebuild_views(
             for value in p.get(field_name) or []:
                 bucket = view_dir / _safe_name(str(value))
                 bucket.mkdir(parents=True, exist_ok=True)
-                if make_relative_symlink(
+                if make_portable_link(
                     bucket / paper_id, vault / "papers" / paper_id
                 ):
                     n += 1
@@ -323,7 +324,7 @@ def rebuild_views(
                 continue
             bucket = view_dir / _safe_name(str(value))
             bucket.mkdir(parents=True, exist_ok=True)
-            if make_relative_symlink(
+            if make_portable_link(
                 bucket / paper_id, vault / "papers" / paper_id
             ):
                 n += 1

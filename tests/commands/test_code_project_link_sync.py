@@ -234,18 +234,18 @@ def test_cascade_unbind_all_removes_code_symlink(
 # ---------------------------------------------------------------------------
 
 
-def test_health_check_flags_missing_code_symlink(
+def test_health_check_flags_missing_code_link(
     vault: Path, project_dir: Path
 ) -> None:
     _register(vault, "pepforge", project_dir)
     _make_paper(vault, "p1", projects=["pepforge"], code_clones=["MyRepo"])
     _make_repo(vault, "MyRepo", papers=["p1"])
     link_paper_to_project(vault, "p1", "pepforge", {"pepforge": str(project_dir)})
-    # Drop the code symlink out of band → drift.
+    # Drop the code link out of band → drift.
     _code_link(project_dir, "MyRepo").unlink()
     issues = check_project_references(vault, _papers(vault))
     msgs = [i.message for i in issues]
-    assert any("litman_code symlink for 'MyRepo'" in m for m in msgs), msgs
+    assert any("litman_code link for 'MyRepo'" in m for m in msgs), msgs
     assert all(i.category == "project_references" for i in issues)
 
 

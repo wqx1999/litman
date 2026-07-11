@@ -56,7 +56,7 @@ from litman.core.notes import (
     deannotate_deleted_wikilinks,
     enumerate_markdown_files,
 )
-from litman.core.portable_link import make_relative_symlink
+from litman.core.portable_link import make_portable_link
 from litman.core.project_link import CODE_SUBDIR
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
@@ -518,7 +518,7 @@ def _rebuild_project_links(
         if not project_dir.is_dir():
             continue
 
-        make_relative_symlink(
+        make_portable_link(
             project_dir / LITERATURE_SUBDIR / paper_id,
             (vault / "papers" / paper_id).resolve(),
         )
@@ -528,7 +528,7 @@ def _rebuild_project_links(
             ).resolve()
             if not repo_target.exists():
                 continue
-            make_relative_symlink(
+            make_portable_link(
                 project_dir / CODE_SUBDIR / repo_name, repo_target
             )
         try:
