@@ -43,6 +43,81 @@ _console = Console(stderr=True)
 _WARNED_THIS_PROCESS: bool = False
 
 
+_SYMLINK_SUPPORT: dict[str, bool] = {}
+
+
+def symlink_supported(directory: Path) -> bool:
+    """Can this filesystem create symlinks? Probed once per directory, per process.
+
+    Probes by creating a **dangling** symlink inside ``directory`` (the target
+    does not exist, so nothing can be followed through it) and unlinking it in a
+    ``finally``. The probe must run in the directory being asked about, not in a
+    tempdir: on Windows a vault on NTFS and a project folder on an exFAT drive
+    give different answers, and Developer Mode is a per-machine — but the
+    filesystem is a per-path — property.
+
+    The result is cached per directory for the life of the process. A health
+    check therefore pays one probe per distinct directory, and the long-lived
+    server probes once. Callers must be Tier-2 (``health-check``) or slower:
+    this writes to the filesystem and must never run on the Tier-1 per-command
+    hot path (invariant #15).
+
+    A directory that does not exist, or any ``OSError``, reads as ``False``.
+    """
+    key = str(directory)
+    cached = _SYMLINK_SUPPORT.get(key)
+    if cached is not None:
+        return cached
+
+    probe = directory / f".litman-symlink-probe-{os.getpid()}"
+    ok = False
+    try:
+        # Dangling on purpose: a probe that resolved somewhere real could be
+        # followed by a tree-walker (or an rmtree) before we remove it.
+        probe.symlink_to(".litman-symlink-probe-target-does-not-exist")
+        ok = True
+    except OSError:
+        ok = False
+    finally:
+        try:
+            if probe.is_symlink():
+                probe.unlink()
+        except OSError:
+            pass
+
+    _SYMLINK_SUPPORT[key] = ok
+    return ok
+
+
+def symlink_hint() -> str:
+    """One-line remediation hint for a filesystem that refuses symlinks.
+
+    Shared by the creation-time warning and by ``lit health-check``'s
+    ``symlink_unsupported`` finding so the two never drift apart.
+    """
+    if sys.platform == "win32":
+        return (
+            "enable Developer Mode (Settings → System → For developers, or run "
+            "`start ms-settings:developers`), then `lit health-check --fix` to "
+            "backfill — do NOT run litman as administrator to work around this"
+        )
+    return (
+        "common causes: FAT32 / exFAT, some SMB or WebDAV mounts — move the "
+        "vault to a filesystem that supports symlinks, then `lit health-check "
+        "--fix` to backfill"
+    )
+
+
+def reset_symlink_support_cache() -> None:
+    """Clear the per-directory probe cache.
+
+    Test-support helper: a test that flips symlink availability mid-process
+    (monkeypatching ``Path.symlink_to``) must clear the cache or it will read a
+    stale verdict for the same directory.
+    """
+    _SYMLINK_SUPPORT.clear()
+
+
 def make_relative_symlink(link_path: Path, target_path: Path) -> bool:
     """Create a relative symlink ``link_path`` → ``target_path``.
 
@@ -140,24 +215,35 @@ def _warn_symlink_unsupported(link_path: Path, err: OSError) -> None:
         return
     _WARNED_THIS_PROCESS = True
     if sys.platform == "win32":
+        # Developer Mode FIRST. It grants SeCreateSymbolicLinkPrivilege to
+        # ordinary users, so a normal non-elevated litman can create symlinks —
+        # it is the only fix that costs nothing. "Run as administrator" is NOT
+        # offered as a remedy: the server spawns agent processes (ADR-020), so
+        # elevating litman elevates that whole surface, and files an elevated
+        # process creates end up owned by Administrators, after which the user's
+        # ordinary `lit add` / `lit modify` cannot write its own library.
         hint = (
-            "Symlink creation refused on this Windows shell. litman's "
-            "views/by-*/ and project litman_reflib/litman_code bridges are skipped on "
-            "this run; metadata.yaml and INDEX.json remain authoritative, "
-            "and every metadata-touching command (lit add / list / show / "
-            "modify / taxonomy) is unaffected. For full functionality, run "
-            "litman inside WSL (recommended — it's Linux, symlinks just "
-            "work), or run this command from a terminal launched with "
-            "'Run as administrator'."
+            "Symlink creation was refused. On Windows this is almost always "
+            "because Developer Mode is off — turning it on lets an ordinary "
+            "(non-elevated) process create symlinks:\n"
+            "        Settings → System → For developers → Developer Mode\n"
+            "        (or run:  start ms-settings:developers )\n"
+            "    Then run `lit health-check --fix` to backfill what was "
+            "skipped. Do NOT run litman as administrator to work around this.\n"
+            "    Meanwhile nothing is lost: only views/by-*/ and the "
+            "litman_reflib / litman_code project shortcuts are skipped. "
+            "metadata.yaml and INDEX.json remain authoritative and every "
+            "command (lit add / list / show / modify / taxonomy), the web UI "
+            "and the agent workflow all work normally."
         )
     else:
         hint = (
             "Filesystem refused symlink creation. litman's views/by-*/ "
             "and project litman_reflib/litman_code bridges will be skipped on this "
-            "run; metadata.yaml and INDEX.json remain authoritative. "
-            "Common causes: FAT32 / exFAT filesystems, some SMB or "
-            "WebDAV mounts. Move the vault to a filesystem that supports "
-            "symlinks to enable these convenience features."
+            "run; metadata.yaml and INDEX.json remain authoritative and every "
+            "command still works. Common causes: FAT32 / exFAT filesystems, "
+            "some SMB or WebDAV mounts. Move the vault to a filesystem that "
+            "supports symlinks, then run `lit health-check --fix` to backfill."
         )
     _console.print(
         f"[yellow]warning:[/] {hint}\n"

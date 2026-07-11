@@ -59,6 +59,7 @@ from litman.core.notes import (
     heal_discussion_scaffold,
     parse_wikilink_target,
 )
+from litman.core.portable_link import symlink_hint, symlink_supported
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
@@ -95,7 +96,7 @@ class Issue:
 # Tag value vocabularies. Kept as module constants so tests can assert a
 # CheckSpec's tags are drawn from these exact sets without re-deriving them.
 TIERS: frozenset[str] = frozenset({"cheap", "full"})
-KLASSES: frozenset[str] = frozenset({"A", "B-ext", "B-auth", "validity"})
+KLASSES: frozenset[str] = frozenset({"A", "B-ext", "B-auth", "validity", "env"})
 CORRECTIONS: frozenset[str] = frozenset(
     {"regen", "resolve", "annotate", "report"}
 )
@@ -121,8 +122,11 @@ class CheckSpec:
             INDEX/registry/listing/bounded-stat only, invariant #15) or
             ``"full"`` (Tier-2 ``health-check`` only).
         klass: drift class — ``"A"`` (derived↔truth), ``"B-ext"``
-            (truth↔external dir), ``"B-auth"`` (truth↔authored truth), or
-            ``"validity"`` (truth-internal integrity, not a drift).
+            (truth↔external dir), ``"B-auth"`` (truth↔authored truth),
+            ``"validity"`` (truth-internal integrity, not a drift), or
+            ``"env"`` (a capability of the host, not a state of the library —
+            nothing drifted and nothing is broken, so it can never be
+            "corrected", only reported).
         correction: ``"regen"`` / ``"resolve"`` / ``"annotate"`` /
             ``"report"`` — the correction mode this check's findings map to.
     """
@@ -130,7 +134,7 @@ class CheckSpec:
     category: str
     fn: _CheckFn
     tier: Literal["cheap", "full"]
-    klass: Literal["A", "B-ext", "B-auth", "validity"]
+    klass: Literal["A", "B-ext", "B-auth", "validity", "env"]
     correction: Literal["regen", "resolve", "annotate", "report"]
 
 
@@ -1116,6 +1120,8 @@ def check_views_vs_metadata(
         # command / regen creates it.
         return []
 
+    can_symlink = symlink_supported(vault)
+
     # Expected membership per view: {view_name: {(bucket, paper_id)}}.
     expected: dict[str, set[tuple[str, str]]] = {
         v: set() for v in (*LIST_VIEW_FIELDS, *SCALAR_VIEW_FIELDS)
@@ -1158,6 +1164,19 @@ def check_views_vs_metadata(
                     hint="run `lit health-check --fix` to rebuild views from metadata",
                 )
             )
+        if not can_symlink:
+            # This host cannot create symlinks at all (Windows without Developer
+            # Mode, exFAT, some SMB mounts). Every expected view would report
+            # "missing" and `--fix` could not repair a single one — a 50-paper
+            # library would show ~300 permanently-red errors that no user action
+            # inside litman can clear. That is an environment capability, not
+            # library damage, and reporting it as damage is a lie that drives
+            # users away. `symlink_unsupported` says it once, as info.
+            #
+            # The stale arm above is NOT suppressed: removing a symlink needs no
+            # privilege, so a leftover view is still a real, fixable defect.
+            continue
+
         for bucket, pid in sorted(expected[view_name] - on_disk):
             out.append(
                 Issue(
@@ -1693,19 +1712,29 @@ def check_project_references(
                     hint="run `lit health-check --fix` to rebuild project links",
                 )
             )
-        for missing in sorted(member_ids - link_ids):
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=missing,
-                    message=(
-                        f"project {name!r} membership implies a litman_reflib "
-                        f"symlink for {missing!r} but it is missing"
-                    ),
-                    hint="run `lit health-check --fix` to rebuild project links",
+        # Probed on the PROJECT dir, not the vault: on Windows a vault on NTFS
+        # and a project folder on an exFAT drive give different answers, so one
+        # project can be reportable while another is not. When the host cannot
+        # create symlinks the bridges were never made, `--fix` cannot make them,
+        # and reporting one error per member paper is noise no user can clear —
+        # `symlink_unsupported` states it once instead. The `extra` arms above
+        # stay live: removing a symlink needs no privilege.
+        project_can_symlink = symlink_supported(project_dir)
+
+        if project_can_symlink:
+            for missing in sorted(member_ids - link_ids):
+                out.append(
+                    Issue(
+                        category="project_references",
+                        severity="error",
+                        paper_id=missing,
+                        message=(
+                            f"project {name!r} membership implies a litman_reflib "
+                            f"symlink for {missing!r} but it is missing"
+                        ),
+                        hint="run `lit health-check --fix` to rebuild project links",
+                    )
                 )
-            )
 
         # 3) litman_code/<repo> symlink set vs derived code-clone membership.
         #    Parallel to the litman_reflib block: expected = every repo bound
@@ -1737,20 +1766,84 @@ def check_project_references(
                     hint="run `lit health-check --fix` to rebuild project links",
                 )
             )
-        for missing in sorted(expected_repos - code_link_names):
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=None,
-                    message=(
-                        f"project {name!r} membership implies a litman_code "
-                        f"symlink for {missing!r} but it is missing"
-                    ),
-                    hint="run `lit health-check --fix` to rebuild project links",
+        if project_can_symlink:
+            for missing in sorted(expected_repos - code_link_names):
+                out.append(
+                    Issue(
+                        category="project_references",
+                        severity="error",
+                        paper_id=None,
+                        message=(
+                            f"project {name!r} membership implies a litman_code "
+                            f"symlink for {missing!r} but it is missing"
+                        ),
+                        hint="run `lit health-check --fix` to rebuild project links",
+                    )
                 )
-            )
     return out
+
+
+def check_symlink_support(
+    vault: Path,
+    papers: list[dict[str, Any]],
+) -> list[Issue]:
+    """Report — once — that this host cannot create symlinks.
+
+    Not a drift check (klass ``env``): nothing is out of date and nothing is
+    broken. It states a capability of the machine, so that the *absence* of
+    views/ and of the litman_reflib / litman_code shortcuts is explained rather
+    than silent, while ``views_vs_metadata`` and ``project_references`` stay
+    quiet about links they know cannot exist.
+
+    Severity is ``info`` on purpose, and ``health-check`` does not gate its exit
+    code on info: a Windows user without Developer Mode has a perfectly healthy
+    library, and must not be told otherwise.
+
+    Scopes probed: the vault (which owns ``views/``) and every configured
+    project directory that exists (each owns its own bridges). They are probed
+    separately because they can live on different filesystems — a vault on NTFS
+    and a project on an exFAT drive disagree. All failing scopes collapse into a
+    single finding; the usual case (Developer Mode off) fails all of them at
+    once and deserves one line, not N.
+    """
+    from litman.core.config import load_config
+
+    scopes: list[str] = []
+
+    if vault.is_dir() and not symlink_supported(vault):
+        scopes.append("the library (views/)")
+
+    try:
+        config = load_config(vault)
+    except ConfigError:
+        config = None
+    if config is not None:
+        for name in sorted(config.projects):
+            project_dir = Path(config.projects[name]).expanduser()
+            if not project_dir.is_dir():
+                # Unreachable / missing — project_path_exists owns that case.
+                continue
+            if not symlink_supported(project_dir):
+                scopes.append(f"project {name!r} (litman_reflib / litman_code)")
+
+    if not scopes:
+        return []
+
+    return [
+        Issue(
+            category="symlink_unsupported",
+            severity="info",
+            paper_id=None,
+            message=(
+                "symbolic links cannot be created here — "
+                + ", ".join(scopes)
+                + ". Those shortcuts are skipped; your library itself is fine: "
+                "metadata.yaml and INDEX.json are authoritative, and every "
+                "command, the web UI and the agent workflow work normally."
+            ),
+            hint=symlink_hint(),
+        )
+    ]
 
 
 def _references_banner_timestamp(text: str) -> str:
@@ -2461,6 +2554,14 @@ def check_code_clone_integrity(
 #       tier=cheap, klass=A, regen (`--fix` regen repairs it; the Tier-1 hook
 #       gates the same rebuild behind a [Y/n] because rebuilding reads
 #       metadata).
+#   symlink_unsupported — the ONLY klass=env entry: a capability of the host,
+#       not a state of the library. Nothing drifted, nothing is broken, and no
+#       correction exists (hence report + severity=info, which health-check does
+#       not gate its exit code on). It exists so that when a host cannot make
+#       symlinks — Windows without Developer Mode, exFAT, some SMB mounts —
+#       views_vs_metadata and project_references can go SILENT about links they
+#       know cannot exist, and the absence is still explained once instead of
+#       reported ~6x per paper as unfixable damage.
 #   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
 #       the user/CLI to re-sync → klass=B-auth, correction=report.
 #   dangling_wikilinks — authored prose marked in place (`(deleted)`) →
@@ -2507,6 +2608,13 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "cheap",
         "A",
         "regen",
+    ),
+    CheckSpec(
+        "symlink_unsupported",
+        check_symlink_support,
+        "full",
+        "env",
+        "report",
     ),
     CheckSpec("dangling_refs", check_dangling_refs, "full", "B-auth", "report"),
     CheckSpec(
