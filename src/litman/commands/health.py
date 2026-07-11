@@ -80,6 +80,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "project_bridge_dangling": (
         "Project bridge symlinks (litman_reflib / litman_code) resolve to a live target"
     ),
+    "symlink_unsupported": "Symbolic links (views/ + project shortcuts)",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",
@@ -201,10 +202,18 @@ def health_check_cmd(
 ) -> None:
     """Run vault-wide consistency checks.
 
-    Exits 0 on a clean vault, 1 if any issue is found (so the command can
-    gate cron / CI tasks). With --fix the exit code reflects post-fix
-    state — if every issue was in a fixable category, the second pass is
-    clean and the command exits 0.
+    Exits 0 on a clean vault, 1 if any error or warning is found (so the command
+    can gate cron / CI tasks). With --fix the exit code reflects post-fix state —
+    if every issue was in a fixable category, the second pass is clean and the
+    command exits 0.
+
+    ``info`` findings do NOT gate the exit code. An info is by definition
+    advisory: it names something the user may want to know, not something wrong
+    with the library. The case that forced the distinction is
+    ``symlink_unsupported`` — a Windows box without Developer Mode has a
+    perfectly healthy vault it simply cannot decorate with symlinks, and exiting
+    1 forever over that would be telling the user their library is broken when
+    it is not.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     papers = list_papers(vault)
@@ -254,7 +263,10 @@ def health_check_cmd(
     # path must NOT refresh (and has no registry entry to refresh anyway).
     _refresh_active_health_check_timestamp(vault)
 
-    if issues:
+    # Errors and warnings gate; info does not. See the command docstring — an
+    # info-only run means "here is something to know", not "your library is
+    # damaged", and a cron/CI gate that fires on it is a false alarm.
+    if any(i.severity != "info" for i in issues):
         sys.exit(1)
 
 
