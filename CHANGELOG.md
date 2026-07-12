@@ -252,6 +252,16 @@ reading the library and regenerates it. `lit health-check --fix` and
   `lit taxonomy list --format json`. Also new there: a drive that cannot hold
   folder links is a fact about the drive — the skills now say so and forbid
   proposing system-setting remedies for it.
+- **The docs caught up with the CLI too.** The command reference claimed
+  `lit health-check` exits 1 on *any* finding (info notes never gate — the
+  cron/CI contract is errors and warnings only), and still described the old
+  `lit project set-path` that only printed a hint. Now documented: the
+  singular-tag warning, the interactive 30-row table cap, `code link/unlink`
+  flags, that `taxonomy add` treats a known value as a no-op and `merge` may
+  create its destination — and `lit agent` finally appears in the README, the
+  tutorial, and the agent map. The two `lit-config.yaml` keys nothing reads
+  (`view_definitions`, `unique_keys`) are labeled inert instead of documented
+  as switches.
 
 ## 1.1.0 — 2026-07-06
 

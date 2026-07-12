@@ -42,8 +42,9 @@ SCALAR_VIEW_FIELDS: dict[str, str] = {
 }
 
 # Per-paper fields included in INDEX.json. A summary projection of
-# metadata.yaml — AI consumers can `cat` the source file for fields not
-# listed here. Two fields joined after the original thin cut, both because a
+# metadata.yaml — for fields not listed here, `lit show <id> --format json`
+# serves the full dict (ADR-007: consumers go through the CLI, not the file).
+# Two fields joined after the original thin cut, both because a
 # consumer was otherwise forced to open every paper to answer one question:
 # `authors` (GUI quick-search + `lit list --format json` match/read authors)
 # and `updated-at` (recency ranking — `lit list --sort recent` and the web
@@ -398,13 +399,14 @@ def _clear_view_subdir(view_dir: Path) -> None:
 def rebuild_views(
     vault: Path, papers: list[dict[str, Any]]
 ) -> dict[str, int]:
-    """Rebuild ``views/by-*/`` symlink hubs from the given paper list.
+    """Rebuild ``views/by-*/`` link hubs from the given paper list.
 
-    Returns a mapping ``{view_name: n_symlinks_created}`` for caller-side
-    reporting. On platforms where symlink creation is refused (Windows
-    without dev mode, FAT32, etc.), individual entries are silently
-    skipped — the count reflects actual symlinks created, not requested.
-    A one-shot warning is emitted by ``portable_link`` on first failure.
+    Returns a mapping ``{view_name: n_links_created}`` for caller-side
+    reporting. On a filesystem that cannot hold folder links (FAT32 /
+    exFAT / some network shares — Windows itself always can, via
+    junctions), individual entries are silently skipped — the count
+    reflects links actually created, not requested. A one-shot warning
+    is emitted by ``portable_link`` on first failure.
     """
     views_dir = vault / "views"
     counts: dict[str, int] = {}

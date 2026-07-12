@@ -77,7 +77,8 @@ pipx install --force .
 
 Reading and annotating work on their own. The *just say what you want* layer runs
 on an AI agent, which you install separately — litman ships the skills it
-drives, not a model.
+drives, not a model. `lit agent` starts yours in the library directory; the app's
+agent button does the same.
 
 [Claude Code](https://claude.ai/code) is the supported agent today. Codex,
 Cursor, Gemini CLI, and OpenCode are next: they already appear in litman's agent

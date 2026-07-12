@@ -315,7 +315,7 @@ Seven dictionaries in two classes.
 
 | Dictionary | Drives field | Managed by | Typical values |
 |---|---|---|---|
-| `projects` | `projects` | `lit project {add,rename,rm,list}` | `PepForge`, `PepCodec` |
+| `projects` | `projects` | `lit project {add,rename,set-path,rm,list}` | `PepForge`, `PepCodec` |
 | `topics` | `topics` | `lit taxonomy {add,rename,merge,rm}` | `transformer`, `peptide-design` |
 | `methods` | `methods` | `lit taxonomy {add,rename,merge,rm}` | `GAN`, `diffusion`, `cell-free` |
 | `data` | `data` | `lit taxonomy {add,rename,merge,rm}` | `UniProt`, `APD3`, `PDB` |
@@ -357,9 +357,9 @@ vocabulary scannable and metadata grep-friendly:
 
 | Command | Refuses when |
 |---|---|
-| `lit taxonomy add <dict> <value>` | `dict` is a fixed enum, or `value` already registered. |
+| `lit taxonomy add <dict> <value>` | `dict` is a fixed enum. An already-registered value is not a refusal — it is a silent no-op. |
 | `lit taxonomy rename <dict> <old> <new>` | `dict` is a fixed enum, `old` not registered, or `new` already registered. |
-| `lit taxonomy merge <dict> <src>… --into <dest>` | `dict` is a fixed enum, any `src` not registered, or `dest` not registered. |
+| `lit taxonomy merge <dict> <src>… --into <dest>` | `dict` is a fixed enum, or any `src` not registered. `dest` may be new — an unregistered destination is created by the merge. |
 | `lit taxonomy rm <dict> <value>` | `dict` is a fixed enum. When a paper still uses `value`, it does not refuse — it shows the affected-paper count and prompts (default `N`). |
 
 `rm` and `merge` are confirm-and-cascade: on confirmation the value is removed
@@ -429,8 +429,8 @@ view with `lit config show`.
 |---|---|---|---|
 | `library_name` | string (required) | — | Human-readable label, conventionally the vault subdirectory name. |
 | `default_pdf_viewer` | string or null | `null` | `lit open`. `null` uses the platform default (`xdg-open`, `open`, `os.startfile`, `wslview`). |
-| `view_definitions` | list[string] | `["by-project", "by-topic", "by-method", "by-status"]` | `lit refresh-views`. Which `views/by-*/` hubs to rebuild. |
-| `unique_keys` | list[string] | `["doi", "arxiv-id"]` | `lit add`. Fields checked for duplicates. The DOI precheck is enforced; `arxiv-id` is informational. |
+| `view_definitions` | list[string] | `["by-project", "by-topic", "by-method", "by-status"]` | Nothing — parsed, never read. The hub set `lit refresh-views` builds is fixed in code and happens to equal the default; editing this list changes nothing. |
+| `unique_keys` | list[string] | `["doi", "arxiv-id"]` | Nothing — parsed, never read. `lit add`'s DOI duplicate precheck is fixed in code; editing this list changes nothing. |
 | `default_clone_depth` | integer ≥ 0 | `1` | `lit code add`, `lit code restore-all`. `0` means full history. |
 | `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). |
 | `projects` | dict[string, string] | `{}` | `lit link`, `lit unlink`, `lit refresh-views`. Project name to directory path. Must be populated (via `lit project add`) before `lit link`. |

@@ -172,37 +172,6 @@ lit uninstall --dry-run
 
 ---
 
-### `lit self-update`
-
-Upgrade litman to the latest release on PyPI, through whichever tool installed
-it. It prints `current → latest`, asks once, then runs `uv tool upgrade litman`
-or `pipx upgrade litman`.
-
-Three installs it will not upgrade: an editable (development) checkout, a plain
-`pip install`, and a conda environment. Each one prints the command to run by
-hand instead. It never runs `pip install --upgrade` into the interpreter it is
-running in.
-
-```
-lit self-update
-lit self-update --yes
-```
-
-| Flag | What it does |
-|---|---|
-| `-y` / `--yes` | Skip the confirmation prompt. |
-
-**The daily check.** Once a day, any `lit` command may ask PyPI for the newest
-version number and print a line when yours is older. The answer is cached for
-24 hours at `<registry dir>/update-check.json`, the request times out after two
-seconds, and a failure — offline, slow, malformed — is swallowed silently.
-
-Set `LITMAN_NO_UPDATE_CHECK=1` to switch it off, cache and all. litman sends no
-telemetry: the request asks PyPI for a version number and says nothing about
-you.
-
----
-
 ## 2. Papers
 
 ### `lit add`
@@ -271,7 +240,10 @@ lit list --topic transformer --format json
 | `--format [table\|json]` | Output format. `json` emits the same per-paper projection as `INDEX.json`. |
 
 With `--sort recent` the table view shows the top 10 by default; raise it with
-`--limit`, or use `--format json` for the full ranked list.
+`--limit`, or use `--format json` for the full ranked list. The default sort
+caps an interactive table too — a terminal shows the first 30 as
+`Papers (showing 30 of N)` — while piped and `--format json` output are never
+capped.
 
 ### `lit show`
 
@@ -414,6 +386,11 @@ Tag operations refuse values not registered in the corresponding TAXONOMY dict
 (register-first). See [3-concepts.md](3-concepts.md) §1.3 for the two-step
 register-then-tag model and which fields are controlled.
 
+`--set` accepts any field name (metadata is schemaless), so a singular slip on
+a tag field — `--set topic=X` where you meant `--add-tag topics=X` — writes a
+plain scalar that the taxonomy never validates and no view indexes. The write
+still goes through; litman prints a warning pointing at the `--add-tag` form.
+
 ### `lit rename`
 
 Change a paper id, rippling the change everywhere: the renamed paper's metadata
@@ -543,7 +520,7 @@ lit project rm <name> [-y]
 | `add <name> --path <dir>` | Register a project (dual-write TAXONOMY + config) in one atomic write. `--path` is **required** and must already exist (no placeholder registration). |
 | `list` | List every project, each row tagged with a drift marker (`✓` / `⚠ path-missing` / `⚠ config-only` / `⚠ taxonomy-only`). `--format json` emits `{name, path, status}` per project, with the marker as a bare token. |
 | `rename <old> <new>` | Rename the project across TAXONOMY, the config key, every paper, and `INDEX.json`. The path carries over. No prompt (semantics-preserving). |
-| `set-path <name> <path>` | Change the on-disk path (config only — papers store names). Prints the rebuild hint, since it does not move the directory. |
+| `set-path <name> <path>` | Change the on-disk path (config only — papers store names). Offers to rebuild the project's links at the new location (one Enter); a non-interactive run, or declining, gets the `lit link --rebuild-all` hint instead. |
 | `rm <name>` | Cascade-untag papers and drop from both truth sources. Always prompts `y/N` — even with no paper referencing it, removing a project drops its path binding and deletes `litman_reflib/` + `REFERENCES.md` from your project folder, which the trash does not cover. `-y` skips the prompt. |
 
 `lit project` is the project counterpart to `lit taxonomy`; `projects` is **not**
@@ -584,6 +561,8 @@ Per-subcommand flags:
 - `add`: `--name <override>`, `--paper <id>` / `--paper-doi <doi>` (bind on add),
   `--depth N` (URL only; `0` = full history; default from `lit-config.yaml`'s
   `default_clone_depth`), `--move` (local-import only: move instead of copy).
+- `link` / `unlink`: `--paper <id>` / `--paper-doi <doi>` (one of the two
+  required; `--paper` takes a full id or a unique substring).
 - `list`: `--paper <id>` / `--paper-doi <doi>` / `--orphan` (repos with no
   bindings) — mutually exclusive.
 - `update`: `--unshallow` (promote a shallow clone to full history).
@@ -614,7 +593,7 @@ lit taxonomy rm <dict> <value> [-y]
 | `add <dict> <value>...` | Register one or more values in a user dict. Already-present values are silent no-ops; the dict is kept sorted. |
 | `rename <dict> <old> <new>` | Rename a value and ripple to every referencing paper. No prompt (semantics-preserving). |
 | `merge <dict> <src>... --into <dest>` | Fold sources into a destination value (existing or new), cascading. `--into` **required**; `-y` skips the prompt. |
-| `rm <dict> <value>` | Remove a value, cascading the removal to every referencing paper. Lists them and prompts `y/N`; `-y` skips. |
+| `rm <dict> <value>` | Remove a value, cascading the removal to every referencing paper. Lists them and prompts `y/N`; `-y` skips. With zero referencing papers it removes straight away — nothing cascades, and re-adding the value undoes it. |
 
 `projects` is not managed here — use `lit project` (it carries an on-disk path).
 The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
@@ -630,7 +609,9 @@ The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
 Scan the whole vault for inconsistencies: dangling references, schema gaps, stale
 staging dirs, missing PDFs, missing discussion logs, dangling wikilinks, dangling
 vault-registry entries, missing project directories. Exits 0 on a clean vault, 1
-if any issue is found (so it can gate cron / CI).
+if any error or warning is found (so it can gate cron / CI). `info` findings —
+notes about the host, such as a drive that cannot hold folder links — are
+reported but do not gate: a structurally clean library exits 0.
 
 ```
 lit health-check
@@ -818,3 +799,32 @@ missing from PATH. The Web UI's agent button launches the same default agent: on
 with a display it opens the agent in a new terminal window; when the server
 runs on a remote box (HPC) it shows the `lit agent` line to copy into your own
 terminal.
+
+### `lit self-update`
+
+Upgrade litman to the latest release on PyPI, through whichever tool installed
+it. It prints `current → latest`, asks once, then runs `uv tool upgrade litman`
+or `pipx upgrade litman`.
+
+Three installs it will not upgrade: an editable (development) checkout, a plain
+`pip install`, and a conda environment. Each one prints the command to run by
+hand instead. It never runs `pip install --upgrade` into the interpreter it is
+running in.
+
+```
+lit self-update
+lit self-update --yes
+```
+
+| Flag | What it does |
+|---|---|
+| `-y` / `--yes` | Skip the confirmation prompt. |
+
+**The daily check.** Once a day, any `lit` command may ask PyPI for the newest
+version number and print a line when yours is older. The answer is cached for
+24 hours at `<registry dir>/update-check.json`, the request times out after two
+seconds, and a failure — offline, slow, malformed — is swallowed silently.
+
+Set `LITMAN_NO_UPDATE_CHECK=1` to switch it off, cache and all. litman sends no
+telemetry: the request asks PyPI for a version number and says nothing about
+you.

@@ -40,10 +40,10 @@ For the occasional thing the tutorial leaves out (a second library, cloud sync,
 TAXONOMY housekeeping, a flag you half-remember), you have two routes, fastest
 first:
 
-1. **Ask the agent — recommended.** Just say what you want:
-   *"how do I rename a paper in lit?"*, *"merge topics gnn and graph-neural-net"*.
-   The skills read the reference pages and run the command for you, faster and
-   more accurately than scanning docs by hand.
+1. **Ask the agent — recommended.** `lit agent` opens it in your library; then
+   just say what you want: *"how do I rename a paper in lit?"*, *"merge topics
+   gnn and graph-neural-net"*. The skills read the reference pages and run the
+   command for you, faster and more accurately than scanning docs by hand.
 2. **Look it up** in [4-commands.md](4-commands.md) (every command and flag) or
    [3-concepts.md](3-concepts.md) (what a given field means).
 

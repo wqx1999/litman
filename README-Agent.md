@@ -52,6 +52,7 @@ is by intent, not by read-vs-write: `lit-reading` writes too.
 | Create a vault | `lit init <parent-dir>` |
 | One-shot setup (completion, skills, vault, sync, desktop shortcut) | `lit setup` |
 | Open the human's web UI | `lit gui` |
+| Start the human's AI agent in the vault | `lit agent` |
 | Reverse setup (remove skills/shortcut/completion/registry/agent prefs) | `lit uninstall` |
 | Add a paper | `lit add <pdf-path> --doi <doi>` |
 | Browse / inspect | `lit list` · `lit show <id>` |

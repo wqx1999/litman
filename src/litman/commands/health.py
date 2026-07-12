@@ -11,8 +11,9 @@ validity auto-fixes (stale staging dirs + orphan trash sidecars). klass-B
 drift (registry / project / taxonomy / code-clone) needs per-case user
 judgment and stays report-only — ``--fix`` never picks a side (ADR-015).
 
-Exit code: ``1`` if any issue is found (so CI / cron can gate on it),
-``0`` if the vault is clean.
+Exit code: ``1`` if any error or warning is found (so CI / cron can gate on
+it), ``0`` if the vault is clean. ``info`` findings never gate — see the
+command docstring below for why.
 """
 
 from __future__ import annotations

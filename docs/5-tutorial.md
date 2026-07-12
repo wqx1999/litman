@@ -33,10 +33,12 @@ way. Reach for whichever fits the moment:
 - 🖥️ **Web UI** — the browser app you open with `lit gui`: a classification tree,
   a tabbed PDF reader, and a context panel. This is the human's home for reading,
   annotating, and everyday curation — where you spend most of a reading day.
-- 🤖 **Agent** — what you say to your AI agent. The bundled skills (`lit-library`
-  for the write side, `lit-reading` for the read side) turn your sentence into the
-  exact `lit` command, and the agent does the heavier lifting too: extracting
-  metadata, drafting notes, traversing the links between papers.
+- 🤖 **Agent** — what you say to your AI agent. `lit agent` starts it in the
+  library directory (the Web UI's agent button launches the same thing). The
+  bundled skills (`lit-library` for the write side, `lit-reading` for the read
+  side) turn your sentence into the exact `lit` command, and the agent does the
+  heavier lifting too: extracting metadata, drafting notes, traversing the links
+  between papers.
 - ⌨️ **CLI** — the `lit` command you type yourself. It is the complete surface
   underneath the other two; drop to it whenever you want precision or a script.
 
@@ -122,9 +124,11 @@ below.
 
 ```console
 $ lit init ~/research
+Parent directory /home/you/research does not exist. Create it? [Y/n]:
 ```
 
-This creates `~/research/literature_vault/` with the standard layout, registers
+(One Enter — the prompt only appears when the folder is not there yet.) This
+creates `~/research/literature_vault/` with the standard layout, registers
 it, and makes it active. Because it is the active library, every later command
 finds it with no flags — you do not set any environment variable.
 
