@@ -61,6 +61,33 @@ behaviour, a minor release adds it, a major release breaks it.
 - The one-line description on the PyPI page, the documentation site and
   `lit --help` now says what litman does in plain English.
 
+### Performance
+
+Everyday commands no longer re-read the whole library to change one paper.
+Measured on a 300-paper library (a real two-year collection):
+
+- **`lit modify` — 3.0s → 0.7s.** Tagging a paper or setting its status used to
+  read every `metadata.yaml` in the library twice, then delete and recreate every
+  link under `views/`. It now reads the index, writes the one paper, and moves
+  only the links that actually changed. `lit read`, `lit skim`, `lit revisit`,
+  `lit drop`, `lit promote` and the web UI's metadata edits all take the same
+  path.
+- **`lit add` — 4.5s → 0.05s** of library work (the rest is the CrossRef fetch).
+  Ingesting the 301st paper now costs what the 2nd did; before, a batch import
+  got slower with every paper.
+- **`lit list` — 1.9s → 0.6s**, which is litman's start-up floor: the query
+  itself is now a single index read, as the documentation always said it was.
+- **A DOI lookup — 2.1s → 0.01s.** `lit add`'s duplicate check and every
+  `--paper-doi` lookup (`show`, `cite`, `rm`, `modify`) used to parse the whole
+  library to find one paper.
+- **The web UI's change-detection sweep — 2.3s → 0.06s**, and its
+  recently-read list — 2.0s → 0.01s. Both ran on every window focus.
+
+`INDEX.json` stays a derived file, never a second source of truth: whenever it
+is missing, stale, or written by another version, litman silently falls back to
+reading the library and regenerates it. `lit health-check --fix` and
+`lit refresh-views` remain the full rebuild.
+
 ### Fixed
 
 - **Two papers can no longer end up sharing a DOI.** `lit add` always refused
