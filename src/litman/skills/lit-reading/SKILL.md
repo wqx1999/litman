@@ -19,7 +19,7 @@ lit-reading is read-first but **not** strictly read-only: it owns the *reading v
 ## Architecture you must respect (read-side invariants)
 
 1. **You navigate, you do not synthesize from training data.** Every claim about a paper must come from reading something inside the vault (metadata.yaml / notes.md / discussion.md / paper.pdf) or from the user. If a paper is not in the vault, say so — do not fabricate a summary from the title.
-2. **No state file.** There is no `lit focus` or `lit current`. The user tells you which paper is in scope, or you infer it from natural-language cues. `lit open` / `lit show` with no argument fall back to the most recently engaged paper — that is a keystroke saver for a human at a terminal, **not a scope oracle for you**. Never run them bare to work out which paper the user means (ADR-004); ask, or use the B15 resume branch.
+2. **No state file.** There is no `lit focus` or `lit current`. The user tells you which paper is in scope, or you infer it from natural-language cues. `lit open` / `lit show` with no argument fall back to the most recently engaged paper — that is a keystroke saver for a human at a terminal, **not a scope oracle for you**. Never run them bare to work out which paper the user means (ADR-004); ask, or use the Phase 1 resume branch.
 3. **Vault path is discovered, never hardcoded.** Resolve via `$LIT_LIBRARY`, the active registered vault (`lit vault list`), or by walking up from the user's cwd for `lit-config.yaml`. Never paste a stale absolute path from prior sessions.
 4. **Multi-vault aware.** The user may have several registered vaults. If a paper id isn't in the active vault, check cross-vault wikilinks (`[[<vault>:<id>]]` syntax in notes) and `lit vault list` before giving up. *Reading* another vault is fine; **writing** is confined to the active vault.
 5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append).** You may regenerate-and-replace `<vault>/papers/<id>/notes.md` (the current-understanding STATE snapshot, agent-assisted, user-read-only) and append dated sections to `<vault>/papers/<id>/discussion.md` (the immutable LOG). Both are scaffolded by `lit add` with an HTML-comment line stating their format — read it before you write, and never strip it. **Never** write `metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `repo-meta.yaml` directly — chain to lit-library.
@@ -36,7 +36,7 @@ Classify every action before you take it.
 
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
-| 1 | **Read** | Just do it, don't ask | `lit list` (incl. `--title` / `--limit` / `--format json`), `lit show` (incl. `--format json` for the full field set), `lit search` (notes/discussion content), `lit related` (knowledge-graph neighbours), scan a PDF, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit taxonomy list` (all five take `--format json`), `lit health-check`. All retrieval is high-autonomy and freely composable (`search` → `show --format json` → `related`). |
+| 1 | **Read** | Just do it, don't ask | `lit list` (incl. `--title` / `--limit` / `--format json`), `lit show` (incl. `--format json` for the full field set), `lit search` (notes/discussion content), `lit related` (knowledge-graph neighbours), `lit cite` (paste-ready ACS citation), scan a PDF, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit taxonomy list` (all five take `--format json`), `lit health-check`. All retrieval is high-autonomy and freely composable (`search` → `show --format json` → `related`). |
 | 2 | **Write, reversible, single-paper** | Do it, then report | the evaluation stamps `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit`, and `lit modify --set priority=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (ingest), `lit code add` (git clone), `lit taxonomy add` / `lit project add`, `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` (governance) |
 
@@ -78,7 +78,7 @@ The CLI hard-rejects unregistered controlled-vocabulary values, so your job is t
 
 **Destructive operations by reversibility:**
 
-- **Soft-delete `lit rm`** (default → moves `papers/<id>/` into `.trash/`, recoverable via `lit trash restore`; recovery SOP at B13). **Never initiate.** May execute on explicit, confirmed request, and must **relay `lit rm`'s cascade report verbatim** ("This paper is linked with N entries…") — never silently delete, never summarize the link count away.
+- **Soft-delete `lit rm`** (default → moves `papers/<id>/` into `.trash/`, recoverable via `lit trash restore`; recovery SOP at B13). **Never initiate.** May execute on explicit, confirmed request — via the agent path: the CLI's own `y/N` never reaches you (a non-tty run without `--yes` aborts with "pass --yes to confirm"; with `--yes` the warning block is skipped entirely), so first run `lit rm <id> --dry-run` (read-only) and **relay its impact set verbatim** (the paper + every reference that would be cleared / repo unbound / orphaned) — never silently delete, never summarize the link count away — then, on the user's go, run `lit rm <id> --yes`.
 - **Irreversible removal** (`lit rm --purge`, `lit trash empty`): **NEVER execute these, even on explicit request.** Surface the exact command and let the user run it.
 - **`lit code rm`** stays governed by lit-library [C] (confirm before execute; clone is re-cloneable).
 
@@ -98,7 +98,7 @@ When the user drops a **raw PDF path** into the conversation and wants to discus
 
 # PART B — The reading SOP (per-operation phases)
 
-Every trigger walks through these phases. Some collapse to one tool call; the heavier ones (cross-paper / project) are demand-only. The verdict ritual (B10) closes a reading session; resume (B15) opens one.
+Every trigger walks through these phases. Some collapse to one tool call; the heavier ones (cross-paper / project) are demand-only. The verdict ritual (B10) closes a reading session; resume (the Phase 1 resume branch) opens one.
 
 ## Phase 1 — Locate the paper
 
@@ -133,7 +133,7 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 | Something I wrote in notes ("我之前在 notes 里写过关于 X 的看法吗") | `lit search <query>` (searches `notes.md` + `discussion.md`) |
 
 1. **Direct id given** → `lit show <id>` to confirm it exists (add `--format json` when you need the full metadata dict, not just the projection — see Phase 2). If missing, ask the user; do not silently substitute another paper.
-2. **Author cue** ("Pandi 那篇") → `lit list --author <cue> --format json`. The `--author` filter matches file-side; the returned rows don't echo the author, but **being *in* the result is the hit**.
+2. **Author cue** ("Pandi 那篇") → `lit list --author <cue> --format json`. The `--author` filter matches file-side; the returned rows carry the `authors` list, so read the matched name straight off the row when confirming to the user.
 3. **Title cue** → `lit list --title <substr> --format json` (case-insensitive substring, comma = OR). The CLI does the filtering file-side — do NOT pull `lit list --format json` whole and grep the title yourself.
    - 1 candidate → use it; confirm to the user "I'm reading `2023_Pandi_Cell-free`, Pandi et al. 2023 — *Cell-free …*" so they can correct.
    - 2–5 → list and ask which one.
@@ -152,7 +152,7 @@ When locate lands on a paper that **already carries a `read-date`** (or `status:
 | Tier | Trigger | How | Reads INDEX into context? |
 |---|---|---|---|
 | 0 focus paper | already in Phase 2 | the loaded focus metadata + notes + discussion | no |
-| 1 neighbours (preferred) | "跟这篇相关的还有哪些", "related to this", "what does it extend", "what builds on / disputes this", "anything similar to this one" | `lit related <id>` — one command returns explicit edges first (`related` / `extends` / `extended-by` / `contradicts` / `contradicted-by`, both inbound + outbound), then shared-topic/method neighbours ranked by overlap. Each row carries a `via` annotation (`edge:<field>` or `taxonomy:` + the shared keys) so you can read *why* / how strong. Narrow with `--by edges` / `--by taxonomy`; tighten taxonomy noise with `--min-shared 2`. | no |
+| 1 neighbours (preferred) | "跟这篇相关的还有哪些", "related to this", "what does it extend", "what builds on / disputes this", "anything similar to this one" | `lit related <id>` — one command returns explicit edges first (`related` / `extends` / `extended-by` / `contradicts` / `contradicted-by`, both inbound + outbound), then shared-topic/method neighbours ranked by overlap. JSON is the default output; each row carries the *why*: `"via": "edge"` plus `"edge": "<field>"`, or `"via": "taxonomy"` plus `"shared": ["topics:x", …]`. Narrow with `--by edges` / `--by taxonomy`; tighten taxonomy noise with `--min-shared 2`; `--limit` caps the merged list (default 20). | no |
 | 2 bounded discovery (fallback) | "what's in my library about X" (no focus paper) | `lit list --topic X --format json` (CLI filters file-side, returns only matching rows) | file read by CLI, NOT into context |
 | never | — | `cat INDEX.json` whole; pulling all rows to compute shared keys by hand | ❌ |
 
@@ -173,13 +173,13 @@ All stay read-only — never `grep` the vault or `cat` INDEX.json; route notes/d
 
 ## Phase 2 — Load paper context (lazy)
 
-On **entering a reading session**, read `TAXONOMY.md` once into context. Flow A (lit-library [E]) needs it to enumerate registered values; Flow B needs it to validate. After the user runs `lit taxonomy {add,rename,merge,rm}` (or `lit project add`) during the session, **re-read `TAXONOMY.md`**.
+On **entering a reading session**, load the registered vocabulary once: `lit taxonomy list --format json` (one array, all four dicts — never `cat TAXONOMY.md`). Flow A (lit-library [E]) needs it to enumerate registered values; Flow B needs it to validate. After the user runs `lit taxonomy {add,rename,merge,rm}` (or `lit project add`) during the session, **re-run it**.
 
 Then, once you have an id, load just enough paper context. Read in this order, stopping when you have enough:
 
-| Tier | File | When to read |
+| Tier | Source | When to read |
 |---|---|---|
-| **Always** | `<vault>/papers/<id>/metadata.yaml` | Identity, taxonomy, refs |
+| **Always** | `lit show <id> --format json` (the full metadata dict) | Identity, taxonomy, refs |
 | Usually | `<vault>/papers/<id>/notes.md` | The current-understanding snapshot (overwrite-style, regenerated on explicit request) |
 | On drill-down | `<vault>/papers/<id>/discussion.md` | Append+timestamp discussion trail (LOG); pull only the relevant dated section when the user drills in, not by default |
 | Only when needed | `<vault>/papers/<id>/paper.pdf` | Specific sections / figures / numbers — walk the PDF reading ladder below, use the `pages` parameter to fetch §3 not the whole 40-page PDF |
@@ -210,7 +210,7 @@ Only run when the user asks for comparison, related work, or "anything similar".
 - Run `lit related <id>` and read its `via` field; **do not** recompute shared keys by hand.
 - Emit **one signpost line**, not a fan-out.
 - **Filter taxonomy noise with `--min-shared 2`** when the user wants only strong neighbours (a single shared generic topic is weak). Explicit-edge neighbours are always strong regardless of shared count.
-- **List at most 3**, in the command's returned order (edges first, then overlap-ranked), citing the *actual* `via` reason as the "why" (the `edge:<field>` label or the shared TAXONOMY values — never invented reasons). Beyond 3, just say "N more related".
+- **List at most 3**, in the command's returned order (edges first, then overlap-ranked), citing the *actual* returned reason as the "why" (the row's `edge` field name or its `shared` TAXONOMY values — never invented reasons). Beyond 3, just say "N more related".
 - Deep-load stays **on-demand** — only after the user picks one.
 
 **Cross-vault references:** notes and discussion files may contain `[[<vault>:<paper-id>]]` wikilinks pointing at another registered vault. If the focus paper has such a link, resolve the target via `lit vault list` and use that vault's index exactly as in Phase 1. Surface the source vault explicitly: "From the *peptide-design* vault — `2024_Foo_Bar` …".
@@ -319,9 +319,11 @@ At a natural moment (using the existing staleness check, introduce no new mechan
 
 ## B12 — Vault health-check guidance
 
-At a natural moment (occasionally at session start / after a batch of operations / when the user asks "is my library still clean?"), **run `lit health-check`, translate the report's categories, and propose a fix per finding.**
+At a natural moment (occasionally at session start / after a batch of operations / when the user asks "is my library still clean?"), **run `lit health-check`, translate the report's categories, and propose a remedy per finding** — except the `env` class below, which has none.
 
-**Red line: health-check only reports, never auto-fixes** — each fix runs only on the user's nod; never self-correct. Running health-check is Tier 1 (just do it); each proposed fix follows its own tier (e.g. unlinking a dangling clone = Tier 3, ask once).
+**Red line: a bare `lit health-check` never writes, and no fix runs without the user's nod** — never self-correct. Running health-check is Tier 1 (just do it). The CLI's one bulk repair is `lit health-check --fix`: it regenerates every derived artifact (lossless recompute from metadata) and cleans stale staging dirs / orphan trash sidecars; registry / project / taxonomy / code-clone drift stays report-only (needs a per-case decision — `--fix` never picks a side). When the findings are in the derived class, propose `--fix` and run it on the user's nod; every other proposed fix follows its own tier (e.g. unlinking a dangling clone = Tier 3, ask once).
+
+**The `env` class has no remedy — never invent one.** `links_unsupported` (severity `info`) reports a host capability, not damage: the drive holding the library (FAT32 / exFAT / some network shares) cannot hold folder links; nothing drifted, nothing is broken. Relay the CLI's own hint — keep the library on an internal drive; after moving it, `lit health-check --fix` backfills the skipped links — and stop there. **Never suggest Developer Mode, administrator / elevated shells, WSL, or any Windows system setting**: the cause is the drive's filesystem, and none of those change it. `info` findings do not gate the exit code — `lit health-check` exiting 0 while printing an info line is a healthy library.
 
 **Staleness nudges.** `lit` may append a dim `tip:` line after a command. Relay it and offer to run the named command — never auto-run. Two variants: (1) `tip: no lit health-check in 14+ days...` → offer `lit health-check`; (2) `tip: no lit sync push in 7+ days...` → offer `lit sync push` (backs the vault up to the configured remote; appears only when a remote is configured).
 
@@ -348,11 +350,13 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit list [--format json] [--topic/--author/--title/--status/--project ...] [--unread] [--sort recent] [--limit N]` | locate / bounded retrieval / resume / triage / roundup; `--title` = title-substring cue, `--limit` = top-N | 1 (read) |
 | `lit show <id> [--format json]` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud; `--format json` returns the FULL field set (every edge, relevance fields), beyond the INDEX projection | 1 (read) |
 | `lit search <query> [--in notes,discussion] [--limit N]` | the ONLY path to your own free-form notes / discussion ("我在 notes 里写过 X 吗"); returns `{id,file,line,snippet}` per matched line; `--limit` caps the hit count | 1 (read) |
-| `lit related <id> [--by edges|taxonomy] [--min-shared N]` | knowledge-graph neighbours ("跟这篇相关的还有哪些"): explicit edges first, then shared-topic/method, each with a `via` reason | 1 (read) |
+| `lit related <id> [--by edges|taxonomy] [--min-shared N] [--limit N]` | knowledge-graph neighbours ("跟这篇相关的还有哪些"): explicit edges first, then shared-topic/method; JSON by default, each row carries its `via` reason | 1 (read) |
+| `lit cite <id>` | paste-ready ACS citation for one paper (citation on stdout, caveats on stderr) | 1 (read) |
 | `lit vault list [--format json]` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
 | `lit project list [--format json]` | canonical source for the registered project set AND each project's path | 1 (read) |
 | `lit trash list [--format json]` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
-| `lit health-check` | translate the report + propose per-finding fixes (B12) | 1 (read) |
+| `lit taxonomy list [<dict>] [--format json]` | the registered vocabulary (all four dicts, or one) — the Phase 2 session load | 1 (read) |
+| `lit health-check [--fix]` | translate the report + propose per-finding remedies (B12); `--fix` = bulk derived-artifact repair, run only on the user's nod | 1 (read); `--fix` 2 |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit modify --set priority=` / `lit modify --set type=` | the priority / type verdicts — fixed-enum evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit open <id>` | suggest by default; run only on explicit request (B14) | — |
@@ -366,5 +370,5 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | Vault not discoverable (no `$LIT_LIBRARY`, no registry, no `lit-config.yaml` upward) | Stop. Tell the user. Do not invent paper content. |
 | User refers to a paper that isn't in any vault | Say so. If they have the PDF, run the B9 PDF-as-entry chain (propose-confirm → chain to lit-library [A]/[B]). A bare DOI/URL with no local file is not an entry trigger. |
 | `notes.md` empty, user asks "what did I think about §3?" | Be honest: "Your notes for this paper are empty — let me read §3 of the PDF instead." Then read the PDF with the `pages` parameter. |
-| `INDEX.json` looks stale (id missing from index but folder exists on disk) | Cross-check by reading the metadata.yaml directly. If they disagree, surface the inconsistency and suggest `lit refresh-views` (teach-don't-do per A3). Do not silently route around it. |
+| `INDEX.json` looks stale (id missing from index but folder exists on disk) | Cross-check with `lit show <id> --format json` — it reads `papers/<id>/metadata.yaml`, not the INDEX. If they disagree, surface the inconsistency and suggest `lit refresh-views` (teach-don't-do per A3). Do not silently route around it. |
 | The user asks for an opinion on the paper | Distinguish honestly: what the **notes / discussion** record (read them) vs. **your own synthesis** (mark clearly as inference, not the user's settled view). Both notes and discussion are agent-written, so the line is *recorded-and-endorsed* vs *fresh inference*, not "user wrote vs Claude made". |

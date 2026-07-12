@@ -242,6 +242,16 @@ reading the library and regenerates it. `lit health-check --fix` and
 - The Windows note in the docs claimed the linked folders need administrator
   rights and pointed users at WSL. They need neither — nor anything else: see
   the junction change above.
+- **The bundled skills describe the CLI as it is.** The instructions an AI
+  agent reads had drifted: they promised a deletion report only an interactive
+  terminal ever prints (the agent path is now spelled out — preview with
+  `lit rm --dry-run`, relay it, run with `--yes`), claimed `lit list` rows
+  don't carry the author (they do), described a `related` output shape the
+  JSON never had, said health-check cannot fix anything (`--fix` exists), and
+  still routed vocabulary reads through the taxonomy file instead of
+  `lit taxonomy list --format json`. Also new there: a drive that cannot hold
+  folder links is a fact about the drive — the skills now say so and forbid
+  proposing system-setting remedies for it.
 
 ## 1.1.0 — 2026-07-06
 
