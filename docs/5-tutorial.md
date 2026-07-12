@@ -20,7 +20,7 @@ public repository so the code-binding step works for real. A second paper,
 have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
-> **Tested with** litman 1.0.0 on Unix (Linux and macOS), June 2026, with Claude
+> **Tested with** litman 1.2.0 on Unix (Linux and macOS), July 2026, with Claude
 > Sonnet 4.6 driving the agent path in Claude Code. The command output shown
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.
@@ -289,23 +289,18 @@ it into its notes"* → the skill registers any missing taxonomy values, sets th
 fields, and drafts the summary into `notes.md`. Review and edit the draft; it is a
 starting point, not the final word.
 
-⌨️ **CLI:** the same, one operation at a time. The scalar fields set directly:
-
-```console
-$ lit modify 2025_Geylan_PepINVENT --set type=research
-$ lit modify 2025_Geylan_PepINVENT --set priority=A
-```
-
-The controlled-vocabulary fields are **register-first**: a value must exist in the
-TAXONOMY before it can be tagged onto a paper, so register then tag (this is what
+⌨️ **CLI:** the same. `--set` and `--add-tag` are repeatable, so one command
+carries the whole reclassification. The controlled-vocabulary fields are
+**register-first** — a value must exist in the TAXONOMY before it can be tagged
+onto a paper — so register once, then tag everything in one call (this is what
 the UI's type-a-new-value and the agent both do for you underneath):
 
 ```console
 $ lit taxonomy add topics peptide-design de-novo-design
 $ lit taxonomy add methods reinforcement-learning
-$ lit modify 2025_Geylan_PepINVENT --add-tag topics=peptide-design
-$ lit modify 2025_Geylan_PepINVENT --add-tag topics=de-novo-design
-$ lit modify 2025_Geylan_PepINVENT --add-tag methods=reinforcement-learning
+$ lit modify 2025_Geylan_PepINVENT --set type=research --set priority=A \
+    --add-tag topics=peptide-design --add-tag topics=de-novo-design \
+    --add-tag methods=reinforcement-learning
 ```
 
 The metadata is schema-less, so you can also record anything else with a plain

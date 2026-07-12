@@ -63,6 +63,48 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
+- **Two papers can no longer end up sharing a DOI.** `lit add` always refused
+  duplicates, but `lit modify --set doi=` did not check — and once two papers
+  shared a DOI, every `--paper-doi` lookup (`show`, `cite`, and destructively
+  `rm`) resolved to an arbitrary one of them. `modify` now refuses the
+  collision and names the paper that owns the DOI, and `lit health-check`
+  reports any collision already present (a new `duplicate_doi` check).
+- **`--set year=` only accepts numbers now.** A mistyped year was written
+  as-is and surfaced much later as an invalid `year = {...}` entry in exported
+  BibTeX.
+- **The web UI explains unreadable files instead of blanking.** A notes or
+  discussion file that is not UTF-8 (an external editor's doing), or a
+  missing/garbled TAXONOMY.md, used to crash the request behind a silent empty
+  panel. The affected tab now says what is wrong and leaves the file untouched;
+  taxonomy and projects report the damage and point at `lit health-check`.
+- **`lit health-check` no longer fails forever on headless machines.** "This
+  SSH/cron session has no display for `lit open`" is now an info note, not a
+  warning, so a structurally clean library exits 0 on servers — the documented
+  cron/CI-gate behaviour.
+- **Windows: write commands no longer print a power-loss warning every time.**
+  The reduced crash-window guarantee on Windows is a property of the platform,
+  documented once, and litman still reports the moment an interrupted write is
+  actually found.
+- **Windows: the desktop shortcut follows OneDrive's Desktop.** With OneDrive
+  folder backup on, the shortcut used to be written into the old, no longer
+  displayed Desktop folder — installing looked like it had produced no icon.
+- **Windows: removing a trashed paper's half-cloned repository no longer
+  strands read-only git files** (which then blocked every later re-clone of
+  that repository).
+- **`lit init <path>` offers to create the parent folder** (one Enter) instead
+  of erroring when it does not exist. Scripts still get the explicit error.
+- **`lit project set-path` offers to rebuild the project's links right there**
+  (one Enter) instead of telling you to run `lit link --rebuild-all` yourself
+  later.
+- **A path passed to `--vault` now points at `--library`.** `--vault` takes a
+  registered name; handing it a filesystem path used to dead-end at
+  "no vault named …, run `lit vault add`" — the wrong fix.
+- **`lit search` line numbers stay right when notes contain form feeds**
+  (pdftotext page separators pasted inside an HTML comment shifted every later
+  hit by a line and hid the file's last line).
+- **Paper ids can no longer end in a dot** — Windows strips a trailing dot
+  when creating the folder, which would leave the id and the folder name
+  permanently disagreeing.
 - **Windows: the browsing folders and project shortcuts now work out of the
   box.** `views/` and the shortcuts `lit link` places in your project folders
   are created as directory junctions on Windows — a native folder link that

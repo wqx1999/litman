@@ -25,6 +25,8 @@ what each of the others is for.
    the project bridges are folder links, which FAT32 / exFAT drives (most USB
    sticks) and network shares cannot hold. On such drives litman says so once
    and skips them; metadata, PDFs, notes, and everything else work normally.
+5. **After a crash or power loss, run `lit health-check`.** It finishes or
+   rolls back any write the interruption cut short.
 
 ## Start here
 
