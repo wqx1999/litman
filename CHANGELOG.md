@@ -57,6 +57,13 @@ behaviour, a minor release adds it, a major release breaks it.
   an index written by an older litman is regenerated on the next write.
 - A new logo, favicon and desktop-shortcut icon. The mark in the top bar follows
   your light / dark theme.
+- `lit project rm` now asks before removing a project that no paper
+  references. It used to remove it on the spot: no papers meant nothing to
+  warn about. But an unreferenced project still owns a path binding in
+  `lit-config.yaml`, and `litman_reflib/` and `REFERENCES.md` inside your
+  own project folder — outside the vault, where the trash does not reach.
+  Undoing it took three commands and remembering the path. The prompt says
+  when no paper is affected, so the Enter is a cheap one. `-y` skips it.
 - Windows is now a declared supported platform.
 - Your agent choice is stored once per machine rather than per vault.
 - `lit list` prints at most 30 rows when sorted by default on an interactive

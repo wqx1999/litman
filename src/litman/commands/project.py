@@ -415,10 +415,17 @@ def project_rm_cmd(
 ) -> None:
     """Delete a project: cascade-untag papers + drop from both truth sources.
 
-    Cascade-with-confirm: if any paper references the project, a warning
-    block lists them and a y/N prompt gates the teardown. --yes / -y
-    skips the prompt; a non-tty without --yes aborts cleanly. With no
-    references the command executes immediately (nothing to warn about).
+    Always confirms. A warning block lists what will be destroyed and a y/N
+    prompt gates the teardown; --yes / -y skips it, a non-tty without --yes
+    aborts cleanly.
+
+    The gate does not depend on any paper referencing the project, because
+    zero papers is not zero damage: deleting an empty project still drops
+    its path binding from lit-config.yaml and deletes litman_reflib/ and
+    REFERENCES.md from the user's own project folder — files that live
+    outside the vault, which the trash does not cover. Undoing it takes
+    three commands and remembering the path that was bound. When there is
+    nothing to cascade the block says so, and the Enter is cheap.
     """
     name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
@@ -451,23 +458,29 @@ def project_rm_cmd(
             warning_lines.append(
                 f"  ... and {len(referencing) - 10} more"
             )
-        warning_lines.append("")
-        warning_lines.append("Removing will:")
+    else:
+        warning_lines = [
+            f"[yellow]⚠[/] '{escape(name)}' is referenced by "
+            f"[bold]0[/] paper(s) — nothing will be untagged.",
+        ]
+    warning_lines.append("")
+    warning_lines.append("Removing will:")
+    if referencing:
         warning_lines.append(
             f"  • Untag these {len(referencing)} paper(s): drop "
             f"'{escape(name)}' from their projects field"
         )
+    warning_lines.append(
+        "  • Remove from TAXONOMY.md and lit-config.yaml"
+    )
+    if project_dir is not None:
         warning_lines.append(
-            "  • Remove from TAXONOMY.md and lit-config.yaml"
+            f"  • Delete {escape(str(project_dir))}/"
+            f"{LITERATURE_SUBDIR}/ symlinks + {REFERENCES_FILENAME}"
         )
-        if project_dir is not None:
-            warning_lines.append(
-                f"  • Delete {escape(str(project_dir))}/"
-                f"{LITERATURE_SUBDIR}/ symlinks + {REFERENCES_FILENAME}"
-            )
-        if not _confirm_destructive(warning_lines, yes=yes):
-            console.print("[dim]Aborted. Nothing changed.[/]")
-            return
+    if not _confirm_destructive(warning_lines, yes=yes):
+        console.print("[dim]Aborted. Nothing changed.[/]")
+        return
 
     # The cascade write (dual TAXONOMY + config rewrite, metadata + INDEX, derived
     # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI

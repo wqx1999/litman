@@ -539,7 +539,7 @@ lit project rm <name> [-y]
 | `list` | List every project, each row tagged with a drift marker (`✓` / `⚠ path-missing` / `⚠ config-only` / `⚠ taxonomy-only`). `--format json` emits `{name, path, status}` per project, with the marker as a bare token. |
 | `rename <old> <new>` | Rename the project across TAXONOMY, the config key, every paper, and `INDEX.json`. The path carries over. No prompt (semantics-preserving). |
 | `set-path <name> <path>` | Change the on-disk path (config only — papers store names). Prints the rebuild hint, since it does not move the directory. |
-| `rm <name>` | Cascade-untag papers and drop from both truth sources. Lists referencing papers and prompts `y/N`; `-y` skips. |
+| `rm <name>` | Cascade-untag papers and drop from both truth sources. Always prompts `y/N` — even with no paper referencing it, removing a project drops its path binding and deletes `litman_reflib/` + `REFERENCES.md` from your project folder, which the trash does not cover. `-y` skips the prompt. |
 
 `lit project` is the project counterpart to `lit taxonomy`; `projects` is **not**
 managed through `lit taxonomy` (only `lit taxonomy list projects` works

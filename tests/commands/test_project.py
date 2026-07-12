@@ -458,18 +458,84 @@ def test_project_set_path_unregistered_rejected(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_project_rm_no_refs_no_prompt(
+def test_project_rm_of_an_empty_project_still_confirms(
     vault: Path, proj_dir: Path
 ) -> None:
+    """Zero papers is not zero damage, so the gate is unconditional.
+
+    Removing an unreferenced project still drops its path binding from
+    lit-config.yaml and deletes litman_reflib/ + REFERENCES.md from the
+    user's own folder — outside the vault, where the trash cannot reach.
+    """
     runner = CliRunner()
     runner.invoke(
         cli,
         ["project", "add", "p", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    # No --yes, no input: should execute without prompting (no refs).
+    # Non-tty (CliRunner's default) and no --yes: refuse, change nothing.
     result = runner.invoke(
         cli, ["project", "rm", "p", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert "Non-interactive environment" in result.output
+    assert _taxonomy_projects(vault) == ["p"]
+    assert _config_projects(vault) != {}
+
+
+def test_project_rm_of_an_empty_project_says_no_papers_are_affected(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warning names what IS destroyed, so the Enter is an informed one."""
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli, ["project", "rm", "p", "--library", str(vault)], input="y\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "0 paper(s)" in result.output
+    assert "TAXONOMY.md and lit-config.yaml" in result.output
+    assert str(proj_dir) in result.output
+    assert _taxonomy_projects(vault) == []
+    assert _config_projects(vault) == {}
+
+
+def test_project_rm_of_an_empty_project_aborts_on_n(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli, ["project", "rm", "p", "--library", str(vault)], input="n\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "Aborted" in result.output
+    assert _taxonomy_projects(vault) == ["p"]
+    assert _config_projects(vault) != {}
+
+
+def test_project_rm_of_an_empty_project_still_honours_yes(
+    vault: Path, proj_dir: Path
+) -> None:
+    """The scripted path is unchanged: --yes removes it with no prompt."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli, ["project", "rm", "p", "--yes", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert _taxonomy_projects(vault) == []
