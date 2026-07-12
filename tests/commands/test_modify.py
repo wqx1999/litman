@@ -1348,3 +1348,99 @@ def test_modify_views_state_equals_a_full_rebuild(
     incremental = _tree(vault / "views")
     reconcile_derived(vault, project_refs=False)
     assert _tree(vault / "views") == incremental
+
+
+# ---------------------------------------------------------------------------
+# --set <singular> — the one-letter miss for --add-tag <plural>
+# ---------------------------------------------------------------------------
+
+
+def test_set_singular_tag_field_still_writes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Schemaless is a root invariant (#7): warn, never refuse."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topic=docking", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["topic"] == "docking"
+
+
+def test_set_singular_tag_field_warns_and_names_the_right_command(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The write is silent otherwise: register-first only guards --add-tag."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topic=docking", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--add-tag topics=docking" in result.stderr
+
+
+def test_set_singular_warning_goes_to_stderr_not_stdout(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topic=docking", "--library", str(vault)],
+    )
+    assert "--add-tag" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("singular", "plural"),
+    [
+        ("topic", "topics"),
+        ("method", "methods"),
+        ("project", "projects"),
+        ("author", "authors"),
+        ("extend", "extends"),
+        ("datum", "data"),  # the irregular plural the naive key+"s" rule misses
+    ],
+)
+def test_every_tag_field_singular_is_caught(
+    vault_with_paper: tuple[Path, str], singular: str, plural: str
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", f"{singular}=x", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert f"--add-tag {plural}=x" in result.stderr
+
+
+def test_an_unrelated_custom_field_is_not_nagged_about(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A schemaless store must not nag: only singulars of a real tag field warn."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "funding=ERC-2024",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["funding"] == "ERC-2024"
+    assert result.stderr == "", result.stderr
+
+
+def test_the_plural_itself_is_still_refused_not_warned(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """--set topics= would clobber the list; that stays a hard error."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topics=docking", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert "would clobber" in str(result.exception)

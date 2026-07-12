@@ -113,6 +113,27 @@ USER_TAG_FIELDS: frozenset[str] = (
     LIST_FIELDS - REVERSE_REF_FIELDS - CODE_MANAGED_FIELDS
 )
 
+# Plurals that are not formed by adding "s". Derived reverse-lookup below
+# rather than a hand-kept singular list, so a new list field is covered the
+# day it is added.
+_IRREGULAR_SINGULARS: dict[str, str] = {"data": "datum"}
+
+
+def _singular_of(field: str) -> str:
+    if field in _IRREGULAR_SINGULARS:
+        return _IRREGULAR_SINGULARS[field]
+    return field[:-1] if field.endswith("s") else field
+
+
+# singular typo -> the tag field the user almost certainly meant.
+# `lit modify --set topic=X` (singular) is a one-letter miss that silently
+# writes a junk scalar: register-first validation only guards --add-tag, and
+# the taxonomy never hears about it. Entries that collide with a real list
+# field can never fire — _apply_set raises on those first.
+SINGULAR_TAG_FIELDS: dict[str, str] = {
+    _singular_of(f): f for f in USER_TAG_FIELDS
+}
+
 
 def _parse_kv(spec: str, flag_name: str) -> tuple[str, str]:
     """Split a `key=value` pair, raising ModifyError on malformed input."""
@@ -210,6 +231,23 @@ def _apply_set(
     if key == "year" and after is not None and not isinstance(after, int):
         raise ModifyError(
             f"year must be a number, got {after!r}. Example: --set year=2023"
+        )
+    # Warn, never refuse: metadata is schemaless by design (invariant #7) and
+    # the user is entitled to any field they like. But `--set topic=X` is a
+    # one-letter miss for `--add-tag topics=X` that lands a junk scalar the
+    # taxonomy will never see and no view will ever index — and it does so
+    # silently, because register-first validation only guards --add-tag. So:
+    # write it, then say so. Only for singulars of a real tag field; an
+    # unrelated custom field says nothing (a schemaless store must not nag).
+    plural = SINGULAR_TAG_FIELDS.get(key)
+    if plural is not None:
+        # Constructed here, not at import: a module-level stderr Console binds
+        # to the import-time sys.stderr and escapes pytest's capture.
+        Console(stderr=True).print(
+            f"[yellow]⚠[/] Wrote {key!r} as a plain field. Did you mean "
+            f"[bold]--add-tag {plural}={raw_value}[/]? "
+            f"{key!r} is not the {plural!r} list, so it is not validated "
+            f"against TAXONOMY.md and nothing will browse or filter by it."
         )
     metadata[key] = after
     return before, after

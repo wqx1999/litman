@@ -120,6 +120,13 @@ reading the library and regenerates it. `lit health-check --fix` and
 - **`--set year=` only accepts numbers now.** A mistyped year was written
   as-is and surfaced much later as an invalid `year = {...}` entry in exported
   BibTeX.
+- **`lit modify --set topic=X` now says you probably meant `--add-tag
+  topics=X`.** The singular is a one-letter miss that wrote a junk scalar
+  field and said nothing: `--set` accepts any field (metadata is schemaless
+  by design), so the register-first check that guards `--add-tag` never ran,
+  the taxonomy never heard about the value, and no view indexed it. The write
+  still goes through — your metadata is yours — but litman now points at the
+  command you wanted. Fields unrelated to a tag list stay silent.
 - **The web UI explains unreadable files instead of blanking.** A notes or
   discussion file that is not UTF-8 (an external editor's doing), or a
   missing/garbled TAXONOMY.md, used to crash the request behind a silent empty
