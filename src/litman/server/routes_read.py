@@ -26,7 +26,7 @@ from litman.core.query import recency_key
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy
 from litman.core.vault_registry import find_active, load_registry
-from litman.core.views import project_paper
+from litman.core.views import load_index_papers, project_paper
 from litman.exceptions import CorruptMetadataError, PaperNotFoundError
 
 router = APIRouter(prefix="/api")
@@ -84,14 +84,22 @@ def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
     setting a paper aside never makes it vanish from the list (anti-drift).
     Membership is purely read-date-based; ``status`` only changes row styling.
     """
-    papers = list_papers(vault)
     if view == "recent-read":
+        # Both the membership test and the sort key are read-date, which the
+        # INDEX projection carries — so a verified INDEX serves this view
+        # without opening a single metadata.yaml. Same order either way: INDEX
+        # entries are id-sorted, exactly like list_papers' output.
+        indexed = load_index_papers(vault)
+        papers = indexed if indexed is not None else list_papers(vault)
         read = [p for p in papers if p.get("read-date")]
         # str ISO sort is fine; list.sort is stable so equal read-dates keep
-        # the incoming id-ascending order from list_papers as a tiebreak.
+        # the incoming id-ascending order as a tiebreak.
         read.sort(key=lambda p: str(p.get("read-date") or ""), reverse=True)
         return read
 
+    # reading / backlog rank by recency_key, which reads `updated-at` — NOT in
+    # the thin projection — so these two still scan.
+    papers = list_papers(vault)
     unread = [p for p in papers if not p.get("read-date")]
     unread.sort(
         key=lambda p: recency_key(vault, p),
@@ -224,17 +232,27 @@ def get_doc_mtimes(request: Request) -> dict[str, dict[str, float | None]]:
     """Per-paper notes.md / discussion.md mtimes (epoch seconds), for change detection.
 
     PURE READ (invariant #16): stat only — never reads file contents, never writes.
-    One entry per paper currently in the vault (same enumeration get_health uses,
-    list_papers); each value is Path.stat().st_mtime, or null when absent. The webUI
-    resync diff compares this against its previous in-memory snapshot to surface
-    notes/discussion edits made OUTSIDE the GUI (agents write these files directly —
-    there is no lit command to hook). O(papers) stats per call; fine for single-user.
+    One entry per paper currently in the vault (same enumeration get_health uses);
+    each value is Path.stat().st_mtime, or null when absent. The webUI resync diff
+    compares this against its previous in-memory snapshot to surface notes/discussion
+    edits made OUTSIDE the GUI (agents write these files directly — there is no lit
+    command to hook). O(papers) stats per call; fine for single-user.
+
+    The endpoint needs ids and nothing else, so a verified INDEX supplies them —
+    the resync sweep fires on every window focus, and parsing every metadata.yaml
+    for a field it does not read made the GUI pay a full vault scan per focus. A
+    stale / older-schema INDEX falls back to ``list_papers``, whose id set (which
+    drops broken paper dirs) the probe already matches, so the enumeration is the
+    same either way.
     """
     vault = _vault(request)
+    indexed = load_index_papers(vault)
+    papers = indexed if indexed is not None else list_papers(vault)
     out: dict[str, dict[str, float | None]] = {}
-    for paper in list_papers(vault):
-        paper_dir = vault / "papers" / paper["id"]
-        out[paper["id"]] = {
+    for paper in papers:
+        paper_id = str(paper["id"])
+        paper_dir = vault / "papers" / paper_id
+        out[paper_id] = {
             "notes": _stat_mtime(paper_dir / "notes.md"),
             "discussion": _stat_mtime(paper_dir / "discussion.md"),
         }

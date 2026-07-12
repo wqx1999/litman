@@ -81,3 +81,43 @@ def test_endpoint_performs_no_writes(
     # materialize an absent notes.md.
     assert meta.stat().st_mtime == meta_mtime_before
     assert not notes.exists()
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: the resync feed needs ids, not a vault scan
+# ---------------------------------------------------------------------------
+
+
+def test_doc_mtimes_serves_ids_from_index_without_a_vault_scan(
+    vault_with_paper: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a fresh INDEX, the endpoint reads no metadata.yaml at all — it
+    fires on every window focus, so a full scan per focus was pure waste."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, paper_id = vault_with_paper
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the doc-mtimes fast path")
+
+    monkeypatch.setattr("litman.server.routes_read.list_papers", _boom)
+    body = _client(vault).get("/api/doc-mtimes").json()
+    assert set(body) == {paper_id}
+    assert set(body[paper_id]) == {"notes", "discussion"}
+
+
+def test_doc_mtimes_enumeration_is_identical_with_and_without_index(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Same key set on the fast path and the scan — including a paper the
+    INDEX never saw (the probe fails, the scan takes over)."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, paper_id = vault_with_paper
+    reconcile_derived(vault, project_refs=False)
+    fast = _client(vault).get("/api/doc-mtimes").json()
+
+    (vault / "INDEX.json").unlink()
+    scan = _client(vault).get("/api/doc-mtimes").json()
+    assert set(fast) == set(scan) == {paper_id}

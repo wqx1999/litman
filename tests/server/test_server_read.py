@@ -609,3 +609,36 @@ def test_recency_key_ranks_pdf_mtime_vs_updated_at(
     # A with neither signal sinks to 0.0.
     c = {"id": "missing"}
     assert recency_key(vault, c) == 0.0
+
+
+def test_recent_read_view_is_identical_with_and_without_index(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """The recent-read fast path (read-date lives in the INDEX projection) must
+    return exactly what the metadata scan returns — same papers, same order."""
+    vault, _ids = smartlist_vault
+    fast = _client(vault).get("/api/papers?view=recent-read").json()
+
+    (vault / "INDEX.json").unlink()
+    scan = _client(vault).get("/api/papers?view=recent-read").json()
+
+    assert fast == scan
+    assert len(fast) == 2
+
+
+def test_recent_read_view_does_not_scan_the_vault(
+    smartlist_vault: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a fresh INDEX, recent-read opens no metadata.yaml."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, ids = smartlist_vault
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the recent-read fast path")
+
+    monkeypatch.setattr("litman.server.routes_read.list_papers", _boom)
+    body = _client(vault).get("/api/papers?view=recent-read").json()
+    assert [p["id"] for p in body] == [ids["dropped_read"], ids["read_deep"]]
