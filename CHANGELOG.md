@@ -133,6 +133,19 @@ reading the library and regenerates it. `lit health-check --fix` and
   the taxonomy never heard about the value, and no view indexed it. The write
   still goes through — your metadata is yours — but litman now points at the
   command you wanted. Fields unrelated to a tag list stay silent.
+- **The web UI no longer goes quietly blank when a vault switch fails.** The
+  five reads that repopulate the panels after a switch had no failure path, so
+  a server that blinked at exactly that moment — the moment it is rebinding —
+  left every panel empty with nothing said. They now raise the same banner
+  every other failed read raises.
+- **A paper with a field it never set is served the same by both paper
+  endpoints.** `GET /api/paper/{id}` returned `metadata.yaml` as it is on disk,
+  and metadata is schemaless — so a paper that had never been given a topic
+  came back with no `topics` key at all, while the list endpoint gave `[]` and
+  the web UI's types said the field was always there. It happened to be
+  defended against everywhere it mattered. Both endpoints now agree on the
+  fields they share, and everything else in the file still passes through
+  untouched.
 - **The web UI explains unreadable files instead of blanking.** A notes or
   discussion file that is not UTF-8 (an external editor's doing), or a
   missing/garbled TAXONOMY.md, used to crash the request behind a silent empty

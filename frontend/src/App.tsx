@@ -1281,22 +1281,30 @@ export default function App() {
     // library is the one that is gone.
     setDisconnected(false)
     setVaultGone(false)
-    fetchVaults().then((v) => {
-      setVaults(v)
-      // Keep `served` on the server's actual binding (see doResync) — this is
-      // the path the vault-gone banner would name.
-      setServed(v.served)
-    })
-    fetchProjects().then(setProjects)
-    fetchTaxonomy().then(setTaxonomy)
-    fetchFixedEnums().then(setFixedEnums)
-    fetchPapers().then((ps) => {
-      setAllPapers(ps)
-      setAllLoaded(true)
-    })
+    // Every one of these goes through classifyFetchError. A vault switch is
+    // exactly when the server is most likely to blink (it is rebinding), and
+    // without a catch the rejection was silent: the panels stayed empty and
+    // nothing said why — the failure mode this banner exists to prevent.
+    fetchVaults()
+      .then((v) => {
+        setVaults(v)
+        // Keep `served` on the server's actual binding (see doResync) — this is
+        // the path the vault-gone banner would name.
+        setServed(v.served)
+      })
+      .catch(classifyFetchError)
+    fetchProjects().then(setProjects).catch(classifyFetchError)
+    fetchTaxonomy().then(setTaxonomy).catch(classifyFetchError)
+    fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
+    fetchPapers()
+      .then((ps) => {
+        setAllPapers(ps)
+        setAllLoaded(true)
+      })
+      .catch(classifyFetchError)
     loadList(listMode)
     loadTrash()
-  }, [loadList, listMode, loadTrash])
+  }, [loadList, listMode, loadTrash, classifyFetchError])
 
   const confirmSwitchVault = useCallback(async () => {
     const name = pendingVault

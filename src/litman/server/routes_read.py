@@ -350,7 +350,21 @@ def get_search(
 
 @router.get("/paper/{paper_id}")
 def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
-    """Full metadata for one paper (same loader ``lit show`` uses)."""
+    """Full metadata for one paper (same loader ``lit show`` uses).
+
+    The projection fields come through ``project_paper``, exactly as
+    ``GET /api/papers`` serves them, and every other key in metadata.yaml —
+    ``relevance-<project>``, ``created-at``, the relation lists, any custom
+    field a user invented — is passed through untouched.
+
+    Why the projection is applied at all, when this endpoint's job is to
+    return everything: metadata.yaml is schemaless (invariant #7), so a
+    missing field simply is not there. Served raw, one paper could arrive
+    with ``topics`` and the next without it, while the frontend's PaperMeta
+    extends IndexPaper and declares all of them present. Consumers happen to
+    defend themselves today; the projection makes the two endpoints agree on
+    the fields they share, so they no longer have to.
+    """
     vault = _vault(request)
     try:
         meta = find_paper(vault, paper_id)
@@ -368,13 +382,18 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
             status_code=404,
             detail=f"No usable metadata for paper {paper_id!r} (file is empty).",
         )
+
+    out = project_paper(meta)
+    out.update(
+        {k: v for k, v in meta.items() if k not in INDEX_PAPER_FIELDS}
+    )
     # Derived display hint (not persisted): which code-clones links are dangling
     # — codes/<name>/ gone — so the cockpit marks them instead of showing a
     # deleted codebase as live. Same criterion as lit health-check (invariant #12).
-    meta["code-clones-missing"] = missing_code_clones(
+    out["code-clones-missing"] = missing_code_clones(
         vault, meta.get("code-clones") or []
     )
-    return meta
+    return out
 
 
 @router.get("/paper/{paper_id}/cite")

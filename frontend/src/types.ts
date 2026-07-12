@@ -3,7 +3,11 @@
 
 import type { ToastVariant } from './ui/Toast'
 
-/** The INDEX.json / `lit list --format json` thin projection (13 fields). */
+/** The INDEX.json / `lit list --format json` thin projection (14 fields).
+ *
+ * Served by GET /api/papers and — for the fields it covers — by
+ * GET /api/paper/{id}, which runs the same projection before merging the rest
+ * of metadata.yaml back in. So every field here is always present on both. */
 export interface IndexPaper {
   id: string
   title: string | null
@@ -19,6 +23,9 @@ export interface IndexPaper {
   data: string[]
   doi: string | null
   'read-date': string | null
+  /** ISO 8601 with time of day (not truncated to a date): the reading list
+   * ranks by it, so papers edited on the same day must not tie. */
+  'updated-at': string | null
 }
 
 /** GET /api/doc-mtimes payload: per-paper notes/discussion file mtimes (epoch
@@ -32,7 +39,6 @@ export interface PaperMeta extends IndexPaper {
   'arxiv-id'?: string | null
   github?: string | null
   'created-at'?: string | null
-  'updated-at'?: string | null
   'last-revisited'?: string | null
   related?: string[]
   extends?: string[]

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from litman.cli import cli
 from litman.core.document import list_papers
 from litman.core.query import recency_key
-from litman.core.views import project_paper, write_index
+from litman.core.views import INDEX_PAPER_FIELDS, project_paper, write_index
 from litman.server import create_app
 
 
@@ -704,3 +704,84 @@ def test_older_schema_index_is_not_served_to_the_reading_view(
     index_path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert _client(vault).get("/api/papers?view=reading").json() == fresh
+
+
+# ---------------------------------------------------------------------------
+# GET /api/paper/{id} and GET /api/papers agree on the projection
+#
+# metadata.yaml is schemaless (invariant #7): a field the user never set simply
+# is not in the file. get_paper used to serve the file as-is, so a paper could
+# arrive without `topics` at all — while the frontend's PaperMeta extends
+# IndexPaper and declares every projection field present. Consumers happened to
+# defend themselves; it was a live round waiting for the next one that didn't.
+# ---------------------------------------------------------------------------
+
+
+def _write_sparse_paper(vault: Path, paper_id: str, body: str) -> None:
+    d = vault / "papers" / paper_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "metadata.yaml").write_text(body, encoding="utf-8")
+    write_index(vault, list_papers(vault))
+
+
+def test_the_two_endpoints_agree_on_every_projection_field(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+
+    one = client.get(f"/api/paper/{paper_id}").json()
+    listed = next(p for p in client.get("/api/papers").json() if p["id"] == paper_id)
+
+    # Derived from INDEX_PAPER_FIELDS, never a hardcoded list: the projection
+    # went 13 -> 14 fields on 2026-07-12 and this must not need editing again.
+    for field in INDEX_PAPER_FIELDS:
+        assert one[field] == listed[field], field
+
+
+def test_a_paper_missing_a_projection_field_still_gets_it(vault_with_paper) -> None:
+    """The bug: no `topics:` in the file meant no `topics` key in the response."""
+    vault, _ = vault_with_paper
+    _write_sparse_paper(
+        vault,
+        "2024_Sparse",
+        "id: 2024_Sparse\ntitle: Sparse\ncreated-at: '2026-01-01T00:00:00+02:00'\n",
+    )
+
+    meta = _client(vault).get("/api/paper/2024_Sparse").json()
+
+    assert set(INDEX_PAPER_FIELDS) <= set(meta), (
+        "every projection field must be present even when the file omits it"
+    )
+    # And the list-field rule holds: absent means [], not null.
+    assert meta["topics"] == []
+    assert meta["authors"] == []
+    assert meta["year"] is None
+
+
+def test_get_paper_still_carries_every_schemaless_extra(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The projection decides the shared fields; everything else passes through."""
+    vault, _ = vault_with_paper
+    _write_sparse_paper(
+        vault,
+        "2024_Extra",
+        "id: 2024_Extra\n"
+        "title: Extra\n"
+        "topics: []\n"
+        "journal: Nature\n"
+        "created-at: '2026-01-01T00:00:00+02:00'\n"
+        "relevance-pepforge: Direct baseline\n"
+        "funding: ERC-2024\n"
+        "code-clones: []\n",
+    )
+
+    meta = _client(vault).get("/api/paper/2024_Extra").json()
+
+    assert meta["journal"] == "Nature"
+    assert meta["relevance-pepforge"] == "Direct baseline"
+    assert meta["funding"] == "ERC-2024"
+    assert meta["created-at"].startswith("2026-01-01")
+    # And the derived hint the cockpit needs.
+    assert meta["code-clones-missing"] == []
