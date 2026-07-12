@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -62,22 +63,8 @@ def trash_group() -> None:
 
 
 @trash_group.command("list")
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def trash_list_cmd(library: Path | None, vault_name: str | None) -> None:
     """Show trash entries, newest first."""
     vault = find_vault(resolve_library_or_vault(library, vault_name))
@@ -232,22 +219,8 @@ def _handle_missing_repos(
         "repo without prompting (script / agent path)."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def trash_restore_cmd(
     paper_id_or_entry: str,
     skip_confirm: bool,
@@ -336,22 +309,8 @@ def trash_restore_cmd(
     help="Preview only — list every trash entry that would be permanently "
     "removed, then exit without emptying the trash.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def trash_empty_cmd(
     skip_confirm: bool,
     dry_run: bool,

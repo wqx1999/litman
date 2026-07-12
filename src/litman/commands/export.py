@@ -29,6 +29,7 @@ import click
 from rich.console import Console
 
 from litman import __version__
+from litman.commands._options import library_option, vault_option
 from litman.core.dates import now_iso
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -152,22 +153,8 @@ def _build_sentinel(timestamp: str | None = None) -> str:
     show_default=True,
     help="Output format. Reserved for future formats; only bibtex is currently implemented.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def export_cmd(
     project: str | None,
     export_all: bool,

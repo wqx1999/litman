@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
@@ -92,22 +93,8 @@ def taxonomy_group() -> None:
 
 @taxonomy_group.command("list")
 @click.argument("dict_name", required=False)
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def taxonomy_list_cmd(
     dict_name: str | None,
     library: Path | None,
@@ -157,22 +144,8 @@ def _print_single_dict(name: str, values: list[str]) -> None:
 @taxonomy_group.command("add")
 @click.argument("dict_name")
 @click.argument("values", nargs=-1, required=True)
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def taxonomy_add_cmd(
     dict_name: str,
     values: tuple[str, ...],
@@ -209,22 +182,8 @@ def taxonomy_add_cmd(
 @click.argument("dict_name")
 @click.argument("old")
 @click.argument("new")
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def taxonomy_rename_cmd(
     dict_name: str,
     old: str,
@@ -270,22 +229,8 @@ def taxonomy_rename_cmd(
     default=False,
     help="Skip the confirmation prompt (for agents / scripts / CI).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def taxonomy_merge_cmd(
     dict_name: str,
     sources: tuple[str, ...],
@@ -406,22 +351,8 @@ def taxonomy_merge_cmd(
     default=False,
     help="Skip the confirmation prompt (for agents / scripts / CI).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def taxonomy_rm_cmd(
     dict_name: str,
     value: str,

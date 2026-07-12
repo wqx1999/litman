@@ -19,6 +19,7 @@ from pathlib import Path
 
 import click
 
+from litman.commands._options import library_option, vault_option
 from litman.commands.modify import _apply_modify
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.document import find_paper
@@ -132,22 +133,8 @@ def apply_unread(vault: Path, paper_id: str) -> tuple[bool, str]:
     metavar="YYYY-MM-DD",
     help="Date to record. Defaults to today (local timezone).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def read_cmd(
     paper_id: str | None,
     paper_doi: str | None,

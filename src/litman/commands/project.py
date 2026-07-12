@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import io
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +36,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
@@ -116,30 +116,6 @@ def project_group() -> None:
     """
 
 
-# Reused option blocks — keep the --library / --vault shape identical to
-# every other litman command.
-def _library_option(fn: Callable[..., Any]) -> Callable[..., Any]:
-    return click.option(
-        "--library",
-        type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-        default=None,
-        envvar="LIT_LIBRARY",
-        help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-    )(fn)
-
-
-def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
-    return click.option(
-        "--vault",
-        "vault_name",
-        default=None,
-        help=(
-            "Vault name from ~/.config/litman/vaults.yaml. "
-            "Mutually exclusive with --library."
-        ),
-    )(fn)
-
-
 # ---------------------------------------------------------------------------
 # add
 # ---------------------------------------------------------------------------
@@ -162,8 +138,8 @@ def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
         "parent). litman does not create it."
     ),
 )
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_add_cmd(
     name: str,
     project_path: Path,
@@ -191,8 +167,8 @@ def project_add_cmd(
 
 
 @project_group.command("list")
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_list_cmd(
     library: Path | None,
     vault_name: str | None,
@@ -262,8 +238,8 @@ def project_list_cmd(
 @project_group.command("rename")
 @click.argument("old")
 @click.argument("new")
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_rename_cmd(
     old: str,
     new: str,
@@ -308,8 +284,8 @@ def project_rename_cmd(
         path_type=Path,
     ),
 )
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_set_path_cmd(
     name: str,
     new_path: Path,
@@ -389,8 +365,8 @@ def project_set_path_cmd(
     default=False,
     help="Skip the confirmation prompt (for agents / scripts / CI).",
 )
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_rm_cmd(
     name: str,
     yes: bool,

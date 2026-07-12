@@ -24,6 +24,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._options import library_option, vault_option
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     Issue,
@@ -182,22 +183,8 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
         "(it needs a per-case decision; --fix never picks a side)."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def health_check_cmd(
     do_fix: bool, library: Path | None, vault_name: str | None
 ) -> None:

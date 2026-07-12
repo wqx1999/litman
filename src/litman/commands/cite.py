@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 
+from litman.commands._options import library_option, vault_option
 from litman.core.cite import format_acs
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -37,21 +38,8 @@ err_console = Console(stderr=True)
         "Mutually exclusive with the positional paper id."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, "
-    "then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help="Vault name from ~/.config/litman/vaults.yaml. "
-    "Mutually exclusive with --library.",
-)
+@library_option
+@vault_option
 def cite_cmd(
     paper_id: str | None,
     paper_doi: str | None,

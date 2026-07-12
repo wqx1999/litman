@@ -65,6 +65,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.config import load_config
@@ -582,22 +583,8 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     help="Preview only — list the paper plus every external link that would "
     "be cleared / unbound / orphaned, then exit without deleting anything.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def rm_cmd(
     paper_id: str | None,
     paper_doi: str | None,

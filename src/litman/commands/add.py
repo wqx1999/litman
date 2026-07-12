@@ -35,6 +35,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands._options import library_option, vault_option
 from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
@@ -295,22 +296,8 @@ def _validate_id_override(
         "Required for non-interactive (non-TTY) batch use."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def add_cmd(
     pdf_path: Path,
     doi: str | None,

@@ -12,6 +12,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -190,22 +191,8 @@ def _as_date(raw: Any) -> date | None:
     help="Output format. 'json' emits the same per-paper projection "
          "as INDEX.json (for agent bounded retrieval).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def list_cmd(
     year: str | None,
     type_filter: str | None,

@@ -47,6 +47,7 @@ import click
 from platformdirs import user_cache_dir
 from rich.console import Console
 
+from litman.commands._options import library_option, vault_option
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
 from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
@@ -464,25 +465,8 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
     default=None,
     help=f"Port to bind (default {_DEFAULT_PORT}; auto-increments if busy).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help=(
-        "Override the active vault. Discovery order: this flag / $LIT_LIBRARY, "
-        "then the active registered vault, then cwd-walk."
-    ),
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 @click.option(
     "--no-browser",
     is_flag=True,

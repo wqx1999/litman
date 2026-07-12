@@ -9,6 +9,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.related import find_related
@@ -58,22 +59,8 @@ console = Console()
     help="Output format. 'json' (default, agent-facing) emits an array of "
     "the INDEX projection plus a 'via' annotation; 'table' is human-readable.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def related_cmd(
     paper_id: str | None,
     paper_doi: str | None,
