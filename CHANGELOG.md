@@ -41,6 +41,12 @@ behaviour, a minor release adds it, a major release breaks it.
   before it appends, so discussions come out in one shape across the library.
   `lit health-check` reports papers added before this (their log is missing) and
   `--fix` creates it — existing logs keep every section they already hold.
+- **`lit open` and `lit show` with no argument** open the paper you engaged
+  with most recently — the one `lit list --sort recent` puts at the top. Coming
+  back to the paper you just closed should not cost you its id. They name the
+  paper they picked on stderr, so `lit show --format json` still emits only
+  JSON. There is still no stored "current paper": the ranking is computed from
+  `updated-at` and the PDF's mtime, the same way it always was.
 - **`--format json` on the five commands that enumerate a library**:
   `lit taxonomy list`, `lit vault list`, `lit project list`, `lit code list`
   and `lit trash list`. They printed a table and nothing else, so an agent had

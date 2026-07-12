@@ -115,13 +115,17 @@ def test_show_paper_id_and_doi_mutually_exclusive(vault: Path) -> None:
     assert "mutually exclusive" in str(result.exception)
 
 
-def test_show_neither_id_nor_doi_errors(vault: Path) -> None:
-    from litman.exceptions import LitmanError
+def test_show_with_no_id_falls_back_to_the_most_recent_paper(vault: Path) -> None:
+    """Was "No paper specified."; now the paper you last engaged with.
 
+    The fallback and its guarantees live in test_open_show_default.py — this
+    only pins that `lit show` no longer refuses the no-argument form.
+    """
     runner = CliRunner()
     result = runner.invoke(cli, ["show", "--library", str(vault)])
-    assert result.exit_code != 0
-    assert isinstance(result.exception, LitmanError)
+    assert result.exit_code == 0, result.output
+    assert "2024_X_Foo" in result.stdout
+    assert "most recently engaged" in result.stderr
 
 
 # ---------------------------------------------------------------------------

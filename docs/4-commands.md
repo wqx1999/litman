@@ -276,9 +276,12 @@ With `--sort recent` the table view shows the top 10 by default; raise it with
 ### `lit show`
 
 Print one paper's full metadata plus its PDF / notes paths. Accepts a full id, a
-unique case-insensitive id substring, or `--paper-doi`.
+unique case-insensitive id substring, or `--paper-doi`. With no argument, shows
+the paper you engaged with most recently — the one `lit list --sort recent` puts
+at the top — and names it on stderr, so `--format json` still emits only JSON.
 
 ```
+lit show
 lit show <id>
 lit show <id> --format json
 lit show --paper-doi 10.1038/...
@@ -333,9 +336,11 @@ lit related <id> --min-shared 2 --limit 10
 
 Open a paper's PDF in the configured viewer (or the platform default). Accepts a
 full id, a unique substring, or `--paper-doi`. Multiple substring matches print
-the candidate list and exit.
+the candidate list and exit. With no argument, opens the paper you engaged with
+most recently — the one `lit list --sort recent` puts at the top.
 
 ```
+lit open
 lit open <id>
 lit open <substring>
 ```
