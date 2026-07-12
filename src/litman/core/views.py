@@ -43,8 +43,8 @@ SCALAR_VIEW_FIELDS: dict[str, str] = {
 
 # Per-paper fields included in INDEX.json. A summary projection of
 # metadata.yaml — AI consumers can `cat` the source file for fields not
-# listed here. `authors` joined in v1.1.1 (it was deliberately out of the
-# original thin projection) so both the GUI quick-search and `lit list
+# listed here. `authors` joined after the original thin cut (it was
+# deliberately left out of it) so both the GUI quick-search and `lit list
 # --format json` consumers can match/read authors without a per-paper load.
 INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "id",

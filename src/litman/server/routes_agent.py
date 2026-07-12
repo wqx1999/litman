@@ -23,7 +23,7 @@ localhost-bound server must not become a remote-code-execution surface.
 
 RED LINE: the Claude-specific ``~/.claude/skills`` path stays inside the
 catalog's claude adapter — it never appears in a response or the status
-contract, so v1.1.2 can add agents without changing this file's shape.
+contract, so new agents can be added without changing this file's shape.
 
 None of these endpoints write to the vault: the skill install writes
 ``~/.claude/skills`` and the default write goes to the machine-level

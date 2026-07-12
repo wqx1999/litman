@@ -1,4 +1,4 @@
-"""PyPI update-check core (v1.1.1 usability).
+"""PyPI update-check core.
 
 A silent, cached, non-blocking probe of the newest litman release on PyPI. The
 result feeds three surfaces: the interactive CLI nudge (``cli.py``), the

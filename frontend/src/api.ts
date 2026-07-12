@@ -375,7 +375,7 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 }
 
 /** One agent's onboarding view: display name, whether litman supports it today
- * (only Claude Code in v1.1.1 — the rest are greyed roadmap placeholders),
+ * (only Claude Code so far — the rest are greyed roadmap placeholders),
  * whether its launch command is on PATH, and its official install page. Agent-
  * agnostic by contract: no per-agent skill path ever appears here. */
 export interface AgentStatusEntry {

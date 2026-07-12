@@ -8,18 +8,18 @@ consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
-v1.1.1 ships exactly one *supported* agent, Claude Code. The other four
+litman ships exactly one *supported* agent today, Claude Code. The other four
 (Codex / Cursor / Gemini CLI / OpenCode) exist here as ``supported=False``
 placeholders so the picker renders a stable, greyed-out roadmap and so the
-seam is already N-agent shaped; v1.1.2 fills in their real adapters. Their
-adapter callables raise :class:`NotImplementedError` — generic code never
+seam is already N-agent shaped; a later release fills in their real adapters.
+Their adapter callables raise :class:`NotImplementedError` — generic code never
 reaches them (every consumer gates on ``supported``), so a programming error
 that *does* call one fails loudly instead of silently misbehaving.
 
 The Claude-Code-specific ``~/.claude/skills`` location is reached ONLY through
 the claude adapter's callables (they delegate to :mod:`litman.core.skill`); it
 must never leak into an endpoint, the ``/api/agent/status`` contract, or the
-frontend. That agent-agnostic boundary is what keeps v1.1.2 cheap.
+frontend. That agent-agnostic boundary is what keeps adding an agent cheap.
 """
 
 from __future__ import annotations
@@ -42,13 +42,13 @@ def _unsupported(name: str) -> Callable[..., Any]:
 
     ``supported=False`` agents are gated out of every generic consumer, so
     this is never called in normal operation; it exists only so a mis-call
-    fails loudly (v1.1.2 replaces it with the real adapter).
+    fails loudly (the real adapter replaces it when that agent lands).
     """
 
     def _raise(*_args: Any, **_kwargs: Any) -> Any:
         raise NotImplementedError(
             f"Agent {name!r} has no skill adapter yet (supported=False) — it "
-            "is a v1.1.2 placeholder. Implement its adapter before wiring it "
+            "is a roadmap placeholder. Implement its adapter before wiring it "
             "into onboarding."
         )
 
@@ -74,7 +74,7 @@ class AgentSpec:
     install_skill: Callable[[], Any]
 
 
-# The one supported agent in v1.1.1. Its skill adapter reuses core.skill
+# The one supported agent today. Its skill adapter reuses core.skill
 # verbatim: "installed" == the bundled skill directories exist under
 # ~/.claude/skills (installed_skill_names treats directory-presence as
 # installed), and install == copy every bundled skill in, overwriting
@@ -82,7 +82,7 @@ class AgentSpec:
 # ~/.claude/skills path is reachable.
 #
 # The four placeholders below carry best-effort launch commands / install
-# URLs so v1.1.2 can implement their adapters without re-editing this table;
+# URLs so their adapters can be implemented without re-editing this table;
 # verify each vendor's exact CLI + docs URL when un-greying it.
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
