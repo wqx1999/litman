@@ -738,3 +738,108 @@ def test_list_explicit_limit_overrides_tty_cap(
     assert result.exit_code == 0
     assert "showing 30 of 35" not in result.output
     assert "2000_A_0035" in result.output
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: identical output, no vault scan, honest fallbacks
+# ---------------------------------------------------------------------------
+
+
+def _reconcile(v: Path) -> None:
+    from litman.core.correctors import reconcile_derived
+
+    reconcile_derived(v, project_refs=False)
+
+
+def test_list_output_is_byte_identical_between_index_and_scan(
+    vault: Path,
+) -> None:
+    """The red line: the fast path may change the cost, never the bytes.
+    Same vault, --format json and the table, INDEX present vs deleted."""
+    _reconcile(vault)
+    fast_json = _invoke(vault, "--format", "json")
+    fast_table = _invoke(vault)
+    assert fast_json.exit_code == 0
+
+    (vault / "INDEX.json").unlink()
+    scan_json = _invoke(vault, "--format", "json")
+    scan_table = _invoke(vault)
+
+    assert fast_json.output == scan_json.output
+    assert fast_table.output == scan_table.output
+    assert len(json.loads(fast_json.output)) == 3
+
+
+def test_list_fast_path_never_opens_metadata(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a fresh INDEX, both output formats are served without a single
+    metadata.yaml read (the documented agent contract, now real)."""
+    _reconcile(vault)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the fast path")
+
+    monkeypatch.setattr("litman.commands.list.list_papers", _boom)
+    result = _invoke(vault, "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert {p["id"] for p in json.loads(result.output)} == {
+        "2023_Pandi_Cellfree", "2024_Smith_BERT", "2024_Doe_GNN",
+    }
+    filtered = _invoke(vault, "--status", "deep-read", "--format", "json")
+    assert [p["id"] for p in json.loads(filtered.output)] == [
+        "2024_Smith_BERT"
+    ]
+    table = _invoke(vault)
+    assert table.exit_code == 0
+
+
+def test_list_stale_index_falls_back_silently_and_sees_the_new_paper(
+    vault: Path,
+) -> None:
+    """A paper seeded behind INDEX's back fails the freshness probe: the
+    scan serves the truth (all 4 papers) and the JSON stays clean."""
+    _reconcile(vault)
+    _seed_paper(vault, "2025_New_Late", title="Late", authors=["N."])
+    result = _invoke(vault, "--format", "json")
+    assert result.exit_code == 0
+    assert len(json.loads(result.output)) == 4
+
+
+def test_list_added_since_reads_created_at_from_disk(vault: Path) -> None:
+    """--added-since needs created-at, which the INDEX projection does not
+    carry — the query must take the scan even when INDEX is fresh. (If it
+    were wrongly served from INDEX, every paper would be excluded.)"""
+    _seed_paper(
+        vault, "2026_Fresh_Addition",
+        title="Fresh", authors=["F."],
+        **{"created-at": "'2026-06-01T10:00:00+02:00'"},
+    )
+    _reconcile(vault)
+    kept = _invoke(vault, "--added-since", "2026-01-01", "--format", "json")
+    assert [p["id"] for p in json.loads(kept.output)] == [
+        "2026_Fresh_Addition"
+    ]
+    none = _invoke(vault, "--added-since", "2027-01-01", "--format", "json")
+    assert json.loads(none.output) == []
+
+
+def test_list_sort_recent_reads_updated_at_from_disk(vault: Path) -> None:
+    """--sort recent ranks on updated-at (not in the projection): with a
+    fresh INDEX the ranking must still reflect per-paper updated-at."""
+    for paper_id, stamp in [
+        ("2023_Pandi_Cellfree", "2026-01-01T10:00:00+02:00"),
+        ("2024_Smith_BERT", "2026-03-01T10:00:00+02:00"),
+        ("2024_Doe_GNN", "2026-02-01T10:00:00+02:00"),
+    ]:
+        meta = vault / "papers" / paper_id / "metadata.yaml"
+        meta.write_text(
+            meta.read_text(encoding="utf-8")
+            + f"updated-at: '{stamp}'\n",
+            encoding="utf-8",
+        )
+    _reconcile(vault)
+    result = _invoke(vault, "--sort", "recent", "--format", "json")
+    assert [p["id"] for p in json.loads(result.output)] == [
+        "2024_Smith_BERT", "2024_Doe_GNN", "2023_Pandi_Cellfree",
+    ]

@@ -43,7 +43,11 @@ from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.project_refs import write_references_md
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
-from litman.core.views import render_index
+from litman.core.views import (
+    load_index_papers,
+    render_index,
+    view_fields_snapshot,
+)
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ModifyError, PaperNotFoundError
 
@@ -392,6 +396,11 @@ def _apply_modify(
             "Restore the file or re-run `lit add`."
         )
 
+    # Before-state of the view-driving fields (the tag ops below mutate the
+    # lists in place) — diffed after the ops so views/ can be updated
+    # incrementally instead of wiped and rebuilt per edit.
+    old_view_fields = view_fields_snapshot(metadata)
+
     diffs: list[tuple[str, Any, Any]] = []
     # Relation tag ops that landed on the originating paper, recorded as
     # (op_kind, forward_field, opposite_paper_id). After the originating
@@ -545,8 +554,33 @@ def _apply_modify(
     # in-memory modified copies (originating + every touched opposite) so
     # the index reflects the staged change without depending on disk state.
     changed_ids = {paper_id} | set(opposite_writes)
-    all_papers = list_papers(vault)
-    all_papers = [p for p in all_papers if p.get("id") not in changed_ids]
+
+    projects_changed = any(key == "projects" for key, _, _ in diffs)
+    # REFERENCES.md renders more than membership: priority grouping, each
+    # member's title/authors/year, and the per-project relevance-<project>
+    # annotation (review F15) — so edits to those fields must refresh refs
+    # too. Both refs paths need FULL metadata (relevance-* is not in the
+    # INDEX projection), which makes them the only two cases below that
+    # still pay a vault scan.
+    refs_fields_changed = any(
+        key in {"priority", "title", "authors", "year"}
+        or key.startswith("relevance-")
+        for key, _, _ in diffs
+    )
+    member_projects = metadata.get("projects") or []
+    needs_full_metadata = projects_changed or (
+        refs_fields_changed and bool(member_projects)
+    )
+
+    # Splice base: the verified INDEX projections when they suffice (the
+    # common tag/status/date edit — no scan at all), else ONE list_papers
+    # scan (down from two). load_index_papers returning None (missing /
+    # stale / older-schema INDEX) falls back to the scan, and the render
+    # below regenerates a fresh INDEX from it either way.
+    base_papers = None if needs_full_metadata else load_index_papers(vault)
+    if base_papers is None:
+        base_papers = list_papers(vault)
+    all_papers = [p for p in base_papers if p.get("id") not in changed_ids]
     # ruamel YAML's CommentedMap is dict-compatible for our consumers.
     all_papers.append(dict(metadata))
     for opp_meta in opposite_writes.values():
@@ -567,48 +601,46 @@ def _apply_modify(
     # (M30 Phase 4): INDEX + views are recomputed together so they can never
     # drift apart. The staged INDEX.json above is the crash-safety layer (it
     # matches metadata atomically even if this rebuild is interrupted); this
-    # call re-derives the identical INDEX plus the views/ hubs, which are
-    # filesystem-mutating but not text-file-atomic.
+    # call re-derives the identical INDEX from the same in-memory list, and
+    # applies the views/ delta for the edited paper — incremental, so a
+    # single-field edit no longer wipes and relinks every bucket in the
+    # vault. Opposite papers took relation-field writes only, which drive no
+    # view bucket, so the delta covers just the originating paper.
     #
     # review F15: when a `projects` membership tag changed, the project-side
     # derived artifacts (litman_reflib/<id> symlink + REFERENCES.md) must be
     # rebuilt too — otherwise `--add-tag projects=X` writes member TRUTH while
     # the project dir stays stale. Gate on the projects diff so an unrelated
     # modify on a non-member paper does not pay the rebuild-all cost.
-    projects_changed = any(key == "projects" for key, _, _ in diffs)
-    fresh_papers = list_papers(vault)
-    reconcile_derived(vault, papers=fresh_papers, project_refs=projects_changed)
+    # (all_papers is full metadata in that branch — needs_full_metadata.)
+    reconcile_derived(
+        vault,
+        papers=all_papers,
+        project_refs=projects_changed,
+        views_delta=[
+            (paper_id, old_view_fields, view_fields_snapshot(metadata))
+        ],
+    )
 
-    # REFERENCES.md renders more than just membership: it groups by `priority`
-    # and prints each member's `title`/`authors`/`year` + the per-project
-    # `relevance-<project>` annotation. So editing any of those on a paper that
-    # belongs to a project leaves that project's REFERENCES.md stale even though
-    # membership is unchanged (the `projects_changed` gate above misses it).
-    # Surgically regenerate ONLY the affected paper's own projects, reusing the
-    # in-memory paper list — no rebuild-all, no extra disk scan. The
-    # `projects_changed` case already rebuilt every project above (and is the
-    # only path that must also refresh a project the paper was just removed
-    # from), so skip it here. Best-effort like rebuild_all_project_refs: a
+    # Surgical REFERENCES.md refresh for refs-rendered fields when membership
+    # itself did not change (the projects_changed path above already rebuilt
+    # every project, including one the paper just left). Only the affected
+    # paper's own projects are regenerated, reusing the in-memory paper list —
+    # full metadata by construction (this condition implies
+    # needs_full_metadata). Best-effort like rebuild_all_project_refs: a
     # project whose dir is missing on this machine is silently skipped.
-    if not projects_changed:
-        refs_fields_changed = any(
-            key in {"priority", "title", "authors", "year"}
-            or key.startswith("relevance-")
-            for key, _, _ in diffs
-        )
-        member_projects = metadata.get("projects") or []
-        if refs_fields_changed and member_projects:
-            registry = load_config(vault).projects
-            for proj in member_projects:
-                project_dir_str = registry.get(proj)
-                if not project_dir_str:
-                    continue
-                project_dir = Path(project_dir_str).expanduser()
-                if not project_dir.is_dir():
-                    continue
-                write_references_md(
-                    vault, proj, project_dir, papers=fresh_papers
-                )
+    if not projects_changed and refs_fields_changed and member_projects:
+        registry = load_config(vault).projects
+        for proj in member_projects:
+            project_dir_str = registry.get(proj)
+            if not project_dir_str:
+                continue
+            project_dir = Path(project_dir_str).expanduser()
+            if not project_dir.is_dir():
+                continue
+            write_references_md(
+                vault, proj, project_dir, papers=all_papers
+            )
 
     # ----- Output -----
     console.print(f"[bold green]✓ Modified[/] {paper_id}")

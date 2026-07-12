@@ -48,6 +48,7 @@ from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.views import load_index_papers, view_fields_snapshot
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
@@ -469,10 +470,11 @@ def add_cmd(
     # The source PDF is copied (not moved) inside the atomic block so that a
     # mid-write failure leaves the original intact; the unlink runs after the
     # block once the vault is known-consistent.
+    new_metadata = _build_metadata(parsed, paper_id)
     try:
         paper_dir.mkdir(parents=True)
         with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
-            _yaml.dump(_build_metadata(parsed, paper_id), f)
+            _yaml.dump(new_metadata, f)
         (paper_dir / "notes.md").write_text(
             f"# {parsed['title']}\n\n"
             f"{WIKILINK_REMINDER}\n\n"
@@ -520,8 +522,31 @@ def add_cmd(
     # cleanup below — that would strand the source (mv semantics broken) AND
     # leave INDEX lagging with no warning. Treat it as the same best-effort the
     # comment already promised.
+    #
+    # Fast path: splice the just-written metadata onto the verified INDEX
+    # projections and move only the buckets this paper joins, so ingesting the
+    # 301st paper costs the same as the 2nd (before, every add re-read every
+    # metadata.yaml and relinked every bucket — a batch import paid that
+    # quadratically). ``pending_ids`` tells the freshness probe that this one
+    # id is expected on disk but not yet in INDEX; a stale INDEX for any other
+    # reason returns None and takes the wholesale rebuild, which self-heals.
     try:
-        reconcile_derived(vault, project_refs=False)
+        indexed = load_index_papers(vault, pending_ids={paper_id})
+        if indexed is None:
+            reconcile_derived(vault, project_refs=False)
+        else:
+            reconcile_derived(
+                vault,
+                papers=[*indexed, dict(new_metadata)],
+                project_refs=False,
+                views_delta=[
+                    (
+                        paper_id,
+                        view_fields_snapshot({}),
+                        view_fields_snapshot(new_metadata),
+                    )
+                ],
+            )
     except Exception as exc:
         console.print(
             f"[yellow]Warning:[/] INDEX/views rebuild failed "

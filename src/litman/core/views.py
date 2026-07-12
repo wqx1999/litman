@@ -20,13 +20,14 @@ opening the JSON directly. JSON has no native comment syntax, so the
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from litman.core.dates import now_iso
-from litman.core.portable_link import make_portable_link
+from litman.core.portable_link import make_portable_link, remove_link_if_present
 
 # Views whose tag values come from a list-typed metadata field.
 LIST_VIEW_FIELDS: dict[str, str] = {
@@ -206,6 +207,85 @@ def load_index_ids(vault: Path) -> set[str] | None:
     }
 
 
+def disk_paper_ids(vault: Path) -> set[str]:
+    """Directory names under ``<vault>/papers/`` — one readdir, no file reads.
+
+    The cheap freshness probe for :func:`load_index_papers`: on Linux
+    ``os.scandir`` answers ``is_dir`` from the directory entry itself, so a
+    300-paper vault costs one syscall-ish listing instead of 300 YAML parses.
+    """
+    papers_dir = vault / "papers"
+    try:
+        with os.scandir(papers_dir) as it:
+            return {entry.name for entry in it if entry.is_dir()}
+    except OSError:
+        return set()
+
+
+def load_index_papers(
+    vault: Path, *, pending_ids: set[str] | None = None
+) -> list[dict[str, Any]] | None:
+    """Load INDEX.json's per-paper projections as a verified paper list.
+
+    The read-side fast path (the documented agent contract: one JSON read
+    instead of a per-paper YAML scan). Returns the ``papers`` entries only
+    when every freshness probe passes; on ANY doubt it returns ``None`` and
+    the caller falls back to ``list_papers`` — INDEX stays a derived
+    artifact, never a second source of truth. Specifically ``None`` when:
+
+    * INDEX.json is missing, unreadable, or not valid JSON;
+    * an entry is not a dict, lacks an id, or its key set differs from
+      ``INDEX_PAPER_FIELDS`` (an INDEX written by an older/newer litman —
+      the next write command regenerates it wholesale);
+    * the entry id set does not exactly match the ``papers/`` directory
+      listing (stale after a manual copy/delete; also any vault holding a
+      broken paper dir, which ``list_papers`` would drop — conservative:
+      those vaults keep today's full-scan behaviour until repaired).
+
+    Args:
+        vault: Vault root.
+        pending_ids: Paper ids whose directory is ALREADY on disk but which
+            the caller knows are not in INDEX yet — ``lit add``'s just-written
+            paper, whose metadata the caller holds in memory. They are
+            excluded from the id-set probe (and only from it), so a
+            mid-ingest vault still takes the fast path; every other staleness
+            signal is checked exactly as before.
+
+    Deliberately silent on fallback: surfacing INDEX↔disk drift is owned by
+    the Tier-1 hook (``index_vs_disk``) and ``lit health-check``, and the
+    JSON output modes downstream must stay clean for parsers.
+
+    The returned dicts carry ONLY the projection fields — enough for
+    ``lit list`` filters, INDEX re-rendering and the views/ buckets, but NOT
+    for REFERENCES.md (``relevance-<project>`` lives only in metadata.yaml).
+    Callers needing full metadata must scan.
+    """
+    target = vault / "INDEX.json"
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    entries = payload.get("papers")
+    if not isinstance(entries, list):
+        return None
+    expected_keys = set(INDEX_PAPER_FIELDS)
+    papers: list[dict[str, Any]] = []
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != expected_keys
+            or not entry.get("id")
+        ):
+            return None
+        papers.append(entry)
+    ids = {str(p["id"]) for p in papers}
+    if len(ids) != len(papers):
+        return None
+    if ids | (pending_ids or set()) != disk_paper_ids(vault):
+        return None
+    return papers
+
+
 def rewrite_index_dropping_ids(vault: Path, dead_ids: set[str]) -> int:
     """Remove ``dead_ids`` from the existing ``INDEX.json`` without reading metadata.
 
@@ -330,4 +410,92 @@ def rebuild_views(
                 n += 1
         counts[view_name] = n
 
+    return counts
+
+
+def view_fields_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Copy the view-driving fields out of a metadata dict.
+
+    Taken BEFORE edit ops run — the tag ops mutate the list values in
+    place, so :func:`update_views_for_paper` needs a defensive copy of the
+    before-state to diff bucket membership against.
+    """
+    snap: dict[str, Any] = {}
+    for field_name in LIST_VIEW_FIELDS.values():
+        snap[field_name] = list(metadata.get(field_name) or [])
+    for field_name in SCALAR_VIEW_FIELDS.values():
+        snap[field_name] = metadata.get(field_name)
+    return snap
+
+
+def _bucket_names(
+    fields: dict[str, Any], field_name: str, is_list: bool
+) -> set[str]:
+    """Bucket directory names a paper occupies for one view dimension."""
+    if is_list:
+        return {_safe_name(str(v)) for v in (fields.get(field_name) or [])}
+    value = fields.get(field_name)
+    return {_safe_name(str(value))} if value else set()
+
+
+def update_views_for_paper(
+    vault: Path,
+    paper_id: str,
+    old_fields: dict[str, Any],
+    new_fields: dict[str, Any],
+) -> dict[str, int]:
+    """Incrementally update ``views/by-*/`` for one paper's field edit.
+
+    The single-paper-edit counterpart of :func:`rebuild_views`, and
+    equivalent by construction on a consistent tree: only buckets whose
+    membership changed between ``old_fields`` and ``new_fields`` (both from
+    :func:`view_fields_snapshot`) are touched. The paper's link is removed
+    from every bucket it left — and an emptied bucket directory is removed,
+    since a full rebuild would never have created it — and upserted into
+    every bucket it joined. Buckets it stays in, and every other paper's
+    links, are not visited at all, which is the point: a 300-paper vault
+    pays two link operations for a status change instead of a full wipe and
+    ~1200 re-links.
+
+    Maintains consistency, never establishes it: a views/ tree damaged by
+    hand keeps its damage outside the edited buckets until a full rebuild
+    (``lit health-check --fix`` / ``lit refresh-views`` / any write command
+    still on the wholesale path) repairs it — the same trust boundary as
+    INDEX.json's fast read path.
+
+    Same graceful-degrade contract as ``rebuild_views``: on a filesystem
+    without links, creations no-op with the one-shot warning and removals
+    find nothing to remove. Returns ``{view_name: n_links_created}``
+    (creations only, mirroring ``rebuild_views``' counting).
+    """
+    views_dir = vault / "views"
+    target = vault / "papers" / paper_id
+    view_specs = [
+        (view_name, field_name, True)
+        for view_name, field_name in LIST_VIEW_FIELDS.items()
+    ] + [
+        (view_name, field_name, False)
+        for view_name, field_name in SCALAR_VIEW_FIELDS.items()
+    ]
+
+    counts: dict[str, int] = {}
+    for view_name, field_name, is_list in view_specs:
+        old_buckets = _bucket_names(old_fields, field_name, is_list)
+        new_buckets = _bucket_names(new_fields, field_name, is_list)
+        n = 0
+        for bucket_name in sorted(old_buckets - new_buckets):
+            bucket = views_dir / view_name / bucket_name
+            remove_link_if_present(bucket / paper_id)
+            try:
+                # Only succeeds when the bucket is now empty — matching the
+                # full rebuild, which never materializes an empty bucket.
+                bucket.rmdir()
+            except OSError:
+                pass
+        for bucket_name in sorted(new_buckets - old_buckets):
+            bucket = views_dir / view_name / bucket_name
+            bucket.mkdir(parents=True, exist_ok=True)
+            if make_portable_link(bucket / paper_id, target):
+                n += 1
+        counts[view_name] = n
     return counts

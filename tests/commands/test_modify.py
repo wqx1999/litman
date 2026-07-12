@@ -1252,3 +1252,99 @@ def test_modify_rm_tag_opposite_lacks_item_is_noop(
     # Opposite untouched: still empty AND not re-stamped.
     assert _read_meta(vault, b)["extended-by"] == []
     assert _read_meta(vault, b)["updated-at"] == seed_updated
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: a single-field edit must not rescan the vault
+# ---------------------------------------------------------------------------
+
+
+def test_modify_serves_the_edit_from_index_without_a_vault_scan(
+    vault_with_paper: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a fresh INDEX, a tag/status edit reads no metadata.yaml beyond
+    its own paper: the splice base comes from INDEX.json and the views move
+    incrementally. list_papers is booby-trapped to prove the scan is gone —
+    the real-default e2e for the whole fast path."""
+    vault, paper_id = vault_with_paper
+
+    def _boom(v: Path) -> list[dict[str, Any]]:
+        raise AssertionError("full vault scan ran on the fast path")
+
+    monkeypatch.setattr("litman.commands.modify.list_papers", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "status=skim", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    # INDEX re-rendered with the change spliced in.
+    entries = {p["id"]: p for p in _read_index(vault)["papers"]}
+    assert entries[paper_id]["status"] == "skim"
+    # Views moved incrementally: new bucket linked, emptied bucket gone.
+    assert (vault / "views" / "by-status" / "skim" / paper_id).is_symlink()
+    assert not (vault / "views" / "by-status" / "inbox").exists()
+
+
+def test_modify_with_stale_index_falls_back_to_the_scan_and_heals(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A paper dir added behind INDEX's back fails the freshness probe, so
+    the edit takes the full scan — and the rendered INDEX now carries both
+    papers (the fallback is also the self-heal)."""
+    vault, paper_id = vault_with_paper
+    late = vault / "papers" / "2025_Late_Arrival"
+    late.mkdir(parents=True)
+    (late / "metadata.yaml").write_text(
+        "id: 2025_Late_Arrival\ntitle: Late\nauthors:\n  - L, A.\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    ids = {p["id"] for p in _read_index(vault)["papers"]}
+    assert ids == {paper_id, "2025_Late_Arrival"}
+
+
+def test_modify_views_state_equals_a_full_rebuild(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """After a real CLI edit through the incremental path, a wholesale
+    reconcile must find nothing to change in views/ — the equivalence
+    contract, checked end to end."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "status=deep-read",
+            "--add-tag", "topics=peptide",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    def _tree(root: Path) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for p in sorted(root.rglob("*")):
+            rel = p.relative_to(root).as_posix()
+            out[rel] = "link" if p.is_symlink() else (
+                "dir" if p.is_dir() else "file"
+            )
+        return out
+
+    incremental = _tree(vault / "views")
+    reconcile_derived(vault, project_refs=False)
+    assert _tree(vault / "views") == incremental

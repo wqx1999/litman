@@ -16,7 +16,7 @@ from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.query import matches_filters, recency_key, split_csv
-from litman.core.views import project_paper
+from litman.core.views import load_index_papers, project_paper
 
 console = Console()
 
@@ -236,7 +236,20 @@ def list_cmd(
     respectively. --limit N keeps the first N after filtering + sorting.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    all_papers = list_papers(vault)
+    # INDEX fast path: every filter, both output formats and the default id
+    # sort read only projection fields, so the verified INDEX.json serves
+    # them in one JSON read instead of a per-paper YAML scan (the documented
+    # agent contract). Two queries need fields the projection does not
+    # carry — created-at (--added-since) and updated-at (--sort recent) —
+    # and take the scan, as does any vault whose INDEX is missing, stale or
+    # older-schema (load_index_papers → None; drift surfacing stays owned by
+    # the Tier-1 hook and lit health-check). Both sources yield the same
+    # id-ascending order and, via project_paper, byte-identical output.
+    all_papers: list[dict[str, Any]] | None = None
+    if added_since is None and sort_by != "recent":
+        all_papers = load_index_papers(vault)
+    if all_papers is None:
+        all_papers = list_papers(vault)
 
     filters = {
         "year": split_csv(year),

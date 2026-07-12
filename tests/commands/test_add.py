@@ -847,3 +847,89 @@ def test_add_scan_failure_does_not_block_ingest(
     assert (paper_dir / "notes.md").is_file()
     assert "Warning" in result.output
     assert "scan failed" in result.output
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: ingesting the Nth paper costs what the 2nd did
+# ---------------------------------------------------------------------------
+
+
+def _seed_indexed_paper(vault: Path, paper_id: str, **fields: Any) -> None:
+    """Write a paper directly to disk (INDEX is reconciled by the caller)."""
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+    lines = [f"id: {paper_id}", "title: Seeded", "authors:", "  - S, A."]
+    for key, value in fields.items():
+        lines.append(f"{key}: {value}")
+    (paper_dir / "metadata.yaml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
+def test_add_indexes_the_new_paper_without_rescanning_the_vault(
+    vault: Path,
+    fake_pdf: Path,
+    mock_crossref: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a fresh INDEX, ingest splices the new paper onto the projections
+    and links only its own buckets — no metadata.yaml but its own is read.
+    list_papers is booby-trapped to prove it (real-default e2e)."""
+    from litman.core.correctors import reconcile_derived
+
+    _seed_indexed_paper(vault, "2020_Prior_Work", status="inbox")
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list[dict[str, Any]]:
+        raise AssertionError("full vault scan ran on the add fast path")
+
+    monkeypatch.setattr("litman.core.document.list_papers", _boom)
+    monkeypatch.setattr("litman.core.correctors.views.rebuild_views", _boom)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in index["papers"]}
+    assert ids == {"2020_Prior_Work", _PAPER_ID}
+    # The new paper joined by-status/inbox; the seeded one kept its link.
+    inbox = vault / "views" / "by-status" / "inbox"
+    assert (inbox / _PAPER_ID).is_symlink()
+    assert (inbox / "2020_Prior_Work").is_symlink()
+
+
+def test_add_with_stale_index_falls_back_to_the_full_rebuild(
+    vault: Path,
+    fake_pdf: Path,
+    mock_crossref: dict[str, Any],
+) -> None:
+    """A paper on disk that INDEX never saw fails the freshness probe, so
+    ingest takes the wholesale rebuild — which also heals the omission."""
+    _seed_indexed_paper(vault, "2020_Unindexed_Paper", status="inbox")
+    # No reconcile: INDEX.json does not know about the seeded paper.
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in index["papers"]}
+    assert ids == {"2020_Unindexed_Paper", _PAPER_ID}
+    assert (
+        vault / "views" / "by-status" / "inbox" / "2020_Unindexed_Paper"
+    ).is_symlink()

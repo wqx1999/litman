@@ -32,6 +32,7 @@ from typing import Any
 from ruamel.yaml import YAMLError
 
 from litman.core.id import derive_keyword_alternatives
+from litman.core.views import load_index_papers
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError
 
@@ -86,6 +87,16 @@ def find_paper_by_doi(
         is case-insensitive. Paper folders without a metadata.yaml, or whose
         metadata fails to parse, are skipped — health-check is the right
         surface for those errors, not lit-add.
+
+    A verified INDEX answers this in one JSON read plus (on a hit) a single
+    metadata.yaml, instead of parsing every paper in the vault — this runs on
+    every ``lit add`` (duplicate refusal) and every ``--paper-doi`` lookup.
+    Selection stays byte-identical to the scan: INDEX entries are sorted by
+    id, the same order the directory walk below takes, so "first match" means
+    the same paper on both paths — including in a vault that already holds a
+    duplicate DOI, where which paper gets picked must not shift under a
+    destructive ``lit rm --paper-doi``. Any doubt (stale INDEX, unreadable
+    metadata behind a hit) drops through to the scan.
     """
     if not doi:
         return None
@@ -95,6 +106,29 @@ def find_paper_by_doi(
     papers_dir = vault / "papers"
     if not papers_dir.is_dir():
         return None
+
+    indexed = load_index_papers(vault)
+    if indexed is not None:
+        for entry in sorted(indexed, key=lambda p: str(p.get("id", ""))):
+            existing = entry.get("doi") or ""
+            if not existing or normalize_doi(str(existing)) != target:
+                continue
+            paper_id = str(entry["id"])
+            try:
+                meta = _yaml_safe.load(
+                    (papers_dir / paper_id / "metadata.yaml").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (OSError, UnicodeDecodeError, YAMLError):
+                break  # unreadable behind the hit — let the scan decide
+            if isinstance(meta, dict):
+                return paper_id, meta
+            break
+        else:
+            # Fresh INDEX, no entry carries this DOI: conclusive, no scan.
+            return None
+
     for paper_dir in sorted(papers_dir.iterdir()):
         if not paper_dir.is_dir():
             continue

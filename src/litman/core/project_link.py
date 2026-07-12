@@ -907,6 +907,8 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
 def rebuild_all_project_links(
     vault: Path,
     registry: dict[str, str],
+    *,
+    papers: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Recreate every project's symlinks + REFERENCES.md from scratch.
 
@@ -919,8 +921,13 @@ def rebuild_all_project_links(
     Does NOT touch metadata — assumes the vault's metadata.yaml files
     are the source of truth (which they are). Only the on-disk symlinks
     + REFERENCES.md get refreshed.
+
+    ``papers`` reuses an already-loaded FULL metadata list (``list_papers``
+    output — the downstream REFERENCES.md render reads
+    ``relevance-<project>``, which INDEX projections lack); ``None`` scans.
     """
-    papers = list_papers(vault)
+    if papers is None:
+        papers = list_papers(vault)
     out: dict[str, dict[str, Any]] = {}
 
     for project, project_dir_str in sorted(registry.items()):
