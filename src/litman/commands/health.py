@@ -73,6 +73,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "paper_dir_validity": (
         "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
     ),
+    "duplicate_doi": "Duplicate DOIs (--paper-doi lookups become ambiguous)",
     "discussion_scaffold": "Discussion log scaffold (discussion.md + its format header)",
     "index_vs_disk": "INDEX.json vs papers/ on disk",
     "views_vs_metadata": "Views (by-*/) vs metadata",

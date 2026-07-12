@@ -14,7 +14,6 @@ Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import click
@@ -36,6 +35,7 @@ from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import rmtree
 from litman.core.trash import (
     RestoreResult,
     empty_trash,
@@ -156,7 +156,11 @@ def _reclone_missing_repo(
         # ``bind_paper_to_repo`` can raise PaperNotFoundError, which is not a
         # CodeError and would otherwise escape and crash an already-committed
         # restore.
-        shutil.rmtree(repo_root, ignore_errors=True)
+        # locking.rmtree, not shutil: a half-finished `git clone` already
+        # wrote read-only .git objects, which Windows refuses to unlink — a
+        # bare rmtree would strand them and wedge every future re-clone on
+        # "directory not empty".
+        rmtree(repo_root, ignore_errors=True)
         if isinstance(e, CodeError):
             raise
         raise CodeError(f"re-clone of {repo_name!r} failed: {e}") from e

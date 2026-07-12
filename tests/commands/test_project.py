@@ -365,8 +365,44 @@ def test_project_set_path_happy(
     )
     assert result.exit_code == 0, result.output
     assert _config_projects(vault) == {"p": str(b)}
-    # Always prints the rebuild hint.
+    # Non-interactive: no prompt possible, so the manual hint survives here.
     assert "lit link --rebuild-all" in result.output
+
+
+def test_project_set_path_interactive_rebuilds_links_with_one_enter(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """House rule: repairable drift gets a [Y/n] default-Y at the point of
+    use. set-path dangles every project link at the old location — pressing
+    Enter must leave litman_reflib rebuilt at the new one, with no
+    "remember to run lit link --rebuild-all later" homework."""
+    from litman.commands import project as project_mod
+
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    paper_dir = vault / "papers" / "2024_P_One"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_P_One\ntitle: T\nprojects: [p]\n", encoding="utf-8"
+    )
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(a), "--library", str(vault)],
+    )
+
+    monkeypatch.setattr(project_mod, "_stdin_isatty", lambda: True)
+    result = runner.invoke(
+        cli,
+        ["project", "set-path", "p", str(b), "--library", str(vault)],
+        input="\n",  # the one Enter (default Y)
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (b / "litman_reflib" / "2024_P_One").is_symlink()
+    assert "lit link --rebuild-all" not in result.output
 
 
 def test_project_set_path_same_is_noop(

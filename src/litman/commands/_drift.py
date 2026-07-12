@@ -53,7 +53,14 @@ from litman.core.vault_registry import (
 
 
 def _default_tty_probe() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    # A windows-subsystem process (the litw desktop launcher) has stdin set
+    # to None, and None.isatty() is an AttributeError, not an answer.
+    return (
+        sys.stdin is not None
+        and sys.stdout is not None
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
 
 
 def _exists_bounded(

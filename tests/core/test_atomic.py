@@ -958,3 +958,24 @@ def test_nested_staged_dirs_are_dir_fsynced(
 
     assert root / "papers" / "2024_Foo" in synced
     assert root / "papers" in synced
+
+
+def test_dir_fsync_on_windows_is_a_silent_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing O_DIRECTORY is a constant of the platform — true on every
+    Windows box on every write — so the degraded guarantee must NOT be
+    re-announced per command (it nagged users and polluted every agent
+    run's stderr). ADR-005 + the docs carry the guarantee level; the
+    staged-write recovery path still reports actual half-finished commits."""
+    from litman.core import atomic
+
+    warn_calls: list[object] = []
+    monkeypatch.setattr(
+        atomic, "_warn_dir_fsync_unsupported", lambda *a: warn_calls.append(a)
+    )
+    monkeypatch.setattr(atomic.sys, "platform", "win32")
+
+    atomic._fsync_dir(tmp_path)
+
+    assert warn_calls == []

@@ -36,6 +36,7 @@ from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
 from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
+from litman.core.dedup import find_paper_by_doi
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
@@ -137,8 +138,15 @@ def _coerce_scalar(value: str) -> Any:
         return value
 
 
-def _apply_set(metadata: dict[str, Any], key: str, raw_value: str) -> tuple[Any, Any]:
-    """Apply a --set op. Returns (before, after) for the diff summary."""
+def _apply_set(
+    vault: Path, paper_id: str, metadata: dict[str, Any], key: str, raw_value: str
+) -> tuple[Any, Any]:
+    """Apply a --set op. Returns (before, after) for the diff summary.
+
+    ``vault`` / ``paper_id`` exist for the DOI-uniqueness gate: doi is the one
+    scalar whose value must be unique across the vault, so validating it needs
+    more than the metadata dict in hand.
+    """
     if key in FORBIDDEN_SET_FIELDS:
         if key == "id":
             raise ModifyError(
@@ -174,6 +182,30 @@ def _apply_set(metadata: dict[str, Any], key: str, raw_value: str) -> tuple[Any,
                 f"Invalid {key} {after!r}. Allowed values: "
                 f"{', '.join(sorted(allowed))}."
             )
+    # DOI uniqueness: `lit add` hard-refuses a duplicate DOI, and --set doi=
+    # must not stay an unguarded backdoor — once two papers share a DOI, every
+    # --paper-doi lookup (show / cite / rm) silently resolves to the
+    # alphabetically-first match, so `rm --paper-doi` can trash the wrong
+    # paper. Same-paper re-set (dup is this paper) stays a legal no-op.
+    if key == "doi" and after is not None:
+        dup = find_paper_by_doi(vault, str(after))
+        if dup is not None and dup[0] != paper_id:
+            dup_id, dup_meta = dup
+            raise ModifyError(
+                f"DOI {after!r} already belongs to another paper:\n"
+                f"  id:    {dup_id}\n"
+                f"  title: {dup_meta.get('title') or '(no title)'}\n"
+                "Two papers must never share a DOI — --paper-doi lookups "
+                "(show / cite / rm) would pick one arbitrarily. If the other "
+                "paper's DOI is the wrong one, fix it there first."
+            )
+    # year feeds straight into exported BibTeX (`year = {...}`); a
+    # non-numeric value passes every downstream check and only surfaces as an
+    # invalid .bib entry in the user's thesis.
+    if key == "year" and after is not None and not isinstance(after, int):
+        raise ModifyError(
+            f"year must be a number, got {after!r}. Example: --set year=2023"
+        )
     metadata[key] = after
     return before, after
 
@@ -368,7 +400,7 @@ def _apply_modify(
 
     for spec in set_ops:
         key, value = _parse_kv(spec, "--set")
-        before, after = _apply_set(metadata, key, value)
+        before, after = _apply_set(vault, paper_id, metadata, key, value)
         # Compare as strings: ruamel round-trips an unquoted YAML date
         # (read-date / last-revisited) into a datetime.date, while
         # _coerce_scalar always returns str / int / None. date(2026,6,1) ==

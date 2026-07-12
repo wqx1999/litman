@@ -201,11 +201,46 @@ def test_lit_init_custom_name_flag(tmp_path: Path) -> None:
 
 
 def test_lit_init_missing_parent_exits_nonzero(tmp_path: Path) -> None:
+    """Non-interactive contract unchanged: automation gets the explicit error."""
     runner = CliRunner()
     missing = tmp_path / "nope"
     result = runner.invoke(cli, ["init", str(missing)])
     assert result.exit_code != 0
     assert isinstance(result.exception, ParentNotFoundError)
+
+
+def test_lit_init_missing_parent_interactive_offers_to_create_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tutorial's first command is `lit init ~/research` on a machine
+    where ~/research does not exist — one Enter must repair that, not an
+    error telling the user to mkdir by hand."""
+    from litman.commands import init as init_mod
+
+    monkeypatch.setattr(init_mod, "_stdin_isatty", lambda: True)
+    runner = CliRunner()
+    missing = tmp_path / "research"
+
+    result = runner.invoke(cli, ["init", str(missing)], input="\n")  # default Y
+
+    assert result.exit_code == 0, result.output
+    assert (missing / "literature_vault" / "papers").is_dir()
+
+
+def test_lit_init_missing_parent_interactive_decline_keeps_the_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.commands import init as init_mod
+
+    monkeypatch.setattr(init_mod, "_stdin_isatty", lambda: True)
+    runner = CliRunner()
+    missing = tmp_path / "research"
+
+    result = runner.invoke(cli, ["init", str(missing)], input="n\n")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ParentNotFoundError)
+    assert not missing.exists()
 
 
 def test_lit_init_existing_vault_refused(tmp_path: Path) -> None:

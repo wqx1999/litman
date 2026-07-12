@@ -523,9 +523,37 @@ def test_make_shortcut_linux_writes_desktop_file(
 
 
 def test_shortcut_path_win32_is_on_desktop(monkeypatch, tmp_path) -> None:
+    """Fallback arm: no shell API reachable (this POSIX host has no
+    ctypes.windll) → the literal %USERPROFILE%\\Desktop."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
     assert shortcut_path() == tmp_path / "profile" / "Desktop" / "litman.lnk"
+
+
+def test_shortcut_path_win32_honors_onedrive_desktop_redirect(
+    monkeypatch, tmp_path
+) -> None:
+    """OneDrive folder backup moves Desktop to %USERPROFILE%\\OneDrive\\Desktop;
+    the shortcut must follow the shell's answer (SHGetFolderPathW), or the
+    installer promises a Desktop icon the user cannot see."""
+    import types
+
+    redirected = tmp_path / "profile" / "OneDrive" / "Desktop"
+
+    class _Buf:
+        value = str(redirected)
+
+    fake_ctypes = types.SimpleNamespace(
+        create_unicode_buffer=lambda n: _Buf(),
+        windll=types.SimpleNamespace(
+            shell32=types.SimpleNamespace(SHGetFolderPathW=lambda *a: 0)
+        ),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    assert shortcut_path() == redirected / "litman.lnk"
 
 
 def test_make_shortcut_win32_builds_powershell_command(

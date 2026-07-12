@@ -720,3 +720,19 @@ def test_hook_bridge_heal_end_to_end(
     link = project_dir / "litman_reflib" / "p1"
     assert link.is_symlink()
     assert link.resolve() == (moved / "papers" / "p1").resolve()
+
+
+def test_tty_probe_survives_none_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The litw desktop launcher is a windows-subsystem process: CPython sets
+    sys.stdin to None there, and None.isatty() is an AttributeError. The probe
+    must answer "not interactive", not blow up mid-hook (the hook's blanket
+    except would silently skip drift handling — including its own designed
+    non-TTY report path)."""
+    monkeypatch.setattr(_drift.sys, "stdin", None)
+    assert _drift._default_tty_probe() is False
+
+    monkeypatch.setattr(_drift.sys, "stdin", object())  # not None, no tty
+    monkeypatch.setattr(_drift.sys, "stdout", None)
+    assert _drift._default_tty_probe() is False

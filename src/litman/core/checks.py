@@ -52,6 +52,7 @@ from litman.core.dates import (
     is_iso_date,
     is_iso_datetime,
 )
+from litman.core.dedup import normalize_doi
 from litman.core.id import is_valid_id
 from litman.core.notes import (
     enumerate_markdown_files,
@@ -630,6 +631,56 @@ def check_discussion_scaffold(
                     hint="`lit health-check --fix` re-inserts it",
                 )
             )
+    return out
+
+
+def check_duplicate_doi(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
+    """No two papers share a DOI (ledger: validity, report-only).
+
+    ``lit add`` refuses a duplicate at ingest and ``lit modify --set doi=``
+    refuses to create one, but metadata restored from a backup or written by
+    an older litman can still collide. The collision is dangerous out of
+    proportion to its looks: every ``--paper-doi`` lookup (``show`` / ``cite``
+    / ``rm``!) resolves to the alphabetically-first match, so a destructive
+    command aimed by DOI can hit the wrong paper. One finding per colliding
+    DOI, naming every holder — severity ``error`` because lookups are already
+    misrouting.
+
+    Not auto-fixable: only the user knows which paper genuinely owns the DOI.
+    """
+    by_doi: dict[str, list[str]] = {}
+    for paper in papers:
+        paper_id = paper.get("id")
+        doi = paper.get("doi")
+        if not paper_id or not doi:
+            continue
+        normalized = normalize_doi(str(doi))
+        if not normalized:
+            continue
+        by_doi.setdefault(normalized, []).append(str(paper_id))
+
+    out: list[Issue] = []
+    for normalized, ids in sorted(by_doi.items()):
+        if len(ids) < 2:
+            continue
+        joined = ", ".join(sorted(ids))
+        out.append(
+            Issue(
+                category="duplicate_doi",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"DOI {normalized!r} is shared by {len(ids)} papers: "
+                    f"{joined} — every --paper-doi lookup (show / cite / rm) "
+                    "resolves to one of them arbitrarily"
+                ),
+                hint=(
+                    "decide which paper owns the DOI, then fix the others: "
+                    "`lit modify <id> --set doi=<correct-doi>` (or --set "
+                    "doi= to clear)"
+                ),
+            )
+        )
     return out
 
 
@@ -2174,8 +2225,15 @@ def check_pdf_viewer(
     * Configured ``default_pdf_viewer`` set but not on PATH → warning;
       ``lit open`` would exit 2 with a "install / fix config" hint.
     * No configured viewer and the platform default (``xdg-open`` /
-      ``wslview``) is missing on Linux → warning. (macOS always has
-      ``open``; Windows always has ``os.startfile``.)
+      ``wslview``) is missing on Linux → warning on a desktop (installing
+      xdg-utils genuinely fixes it), info on a headless session. (macOS
+      always has ``open``; Windows always has ``os.startfile``.)
+    * ``xdg-open`` present but no display reachable → info, never warning:
+      "this SSH/cron session has no screen" is an environment fact, not
+      vault damage, and a warning would make health-check exit 1 forever on
+      every headless box — the exact failure mode ``links_unsupported`` was
+      demoted for. ``lit open`` there prints the path, which is the correct
+      behavior, not a defect.
 
     Lazy imports avoid pulling pydantic + the viewer module at health-check
     module-load time — both are heavier than checks needs for the unrelated
@@ -2217,7 +2275,9 @@ def check_pdf_viewer(
         out.append(
             Issue(
                 category="pdf_viewer",
-                severity="warning",
+                # Headless: environmental, unfixable from here (info).
+                # Desktop: actionable gap — installing xdg-utils fixes it.
+                severity="info" if is_headless() else "warning",
                 paper_id=None,
                 message=(
                     "no platform PDF viewer detected — "
@@ -2233,7 +2293,7 @@ def check_pdf_viewer(
         out.append(
             Issue(
                 category="pdf_viewer",
-                severity="warning",
+                severity="info",
                 paper_id=None,
                 message=(
                     "xdg-open is installed but no graphical display is "
@@ -2593,6 +2653,7 @@ def check_code_clone_integrity(
 #       diagnostics, surface only → klass=validity, correction=report.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
+    CheckSpec("duplicate_doi", check_duplicate_doi, "full", "validity", "report"),
     CheckSpec(
         "paper_dir_validity", check_paper_dir_validity, "full", "validity", "report"
     ),

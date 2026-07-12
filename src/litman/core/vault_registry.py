@@ -551,6 +551,16 @@ def find_by_name(reg: VaultRegistry, name: str) -> VaultEntry | None:
     return None
 
 
+def _looks_like_path(name: str) -> bool:
+    """True when a ``--vault`` value is separator/~-shaped — i.e. a PATH the
+    user meant to hand to ``--library``."""
+    return (
+        os.sep in name
+        or (os.altsep is not None and os.altsep in name)
+        or name.startswith("~")
+    )
+
+
 def resolve_vault_param(reg: VaultRegistry, name: str) -> Path:
     """Return the absolute path of vault ``name`` for ``--vault`` plumbing.
 
@@ -564,6 +574,16 @@ def resolve_vault_param(reg: VaultRegistry, name: str) -> Path:
     entry = find_by_name(reg, name)
     if entry is None:
         names = ", ".join(v.name for v in reg.vaults) or "(none registered)"
+        if _looks_like_path(name):
+            # The classic conflation: --vault takes a registered NAME,
+            # --library takes a path. Pushing a path-holder toward
+            # `lit vault add` sends them to the wrong fix.
+            raise VaultRegistryError(
+                f"No vault named {name!r} in the registry — that looks like "
+                "a filesystem path. --vault takes a registered name "
+                f"(available: {names}); for a path use: "
+                f"lit <cmd> --library {name}"
+            )
         raise VaultRegistryError(
             f"No vault named {name!r} in the registry. Available: {names}. "
             "Run `lit vault add` to register one."

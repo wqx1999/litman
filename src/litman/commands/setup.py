@@ -51,7 +51,7 @@ console = Console()
 def _stdin_is_tty() -> bool:
     """Indirection so tests can force the interactive branch. ``lit setup``
     is TTY-only; automation calls the standalone commands instead."""
-    return sys.stdin.isatty()
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
 @click.command("setup")

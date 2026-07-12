@@ -61,8 +61,11 @@ _KEYWORD_COLON_PREFIX_MAX = 12  # slug(prefix) length cutoff for colon special-c
 _KEYWORD_COLON_POST_MIN = 5     # min hyphen-stripped slug length for post-colon first word
 
 # Valid paper id: starts with [A-Za-z0-9_-], then any of [A-Za-z0-9._-].
-# Disallows leading dot (no hidden files), spaces, slashes, ".." anywhere.
-_VALID_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*$")
+# Disallows leading dot (no hidden files), spaces, slashes, ".." anywhere —
+# and a TRAILING dot: Windows silently strips trailing dots when creating a
+# directory, so `papers/2024_Foo./` would land on disk as `papers/2024_Foo/`
+# and the id-vs-dirname drift would be born broken (ADR-005).
+_VALID_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]*(?<!\.)$")
 
 
 def is_valid_id(paper_id: str) -> bool:

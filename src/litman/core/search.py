@@ -31,18 +31,27 @@ from litman.core.notes import enumerate_markdown_files
 # the same reason.
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
+# Every character str.splitlines() treats as a line boundary — not just \n.
+# The mask below must preserve ALL of them: the caller zips the raw and masked
+# splitlines() outputs pairwise, so a masked-away \x0c (form feed — pdftotext
+# emits them between pages, and pdf-text output gets pasted into notes) would
+# shift every subsequent line number and drop the final line from the corpus.
+_LINE_BOUNDARY_CHARS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+
 
 def _mask_html_comments(text: str) -> str:
     """Blank out comment regions, preserving every character position.
 
-    Each commented-out character becomes a space and each newline stays a
-    newline, so the masked text has the same line count and the same columns as
+    Each commented-out character becomes a space and each line boundary stays
+    itself, so the masked text has the same line count and the same columns as
     the original — the hit's ``line`` number (which the Web UI uses to scroll
     the reader to the match) keeps pointing at the real line.
     """
 
     def _blank(match: re.Match[str]) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
+        return "".join(
+            ch if ch in _LINE_BOUNDARY_CHARS else " " for ch in match.group(0)
+        )
 
     return _HTML_COMMENT_RE.sub(_blank, text)
 

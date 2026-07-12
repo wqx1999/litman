@@ -99,6 +99,127 @@ def test_modify_set_int_coercion(vault_with_paper: tuple[Path, str]) -> None:
     assert isinstance(meta["year"], int)
 
 
+def _seed_second_paper(vault: Path, paper_id: str, doi: str) -> None:
+    """A minimal second paper so DOI-collision tests have a victim."""
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        f"id: {paper_id}\n"
+        "title: Second Paper\n"
+        "authors:\n"
+        "  - Second, Bob\n"
+        "year: 2023\n"
+        f"doi: {doi}\n"
+        "created-at: '2026-04-28T10:00:00+02:00'\n"
+        "updated-at: '2026-04-28T10:00:00+02:00'\n"
+        "projects: []\n"
+        "topics: []\n"
+        "methods: []\n"
+        "data: []\n"
+        "type: research\n"
+        "status: inbox\n"
+        "priority: B\n",
+        encoding="utf-8",
+    )
+
+
+def test_modify_set_doi_owned_by_another_paper_rejected(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """`lit add` refuses duplicate DOIs; --set doi= must not be a backdoor.
+
+    Two papers sharing a DOI makes every --paper-doi lookup (show / cite /
+    rm!) resolve to an arbitrary one, so the collision must die here.
+    """
+    vault, paper_id = vault_with_paper
+    _seed_second_paper(vault, "2023_Second_Paper", doi="10.9/other")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        # 10.1/x is vault_with_paper's DOI.
+        ["modify", "2023_Second_Paper", "--set", "doi=10.1/x",
+         "--library", str(vault)],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "already belongs to another paper" in str(result.exception)
+    assert paper_id in str(result.exception)  # names the paper that owns it
+    assert _read_meta(vault, "2023_Second_Paper")["doi"] == "10.9/other"
+
+
+def test_modify_set_doi_case_variant_rejected(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """DOI matching is case-insensitive (dedup semantics), so is the gate."""
+    vault, _paper_id = vault_with_paper
+    _seed_second_paper(vault, "2023_Second_Paper", doi="10.9/other")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", "2023_Second_Paper", "--set", "doi=10.1/X",
+         "--library", str(vault)],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "already belongs to another paper" in str(result.exception)
+
+
+def test_modify_set_doi_to_own_value_allowed(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Re-setting a paper's own DOI is not a collision (self-match)."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "doi=10.1/x", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["doi"] == "10.1/x"
+
+
+def test_modify_set_year_rejects_non_numeric(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """A string year passes every downstream check and only surfaces as an
+    invalid `year = {notayear}` in exported BibTeX — refuse it at the door."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "year=notayear", "--library", str(vault)],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "year must be a number" in str(result.exception)
+    assert _read_meta(vault, paper_id)["year"] == 2024  # untouched
+
+
+def test_modify_set_year_unset_still_allowed(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """`--set year=` (clear) stays legal — absence is a valid state; only a
+    non-numeric VALUE is rejected."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "year=", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["year"] is None
+
+
 def test_modify_set_empty_value_unsets(vault_with_paper: tuple[Path, str]) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()

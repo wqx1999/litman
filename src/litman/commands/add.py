@@ -184,7 +184,7 @@ def _resolve_collision(
     if auto_suffix:
         return auto_suffix_id(vault, primary_id)
 
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         raise AddError(
             f"Paper id {primary_id!r} already exists at "
             f"{vault / 'papers' / primary_id} and stdin is not a TTY. "

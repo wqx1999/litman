@@ -1053,8 +1053,11 @@ def test_pdf_viewer_clean_when_platform_default_available(
 def test_pdf_viewer_warns_when_no_platform_default(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Desktop arm: a display is reachable, so 'install xdg-utils' is real
+    advice and the finding stays a warning (headless arm is tested below)."""
     monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
     monkeypatch.setattr(viewer_mod.shutil, "which", lambda cmd: None)
+    monkeypatch.setenv("DISPLAY", ":0")
     issues = check_pdf_viewer(vault, [])
     assert len(issues) == 1
     assert issues[0].category == "pdf_viewer"
@@ -1101,10 +1104,16 @@ def test_pdf_viewer_clean_when_configured_present(
     assert check_pdf_viewer(vault, []) == []
 
 
-def test_pdf_viewer_warns_when_xdg_open_headless(
+def test_pdf_viewer_headless_is_info_so_health_can_still_exit_zero(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Linux + xdg-open present + no configured viewer + headless → warn."""
+    """Linux + xdg-open present + no configured viewer + headless → info.
+
+    "This SSH/cron session has no screen" is an environment fact, not vault
+    damage. As a warning it made ``lit health-check`` exit 1 forever on every
+    headless box, breaking its documented cron/CI-gate use — the same failure
+    mode ``links_unsupported`` was demoted for.
+    """
     monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
     monkeypatch.setattr(
         viewer_mod.shutil,
@@ -1116,10 +1125,29 @@ def test_pdf_viewer_warns_when_xdg_open_headless(
     issues = check_pdf_viewer(vault, [])
     assert len(issues) == 1
     assert issues[0].category == "pdf_viewer"
-    assert issues[0].severity == "warning"
+    assert issues[0].severity == "info"
     # Distinct from the "not installed" message.
     assert "no graphical display" in issues[0].message
     assert "no platform PDF viewer" not in issues[0].message
+
+
+def test_pdf_viewer_missing_is_info_headless_but_warning_on_a_desktop(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No viewer at all: env-shaped info on a headless box (nothing there to
+    install a display for), actionable warning on a desktop (installing
+    xdg-utils genuinely fixes `lit open`)."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(viewer_mod.shutil, "which", lambda cmd: None)
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    headless = check_pdf_viewer(vault, [])
+    assert [i.severity for i in headless] == ["info"]
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    desktop = check_pdf_viewer(vault, [])
+    assert [i.severity for i in desktop] == ["warning"]
 
 
 def test_pdf_viewer_clean_when_xdg_open_with_display(

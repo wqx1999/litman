@@ -283,6 +283,34 @@ def _shortcut_executable() -> str:
     return lit
 
 
+def _windows_desktop_dir() -> Path:
+    """The folder the shell actually shows as Desktop.
+
+    Not the literal ``%USERPROFILE%\\Desktop``: with OneDrive folder backup
+    on (the default once Windows 11 signs into a Microsoft account) the shell
+    moves Desktop to ``%USERPROFILE%\\OneDrive\\Desktop``, and a shortcut
+    written to the literal path lands in a folder Explorer no longer
+    displays — the installer then says "double-click the Desktop icon" about
+    an icon the user cannot see. ``SHGetFolderPathW(CSIDL_DESKTOPDIRECTORY)``
+    asks the shell where Desktop currently is, redirects included. Best
+    effort: any failure falls back to the literal path, which is correct on
+    every machine without folder redirection.
+    """
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(260)
+        # 0x10 = CSIDL_DESKTOPDIRECTORY, the physical folder (0x00 is the
+        # virtual desktop namespace); final 0 = SHGFP_TYPE_CURRENT.
+        ok = ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf)
+        if ok == 0 and buf.value:
+            return Path(buf.value)
+    except (OSError, AttributeError):
+        pass
+    userprofile = os.environ.get("USERPROFILE") or str(Path.home())
+    return Path(userprofile) / "Desktop"
+
+
 def shortcut_path() -> Path:
     """Where the desktop shortcut lives on this platform.
 
@@ -294,8 +322,7 @@ def shortcut_path() -> Path:
     file on the Linux Desktop would need a manual "trust" step).
     """
     if sys.platform == "win32":
-        userprofile = os.environ.get("USERPROFILE") or str(Path.home())
-        return Path(userprofile) / "Desktop" / "litman.lnk"
+        return _windows_desktop_dir() / "litman.lnk"
     if sys.platform == "darwin":
         return Path.home() / "Applications" / "litman.app"
     data_home = os.environ.get("XDG_DATA_HOME") or str(

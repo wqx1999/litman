@@ -27,6 +27,7 @@ half-update footgun); see ``commands/taxonomy.py``.
 from __future__ import annotations
 
 import io
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_link import (
     add_project,
+    rebuild_all_project_links,
     remove_project,
     rename_project,
     set_project_path,
@@ -49,6 +51,7 @@ from litman.core.project_link import (
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
+    rebuild_all_project_refs,
 )
 from litman.core.taxonomy import (
     find_referencing_papers,
@@ -58,6 +61,11 @@ from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
 console = Console()
+
+
+def _stdin_isatty() -> bool:
+    """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
+    return sys.stdin is not None and sys.stdin.isatty()
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -333,11 +341,37 @@ def project_set_path_cmd(
     console.print(
         f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}"
     )
-    console.print(
-        "[dim]ℹ If the project directory wasn't physically moved, run "
-        "`lit link --rebuild-all` to recreate symlinks at the new "
-        "location.[/]"
-    )
+    # The registry change does not move the directory, so litman_reflib /
+    # litman_code keep pointing at the OLD location until rebuilt. Repairable
+    # drift gets a one-Enter [Y/n] at the point of use (the Tier-1 heal in
+    # _drift.py already rebuilds automatically; this is parity) — the bare
+    # "remember to run a command later" hint survives only for non-TTY runs.
+    if _stdin_isatty() and click.confirm(
+        "Rebuild the project links at the new location now?", default=True
+    ):
+        registry = {
+            pname: str(ppath)
+            for pname, ppath in load_config(vault).projects.items()
+        }
+        link_status = rebuild_all_project_links(vault, registry)
+        rebuild_all_project_refs(vault, registry)
+        if link_status.get(name_str, {}).get("status") == "rebuilt":
+            console.print(
+                f"[green]✓ Rebuilt[/] {escape(name_str)}'s links at the new "
+                "location."
+            )
+        else:
+            console.print(
+                "[dim]Config updated; the directory is not reachable here "
+                "yet — links rebuild once it exists (`lit refresh-views` "
+                "there).[/dim]"
+            )
+    else:
+        console.print(
+            "[dim]ℹ If the project directory wasn't physically moved, run "
+            "`lit link --rebuild-all` to recreate symlinks at the new "
+            "location.[/]"
+        )
 
 
 # ---------------------------------------------------------------------------

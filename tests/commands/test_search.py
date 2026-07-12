@@ -188,3 +188,20 @@ def test_search_finds_prose_on_a_line_that_ends_in_a_comment(vault: Path) -> Non
         "2025_E_Mix"
     ]
     assert json.loads(_invoke(vault, "hidden").output) == []
+
+
+def test_search_keeps_line_numbers_when_a_comment_holds_a_form_feed(
+    vault: Path,
+) -> None:
+    """splitlines() breaks on \\x0c too — pdftotext page separators pasted
+    into notes. A mask that turned it into a space would shift every later
+    hit's line number and drop the file's last line from the corpus."""
+    _seed_paper(
+        vault,
+        "2025_F_Feed",
+        notes="line one\n<!-- page\x0cbreak -->\nTARGET after comment\n",
+    )
+    hits = json.loads(_invoke(vault, "TARGET after comment").output)
+    assert len(hits) == 1
+    assert hits[0]["line"] == 4  # \x0c splits the comment line in two
+    assert hits[0]["snippet"] == "TARGET after comment"

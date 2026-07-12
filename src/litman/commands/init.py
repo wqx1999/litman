@@ -10,6 +10,7 @@ variable to set. ``--no-register`` opts out.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,6 +71,11 @@ def apply_init(
     return vault, entry
 
 
+def _stdin_isatty() -> bool:
+    """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
+    return sys.stdin is not None and sys.stdin.isatty()
+
+
 @click.command("init")
 @click.argument(
     "parent_dir",
@@ -123,6 +129,18 @@ def init_cmd(
     PARENT_DIR defaults to the current working directory.
     """
     register_name = register_as or name
+
+    # The tutorial's first hands-on command is `lit init ~/research` on a
+    # machine where ~/research does not exist yet — dead-ending there with
+    # "create it first" is a mkdir the tool can offer itself. Interactive
+    # sessions get the one-Enter repair; automation keeps the explicit
+    # ParentNotFoundError contract (and a file sitting at the path still
+    # takes the core error path untouched).
+    if not parent_dir.exists() and _stdin_isatty() and click.confirm(
+        f"Parent directory {parent_dir} does not exist. Create it?",
+        default=True,
+    ):
+        parent_dir.mkdir(parents=True, exist_ok=True)
 
     if no_register:
         vault = create_vault(parent_dir, name=name)
