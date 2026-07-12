@@ -200,6 +200,14 @@ reading the library and regenerates it. `lit health-check --fix` and
 - `lit add` rejects a file that is not a PDF instead of ingesting it, and its help
   text now says plainly that the source file is **moved** into the vault, not
   copied.
+- **`lit link <paper> <project>` now shows you the command you meant.** That
+  shape, and `lit code add <paper> <repo>`, are the ones a person reaches for
+  first — but the second value belongs in a flag, and all these commands used
+  to say was "Got unexpected extra argument (pepforge)". They now print the
+  whole corrected line, ready to copy. (`lit unlink`, `lit code link` and
+  `lit code unlink` too; `lit code add` works out which word is the repo, so
+  the command it hands back is right even if you wrote them the other way
+  round.)
 - A mistyped command or paper id suggests the closest match instead of failing
   blankly.
 - `lit rm` and `lit trash` route every delete through the same confirmation.

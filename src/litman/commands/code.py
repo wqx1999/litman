@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from litman.commands._options import format_option, library_option, vault_option
+from litman.commands._usage import reject_second_positional
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -90,6 +91,7 @@ def code_group() -> None:
 
 @code_group.command("add")
 @click.argument("source")
+@click.argument("misplaced_paper", required=False)
 @click.option(
     "--name",
     "repo_name",
@@ -148,6 +150,7 @@ def code_group() -> None:
 @vault_option
 def code_add_cmd(
     source: str,
+    misplaced_paper: str | None,
     repo_name: str | None,
     paper_id: str | None,
     paper_doi: str | None,
@@ -174,6 +177,22 @@ def code_add_cmd(
     unique substring) or --paper-doi <DOI>, also appends <repo-name>
     to that paper's code-clones list atomically.
     """
+    if misplaced_paper is not None:
+        # `lit code add <paper> <url>` reads as naturally as `<url> <paper>`,
+        # so work out which word is the source rather than assuming an order —
+        # otherwise the command we hand back still has them the wrong way round.
+        if _is_url(source) or Path(source).expanduser().is_dir():
+            src, paper = source, misplaced_paper
+        elif _is_url(misplaced_paper) or Path(misplaced_paper).expanduser().is_dir():
+            src, paper = misplaced_paper, source
+        else:
+            src, paper = source, misplaced_paper  # neither looks like a source
+        raise reject_second_positional(
+            taken=source,
+            extra=misplaced_paper,
+            correct=f"lit code add {src} --paper {paper}",
+        )
+
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
     if paper_id is not None or paper_doi is not None:
@@ -445,6 +464,7 @@ def code_list_cmd(
 
 @code_group.command("link")
 @click.argument("repo_name")
+@click.argument("misplaced_paper", required=False)
 @click.option(
     "--paper",
     "paper_id",
@@ -468,6 +488,7 @@ def code_list_cmd(
 @vault_option
 def code_link_cmd(
     repo_name: str,
+    misplaced_paper: str | None,
     paper_id: str | None,
     paper_doi: str | None,
     library: Path | None,
@@ -480,6 +501,12 @@ def code_link_cmd(
     atomically. Idempotent: if the binding is already present on both sides,
     no metadata is touched.
     """
+    if misplaced_paper is not None:
+        raise reject_second_positional(
+            taken=repo_name,
+            extra=misplaced_paper,
+            correct=f"lit code link {repo_name} --paper {misplaced_paper}",
+        )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     changed = bind_paper_to_repo(vault, paper_id, repo_name)
@@ -501,6 +528,7 @@ def code_link_cmd(
 
 @code_group.command("unlink")
 @click.argument("repo_name")
+@click.argument("misplaced_paper", required=False)
 @click.option(
     "--paper",
     "paper_id",
@@ -524,6 +552,7 @@ def code_link_cmd(
 @vault_option
 def code_unlink_cmd(
     repo_name: str,
+    misplaced_paper: str | None,
     paper_id: str | None,
     paper_doi: str | None,
     library: Path | None,
@@ -539,6 +568,12 @@ def code_unlink_cmd(
     the paper side, so it also repairs a dangling code-clones reference.
     Idempotent: a no-op if the binding is already absent on both sides.
     """
+    if misplaced_paper is not None:
+        raise reject_second_positional(
+            taken=repo_name,
+            extra=misplaced_paper,
+            correct=f"lit code unlink {repo_name} --paper {misplaced_paper}",
+        )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     changed = unbind_paper_from_repo(vault, paper_id, repo_name)

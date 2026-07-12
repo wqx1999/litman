@@ -10,6 +10,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from litman.commands._options import library_option, vault_option
+from litman.commands._usage import reject_second_positional
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import (
@@ -32,6 +33,7 @@ console = Console()
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
 )
+@click.argument("misplaced_project", required=False)
 @click.option(
     "--paper-doi",
     "paper_doi",
@@ -71,6 +73,7 @@ console = Console()
 @vault_option
 def link_cmd(
     paper_id: str | None,
+    misplaced_project: str | None,
     paper_doi: str | None,
     project: str | None,
     relevance: str | None,
@@ -98,6 +101,12 @@ def link_cmd(
     linking, and its directory must exist on disk (lit-config.yaml stores
     only the path, not the directory itself).
     """
+    if misplaced_project is not None:
+        raise reject_second_positional(
+            taken=paper_id or "",
+            extra=misplaced_project,
+            correct=f"lit link {paper_id} --project {misplaced_project}",
+        )
     if rebuild_all:
         if paper_id or project or paper_doi:
             raise LitmanError(
@@ -215,6 +224,7 @@ def link_cmd(
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
 )
+@click.argument("misplaced_project", required=False)
 @click.option(
     "--paper-doi",
     "paper_doi",
@@ -227,8 +237,8 @@ def link_cmd(
 @click.option(
     "--project",
     "project",
-    required=True,
-    help="Project name to unlink from.",
+    default=None,
+    help="Project name to unlink from. Required.",
 )
 @click.option(
     "--keep-relevance",
@@ -244,8 +254,9 @@ def link_cmd(
 @vault_option
 def unlink_cmd(
     paper_id: str | None,
+    misplaced_project: str | None,
     paper_doi: str | None,
-    project: str,
+    project: str | None,
     keep_relevance: bool,
     library: Path | None,
     vault_name: str | None,
@@ -259,6 +270,21 @@ def unlink_cmd(
     only removed if no OTHER linked paper in the project still
     references the same repo (shared-utility-lib case).
     """
+    # --project is checked here rather than declared required=True: Click
+    # enforces a required option during parsing, before any command body runs,
+    # so `lit unlink <paper> <project>` would die on "Missing option
+    # '--project'" and never reach the guard that can name the right command.
+    # Same message Click would have printed, for the case where it really is
+    # just missing.
+    if misplaced_project is not None:
+        raise reject_second_positional(
+            taken=paper_id or "",
+            extra=misplaced_project,
+            correct=f"lit unlink {paper_id} --project {misplaced_project}",
+        )
+    if not project:
+        raise click.UsageError("Missing option '--project'.")
+
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     config = load_config(vault)
