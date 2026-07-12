@@ -119,6 +119,11 @@ export default function MdView({
   // html is derived from it; edit mode seeds its textarea from it.
   const [text, setText] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
+  // Load failed with a described server error (e.g. the file on disk is not
+  // UTF-8). Kept separate from `missing`: the file EXISTS, so the tab must
+  // explain instead of offering "start writing" (whose save would overwrite
+  // the original).
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -138,6 +143,7 @@ export default function MdView({
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
+    setLoadError(null)
     // Read-only (trash) tabs address the file by the trash entry_name, which the
     // host passes as `paperId`; live tabs use the per-paper read endpoints.
     const load = readOnly
@@ -147,11 +153,19 @@ export default function MdView({
       : doc === 'notes'
         ? fetchNotes
         : fetchDiscussion
-    load(paperId).then((loadedText) => {
-      if (cancelled) return
-      setText(loadedText)
-      setLoaded(true)
-    })
+    load(paperId)
+      .then((loadedText) => {
+        if (cancelled) return
+        setText(loadedText)
+        setLoaded(true)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        // Deliberately NOT setLoaded(true): `loaded` gates enterEdit, and
+        // editing a file the server could not read would overwrite it with a
+        // blank draft on save. Unreadable ⇒ not editable until fixed on disk.
+        setLoadError(err instanceof Error ? err.message : String(err))
+      })
     return () => {
       cancelled = true
     }
@@ -173,9 +187,19 @@ export default function MdView({
     if (editing || readOnly) return
     let cancelled = false
     const load = doc === 'notes' ? fetchNotes : fetchDiscussion
-    load(paperId).then((fresh) => {
-      if (!cancelled) setText(fresh)
-    })
+    load(paperId)
+      .then((fresh) => {
+        if (cancelled) return
+        setText(fresh)
+        // A resync can also RECOVER a previously unreadable file (the user
+        // fixed it on disk): clear the error and unlock the tab.
+        setLoaded(true)
+        setLoadError(null)
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setLoadError(err instanceof Error ? err.message : String(err))
+      })
     return () => {
       cancelled = true
     }
@@ -358,7 +382,11 @@ export default function MdView({
           </span>
         ) : (
           <span className="font-mono text-xs font-normal text-stone-400">
-            {missing ? 'double-click to start writing' : 'double-click to edit'}
+            {loadError
+              ? 'unavailable'
+              : missing
+                ? 'double-click to start writing'
+                : 'double-click to edit'}
           </span>
         )}
       </div>
@@ -376,6 +404,21 @@ export default function MdView({
           spellCheck={false}
           className="min-h-0 w-full flex-1 resize-none bg-white p-8 font-mono text-sm leading-relaxed text-stone-800 outline-none"
         />
+      ) : loadError ? (
+        // The file exists but the server could not serve it (non-UTF-8 or
+        // unreadable on disk). No edit affordance on purpose: `loaded` stays
+        // false, so a double-click cannot open a blank draft whose save would
+        // overwrite the original.
+        <div className="flex-1 overflow-auto p-8 text-sm leading-relaxed text-stone-500">
+          <p className="font-medium text-stone-600">
+            Couldn't load {doc}.md
+          </p>
+          <p className="mt-2 max-w-prose">{loadError}</p>
+          <p className="mt-2 max-w-prose text-stone-400">
+            Fix the file on disk, then reopen this tab — litman never
+            overwrites it.
+          </p>
+        </div>
       ) : missing ? (
         <div
           className={`flex-1 overflow-auto p-8 text-sm text-stone-400 ${

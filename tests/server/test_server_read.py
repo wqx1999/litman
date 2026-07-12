@@ -199,6 +199,44 @@ def test_get_taxonomy_returns_dict_keys(
         assert isinstance(tax[key], list)
 
 
+def test_non_utf8_notes_is_a_described_500_not_a_traceback(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """An external editor saving notes.md as UTF-16 must yield a clean error
+    body (same contract as get_paper's CorruptMetadataError arm) — the raw
+    UnicodeDecodeError previously escaped as an undescribed 500."""
+    vault, paper_id = vault_with_paper
+    notes = vault / "papers" / paper_id / "notes.md"
+    notes.write_bytes("# 笔记\n".encode("utf-16"))
+
+    # raise_server_exceptions=False: an UNHANDLED error would raise right
+    # through the TestClient; a handled HTTPException returns a JSON body.
+    client = TestClient(create_app(vault), raise_server_exceptions=False)
+    resp = client.get(f"/api/paper/{paper_id}/notes")
+
+    assert resp.status_code == 500
+    assert "notes.md cannot be read" in resp.json()["detail"]
+
+
+def test_missing_taxonomy_is_a_described_500_on_both_consumers(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """One damaged TAXONOMY.md previously 500'd /api/taxonomy AND
+    /api/projects with raw tracebacks; both must describe the damage and
+    point at health-check instead."""
+    vault, _ = vault_with_paper
+    (vault / "TAXONOMY.md").chmod(0o644)
+    (vault / "TAXONOMY.md").unlink()
+
+    client = TestClient(create_app(vault), raise_server_exceptions=False)
+    for route in ("/api/taxonomy", "/api/projects"):
+        resp = client.get(route)
+        assert resp.status_code == 500, route
+        detail = resp.json()["detail"]
+        assert "TAXONOMY.md is missing" in detail, route
+        assert "health-check" in detail, route
+
+
 def test_get_projects_empty_vault(
     vault_with_paper: tuple[Path, str],
 ) -> None:

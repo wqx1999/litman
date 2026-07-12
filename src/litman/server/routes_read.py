@@ -414,15 +414,53 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
     md_path = vault / "papers" / paper_id / filename
     if not md_path.is_file():
         raise HTTPException(status_code=404, detail=f"No {filename} for {paper_id!r}.")
-    return {"text": md_path.read_text(encoding="utf-8")}
+    try:
+        return {"text": md_path.read_text(encoding="utf-8")}
+    except (OSError, UnicodeDecodeError) as exc:
+        # Present but unservable (external editor saved it non-UTF-8, cloud
+        # client left a husk): damaged data, not a missing resource — the
+        # same clean-500 contract as get_paper's CorruptMetadataError arm,
+        # never an unhandled traceback.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"papers/{paper_id}/{filename} cannot be read "
+                f"(not UTF-8, or unreadable): {exc}"
+            ),
+        ) from exc
+
+
+def _taxonomy_text(vault: Path) -> str:
+    """TAXONOMY.md's text, or a described 500 when it cannot be served.
+
+    A missing / non-UTF-8 TAXONOMY.md is damaged TRUTH (health-check's beat
+    on the CLI side). Left unguarded it took down /api/taxonomy AND
+    /api/projects with raw tracebacks, which the frontend swallows into a
+    silently empty panel.
+    """
+    path = vault / "TAXONOMY.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "TAXONOMY.md is missing from this library — run "
+                "`lit health-check` to diagnose."
+            ),
+        ) from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"TAXONOMY.md cannot be read (not UTF-8, or unreadable): {exc}",
+        ) from exc
 
 
 @router.get("/taxonomy")
 def get_taxonomy(request: Request) -> dict[str, list[str]]:
     """The TAXONOMY controlled vocabulary, one list per dict key."""
     vault = _vault(request)
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-    return parse_taxonomy(text)
+    return parse_taxonomy(_taxonomy_text(vault))
 
 
 @router.get("/fixed-enums")
@@ -453,8 +491,7 @@ def get_projects(request: Request) -> list[dict[str, str]]:
     from litman.core.config import load_config
 
     vault = _vault(request)
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-    taxonomy_names = set(parse_taxonomy(text)["projects"])
+    taxonomy_names = set(parse_taxonomy(_taxonomy_text(vault))["projects"])
     config_map = load_config(vault).projects
     config_names = set(config_map)
 

@@ -168,7 +168,18 @@ export function putDiscussion(id: string, text: string): Promise<void> {
 async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
   const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
-  if (!resp.ok) throw new Error(`notes/${doc} → ${resp.status}`)
+  if (!resp.ok) {
+    // The server describes damaged files (non-UTF-8 etc.) in `detail` —
+    // surface that to the tab instead of a bare status code.
+    let detail = `${doc}.md → HTTP ${resp.status}`
+    try {
+      const body = (await resp.json()) as { detail?: string }
+      if (body.detail) detail = body.detail
+    } catch {
+      /* body not JSON — keep the status string */
+    }
+    throw new Error(detail)
+  }
   const body = (await resp.json()) as { text: string }
   return body.text
 }

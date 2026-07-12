@@ -67,7 +67,18 @@ def _read_trash_md(entry: TrashEntry, filename: str) -> dict[str, str]:
             status_code=404,
             detail=f"No {filename} in trash entry {entry.entry_name!r}.",
         )
-    return {"text": md_path.read_text(encoding="utf-8")}
+    try:
+        return {"text": md_path.read_text(encoding="utf-8")}
+    except (OSError, UnicodeDecodeError) as exc:
+        # Same clean-500 contract as the live-paper markdown routes: damaged
+        # data is described, never an unhandled traceback.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"{filename} in trash entry {entry.entry_name!r} cannot be "
+                f"read (not UTF-8, or unreadable): {exc}"
+            ),
+        ) from exc
 
 
 @router.get("/trash")
