@@ -96,7 +96,7 @@ take no `--library` / `--vault`.
 ```
 lit vault add <name> <path> [--import-from "..."] [--use]
 lit vault use <name>
-lit vault list
+lit vault list [--format json]
 lit vault info <name>
 lit vault remove <name> [-y]
 ```
@@ -105,7 +105,7 @@ lit vault remove <name> [-y]
 |---|---|
 | `add <name> <path>` | Register an *existing* vault directory (must already contain `lit-config.yaml`). Does not create a vault — use `lit init` for that. |
 | `use <name>` | Switch the active vault. |
-| `list` | Show every registered vault; the active one is marked `✓`, with path, paper count, and provenance. |
+| `list` | Show every registered vault; the active one is marked `✓`, with path, paper count, and provenance. `--format json` emits one object per vault. |
 | `info <name>` | Show one vault's path, paper count, on-disk size, provenance, and active flag. |
 | `remove <name>` | Unregister `<name>`. The directory itself is **not** deleted. |
 
@@ -527,7 +527,7 @@ not hand-edit either side.
 
 ```
 lit project add <name> --path <abs-path>
-lit project list
+lit project list [--format json]
 lit project rename <old> <new>
 lit project set-path <name> <new-path>
 lit project rm <name> [-y]
@@ -536,7 +536,7 @@ lit project rm <name> [-y]
 | Subcommand | What it does |
 |---|---|
 | `add <name> --path <dir>` | Register a project (dual-write TAXONOMY + config) in one atomic write. `--path` is **required** and must already exist (no placeholder registration). |
-| `list` | List every project, each row tagged with a drift marker (`✓` / `⚠ path-missing` / `⚠ config-only` / `⚠ taxonomy-only`). |
+| `list` | List every project, each row tagged with a drift marker (`✓` / `⚠ path-missing` / `⚠ config-only` / `⚠ taxonomy-only`). `--format json` emits `{name, path, status}` per project, with the marker as a bare token. |
 | `rename <old> <new>` | Rename the project across TAXONOMY, the config key, every paper, and `INDEX.json`. The path carries over. No prompt (semantics-preserving). |
 | `set-path <name> <path>` | Change the on-disk path (config only — papers store names). Prints the rebuild hint, since it does not move the directory. |
 | `rm <name>` | Cascade-untag papers and drop from both truth sources. Lists referencing papers and prompts `y/N`; `-y` skips. |
@@ -556,7 +556,7 @@ can bind multiple papers).
 ```
 lit code add <url> [--name <n>] [--paper <id>] [--depth N]
 lit code add <local-dir> --move
-lit code list [--paper <id> | --orphan]
+lit code list [--paper <id> | --orphan] [--format json]
 lit code link <repo-name> --paper <id>
 lit code unlink <repo-name> --paper <id>
 lit code update <repo-name> [--unshallow]
@@ -569,7 +569,7 @@ lit code restore-all [--dry-run]
 | `add <source>` | Clone (URL source) or copy/move (local-path source) into `codes/<name>/repo/`, seeding `repo-meta.yaml` and `notes.md`. |
 | `link <repo-name> --paper <id>` | Bind an already-present repo to a paper (idempotent if already bound). |
 | `unlink <repo-name> --paper <id>` | Unbind a repo from a paper without deleting the clone. Drops only the named paper's edge; tolerant of an already-deleted clone. |
-| `list` | List repos and their paper bindings. |
+| `list` | List repos and their paper bindings. `--format json` emits each repo's `repo-meta.yaml`, so the bindings come out as ids rather than a summary cell. |
 | `update <repo-name>` | `git pull --ff-only` inside the repo. |
 | `rm <repo-name>` | Permanently delete `codes/<repo-name>/`. Hard delete (re-clonable from the recorded upstream). |
 | `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery). |
@@ -596,7 +596,7 @@ changes are atomic (TAXONOMY + every referencing `metadata.yaml` + `INDEX.json`
 in one staged write).
 
 ```
-lit taxonomy list [<dict>]
+lit taxonomy list [<dict>] [--format json]
 lit taxonomy add <dict> <value>...
 lit taxonomy rename <dict> <old> <new>
 lit taxonomy merge <dict> <src>... --into <dest> [-y]
@@ -605,7 +605,7 @@ lit taxonomy rm <dict> <value> [-y]
 
 | Subcommand | What it does |
 |---|---|
-| `list [<dict>]` | Show one dict, or all dicts when no name is given. |
+| `list [<dict>]` | Show one dict, or all dicts when no name is given. `--format json` emits `{dict, kind, count, values}` per dict. |
 | `add <dict> <value>...` | Register one or more values in a user dict. Already-present values are silent no-ops; the dict is kept sorted. |
 | `rename <dict> <old> <new>` | Rename a value and ripple to every referencing paper. No prompt (semantics-preserving). |
 | `merge <dict> <src>... --into <dest>` | Fold sources into a destination value (existing or new), cascading. `--into` **required**; `-y` skips the prompt. |
@@ -657,14 +657,14 @@ Manage the recoverable-delete bin under `<vault>/.trash/`, capped at 100 entries
 (`lit rm` evicts the oldest when full).
 
 ```
-lit trash list
+lit trash list [--format json]
 lit trash restore <id-or-entry> [-y]
 lit trash empty [--dry-run] [-y]
 ```
 
 | Subcommand | What it does |
 |---|---|
-| `list` | Show trash entries, newest first. |
+| `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. |
 | `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project symlinks + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting). |
 | `empty` | Permanently delete every trash entry. `--dry-run` lists what would be removed; `-y` skips the prompt. |
 

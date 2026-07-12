@@ -57,3 +57,27 @@ def vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
         default=None,
         help=VAULT_HELP,
     )(fn)
+
+
+def format_option(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Add ``--format table|json`` (parameter ``output_format``).
+
+    For the enumerate commands (``taxonomy`` / ``vault`` / ``project`` /
+    ``code`` / ``trash`` ``list``), whose tables are for people and whose
+    JSON is for agents.  ``lit list`` / ``show`` / ``search`` / ``related``
+    each declare their own ``--format`` because they document a specific
+    payload (the INDEX projection, match spans) rather than rows.
+
+    The json branch must be taken *before* a command prints its "nothing
+    here" message: an empty result is ``[]``, never prose on stdout.
+    """
+    return click.option(
+        "--format",
+        "output_format",
+        type=click.Choice(["table", "json"]),
+        default="table",
+        help=(
+            "Output format. 'json' emits one object per row, keyed the way "
+            "the underlying file is (for agents)."
+        ),
+    )(fn)

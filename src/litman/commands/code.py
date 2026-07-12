@@ -11,6 +11,7 @@ preserved in its ``repo-meta.yaml``).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from litman.commands._options import library_option, vault_option
+from litman.commands._options import format_option, library_option, vault_option
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -333,12 +334,14 @@ def code_add_cmd(
     default=False,
     help="Show only repos with no paper bindings (papers: []).",
 )
+@format_option
 @library_option
 @vault_option
 def code_list_cmd(
     paper_id: str | None,
     paper_doi: str | None,
     orphan: bool,
+    output_format: str,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -373,6 +376,24 @@ def code_list_cmd(
         repos = [r for r in repos if paper_id in (r.get("papers") or [])]
     elif orphan:
         repos = [r for r in repos if not (r.get("papers") or [])]
+
+    if output_format == "json":
+        # Each repo-meta.yaml as it is on disk, not the table's summarised
+        # cells — the Papers column renders "3 (id, ...)" and agents want the
+        # ids. list_repos' synthetic _path is dropped: it is private (leading
+        # underscore), and codes/<name>/ is derivable from the name anyway.
+        # Before the no-repos message, so no matches is `[]`, not prose.
+        click.echo(
+            json.dumps(
+                [
+                    {k: v for k, v in meta.items() if not k.startswith("_")}
+                    for meta in repos
+                ],
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return
 
     if not repos:
         msg_parts = ["No code repos"]

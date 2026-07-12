@@ -27,6 +27,7 @@ half-update footgun); see ``commands/taxonomy.py``.
 from __future__ import annotations
 
 import io
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._options import library_option, vault_option
+from litman.commands._options import format_option, library_option, vault_option
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
@@ -166,10 +167,35 @@ def project_add_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _project_status(*, in_taxonomy: bool, in_config: bool, path_str: str) -> str:
+    """The drift marker for one project, as a bare machine-readable token.
+
+    The table decorates these with ✓ / ⚠; JSON gets the token itself. One
+    function so the two renderings cannot disagree about what is drifting.
+    """
+    if not in_taxonomy:
+        return "config-only"
+    if not in_config:
+        return "taxonomy-only"
+    if path_str and Path(path_str).expanduser().is_dir():
+        return "ok"
+    return "path-missing"
+
+
+_STATUS_CELL = {
+    "ok": "[green]✓[/]",
+    "path-missing": "[yellow]⚠ path-missing[/]",
+    "config-only": "[yellow]⚠ config-only[/]",
+    "taxonomy-only": "[yellow]⚠ taxonomy-only[/]",
+}
+
+
 @project_group.command("list")
+@format_option
 @library_option
 @vault_option
 def project_list_cmd(
+    output_format: str,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -194,6 +220,27 @@ def project_list_cmd(
     config_names = set(config_map)
     all_names = sorted(taxonomy_names | config_names)
 
+    if output_format == "json":
+        # Before the no-projects message: an empty registry is `[]`, not prose.
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "name": name,
+                        "path": config_map.get(name) or None,
+                        "status": _project_status(
+                            in_taxonomy=name in taxonomy_names,
+                            in_config=name in config_names,
+                            path_str=config_map.get(name, ""),
+                        ),
+                    }
+                    for name in all_names
+                ],
+                ensure_ascii=False,
+            )
+        )
+        return
+
     if not all_names:
         console.print("[dim](no projects registered)[/]")
         console.print(
@@ -208,20 +255,13 @@ def project_list_cmd(
     table.add_column("status")
 
     for name in all_names:
-        in_tax = name in taxonomy_names
-        in_cfg = name in config_names
         path_str = config_map.get(name, "")
-        if in_tax and in_cfg:
-            path_ok = bool(path_str) and Path(path_str).expanduser().is_dir()
-            status = (
-                "[green]✓[/]"
-                if path_ok
-                else "[yellow]⚠ path-missing[/]"
-            )
-        elif in_cfg:
-            status = "[yellow]⚠ config-only[/]"
-        else:
-            status = "[yellow]⚠ taxonomy-only[/]"
+        token = _project_status(
+            in_taxonomy=name in taxonomy_names,
+            in_config=name in config_names,
+            path_str=path_str,
+        )
+        status = _STATUS_CELL[token]
         table.add_row(
             escape(name),
             escape(path_str) if path_str else "[dim]—[/]",

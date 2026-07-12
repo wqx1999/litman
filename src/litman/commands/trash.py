@@ -14,14 +14,16 @@ Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._options import library_option, vault_option
+from litman.commands._options import format_option, library_option, vault_option
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -39,6 +41,7 @@ from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.trash import (
     RestoreResult,
+    TrashEntry,
     empty_trash,
     list_trash,
     resolve_trash_entry,
@@ -62,13 +65,41 @@ def trash_group() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _trash_row(e: TrashEntry) -> dict[str, Any]:
+    """One trash entry as a JSON row, keyed the way the sidecar is.
+
+    Carries the two fields the table has no room for: ``entry_path``, and
+    the ``orphan_repos`` a restore would have to re-clone.
+    """
+    return {
+        "paper_id": e.paper_id,
+        "deleted_at": e.deleted_at,
+        "cascade_was_used": e.cascade_was_used,
+        "title": e.title,
+        "entry_name": e.entry_name,
+        "entry_path": str(e.entry_path),
+        "orphan_repos": e.orphan_repos,
+    }
+
+
 @trash_group.command("list")
+@format_option
 @library_option
 @vault_option
-def trash_list_cmd(library: Path | None, vault_name: str | None) -> None:
+def trash_list_cmd(
+    output_format: str, library: Path | None, vault_name: str | None
+) -> None:
     """Show trash entries, newest first."""
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
+
+    if output_format == "json":
+        # Before the empty message: an empty trash is `[]`, not prose.
+        click.echo(
+            json.dumps([_trash_row(e) for e in entries], ensure_ascii=False)
+        )
+        return
+
     if not entries:
         console.print("[dim](trash is empty)[/]")
         return

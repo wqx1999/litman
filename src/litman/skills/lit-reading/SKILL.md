@@ -36,7 +36,7 @@ Classify every action before you take it.
 
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
-| 1 | **Read** | Just do it, don't ask | `lit list` (incl. `--title` / `--limit` / `--format json`), `lit show` (incl. `--format json` for the full field set), `lit search` (notes/discussion content), `lit related` (knowledge-graph neighbours), scan a PDF, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit health-check`. All retrieval is high-autonomy and freely composable (`search` → `show --format json` → `related`). |
+| 1 | **Read** | Just do it, don't ask | `lit list` (incl. `--title` / `--limit` / `--format json`), `lit show` (incl. `--format json` for the full field set), `lit search` (notes/discussion content), `lit related` (knowledge-graph neighbours), scan a PDF, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit taxonomy list` (all five take `--format json`), `lit health-check`. All retrieval is high-autonomy and freely composable (`search` → `show --format json` → `related`). |
 | 2 | **Write, reversible, single-paper** | Do it, then report | the evaluation stamps `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit`, and `lit modify --set priority=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (ingest), `lit code add` (git clone), `lit taxonomy add` / `lit project add`, `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` (governance) |
 
@@ -217,7 +217,7 @@ Only run when the user asks for comparison, related work, or "anything similar".
 
 ## Phase 4 — Project context (connect a paper to the user's own work)
 
-**One source for both the registered set and each project's path: `lit project list`** (Tier 1 read). Three columns — `name` / `path` / `status` — answer both "which projects exist" and "project name → on-disk dev_docs directory". Do **NOT** hand-parse `lit-config.yaml`, do **NOT** route the path through `lit config show`.
+**One source for both the registered set and each project's path: `lit project list`** (Tier 1 read; `--format json` gives `{name, path, status}`). It answers both "which projects exist" and "project name → on-disk directory". Do **NOT** hand-parse `lit-config.yaml`, do **NOT** route the path through `lit config show`.
 
 **Project-name normalization (query side): deterministic canonicalization only.** Normalize the user's token by case + whitespace + separator, then **exact-match** against a registered `name`. One step beyond (abbreviation / alias / 0-match / multi-match) → fall back to **presenting the registered set** and let the user pick. **Never fuzzy-guess.** cwd is at most a pre-checked hint; the user confirms; never overrides an explicit reference.
 
@@ -329,7 +329,7 @@ At a natural moment (occasionally at session start / after a batch of operations
 
 When the user signals a mis-deletion ("我之前好像误删了那篇关于…的文献", "把删掉的 X 找回来", "I think I deleted that paper by mistake"), run a **find → confirm → restore** flow. lit-reading owns find + confirm; the actual restore chains to lit-library [I].
 
-1. **Find (read-only).** `lit trash list` enumerates the bin newest-first (paper id, deleted_at, title, entry_name). The trashed folder is fully readable on disk at `<vault>/.trash/<entry-name>/` — when the title alone is ambiguous you **MAY** open its `metadata.yaml` / `notes.md` / `discussion.md` / the PDF to match the user's description by content.
+1. **Find (read-only).** `lit trash list` enumerates the bin newest-first (paper id, deleted_at, title, entry_name; `--format json` adds `entry_path` and `orphan_repos`). The trashed folder is fully readable on disk at `<vault>/.trash/<entry-name>/` — when the title alone is ambiguous you **MAY** open its `metadata.yaml` / `notes.md` / `discussion.md` / the PDF to match the user's description by content.
 2. **Confirm (present-and-user-picks, NEVER auto-restore).** Surface the **single most-likely candidate** (id + title + deleted_at, plus a one-line content cue if you inspected the files) and ask "is this the one?". If several are plausible, list at most 3 (newest-first) and let the user pick. Never restore without an explicit identity confirmation.
 3. **Restore (chain to lit-library [I]).** Only after the user confirms the identity, chain to lit-library to run `lit trash restore <id>` (there is **no** top-level `lit restore`). Pass the confirmed paper id (or the full entry name `<id>-<UTC-timestamp>` if the same id sits in trash more than once), and whatever the user already said about re-cloning code.
 
@@ -349,9 +349,9 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit show <id> [--format json]` / `lit show --paper-doi <doi>` | confirm a paper, dedup check, read metadata aloud; `--format json` returns the FULL field set (every edge, relevance fields), beyond the INDEX projection | 1 (read) |
 | `lit search <query> [--in notes,discussion] [--limit N]` | the ONLY path to your own free-form notes / discussion ("我在 notes 里写过 X 吗"); returns `{id,file,line,snippet}` per matched line; `--limit` caps the hit count | 1 (read) |
 | `lit related <id> [--by edges|taxonomy] [--min-shared N]` | knowledge-graph neighbours ("跟这篇相关的还有哪些"): explicit edges first, then shared-topic/method, each with a `via` reason | 1 (read) |
-| `lit vault list` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
-| `lit project list` | canonical source for the registered project set AND each project's path | 1 (read) |
-| `lit trash list` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
+| `lit vault list [--format json]` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
+| `lit project list [--format json]` | canonical source for the registered project set AND each project's path | 1 (read) |
+| `lit trash list [--format json]` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
 | `lit health-check` | translate the report + propose per-finding fixes (B12) | 1 (read) |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit modify --set priority=` / `lit modify --set type=` | the priority / type verdicts — fixed-enum evaluation stamps lit-reading owns (B10) | 2 (inline) |

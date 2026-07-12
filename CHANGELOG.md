@@ -41,6 +41,12 @@ behaviour, a minor release adds it, a major release breaks it.
   before it appends, so discussions come out in one shape across the library.
   `lit health-check` reports papers added before this (their log is missing) and
   `--fix` creates it — existing logs keep every section they already hold.
+- **`--format json` on the five commands that enumerate a library**:
+  `lit taxonomy list`, `lit vault list`, `lit project list`, `lit code list`
+  and `lit trash list`. They printed a table and nothing else, so an agent had
+  to parse a table that folds its own long cells — or go read `TAXONOMY.md`
+  and `vaults.yaml` behind the CLI's back. Each now emits one object per row,
+  keyed the way the underlying file is, and an empty library is `[]`.
 
 ### Changed
 
