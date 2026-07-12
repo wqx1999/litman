@@ -604,7 +604,7 @@ def rm_cmd(
     and views/by-*/ are refreshed either way.
 
     All external links to the paper (other papers' relation fields, repo
-    bindings, project symlinks) are torn down atomically; the paper's own
+    bindings, project links) are torn down atomically; the paper's own
     fields ride into trash so a later lit trash restore can rebuild them.
     A y/N confirmation guards the delete (default N); pass -y to force it
     non-interactively. --dry-run previews the full impact set (the paper plus

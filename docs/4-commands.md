@@ -267,7 +267,7 @@ lit show --paper-doi 10.1038/...
 ### `lit search`
 
 Case-insensitive substring search over your `notes.md` / `discussion.md` only —
-not the PDF full text, not trashed papers, not the `views/` symlinks, and not the
+not the PDF full text, not trashed papers, not the `views/` links, and not the
 `<!-- -->` comments litman seeds into those two files. Each hit is one matched
 line. Defaults to JSON output (`{id, file, line, snippet}`).
 
@@ -410,7 +410,7 @@ papers' relation fields and in notes wikilinks.
 
 Remove a paper. By default moves `papers/<id>/` to `<vault>/.trash/` (recoverable
 via `lit trash restore`); `--purge` deletes permanently. All external links to
-the paper (other papers' relation fields, repo bindings, project symlinks) are
+the paper (other papers' relation fields, repo bindings, project links) are
 torn down atomically; the paper's own fields ride into trash so a later restore
 can rebuild them. A `y/N` prompt guards the delete (default N).
 
@@ -464,7 +464,7 @@ for what each field means.
 
 ### `lit link`
 
-Link a paper to a project: add the `projects` tag, write a symlink under
+Link a paper to a project: add the `projects` tag, write a folder link under
 `<project>/litman_reflib/<id>/`, and regenerate
 `<project>/litman_reflib/REFERENCES.md`. The
 project must be registered in `lit-config.yaml` (via `lit project add`) and its
@@ -481,12 +481,12 @@ lit link --rebuild-all
 | `--paper-doi <doi>` | Look the paper up by DOI. Mutually exclusive with the positional id and `--rebuild-all`. |
 | `--project <name>` | Project name (must be registered in `lit-config.yaml`). |
 | `--relevance <text>` | Set the `relevance-<project>` field in one shot. Otherwise left untouched. |
-| `--rebuild-all` | Cross-machine recovery: rebuild every project's symlinks + `REFERENCES.md` from each paper's `projects` field. Skips `<id>` / `--project`. |
+| `--rebuild-all` | Cross-machine recovery: rebuild every project's links + `REFERENCES.md` from each paper's `projects` field. Skips `<id>` / `--project`. |
 
 ### `lit unlink`
 
-Reverse a link: drop the `projects` tag, the symlink, the `REFERENCES.md` entry,
-and (by default) the `relevance-<project>` field. Code symlinks under the project
+Reverse a link: drop the `projects` tag, the folder link, the `REFERENCES.md` entry,
+and (by default) the `relevance-<project>` field. Code links under the project
 are removed only if no other linked paper there still references the same repo.
 
 ```
@@ -625,9 +625,9 @@ lit health-check --fix
 ### `lit refresh-views`
 
 Rebuild every derived artifact from `papers/*/metadata.yaml`, in order: (1)
-`INDEX.json` (paper summary + by-doi reverse map), (2) `views/by-*` symlink hubs
+`INDEX.json` (paper summary + by-doi reverse map), (2) `views/by-*` link hubs
 (wiped and rebuilt, so stale tag buckets disappear), (3) each project's
-`litman_reflib/` symlinks and `REFERENCES.md`. Per-project failures (missing
+`litman_reflib/` links and `REFERENCES.md`. Per-project failures (missing
 project dir on this machine) are skipped, not aborted.
 
 ```
@@ -651,7 +651,7 @@ lit trash empty [--dry-run] [-y]
 | Subcommand | What it does |
 |---|---|
 | `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. |
-| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project symlinks + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting). |
+| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting). |
 | `empty` | Permanently delete every trash entry. `--dry-run` lists what would be removed; `-y` skips the prompt. |
 
 ### `lit sync`

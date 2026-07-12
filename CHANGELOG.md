@@ -74,6 +74,15 @@ behaviour, a minor release adds it, a major release breaks it.
 - Your agent choice is stored once per machine rather than per vault.
 - `lit list` prints at most 30 rows when sorted by default on an interactive
   terminal. Pass `--limit` for more.
+- litman's messages say **link** where they used to say symlink. On Windows the
+  browsing folders and project shortcuts are directory junctions, so "12
+  symlinks" was the wrong word on the one platform where the word choice
+  matters; the web UI already said "folder links". Output wording only —
+  nothing on disk changes.
+- New libraries' `lit-config.yaml` no longer includes `view_definitions` and
+  `unique_keys` — two keys litman parses but has never read (the view set and
+  the DOI duplicate check are fixed in code). Older libraries that carry them
+  keep loading exactly as before.
 - `lit uninstall` now also removes the desktop shortcut, the machine-level
   preferences, and the browser profile the app window uses.
 - A shorter README. The agent model benchmark moved to

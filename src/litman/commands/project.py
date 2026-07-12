@@ -385,7 +385,7 @@ def project_set_path_cmd(
     else:
         console.print(
             "[dim]ℹ If the project directory wasn't physically moved, run "
-            "`lit link --rebuild-all` to recreate symlinks at the new "
+            "`lit link --rebuild-all` to recreate the links at the new "
             "location.[/]"
         )
 
@@ -476,7 +476,7 @@ def project_rm_cmd(
     if project_dir is not None:
         warning_lines.append(
             f"  • Delete {escape(str(project_dir))}/"
-            f"{LITERATURE_SUBDIR}/ symlinks + {REFERENCES_FILENAME}"
+            f"{LITERATURE_SUBDIR}/ links + {REFERENCES_FILENAME}"
         )
     if not _confirm_destructive(warning_lines, yes=yes):
         console.print("[dim]Aborted. Nothing changed.[/]")

@@ -132,17 +132,19 @@ class LitConfig(BaseModel):
     view_definitions: list[str] = Field(
         default_factory=lambda: list(DEFAULT_VIEW_DEFINITIONS),
         description=(
-            "Which views/by-* directories `lit refresh-views` rebuilds. "
-            "Currently informational — the renderer hardcodes the same set; "
-            "future milestones may consume this field to scope refresh runs."
+            "Legacy key — parsed but never read. The hub set "
+            "`lit refresh-views` rebuilds is fixed in code. No longer "
+            "seeded into new libraries; declared so older libraries that "
+            "carry it still load (the schema forbids unknown keys)."
         ),
     )
     unique_keys: list[str] = Field(
         default_factory=lambda: list(DEFAULT_UNIQUE_KEYS),
         description=(
-            "Fields used by `lit add` to detect duplicate papers. M2.9 "
-            "implements the DOI precheck; arxiv-id support remains "
-            "informational pending a future milestone."
+            "Legacy key — parsed but never read. `lit add`'s DOI duplicate "
+            "precheck is fixed in code. No longer seeded into new "
+            "libraries; declared so older libraries that carry it still "
+            "load (the schema forbids unknown keys)."
         ),
     )
     default_clone_depth: int = Field(

@@ -173,8 +173,10 @@ def test_lit_config_seed_is_valid_yaml(tmp_path: Path) -> None:
     assert config["library_name"] == "custom_lib"
     # git_auto_commit was removed when the vault stopped being a git repo.
     assert "git_auto_commit" not in config
-    assert "by-topic" in config["view_definitions"]
-    assert "doi" in config["unique_keys"]
+    # view_definitions / unique_keys are legacy keys nothing reads: still
+    # accepted from older libraries, no longer written into new ones.
+    assert "view_definitions" not in config
+    assert "unique_keys" not in config
 
 
 # ---------------------------------------------------------------------------

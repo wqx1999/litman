@@ -33,7 +33,7 @@ discussion, the links between papers, and the code repositories cloned for it.
 │       ├── repo-meta.yaml
 │       └── notes.md
 │
-├── views/                  # symlink hubs faceted by metadata field
+├── views/                  # link hubs faceted by metadata field
 │   ├── by-project/
 │   ├── by-topic/
 │   ├── by-method/

@@ -465,7 +465,7 @@ def check_and_prompt_bridge_drift(
         # warning above for why a hard wrap would break them).
         err.print(
             f"[yellow]warning:[/] {n_links} project bridge "
-            f"symlink{'s point' if n_links != 1 else ' points'} at nothing "
+            f"link{'s point' if n_links != 1 else ' points'} at nothing "
             f"(library moved?): {joined}. Run "
             f"[bold]lit health-check --fix[/] (or [bold]lit refresh-views[/]) "
             "to rebuild them.",
@@ -477,7 +477,7 @@ def check_and_prompt_bridge_drift(
     console.print()
     console.print(
         f"[yellow]⚠[/]  {n_links} project bridge "
-        f"symlink{'s point' if n_links != 1 else ' points'} at nothing — "
+        f"link{'s point' if n_links != 1 else ' points'} at nothing — "
         "the library, or what a link targeted, has moved:"
     )
     for name, links in dangling.items():

@@ -81,7 +81,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "views_vs_metadata": "Views (by-*/) vs metadata",
     "project_references": "Project REFERENCES.md / litman_reflib / litman_code vs membership",
     "project_bridge_dangling": (
-        "Project bridge symlinks (litman_reflib / litman_code) resolve to a live target"
+        "Project bridge links (litman_reflib / litman_code) resolve to a live target"
     ),
     "links_unsupported": "Folder links (views/ + project shortcuts)",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",

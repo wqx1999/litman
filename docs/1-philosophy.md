@@ -91,7 +91,7 @@ links to other papers, and the code repositories cloned for it. Nothing about a
 paper is kept outside the vault.
 
 Projects do not own papers. Linking a project to a paper creates a projection on
-the project side (a symlink back into the vault plus a generated reference list).
+the project side (a folder link back into the vault plus a generated reference list).
 The paper stays in the vault as the single source of truth, and one paper can
 serve any number of projects at once with no duplication. Re-tag or re-read a
 paper, and every project that borrows it sees the change, because they all point

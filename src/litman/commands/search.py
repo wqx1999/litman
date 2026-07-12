@@ -59,7 +59,7 @@ def search_cmd(
     """Search your notes.md / discussion.md for a substring (case-insensitive).
 
     Searches only the markdown you author per paper — NOT the PDF full text,
-    NOT trashed papers, NOT the views/ symlink hubs. Each hit is one matched
+    NOT trashed papers, NOT the views/ link hubs. Each hit is one matched
     line. Default output is JSON ({id,file,line,snippet}) for agent bounded
     retrieval; pass --format table for a human view. --limit N caps the hit
     count for bounded retrieval.

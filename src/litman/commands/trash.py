@@ -263,7 +263,7 @@ def trash_restore_cmd(
     Pass either the paper id (must be unambiguous) or the full entry name
     (<id>-<UTC-timestamp>). The paper's sealed fields drive a symmetric
     rebuild: opposite papers' paired reverse edges, surviving repo bindings,
-    and project symlinks + REFERENCES.md are re-created. A 1:1 repo that was
+    and project links + REFERENCES.md are re-created. A 1:1 repo that was
     hard-deleted at rm time is re-cloned (prompted, or auto with -y); an edge
     whose opposite is no longer in the library is silently dropped.
     Refreshes INDEX.json and views/.

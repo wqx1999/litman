@@ -65,7 +65,7 @@ console = Console()
     default=False,
     help=(
         "Cross-machine recovery: skip <paper-id>/--project and instead "
-        "rebuild every registered project's symlinks + REFERENCES.md "
+        "rebuild every registered project's links + REFERENCES.md "
         "from scratch, based on each paper's projects field."
     ),
 )
@@ -81,7 +81,7 @@ def link_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Link a paper to a project: tag + symlinks + REFERENCES.md.
+    """Link a paper to a project: tag + links + REFERENCES.md.
 
     Single-paper mode (the paper id accepts a full id, a unique substring,
     or --paper-doi <DOI>):
@@ -91,7 +91,7 @@ def link_cmd(
         lit link <paper-id> --project <name> --relevance "Direct baseline"
         lit link --paper-doi 10.1038/... --project <name>
 
-    Cross-machine recovery mode (rebuild every project's symlinks +
+    Cross-machine recovery mode (rebuild every project's links +
     REFERENCES.md from each paper's projects field):
 
     \b
@@ -261,12 +261,12 @@ def unlink_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Unlink a paper from a project: remove tag + symlinks + REFERENCES.md.
+    """Unlink a paper from a project: remove tag + links + REFERENCES.md.
 
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.
 
-    The reverse of lit link. Code symlinks under the project are
+    The reverse of lit link. Code links under the project are
     only removed if no OTHER linked paper in the project still
     references the same repo (shared-utility-lib case).
     """
@@ -311,12 +311,12 @@ def unlink_cmd(
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (was not linked)")
     body_lines.append(
-        f"[dim]Paper symlink:[/] "
+        f"[dim]Paper link:[/] "
         f"{'removed' if result['paper_link_removed'] else 'absent (already)'}"
     )
     if result["code_links_removed"]:
         body_lines.append(
-            f"[dim]Code symlinks removed:[/] "
+            f"[dim]Code links removed:[/] "
             f"{', '.join(escape(r) for r in result['code_links_removed'])}"
         )
     if result["code_links_kept"]:
@@ -324,7 +324,7 @@ def unlink_cmd(
             f"{escape(r)} (still used by {', '.join(escape(p) for p in users)})"
             for r, users in result["code_links_kept"]
         )
-        body_lines.append(f"[dim]Code symlinks kept:[/] {kept}")
+        body_lines.append(f"[dim]Code links kept:[/] {kept}")
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     console.print(
         Panel.fit("\n".join(body_lines), title="lit unlink", border_style="green")

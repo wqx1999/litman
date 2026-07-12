@@ -94,7 +94,7 @@ Non-negotiable. Violating any of these corrupts the library or its trust model.
 ├── INDEX.json          # auto-generated thin projection — your primary read surface
 ├── papers/<id>/        # paper.pdf, metadata.yaml, notes.md, discussion.md
 ├── codes/<repo>/       # cloned code repos bound to papers
-└── views/by-*/         # symlink hubs faceted by metadata field
+└── views/by-*/         # link hubs faceted by metadata field
 ```
 
 Read in cost order: start from `INDEX.json`, open a paper's `metadata.yaml` only

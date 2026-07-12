@@ -759,7 +759,7 @@ def modify_cmd(
     or omit it and pass --paper-doi <DOI> instead.
 
     Updates papers/<id>/metadata.yaml (with a refreshed updated-at
-    audit timestamp) and INDEX.json atomically; views/by-*/ symlinks
+    audit timestamp) and INDEX.json atomically; views/by-*/ links
     are rebuilt afterwards.
     """
     if not (set_ops or add_tag_ops or rm_tag_ops):
