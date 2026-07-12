@@ -467,12 +467,12 @@ Top-level structure:
 | `papers` | list[object] | One thin projection per paper, sorted by id. |
 | `by_doi` | dict[string, string] | Reverse map from normalized (lowercase) DOI to paper id. |
 
-Each entry in `papers` is a **13-field projection** of `metadata.yaml`, not the
+Each entry in `papers` is a **14-field projection** of `metadata.yaml`, not the
 whole record: `id`, `title`, `authors`, `year`, `type`, `priority`, `status`,
-`topics`, `projects`, `methods`, `data`, `doi`, `read-date`. A consumer narrows the
-candidate set from this file, then opens a candidate's `metadata.yaml` for any
-field not in the projection. `lit list --format json` emits the same per-paper
-projection, so its schema never drifts from the index.
+`topics`, `projects`, `methods`, `data`, `doi`, `read-date`, `updated-at`. A
+consumer narrows the candidate set from this file, then opens a candidate's
+`metadata.yaml` for any field not in the projection. `lit list --format json`
+emits the same per-paper projection, so its schema never drifts from the index.
 
 ---
 

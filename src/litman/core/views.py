@@ -43,9 +43,12 @@ SCALAR_VIEW_FIELDS: dict[str, str] = {
 
 # Per-paper fields included in INDEX.json. A summary projection of
 # metadata.yaml — AI consumers can `cat` the source file for fields not
-# listed here. `authors` joined after the original thin cut (it was
-# deliberately left out of it) so both the GUI quick-search and `lit list
-# --format json` consumers can match/read authors without a per-paper load.
+# listed here. Two fields joined after the original thin cut, both because a
+# consumer was otherwise forced to open every paper to answer one question:
+# `authors` (GUI quick-search + `lit list --format json` match/read authors)
+# and `updated-at` (recency ranking — `lit list --sort recent` and the web
+# UI's default reading list). `created-at` stays out: nothing ranks or filters
+# on it except `--added-since`, which is rare and can afford the scan.
 INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "id",
     "title",
@@ -60,6 +63,7 @@ INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "data",
     "doi",
     "read-date",
+    "updated-at",
 )
 
 # Fields stored as lists in metadata.yaml — emitted as `[]` when absent so
@@ -72,6 +76,11 @@ _LIST_FIELDS = {"authors", "topics", "projects", "methods", "data"}
 # stay JSON-clean and string-comparable.
 _DATE_FIELDS = {"read-date"}
 
+# Timestamp-typed scalar fields. Same json.dumps problem as _DATE_FIELDS, but
+# these must NOT lose the time of day: `recency_key` ranks papers against each
+# other, and truncating to YYYY-MM-DD would make everything touched today tie.
+_TIMESTAMP_FIELDS = {"updated-at"}
+
 
 def _date_to_iso(value: Any) -> Any:
     """Normalize a date/datetime field to a YYYY-MM-DD string.
@@ -81,6 +90,28 @@ def _date_to_iso(value: Any) -> Any:
     """
     if isinstance(value, datetime):
         return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def _timestamp_to_iso(value: Any) -> Any:
+    """Normalize a timestamp field to a full ISO 8601 string.
+
+    The YAML safe-loader parses ``2026-05-13T11:24:11+00:00`` into a datetime,
+    which json.dumps cannot serialize. Unlike :func:`_date_to_iso` this keeps
+    the time of day (and the tz offset), so the projection round-trips through
+    ``recency_key``'s ``datetime.fromisoformat`` to the exact same instant the
+    live scan computes from the typed object — the INDEX-served and scanned
+    orderings must be identical, not merely similar.
+
+    A bare ``datetime.date`` (an under-specified value in the yaml) serializes
+    as YYYY-MM-DD, which ``fromisoformat`` reads back as that day's midnight —
+    which is precisely how ``recency_key`` treats the typed date. Everything
+    else (already a string, or None) passes through.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
     return value
@@ -112,6 +143,8 @@ def project_paper(p: dict[str, Any]) -> dict[str, Any]:
             out[field] = list(value) if value else []
         elif field in _DATE_FIELDS:
             out[field] = _date_to_iso(value)
+        elif field in _TIMESTAMP_FIELDS:
+            out[field] = _timestamp_to_iso(value)
         else:
             out[field] = value
     return out

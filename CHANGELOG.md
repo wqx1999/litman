@@ -44,6 +44,11 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Changed
 
+- `INDEX.json` and `lit list --format json` carry one more field per paper:
+  `updated-at`. Ranking a library by recency — `lit list --sort recent`, and the
+  web UI's reading list — needs it, and reading it used to mean opening every
+  paper. A consumer that ignores the field sees exactly what it saw before, and
+  an index written by an older litman is regenerated on the next write.
 - A new logo, favicon and desktop-shortcut icon. The mark in the top bar follows
   your light / dark theme.
 - Windows is now a declared supported platform.
@@ -77,11 +82,14 @@ Measured on a 300-paper library (a real two-year collection):
   got slower with every paper.
 - **`lit list` — 1.9s → 0.6s**, which is litman's start-up floor: the query
   itself is now a single index read, as the documentation always said it was.
+  `--sort recent` included.
 - **A DOI lookup — 2.1s → 0.01s.** `lit add`'s duplicate check and every
   `--paper-doi` lookup (`show`, `cite`, `rm`, `modify`) used to parse the whole
   library to find one paper.
-- **The web UI's change-detection sweep — 2.3s → 0.06s**, and its
-  recently-read list — 2.0s → 0.01s. Both ran on every window focus.
+- **The web UI's paper list — 2.3s → 0.02s.** Opening the library, and every
+  window focus after it, re-read every paper to rank the reading list by
+  recency. The change-detection sweep that runs beside it went 2.3s → 0.06s,
+  and the recently-read list 2.0s → 0.01s.
 
 `INDEX.json` stays a derived file, never a second source of truth: whenever it
 is missing, stale, or written by another version, litman silently falls back to

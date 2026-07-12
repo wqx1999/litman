@@ -122,7 +122,7 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 ### Locate-by-cue (the user names a paper)
 
-**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / authors / year / type / priority / status / topics / projects / methods / data / doi / read-date; for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
+**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / authors / year / type / priority / status / topics / projects / methods / data / doi / read-date / updated-at; for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
 
 | Cue | Command |
 |---|---|

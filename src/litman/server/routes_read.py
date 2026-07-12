@@ -26,7 +26,11 @@ from litman.core.query import recency_key
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy
 from litman.core.vault_registry import find_active, load_registry
-from litman.core.views import load_index_papers, project_paper
+from litman.core.views import (
+    INDEX_PAPER_FIELDS,
+    load_index_papers,
+    project_paper,
+)
 from litman.exceptions import CorruptMetadataError, PaperNotFoundError
 
 router = APIRouter(prefix="/api")
@@ -53,12 +57,17 @@ def _index_papers(vault: Path) -> list[dict[str, Any]] | None:
     papers = payload.get("papers")
     if not isinstance(papers, list):
         return None
-    # Schema-staleness guard: an INDEX.json written before `authors` joined the
-    # thin projection does not carry it. Treat it as "not available" so the
-    # caller re-projects live off metadata.yaml — the API always serves the
-    # current schema; the on-disk INDEX catches up on the vault's next write /
-    # refresh-views.
-    if papers and isinstance(papers[0], dict) and "authors" not in papers[0]:
+    # Schema-staleness guard: an INDEX.json written by an older litman carries
+    # an older projection (no `authors`, no `updated-at`). Compare the whole
+    # field set rather than probing one name, so adding a field to the
+    # projection never again means remembering to edit this line. Treat a
+    # mismatch as "not available" so the caller re-projects live off
+    # metadata.yaml — the API always serves the current schema; the on-disk
+    # INDEX catches up on the vault's next write / refresh-views.
+    if papers and (
+        not isinstance(papers[0], dict)
+        or set(papers[0]) != set(INDEX_PAPER_FIELDS)
+    ):
         return None
     return papers
 
@@ -73,7 +82,7 @@ _SMART_LIST_VIEWS = frozenset({"reading", "recent-read", "backlog"})
 
 
 def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
-    """Order ``list_papers`` for one smart-list view.
+    """Order the vault's papers for one smart-list view.
 
     - ``reading``     = unread, recency DESC.
     - ``recent-read`` = read (read-date set), read-date DESC.
@@ -98,9 +107,15 @@ def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
         read.sort(key=lambda p: str(p.get("read-date") or ""), reverse=True)
         return read
 
-    # reading / backlog rank by recency_key, which reads `updated-at` — NOT in
-    # the thin projection — so these two still scan.
-    papers = list_papers(vault)
+    # reading / backlog rank by recency_key, which reads `updated-at` and the
+    # PDF's mtime. `updated-at` is in the projection, so a verified INDEX
+    # serves the default view too: 300 stat() calls instead of 300 YAML
+    # parses. The projection serializes `updated-at` back to a full ISO string
+    # (views._timestamp_to_iso), which recency_key parses to the same instant
+    # it computes from the typed object a scan hands it — so the order is
+    # identical on both paths, not merely similar.
+    indexed = load_index_papers(vault)
+    papers = indexed if indexed is not None else list_papers(vault)
     unread = [p for p in papers if not p.get("read-date")]
     unread.sort(
         key=lambda p: recency_key(vault, p),

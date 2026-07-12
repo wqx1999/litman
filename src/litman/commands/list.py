@@ -236,17 +236,17 @@ def list_cmd(
     respectively. --limit N keeps the first N after filtering + sorting.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    # INDEX fast path: every filter, both output formats and the default id
-    # sort read only projection fields, so the verified INDEX.json serves
-    # them in one JSON read instead of a per-paper YAML scan (the documented
-    # agent contract). Two queries need fields the projection does not
-    # carry — created-at (--added-since) and updated-at (--sort recent) —
-    # and take the scan, as does any vault whose INDEX is missing, stale or
-    # older-schema (load_index_papers → None; drift surfacing stays owned by
-    # the Tier-1 hook and lit health-check). Both sources yield the same
-    # id-ascending order and, via project_paper, byte-identical output.
+    # INDEX fast path: every filter, both output formats and both sorts read
+    # only projection fields, so the verified INDEX.json serves them in one
+    # JSON read instead of a per-paper YAML scan (the documented agent
+    # contract). One query needs a field the projection does not carry —
+    # created-at (--added-since) — and takes the scan, as does any vault whose
+    # INDEX is missing, stale or older-schema (load_index_papers → None; drift
+    # surfacing stays owned by the Tier-1 hook and lit health-check). Both
+    # sources yield the same id-ascending order and, via project_paper,
+    # byte-identical output.
     all_papers: list[dict[str, Any]] | None = None
-    if added_since is None and sort_by != "recent":
+    if added_since is None:
         all_papers = load_index_papers(vault)
     if all_papers is None:
         all_papers = list_papers(vault)

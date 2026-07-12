@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.taxonomy import USER_DICTS
 from litman.core.views import INDEX_PAPER_FIELDS
@@ -824,22 +825,86 @@ def test_list_added_since_reads_created_at_from_disk(vault: Path) -> None:
     assert json.loads(none.output) == []
 
 
-def test_list_sort_recent_reads_updated_at_from_disk(vault: Path) -> None:
-    """--sort recent ranks on updated-at (not in the projection): with a
-    fresh INDEX the ranking must still reflect per-paper updated-at."""
+def _stagger_updated_at(v: Path) -> None:
+    """Give the three fixture papers distinct updated-at stamps."""
     for paper_id, stamp in [
         ("2023_Pandi_Cellfree", "2026-01-01T10:00:00+02:00"),
         ("2024_Smith_BERT", "2026-03-01T10:00:00+02:00"),
         ("2024_Doe_GNN", "2026-02-01T10:00:00+02:00"),
     ]:
-        meta = vault / "papers" / paper_id / "metadata.yaml"
+        meta = v / "papers" / paper_id / "metadata.yaml"
         meta.write_text(
             meta.read_text(encoding="utf-8")
             + f"updated-at: '{stamp}'\n",
             encoding="utf-8",
         )
+
+
+def test_list_sort_recent_reads_updated_at_from_disk(vault: Path) -> None:
+    """--sort recent ranks on updated-at: with a fresh INDEX the ranking must
+    reflect each paper's own stamp (it is served from the projection now)."""
+    _stagger_updated_at(vault)
     _reconcile(vault)
     result = _invoke(vault, "--sort", "recent", "--format", "json")
     assert [p["id"] for p in json.loads(result.output)] == [
         "2024_Smith_BERT", "2024_Doe_GNN", "2023_Pandi_Cellfree",
     ]
+
+
+def test_list_sort_recent_is_identical_with_and_without_index(
+    vault: Path,
+) -> None:
+    """updated-at joined the projection, so --sort recent is INDEX-served. The
+    ranking must be exactly the scan's — the projection writes updated-at as an
+    ISO string where the scan hands recency_key a datetime, and if that
+    round-trip lost the clock, same-day edits would reorder."""
+    _stagger_updated_at(vault)
+    _reconcile(vault)
+    fast = _invoke(vault, "--sort", "recent", "--format", "json")
+    fast_table = _invoke(vault, "--sort", "recent")
+
+    (vault / "INDEX.json").unlink()
+    scan = _invoke(vault, "--sort", "recent", "--format", "json")
+    scan_table = _invoke(vault, "--sort", "recent")
+
+    assert fast.output == scan.output
+    assert fast_table.output == scan_table.output
+
+
+def test_list_sort_recent_does_not_scan_the_vault(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real default path, with the scan booby-trapped: --sort recent must
+    come back from the INDEX alone."""
+    _stagger_updated_at(vault)
+    _reconcile(vault)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the --sort recent path")
+
+    monkeypatch.setattr("litman.commands.list.list_papers", _boom)
+    result = _invoke(vault, "--sort", "recent", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert [p["id"] for p in json.loads(result.output)] == [
+        "2024_Smith_BERT", "2024_Doe_GNN", "2023_Pandi_Cellfree",
+    ]
+
+
+def test_list_added_since_still_scans(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--added-since ranks on created-at, which is deliberately NOT in the
+    projection — it must still take the scan rather than silently answer from
+    an INDEX that cannot know the answer."""
+    _reconcile(vault)
+    calls: list[Path] = []
+    real = list_papers
+
+    def _counting(v: Path) -> list:
+        calls.append(v)
+        return real(v)
+
+    monkeypatch.setattr("litman.commands.list.list_papers", _counting)
+    result = _invoke(vault, "--added-since", "2000-01-01", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert calls, "--added-since answered without reading created-at"

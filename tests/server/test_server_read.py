@@ -642,3 +642,65 @@ def test_recent_read_view_does_not_scan_the_vault(
     monkeypatch.setattr("litman.server.routes_read.list_papers", _boom)
     body = _client(vault).get("/api/papers?view=recent-read").json()
     assert [p["id"] for p in body] == [ids["dropped_read"], ids["read_deep"]]
+
+
+def test_reading_and_backlog_are_identical_with_and_without_index(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """The GUI's default view. Both rank by recency_key, whose `updated-at` is
+    in the projection now — so both are INDEX-served, and both must return
+    exactly what the scan returns. The projection hands recency_key an ISO
+    string where a scan hands it a datetime; if that round-trip dropped the
+    time of day, two papers edited on the same day would reorder here."""
+    vault, _ids = smartlist_vault
+    fast = {
+        view: _client(vault).get(f"/api/papers?view={view}").json()
+        for view in ("reading", "backlog")
+    }
+
+    (vault / "INDEX.json").unlink()
+    scan = {
+        view: _client(vault).get(f"/api/papers?view={view}").json()
+        for view in ("reading", "backlog")
+    }
+
+    assert fast == scan
+    assert len(fast["reading"]) == 3  # the three unread papers
+
+
+def test_reading_view_does_not_scan_the_vault(
+    smartlist_vault: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The view the GUI opens on, and re-fetches on every window focus: with a
+    fresh INDEX it must not open a single metadata.yaml."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, _ids = smartlist_vault
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the reading fast path")
+
+    monkeypatch.setattr("litman.server.routes_read.list_papers", _boom)
+    body = _client(vault).get("/api/papers?view=reading").json()
+    assert len(body) == 3
+
+
+def test_older_schema_index_is_not_served_to_the_reading_view(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """An INDEX.json written by an older litman carries an older projection (no
+    `updated-at`). Serving it would silently degrade the ranking to pdf-mtime
+    only. The staleness guard compares the whole field set, so the view falls
+    back to the scan and the order stays right — no migration, no repair step."""
+    vault, _ids = smartlist_vault
+    fresh = _client(vault).get("/api/papers?view=reading").json()
+
+    index_path = vault / "INDEX.json"
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    for entry in payload["papers"]:
+        entry.pop("updated-at")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert _client(vault).get("/api/papers?view=reading").json() == fresh
