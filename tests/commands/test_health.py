@@ -469,6 +469,45 @@ def test_views_vs_metadata_stale_symlink_is_error(vault: Path) -> None:
     del shutil  # keep import used
 
 
+def test_views_vs_metadata_junction_links_are_seen(
+    vault: Path, fake_junction
+) -> None:
+    """Windows regression (2026-07-14 manual round): view links are junctions
+    there, and junctions answer ``is_junction()`` only. With bare
+    ``is_symlink()`` detection the on-disk scan was always empty, so a
+    perfectly healthy library reported one "link is missing" error PER LINK,
+    exited 1, and ``--fix`` rebuilt the same links forever without ever
+    converging."""
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    _build_index(vault)
+    # Swap the POSIX-built symlinks for junction stand-ins — what the same
+    # vault looks like on NTFS.
+    for view, bucket in (("by-topic", "amp"), ("by-status", "deep-read")):
+        fake_junction(vault / "views" / view / bucket / "2024_Foo_Bar")
+    assert check_views_vs_metadata(vault, list_papers(vault)) == []
+
+
+def test_views_vs_metadata_stale_junction_is_error(
+    vault: Path, fake_junction
+) -> None:
+    """The stale arm needs junction eyes too: with the empty on-disk scan a
+    leftover junction in a bucket the paper no longer belongs to was silently
+    never reported on Windows."""
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    _build_index(vault)
+    fake_junction(
+        vault / "views" / "by-topic" / "ghost-topic" / "2024_Foo_Bar"
+    )
+    issues = check_views_vs_metadata(vault, list_papers(vault))
+    stale = [i for i in issues if "no matching metadata tag" in i.message]
+    assert len(stale) == 1
+    assert stale[0].category == "views_vs_metadata"
+
+
 # --- relevance_orphan (M30 #11) ---------------------------------------------
 
 

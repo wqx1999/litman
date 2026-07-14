@@ -144,6 +144,40 @@ def vault_with_paper(tmp_path: Path) -> tuple[Path, str]:
     return vault, paper_id
 
 
+@pytest.fixture
+def fake_junction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Path], Path]:
+    """Factory: plant a Windows-junction stand-in at the given path.
+
+    On NTFS every litman link is a directory junction — a mount-point
+    reparse point, which Python does NOT consider a symlink: only the
+    ``is_junction()`` API sees it. POSIX hosts cannot create one, so the
+    stand-in is a real empty directory plus an ``is_junction`` patch scoped
+    to the planted paths. Deletion behaves like Windows too: ``unlink()``
+    raises and the ``rmdir()`` fallback inside ``remove_link_if_present``
+    removes the entry without recursing anywhere. An existing symlink at the
+    path (a POSIX-built fixture link) is replaced in place.
+    """
+    planted: set[Path] = set()
+    real_is_junction = Path.is_junction
+
+    def _plant(path: Path) -> Path:
+        if path.is_symlink():
+            path.unlink()
+        path.mkdir(parents=True, exist_ok=True)
+        if not planted:
+            monkeypatch.setattr(
+                Path,
+                "is_junction",
+                lambda self: self in planted or real_is_junction(self),
+            )
+        planted.add(path)
+        return path
+
+    return _plant
+
+
 @pytest.fixture(autouse=True)
 def _isolate_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

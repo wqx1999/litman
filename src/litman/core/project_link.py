@@ -36,6 +36,7 @@ from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.portable_link import (
+    is_portable_link,
     make_portable_link,
     remove_link_if_present,
 )
@@ -172,7 +173,7 @@ def reconcile_project_code_links(
     resolving: set[str] = set()
     if code_dir.is_dir():
         for child in code_dir.iterdir():
-            if child.is_symlink():
+            if is_portable_link(child):
                 on_disk.add(child.name)
                 # exists() FOLLOWS the link. A dangling bridge (the vault —
                 # or the clone — moved out from under it) must count as
@@ -246,7 +247,7 @@ def find_dangling_bridges(
                 if not hub.is_dir():
                     continue
                 for child in sorted(hub.iterdir()):
-                    if child.is_symlink():
+                    if is_portable_link(child):
                         hub_links.append(child)
         except OSError:
             # A hub that vanishes or refuses listing between the bounded dir
@@ -532,7 +533,7 @@ def unlink_paper_from_project(
     code_links_kept = []
     for repo_name in code_clones:
         link_path = project_dir / CODE_SUBDIR / repo_name
-        if not link_path.is_symlink():
+        if not is_portable_link(link_path):
             continue
         # Check fresh papers (excludes the just-unlinked paper). If another
         # paper tagged with this project still binds the repo, KEEP the
@@ -730,22 +731,27 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
         literature_dir = project_dir / LITERATURE_SUBDIR
         if literature_dir.is_dir():
             for child in literature_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
+                remove_link_if_present(child)
             refs = literature_dir / REFERENCES_FILENAME
             if refs.exists():
                 refs.unlink()
         # Symmetric teardown of litman_code/ (parallel to rm.py's
         # _teardown_project_links). The project is gone, so every
-        # litman_code/<repo> symlink is an orphan — no shared-lib retention
-        # judgment needed. Without this, those symlinks become permanent
+        # litman_code/<repo> link is an orphan — no shared-lib retention
+        # judgment needed. Without this, those links become permanent
         # orphans that no later rebuild_all_project_links revisits (the project
         # is already out of the registry), violating invariant #14.
         code_dir = project_dir / CODE_SUBDIR
         if code_dir.is_dir():
             for child in code_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
+                remove_link_if_present(child)
+        # The hubs themselves were litman's litter too: rmdir only when
+        # empty, so anything the user parked inside survives untouched.
+        for hub in (literature_dir, code_dir):
+            try:
+                hub.rmdir()
+            except OSError:
+                pass
 
     return n_changed, referencing
 
@@ -951,8 +957,7 @@ def rebuild_all_project_links(
             sub_dir = project_dir / sub
             if sub_dir.exists():
                 for child in sub_dir.iterdir():
-                    if child.is_symlink():
-                        child.unlink()
+                    remove_link_if_present(child)
             else:
                 sub_dir.mkdir(exist_ok=True)
         # Preserve REFERENCES.md across the wipe — it lives in

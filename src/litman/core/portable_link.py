@@ -18,9 +18,13 @@ platform:
   Junctions store absolute targets, so a moved vault leaves them stale; that
   is the same detected-and-repaired failure class as the project bridges
   (``lit health-check --fix``, the Tier-1 rebuild prompt, the GUI rebuild on
-  vault switch). To Python's detection calls a junction reads as a symlink
-  (Windows lstat marks name-surrogate reparse points ``S_IFLNK``), so the
-  checks, regen and removal code paths need no platform branches.
+  vault switch). To Python a junction is NOT a symlink: it is a mount-point
+  reparse point (``IO_REPARSE_TAG_MOUNT_POINT``), and since 3.8
+  ``is_symlink()`` deliberately answers ``False`` for it — only the 3.12
+  ``is_junction()`` API sees it. Every code path that detects, counts or
+  removes litman links must therefore go through :func:`is_portable_link`
+  (or the removal helpers below, which embed it); a bare ``is_symlink()``
+  makes junctions invisible on Windows.
 
 Windows never falls back to symlinks: a filesystem where junctions are
 impossible (no reparse points — FAT32, exFAT, network shares) refuses
@@ -55,6 +59,19 @@ _WARNED_THIS_PROCESS: bool = False
 
 
 _LINK_MECHANISM: dict[str, str] = {}
+
+
+def is_portable_link(path: Path) -> bool:
+    """True if ``path`` is a folder link of the kind litman creates.
+
+    POSIX symlinks answer ``is_symlink()``; Windows junctions answer only
+    ``is_junction()`` — never both. This is the single detection predicate
+    for every scan, count and teardown site; a bare ``is_symlink()`` check
+    cannot see junctions, which turns a healthy Windows library into a wall
+    of phantom "link is missing" errors and leaves orphan junctions behind
+    every teardown.
+    """
+    return path.is_symlink() or path.is_junction()
 
 
 def _probe_symlink(directory: Path) -> bool:
@@ -98,7 +115,7 @@ def _probe_junction(directory: Path) -> bool:
         ok = False
     finally:
         try:
-            if link.is_symlink() or link.is_junction():
+            if is_portable_link(link):
                 try:
                     link.unlink()
                 except OSError:
@@ -235,7 +252,7 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
     """
     link_path.parent.mkdir(parents=True, exist_ok=True)
     obstruction: OSError | None = None
-    if link_path.is_symlink() or link_path.is_junction() or link_path.exists():
+    if is_portable_link(link_path) or link_path.exists():
         try:
             _remove_existing_entry(link_path)
         except OSError as err:
@@ -266,7 +283,7 @@ def _remove_existing_entry(path: Path) -> None:
     flatten user data into a link is the point; the caller reports that as an
     obstruction, not as missing link support.
     """
-    if path.is_symlink() or path.is_junction():
+    if is_portable_link(path):
         try:
             path.unlink()
         except OSError:
@@ -279,15 +296,15 @@ def remove_link_if_present(link_path: Path) -> bool:
     """Remove the folder link at ``link_path`` if it is in fact a link.
 
     Refuses to delete real files or directories — only links (symlinks and,
-    on Windows, junctions; both read as symlinks to ``is_symlink()`` there,
-    the ``is_junction()`` check is belt-and-braces). On filesystems where the
-    link was never created (graceful degrade above), this is a silent no-op
-    returning ``False``.
+    on Windows, junctions; junctions answer ``is_junction()`` only, so the
+    combined :func:`is_portable_link` predicate is what makes this work on
+    Windows at all). On filesystems where the link was never created
+    (graceful degrade above), this is a silent no-op returning ``False``.
 
     Returns:
         ``True`` if a link was removed, ``False`` otherwise.
     """
-    if not (link_path.is_symlink() or link_path.is_junction()):
+    if not is_portable_link(link_path):
         return False
     try:
         link_path.unlink()

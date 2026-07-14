@@ -17,6 +17,7 @@ from rich.console import Console
 
 import litman.core.portable_link as portable_link
 from litman.core.portable_link import (
+    is_portable_link,
     make_portable_link,
     remove_link_if_present,
     reset_warning_state,
@@ -293,6 +294,48 @@ def test_create_junction_off_windows_raises_oserror(tmp_path: Path) -> None:
         portable_link._create_junction(tmp_path / "lnk", target)
 
 
+# ---------------------------------------------------------------------------
+# is_portable_link — the single link-detection predicate
+# ---------------------------------------------------------------------------
+
+
+def test_is_portable_link_symlink_true(tmp_path: Path) -> None:
+    target = tmp_path / "target-dir"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    assert is_portable_link(link) is True
+
+
+def test_is_portable_link_real_entries_false(tmp_path: Path) -> None:
+    real_dir = tmp_path / "real-dir"
+    real_dir.mkdir()
+    real_file = tmp_path / "real.txt"
+    real_file.write_text("hi", encoding="utf-8")
+    assert is_portable_link(real_dir) is False
+    assert is_portable_link(real_file) is False
+    assert is_portable_link(tmp_path / "absent") is False
+
+
+def test_is_portable_link_junction_true(tmp_path, fake_junction) -> None:
+    """Windows regression (2026-07-14 manual round): junctions answer
+    ``is_junction()`` only, never ``is_symlink()`` — bare ``is_symlink()``
+    detection made every litman link invisible on NTFS."""
+    link = fake_junction(tmp_path / "junction")
+    assert not link.is_symlink()
+    assert is_portable_link(link) is True
+
+
+def test_remove_link_if_present_removes_junction_stand_in(
+    tmp_path, fake_junction
+) -> None:
+    """The unlink→rmdir fallback removes a junction-shaped entry (a directory
+    to POSIX delete calls) without recursing into anything."""
+    link = fake_junction(tmp_path / "junction")
+    assert remove_link_if_present(link) is True
+    assert not link.exists()
+
+
 @pytest.mark.skipif(
     portable_link.sys.platform != "win32",
     reason="real junctions need a Windows kernel",
@@ -303,16 +346,19 @@ class TestRealJunctionsOnWindows:
     They pin the two load-bearing stdlib facts the Linux suite can only
     assert through the seam."""
 
-    def test_link_traverses_and_reads_as_symlink(self, tmp_path: Path) -> None:
+    def test_link_traverses_and_reads_as_junction(self, tmp_path: Path) -> None:
         target = tmp_path / "papers-dir"
         target.mkdir()
         (target / "inside.txt").write_text("hi", encoding="utf-8")
         link = tmp_path / "junction"
 
         assert make_portable_link(link, target) is True
-        # Junctions must read as symlinks to every litman detection site.
-        assert link.is_symlink()
+        # A junction is a mount-point reparse point, NOT a symlink: Python
+        # answers is_junction() only. This is why every detection site must
+        # go through is_portable_link() — bare is_symlink() sees nothing.
+        assert not link.is_symlink()
         assert link.is_junction()
+        assert is_portable_link(link)
         assert (link / "inside.txt").read_text(encoding="utf-8") == "hi"
 
     def test_remove_spares_the_target(self, tmp_path: Path) -> None:

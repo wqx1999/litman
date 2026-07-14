@@ -60,7 +60,11 @@ from litman.core.notes import (
     heal_discussion_scaffold,
     parse_wikilink_target,
 )
-from litman.core.portable_link import links_supported, links_unsupported_hint
+from litman.core.portable_link import (
+    is_portable_link,
+    links_supported,
+    links_unsupported_hint,
+)
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
@@ -1199,7 +1203,7 @@ def check_views_vs_metadata(
                 if not bucket.is_dir():
                     continue
                 for entry in bucket.iterdir():
-                    if entry.is_symlink():
+                    if is_portable_link(entry):
                         on_disk.add((bucket.name, entry.name))
 
         for bucket, pid in sorted(on_disk - expected[view_name]):
@@ -1750,7 +1754,7 @@ def check_project_references(
         link_ids: set[str] = set()
         if reflib.is_dir():
             for entry in reflib.iterdir():
-                if entry.is_symlink():
+                if is_portable_link(entry):
                     link_ids.add(entry.name)
         for extra in sorted(link_ids - member_ids):
             out.append(
@@ -1804,7 +1808,7 @@ def check_project_references(
         code_link_names: set[str] = set()
         if code_dir.is_dir():
             for entry in code_dir.iterdir():
-                if entry.is_symlink():
+                if is_portable_link(entry):
                     code_link_names.add(entry.name)
         for extra in sorted(code_link_names - expected_repos):
             out.append(

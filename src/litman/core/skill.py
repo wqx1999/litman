@@ -27,6 +27,7 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
+from litman.core.portable_link import is_portable_link
 from litman.exceptions import LitmanError
 
 # Default parent dir under which each skill gets its own subdir.
@@ -220,10 +221,10 @@ def uninstall_skill(
         left behind).
     """
     target = parent_dir / name
-    if target.is_symlink():
-        # A symlinked skill dir points outside the tree we manage: deleting
-        # "through" it could reach files elsewhere, and rmdir on a symlink
-        # errors. Leave it entirely untouched.
+    if is_portable_link(target):
+        # A linked skill dir (symlink or Windows junction) points outside
+        # the tree we manage: deleting "through" it could reach files
+        # elsewhere, and rmdir on a link errors. Leave it entirely untouched.
         return {
             "name": name,
             "target": target,

@@ -81,7 +81,7 @@ from litman.core.notes import (
     enumerate_markdown_files,
 )
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-from litman.core.portable_link import remove_link_if_present
+from litman.core.portable_link import is_portable_link, remove_link_if_present
 from litman.core.project_link import (
     CODE_SUBDIR,
     _papers_using_repo_in_project,
@@ -278,7 +278,7 @@ def _teardown_project_links(
 
         for repo_name in code_clones:
             link_path = project_dir / CODE_SUBDIR / repo_name
-            if not link_path.is_symlink():
+            if not is_portable_link(link_path):
                 continue
             still_used = _papers_using_repo_in_project(
                 surviving_papers, project, repo_name,

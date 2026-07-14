@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Any
 
 from litman.core.dates import now_iso
-from litman.core.portable_link import make_portable_link, remove_link_if_present
+from litman.core.portable_link import (
+    is_portable_link,
+    make_portable_link,
+    remove_link_if_present,
+)
 
 # Views whose tag values come from a list-typed metadata field.
 LIST_VIEW_FIELDS: dict[str, str] = {
@@ -388,7 +392,9 @@ def _clear_view_subdir(view_dir: Path) -> None:
     """
     if view_dir.exists():
         for child in view_dir.iterdir():
-            if child.is_symlink() or child.is_file():
+            if is_portable_link(child):
+                remove_link_if_present(child)
+            elif child.is_file():
                 child.unlink()
             elif child.is_dir():
                 shutil.rmtree(child)

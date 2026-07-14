@@ -225,6 +225,25 @@ def test_check_flags_dangling_code_bridge(tmp_path: Path) -> None:
     assert "ghostrepo" in issues[0].message  # the example names the code link
 
 
+def test_find_dangling_sees_junction_bridges(
+    tmp_path: Path, fake_junction
+) -> None:
+    """Windows regression (2026-07-14 manual round): bridges are junctions
+    there, and junctions answer ``is_junction()`` only. With bare
+    ``is_symlink()`` scanning the collector was blind on Windows — a moved
+    vault never triggered the Tier-1 rebuild prompt, the GUI switch-time
+    heal, or health-check's dangling arm."""
+    proj = tmp_path / "proj"
+    bridge = fake_junction(proj / "litman_reflib" / "2024_A")
+
+    out = find_dangling_bridges(
+        {"pepforge": str(proj)},
+        {str(proj): True},
+        lambda paths: {p: False for p in paths},  # every target definitely gone
+    )
+    assert [p.name for p in out["pepforge"]] == [bridge.name]
+
+
 def test_find_dangling_unreadable_hub_skips_that_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

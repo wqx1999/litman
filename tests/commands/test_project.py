@@ -668,6 +668,40 @@ def test_project_rm_atomicity_index_matches_metadata(
         assert p["projects"] == []
 
 
+def test_project_rm_junction_bridges_torn_down(
+    vault: Path, proj_dir: Path, fake_junction
+) -> None:
+    """Windows regression (2026-07-14 manual round): with a paper still
+    linked, ``project rm --yes`` reported success but skipped the junction
+    bridges — bare ``is_symlink()`` sees nothing on NTFS — leaving orphan
+    links pointing into the vault from a project that no longer exists
+    (exactly what invariant #14's teardown comment promises never happens).
+    The emptied hubs are litman's litter and go with the project; the user's
+    own files stay."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    reflib = proj_dir / "litman_reflib"
+    bridge = fake_junction(reflib / "2024_A")
+    (reflib / "REFERENCES.md").write_text("# refs\n", encoding="utf-8")
+    (proj_dir / "my_own_file.txt").write_text("mine", encoding="utf-8")
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert not bridge.exists()
+    assert not reflib.exists()  # emptied hub removed with the project
+    assert (proj_dir / "my_own_file.txt").exists()
+    # The vault side of the bridge is untouched.
+    assert (vault / "papers" / "2024_A" / "metadata.yaml").is_file()
+
+
 def test_project_rm_stray_stdin_no_yes_aborts_unmutated(
     vault: Path, proj_dir: Path
 ) -> None:
