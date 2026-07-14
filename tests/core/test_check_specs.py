@@ -51,12 +51,13 @@ _EXPECTED_CATEGORIES = (
     "stale_staging",
     "trash_health",
     "pdf_viewer",
+    "skill_drift",
     "code_clone_integrity",
 )
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 23
+    assert len(_CHECK_REGISTRY) == 24
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -92,10 +93,16 @@ def test_every_spec_fn_has_check_signature() -> None:
 
 def test_auto_fixable_categories_unchanged() -> None:
     """``--fix`` stays the additive/lossless set: the two Phase-1 validity
-    cleanups plus the discussion scaffold. Broadening it to klass-A regen is
-    still Phase 2."""
+    cleanups, the discussion scaffold, and the skill re-copy (the installed
+    skill dir is a deploy artifact of the package; refreshing it never
+    touches files the user added). Broadening to klass-A regen is separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
-        {"stale_staging", "orphan_trash_sidecar", "discussion_scaffold"}
+        {
+            "stale_staging",
+            "orphan_trash_sidecar",
+            "discussion_scaffold",
+            "skill_drift",
+        }
     )
 
 

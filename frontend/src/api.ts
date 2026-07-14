@@ -389,11 +389,15 @@ export interface AgentStatusEntry {
 /** The agent-onboarding status — the single data source for the TopBar red dot
  * and the setup panel. `needs_setup` is computed SERVER-SIDE (the red-dot
  * condition); the client never re-derives the state machine. `skill_installed`
- * reports the resolved default agent's skill. `default` is null until chosen. */
+ * reports the resolved default agent's skill; `skill_state` is the server's
+ * content-level verdict for it — 'stale' means installed but out of date with
+ * the running litman (the panel offers an update, and the server folds it into
+ * `needs_setup` so the red dot surfaces it). `default` is null until chosen. */
 export interface AgentStatus {
   agents: AgentStatusEntry[]
   default: string | null
   skill_installed: boolean
+  skill_state: 'absent' | 'stale' | 'current'
   needs_setup: boolean
 }
 
@@ -403,7 +407,9 @@ export function fetchAgentStatus(): Promise<AgentStatus> {
   return getJSON<AgentStatus>('/api/agent/status')
 }
 
-/** Install the named agent's skill through the server-side catalog adapter.
+/** Install or refresh the named agent's skill through the server-side catalog
+ * adapter (the install overwrites, so the same call is the "Update skill"
+ * action when `skill_state` is 'stale').
  * Sends the agent NAME only — the install target lives entirely server-side
  * (ADR-020); any path in the body is ignored. An absent name targets the
  * default agent. Throws the backend's verbatim message (400) for an unknown /

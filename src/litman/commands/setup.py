@@ -37,7 +37,7 @@ from litman.commands.sync import sync_setup_cmd
 from litman.core import agent_prefs
 from litman.core.config import load_config
 from litman.core.library import DEFAULT_VAULT_NAME, find_vault
-from litman.core.skill import installed_skill_names, list_bundled_skills
+from litman.core.skill import skill_status
 from litman.core.vault_registry import (
     VaultRegistryError,
     ensure_name_registrable,
@@ -141,12 +141,11 @@ def _step_skill(
 ) -> None:
     console.rule("[bold]Step 2/5 — agent skill")
 
-    # Re-run idempotency: install_skill_cmd defaults to force=False and the
-    # underlying install_all_skills raises SkillInstallError on the first
-    # already-present target. Probe state first and expose --force as a
-    # prompt so wizard users can refresh skills (e.g., after a litman
-    # upgrade ships updated skill content) without dropping to the
-    # standalone command. Mirrors feedback_wizard_mirrors_command_flags.
+    # Re-run idempotency: probe content-level state first (skill_status) and
+    # expose --force as a prompt only where it changes anything, so wizard
+    # users can refresh skills after a litman upgrade without dropping to
+    # the standalone command (feedback_wizard_mirrors_command_flags):
+    # up-to-date installs auto-skip, stale ones prompt [Y/n] default Y.
     # Keep CLI setup and GUI onboarding on one machine-level default agent so
     # `lit setup` clears the GUI red dot too. preferences.yaml is machine-
     # global config, NOT a vault TRUTH/DERIVED surface — invariant #16 (the
@@ -156,24 +155,45 @@ def _step_skill(
     def _record_claude_default() -> None:
         agent_prefs.save_default_agent("claude")
 
-    bundled = set(list_bundled_skills())
-    already = installed_skill_names()
+    statuses = skill_status()
+    bundled = set(statuses)
+    already = {
+        name
+        for name, info in statuses.items()
+        if info["state"] != "absent"
+    }
+    stale = sorted(
+        name
+        for name, info in statuses.items()
+        if info["state"] == "stale"
+    )
     if already:
         if already >= bundled:
+            if not stale:
+                console.print(
+                    f"[dim]Skills already installed and up to date "
+                    f"({', '.join(sorted(already))}) — nothing to do. "
+                    f"(lit install-skill --force re-copies them "
+                    f"regardless.)[/]"
+                )
+                _record_claude_default()
+                skipped.append("skill (up to date)")
+                return
             console.print(
-                f"[dim]Skills already installed "
-                f"({', '.join(sorted(already))}).[/]"
+                f"[dim]Skills installed but out of date with this litman "
+                f"({', '.join(stale)}).[/]"
             )
             if not click.confirm(
-                "Reinstall (overwrite with the bundled version)?",
-                default=False,
+                "Refresh them with the bundled version? "
+                "(files you added are kept)",
+                default=True,
             ):
                 _record_claude_default()
-                skipped.append("skill (already installed)")
+                skipped.append("skill (stale, refresh declined)")
                 return
             ctx.invoke(install_skill_cmd, force=True)
             _record_claude_default()
-            did.append("skill (reinstalled, Claude Code)")
+            did.append("skill (refreshed, Claude Code)")
             return
         missing = bundled - already
         console.print(

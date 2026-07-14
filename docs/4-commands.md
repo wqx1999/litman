@@ -136,6 +136,11 @@ Install the bundled agent skills (`lit-library` for the write side,
 without them. Copies files only; does not install an agent or configure any
 keys.
 
+Safe to re-run after upgrading litman: skills that already match the bundled
+content report "up to date", out-of-date ones are offered a refresh (`[Y/n]`,
+default yes; non-interactive runs need `--force` instead). A skill directory
+that is a symlink is always left untouched.
+
 ```
 lit install-skill
 lit install-skill --skill lit-reading
@@ -145,7 +150,7 @@ lit install-skill --skill lit-reading
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
 | `--parent-dir <path>` | Install directory. Default: `~/.claude/skills`, where Claude Code auto-discovers them. |
-| `--force` | Overwrite files inside an existing target. Files not part of the bundled skill are left in place. |
+| `--force` | Overwrite files inside an existing target without asking. Files not part of the bundled skill are left in place. |
 
 ### `lit uninstall`
 
@@ -608,7 +613,8 @@ The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
 
 Scan the whole vault for inconsistencies: dangling references, schema gaps, stale
 staging dirs, missing PDFs, missing discussion logs, dangling wikilinks, dangling
-vault-registry entries, missing project directories. Exits 0 on a clean vault, 1
+vault-registry entries, missing project directories, and installed agent skills
+that are out of date with the running litman. Exits 0 on a clean vault, 1
 if any error or warning is found (so it can gate cron / CI). `info` findings —
 notes about the host, such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
@@ -620,7 +626,7 @@ lit health-check --fix
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata), clean stale staging dirs / orphan trash sidecars, and create any missing `discussion.md` (existing ones keep every section they hold). Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata), clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
 
 ### `lit refresh-views`
 

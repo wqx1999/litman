@@ -7,7 +7,7 @@ Endpoints:
 * ``POST /api/agent/launch``      — open the named agent in a terminal at the vault
 * ``GET  /api/agent/status``      — the red-dot / setup-panel data source; the
   server computes ``needs_setup`` (single source of truth for the state machine)
-* ``POST /api/agent/skill/install`` — install the named agent's skill
+* ``POST /api/agent/skill/install`` — install / refresh the named agent's skill
 * ``PUT  /api/agent/default``     — record the machine-level default agent
 
 The agent set + launch commands + install targets all come from the code-level
@@ -133,10 +133,17 @@ def agent_status(response: Response) -> dict[str, object]:
     never re-derives the state machine):
 
         needs_setup == NOT( default chosen AND supported AND detected AND
-                            skill_installed )
+                            skill_installed AND skill up to date )
+
+    ``skill_state`` is the content-level verdict for the resolved default's
+    skill: ``"absent"`` (nothing installed), ``"stale"`` (installed but out of
+    date with the running litman — the panel offers an update, and it is part
+    of ``needs_setup`` so the red dot surfaces it), or ``"current"``.
+    ``skill_installed`` (== state != "absent") stays alongside for the panel's
+    install-vs-update branch.
 
     ``Cache-Control: no-store`` is mandatory: ``detected`` (is the agent binary
-    on PATH?) and ``skill_installed`` are live machine state that flips the
+    on PATH?) and ``skill_state`` are live machine state that flips the
     moment the user installs the agent CLI or its skill in a terminal. Without
     it the browser serves a cached "not installed" body, so even a plain reload
     keeps showing the red dot until a hard refresh (same reason paper.pdf sets
@@ -156,11 +163,15 @@ def agent_status(response: Response) -> dict[str, object]:
 
     default = agent_prefs.load_default_agent()
 
-    # skill_installed reports the *resolved* default's skill so the panel can
-    # show "Ready" vs "Install skill" even before the user has committed a
-    # default. Only a supported agent has a skill adapter to probe.
+    # skill_state reports the *resolved* default's skill so the panel can
+    # show "Ready" vs "Install skill" vs "Update skill" even before the user
+    # has committed a default. Only a supported agent has a skill adapter to
+    # probe.
     probe = agents.get_agent(default or agents.default_agent_name())
-    skill_installed = bool(probe and probe.supported and probe.skill_installed())
+    skill_state = (
+        probe.skill_state() if (probe and probe.supported) else "absent"
+    )
+    skill_installed = skill_state != "absent"
 
     default_spec = agents.get_agent(default) if default else None
     detected = bool(default_spec and agents.detect(default_spec))
@@ -170,19 +181,24 @@ def agent_status(response: Response) -> dict[str, object]:
         and default_spec.supported
         and detected
         and skill_installed
+        and skill_state != "stale"
     )
 
     return {
         "agents": entries,
         "default": default,
         "skill_installed": skill_installed,
+        "skill_state": skill_state,
         "needs_setup": needs_setup,
     }
 
 
 @router.post("/agent/skill/install")
 async def install_agent_skill(request: Request) -> dict[str, object]:
-    """Install the named agent's skill (default: the resolved default agent).
+    """Install or refresh the named agent's skill (default: the resolved
+    default agent). The adapter installs with overwrite, so the same call
+    serves first-time onboarding and the "Update skill" action for a stale
+    install; files the user added next to the skill are never touched.
 
     Body JSON (optional): ``{"agent": "<name>"}`` — ONLY the name is read; the
     install target lives entirely in the catalog adapter (RED LINE). Unknown

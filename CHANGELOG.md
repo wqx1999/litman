@@ -16,6 +16,12 @@ behaviour, a minor release adds it, a major release breaks it.
   is configured. Click it to pick your agent, install the litman skill, and clear
   the dot. Claude Code is supported today; Codex, Cursor, Gemini CLI and OpenCode
   are listed as coming soon.
+- **Skill updates are detected.** Upgrading litman ships new skill content, but
+  the installed copy used to stay silently stale. Now the GUI agent button
+  raises its red dot and offers **Update skill**, `lit health-check` flags the
+  drift (`--fix` refreshes it), re-running `lit install-skill` reports
+  "up to date" or offers the refresh instead of erroring, and `lit setup`
+  refreshes on Enter. Files you added next to a skill are always kept.
 - **`~` launches the agent** from anywhere in the GUI — the key left of `1`, with
   or without Shift. Press `?` for the full shortcut list.
 - **A welcome page.** `lit gui` now starts without a vault and offers to create

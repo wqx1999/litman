@@ -149,8 +149,16 @@ class CheckSpec:
 # until then this stays a literal so external ``--fix`` behavior is unchanged.
 # ``discussion_scaffold`` joins them as a third validity fix: creating a missing
 # empty log (or restoring its header) is a pure add, never an overwrite.
+# ``skill_drift`` is the fourth: re-copying the bundled skill files over a
+# stale installed copy is lossless (the installed dir is a deploy artifact;
+# user-added files next to SKILL.md are never touched).
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
-    {"stale_staging", "orphan_trash_sidecar", "discussion_scaffold"}
+    {
+        "stale_staging",
+        "orphan_trash_sidecar",
+        "discussion_scaffold",
+        "skill_drift",
+    }
 )
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
@@ -2314,6 +2322,63 @@ def check_pdf_viewer(
     return out
 
 
+def check_skill_drift(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Installed agent skills vs this litman's bundled copies (machine-level).
+
+    The installed skill directory is a deploy artifact of the *package*:
+    ``lit install-skill`` copies the bundled files out, and a litman upgrade
+    ships new bundled content without touching the installed copy. A stale
+    copy fails silently — the agent keeps following an outdated SOP against
+    the newer CLI — so it is surfaced here as a warning and refreshed by
+    ``--fix`` (a lossless re-copy; files the user added next to SKILL.md are
+    never touched).
+
+    Deliberately NOT flagged:
+
+    * absent skills — never installing one is a respected opt-out (the CLI
+      is fully usable without skills), and ``--fix`` installing something the
+      user removed would be picking a side (ADR-015);
+    * ``linked`` dirs — a symlink/junction points at a copy managed
+      elsewhere (a development checkout), where diverging is the point.
+
+    Machine-level, so ``vault`` / ``papers`` are unused — like the pdf-viewer
+    probe this reports host state per run, not vault state.
+    """
+    from litman.core.skill import skill_status
+
+    try:
+        statuses = skill_status()
+    except OSError:
+        # Unreadable skills dir / broken package resources — not a vault
+        # problem; the install-skill command is where that error belongs.
+        return []
+
+    out: list[Issue] = []
+    for name in sorted(statuses):
+        info = statuses[name]
+        if info["state"] != "stale":
+            continue
+        files = ", ".join(info["stale_files"])
+        out.append(
+            Issue(
+                category="skill_drift",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    f"installed agent skill '{name}' is out of date with "
+                    f"this litman install ({files})"
+                ),
+                hint=(
+                    "refresh with `lit health-check --fix` or "
+                    "`lit install-skill --force`"
+                ),
+            )
+        )
+    return out
+
+
 def check_trash_health(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -2725,6 +2790,13 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("stale_staging", check_stale_staging, "full", "validity", "report"),
     CheckSpec("trash_health", check_trash_health, "full", "validity", "report"),
     CheckSpec("pdf_viewer", check_pdf_viewer, "full", "validity", "report"),
+    # skill_drift — the installed agent-skill copies are deploy artifacts of
+    # the *package* (regen = re-copy, lossless), but they are machine-level,
+    # not vault-derived: klass A would route them into the vault-wide regen
+    # (which never touches the skills dir) and into the klass-A category
+    # sets. Like discussion_scaffold they ride the validity-fix path instead
+    # (AUTO_FIXABLE_CATEGORIES + apply_autofix).
+    CheckSpec("skill_drift", check_skill_drift, "full", "validity", "regen"),
     CheckSpec(
         "code_clone_integrity",
         check_code_clone_integrity,
@@ -2833,10 +2905,36 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
     * ``discussion_scaffold`` — creates the missing ``discussion.md`` (or
       re-inserts its append-format header) for each flagged paper. Additive
       only: an existing log keeps every dated section it already holds.
+    * ``skill_drift`` — re-copies each stale installed agent skill from the
+      bundled package content (lossless: the installed dir is a deploy
+      artifact, and files the user added next to SKILL.md are kept).
     """
     counts: dict[str, int] = {}
 
     fixable_present = {i.category for i in issues if i.category in AUTO_FIXABLE_CATEGORIES}
+
+    if "skill_drift" in fixable_present:
+        from litman.core.skill import (
+            SkillInstallError,
+            install_skill,
+            skill_status,
+        )
+
+        n = 0
+        # Re-derive which skills are stale (issues carry prose, not state);
+        # only those are refreshed — absent skills stay a respected opt-out.
+        for name, info in sorted(skill_status().items()):
+            if info["state"] != "stale":
+                continue
+            try:
+                install_skill(overwrite=True, name=name)
+            except (SkillInstallError, OSError):
+                # Best-effort: an unwritable skills dir must not abort the
+                # whole `--fix` run. The skill stays flagged and is re-offered
+                # on the next health-check.
+                continue
+            n += 1
+        counts["skill_drift"] = n
 
     if "discussion_scaffold" in fixable_present:
         n = 0

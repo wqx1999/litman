@@ -30,7 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from litman.core.skill import install_all_skills, installed_skill_names
+from litman.core.skill import aggregate_skill_state, install_all_skills
 
 # Fallback default when the user has not chosen one (no per-vault override
 # anymore — the machine-level preferences.yaml or this constant decide).
@@ -70,15 +70,16 @@ class AgentSpec:
     supported: bool
     install_url: str
     detect_bin: str
-    skill_installed: Callable[[], bool]
+    skill_state: Callable[[], str]
     install_skill: Callable[[], Any]
 
 
 # The one supported agent today. Its skill adapter reuses core.skill
-# verbatim: "installed" == the bundled skill directories exist under
-# ~/.claude/skills (installed_skill_names treats directory-presence as
-# installed), and install == copy every bundled skill in, overwriting
-# (install_all_skills). Those two callables are the ONLY place the
+# verbatim: skill_state content-compares the installed copies against the
+# bundle ("absent" — nothing installed / "stale" — installed but out of
+# date with this litman / "current"), and install == copy every bundled
+# skill in, overwriting (install_all_skills; linked dev-checkout dirs are
+# left untouched). Those two callables are the ONLY place the
 # ~/.claude/skills path is reachable.
 #
 # The four placeholders below carry best-effort launch commands / install
@@ -92,7 +93,7 @@ AGENTS: tuple[AgentSpec, ...] = (
         supported=True,
         install_url="https://docs.claude.com/en/docs/claude-code/overview",
         detect_bin="claude",
-        skill_installed=lambda: bool(installed_skill_names()),
+        skill_state=lambda: aggregate_skill_state(),
         install_skill=lambda: install_all_skills(overwrite=True),
     ),
     AgentSpec(
@@ -102,7 +103,7 @@ AGENTS: tuple[AgentSpec, ...] = (
         supported=False,
         install_url="https://developers.openai.com/codex/cli/",
         detect_bin="codex",
-        skill_installed=_unsupported("codex"),
+        skill_state=_unsupported("codex"),
         install_skill=_unsupported("codex"),
     ),
     AgentSpec(
@@ -112,7 +113,7 @@ AGENTS: tuple[AgentSpec, ...] = (
         supported=False,
         install_url="https://cursor.com/cli",
         detect_bin="cursor-agent",
-        skill_installed=_unsupported("cursor"),
+        skill_state=_unsupported("cursor"),
         install_skill=_unsupported("cursor"),
     ),
     AgentSpec(
@@ -122,7 +123,7 @@ AGENTS: tuple[AgentSpec, ...] = (
         supported=False,
         install_url="https://github.com/google-gemini/gemini-cli",
         detect_bin="gemini",
-        skill_installed=_unsupported("gemini"),
+        skill_state=_unsupported("gemini"),
         install_skill=_unsupported("gemini"),
     ),
     AgentSpec(
@@ -132,7 +133,7 @@ AGENTS: tuple[AgentSpec, ...] = (
         supported=False,
         install_url="https://opencode.ai/",
         detect_bin="opencode",
-        skill_installed=_unsupported("opencode"),
+        skill_state=_unsupported("opencode"),
         install_skill=_unsupported("opencode"),
     ),
 )

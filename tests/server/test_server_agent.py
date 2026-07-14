@@ -159,6 +159,7 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
     # top-level fields present
     assert "default" in body
     assert isinstance(body["skill_installed"], bool)
+    assert body["skill_state"] in {"absent", "stale", "current"}
     assert isinstance(body["needs_setup"], bool)
 
 
@@ -194,7 +195,7 @@ def test_skill_install_e2e_really_copies_and_status_flips(
     import litman.core.skill as skill_mod
 
     real_install = skill_mod.install_all_skills
-    real_probe = skill_mod.installed_skill_names
+    real_probe = skill_mod.aggregate_skill_state
     # Redirect only the DESTINATION (the sanctioned $HOME/parent_dir redirect);
     # the real bundled-file copy still runs end to end.
     monkeypatch.setattr(
@@ -204,12 +205,14 @@ def test_skill_install_e2e_really_copies_and_status_flips(
     )
     monkeypatch.setattr(
         agents,
-        "installed_skill_names",
+        "aggregate_skill_state",
         lambda *a, **k: real_probe(parent_dir=tmp_skills),
     )
 
     client = _client(vault)
-    assert _status(client)["skill_installed"] is False
+    before = _status(client)
+    assert before["skill_installed"] is False
+    assert before["skill_state"] == "absent"
 
     resp = client.post("/api/agent/skill/install", json={"agent": "claude"})
     assert resp.status_code == 200
@@ -225,7 +228,21 @@ def test_skill_install_e2e_really_copies_and_status_flips(
     for skill_name in bundled:
         assert (tmp_skills / skill_name / "SKILL.md").is_file()
 
-    assert _status(client)["skill_installed"] is True
+    after = _status(client)
+    assert after["skill_installed"] is True
+    assert after["skill_state"] == "current"
+
+    # Stale round-trip: tamper one installed file → status flips to "stale";
+    # the SAME install endpoint refreshes it back to "current" (the panel's
+    # "Update skill" action).
+    tampered = tmp_skills / bundled[0] / "SKILL.md"
+    tampered.write_text("OUTDATED LOCAL COPY\n", encoding="utf-8")
+    assert _status(client)["skill_state"] == "stale"
+
+    resp = client.post("/api/agent/skill/install", json={"agent": "claude"})
+    assert resp.status_code == 200
+    assert _status(client)["skill_state"] == "current"
+    assert "OUTDATED LOCAL COPY" not in tampered.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +308,7 @@ def test_put_default_persists_and_status_reflects(
     """Drives the REAL prefs write + read through the endpoints (tmp-isolated
     preferences.yaml), then confirms status reflects the persisted default."""
     monkeypatch.setattr(agents, "detect", lambda spec: True)
-    monkeypatch.setattr(agents, "installed_skill_names", lambda *a, **k: {"lit-library"})
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "current")
     client = _client(vault)
 
     assert agent_prefs.load_default_agent() is None  # nothing chosen yet
@@ -321,7 +338,7 @@ def test_needs_setup_true_when_default_not_detected(
 ) -> None:
     monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "claude")
     monkeypatch.setattr(agents, "detect", lambda spec: False)
-    monkeypatch.setattr(agents, "installed_skill_names", lambda *a, **k: {"lit-library"})
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "current")
     assert _status(_client(vault))["needs_setup"] is True
 
 
@@ -330,9 +347,26 @@ def test_needs_setup_true_when_detected_but_no_skill(
 ) -> None:
     monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "claude")
     monkeypatch.setattr(agents, "detect", lambda spec: True)
-    monkeypatch.setattr(agents, "installed_skill_names", lambda *a, **k: set())
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "absent")
     body = _status(_client(vault))
     assert body["skill_installed"] is False
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+
+def test_needs_setup_true_when_skill_stale(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale skill is part of needs_setup: the red dot must surface "your
+    installed skill is out of date" the same way it surfaces "not installed" —
+    otherwise the update is invisible until something breaks (the silent-
+    failure mode this arm exists to kill)."""
+    monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "claude")
+    monkeypatch.setattr(agents, "detect", lambda spec: True)
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "stale")
+    body = _status(_client(vault))
+    assert body["skill_installed"] is True  # installed, just out of date
+    assert body["skill_state"] == "stale"
     assert body["needs_setup"] is True
 
 
@@ -341,7 +375,8 @@ def test_needs_setup_false_when_detected_and_skill_installed(
 ) -> None:
     monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "claude")
     monkeypatch.setattr(agents, "detect", lambda spec: True)
-    monkeypatch.setattr(agents, "installed_skill_names", lambda *a, **k: {"lit-library"})
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "current")
     body = _status(_client(vault))
     assert body["skill_installed"] is True
+    assert body["skill_state"] == "current"
     assert body["needs_setup"] is False

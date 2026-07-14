@@ -2291,9 +2291,10 @@ function AgentPanel({
 
 /** The onboarding step of the agent panel: a row per catalog agent, the one
  * `supported` agent selectable with a state-driven action (get it → install
- * skill → ready), the rest greyed "coming soon" placeholders (roadmap signal +
- * stable layout). Everything is data-driven off the status payload — no agent
- * name or skill path is hardcoded here (the red-line agent-agnostic frontend).
+ * skill → update skill when stale → ready), the rest greyed "coming soon"
+ * placeholders (roadmap signal + stable layout). Everything is data-driven off
+ * the status payload — no agent name or skill path is hardcoded here (the
+ * red-line agent-agnostic frontend).
  * Auto-themes via the inverted stone ramp + `.dark .bg-white`; no `dark:`. */
 function AgentSetup({
   status,
@@ -2355,6 +2356,33 @@ function AgentSetup({
                 >
                   {busy ? 'Installing…' : 'Install skill'}
                 </button>
+              ) : status.skill_state === 'stale' ? (
+                /* Installed but out of date with the running litman (server-
+                   side content comparison). Same install endpoint — it
+                   overwrites the bundled files and keeps the user's own. */
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-amber-600">
+                    Skill update available
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onLaunch(agent.name)}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                    >
+                      Launch anyway
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onInstallSkill(agent.name)}
+                      className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                    >
+                      {busy ? 'Updating…' : 'Update skill'}
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div className="mt-2 flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-emerald-600">

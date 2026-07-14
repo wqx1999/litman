@@ -34,6 +34,7 @@ from litman.core.checks import (
     check_project_config_consistency,
     check_project_path_exists,
     check_schema,
+    check_skill_drift,
     check_stale_staging,
     check_taxonomy_drift,
     check_trash_health,
@@ -1204,6 +1205,106 @@ def test_pdf_viewer_clean_when_xdg_open_with_display(
     assert check_pdf_viewer(vault, []) == []
 
 
+# --- skill_drift --------------------------------------------------------------
+#
+# The conftest ``_isolate_skills_dir`` autouse fixture points the call-time
+# skills dir at an empty per-test path; tests that need installed skills
+# re-patch ``default_skills_parent_dir`` at a dir they populate (a test-body
+# patch wins over the fixture's).
+
+
+def _plant_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    from litman.core.skill import install_all_skills
+
+    parent = tmp_path / "installed-skills"
+    install_all_skills(parent_dir=parent)
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: parent
+    )
+    return parent
+
+
+def test_skill_drift_clean_when_no_skills_installed(vault: Path) -> None:
+    """Never installing a skill is a respected opt-out, not drift."""
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_clean_when_current(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plant_skills(tmp_path, monkeypatch)
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_stale_is_warning_naming_skill_and_file(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = _plant_skills(tmp_path, monkeypatch)
+    (parent / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    issues = check_skill_drift(vault, [])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "skill_drift"
+    assert issue.severity == "warning"
+    assert "lit-library" in issue.message
+    assert "SKILL.md" in issue.message
+    assert "--fix" in (issue.hint or "")
+
+
+def test_skill_drift_linked_dir_is_clean(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlinked skill dir is dev-managed; diverging is the point."""
+    parent = tmp_path / "installed-skills"
+    parent.mkdir()
+    real = tmp_path / "dev-checkout" / "lit-library"
+    real.mkdir(parents=True)
+    (parent / "lit-library").symlink_to(real)
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: parent
+    )
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_category_is_auto_fixable(vault: Path) -> None:
+    assert "skill_drift" in AUTO_FIXABLE_CATEGORIES
+
+
+def test_health_check_cli_stale_skill_warns_and_fix_refreshes(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end through the REAL default probe (inject-seam lesson): a
+    stale installed skill gates a clean vault at exit 1; ``--fix`` re-copies
+    the bundled files, keeps the user's own file, and the post-fix pass is
+    clean (exit 0)."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    parent = _plant_skills(tmp_path, monkeypatch)
+    stale_md = parent / "lit-library" / "SKILL.md"
+    stale_md.write_text("OUTDATED\n", encoding="utf-8")
+    user_file = parent / "lit-library" / "my_local_notes.md"
+    user_file.write_text("mine\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 1
+    assert "skill_drift" in result.output or "skill" in result.output.lower()
+    assert "fixable via --fix" in result.output
+
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "skill_drift" in result.output
+    text = stale_md.read_text(encoding="utf-8")
+    assert "OUTDATED" not in text
+    assert "name: lit-library" in text
+    assert user_file.read_text(encoding="utf-8") == "mine\n"
+
+
 # --- code_clone_integrity ---------------------------------------------------
 
 
@@ -1440,7 +1541,12 @@ def test_apply_autofix_skips_non_fixable_categories(vault: Path) -> None:
 
 def test_auto_fixable_categories_constant() -> None:
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
-        {"stale_staging", "orphan_trash_sidecar", "discussion_scaffold"}
+        {
+            "stale_staging",
+            "orphan_trash_sidecar",
+            "discussion_scaffold",
+            "skill_drift",
+        }
     )
 
 

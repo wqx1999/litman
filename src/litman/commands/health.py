@@ -98,6 +98,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "orphan_trash_sidecar": "Orphan .trash/ sidecars",
     "trash_size": "Trash bloat (entry count)",
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
+    "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
     "vault_registry_drift": "Vault registry drift (registered path missing)",
 }
@@ -179,7 +180,8 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     default=False,
     help=(
         "Auto-regenerate all derived (klass-A) artifacts (lossless recompute "
-        "from metadata) plus clean stale staging dirs / orphan trash sidecars. "
+        "from metadata) plus clean stale staging dirs / orphan trash sidecars "
+        "and refresh stale installed agent skills. "
         "Registry / project / taxonomy / code-clone drift stays report-only "
         "(it needs a per-case decision; --fix never picks a side)."
     ),

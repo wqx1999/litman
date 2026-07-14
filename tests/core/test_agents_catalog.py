@@ -102,7 +102,7 @@ def test_detect_uses_detect_bin_first_token_fallback(
         supported=False,
         install_url="https://x/",
         detect_bin="",
-        skill_installed=lambda: False,
+        skill_state=lambda: "absent",
         install_skill=lambda: [],
     )
     assert detect(spec) is False
@@ -130,15 +130,17 @@ def test_claude_install_skill_routes_to_install_all_skills(
     assert result == [{"name": "lit-library", "files": ["SKILL.md"], "mode": "created"}]
 
 
-def test_claude_skill_installed_routes_to_installed_skill_names(
+def test_claude_skill_state_routes_to_aggregate_skill_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(agents, "installed_skill_names", lambda *a, **k: set())
-    assert get_agent("claude").skill_installed() is False
     monkeypatch.setattr(
-        agents, "installed_skill_names", lambda *a, **k: {"lit-library"}
+        agents, "aggregate_skill_state", lambda *a, **k: "absent"
     )
-    assert get_agent("claude").skill_installed() is True
+    assert get_agent("claude").skill_state() == "absent"
+    monkeypatch.setattr(
+        agents, "aggregate_skill_state", lambda *a, **k: "stale"
+    )
+    assert get_agent("claude").skill_state() == "stale"
 
 
 @pytest.mark.parametrize("name", ["codex", "cursor", "gemini", "opencode"])
@@ -148,4 +150,4 @@ def test_unsupported_agent_adapters_raise_not_implemented(name: str) -> None:
     with pytest.raises(NotImplementedError):
         spec.install_skill()
     with pytest.raises(NotImplementedError):
-        spec.skill_installed()
+        spec.skill_state()
