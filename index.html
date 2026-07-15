@@ -1,0 +1,1341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>litman — you read, it files</title>
+<meta name="description" content="litman keeps every paper you read as plain files on your own disk, and lets the AI agent you already use do the filing."/>
+<link rel="icon" href="img/favicon.png" type="image/png"/>
+
+<meta property="og:title" content="litman — you read, it files"/>
+<meta property="og:description" content="Every paper as plain files on your own disk. Your AI agent keeps them in order."/>
+<meta property="og:image" content="https://wqx1999.github.io/litman/img/browse-light.webp"/>
+<meta property="og:url" content="https://wqx1999.github.io/litman/"/>
+<meta name="twitter:card" content="summary_large_image"/>
+
+<!-- Set before the stylesheet parses, so everything that animates in starts
+     hidden. If the script never runs, .js is never added and nothing hides. -->
+<script>document.documentElement.classList.add('js');</script>
+
+<style>
+  @property --enter { syntax: "<number>"; inherits: false; initial-value: 1; }
+
+  :root {
+    --blue:    #007aff;
+    --blue-2:  #34aaff;
+    --ink:     #1c1c1e;
+    --ink-2:   #6e6e73;
+    --ink-3:   #a1a1a6;
+    --bg:      #ffffff;
+    --panel:   #f5f5f7;
+    --panel-2: #ebebef;
+    --rule:    rgba(0, 0, 0, .09);
+    --glass:   rgba(255, 255, 255, .72);
+    --shadow:  0 40px 80px -24px rgba(0, 0, 0, .22), 0 2px 8px rgba(0, 0, 0, .06);
+    --grain:   .022;
+    --red:     #ff3b30;
+
+    /* the GUI's own easing — frontend/src/index.css */
+    --ease:   cubic-bezier(0.22, 1, 0.36, 1);
+    --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+            "Helvetica Neue", system-ui, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+
+    --gut: clamp(20px, 5vw, 40px);
+    --max: 1140px;
+    --green: #34c759;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --blue:    #0a84ff;
+      --blue-2:  #409cff;
+      --ink:     #f5f5f7;
+      --ink-2:   #98989d;
+      --ink-3:   #6e6e73;
+      --bg:      #000000;
+      --panel:   #141416;
+      --panel-2: #1f1f22;
+      --rule:    rgba(255, 255, 255, .11);
+      --glass:   rgba(28, 28, 30, .68);
+      --shadow:  0 40px 90px -20px rgba(0, 0, 0, .8), 0 0 0 1px rgba(255, 255, 255, .06);
+      --grain:   .04;
+      --green:   #30d158;
+      --red:     #ff453a;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* A film of noise over everything. At 2% it reads as paper, not texture. */
+  body::after {
+    content: "";
+    position: fixed; inset: 0; z-index: 999;
+    pointer-events: none;
+    opacity: var(--grain);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  a { color: inherit; text-decoration: none; }
+
+  h1, h2 {
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -.035em;
+    line-height: 1.03;
+    text-wrap: balance;
+  }
+  h1 { font-size: clamp(46px, 8.4vw, 116px); letter-spacing: -.045em; }
+  h2 { font-size: clamp(32px, 4.4vw, 58px); }
+
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 var(--gut); }
+  .dim  { color: var(--ink-3); }
+  .lede {
+    color: var(--ink-2);
+    font-size: clamp(18px, 1.55vw, 21px);
+    line-height: 1.5;
+    max-width: 32em;
+    text-wrap: pretty;
+  }
+  .eyebrow {
+    margin: 0 0 18px;
+    font-size: 12px; font-weight: 590; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--blue);
+  }
+
+  /* ── scroll-progress hairline ───────────────────────────────────────────── */
+  .progress {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 120;
+    height: 2px;
+    background: linear-gradient(90deg, var(--blue), var(--blue-2));
+    transform: scaleX(0); transform-origin: 0 50%;
+  }
+
+  /* ── right-rail section nav — a column of dots that tracks the deck ──────── */
+  .rail {
+    position: fixed; top: 50%; right: clamp(18px, 2.6vw, 42px); z-index: 100;
+    transform: translateY(-50%) translateX(16px);
+    display: flex; flex-direction: column; align-items: flex-end; gap: 11px;
+    opacity: 0; pointer-events: none;
+    transition: opacity .4s var(--ease), transform .5s var(--ease);
+  }
+  .rail.up { opacity: 1; transform: translateY(-50%); pointer-events: auto; }
+  /* on the app slide the UI takes the stage — the nav steps aside */
+  .rail.dim { opacity: 0; pointer-events: none; transform: translateY(-50%) translateX(16px); }
+  .rail a {
+    display: flex; align-items: center; justify-content: flex-end; gap: 15px;
+    padding: 4px 2px;
+    font-size: 14.5px; font-weight: 560; letter-spacing: .004em;
+    color: var(--ink-3); cursor: pointer;
+  }
+  .rail .lbl {
+    opacity: 0; transform: translateX(7px);
+    transition: opacity .28s var(--ease), transform .28s var(--ease), color .2s;
+  }
+  .rail a:hover .lbl, .rail a.on .lbl { opacity: 1; transform: none; }
+  .rail a.on { color: var(--ink); }
+  .rail a.on .lbl { font-weight: 660; }
+  .rail i {
+    flex: none; display: block;
+    width: 12px; height: 12px; border-radius: 999px;
+    background: var(--ink-3);
+    transition: background .25s var(--ease), height .45s var(--spring);
+  }
+  .rail a:hover i { background: var(--ink-2); }
+  .rail a.on i { background: var(--blue); height: 32px; }
+  .rail a.get i { box-shadow: 0 0 0 3px rgba(0, 122, 255, .18); }
+
+  /* ── hero ─────────────────────────────────────────────────────────────── */
+  .hero {
+    position: relative;
+    min-height: 100svh;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 118px 0 78px;
+    overflow: hidden;
+  }
+  .hero-bg { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+  .blob {
+    position: absolute; border-radius: 50%;
+    filter: blur(66px); opacity: .5; will-change: transform;
+  }
+  .blob.a {
+    width: 62vw; height: 62vw; top: -26vw; left: 50%; margin-left: -34vw;
+    background: radial-gradient(closest-side, rgba(0, 122, 255, .5), transparent 70%);
+    animation: drift-a 19s ease-in-out infinite;
+  }
+  .blob.b {
+    width: 44vw; height: 44vw; top: -8vw; left: 4%;
+    background: radial-gradient(closest-side, rgba(52, 170, 255, .38), transparent 70%);
+    animation: drift-b 24s ease-in-out infinite;
+  }
+  .blob.c {
+    width: 40vw; height: 40vw; top: 6vw; right: 2%;
+    background: radial-gradient(closest-side, rgba(0, 122, 255, .3), transparent 70%);
+    animation: drift-c 27s ease-in-out infinite;
+  }
+  @keyframes drift-a { 50% { transform: translate(3%, 7%) scale(1.08); } }
+  @keyframes drift-b { 50% { transform: translate(-7%, 5%) scale(1.14); } }
+  @keyframes drift-c { 50% { transform: translate(5%, -6%) scale(1.1); } }
+  @media (prefers-color-scheme: dark) {
+    .blob.a { background: radial-gradient(closest-side, rgba(10, 132, 255, .6), transparent 70%); opacity: .6; }
+    .blob.b { background: radial-gradient(closest-side, rgba(64, 156, 255, .4), transparent 70%); }
+    .blob.c { background: radial-gradient(closest-side, rgba(10, 132, 255, .38), transparent 70%); }
+  }
+  .hero > .wrap { position: relative; z-index: 1; }
+
+  .lockup { height: clamp(54px, 7.4vw, 88px); width: auto; margin-bottom: clamp(34px, 5.5vh, 56px); }
+
+  /* kinetic headline — each word rises out of its own clip */
+  .kin { max-width: 12ch; }
+  .kin .w {
+    display: inline-block; overflow: hidden; vertical-align: top;
+    padding: .06em .02em .16em; margin: -.06em -.02em -.16em;
+  }
+  .kin .i { display: inline-block; }
+  .js .kin .i { transform: translateY(116%); animation: kin-up 1s var(--spring) both; animation-delay: var(--kd, 0s); }
+  @keyframes kin-up { to { transform: none; } }
+
+  .hero .lede { margin: 28px 0 40px; }
+
+  .js .lockup, .js .hero .lede, .js .hero .install, .js .scroller {
+    animation: fade-up .85s var(--ease) both;
+  }
+  .js .lockup       { animation-delay: .05s; }
+  .js .hero .lede   { animation-delay: .52s; }
+  .js .hero .install{ animation-delay: .62s; }
+  .js .scroller     { animation-delay: .82s; }
+  @keyframes fade-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+
+  /* ── the install pill ─────────────────────────────────────────────────── */
+  .cmd {
+    display: inline-flex; align-items: center; gap: 14px;
+    max-width: 100%;
+    padding: 10px 10px 10px 20px;
+    border: 1px solid var(--rule); border-radius: 14px;
+    background: var(--panel);
+    font-family: var(--mono); font-size: 13.5px;
+  }
+  .cmd code { overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .cmd code::-webkit-scrollbar { display: none; }
+  .cmd .sigil { color: var(--ink-3); user-select: none; }
+
+  .copy {
+    flex: none; position: relative; overflow: hidden;
+    min-width: 78px; height: 34px;
+    border: 0; border-radius: 9px;
+    background: var(--ink); color: var(--bg);
+    font-family: var(--sans); font-size: 13px; font-weight: 550;
+    cursor: pointer;
+    transition: transform .35s var(--spring), background .25s;
+  }
+  .copy:hover { transform: translateY(-1px); }
+  .copy:active { transform: scale(.94); }
+  .copy.ok { background: var(--blue); color: #fff; }
+  .copy span { display: block; transition: transform .42s var(--spring), opacity .3s var(--ease); }
+  .copy .b { position: absolute; inset: 0; display: grid; place-items: center;
+             transform: translateY(105%); opacity: 0; }
+  .copy.ok .a { transform: translateY(-105%); opacity: 0; }
+  .copy.ok .b { transform: none; opacity: 1; }
+
+  /* two install commands, each labelled with the OS it's for */
+  .install { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 16px; max-width: 100%; }
+  .os-row { max-width: 100%; }
+  .os {
+    display: block; margin: 0 0 7px;
+    font-size: 11px; font-weight: 620; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+
+  .scroller {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: clamp(38px, 7vh, 80px);
+    font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .scroller i {
+    display: block; width: 1px; height: 26px;
+    background: linear-gradient(var(--ink-3), transparent);
+    transform-origin: top;
+    animation: fall 2.2s var(--ease) infinite;
+  }
+  @keyframes fall {
+    0%        { transform: scaleY(0); opacity: 0; }
+    35%       { transform: scaleY(1); opacity: 1; }
+    70%, 100% { transform: scaleY(1) translateY(26px); opacity: 0; }
+  }
+
+  /* ── a scene is one slide; the stage centres it ─────────────────────────── */
+  .scene { position: relative; }
+  .stage {
+    position: relative;
+    min-height: 100svh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: clamp(84px, 11vh, 120px) var(--gut) clamp(44px, 7vh, 80px);
+    overflow: hidden;
+  }
+  .head { text-align: center; max-width: 44rem; margin: 0 auto clamp(20px, 3vh, 36px); }
+  .head h2 { margin-bottom: 0; }
+  .head .lede { margin: 16px auto 0; }
+
+  /* generic reveal — replayable: the transition lives on the base element, so
+     it animates both when .in is added (enter) and removed (leave). */
+  .reveal { width: 100%; display: flex; justify-content: center; }
+  .js .reveal {
+    opacity: 0; transform: translateY(34px);
+    clip-path: inset(0 0 12% 0 round 18px);
+    transition: opacity 1s var(--ease), transform 1s var(--ease), clip-path 1s var(--ease);
+  }
+  .js .reveal.in { opacity: 1; transform: none; clip-path: inset(0 0 0 0 round 18px); }
+  .js .rise {
+    opacity: 0; transform: translateY(22px);
+    transition: opacity .9s var(--ease), transform .9s var(--ease);
+    transition-delay: var(--rd, 0s);
+  }
+  .js .rise.in { opacity: 1; transform: none; }
+
+  /* a card that leans toward the pointer */
+  .tilt {
+    transform: perspective(1100px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+    transition: transform .55s var(--ease);
+    will-change: transform;
+  }
+  .tilt.act { transition: transform .12s linear; }
+
+  /* two-column split used by the problem + agent scenes */
+  .split {
+    display: grid;
+    grid-template-columns: .86fr 1.14fr;
+    gap: clamp(18px, 3vw, 44px);
+    align-items: center;
+    width: 100%; max-width: var(--max);
+  }
+
+  /* ── scene 1 · the problem ──────────────────────────────────────────────── */
+  #problem .side h2 { font-size: clamp(30px, 3.6vw, 50px); }
+  #problem .side .lede { margin-top: 16px; }
+
+  .pains { margin: clamp(20px, 3vh, 30px) 0 0; display: flex; flex-direction: column; gap: 9px; }
+  .pain {
+    display: flex; align-items: flex-start; gap: 13px; text-align: left;
+    padding: 13px 16px;
+    border: 1px solid var(--rule); border-radius: 14px;
+    background: var(--panel);
+    color: inherit; font: inherit; cursor: pointer;
+    transition: border-color .25s var(--ease), background .25s var(--ease),
+                transform .3s var(--spring), box-shadow .3s var(--ease);
+  }
+  .pain:hover { transform: translateY(-2px); box-shadow: 0 16px 30px -22px rgba(0,0,0,.5); }
+  .pain.on { border-color: var(--red); background: var(--bg); box-shadow: 0 14px 34px -20px rgba(0,0,0,.4); }
+  .pain .dot {
+    flex: none; width: 9px; height: 9px; margin-top: 7px; border-radius: 50%;
+    background: var(--ink-3); transition: background .25s, transform .3s var(--spring);
+  }
+  .pain.on .dot { background: var(--red); transform: scale(1.25); }
+  .pain .k { display: block; font-size: 15px; font-weight: 570; letter-spacing: -.01em; }
+  .pain .s { display: block; margin-top: 2px; font-size: 13.5px; color: var(--ink-3); line-height: 1.4; }
+
+  /* the messy Downloads folder */
+  .folder {
+    position: relative; width: 100%; max-width: 560px;
+    border: 1px solid var(--rule); border-radius: 16px;
+    background: var(--panel); box-shadow: var(--shadow); overflow: hidden;
+  }
+  .folder .top {
+    display: flex; align-items: center; gap: 7px;
+    padding: 12px 16px; border-bottom: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+  }
+  .folder .top i { width: 10px; height: 10px; border-radius: 50%; background: var(--panel-2); }
+  .folder .top .path { margin-left: 8px; }
+  .folder ul { list-style: none; margin: 0; padding: 6px 0; }
+  .folder li {
+    display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 12px;
+    padding: 8px 16px;
+    font-family: var(--mono); font-size: 12.5px;
+    transition: opacity .35s var(--ease), background .35s var(--ease);
+  }
+  .folder li .ic {
+    grid-row: span 1; width: 22px; height: 26px; border-radius: 4px;
+    background: linear-gradient(150deg, #ff6a5f, #ff3b30);
+    display: grid; place-items: center;
+    font-family: var(--sans); font-size: 7.5px; font-weight: 700; color: #fff; letter-spacing: .02em;
+  }
+  .folder li .nm { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .folder li .mt { font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+
+  .callout {
+    position: absolute; right: 16px;
+    max-width: 15rem; padding: 9px 13px; border-radius: 12px;
+    background: var(--ink); color: var(--bg);
+    font-size: 12.5px; line-height: 1.35; font-weight: 500;
+    box-shadow: var(--shadow);
+    opacity: 0; transform: translateY(8px) scale(.96); pointer-events: none;
+    transition: opacity .4s var(--ease), transform .5s var(--spring);
+  }
+  .callout::after {
+    content: ""; position: absolute; left: 26px; bottom: -6px;
+    width: 12px; height: 12px; background: var(--ink); transform: rotate(45deg);
+  }
+  #problem[data-pain="0"] .callout[data-k="0"],
+  #problem[data-pain="1"] .callout[data-k="1"],
+  #problem[data-pain="2"] .callout[data-k="2"] { opacity: 1; transform: none; }
+  /* pain 1: the "did I read this?" duplicates dim */
+  #problem[data-pain="1"] li.dup { opacity: .4; }
+  /* pain 2: it all goes quiet */
+  #problem[data-pain="2"] li { opacity: .5; }
+
+  /* ── scene 2 · the agent · a live chat ──────────────────────────────────── */
+  #agent .picks { display: flex; flex-direction: column; gap: 9px; }
+  .pick {
+    display: flex; align-items: flex-start; gap: 13px; text-align: left;
+    padding: 13px 16px;
+    border: 1px solid var(--rule); border-radius: 14px;
+    background: var(--panel);
+    color: inherit; font: inherit; cursor: pointer;
+    transition: border-color .25s var(--ease), background .25s var(--ease),
+                transform .3s var(--spring), box-shadow .3s var(--ease);
+  }
+  .pick:hover { border-color: rgba(0,122,255,.38); transform: translateY(-2px); box-shadow: 0 16px 30px -22px rgba(0,0,0,.5); }
+  .pick.on { border-color: var(--blue); background: var(--bg); box-shadow: 0 14px 34px -20px rgba(0,0,0,.4); }
+  .pick .n {
+    flex: none; width: 22px; height: 22px; margin-top: 1px;
+    display: grid; place-items: center; border-radius: 999px; background: var(--panel-2);
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    transition: background .25s, color .25s;
+  }
+  .pick.on .n { background: var(--blue); color: #fff; }
+  .pick .k { display: block; font-size: 15px; font-weight: 560; letter-spacing: -.01em; }
+  .pick .s { display: block; margin-top: 2px; font-size: 13px; color: var(--ink-3); line-height: 1.4; }
+
+  .chat {
+    width: 100%;
+    display: flex; flex-direction: column;
+    height: clamp(348px, 47svh, 448px);
+    border: 1px solid var(--rule); border-radius: 16px;
+    background: var(--panel); box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .chat .bar {
+    flex: none; display: flex; align-items: center; gap: 7px;
+    padding: 12px 15px; border-bottom: 1px solid var(--rule);
+    font-size: 12px; color: var(--ink-3);
+  }
+  .chat .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--panel-2); }
+  .chat .bar .who { margin-left: 6px; font-family: var(--mono); font-size: 11.5px; }
+  .chat .bar .replay {
+    margin-left: auto; border: 0; background: none; cursor: pointer;
+    font-family: var(--sans); font-size: 12px; color: var(--ink-3);
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: color .2s;
+  }
+  .chat .bar .replay:hover { color: var(--blue); }
+  .chat .bar .replay svg { width: 13px; height: 13px; }
+
+  .stream { position: relative; flex: 1; overflow: hidden; }
+  .ex {
+    position: absolute; inset: 0; overflow: auto;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 4px;
+    padding: 16px clamp(14px, 1.8vw, 20px) 10px;
+    opacity: 0; pointer-events: none;
+  }
+  .ex.on { opacity: 1; pointer-events: auto; transition: opacity .3s var(--ease); }
+
+  .msg {
+    width: fit-content; max-width: min(34ch, 88%);
+    padding: 10px 14px; border-radius: 15px;
+    font-size: clamp(13.5px, 1.1vw, 15px); line-height: 1.5;
+  }
+  .msg.you { margin-left: auto; background: var(--blue); color: #fff; border-bottom-right-radius: 5px; }
+  .msg.bot { background: var(--panel-2); color: var(--ink); border-bottom-left-radius: 5px; }
+  .msg.bot b { font-weight: 600; }
+  .msg.bot code { font-family: var(--mono); font-size: .86em; color: var(--ink-2); }
+
+  .tools { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; max-width: 92%; }
+  .tool {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 12px; border: 1px solid var(--rule); border-radius: 10px;
+    background: var(--bg);
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+  }
+  .tool code { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tool .st {
+    flex: none; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--rule); border-top-color: var(--blue);
+    animation: spin .7s linear infinite;
+  }
+  .tool.done .st {
+    border: 0; background: var(--green); position: relative; animation: none;
+  }
+  .tool.done .st::after {
+    content: "✓"; position: absolute; inset: 0;
+    display: grid; place-items: center; color: #fff; font-size: 9px; font-weight: 700;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .thinking {
+    width: fit-content; display: none; align-items: center; gap: 5px;
+    padding: 12px 15px; border-radius: 15px; border-bottom-left-radius: 5px;
+    background: var(--panel-2);
+  }
+  .thinking.show { display: inline-flex; }
+  .thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); animation: bounce 1.3s infinite; }
+  .thinking i:nth-child(2) { animation-delay: .16s; }
+  .thinking i:nth-child(3) { animation-delay: .32s; }
+  @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .4; } 30% { transform: translateY(-5px); opacity: 1; } }
+
+  /* rows fade/rise as the run reveals them */
+  .js .ex .msg, .js .ex .tool {
+    opacity: 0; transform: translateY(9px);
+    transition: opacity .4s var(--ease), transform .5s var(--spring);
+  }
+  .js .ex .msg.show, .js .ex .tool.show { opacity: 1; transform: none; }
+
+  /* the composer at the foot of the chat — types the prompt, then "sends" it */
+  .composer {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 11px 12px 11px 16px; border-top: 1px solid var(--rule);
+    background: var(--bg);
+    opacity: 0; transition: opacity .3s var(--ease);
+  }
+  .composer.show { opacity: 1; }
+  .composer .field {
+    flex: 1; min-height: 20px;
+    font-family: var(--sans); font-size: 14px; color: var(--ink);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .composer .field:empty::before { content: "Ask litman…"; color: var(--ink-3); }
+  .composer .caret {
+    display: inline-block; width: 2px; height: 1.05em; margin-left: 1px;
+    background: var(--blue); vertical-align: -2px; animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .composer .send {
+    flex: none; width: 32px; height: 32px; border: 0; border-radius: 50%;
+    background: var(--blue); color: #fff; display: grid; place-items: center; cursor: default;
+  }
+  .composer .send svg { width: 15px; height: 15px; }
+
+  /* ── scene 3 · the app · the UI leads, the words sit beside it ───────────── */
+  /* the nav rail hides on this slide, so the window takes the full width —
+     symmetric padding, centred, as large as one screen allows. */
+  #app .stage { padding-left: clamp(28px, 5vw, 80px); padding-right: clamp(28px, 5vw, 80px); }
+  #app .split { grid-template-columns: minmax(300px, 320px) 1fr; column-gap: clamp(24px, 3.4vw, 52px); max-width: 1360px; }
+  #app .side h2 { font-size: clamp(26px, 3vw, 42px); }
+  #app .side .lede { margin-top: 15px; max-width: 30em; }
+  #app .segment { margin-top: clamp(20px, 3.2vh, 32px); width: fit-content; }
+  #app .cap { margin-top: clamp(16px, 2.4vh, 24px); height: 4em; text-align: left; }
+
+  .segment {
+    position: relative; display: flex;
+    padding: 4px; border: 1px solid var(--rule); border-radius: 999px; background: var(--panel);
+  }
+  .segment .knob {
+    position: absolute; top: 4px; bottom: 4px; left: 4px;
+    width: calc((100% - 8px) / 3);
+    border-radius: 999px; background: var(--bg);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .1);
+    transform: translateX(calc(var(--seg, 0) * 100%));
+    transition: transform .55s var(--spring);
+  }
+  .segment button {
+    position: relative; z-index: 1; width: 96px; padding: 7px 0;
+    border: 0; background: none; cursor: pointer;
+    text-align: center; font-family: var(--sans); font-size: 13px; font-weight: 500;
+    color: var(--ink-3); transition: color .3s var(--ease);
+  }
+  .segment button.on { color: var(--ink); }
+
+  .window {
+    position: relative;
+    width: 100%; max-width: 1040px;
+    aspect-ratio: 1600 / 1000;
+    border: 1px solid var(--rule); border-radius: 14px;
+    background: var(--panel); box-shadow: var(--shadow); overflow: hidden;
+  }
+  .window .shot { position: absolute; inset: 0; opacity: 0; transition: opacity .4s var(--ease); }
+  .window img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+  .cap {
+    position: relative; width: 100%; max-width: 36em; height: 2.8em;
+    text-align: center; color: var(--ink-2); font-size: clamp(15px, 1.35vw, 18px);
+  }
+  .cap span {
+    position: absolute; inset: 0;
+    opacity: 0; transform: translateY(6px);
+    transition: opacity .4s var(--ease), transform .5s var(--ease);
+  }
+  .cap span.on { opacity: 1; transform: none; }
+
+  /* ── close ────────────────────────────────────────────────────────────── */
+  .close {
+    position: relative;
+    padding: clamp(100px, 16vh, 180px) 0 clamp(84px, 11vh, 130px);
+    text-align: center; overflow: hidden;
+  }
+  .close::before {
+    content: ""; position: absolute; bottom: -55%; left: 50%; transform: translateX(-50%);
+    width: min(1000px, 140vw); aspect-ratio: 1;
+    background: radial-gradient(closest-side, rgba(0, 122, 255, .13), transparent 70%);
+    pointer-events: none;
+  }
+  @media (prefers-color-scheme: dark) {
+    .close::before { background: radial-gradient(closest-side, rgba(10, 132, 255, .22), transparent 70%); }
+  }
+  .close > * { position: relative; }
+  .close .install { margin-top: 40px; text-align: left; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 30px 0;
+    font-size: 13.5px; color: var(--ink-3);
+  }
+  .foot-row {
+    display: flex; flex-wrap: wrap; align-items: center;
+    justify-content: space-between; gap: 14px 30px;
+  }
+  .foot-grp { display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap; }
+  footer a { color: var(--ink-2); transition: color .2s; }
+  footer a:hover { color: var(--blue); }
+  .foot-grp.aff { gap: 10px; }
+  .foot-grp.aff a { color: var(--ink); font-weight: 500; }
+  .foot-grp.aff .sep { color: var(--ink-3); opacity: .55; }
+  .foot-grp.tag { color: var(--ink-3); }
+
+  /* base: in normal flow a slide is just a block */
+  .slide { position: relative; }
+
+  /* ── PPT deck ─── on a roomy desktop window each scene is one full-screen
+     slide, switched discretely (wheel / arrows / rail dots) with a soft cross-
+     fade — never a continuous scroll, never an in-between page. Below the size
+     gate (short or narrow windows, reduced-motion) it degrades to normal flow. */
+  @media (min-width: 901px) and (min-height: 640px) and (prefers-reduced-motion: no-preference) {
+    html { height: 100%; }
+    body { position: fixed; inset: 0; overflow: hidden; }
+
+    .slide {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      opacity: 0; pointer-events: none;
+      transform: translateY(var(--pos, 0));
+      transition: transform .72s var(--ease), opacity .5s var(--ease);
+      will-change: transform, opacity;
+    }
+    .slide.scroll { overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+    .slide.scroll::-webkit-scrollbar { display: none; }
+    .slide.active { opacity: 1; pointer-events: auto; z-index: 2; }
+
+    .hero.slide { overflow: hidden; padding-top: clamp(58px, 7vh, 104px); padding-bottom: clamp(24px, 3.5vh, 56px); }
+    .hero.slide .lockup { margin-bottom: clamp(16px, 3vh, 52px); }
+    .hero.slide .lede { margin-top: clamp(14px, 2.2vh, 28px); margin-bottom: clamp(18px, 2.8vh, 40px); }
+    .hero.slide .scroller { margin-top: clamp(18px, 3.4vh, 60px); }
+    .hero, .stage { min-height: 100%; }
+    .stage { padding-top: clamp(64px, 8vh, 96px); padding-bottom: clamp(40px, 6vh, 72px); }
+
+    /* last slide: the CTA fills the stage, the footer sits at the foot */
+    .close-slide { justify-content: space-between; }
+    .close-slide > .close { flex: 1; display: flex; align-items: center; justify-content: center;
+                            padding: 36px 0; }
+    .close-slide > footer { flex: none; }
+  }
+
+  @media (max-width: 900px) {
+    .rail { display: none; }
+    .split { grid-template-columns: 1fr; gap: 18px; }
+    #app .stage { padding-left: var(--gut); padding-right: var(--gut); }
+    #app .split { grid-template-columns: 1fr; max-width: var(--max); }
+    #problem .side, #app .side { text-align: center; }
+    #problem .side .lede, #app .side .lede { margin-left: auto; margin-right: auto; }
+    #app .segment, #app .cap { margin-left: auto; margin-right: auto; text-align: center; }
+    #app .cap { height: auto; }
+    #app .cap span { position: relative; opacity: 1; transform: none; }
+    #app .cap span:not(.on) { display: none; }
+    .pains, #agent .picks { }
+    .tilt { transform: none !important; }
+    .folder { margin: 0 auto; }
+  }
+  @media (max-width: 640px) {
+    .segment button { width: 78px; }
+    .foot-row { justify-content: flex-start; gap: 12px; }
+    .foot-grp { width: 100%; }
+    .folder li .mt { display: none; }
+    .callout { max-width: 12rem; font-size: 12px; }
+  }
+
+  /* Someone who asked the OS for less motion gets the end state, at once. */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; scroll-snap-type: none; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .progress, .blob, .scroller { display: none; }
+    .kin .i { transform: none; }
+    .js .rise, .js .reveal { opacity: 1; transform: none; clip-path: none; }
+    .rail { opacity: 1; transform: translateY(-50%); pointer-events: auto; }
+    .tilt { transform: none; }
+    .stage { min-height: auto; padding: 72px var(--gut); }
+    .split { align-items: start; }
+    .callout { position: relative; right: auto; opacity: 1; transform: none; margin: 8px 16px 4px; }
+    .callout::after { display: none; }
+    .js .ex .msg, .js .ex .tool { opacity: 1; transform: none; }
+    .ex { position: relative; opacity: 1; justify-content: flex-start; }
+    .ex:not(.on) { display: none; }
+    .composer, .thinking { display: none !important; }
+    .tool .st { border: 0; background: var(--green); }
+    .tool .st::after { content: "✓"; display: grid; place-items: center; color: #fff; font-size: 9px; }
+    .window { aspect-ratio: auto; }
+    .window .shot:not(.on) { display: none; }
+    .window .shot.on { position: relative; opacity: 1; }
+    .cap { height: auto; }
+    .cap span:not(.on) { display: none; }
+    .cap span.on { position: relative; opacity: 1; transform: none; }
+  }
+</style>
+</head>
+
+<body>
+
+<div class="progress" id="prog" aria-hidden="true"></div>
+
+<nav class="rail" id="rail" aria-label="Sections">
+  <a href="#top"><span class="lbl">Home</span><i></i></a>
+  <a href="#problem"><span class="lbl">Problem</span><i></i></a>
+  <a href="#agent"><span class="lbl">Agent</span><i></i></a>
+  <a href="#app"><span class="lbl">App</span><i></i></a>
+  <a class="get" href="#get"><span class="lbl">Install</span><i></i></a>
+</nav>
+
+<!-- ══ hero ═══════════════════════════════════════════════════════════════ -->
+<header class="hero slide" id="top">
+  <div class="hero-bg" aria-hidden="true" data-par="0.18">
+    <span class="blob a"></span><span class="blob b"></span><span class="blob c"></span>
+  </div>
+  <div class="wrap">
+    <picture>
+      <source srcset="assets/logo-hero-dark.png" media="(prefers-color-scheme: dark)"/>
+      <img class="lockup" src="assets/logo-hero.png" alt="litman" width="1040" height="260"/>
+    </picture>
+
+    <h1 class="kin">
+      <span class="w" style="--kd:.04s"><span class="i">Your</span></span>
+      <span class="w" style="--kd:.12s"><span class="i">papers,</span></span>
+      <span class="w" style="--kd:.20s"><span class="i">finally</span></span>
+      <span class="w" style="--kd:.26s"><span class="i">in</span></span>
+      <span class="w" style="--kd:.32s"><span class="i">order.</span></span>
+    </h1>
+
+    <p class="lede">
+      Every paper stays as a plain file on your own disk — and the AI agent
+      you already use files, finds and links them for you.
+    </p>
+
+    <div class="install">
+      <div class="os-row">
+        <span class="os">macOS &amp; Linux</span>
+        <div class="cmd">
+          <span class="sigil">$</span>
+          <code id="i1">curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh</code>
+          <button class="copy" data-copy="#i1" aria-label="Copy the macOS and Linux install command">
+            <span class="a">Copy</span><span class="b">Copied</span>
+          </button>
+        </div>
+      </div>
+      <div class="os-row">
+        <span class="os">Windows</span>
+        <div class="cmd">
+          <span class="sigil">&gt;</span>
+          <code id="i1w">irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex</code>
+          <button class="copy" data-copy="#i1w" aria-label="Copy the Windows install command">
+            <span class="a">Copy</span><span class="b">Copied</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="scroller"><i></i> Scroll</div>
+  </div>
+</header>
+
+<!-- ══ scene 1 · the problem ══════════════════════════════════════════════ -->
+<section class="scene slide scroll" id="problem" data-pain="0">
+  <div class="stage">
+    <div class="split">
+
+      <div class="side rise">
+        <p class="eyebrow">The problem</p>
+        <h2>Where does it all go?</h2>
+        <p class="lede">Every paper you meant to understand ends up as one more cryptic PDF in a pile.</p>
+
+        <div class="pains" role="tablist" aria-label="What goes wrong">
+          <button class="pain on" data-pain="0" aria-selected="true">
+            <span class="dot"></span>
+            <span><b class="k">Scattered everywhere</b><span class="s">Downloads, Desktop, email, a USB stick.</span></span>
+          </button>
+          <button class="pain" data-pain="1" aria-selected="false">
+            <span class="dot"></span>
+            <span><b class="k">Did I already read this?</b><span class="s">No memory of what you've seen before.</span></span>
+          </button>
+          <button class="pain" data-pain="2" aria-selected="false">
+            <span class="dot"></span>
+            <span><b class="k">Your notes? Nowhere.</b><span class="s">You had thoughts. They're not attached to anything.</span></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="reveal">
+        <div class="folder tilt" aria-label="A messy Downloads folder">
+          <div class="top"><i></i><i></i><i></i><span class="path">~/Downloads</span></div>
+          <ul>
+            <li><span class="ic">PDF</span><span class="nm">paper (3).pdf</span><span class="mt">Mar 4 · 8.1 MB</span></li>
+            <li class="dup"><span class="ic">PDF</span><span class="nm">1706.03762v5.pdf</span><span class="mt">Mar 4 · 2.2 MB</span></li>
+            <li><span class="ic">PDF</span><span class="nm">nihms-1832902.pdf</span><span class="mt">Feb 19 · 5.7 MB</span></li>
+            <li><span class="ic">PDF</span><span class="nm">41586-2023-06221-x.pdf</span><span class="mt">Feb 11 · 12 MB</span></li>
+            <li class="dup"><span class="ic">PDF</span><span class="nm">1706.03762 (2).pdf</span><span class="mt">Jan 28 · 2.2 MB</span></li>
+            <li><span class="ic">PDF</span><span class="nm">Untitled.pdf</span><span class="mt">Jan 22 · 940 KB</span></li>
+            <li><span class="ic">PDF</span><span class="nm">final_v2_REAL.pdf</span><span class="mt">Jan 9 · 3.8 MB</span></li>
+            <li><span class="ic">PDF</span><span class="nm">download.pdf</span><span class="mt">Dec 30 · 6.4 MB</span></li>
+          </ul>
+          <div class="callout" data-k="0" style="top:52px">Which folder did I even put it in?</div>
+          <div class="callout" data-k="1" style="top:96px">Wait — did I read this one already?</div>
+          <div class="callout" data-k="2" style="top:150px">I had thoughts on this. They're gone.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ scene 2 · the agent (the engine) ═══════════════════════════════════ -->
+<section class="scene slide scroll" id="agent">
+  <div class="stage">
+
+    <div class="head rise">
+      <p class="eyebrow">The engine · your agent</p>
+      <h2>Just ask, and it's filed.</h2>
+      <p class="lede">
+        Ask the AI agent you already use, in plain words. It runs the commands —
+        filing, finding and linking papers for you.
+      </p>
+    </div>
+
+    <div class="split">
+
+      <div class="picks rise" role="tablist" aria-label="Things you can ask the agent">
+        <button class="pick on" data-ex="0" aria-selected="true">
+          <span class="n">1</span>
+          <span><b class="k">Add &amp; file a new paper</b><span class="s">One sentence — added, tagged, filed.</span></span>
+        </button>
+        <button class="pick" data-ex="1" aria-selected="false">
+          <span class="n">2</span>
+          <span><b class="k">Find one you read before</b><span class="s">Recall it from your own notes.</span></span>
+        </button>
+        <button class="pick" data-ex="2" aria-selected="false">
+          <span class="n">3</span>
+          <span><b class="k">Review a paper's code</b><span class="s">Clone the repo, check it runs.</span></span>
+        </button>
+        <button class="pick" data-ex="3" aria-selected="false">
+          <span class="n">4</span>
+          <span><b class="k">Surface related work</b><span class="s">Neighbours already in your vault.</span></span>
+        </button>
+      </div>
+
+      <div class="reveal">
+        <div class="chat tilt">
+          <div class="bar">
+            <i></i><i></i><i></i><span class="who">claude · litman</span>
+            <button class="replay" id="replay" aria-label="Replay">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+              Replay
+            </button>
+          </div>
+
+          <div class="stream" id="stream">
+
+            <div class="ex on" data-ex="0">
+              <div class="msg you">Add the paper I just downloaded — it's about peptide binders.</div>
+              <div class="tools">
+                <span class="tool"><span class="st"></span><code>lit add ~/Downloads/2310.19325v2.pdf</code></span>
+                <span class="tool"><span class="st"></span><code>lit modify 2024_Chen --add-tag topics=peptide-design --set priority=A</code></span>
+              </div>
+              <div class="msg bot">Filed under <b>peptide-design</b>, priority A, in <code>papers/2024_Chen_Diffusion-Peptide-Binders/</code>. It cites two papers already in your vault — link them?</div>
+            </div>
+
+            <div class="ex" data-ex="1">
+              <div class="msg you">Which paper did I read on diffusion models for peptide design?</div>
+              <div class="tools">
+                <span class="tool"><span class="st"></span><code>lit list --topic peptide-design --status read --sort recent</code></span>
+              </div>
+              <div class="msg bot">That's <b>Chen 2024</b> — you read it three weeks ago. Your <code>notes.md</code> flags the sampler as the weak point. Open it?</div>
+            </div>
+
+            <div class="ex" data-ex="2">
+              <div class="msg you">Clone this paper's code and check the training script runs.</div>
+              <div class="tools">
+                <span class="tool"><span class="st"></span><code>lit code add 2024_Chen --repo github.com/chen-lab/diff-peptide</code></span>
+                <span class="tool"><span class="st"></span><code>cd codes/2024_Chen &amp;&amp; python train.py --dry-run</code></span>
+              </div>
+              <div class="msg bot">Cloned into <code>codes/2024_Chen/</code>. <code>train.py</code> needs torch 2.1 and a config they didn't ship — I drafted one and noted it in <code>discussion.md</code>.</div>
+            </div>
+
+            <div class="ex" data-ex="3">
+              <div class="msg you">What else in my library connects to this one?</div>
+              <div class="tools">
+                <span class="tool"><span class="st"></span><code>lit list --method diffusion --topic peptide-design</code></span>
+                <span class="tool"><span class="st"></span><code>lit relations 2024_Chen --add related=Watson2023,Ingraham2023</code></span>
+              </div>
+              <div class="msg bot">Three neighbours already in your vault: <b>Watson 2023 · Ingraham 2023 · Badrinarayanan 2024</b>. I linked the closest two as related.</div>
+            </div>
+
+            <div class="thinking" id="thinking"><i></i><i></i><i></i></div>
+          </div>
+
+          <div class="composer" id="composer">
+            <div class="field" id="field"></div>
+            <button class="send" tabindex="-1" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ scene 3 · the app (the shell you read in) ══════════════════════════ -->
+<section class="scene slide scroll" id="app">
+  <div class="stage">
+    <div class="split app-split">
+
+      <div class="side rise">
+        <p class="eyebrow">The window · for you</p>
+        <h2>Sit down and read.</h2>
+        <p class="lede">
+          The agent keeps everything filed and linked. The app is that same
+          library, made for reading — where <b>you</b> highlight, annotate and note.
+        </p>
+
+        <div class="segment" id="seg" role="tablist" aria-label="What the app does">
+          <span class="knob"></span>
+          <button class="on" data-app="0">Find</button>
+          <button data-app="1">Read</button>
+          <button data-app="2">Note</button>
+        </div>
+
+        <p class="cap" id="cap">
+          <span class="on">Filter by status, priority, topic — the same library the agent files into.</span>
+          <span>Read it in place. Highlight and annotate; the marks stay with the paper.</span>
+          <span>Notes are Markdown on disk. The agent reads them; so does any editor you like.</span>
+        </p>
+      </div>
+
+      <div class="reveal">
+        <div class="window tilt" id="win">
+          <div class="shot on" style="opacity:1">
+            <picture>
+              <source srcset="img/browse-dark.webp" media="(prefers-color-scheme: dark)"/>
+              <img src="img/browse-light.webp" alt="Filtering the litman library by status, priority and topic" width="2200" height="1375"/>
+            </picture>
+          </div>
+          <div class="shot">
+            <picture>
+              <source srcset="img/pdf-dark.webp" media="(prefers-color-scheme: dark)"/>
+              <img src="img/pdf-light.webp" alt="Reading a PDF inside litman" width="2200" height="1375" loading="lazy"/>
+            </picture>
+          </div>
+          <div class="shot">
+            <picture>
+              <source srcset="img/notes-dark.webp" media="(prefers-color-scheme: dark)"/>
+              <img src="img/notes-light.webp" alt="Markdown notes inside litman" width="2200" height="1375" loading="lazy"/>
+            </picture>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ close + footer · one slide ═════════════════════════════════════════ -->
+<section class="slide scroll close-slide" id="get">
+  <div class="close">
+    <div class="wrap">
+      <h2 class="rise">Start with one paper.</h2>
+      <div class="rise" style="--rd:.08s">
+        <div class="install">
+          <div class="os-row">
+            <span class="os">macOS &amp; Linux</span>
+            <div class="cmd">
+              <span class="sigil">$</span>
+              <code id="i2">curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh</code>
+              <button class="copy" data-copy="#i2" aria-label="Copy the macOS and Linux install command">
+                <span class="a">Copy</span><span class="b">Copied</span>
+              </button>
+            </div>
+          </div>
+          <div class="os-row">
+            <span class="os">Windows</span>
+            <div class="cmd">
+              <span class="sigil">&gt;</span>
+              <code id="i2w">irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex</code>
+              <button class="copy" data-copy="#i2w" aria-label="Copy the Windows install command">
+                <span class="a">Copy</span><span class="b">Copied</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <div class="foot-row">
+        <div class="foot-grp">
+          <a href="https://github.com/wqx1999/litman/blob/main/LICENSE">MIT</a>
+          <a href="https://github.com/wqx1999/litman/tree/main/docs">Docs</a>
+          <a href="https://github.com/wqx1999/litman">GitHub</a>
+          <a href="https://pypi.org/project/litman/">PyPI</a>
+          <a href="https://github.com/wqx1999/litman/blob/main/CHANGELOG.md">Changelog</a>
+        </div>
+        <div class="foot-grp aff">
+          <a href="https://www.tu.berlin/en/biochemie">Süssmuth Group</a>
+          <span class="sep">·</span>
+          <a href="https://www.tu.berlin/">Technische Universität Berlin</a>
+        </div>
+        <div class="foot-grp tag">Let litman keep your reading in order.</div>
+      </div>
+    </div>
+  </footer>
+</section>
+
+<script>
+(() => {
+  const calm  = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const wait  = ms => new Promise(r => setTimeout(r, ms));
+
+  let deckOn = false;       // is the PPT deck (discrete slides) active?
+  let playChatFn = null;    // the agent chat runner, set once it's defined below
+
+  /* ── copy buttons ─────────────────────────────────────────────────────── */
+  document.querySelectorAll('.copy').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const text = document.querySelector(btn.dataset.copy).textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const t = document.createElement('textarea');
+        t.value = text; document.body.appendChild(t); t.select();
+        document.execCommand('copy'); t.remove();
+      }
+      btn.classList.add('ok');
+      setTimeout(() => btn.classList.remove('ok'), 1600);
+    });
+  });
+
+  /* ── replayable enter-reveals for scroll (non-deck) mode ────────────────── */
+  const revealEls = [...document.querySelectorAll('.rise, .reveal')];
+  const io = new IntersectionObserver(es => es.forEach(e => {
+    if (deckOn) return;
+    e.target.classList.toggle('in', e.isIntersecting);
+  }), { threshold: .2, rootMargin: '0px 0px -10% 0px' });
+  // observation is wired on / off by setMode() at the foot of this script
+
+  /* ── scene 1 · the problem · click a pain ─────────────────────────────── */
+  const problem = document.getElementById('problem');
+  const pains = [...document.querySelectorAll('.pain')];
+  pains.forEach((b, i) => b.addEventListener('click', () => {
+    problem.dataset.pain = i;
+    pains.forEach((x, j) => { const on = j === i; x.classList.toggle('on', on); x.setAttribute('aria-selected', on); });
+  }));
+
+  /* ── scene 3 · the app · click Find / Read / Note ─────────────────────── */
+  const seg   = document.getElementById('seg');
+  const win   = document.getElementById('win');
+  const cap   = document.getElementById('cap');
+  const shots = win ? [...win.querySelectorAll('.shot')] : [];
+  const tabs  = seg ? [...seg.querySelectorAll('button')] : [];
+  const caps  = cap ? [...cap.querySelectorAll('span')]  : [];
+  const showApp = i => {
+    if (seg) seg.style.setProperty('--seg', i);
+    tabs.forEach((b, j) => b.classList.toggle('on', j === i));
+    shots.forEach((s, j) => { s.classList.toggle('on', j === i); s.style.opacity = j === i ? 1 : 0; });
+    caps.forEach((s, j) => s.classList.toggle('on', j === i));
+  };
+  tabs.forEach((b, i) => b.addEventListener('click', () => showApp(i)));
+  showApp(0);
+
+  /* ── scene 2 · the agent · a live chat that plays and replays ─────────── */
+  const picks     = [...document.querySelectorAll('.pick')];
+  const exes      = [...document.querySelectorAll('.ex')];
+  const thinking  = document.getElementById('thinking');
+  const composer  = document.getElementById('composer');
+  const field     = document.getElementById('field');
+  const caret     = '<span class="caret"></span>';
+  let currentEx   = 0;
+  let chatToken   = 0;
+
+  const setPick = i => {
+    picks.forEach((b, j) => { const on = j === i; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+    exes.forEach((e, j) => e.classList.toggle('on', j === i));
+  };
+
+  // reduced motion / no motion: no theatre, just switch which example shows
+  if (calm) {
+    picks.forEach((b, i) => b.addEventListener('click', () => setPick(i)));
+    setPick(0);
+  } else {
+    const resetChat = i => {
+      exes.forEach((e, j) => {
+        e.classList.toggle('on', j === i);
+        e.querySelectorAll('.msg, .tool').forEach(n => n.classList.remove('show', 'done'));
+      });
+      thinking.classList.remove('show');
+      composer.classList.remove('show');
+      field.innerHTML = '';
+    };
+
+    const typeInto = async (text, token) => {
+      field.textContent = '';
+      for (let k = 0; k < text.length; k++) {
+        if (token !== chatToken) return false;
+        field.textContent += text[k];
+        field.innerHTML = field.textContent + caret;   // keep the caret trailing
+        await wait(text[k] === ' ' ? 46 : 26 + Math.round(k % 3) * 6);
+      }
+      field.innerHTML = field.textContent + caret;
+      return token === chatToken;
+    };
+
+    const playChat = async i => {
+      const token = ++chatToken;
+      currentEx = i;
+      setPick(i);
+      resetChat(i);
+      const ex   = exes[i];
+      const you  = ex.querySelector('.msg.you');
+      const bot  = ex.querySelector('.msg.bot');
+      const tls  = [...ex.querySelectorAll('.tool')];
+
+      await wait(280); if (token !== chatToken) return;
+      composer.classList.add('show');
+      if (!(await typeInto(you.textContent, token))) return;
+      await wait(360); if (token !== chatToken) return;
+
+      composer.classList.remove('show');       // "send"
+      field.innerHTML = '';
+      you.classList.add('show');
+      await wait(420); if (token !== chatToken) return;
+
+      thinking.classList.add('show');
+      await wait(720); if (token !== chatToken) return;
+
+      for (const t of tls) {
+        if (token !== chatToken) return;
+        t.classList.add('show');               // tool starts, spinner
+        await wait(640); if (token !== chatToken) return;
+        t.classList.add('done');               // ✓
+        await wait(280);
+      }
+      if (token !== chatToken) return;
+
+      await wait(200);
+      thinking.classList.remove('show');
+      await wait(120); if (token !== chatToken) return;
+      bot.classList.add('show');
+    };
+
+    picks.forEach((b, i) => b.addEventListener('click', () => playChat(i)));
+    const replay = document.getElementById('replay');
+    if (replay) replay.addEventListener('click', () => playChat(currentEx));
+    playChatFn = playChat;   // the deck controller replays this on slide-enter
+
+    // non-deck: replay from the top each time the agent scene scrolls into view
+    let inView = false;
+    const io2 = new IntersectionObserver(es => es.forEach(e => {
+      if (deckOn) return;
+      if (e.isIntersecting && !inView) { inView = true; playChat(currentEx); }
+      else if (!e.isIntersecting) { inView = false; }
+    }), { threshold: .5 });
+    io2.observe(document.getElementById('agent'));
+    setPick(0);   // first example active but blank until entered
+  }
+
+  /* ── shared refs ──────────────────────────────────────────────────────── */
+  const rail   = document.getElementById('rail');
+  const prog   = document.getElementById('prog');
+  const pars   = [...document.querySelectorAll('[data-par]')];
+  const slides = [...document.querySelectorAll('.slide')];
+  const ids    = slides.map(s => s.id);                    // top, problem, agent, app, get
+  const links  = ids.map(id => rail && rail.querySelector(`a[href="#${id}"]`));
+
+  /* ── scroll (non-deck) mode: rail spy + progress + hero parallax, one rAF ─ */
+  let queued = false;
+  const tick = () => {
+    queued = false;
+    if (deckOn) return;
+    const vh  = innerHeight;
+    const max = document.documentElement.scrollHeight - vh;
+    if (prog) prog.style.transform = `scaleX(${max > 0 ? clamp(scrollY / max) : 0})`;
+    if (rail) rail.classList.toggle('up', scrollY > vh * .55);
+    let active = 0;
+    ids.forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (el && el.getBoundingClientRect().top <= vh * .4) active = i;
+    });
+    links.forEach((a, i) => a && a.classList.toggle('on', i === active));
+    if (rail) rail.classList.toggle('dim', ids[active] === 'app');
+    if (!calm) pars.forEach(el => { el.style.transform = `translate3d(0, ${scrollY * (+el.dataset.par)}px, 0)`; });
+  };
+  const onScroll = () => { if (!queued) { queued = true; requestAnimationFrame(tick); } };
+  addEventListener('scroll', onScroll, { passive: true });
+  addEventListener('resize', onScroll);
+
+  /* ── cards lean toward the pointer ────────────────────────────────────── */
+  if (!calm && matchMedia('(pointer: fine)').matches) {
+    document.querySelectorAll('.tilt').forEach(el => {
+      el.addEventListener('pointermove', e => {
+        const r = el.getBoundingClientRect();
+        const px = (e.clientX - r.left) / r.width - .5;
+        const py = (e.clientY - r.top) / r.height - .5;
+        el.style.setProperty('--ry', (px * 5).toFixed(2) + 'deg');
+        el.style.setProperty('--rx', (-py * 5).toFixed(2) + 'deg');
+        el.classList.add('act');
+      });
+      el.addEventListener('pointerleave', () => {
+        el.style.setProperty('--ry', '0deg'); el.style.setProperty('--rx', '0deg');
+        el.classList.remove('act');
+      });
+    });
+  }
+
+  /* ── PPT deck: one full-screen slide at a time, switched discretely ─────── */
+  const DECK_Q = '(min-width: 901px) and (min-height: 640px) and (prefers-reduced-motion: no-preference)';
+  const deckMq = matchMedia(DECK_Q);
+  let cur = 0, lock = false, lockT = 0;
+
+  const revealIn = (i, on) =>
+    slides[i].querySelectorAll('.rise, .reveal').forEach(el => el.classList.toggle('in', on));
+
+  const enter = i => {
+    if (ids[i] === 'agent' && !calm && playChatFn) playChatFn(currentEx);
+  };
+
+  const paint = () => {
+    slides.forEach((s, i) => {
+      s.style.setProperty('--pos', i < cur ? '-6%' : (i > cur ? '6%' : '0px'));
+      s.classList.toggle('active', i === cur);
+    });
+    if (rail) rail.classList.toggle('up', cur >= 1);
+    if (rail) rail.classList.toggle('dim', ids[cur] === 'app');
+    links.forEach((a, i) => a && a.classList.toggle('on', i === cur));
+    if (prog) prog.style.transform = `scaleX(${cur / (slides.length - 1)})`;
+  };
+
+  const go = n => {
+    n = clamp(n, 0, slides.length - 1);
+    if (n === cur || lock) return;
+    revealIn(cur, false);                 // reset the leaving slide so it replays on return
+    cur = n;
+    paint();
+    revealIn(cur, true);
+    enter(cur);
+    lock = true; clearTimeout(lockT); lockT = setTimeout(() => { lock = false; }, 780);
+  };
+
+  // wheel — advance a slide, but let a slide that overflows scroll to its edge first
+  addEventListener('wheel', e => {
+    if (!deckOn) return;
+    const s = slides[cur];
+    if (s.classList.contains('scroll') && s.scrollHeight > s.clientHeight + 2) {
+      const atTop = s.scrollTop <= 0;
+      const atBot = s.scrollTop + s.clientHeight >= s.scrollHeight - 2;
+      if (e.deltaY > 0 && !atBot) return;
+      if (e.deltaY < 0 && !atTop) return;
+    }
+    e.preventDefault();
+    if (lock || Math.abs(e.deltaY) < 6) return;
+    go(cur + (e.deltaY > 0 ? 1 : -1));
+  }, { passive: false });
+
+  // keyboard — arrows / page keys / space / home / end
+  addEventListener('keydown', e => {
+    if (!deckOn || e.metaKey || e.ctrlKey || e.altKey) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+    let n = null;
+    switch (e.key) {
+      case 'ArrowDown': case 'PageDown': case ' ': n = cur + 1; break;
+      case 'ArrowUp':   case 'PageUp':             n = cur - 1; break;
+      case 'Home': n = 0; break;
+      case 'End':  n = slides.length - 1; break;
+      default: return;
+    }
+    e.preventDefault();
+    go(n);
+  });
+
+  // touch — swipe up / down (rare on a deck-sized window, but handle it)
+  let ty = 0;
+  addEventListener('touchstart', e => { ty = e.touches[0].clientY; }, { passive: true });
+  addEventListener('touchend', e => {
+    if (!deckOn) return;
+    const s = slides[cur];
+    if (s.classList.contains('scroll') && s.scrollHeight > s.clientHeight + 2) return;
+    const dy = ty - e.changedTouches[0].clientY;
+    if (Math.abs(dy) > 46) go(cur + (dy > 0 ? 1 : -1));
+  }, { passive: true });
+
+  // rail dots + the hero "Scroll" cue drive the deck too
+  links.forEach((a, i) => a && a.addEventListener('click', e => {
+    if (deckOn) { e.preventDefault(); go(i); }
+  }));
+  const scroller = document.querySelector('.scroller');
+  if (scroller) {
+    scroller.style.cursor = 'pointer';
+    scroller.addEventListener('click', () => {
+      if (deckOn) go(cur + 1);
+      else { const el = document.getElementById('problem'); if (el) el.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  }
+
+  // switch between deck and normal-scroll as the window crosses the size gate
+  const setMode = on => {
+    deckOn = on;
+    if (on) {
+      io.disconnect();
+      revealEls.forEach(el => el.classList.remove('in'));
+      paint();
+      revealIn(cur, true);
+      enter(cur);
+    } else {
+      slides.forEach(s => { s.style.removeProperty('--pos'); s.classList.remove('active'); });
+      revealEls.forEach(el => io.observe(el));
+      const el = document.getElementById(ids[cur]);
+      if (el) el.scrollIntoView();
+      tick();
+    }
+  };
+  deckMq.addEventListener ? deckMq.addEventListener('change', e => setMode(e.matches))
+                          : deckMq.addListener(e => setMode(e.matches));
+  setMode(deckMq.matches);
+})();
+</script>
+
+</body>
+</html>
