@@ -20,8 +20,12 @@ entry that runs ``lit gui --window`` and exits without starting the server
 (shared with ``lit setup`` step 5, ADR-019).
 
 ``--window`` owns its browser: the app window is the application, so closing
-it stops the server, and Ctrl+C closes the window. Two things make that work
-and both are load-bearing — the dedicated ``--user-data-dir`` (see
+it stops the server, and Ctrl+C closes the window. The forward direction is
+an AND gate, not a process wait: Chromium hands windows across processes, so
+the spawned process exiting does not mean the window closed — the server
+stops only once that process is gone AND no page holds the ``/api/presence``
+WebSocket open (see :func:`_stop_server_when_window_closes`). Two more
+things are load-bearing — the dedicated ``--user-data-dir`` (see
 :func:`browser_profile_dir`) and the desktop shortcut running the console-less
 ``litw`` twin (see :func:`_shortcut_executable`). A terminal-launched
 ``lit gui`` (tab mode) keeps the plain Ctrl+C contract: what the terminal
@@ -38,6 +42,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from importlib.resources import files
 from pathlib import Path
@@ -50,6 +55,7 @@ from rich.console import Console
 from litman.commands._options import library_option, vault_option
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
+from litman.core.presence import PresenceTracker
 from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
 from litman.exceptions import LibraryNotFoundError, LitmanError
 
@@ -114,11 +120,12 @@ _BROWSER_PROFILE_DIRNAME = "browser-profile"
 def browser_profile_dir() -> Path:
     """Chromium ``--user-data-dir`` for the ``--window`` app window.
 
-    A dedicated profile is what makes the process we spawn *be* the window.
-    Launch a Chromium against the user's normal profile and it hands the URL to
-    the already-running browser and exits within a second, so its exit says
-    nothing about whether the window is still open — a server tied to that exit
-    would die the instant it started.
+    A dedicated profile gives us a browser instance of our own. Launched
+    against the user's normal profile, a Chromium hands the URL to the
+    already-running browser and exits at once — leaving no process for the
+    Ctrl+C path to terminate (a dead window shell would outlive the server on
+    screen), and dropping litman's app window into the middle of the user's
+    everyday browsing session.
 
     The cache dir, not the config dir the registry lives in: this holds tens of
     MB of Chromium's own state and must never ride along on a cloud-synced
@@ -154,12 +161,12 @@ _FIRST_RUN_SENTINEL = "First Run"
 def _quiet_browser_profile(profile: Path) -> None:
     """Mark a fresh app-window profile as one the browser has already run.
 
-    Two things follow from the sentinel, and the first is not cosmetic. Edge
-    restarts itself partway through a new profile's first run: the process we
-    spawned exits, :func:`_stop_server_when_window_closes` reads that as a
-    closed window, and the server dies between the page's HTML and its
-    scripts. The sentinel is also what keeps Edge from signing the profile
-    into the Windows account on sight.
+    Two things follow from the sentinel. It keeps Edge from signing the
+    profile into the Windows account on sight, and it suppresses Edge's
+    first-run self-restart — the spawned process handing the real window to
+    a process we never see. The presence gate in
+    :func:`_stop_server_when_window_closes` survives that handoff on its own
+    now, so the suppression is defense in depth, not the fix.
 
     The sentinel is all we write. Seeding Chromium's ``Preferences`` from
     outside makes the browser announce that its settings were changed
@@ -179,11 +186,12 @@ def _app_window_argv(url: str) -> list[str] | None:
     closest thing to a native app with zero new dependencies (ADR-019).
 
     ``--user-data-dir`` is not a preference: it forces a browser instance of
-    our own, which is the only reason ``proc.wait()`` can mean "the user closed
-    the window". The suppression flags exist because a never-before-used
-    profile otherwise greets the user with a first-run tab, a make-me-default
-    prompt and a translate bubble on top of their library. The profile's
-    ``Preferences`` file quiets the rest (see :func:`_quiet_browser_profile`).
+    our own — the process the Ctrl+C path can terminate without touching the
+    user's everyday browser session (see :func:`browser_profile_dir`). The
+    suppression flags exist because a never-before-used profile otherwise
+    greets the user with a first-run tab, a make-me-default prompt and a
+    translate bubble on top of their library. The profile's sentinel file
+    quiets the rest (see :func:`_quiet_browser_profile`).
     """
     flags = [
         f"--app={url}",
@@ -219,8 +227,36 @@ def _app_window_argv(url: str) -> list[str] | None:
     return None
 
 
-def _stop_server_when_window_closes(proc: subprocess.Popen[bytes], server: Any) -> None:
-    """Block until the app window exits, then ask uvicorn to shut down.
+def _stop_server_when_window_closes(
+    proc: subprocess.Popen[bytes],
+    server: Any,
+    presence: PresenceTracker,
+    *,
+    first_connect_grace: float = 15.0,
+    linger: float = 5.0,
+    poll: float = 0.25,
+) -> None:
+    """Ask uvicorn to shut down once the window is gone — an AND gate.
+
+    The spawned process exiting is necessary but not sufficient: Chromium
+    hands windows across processes (Edge restarts itself partway through a
+    fresh profile's first run), so ``proc.wait()`` returning can mean a
+    handoff, not a closed window. The page is the other witness — the SPA
+    holds a WebSocket open to ``/api/presence`` for as long as it is loaded,
+    and ``presence`` counts those sockets. After the process exits, the
+    server stops only once the count is zero and has stayed zero for
+    ``linger`` seconds (an F5 reload drops and re-opens the socket inside
+    that window). If no page ever connected — the browser never came up —
+    ``first_connect_grace`` bounds the wait so a failed launch still leaves
+    no orphan. Consequence: the server now follows the *last live page*, not
+    the window process; an extra tab on the same server keeps it alive after
+    the window closes.
+
+    The keyword defaults are the shipped values; tests inject shorter ones.
+    Each round reads the tracker through a single ``snapshot()`` call — read
+    as separate properties, a connect landing between reads can show
+    ``ever_connected=True`` with ``last_zero=None`` torn across rounds
+    instead of confined to one (the None guard below absorbs it).
 
     ``server`` is a ``uvicorn.Server`` (untyped here to keep uvicorn out of the
     CLI import path, invariant #5). Its main loop polls ``should_exit`` every
@@ -228,6 +264,21 @@ def _stop_server_when_window_closes(proc: subprocess.Popen[bytes], server: Any) 
     it from outside the event loop.
     """
     proc.wait()
+    exited_at = time.monotonic()
+    while True:
+        count, ever_connected, last_zero = presence.snapshot()
+        if count == 0:
+            if ever_connected:
+                # last_zero is None ⇒ a connection is being established right
+                # now (torn snapshot) — treat it as not idle and keep polling.
+                # Without this guard, None in the subtraction is a TypeError,
+                # this daemon thread dies silently, and the server becomes an
+                # orphan that never exits.
+                if last_zero is not None and time.monotonic() - last_zero >= linger:
+                    break
+            elif time.monotonic() - exited_at >= first_connect_grace:
+                break
+        time.sleep(poll)
     server.should_exit = True
 
 
@@ -566,8 +617,11 @@ def gui_cmd(
         f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"
     )
 
+    # Keep the app reference: the window watcher reads the presence tracker
+    # off app.state (created unconditionally by create_app).
+    app = create_app(vault)
     server = uvicorn.Server(
-        uvicorn.Config(create_app(vault), host="127.0.0.1", port=actual_port)
+        uvicorn.Config(app, host="127.0.0.1", port=actual_port)
     )
 
     browser_timer: threading.Timer | None = None
@@ -610,7 +664,7 @@ def gui_cmd(
             owned.append(proc)
             threading.Thread(
                 target=_stop_server_when_window_closes,
-                args=(proc, server),
+                args=(proc, server, app.state.presence),
                 daemon=True,
             ).start()
 

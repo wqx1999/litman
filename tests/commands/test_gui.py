@@ -1,15 +1,17 @@
 """Tests for ``lit gui`` — import isolation, the missing-uvicorn guard, the
-free-port finder, browser auto-open (--no-browser / --window / headless), and
-the desktop shortcut (--make-shortcut). fastapi + uvicorn are core
-dependencies now, but the CLI's startup path and this command's guard stay
-fastapi-free by design (invariant #5): the import-isolation test proves that,
-and the guard test simulates a corrupted install where uvicorn is missing
-anyway. All browser/process side effects are monkeypatched — no test opens a
-real window or starts a real server."""
+free-port finder, browser auto-open (--no-browser / --window / headless), the
+window watcher's shutdown gate (proc exit AND no live page), and the desktop
+shortcut (--make-shortcut). fastapi + uvicorn are core dependencies now, but
+the CLI's startup path and this command's guard stay fastapi-free by design
+(invariant #5): the import-isolation test proves that, and the guard test
+simulates a corrupted install where uvicorn is missing anyway. No test opens
+a real window or starts a real server — the watcher tests drive the gate with
+an already-exited throwaway process and a hand-fed presence tracker."""
 
 from __future__ import annotations
 
 import builtins
+import functools
 import importlib
 import re
 import shutil
@@ -25,6 +27,7 @@ from typing import ClassVar
 import pytest
 from click.testing import CliRunner
 
+from litman.commands import gui
 from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
@@ -36,6 +39,7 @@ from litman.commands.gui import (
     remove_browser_profile,
     shortcut_path,
 )
+from litman.core.presence import PresenceTracker
 
 # ---------------------------------------------------------------------------
 # A1(a) — importing the CLI must not pull fastapi into the process
@@ -162,7 +166,14 @@ class _FakeServer:
 @pytest.fixture
 def gui_harness(monkeypatch):
     """Neutralize every side effect of a full `lit gui` run and record the
-    browser-open calls. Returns (opened_urls, spawned_procs)."""
+    browser-open calls. Returns (opened_urls, spawned_procs).
+
+    The watcher keeps its shipped constants as keyword defaults, and gui_cmd
+    offers no injection seam for them — under this harness no page ever
+    connects, so a --window test would sit out the full first-connect grace.
+    Rebinding the module global to a shortened partial covers every test that
+    goes through gui_cmd (the `_open` closure resolves the name at call time).
+    """
     opened: list[str] = []
     procs: list[_FakeProc] = []
     _FakeServer.instances.clear()
@@ -177,6 +188,16 @@ def gui_harness(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", _fake_popen)
     monkeypatch.setattr("uvicorn.Server", _FakeServer)
     monkeypatch.setattr("uvicorn.Config", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        functools.partial(
+            gui._stop_server_when_window_closes,
+            first_connect_grace=0.2,
+            linger=0.1,
+            poll=0.02,
+        ),
+    )
     return opened, procs
 
 
@@ -265,8 +286,8 @@ def test_gui_window_gives_the_browser_a_profile_of_its_own(
     gui_harness, chromium_on_path, vault_with_paper
 ) -> None:
     # Without --user-data-dir an already-running Chrome adopts the window and
-    # the process we spawned exits at once — which the watcher below would read
-    # as "the user closed the window" and kill the server a second after start.
+    # the process we spawned exits at once — leaving nothing for the Ctrl+C
+    # path to terminate, and litman's window inside the user's own session.
     _opened, procs = gui_harness
     vault, _pid = vault_with_paper
 
@@ -287,9 +308,10 @@ def test_gui_window_marks_a_fresh_browser_profile_as_already_run(
     gui_harness, chromium_on_path, vault_with_paper
 ) -> None:
     # Without the sentinel Edge restarts itself partway through a new profile's
-    # first run. The process we spawned exits, the watcher below reads that as
-    # a closed window, and the server dies between the page's HTML and its
-    # scripts — a blank window, then ERR_CONNECTION_REFUSED on reload.
+    # first run — the process we spawned exits while the window lives on in a
+    # process we never see. The presence gate survives that handoff on its
+    # own; the sentinel stays as defense in depth, and as what keeps Edge from
+    # signing the profile into the Windows account.
     vault, _pid = vault_with_paper
 
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
@@ -322,8 +344,9 @@ def test_gui_window_ties_the_server_to_the_window(
     gui_harness, chromium_on_path, vault_with_paper
 ) -> None:
     """Closing the app window must stop the server. Here the command's own
-    cleanup closes it; the point is that gui_cmd wired *this* process to *this*
-    server, so the watcher fires."""
+    cleanup closes it and no page ever connected (fake server), so the gate
+    exits via the first-connect grace; the point is that gui_cmd wired *this*
+    process and *this* tracker to *this* server, so the watcher fires."""
     vault, _pid = vault_with_paper
 
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
@@ -404,16 +427,121 @@ def test_gui_window_and_no_browser_conflict() -> None:
     assert "mutually exclusive" in result.output
 
 
-def test_stop_server_when_window_closes_sets_should_exit() -> None:
-    # The seam itself, driven directly: the real uvicorn.Server polls this same
-    # attribute every 100ms from its event loop.
-    proc, server = _FakeProc(["chrome"]), _FakeServer()
+# ---------------------------------------------------------------------------
+# the window watcher's AND gate — proc exit alone must not stop the server
+# (task-window-presence-gate)
+# ---------------------------------------------------------------------------
+
+
+def _exited_proc() -> subprocess.Popen[bytes]:
+    """A real process that has already exited — the Edge self-restart shape:
+    the process we spawned is gone, and whether the window is too is exactly
+    what the presence tracker has to answer."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc
+
+
+def test_watcher_exits_after_grace_when_no_page_ever_connected() -> None:
+    # The browser never came up at all: no page will ever connect, so the
+    # gate must fall back to the first-connect grace — a failed launch may
+    # not leave an orphaned server behind.
+    proc, server = _exited_proc(), _FakeServer()
     watcher = threading.Thread(
-        target=_stop_server_when_window_closes, args=(proc, server), daemon=True
+        target=_stop_server_when_window_closes,
+        args=(proc, server, PresenceTracker()),
+        kwargs={"first_connect_grace": 1.0, "linger": 0.1, "poll": 0.02},
+        daemon=True,
     )
     watcher.start()
-    assert server.should_exit is False  # still open
-    proc.terminate()  # the user closes the window
+    assert server.should_exit is False  # inside the grace window
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+def test_watcher_holds_while_a_page_is_connected() -> None:
+    # The bug scenario itself: the spawned process is gone (Chromium handed
+    # the window to a process we never see) but the page is alive and holds
+    # the presence socket. The server must stay up on the page's account —
+    # and stop only a linger after the page goes away.
+    tracker = PresenceTracker()
+    tracker.connect()
+    proc, server = _exited_proc(), _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, tracker),
+        kwargs={"first_connect_grace": 0.1, "linger": 0.2, "poll": 0.02},
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.5)  # well past the grace: the page is what holds the server
+    assert server.should_exit is False
+    tracker.disconnect()  # the user closes the last page
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+def test_watcher_survives_a_reload_inside_the_linger() -> None:
+    # F5: the page's socket drops and the reloaded page reconnects a moment
+    # later. The gap must not read as "the last page closed" — that is what
+    # the linger is for.
+    tracker = PresenceTracker()
+    tracker.connect()
+    proc, server = _exited_proc(), _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, tracker),
+        kwargs={"first_connect_grace": 0.05, "linger": 0.8, "poll": 0.02},
+        daemon=True,
+    )
+    watcher.start()
+    tracker.disconnect()  # the old page tears down...
+    time.sleep(0.1)  # ...a reload-sized gap, well inside the linger...
+    tracker.connect()  # ...and the reloaded page arrives
+    time.sleep(1.0)  # past the linger as measured from the disconnect
+    assert server.should_exit is False
+    # Let the watcher finish so the thread does not outlive the test.
+    tracker.disconnect()
+    watcher.join(timeout=5)
+    assert server.should_exit is True
+
+
+class _TornTracker:
+    """A tracker pinned in the torn one-poll view: a connect is landing right
+    now, so ever_connected is already True while last_zero is still None.
+    ``PresenceTracker.snapshot()`` confines this to a single poll in real use;
+    pinning it proves the watcher's None guard absorbs it (``None`` in the
+    idle subtraction would be a TypeError that kills the daemon silently)."""
+
+    def __init__(self) -> None:
+        self.polls = 0
+        self.state: tuple[int, bool, float | None] = (0, True, None)
+
+    def snapshot(self) -> tuple[int, bool, float | None]:
+        self.polls += 1
+        return self.state
+
+
+def test_watcher_torn_snapshot_neither_breaks_nor_crashes() -> None:
+    tracker = _TornTracker()
+    proc, server = _exited_proc(), _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, tracker),
+        kwargs={"first_connect_grace": 0.05, "linger": 0.05, "poll": 0.02},
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.3)
+    # Still alive and still polling: no exit (the torn view is not idleness)
+    # and no crash (the None guard held).
+    assert watcher.is_alive()
+    assert server.should_exit is False
+    assert tracker.polls >= 2
+    # Resolve the view to long-idle so the watcher can finish cleanly.
+    tracker.state = (0, True, time.monotonic() - 60.0)
     watcher.join(timeout=5)
     assert not watcher.is_alive()
     assert server.should_exit is True

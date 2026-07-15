@@ -1,8 +1,9 @@
 """FastAPI app factory for the litman webUI (``lit gui``).
 
 The server is a thin read/write surface over the *same* core + command
-backends the CLI uses (invariant #16 / ADR-016 / ADR-017). Phase 0 wires
-only the read endpoints; structured + whitelist writes land in later phases.
+backends the CLI uses (invariant #16 / ADR-016 / ADR-017): read, write,
+structured, trash and agent routers, plus the ``/api/presence`` WebSocket
+that lets pages report they are alive (the ``--window`` shutdown gate).
 
 This module imports fastapi at module scope, so it must NEVER be imported by
 ``litman.cli`` / ``import litman`` at top level (invariant #5 — the CLI's
@@ -22,7 +23,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from litman.core.config import CONFIG_FILENAME
+from litman.core.presence import PresenceTracker
 from litman.server.routes_agent import router as agent_router
+from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
 from litman.server.routes_structured import router as structured_router
 from litman.server.routes_trash import router as trash_router
@@ -106,6 +109,11 @@ def create_app(vault: Path | None) -> FastAPI:
     """
     app = FastAPI(title="litman webUI", version="0", lifespan=_lifespan)
     app.state.vault = vault
+    # Live-page counter behind the /api/presence WebSocket. Created (and the
+    # route mounted) unconditionally: in tab/headless mode pages connect too,
+    # but nothing consumes the signal — only the --window watcher does, so no
+    # mode switch is needed here.
+    app.state.presence = PresenceTracker()
 
     @app.middleware("http")
     async def _guard_vault(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -163,6 +171,7 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(structured_router)
     app.include_router(trash_router)
     app.include_router(agent_router)
+    app.include_router(presence_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.
