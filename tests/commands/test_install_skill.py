@@ -12,10 +12,12 @@ from litman.core.skill import (
     DEFAULT_PARENT_DIR,
     SKILL_NAME,
     SkillInstallError,
+    aggregate_skill_state,
     bundled_skill_root,
     install_all_skills,
     install_skill,
     list_bundled_skills,
+    skill_status,
 )
 
 
@@ -165,6 +167,115 @@ def test_install_skill_unknown_name_raises(tmp_path: Path) -> None:
         install_skill(target=target, name="ghost-skill")
 
 
+def test_install_skill_linked_target_untouched_even_with_force(
+    tmp_path: Path,
+) -> None:
+    """A symlinked skill dir points at a copy managed elsewhere (a dev
+    checkout); install must never copy *through* the link — not even with
+    overwrite=True — or it would clobber the source of truth in place."""
+    real = tmp_path / "checkout" / "lit-library"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("DEV COPY\n", encoding="utf-8")
+    parent = tmp_path / "skills"
+    parent.mkdir()
+    link = parent / "lit-library"
+    link.symlink_to(real)
+
+    result = install_skill(target=link, overwrite=True, name="lit-library")
+    assert result["mode"] == "linked"
+    assert result["files"] == []
+    assert (real / "SKILL.md").read_text(encoding="utf-8") == "DEV COPY\n"
+
+
+# ---------------------------------------------------------------------------
+# skill_status / aggregate_skill_state — content-level freshness probes
+# ---------------------------------------------------------------------------
+
+
+def test_skill_status_absent_for_empty_parent(tmp_path: Path) -> None:
+    statuses = skill_status(parent_dir=tmp_path / "skills")
+    assert set(statuses) == set(list_bundled_skills())
+    assert all(s["state"] == "absent" for s in statuses.values())
+
+
+def test_skill_status_current_after_install(tmp_path: Path) -> None:
+    parent = tmp_path / "skills"
+    install_all_skills(parent_dir=parent)
+    statuses = skill_status(parent_dir=parent)
+    assert all(s["state"] == "current" for s in statuses.values())
+    assert all(s["stale_files"] == [] for s in statuses.values())
+
+
+def test_skill_status_tampered_file_is_stale_and_named(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "skills"
+    install_all_skills(parent_dir=parent)
+    (parent / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    statuses = skill_status(parent_dir=parent)
+    assert statuses["lit-library"]["state"] == "stale"
+    assert "SKILL.md" in statuses["lit-library"]["stale_files"]
+    assert statuses["lit-reading"]["state"] == "current"
+
+
+def test_skill_status_missing_bundled_file_is_stale(tmp_path: Path) -> None:
+    parent = tmp_path / "skills"
+    install_all_skills(parent_dir=parent)
+    (parent / "lit-library" / "SKILL.md").unlink()
+    assert skill_status(parent_dir=parent)["lit-library"]["state"] == "stale"
+
+
+def test_skill_status_user_additions_do_not_affect_state(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "skills"
+    install_all_skills(parent_dir=parent)
+    (parent / "lit-library" / "my_local_notes.md").write_text(
+        "mine\n", encoding="utf-8"
+    )
+    assert skill_status(parent_dir=parent)["lit-library"]["state"] == "current"
+
+
+def test_skill_status_linked_dir_never_stale(tmp_path: Path) -> None:
+    parent = tmp_path / "skills"
+    parent.mkdir()
+    real = tmp_path / "dev-checkout" / "lit-library"
+    real.mkdir(parents=True)  # deliberately diverges from the bundle
+    (parent / "lit-library").symlink_to(real)
+    statuses = skill_status(parent_dir=parent)
+    assert statuses["lit-library"]["state"] == "linked"
+    assert statuses["lit-library"]["stale_files"] == []
+
+
+def test_aggregate_skill_state_absent(tmp_path: Path) -> None:
+    assert aggregate_skill_state(parent_dir=tmp_path / "skills") == "absent"
+
+
+def test_aggregate_skill_state_current(tmp_path: Path) -> None:
+    parent = tmp_path / "skills"
+    install_all_skills(parent_dir=parent)
+    assert aggregate_skill_state(parent_dir=parent) == "current"
+
+
+def test_aggregate_skill_state_any_stale_wins(tmp_path: Path) -> None:
+    parent = tmp_path / "skills"
+    install_all_skills(parent_dir=parent)
+    (parent / "lit-reading" / "SKILL.md").write_text("OLD\n", encoding="utf-8")
+    assert aggregate_skill_state(parent_dir=parent) == "stale"
+
+
+def test_aggregate_skill_state_partial_install_counts_current(
+    tmp_path: Path,
+) -> None:
+    """Installing only one bundled skill is a deliberate choice
+    (``--skill``), not drift — the GUI must not nag about the other."""
+    parent = tmp_path / "skills"
+    install_skill(target=parent / "lit-library", name="lit-library")
+    assert aggregate_skill_state(parent_dir=parent) == "current"
+
+
 # ---------------------------------------------------------------------------
 # install_all_skills
 # ---------------------------------------------------------------------------
@@ -290,6 +401,120 @@ def test_cli_install_skill_unknown_name_exits_nonzero(
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, SkillInstallError)
+
+
+def test_cli_install_skill_rerun_reports_up_to_date(tmp_path: Path) -> None:
+    """Re-running after a clean install is a no-op success, not an error —
+    the upgrade path (`lit install-skill` after `pipx upgrade litman`) must
+    not require --force when there is nothing to refresh."""
+    parent = tmp_path / "skills"
+    runner = CliRunner()
+    assert (
+        runner.invoke(cli, ["install-skill", "--parent-dir", str(parent)])
+        .exit_code
+        == 0
+    )
+    result = runner.invoke(
+        cli, ["install-skill", "--parent-dir", str(parent)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "up to date" in result.output
+    assert "lit-library" in result.output
+    assert "lit-reading" in result.output
+
+
+def test_cli_install_skill_stale_non_tty_requires_force(
+    tmp_path: Path,
+) -> None:
+    """Out-of-date content + nobody at the keyboard → refuse loudly with a
+    --force pointer, and touch nothing (an agent or script must never
+    overwrite skill files silently)."""
+    parent = tmp_path / "skills"
+    runner = CliRunner()
+    runner.invoke(cli, ["install-skill", "--parent-dir", str(parent)])
+    stale_md = parent / "lit-library" / "SKILL.md"
+    stale_md.write_text("OLD LOCAL COPY\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli, ["install-skill", "--parent-dir", str(parent)]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SkillInstallError)
+    assert "--force" in str(result.exception)
+    assert "lit-library" in str(result.exception)
+    assert stale_md.read_text(encoding="utf-8") == "OLD LOCAL COPY\n"
+
+
+def test_cli_install_skill_stale_tty_enter_refreshes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interactive run + stale skill → [Y/n] prompt whose default (plain
+    Enter) refreshes. The drift surfaces at the next relevant operation and
+    one keypress fixes it."""
+    parent = tmp_path / "skills"
+    runner = CliRunner()
+    runner.invoke(cli, ["install-skill", "--parent-dir", str(parent)])
+    stale_md = parent / "lit-library" / "SKILL.md"
+    stale_md.write_text("OLD LOCAL COPY\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "litman.commands.install_skill._stdin_is_tty", lambda: True
+    )
+
+    result = runner.invoke(
+        cli, ["install-skill", "--parent-dir", str(parent)], input="\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "overwritten" in result.output
+    text = stale_md.read_text(encoding="utf-8")
+    assert "OLD LOCAL COPY" not in text
+    assert "name: lit-library" in text
+
+
+def test_cli_install_skill_stale_tty_decline_leaves_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "skills"
+    runner = CliRunner()
+    runner.invoke(cli, ["install-skill", "--parent-dir", str(parent)])
+    stale_md = parent / "lit-library" / "SKILL.md"
+    stale_md.write_text("OLD LOCAL COPY\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "litman.commands.install_skill._stdin_is_tty", lambda: True
+    )
+
+    result = runner.invoke(
+        cli, ["install-skill", "--parent-dir", str(parent)], input="n\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "skipped" in result.output
+    assert stale_md.read_text(encoding="utf-8") == "OLD LOCAL COPY\n"
+
+
+def test_cli_install_skill_linked_left_untouched_even_with_force(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "skills"
+    parent.mkdir(parents=True)
+    real = tmp_path / "checkout" / "lit-library"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("DEV COPY\n", encoding="utf-8")
+    (parent / "lit-library").symlink_to(real)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "install-skill",
+            "--skill",
+            "lit-library",
+            "--parent-dir",
+            str(parent),
+            "--force",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "linked" in result.output
+    assert (real / "SKILL.md").read_text(encoding="utf-8") == "DEV COPY\n"
 
 
 def test_cli_install_skill_help_mentions_options() -> None:

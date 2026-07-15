@@ -14,14 +14,16 @@ Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 
 from __future__ import annotations
 
-import shutil
+import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._options import format_option, library_option, vault_option
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -32,11 +34,14 @@ from litman.core.code import (
     write_repo_meta,
 )
 from litman.core.config import load_config
+from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import rmtree
 from litman.core.trash import (
     RestoreResult,
+    TrashEntry,
     empty_trash,
     list_trash,
     resolve_trash_entry,
@@ -60,27 +65,41 @@ def trash_group() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _trash_row(e: TrashEntry) -> dict[str, Any]:
+    """One trash entry as a JSON row, keyed the way the sidecar is.
+
+    Carries the two fields the table has no room for: ``entry_path``, and
+    the ``orphan_repos`` a restore would have to re-clone.
+    """
+    return {
+        "paper_id": e.paper_id,
+        "deleted_at": e.deleted_at,
+        "cascade_was_used": e.cascade_was_used,
+        "title": e.title,
+        "entry_name": e.entry_name,
+        "entry_path": str(e.entry_path),
+        "orphan_repos": e.orphan_repos,
+    }
+
+
 @trash_group.command("list")
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
-def trash_list_cmd(library: Path | None, vault_name: str | None) -> None:
+@format_option
+@library_option
+@vault_option
+def trash_list_cmd(
+    output_format: str, library: Path | None, vault_name: str | None
+) -> None:
     """Show trash entries, newest first."""
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
+
+    if output_format == "json":
+        # Before the empty message: an empty trash is `[]`, not prose.
+        click.echo(
+            json.dumps([_trash_row(e) for e in entries], ensure_ascii=False)
+        )
+        return
+
     if not entries:
         console.print("[dim](trash is empty)[/]")
         return
@@ -155,7 +174,11 @@ def _reclone_missing_repo(
         # ``bind_paper_to_repo`` can raise PaperNotFoundError, which is not a
         # CodeError and would otherwise escape and crash an already-committed
         # restore.
-        shutil.rmtree(repo_root, ignore_errors=True)
+        # locking.rmtree, not shutil: a half-finished `git clone` already
+        # wrote read-only .git objects, which Windows refuses to unlink — a
+        # bare rmtree would strand them and wedge every future re-clone on
+        # "directory not empty".
+        rmtree(repo_root, ignore_errors=True)
         if isinstance(e, CodeError):
             raise
         raise CodeError(f"re-clone of {repo_name!r} failed: {e}") from e
@@ -227,22 +250,8 @@ def _handle_missing_repos(
         "repo without prompting (script / agent path)."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def trash_restore_cmd(
     paper_id_or_entry: str,
     skip_confirm: bool,
@@ -254,7 +263,7 @@ def trash_restore_cmd(
     Pass either the paper id (must be unambiguous) or the full entry name
     (<id>-<UTC-timestamp>). The paper's sealed fields drive a symmetric
     rebuild: opposite papers' paired reverse edges, surviving repo bindings,
-    and project symlinks + REFERENCES.md are re-created. A 1:1 repo that was
+    and project links + REFERENCES.md are re-created. A 1:1 repo that was
     hard-deleted at rm time is re-cloned (prompted, or auto with -y); an edge
     whose opposite is no longer in the library is silently dropped.
     Refreshes INDEX.json and views/.
@@ -331,22 +340,8 @@ def trash_restore_cmd(
     help="Preview only — list every trash entry that would be permanently "
     "removed, then exit without emptying the trash.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def trash_empty_cmd(
     skip_confirm: bool,
     dry_run: bool,
@@ -380,21 +375,25 @@ def trash_empty_cmd(
         )
         return
 
-    if not skip_confirm:
-        console.print(
-            f"[bold yellow]About to permanently delete[/] "
-            f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'}:"
+    # Route the confirm through the shared _confirm_destructive (same gate
+    # taxonomy/project/rm use): --yes proceeds silently, a non-tty stdin
+    # without --yes is refused WITHOUT reading stdin (so `echo y | lit trash
+    # empty` can no longer bypass the prompt), and an interactive tty renders
+    # the warning block + a default-No prompt.
+    warning_lines = [
+        f"[bold yellow]About to permanently delete[/] "
+        f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'}:"
+    ]
+    for e in entries[:10]:
+        warning_lines.append(
+            f"  - {escape(e.paper_id)} [dim]({escape(e.deleted_at)})[/]"
         )
-        for e in entries[:10]:
-            console.print(
-                f"  - {escape(e.paper_id)} [dim]({escape(e.deleted_at)})[/]"
-            )
-        if len(entries) > 10:
-            console.print(f"  ... and {len(entries) - 10} more")
-        console.print("[bold red]Not recoverable.[/]")
-        if not click.confirm("Continue?", default=False):
-            console.print("[dim]Aborted. Trash unchanged.[/]")
-            return
+    if len(entries) > 10:
+        warning_lines.append(f"  ... and {len(entries) - 10} more")
+    warning_lines.append("[bold red]Not recoverable.[/]")
+    if not _confirm_destructive(warning_lines, yes=skip_confirm):
+        console.print("[dim]Aborted. Trash unchanged.[/]")
+        return
 
     n = empty_trash(vault)
     console.print(

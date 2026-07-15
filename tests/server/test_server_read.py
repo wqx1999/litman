@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from litman.cli import cli
 from litman.core.document import list_papers
 from litman.core.query import recency_key
-from litman.core.views import project_paper, write_index
+from litman.core.views import INDEX_PAPER_FIELDS, project_paper, write_index
 from litman.server import create_app
 
 
@@ -197,6 +197,44 @@ def test_get_taxonomy_returns_dict_keys(
     for key in ("projects", "topics", "methods", "data"):
         assert key in tax
         assert isinstance(tax[key], list)
+
+
+def test_non_utf8_notes_is_a_described_500_not_a_traceback(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """An external editor saving notes.md as UTF-16 must yield a clean error
+    body (same contract as get_paper's CorruptMetadataError arm) — the raw
+    UnicodeDecodeError previously escaped as an undescribed 500."""
+    vault, paper_id = vault_with_paper
+    notes = vault / "papers" / paper_id / "notes.md"
+    notes.write_bytes("# 笔记\n".encode("utf-16"))
+
+    # raise_server_exceptions=False: an UNHANDLED error would raise right
+    # through the TestClient; a handled HTTPException returns a JSON body.
+    client = TestClient(create_app(vault), raise_server_exceptions=False)
+    resp = client.get(f"/api/paper/{paper_id}/notes")
+
+    assert resp.status_code == 500
+    assert "notes.md cannot be read" in resp.json()["detail"]
+
+
+def test_missing_taxonomy_is_a_described_500_on_both_consumers(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """One damaged TAXONOMY.md previously 500'd /api/taxonomy AND
+    /api/projects with raw tracebacks; both must describe the damage and
+    point at health-check instead."""
+    vault, _ = vault_with_paper
+    (vault / "TAXONOMY.md").chmod(0o644)
+    (vault / "TAXONOMY.md").unlink()
+
+    client = TestClient(create_app(vault), raise_server_exceptions=False)
+    for route in ("/api/taxonomy", "/api/projects"):
+        resp = client.get(route)
+        assert resp.status_code == 500, route
+        detail = resp.json()["detail"]
+        assert "TAXONOMY.md is missing" in detail, route
+        assert "health-check" in detail, route
 
 
 def test_get_projects_empty_vault(
@@ -571,3 +609,179 @@ def test_recency_key_ranks_pdf_mtime_vs_updated_at(
     # A with neither signal sinks to 0.0.
     c = {"id": "missing"}
     assert recency_key(vault, c) == 0.0
+
+
+def test_recent_read_view_is_identical_with_and_without_index(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """The recent-read fast path (read-date lives in the INDEX projection) must
+    return exactly what the metadata scan returns — same papers, same order."""
+    vault, _ids = smartlist_vault
+    fast = _client(vault).get("/api/papers?view=recent-read").json()
+
+    (vault / "INDEX.json").unlink()
+    scan = _client(vault).get("/api/papers?view=recent-read").json()
+
+    assert fast == scan
+    assert len(fast) == 2
+
+
+def test_recent_read_view_does_not_scan_the_vault(
+    smartlist_vault: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a fresh INDEX, recent-read opens no metadata.yaml."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, ids = smartlist_vault
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the recent-read fast path")
+
+    monkeypatch.setattr("litman.server.routes_read.list_papers", _boom)
+    body = _client(vault).get("/api/papers?view=recent-read").json()
+    assert [p["id"] for p in body] == [ids["dropped_read"], ids["read_deep"]]
+
+
+def test_reading_and_backlog_are_identical_with_and_without_index(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """The GUI's default view. Both rank by recency_key, whose `updated-at` is
+    in the projection now — so both are INDEX-served, and both must return
+    exactly what the scan returns. The projection hands recency_key an ISO
+    string where a scan hands it a datetime; if that round-trip dropped the
+    time of day, two papers edited on the same day would reorder here."""
+    vault, _ids = smartlist_vault
+    fast = {
+        view: _client(vault).get(f"/api/papers?view={view}").json()
+        for view in ("reading", "backlog")
+    }
+
+    (vault / "INDEX.json").unlink()
+    scan = {
+        view: _client(vault).get(f"/api/papers?view={view}").json()
+        for view in ("reading", "backlog")
+    }
+
+    assert fast == scan
+    assert len(fast["reading"]) == 3  # the three unread papers
+
+
+def test_reading_view_does_not_scan_the_vault(
+    smartlist_vault: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The view the GUI opens on, and re-fetches on every window focus: with a
+    fresh INDEX it must not open a single metadata.yaml."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, _ids = smartlist_vault
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the reading fast path")
+
+    monkeypatch.setattr("litman.server.routes_read.list_papers", _boom)
+    body = _client(vault).get("/api/papers?view=reading").json()
+    assert len(body) == 3
+
+
+def test_older_schema_index_is_not_served_to_the_reading_view(
+    smartlist_vault: tuple[Path, dict[str, str]],
+) -> None:
+    """An INDEX.json written by an older litman carries an older projection (no
+    `updated-at`). Serving it would silently degrade the ranking to pdf-mtime
+    only. The staleness guard compares the whole field set, so the view falls
+    back to the scan and the order stays right — no migration, no repair step."""
+    vault, _ids = smartlist_vault
+    fresh = _client(vault).get("/api/papers?view=reading").json()
+
+    index_path = vault / "INDEX.json"
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    for entry in payload["papers"]:
+        entry.pop("updated-at")
+    index_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert _client(vault).get("/api/papers?view=reading").json() == fresh
+
+
+# ---------------------------------------------------------------------------
+# GET /api/paper/{id} and GET /api/papers agree on the projection
+#
+# metadata.yaml is schemaless (invariant #7): a field the user never set simply
+# is not in the file. get_paper used to serve the file as-is, so a paper could
+# arrive without `topics` at all — while the frontend's PaperMeta extends
+# IndexPaper and declares every projection field present. Consumers happened to
+# defend themselves; it was a live round waiting for the next one that didn't.
+# ---------------------------------------------------------------------------
+
+
+def _write_sparse_paper(vault: Path, paper_id: str, body: str) -> None:
+    d = vault / "papers" / paper_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "metadata.yaml").write_text(body, encoding="utf-8")
+    write_index(vault, list_papers(vault))
+
+
+def test_the_two_endpoints_agree_on_every_projection_field(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+
+    one = client.get(f"/api/paper/{paper_id}").json()
+    listed = next(p for p in client.get("/api/papers").json() if p["id"] == paper_id)
+
+    # Derived from INDEX_PAPER_FIELDS, never a hardcoded list: the projection
+    # went 13 -> 14 fields on 2026-07-12 and this must not need editing again.
+    for field in INDEX_PAPER_FIELDS:
+        assert one[field] == listed[field], field
+
+
+def test_a_paper_missing_a_projection_field_still_gets_it(vault_with_paper) -> None:
+    """The bug: no `topics:` in the file meant no `topics` key in the response."""
+    vault, _ = vault_with_paper
+    _write_sparse_paper(
+        vault,
+        "2024_Sparse",
+        "id: 2024_Sparse\ntitle: Sparse\ncreated-at: '2026-01-01T00:00:00+02:00'\n",
+    )
+
+    meta = _client(vault).get("/api/paper/2024_Sparse").json()
+
+    assert set(INDEX_PAPER_FIELDS) <= set(meta), (
+        "every projection field must be present even when the file omits it"
+    )
+    # And the list-field rule holds: absent means [], not null.
+    assert meta["topics"] == []
+    assert meta["authors"] == []
+    assert meta["year"] is None
+
+
+def test_get_paper_still_carries_every_schemaless_extra(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The projection decides the shared fields; everything else passes through."""
+    vault, _ = vault_with_paper
+    _write_sparse_paper(
+        vault,
+        "2024_Extra",
+        "id: 2024_Extra\n"
+        "title: Extra\n"
+        "topics: []\n"
+        "journal: Nature\n"
+        "created-at: '2026-01-01T00:00:00+02:00'\n"
+        "relevance-pepforge: Direct baseline\n"
+        "funding: ERC-2024\n"
+        "code-clones: []\n",
+    )
+
+    meta = _client(vault).get("/api/paper/2024_Extra").json()
+
+    assert meta["journal"] == "Nature"
+    assert meta["relevance-pepforge"] == "Direct baseline"
+    assert meta["funding"] == "ERC-2024"
+    assert meta["created-at"].startswith("2026-01-01")
+    # And the derived hint the cockpit needs.
+    assert meta["code-clones-missing"] == []

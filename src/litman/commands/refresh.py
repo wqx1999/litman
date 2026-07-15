@@ -8,6 +8,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -19,22 +20,8 @@ console = Console()
 
 
 @click.command("refresh-views")
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def refresh_views_cmd(
     library: Path | None, vault_name: str | None
 ) -> None:
@@ -44,9 +31,9 @@ def refresh_views_cmd(
 
     \b
     1. INDEX.json — global paper summary + by-doi reverse map.
-    2. views/by-*/ symlink hubs — wiped and rebuilt; stale tag buckets
+    2. views/by-*/ link hubs — wiped and rebuilt; stale tag buckets
        disappear.
-    3. <project_dir>/litman_reflib/ symlinks AND REFERENCES.md for each
+    3. <project_dir>/litman_reflib/ links AND REFERENCES.md for each
        project in lit-config.yaml's projects map. Per-project failures
        (missing project dir on this machine) are skipped, not aborted.
 
@@ -71,7 +58,7 @@ def refresh_views_cmd(
         f"[green]✓[/] INDEX.json updated ({n} paper{'s' if n != 1 else ''})"
     )
     for view_name, k in counts.items():
-        console.print(f"  views/{view_name}: {k} symlink{'s' if k != 1 else ''}")
+        console.print(f"  views/{view_name}: {k} link{'s' if k != 1 else ''}")
     if project_results:
         console.print(f"[green]✓[/] Project REFERENCES.md ({len(project_results)} project{'s' if len(project_results) != 1 else ''})")
         for project, info in project_results.items():

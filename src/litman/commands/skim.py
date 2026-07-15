@@ -11,6 +11,7 @@ from pathlib import Path
 
 import click
 
+from litman.commands._options import library_option, vault_option
 from litman.commands.modify import _apply_modify
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
@@ -29,22 +30,8 @@ from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
         "Mutually exclusive with the positional paper id."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def skim_cmd(
     paper_id: str | None,
     paper_doi: str | None,

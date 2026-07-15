@@ -10,6 +10,7 @@ variable to set. ``--no-register`` opts out.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from rich.panel import Panel
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
 from litman.core.library import DEFAULT_VAULT_NAME, create_vault
 from litman.core.vault_registry import (
+    VaultEntry,
     add_vault,
     ensure_name_registrable,
     find_by_name,
@@ -30,6 +32,48 @@ from litman.core.vault_registry import (
 from litman.exceptions import VaultRegistryError
 
 console = Console()
+
+
+def apply_init(
+    parent_dir: Path,
+    name: str = DEFAULT_VAULT_NAME,
+    register_as: str | None = None,
+    now_iso: str | None = None,
+) -> tuple[Path, VaultEntry]:
+    """Create + register a vault, marking it health-checked. Returns ``(vault, entry)``.
+
+    The single create-and-register code path shared by the ``lit init`` CLI and
+    the ``POST /api/vaults/create`` endpoint (invariant #16). The vault subdir is
+    created under ``parent_dir``; the entry is appended to the user-level registry
+    (the first vault becomes active) and its health-check clock is started at
+    creation so a brand-new library never reads as "never checked == stale".
+
+    The interactive first-time-registry hint is deliberately NOT here — it is a
+    CLI-only TTY concern that ``init_cmd`` runs before calling this.
+
+    Raises:
+        VaultRegistryError: ``register_as`` / ``name`` is not registrable (bad
+            shape or already registered) — raised BEFORE anything is created.
+        ParentNotFoundError / VaultExistsError: from :func:`create_vault`.
+    """
+    register_name = register_as or name
+    reg = load_registry()
+    ensure_name_registrable(reg, register_name)
+    vault = create_vault(parent_dir, name=name)
+    updated = mark_health_checked(
+        add_vault(reg, register_name, vault),
+        register_name,
+        now_iso or datetime.now(timezone.utc).isoformat(),
+    )
+    save_registry(updated)
+    entry = find_by_name(updated, register_name)
+    assert entry is not None  # just added
+    return vault, entry
+
+
+def _stdin_isatty() -> bool:
+    """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
 @click.command("init")
@@ -86,25 +130,20 @@ def init_cmd(
     """
     register_name = register_as or name
 
-    # Pre-flight: validate the registry name BEFORE creating anything, so a
-    # name clash aborts cleanly without leaving an unregistered vault on disk.
-    if not no_register:
-        reg = load_registry()
-        try:
-            ensure_name_registrable(reg, register_name)
-        except VaultRegistryError as e:
-            raise click.ClickException(
-                f"{e}\nNo vault was created. Re-run with "
-                f"`--register-as <distinct-name>`, or `--no-register` to "
-                f"create it without registering."
-            ) from e
-        # Fires only on the very first registry creation (TTY-gated). May
-        # abort here, in which case nothing has been created yet.
-        maybe_first_time_registry_prompt()
-
-    vault = create_vault(parent_dir, name=name)
+    # The tutorial's first hands-on command is `lit init ~/research` on a
+    # machine where ~/research does not exist yet — dead-ending there with
+    # "create it first" is a mkdir the tool can offer itself. Interactive
+    # sessions get the one-Enter repair; automation keeps the explicit
+    # ParentNotFoundError contract (and a file sitting at the path still
+    # takes the core error path untouched).
+    if not parent_dir.exists() and _stdin_isatty() and click.confirm(
+        f"Parent directory {parent_dir} does not exist. Create it?",
+        default=True,
+    ):
+        parent_dir.mkdir(parents=True, exist_ok=True)
 
     if no_register:
+        vault = create_vault(parent_dir, name=name)
         body = (
             f"[bold green]Vault initialized:[/] {vault}\n"
             f"[yellow]Not registered[/] (--no-register).\n\n"
@@ -114,38 +153,44 @@ def init_cmd(
             f"  [dim]•[/] lit vault add <name> {vault}\n\n"
             "Then: lit add <path-to-pdf> --doi <doi>"
         )
-    else:
-        updated = add_vault(reg, register_name, vault)
-        # review F17: a freshly created vault is in a known-good state
-        # (create_vault writes a valid skeleton), so start its health-check
-        # staleness clock at creation. Otherwise last_health_check_at=None reads
-        # as "never checked == stale" and the post-command nudge fires
-        # immediately on a brand-new library.
-        updated = mark_health_checked(
-            updated,
-            register_name,
-            datetime.now(timezone.utc).isoformat(),
+        console.print(Panel.fit(body, title="lit init", border_style="green"))
+        return
+
+    # Pre-flight: validate the registry name BEFORE creating anything (and before
+    # the first-time hint), so a name clash aborts cleanly without leaving an
+    # unregistered vault on disk and with a CLI-shaped error message.
+    reg = load_registry()
+    try:
+        ensure_name_registrable(reg, register_name)
+    except VaultRegistryError as e:
+        raise click.ClickException(
+            f"{e}\nNo vault was created. Re-run with "
+            f"`--register-as <distinct-name>`, or `--no-register` to "
+            f"create it without registering."
+        ) from e
+    # Fires only on the very first registry creation (TTY-gated). May abort
+    # here, in which case nothing has been created yet.
+    maybe_first_time_registry_prompt()
+
+    # Same create+register core path as POST /api/vaults/create (invariant #16).
+    vault, entry = apply_init(parent_dir, name, register_as)
+    if entry.is_active:
+        body = (
+            f"[bold green]Vault initialized & registered:[/] {vault}\n"
+            f"[bold]Registry name:[/] {register_name}  "
+            f"[green](active)[/]\n\n"
+            "lit will use this vault automatically — no environment "
+            "variable needed.\n\n"
+            "Next: lit add <path-to-pdf> --doi <doi>"
         )
-        save_registry(updated)
-        entry = find_by_name(updated, register_name)
-        assert entry is not None  # just added
-        if entry.is_active:
-            body = (
-                f"[bold green]Vault initialized & registered:[/] {vault}\n"
-                f"[bold]Registry name:[/] {register_name}  "
-                f"[green](active)[/]\n\n"
-                "lit will use this vault automatically — no environment "
-                "variable needed.\n\n"
-                "Next: lit add <path-to-pdf> --doi <doi>"
-            )
-        else:
-            body = (
-                f"[bold green]Vault initialized & registered:[/] {vault}\n"
-                f"[bold]Registry name:[/] {register_name}  "
-                f"[yellow](not active)[/]\n\n"
-                f"Another vault is currently active. To switch:\n"
-                f"  [dim]•[/] lit vault use {register_name}\n\n"
-                "Next: lit add <path-to-pdf> --doi <doi>"
-            )
+    else:
+        body = (
+            f"[bold green]Vault initialized & registered:[/] {vault}\n"
+            f"[bold]Registry name:[/] {register_name}  "
+            f"[yellow](not active)[/]\n\n"
+            f"Another vault is currently active. To switch:\n"
+            f"  [dim]•[/] lit vault use {register_name}\n\n"
+            "Next: lit add <path-to-pdf> --doi <doi>"
+        )
 
     console.print(Panel.fit(body, title="lit init", border_style="green"))

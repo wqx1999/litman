@@ -27,7 +27,7 @@ from litman.cli import cli
 from litman.core.checks import check_dangling_wikilinks
 from litman.core.document import list_papers
 from litman.core.library import create_vault
-from litman.core.notes import parse_wikilink_target
+from litman.core.notes import discussion_scaffold, parse_wikilink_target
 from litman.core.vault_registry import (
     add_vault,
     save_registry,
@@ -128,8 +128,12 @@ def _seed_paper(
         _yaml.dump(meta, f)
     (paper_dir / "notes.md").write_text(notes_body, encoding="utf-8")
     # M30 paper_dir_validity requires paper.pdf; write a stub so the clean-vault
-    # cases stay clean.
+    # cases stay clean. Same for the discussion log, which `lit add` scaffolds
+    # and the discussion_scaffold check requires.
     (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
+    (paper_dir / "discussion.md").write_text(
+        discussion_scaffold(paper_id), encoding="utf-8"
+    )
 
 
 def _write_index(vault: Path) -> None:

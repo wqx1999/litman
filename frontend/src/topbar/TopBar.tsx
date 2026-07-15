@@ -8,19 +8,29 @@ import type {
   VaultsPayload,
 } from '../types'
 import type { Candidate } from '../search'
+import { projectHealth } from '../projects'
 import {
   createProject,
   deleteProject,
+  fetchAgents,
+  fetchAgentStatus,
   fetchHealth,
+  installAgentSkill,
+  launchAgent,
   renameProject,
+  setDefaultAgent,
   setProjectPath,
 } from '../api'
+import type { AgentLaunchResult, AgentStatus } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
-import logoUrl from '../assets/litman-logo.png'
+import LitmanMark from '../ui/LitmanMark'
 
 interface Props {
   vaults: VaultsPayload | null
+  /** The newer litman version available on PyPI (null = up to date / unknown).
+   * From the read-only /api/version cache; drives the update dot on the logo. */
+  updateAvailable?: string | null
   /** Registered projects backing the global Projects manager (P4). */
   projects: ProjectEntry[]
   /** Full INDEX projection — backs the delete-project confirm's "N papers" count. */
@@ -48,6 +58,10 @@ interface Props {
    * backend's verbatim VaultRegistryError so the form can show it inline. On
    * success App refreshes the list and, when `setActive`, reuses switchVault. */
   onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  /** Create a NEW vault dir under `parentDir` and register it (the `lit init`
+   * backend). Same contract as onRegisterVault: rejects with the backend's
+   * verbatim message so the form can show it inline. */
+  onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   /** Unregister a vault (registry entry only — the directory on disk is kept).
    * App handles the toast + list refresh; errors are toasted, not thrown. */
   onUnregisterVault: (name: string) => Promise<void>
@@ -83,6 +97,18 @@ interface Props {
    * shortcut modal-guard suppresses global keys while one is up — mirrors
    * onProjectsOpenChange. Without it ⌥-write shortcuts fire behind the panel. */
   onObservabilityOpenChange: (open: boolean) => void
+  /** Same mirror for the agent panel (picker / copy box) — the modal-guard
+   * red line applies to every TopBar overlay. */
+  onAgentOpenChange: (open: boolean) => void
+  /** Hand App a stable opener for the agent button so the global `` ` ``
+   * shortcut and the button run the SAME code path (launch when configured,
+   * onboarding panel when not) — mirrors Cockpit's onRegisterHandle. Called
+   * with null on unmount. */
+  onRegisterAgentOpen: (open: (() => void) | null) => void
+  /** Same idiom for the vault manager: hand App a stable opener so the vault-gone
+   * banner's button opens the SAME panel the toolbar's vault icon does. Called
+   * with null on unmount. */
+  onRegisterVaultManagerOpen: (open: (() => void) | null) => void
   /** In trash mode, hide the library-scoped controls (vault switch, Projects,
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
@@ -98,6 +124,7 @@ interface Props {
  * that future vault operations will join. */
 export default function TopBar({
   vaults,
+  updateAvailable,
   projects,
   allPapers,
   search,
@@ -111,6 +138,7 @@ export default function TopBar({
   onProjectsChanged,
   onSwitchVault,
   onRegisterVault,
+  onCreateVault,
   onUnregisterVault,
   switching,
   notify,
@@ -123,10 +151,19 @@ export default function TopBar({
   logUnread,
   onLogOpened,
   onObservabilityOpenChange,
+  onAgentOpenChange,
+  onRegisterAgentOpen,
+  onRegisterVaultManagerOpen,
   trashMode,
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
   const [showVaults, setShowVaults] = useState(false)
+  // Hand the opener up to App (the vault-gone banner drives it). `setShowVaults`
+  // is stable, so unlike the agent opener this needs no ref to stay identity-safe.
+  useEffect(() => {
+    onRegisterVaultManagerOpen(() => setShowVaults(true))
+    return () => onRegisterVaultManagerOpen(null)
+  }, [onRegisterVaultManagerOpen])
   // Only one of the two observability panels is open at a time; opening either
   // closes the other. Opening the log also clears the unread dot.
   const [panel, setPanel] = useState<null | 'log' | 'health'>(null)
@@ -158,6 +195,170 @@ export default function TopBar({
   }
   const closePanel = () => setPanel(null)
 
+  // Agent launcher: one configured agent → the button launches it directly;
+  // several → a picker panel. A launch that can't pop a terminal window on the
+  // server's machine (headless / remote) comes back as mode "copy" and the
+  // panel shows the `lit agent …` line to paste into the user's own terminal.
+  const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
+  const [agentBusy, setAgentBusy] = useState(false)
+  // Machine-global onboarding status — the red-dot source. Fetched once when the
+  // TopBar mounts, which only happens while a vault is served (App gates the
+  // whole view on `served`), so this mirrors App's served-gated seed, NOT the
+  // on-demand Health fetch: the dot must be known on load, before any click.
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
+  useEffect(() => {
+    fetchAgentStatus()
+      .then(setAgentStatus)
+      .catch(() => {}) // best-effort: no status just means no red dot
+  }, [])
+
+  const refreshAgentStatus = () =>
+    fetchAgentStatus().then((s) => {
+      setAgentStatus(s)
+      return s
+    })
+
+  // Re-read status and reflect it in both places it shows: the red dot (always,
+  // via refreshAgentStatus) and the setup panel if it happens to be open. Drives
+  // the auto-recheck-on-focus effect below and the panel's manual "Recheck"
+  // button. Best-effort — a failed re-read just leaves the last known state.
+  const recheckAgentStatus = () =>
+    refreshAgentStatus()
+      .then((s) => {
+        setAgentUi((ui) =>
+          ui?.kind === 'setup' ? { kind: 'setup', status: s } : ui,
+        )
+        return s
+      })
+      .catch(() => {})
+
+  // Auto-recheck when the browser regains focus / the tab becomes visible — the
+  // "go install the agent CLI (or its skill) in a terminal, come back to the
+  // browser" loop, so the red dot clears itself with no manual refresh. Mirrors
+  // App.tsx's auto-resync: `focus` fires on app switch, `visibilitychange` on
+  // tab switch (both can fire on one return, so an 800ms throttle coalesces).
+  // Empty deps is safe: the effect only calls stable setters + a module fetch.
+  const lastAgentRecheckRef = useRef(0)
+  useEffect(() => {
+    const onReturn = () => {
+      const now = Date.now()
+      if (now - lastAgentRecheckRef.current < 800) return
+      lastAgentRecheckRef.current = now
+      recheckAgentStatus()
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onReturn()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
+
+  const handleLaunch = (res: AgentLaunchResult) => {
+    if (res.mode === 'spawned') {
+      setAgentUi(null)
+      notify(`Launched ${res.agent} in a terminal window`, 'success')
+    } else {
+      setAgentUi({ kind: 'copy', agent: res.agent, command: res.command })
+    }
+  }
+
+  const openAgent = () => {
+    if (agentBusy) return
+    // Not configured yet → onboarding, never a launch (there's nothing to run).
+    // needs_setup is the server's single source of truth for the red dot.
+    if (agentStatus?.needs_setup) {
+      setAgentUi({ kind: 'setup', status: agentStatus })
+      return
+    }
+    setAgentBusy(true)
+    fetchAgents()
+      .then((info) => {
+        if (info.agents.length <= 1) return launchAgent().then(handleLaunch)
+        setAgentUi({ kind: 'picker', agents: info.agents, default: info.default })
+      })
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+      .finally(() => setAgentBusy(false))
+  }
+
+  // `openAgent` is rebuilt every render (it closes over agentBusy/agentStatus),
+  // so register a STABLE wrapper once and let it read the live closure from a
+  // ref — registering openAgent directly would re-fire onRegisterAgentOpen on
+  // every render (Cockpit's actionsRef solves the same problem the same way).
+  const openAgentRef = useRef(openAgent)
+  openAgentRef.current = openAgent
+  useEffect(() => {
+    onRegisterAgentOpen(() => openAgentRef.current())
+    return () => onRegisterAgentOpen(null)
+  }, [onRegisterAgentOpen])
+
+  const pickAgent = (name: string) => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    launchAgent(name)
+      .then(handleLaunch)
+      .catch((err) => {
+        setAgentUi(null)
+        notify(err instanceof Error ? err.message : String(err), 'error')
+      })
+      .finally(() => setAgentBusy(false))
+  }
+
+  // Re-pick the default agent from an already-configured state (the picker's
+  // "Change agent" link). Reuse the loaded status if present, else fetch.
+  const openSetup = () => {
+    if (agentBusy) return
+    if (agentStatus) {
+      setAgentUi({ kind: 'setup', status: agentStatus })
+      return
+    }
+    refreshAgentStatus()
+      .then((s) => setAgentUi({ kind: 'setup', status: s }))
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+  }
+
+  // Setup panel: install the agent's skill, then adopt it as the default, then
+  // re-read status so the open panel + red dot both reflect the new state.
+  const installSkillFor = (name: string) => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    installAgentSkill(name)
+      .then(() => setDefaultAgent(name))
+      .then(refreshAgentStatus)
+      .then((s) => {
+        setAgentUi({ kind: 'setup', status: s })
+        notify('Skill installed — your agent is ready', 'success')
+      })
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+      .finally(() => setAgentBusy(false))
+  }
+
+  // Setup panel: the skill is already installed → just adopt the agent as the
+  // machine-level default and re-read status (clears the red dot).
+  const chooseAgent = (name: string) => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    setDefaultAgent(name)
+      .then(refreshAgentStatus)
+      .then((s) => {
+        setAgentUi({ kind: 'setup', status: s })
+        notify(`${name} is now your default agent`, 'success')
+      })
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+      .finally(() => setAgentBusy(false))
+  }
+
   // Badge counts off the last run (ruling 1): error wins (rose), else warning
   // (amber), else nothing. Empty until the first run.
   const errorCount = healthIssues?.filter((i) => i.severity === 'error').length ?? 0
@@ -187,6 +388,11 @@ export default function TopBar({
   useEffect(() => {
     onObservabilityOpenChange(panel !== null)
   }, [panel, onObservabilityOpenChange])
+
+  // Same mirror for the agent panel.
+  useEffect(() => {
+    onAgentOpenChange(agentUi !== null)
+  }, [agentUi, onAgentOpenChange])
 
   // Focus mode turns the header into an auto-hiding overlay (macOS fullscreen
   // menu-bar idiom): it detaches to `absolute`, slides up out of view, and
@@ -270,12 +476,25 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <img
-        src={logoUrl}
-        alt="litman"
-        title="litman"
-        className="h-6 w-auto shrink-0 select-none"
-      />
+      <div
+        className="relative shrink-0"
+        title={
+          updateAvailable
+            ? `litman ${updateAvailable} available — run \`lit self-update\``
+            : 'litman'
+        }
+      >
+        <LitmanMark className="h-6 w-6 select-none text-stone-800" />
+        {updateAvailable && (
+          <span
+            aria-label={`Update available: litman ${updateAvailable}`}
+            className="pointer-events-none absolute -right-1 -top-1 h-2.5 w-2.5"
+          >
+            <span className="absolute inset-0 rounded-full bg-accent-500 animate-update-halo" />
+            <span className="absolute inset-0 rounded-full bg-accent-500 ring-2 ring-stone-50" />
+          </span>
+        )}
+      </div>
 
       {!trashMode && (
       <>
@@ -294,9 +513,13 @@ export default function TopBar({
       >
         {vaults?.active ? (
           vaults.vaults.map((v) => (
+            // A missing vault stays listed and stays selectable: hiding it would
+            // be one more thing happening without the user being told. Picking it
+            // fails loudly (the server refuses to switch to a path that is gone).
             <option key={v.name} value={v.name}>
               {v.name}
               {v.active ? ' (active)' : ''}
+              {v.exists ? '' : ' — missing'}
             </option>
           ))
         ) : (
@@ -315,15 +538,6 @@ export default function TopBar({
       >
         <IconVault />
       </button>
-
-      {showVaults && (
-        <VaultManager
-          vaults={vaults}
-          onRegisterVault={onRegisterVault}
-          onUnregisterVault={onUnregisterVault}
-          onClose={() => setShowVaults(false)}
-        />
-      )}
 
       <button
         type="button"
@@ -357,6 +571,24 @@ export default function TopBar({
           focus/dark/help cluster pinned to the right edge (the SearchBox's
           flex-grow normally does that). */}
       {trashMode && <div className="flex-1" />}
+
+      {/* The vault manager renders in BOTH modes — deliberately outside the
+          !trashMode block that hides its toolbar button. The vault-gone
+          banner's "Find it" opens it through the registered opener, and a 410
+          can arrive in trash mode too (the trash routes sit behind the same
+          guard); gated with the button, that click would set state and render
+          nothing — a dead recovery button — and the stuck flag would then pop
+          the manager open from nowhere on leaving trash mode. A portal, so its
+          position in this JSX carries no layout meaning anyway. */}
+      {showVaults && (
+        <VaultManager
+          vaults={vaults}
+          onRegisterVault={onRegisterVault}
+          onCreateVault={onCreateVault}
+          onUnregisterVault={onUnregisterVault}
+          onClose={() => setShowVaults(false)}
+        />
+      )}
 
       {/* Observability cluster (refresh + log + health), left of the focus/dark/
           help group. All workspace-level, so they sit here in BOTH modes. */}
@@ -410,6 +642,41 @@ export default function TopBar({
           error={healthError}
           onRerun={runHealth}
           onClose={closePanel}
+        />
+      )}
+
+      <button
+        type="button"
+        onClick={openAgent}
+        disabled={agentBusy}
+        title={
+          agentStatus?.needs_setup
+            ? 'Set up your AI agent'
+            : 'Launch your AI agent in the vault (lit agent) — press ~'
+        }
+        aria-label={agentStatus?.needs_setup ? 'Set up agent' : 'Launch agent'}
+        className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"
+      >
+        <IconAgent />
+        {agentStatus?.needs_setup && (
+          <span
+            aria-label="Agent setup needed"
+            className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-stone-50"
+          />
+        )}
+      </button>
+
+      {agentUi && (
+        <AgentPanel
+          ui={agentUi}
+          busy={agentBusy}
+          onPick={pickAgent}
+          onInstallSkill={installSkillFor}
+          onChooseAgent={chooseAgent}
+          onOpenSetup={openSetup}
+          onRecheck={recheckAgentStatus}
+          onClose={() => setAgentUi(null)}
+          notify={notify}
         />
       )}
 
@@ -584,17 +851,39 @@ function ProjectManager({
               No projects registered.
             </div>
           )}
-          {sorted.map((p) => (
+          {sorted.map((p) => {
+            const health = projectHealth(p.status)
+            return (
             <div
               key={p.name}
               className="flex items-center justify-between gap-2 border-b border-stone-100 px-3 py-2 last:border-b-0"
             >
               <div className="min-w-0">
-                <div className="truncate text-sm font-medium text-stone-800">
-                  {p.name}
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-stone-800">
+                    {p.name}
+                  </span>
+                  {health && (
+                    <span
+                      title={health.title}
+                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                        health.tone === 'missing'
+                          ? 'bg-rose-100 text-rose-700'
+                          : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {health.badge}
+                    </span>
+                  )}
                 </div>
-                <div className="truncate font-mono text-[11px] text-stone-400">
-                  {p.path}
+                <div
+                  className={`truncate font-mono text-[11px] ${
+                    health?.tone === 'missing'
+                      ? 'text-rose-400 line-through'
+                      : 'text-stone-400'
+                  }`}
+                >
+                  {p.path || 'no folder set'}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -633,7 +922,8 @@ function ProjectManager({
                 </button>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
         <div className="mt-4 flex justify-between">
           <button
@@ -1091,16 +1381,19 @@ function NewProjectDialog({
 function VaultManager({
   vaults,
   onRegisterVault,
+  onCreateVault,
   onUnregisterVault,
   onClose,
 }: {
   vaults: VaultsPayload | null
   onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
+  onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   onUnregisterVault: (name: string) => Promise<void>
   onClose: () => void
 }) {
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
   const [showRegister, setShowRegister] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
   const [busy, setBusy] = useState(false)
 
   async function doUnregister(name: string) {
@@ -1115,7 +1408,7 @@ function VaultManager({
 
   const entries = vaults?.vaults ?? []
   const sorted = entries.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked = busy || pendingUnregister != null || showRegister
+  const blocked = busy || pendingUnregister != null || showRegister || showCreate
 
   return createPortal(
     <div
@@ -1125,15 +1418,16 @@ function VaultManager({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && !pendingUnregister && !showRegister) onClose()
+          if (e.key === 'Escape' && !pendingUnregister && !showRegister && !showCreate)
+            onClose()
         }}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Register an existing vault, or unregister one. Unregistering removes the
-          registry entry only — the vault folder on disk is kept. Switch vaults
-          from the selector in the toolbar.
+          Create a new vault, or register one that already exists. Unregistering
+          removes the registry entry only — the vault folder on disk is kept. Switch
+          vaults from the selector in the toolbar.
         </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
@@ -1156,8 +1450,20 @@ function VaultManager({
                       active
                     </span>
                   )}
+                  {!v.exists && (
+                    <span
+                      title="No library at this path — the folder was moved, renamed or deleted."
+                      className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700"
+                    >
+                      missing
+                    </span>
+                  )}
                 </div>
-                <div className="truncate font-mono text-[11px] text-stone-400">
+                <div
+                  className={`truncate font-mono text-[11px] ${
+                    v.exists ? 'text-stone-400' : 'text-rose-400 line-through'
+                  }`}
+                >
                   {v.path}
                 </div>
               </div>
@@ -1180,15 +1486,25 @@ function VaultManager({
             </div>
           ))}
         </div>
-        <div className="mt-4 flex justify-between">
-          <button
-            type="button"
-            disabled={blocked}
-            onClick={() => setShowRegister(true)}
-            className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
-          >
-            + Register existing vault…
-          </button>
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => setShowCreate(true)}
+              className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
+            >
+              + New vault…
+            </button>
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => setShowRegister(true)}
+              className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+            >
+              + Register existing…
+            </button>
+          </div>
           <button
             type="button"
             disabled={blocked}
@@ -1217,6 +1533,16 @@ function VaultManager({
             // SwitchVaultDialog (via switchVault) — close this panel so that
             // confirm isn't stacked behind it.
             if (setActive) onClose()
+          }}
+        />
+      )}
+      {showCreate && (
+        <CreateVaultDialog
+          onCreateVault={onCreateVault}
+          onClose={() => setShowCreate(false)}
+          onCreated={(setActive) => {
+            setShowCreate(false)
+            if (setActive) onClose() // same reason as above: don't stack the confirm
           }}
         />
       )}
@@ -1351,7 +1677,10 @@ function RegisterVaultDialog({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
+          // Guarded like the backdrop and Cancel: this dialog is the error's
+          // only surface, so closing it mid-request would lose a late failure
+          // (setError on an unmounted component is a no-op).
+          if (e.key === 'Escape' && !busy) onClose()
         }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
@@ -1426,6 +1755,160 @@ function RegisterVaultDialog({
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
             {busy ? 'Registering…' : 'Register'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Create a NEW vault: the `lit init` backend (POST /api/vaults/create), reachable
+ * from the manager rather than only from the first-run welcome page. Sibling of
+ * RegisterVaultDialog, and deliberately shaped like it — same shell, same inline
+ * verbatim-400, same "switch to it after" checkbox reusing App's switchVault.
+ *
+ * The two differ in what the path field means, which is the whole point of having
+ * two dialogs instead of one: Register takes the vault folder ITSELF (it must
+ * already hold a lit-config.yaml), while Create takes the PARENT and makes the
+ * folder under it. Getting that backwards is the easy mistake, so the field is
+ * labelled "Location", the name is a separate field, and the joined path is
+ * echoed back under both — the same three-part shape the welcome page uses.
+ *
+ * One name, not two: the folder created on disk and the registry entry share it.
+ * (`lit init --register-as` splits them; the GUI does not need to.) */
+function CreateVaultDialog({
+  onCreateVault,
+  onClose,
+  onCreated,
+}: {
+  onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
+  onClose: () => void
+  onCreated: (setActive: boolean) => void
+}) {
+  const [parentDir, setParentDir] = useState('~')
+  const [name, setName] = useState('')
+  const [setActive, setSetActive] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const canSubmit = parentDir.trim().length > 0 && name.trim().length > 0 && !busy
+
+  async function submit() {
+    if (!canSubmit) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onCreateVault(parentDir.trim(), name.trim(), setActive)
+      onCreated(setActive)
+    } catch (err) {
+      // Verbatim backend message inline (missing parent / target not empty / name
+      // already registered); keep the dialog open so the user can correct it.
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  const joined = `${parentDir.trim().replace(/\/+$/, '')}/${name.trim() || '<name>'}`
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onClose()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          // Same guard as RegisterVaultDialog, same reason.
+          if (e.key === 'Escape' && !busy) onClose()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">New vault</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          Creates the vault folder and registers it. The location must already
+          exist; the vault folder itself must not.
+        </p>
+        <div className="mt-4 flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Location
+            </span>
+            <input
+              type="text"
+              value={parentDir}
+              disabled={busy}
+              spellCheck={false}
+              placeholder="/work/you"
+              onChange={(e) => setParentDir(e.target.value)}
+              className={`${INPUT} font-mono`}
+            />
+            <span className="text-[11px] text-stone-400">
+              the folder to create the vault in
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              Name
+            </span>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              disabled={busy}
+              spellCheck={false}
+              placeholder="literature_vault"
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit()
+              }}
+              className={INPUT}
+            />
+          </label>
+          <p className="truncate text-[11px] text-stone-400">
+            Creates <span className="font-mono text-stone-500">{joined}</span>
+          </p>
+          <label className="flex items-center gap-2 text-xs text-stone-600">
+            <input
+              type="checkbox"
+              checked={setActive}
+              disabled={busy}
+              onChange={(e) => setSetActive(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-400"
+            />
+            Switch to it after creating
+          </label>
+        </div>
+        {error && (
+          <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-[11px] leading-relaxed text-rose-600">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Creating…' : 'Create vault'}
           </button>
         </div>
       </div>
@@ -1676,6 +2159,286 @@ function ActivityLogPanel({
   )
 }
 
+/** The agent overlay's three shapes: the onboarding `setup` flow (pick + install
+ * the agent's skill), the `picker` (which configured agent to launch), or the
+ * `copy` box (when the server can't pop a terminal window, the `lit agent …`
+ * line to paste into the user's own terminal). All three are one `AgentUi`, so
+ * the single `onAgentOpenChange(agentUi !== null)` effect keeps every variant
+ * inside App's modal-guard (⌥ shortcuts can't punch through). */
+type AgentUi =
+  | { kind: 'setup'; status: AgentStatus }
+  | { kind: 'picker'; agents: string[]; default: string }
+  | { kind: 'copy'; agent: string; command: string }
+
+function AgentPanel({
+  ui,
+  busy,
+  onPick,
+  onInstallSkill,
+  onChooseAgent,
+  onOpenSetup,
+  onRecheck,
+  onClose,
+  notify,
+}: {
+  ui: AgentUi
+  busy: boolean
+  onPick: (name: string) => void
+  onInstallSkill: (name: string) => void
+  onChooseAgent: (name: string) => void
+  onOpenSetup: () => void
+  onRecheck: () => void
+  onClose: () => void
+  notify: (msg: string, variant?: ToastVariant) => void
+}) {
+  const copyCommand = (command: string) => {
+    navigator.clipboard
+      .writeText(command)
+      .then(() => notify('Command copied', 'success'))
+      .catch(() => notify('Copy failed — select the text and copy it', 'error'))
+  }
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        {ui.kind === 'setup' ? (
+          <AgentSetup
+            status={ui.status}
+            busy={busy}
+            onInstallSkill={onInstallSkill}
+            onChooseAgent={onChooseAgent}
+            onLaunch={onPick}
+            onRecheck={onRecheck}
+          />
+        ) : ui.kind === 'picker' ? (
+          <>
+            <h2 className="text-sm font-semibold text-stone-900">Launch agent</h2>
+            <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+              Starts the agent in the vault directory.
+            </p>
+            <div className="mt-3 overflow-hidden rounded-lg border border-stone-200">
+              {ui.agents.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onPick(name)}
+                  className="flex w-full items-center justify-between border-b border-stone-100 px-3 py-2 text-left text-sm text-stone-700 transition-colors last:border-b-0 hover:bg-stone-50 disabled:opacity-50"
+                >
+                  <span className="font-mono">{name}</span>
+                  {name === ui.default && (
+                    <span className="text-[10px] uppercase tracking-wide text-stone-400">
+                      default
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onOpenSetup}
+              className="mt-3 text-xs font-medium text-accent-600 transition-colors hover:text-accent-700 disabled:opacity-50"
+            >
+              Change agent…
+            </button>
+          </>
+        ) : (
+          <>
+            <h2 className="text-sm font-semibold text-stone-900">
+              Run in your local terminal
+            </h2>
+            <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+              No terminal window can be opened from here. Paste this where you
+              normally run {ui.agent}:
+            </p>
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+              <code className="min-w-0 flex-1 truncate font-mono text-sm text-stone-800">
+                {ui.command}
+              </code>
+              <button
+                type="button"
+                onClick={() => copyCommand(ui.command)}
+                className="shrink-0 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900"
+              >
+                Copy
+              </button>
+            </div>
+          </>
+        )}
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/** The onboarding step of the agent panel: a row per catalog agent, the one
+ * `supported` agent selectable with a state-driven action (get it → install
+ * skill → update skill when stale → ready), the rest greyed "coming soon"
+ * placeholders (roadmap signal + stable layout). Everything is data-driven off
+ * the status payload — no agent name or skill path is hardcoded here (the
+ * red-line agent-agnostic frontend).
+ * Auto-themes via the inverted stone ramp + `.dark .bg-white`; no `dark:`. */
+function AgentSetup({
+  status,
+  busy,
+  onInstallSkill,
+  onChooseAgent,
+  onLaunch,
+  onRecheck,
+}: {
+  status: AgentStatus
+  busy: boolean
+  onInstallSkill: (name: string) => void
+  onChooseAgent: (name: string) => void
+  onLaunch: (name: string) => void
+  onRecheck: () => void
+}) {
+  return (
+    <>
+      <h2 className="text-sm font-semibold text-stone-900">Set up your agent</h2>
+      <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+        litman writes to your library through an AI agent. Pick one, then install
+        its skill — the CLI keeps working without it.
+      </p>
+      <div className="mt-3 flex flex-col gap-2">
+        {status.agents.map((agent) =>
+          agent.supported ? (
+            <div
+              key={agent.name}
+              className="rounded-lg border border-stone-200 bg-stone-50 p-3"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-stone-800">
+                  {agent.display}
+                </span>
+                {!status.needs_setup && status.default === agent.name && (
+                  <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                    default
+                  </span>
+                )}
+              </div>
+              {!agent.detected ? (
+                <div className="mt-2 text-xs leading-relaxed text-stone-500">
+                  {agent.display} isn't installed.{' '}
+                  <a
+                    href={agent.install_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-accent-600 transition-colors hover:text-accent-700"
+                  >
+                    Get {agent.display} →
+                  </a>
+                </div>
+              ) : !status.skill_installed ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onInstallSkill(agent.name)}
+                  className="mt-2 rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                >
+                  {busy ? 'Installing…' : 'Install skill'}
+                </button>
+              ) : status.skill_state === 'stale' ? (
+                /* Installed but out of date with the running litman (server-
+                   side content comparison). Same install endpoint — it
+                   overwrites the bundled files and keeps the user's own. */
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-amber-600">
+                    Skill update available
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onLaunch(agent.name)}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                    >
+                      Launch anyway
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onInstallSkill(agent.name)}
+                      className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                    >
+                      {busy ? 'Updating…' : 'Update skill'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-emerald-600">
+                    ✓ Ready
+                  </span>
+                  {status.needs_setup ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onChooseAgent(agent.name)}
+                      className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                    >
+                      Use {agent.display}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onLaunch(agent.name)}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                    >
+                      Launch now
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div
+              key={agent.name}
+              className="flex items-center justify-between rounded-lg border border-stone-200 px-3 py-2.5 opacity-60"
+            >
+              <span className="text-sm font-medium text-stone-400">
+                {agent.display}
+              </span>
+              <span className="text-[10px] uppercase tracking-wide text-stone-400">
+                coming soon
+              </span>
+            </div>
+          ),
+        )}
+      </div>
+      {/* Manual fallback for the rare case the focus/visibility auto-recheck
+          doesn't fire (e.g. a second monitor where this tab never lost focus). */}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onRecheck}
+        className="mt-3 text-xs font-medium text-stone-500 transition-colors hover:text-stone-700 disabled:opacity-50"
+      >
+        Installed it just now? Recheck
+      </button>
+    </>
+  )
+}
+
 const ICON = 'h-[18px] w-[18px]'
 const SVG_PROPS = {
   className: ICON,
@@ -1828,6 +2591,16 @@ function IconShield() {
     <svg {...SVG_PROPS}>
       <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
       <path d="M9 12l2 2 4-4" />
+    </svg>
+  )
+}
+
+/** Terminal window with a prompt — launch the configured AI agent. */
+function IconAgent() {
+  return (
+    <svg {...SVG_PROPS}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9.5l3 2.5-3 2.5M12.5 15.5H17" />
     </svg>
   )
 }

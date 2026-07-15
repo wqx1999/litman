@@ -127,11 +127,16 @@ def _fsync_dir(path: Path) -> None:
 
     On platforms without ``O_DIRECTORY`` (Windows) this degrades to a
     no-op and crash-safety drops to "safe-on-clean-failure" (ADR-005).
-    The first occurrence in a process emits a one-shot stderr warning so
-    the weaker guarantee is not silent.
+    Silently: it is a constant of the platform, true on every Windows box
+    on every write, so a per-command stderr warning would nag the user
+    (and pollute every agent run) about weather they cannot change — an
+    environment limitation dressed up as a defect. The guarantee level is
+    documented (ADR-005, docs caveats), and the staged-write recovery
+    machinery already reports the moment a half-finished commit is
+    actually found. A POSIX host where the directory OPEN fails is the
+    opposite case — unusual and worth one line — so that arm still warns.
     """
     if sys.platform == "win32":
-        _warn_dir_fsync_unsupported()
         return
     try:
         fd = os.open(path, os.O_DIRECTORY | os.O_RDONLY)

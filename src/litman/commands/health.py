@@ -11,8 +11,9 @@ validity auto-fixes (stale staging dirs + orphan trash sidecars). klass-B
 drift (registry / project / taxonomy / code-clone) needs per-case user
 judgment and stays report-only — ``--fix`` never picks a side (ADR-015).
 
-Exit code: ``1`` if any issue is found (so CI / cron can gate on it),
-``0`` if the vault is clean.
+Exit code: ``1`` if any error or warning is found (so CI / cron can gate on
+it), ``0`` if the vault is clean. ``info`` findings never gate — see the
+command docstring below for why.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._options import library_option, vault_option
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     Issue,
@@ -73,9 +75,15 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "paper_dir_validity": (
         "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
     ),
+    "duplicate_doi": "Duplicate DOIs (--paper-doi lookups become ambiguous)",
+    "discussion_scaffold": "Discussion log scaffold (discussion.md + its format header)",
     "index_vs_disk": "INDEX.json vs papers/ on disk",
     "views_vs_metadata": "Views (by-*/) vs metadata",
     "project_references": "Project REFERENCES.md / litman_reflib / litman_code vs membership",
+    "project_bridge_dangling": (
+        "Project bridge links (litman_reflib / litman_code) resolve to a live target"
+    ),
+    "links_unsupported": "Folder links (views/ + project shortcuts)",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",
@@ -90,6 +98,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "orphan_trash_sidecar": "Orphan .trash/ sidecars",
     "trash_size": "Trash bloat (entry count)",
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
+    "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
     "vault_registry_drift": "Vault registry drift (registered path missing)",
 }
@@ -171,36 +180,31 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     default=False,
     help=(
         "Auto-regenerate all derived (klass-A) artifacts (lossless recompute "
-        "from metadata) plus clean stale staging dirs / orphan trash sidecars. "
+        "from metadata) plus clean stale staging dirs / orphan trash sidecars "
+        "and refresh stale installed agent skills. "
         "Registry / project / taxonomy / code-clone drift stays report-only "
         "(it needs a per-case decision; --fix never picks a side)."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def health_check_cmd(
     do_fix: bool, library: Path | None, vault_name: str | None
 ) -> None:
     """Run vault-wide consistency checks.
 
-    Exits 0 on a clean vault, 1 if any issue is found (so the command can
-    gate cron / CI tasks). With --fix the exit code reflects post-fix
-    state — if every issue was in a fixable category, the second pass is
-    clean and the command exits 0.
+    Exits 0 on a clean vault, 1 if any error or warning is found (so the command
+    can gate cron / CI tasks). With --fix the exit code reflects post-fix state —
+    if every issue was in a fixable category, the second pass is clean and the
+    command exits 0.
+
+    ``info`` findings do NOT gate the exit code. An info is by definition
+    advisory: it names something the user may want to know, not something wrong
+    with the library. The case that forced the distinction is
+    ``links_unsupported`` — a vault on a drive that cannot hold folder links
+    (FAT32 / exFAT, network shares) is perfectly healthy, it simply cannot be
+    decorated with views/ and project shortcuts, and exiting 1 forever over
+    that would be telling the user their library is broken when it is not.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     papers = list_papers(vault)
@@ -250,7 +254,10 @@ def health_check_cmd(
     # path must NOT refresh (and has no registry entry to refresh anyway).
     _refresh_active_health_check_timestamp(vault)
 
-    if issues:
+    # Errors and warnings gate; info does not. See the command docstring — an
+    # info-only run means "here is something to know", not "your library is
+    # damaged", and a cron/CI gate that fires on it is a false alarm.
+    if any(i.severity != "info" for i in issues):
         sys.exit(1)
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SearchScope } from '../types'
 import { DROPDOWN_LIMIT, type Candidate } from '../search'
+import { isEditingTarget } from '../useKeyboardShortcuts'
 
 interface Props {
   value: string
@@ -17,6 +18,9 @@ interface Props {
 const SCOPE_LABEL: Record<SearchScope, string> = {
   id: 'id',
   title: 'title',
+  author: 'author',
+  doi: 'doi',
+  year: 'year',
   notes: 'notes',
   discussion: 'discussion',
 }
@@ -85,9 +89,18 @@ export default function SearchBox({
   // leaves this one to us (see useKeyboardShortcuts' reserved-combo bail).
   // e.code (not e.key) keeps it layout-stable; selecting the existing text means
   // the next keystroke replaces the current query.
+  // Bare `/` does the same (the other universal web convention), guarded off
+  // text-entry surfaces (typing a literal slash in notes / the search box must
+  // stay typing) — matched on e.key so it follows the keyboard layout.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyK') {
+      const slash =
+        e.key === '/' &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !isEditingTarget(e.target)
+      if (((e.metaKey || e.ctrlKey) && e.code === 'KeyK') || slash) {
         e.preventDefault()
         inputRef.current?.focus()
         inputRef.current?.select()

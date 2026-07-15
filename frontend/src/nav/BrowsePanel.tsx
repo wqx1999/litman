@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
@@ -35,6 +35,12 @@ interface Props {
   scoped: IndexPaper[]
   /** Papers to render in the list (all filters applied in App). */
   visible: IndexPaper[]
+  /** True vault-empty (full INDEX fetched, zero papers) — renders the
+   * getting-started card instead of the plain no-match empty state. */
+  vaultEmpty: boolean
+  /** The list fetch failed (server unreachable) — renders an explicit failure
+   * line instead of an empty state that would read as "no papers". */
+  loadFailed: boolean
   loading: boolean
   projects: string[]
   projectScope: string | null
@@ -147,6 +153,8 @@ function orderedEntries(
 export default function BrowsePanel({
   scoped,
   visible,
+  vaultEmpty,
+  loadFailed,
   loading,
   projects,
   projectScope,
@@ -173,6 +181,17 @@ export default function BrowsePanel({
   // Level-2 disclosure: which dimension groups are expanded. Empty = all
   // collapsed (the default).
   const [openGroups, setOpenGroups] = useState<Set<FacetKey>>(new Set())
+
+  // Keep the selection visible when it moves without a click (the J/K keyboard
+  // navigation): nudge the selected row into view. block:'nearest' = no scroll
+  // at all while the row is already visible, so mouse selection never jumps.
+  const listRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!selectedId) return
+    listRef.current
+      ?.querySelector('[data-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [selectedId])
 
   const toggleGroup = (key: FacetKey) =>
     setOpenGroups((prev) => {
@@ -474,10 +493,37 @@ export default function BrowsePanel({
         </div>
 
         {/* Paper list */}
-        <div className="min-h-0 flex-1 overflow-auto bg-white py-1">
+        <div ref={listRef} className="min-h-0 flex-1 overflow-auto bg-white py-1">
           {loading && <div className="p-3 text-sm text-stone-500">Loading…</div>}
-          {!loading && visible.length === 0 && (
-            <div className="p-3 text-sm text-stone-400">No papers.</div>
+          {/* Three empty states, in precedence order: the list fetch failed
+           * (server unreachable — never masquerade as an empty library), a
+           * truly empty vault gets a getting-started card (the GUI has no add
+           * flow — point at the terminal / the agent, and surface add's move
+           * semantics), and everything else (filters, search, smart-list,
+           * project scope matching nothing) stays a short no-match line.
+           * Mirrors the CLI's own empty-vault guidance in list.py. */}
+          {!loading && loadFailed && visible.length === 0 && (
+            <div className="p-3 text-sm text-stone-400">
+              Couldn't reach the server — papers can't load.
+            </div>
+          )}
+          {!loading && !loadFailed && visible.length === 0 && !vaultEmpty && (
+            <div className="p-3 text-sm text-stone-400">No papers match.</div>
+          )}
+          {!loading && !loadFailed && vaultEmpty && (
+            <div className="mx-2 my-3 rounded-xl bg-stone-100/80 p-4 text-sm text-stone-500 ring-1 ring-stone-200/80">
+              <div className="mb-2 font-medium text-stone-700">
+                No papers in your vault yet.
+              </div>
+              <div>Add your first paper from the terminal:</div>
+              <div className="my-2 w-fit rounded-lg bg-stone-200/70 px-2.5 py-1.5 font-mono text-xs text-stone-700">
+                lit add &lt;pdf&gt; --doi &lt;doi&gt;
+              </div>
+              <div>…or ask your coding agent to add it for you.</div>
+              <div className="mt-2.5 text-xs text-stone-400">
+                add moves the source PDF into the vault.
+              </div>
+            </div>
           )}
           {visible.map((p) => {
             const selected = p.id === selectedId
@@ -487,6 +533,7 @@ export default function BrowsePanel({
             return (
               <div
                 key={p.id}
+                data-selected={selected || undefined}
                 className={`mx-2 my-0.5 overflow-hidden rounded-xl ring-1 transition-[background-color,box-shadow] duration-300 ease-fluid ${
                   selected
                     ? 'bg-accent-50 shadow-[0_1px_8px_rgba(0,122,255,0.10)] ring-accent-200/70'

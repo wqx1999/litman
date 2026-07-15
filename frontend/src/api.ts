@@ -16,10 +16,27 @@ import type {
   VaultsPayload,
 } from './types'
 
+/** An HTTP failure, carrying the status code so callers can branch on it.
+ *
+ * The message is what it always was (the backend's `detail` where there is one,
+ * the status line otherwise), so every existing `err.message` toast is unchanged.
+ * The status is what's new: App needs to tell a **410** — the served library is
+ * no longer on disk — apart from every other 4xx, because that one is not a
+ * failed action, it's a lost library. */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const resp = await fetch(url)
   if (!resp.ok) {
-    throw new Error(`${url} → ${resp.status} ${resp.statusText}`)
+    throw new ApiError(`${url} → ${resp.status} ${resp.statusText}`, resp.status)
   }
   return (await resp.json()) as T
 }
@@ -51,7 +68,7 @@ async function mutateJSON<T>(
     } catch {
       /* non-JSON error body — keep the status-line fallback */
     }
-    throw new Error(detail)
+    throw new ApiError(detail, resp.status)
   }
   return (await resp.json()) as T
 }
@@ -151,7 +168,18 @@ export function putDiscussion(id: string, text: string): Promise<void> {
 async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
   const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
-  if (!resp.ok) throw new Error(`notes/${doc} → ${resp.status}`)
+  if (!resp.ok) {
+    // The server describes damaged files (non-UTF-8 etc.) in `detail` —
+    // surface that to the tab instead of a bare status code.
+    let detail = `${doc}.md → HTTP ${resp.status}`
+    try {
+      const body = (await resp.json()) as { detail?: string }
+      if (body.detail) detail = body.detail
+    } catch {
+      /* body not JSON — keep the status string */
+    }
+    throw new Error(detail)
+  }
   const body = (await resp.json()) as { text: string }
   return body.text
 }
@@ -277,12 +305,144 @@ export function fetchVaults(): Promise<VaultsPayload> {
   return getJSON<VaultsPayload>('/api/vaults')
 }
 
+/** Running litman version + the latest available release (or null when none /
+ * unknown). PURE READ of the server's update-check cache — the request path
+ * never hits PyPI; the server's startup task populates the cache. Backs the
+ * TopBar update dot. */
+export interface VersionInfo {
+  current: string
+  latest: string | null
+}
+
+export function fetchVersion(): Promise<VersionInfo> {
+  return getJSON<VersionInfo>('/api/version')
+}
+
+/** What this host can do. Cheap enough to call on page load — unlike
+ * `/api/health`, which is Tier-2 and only runs when the user opens the panel.
+ *
+ * `links` is which folder-link mechanism works in the served vault: 'symlink'
+ * (POSIX) and 'junction' (Windows) are both fully-functional silent states.
+ * 'none' means the drive cannot hold links at all (FAT32 / exFAT, network
+ * shares), so views/ and the litman_reflib / litman_code project shortcuts are
+ * not being created — the library itself is unaffected. A GUI-only user has no
+ * other way to learn this: the CLI prints a warning to stderr, and the desktop
+ * shortcut launches the console-less `litw` entry point, so that warning is
+ * shown to nobody. */
+export interface Capabilities {
+  links: 'symlink' | 'junction' | 'none'
+  platform: string
+}
+
+export function fetchCapabilities(): Promise<Capabilities> {
+  return getJSON<Capabilities>('/api/capabilities')
+}
+
 /** Run every health-check probe and return the flat findings list — the pure-read
  * mirror of `lit health-check` (the GET never re-locks / fixes / stamps the
  * registry). On demand only (Tier-2: reads all metadata server-side), so the
  * caller fetches this when the user opens the health panel, never on page load. */
 export function fetchHealth(): Promise<HealthIssue[]> {
   return getJSON<HealthIssue[]>('/api/health')
+}
+
+/** The configured agent launchers (lit-config.yaml `agents:`) + the default. */
+export interface AgentsPayload {
+  agents: string[]
+  default: string
+}
+
+export function fetchAgents(): Promise<AgentsPayload> {
+  return getJSON<AgentsPayload>('/api/agents')
+}
+
+/** The launch endpoint's outcome: `spawned` = a native terminal window opened
+ * on the server's machine; `copy` = it couldn't (headless / remote server), and
+ * `command` carries the `lit agent …` line for the user's own terminal. */
+export interface AgentLaunchResult {
+  ok: boolean
+  mode: 'spawned' | 'copy'
+  agent: string
+  command: string
+}
+
+/** Launch a configured agent in a terminal at the vault. Sends the agent NAME
+ * only — the command always comes from the server-side config (ADR-020); an
+ * absent name launches the default agent. Throws the backend's verbatim
+ * message (400) on an unknown name. */
+export function launchAgent(name?: string): Promise<AgentLaunchResult> {
+  return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
+}
+
+/** One agent's onboarding view: display name, whether litman supports it today
+ * (only Claude Code so far — the rest are greyed roadmap placeholders),
+ * whether its launch command is on PATH, and its official install page. Agent-
+ * agnostic by contract: no per-agent skill path ever appears here. */
+export interface AgentStatusEntry {
+  name: string
+  display: string
+  supported: boolean
+  detected: boolean
+  install_url: string
+}
+
+/** The agent-onboarding status — the single data source for the TopBar red dot
+ * and the setup panel. `needs_setup` is computed SERVER-SIDE (the red-dot
+ * condition); the client never re-derives the state machine. `skill_installed`
+ * reports the resolved default agent's skill; `skill_state` is the server's
+ * content-level verdict for it — 'stale' means installed but out of date with
+ * the running litman (the panel offers an update, and the server folds it into
+ * `needs_setup` so the red dot surfaces it). `default` is null until chosen. */
+export interface AgentStatus {
+  agents: AgentStatusEntry[]
+  default: string | null
+  skill_installed: boolean
+  skill_state: 'absent' | 'stale' | 'current'
+  needs_setup: boolean
+}
+
+/** The onboarding status (GET, pure read). Drives the red dot on load, so the
+ * caller fetches it when a vault is served, not on panel-open. */
+export function fetchAgentStatus(): Promise<AgentStatus> {
+  return getJSON<AgentStatus>('/api/agent/status')
+}
+
+/** Install or refresh the named agent's skill through the server-side catalog
+ * adapter (the install overwrites, so the same call is the "Update skill"
+ * action when `skill_state` is 'stale').
+ * Sends the agent NAME only — the install target lives entirely server-side
+ * (ADR-020); any path in the body is ignored. An absent name targets the
+ * default agent. Throws the backend's verbatim message (400) for an unknown /
+ * unsupported agent. */
+export function installAgentSkill(
+  name?: string,
+): Promise<{ ok: boolean; agent: string; files: string[]; mode: string }> {
+  return mutateJSON('/api/agent/skill/install', 'POST', name ? { agent: name } : {})
+}
+
+/** Record the machine-level default agent (PUT). Sends the NAME only; the
+ * server validates it against the catalog. Throws the backend's verbatim
+ * message (400) for an unknown / unsupported agent. */
+export function setDefaultAgent(
+  name: string,
+): Promise<{ ok: boolean; default: string }> {
+  return mutateJSON('/api/agent/default', 'PUT', { agent: name })
+}
+
+/** Create a NEW vault directory + register it, through the `lit init` backend
+ * (the welcome-page flow). Sends a filesystem `parentDir` + optional `name` only
+ * — never a command (ADR-020). The first vault becomes active and repoints the
+ * running server in place, so the GUI slides from the welcome page into the new
+ * empty vault with no restart. Throws the backend's verbatim message (400) on a
+ * missing parent directory, a non-empty target, or a name clash. */
+export function createVault(
+  parentDir: string,
+  name?: string,
+): Promise<{ ok: boolean; name: string; path: string; active: boolean }> {
+  return mutateJSON('/api/vaults/create', 'POST', {
+    parent_dir: parentDir,
+    ...(name ? { name } : {}),
+  })
 }
 
 /** Switch the active vault through the `lit vault use` backend (3c-2). GLOBAL:

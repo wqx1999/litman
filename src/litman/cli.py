@@ -11,7 +11,9 @@ normal Python tracebacks (they indicate bugs, not user errors).
 
 from __future__ import annotations
 
+import os
 import sys
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from rich.console import Console
 
 from litman import __version__
 from litman.commands.add import add_cmd
+from litman.commands.agent import agent_cmd
 from litman.commands.cite import cite_cmd
 from litman.commands.code import code_group
 from litman.commands.config import config_group
@@ -44,6 +47,7 @@ from litman.commands.rename import rename_cmd
 from litman.commands.revisit import revisit_cmd
 from litman.commands.rm import rm_cmd
 from litman.commands.search import search_cmd
+from litman.commands.self_update import self_update_cmd
 from litman.commands.setup import setup_cmd
 from litman.commands.show import show_cmd
 from litman.commands.skim import skim_cmd
@@ -96,7 +100,8 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Linking & organization",
      ("link", "unlink", "project", "code", "taxonomy")),
     ("Maintenance",
-     ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui")),
+     ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui",
+      "agent", "self-update")),
 )
 
 
@@ -140,7 +145,29 @@ class LitGroup(click.Group):
         # the nudge is a passive reminder, not a guarantee on every exit path.
         if cmd_name not in self._DRIFT_SKIP:
             self._emit_staleness_nudge()
+            self._emit_update_nudge()
         return result
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Append a did-you-mean hint when a command name is mistyped.
+
+        Click's default raises a bare "No such command 'lst'." UsageError.
+        We augment the message with the closest real command names (difflib)
+        and re-raise the SAME UsageError — exception type and exit code (2)
+        are unchanged, so an agent parsing the failure is unaffected. During
+        resilient parsing (shell completion) Click never raises here, so
+        completion is untouched.
+        """
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError as exc:
+            typed = args[0] if args else ""
+            matches = get_close_matches(typed, self.list_commands(ctx), n=3)
+            if matches and exc.message:
+                exc.message = f"{exc.message} Did you mean: {', '.join(matches)}?"
+            raise
 
     def _run_drift_hook(self) -> None:
         """Tier-1 pre-dispatch drift hook (M28; unified detection M30 Phase 2).
@@ -181,10 +208,14 @@ class LitGroup(click.Group):
             # Single shared bounded-stat budget (spec §7 / verification task 3):
             # gather every path the cheap bounded-stat checks need (registry
             # vault paths + active-vault project map paths) and probe them with
-            # ONE _exists_bounded call. The two checks that would otherwise each
-            # probe (vault_registry_drift, project_path_exists) get the result
-            # threaded in via exists_status. Worst-case hung-mount cost is one
-            # 0.5s budget, not two.
+            # ONE _exists_bounded call. The three checks that would otherwise
+            # each probe (vault_registry_drift, project_path_exists,
+            # project_bridge_dangling — the last shares the same project-dir
+            # verdicts) get the result threaded in via exists_status. The
+            # bridge check's link-TARGET probe is its own second bounded call
+            # (the shared probe never stats link targets), so the worst-case
+            # hung-mount cost is two 0.5s budgets — not one, but still bounded
+            # and only paid when projects are configured.
             shared_status = self._cheap_shared_exists(vault)
 
             # Detection: run every cheap check. Vault-scoped checks need a vault
@@ -193,7 +224,11 @@ class LitGroup(click.Group):
             for spec in cheap_checks():
                 if vault is None and spec.category != "vault_registry_drift":
                     continue
-                if spec.category in ("vault_registry_drift", "project_path_exists"):
+                if spec.category in (
+                    "vault_registry_drift",
+                    "project_path_exists",
+                    "project_bridge_dangling",
+                ):
                     issues.extend(
                         spec.fn(
                             vault or Path("/nonexistent"),
@@ -234,6 +269,23 @@ class LitGroup(click.Group):
 
                 try:
                     check_and_prompt_project_drift()
+                except Exception:
+                    pass
+
+            # Bridge drift (#3's cheap arm): a moved library dangles every
+            # project's litman_reflib/litman_code symlink at once — this is
+            # the recovery seam after the user re-registers the found vault.
+            # The heal reads metadata (rebuild_all_project_links), so it is
+            # gated behind the corrector's [Y/n]: invariant #15 constrains
+            # hook-time DETECTION, not a consented repair (same precedent as
+            # the project-path heal above). Runs after project_path_exists so
+            # a re-pointed project dir is healed (and its bridges rebuilt)
+            # before this segment re-probes.
+            if "project_bridge_dangling" in categories:
+                from litman.commands._drift import check_and_prompt_bridge_drift
+
+                try:
+                    check_and_prompt_bridge_drift()
                 except Exception:
                     pass
 
@@ -484,6 +536,41 @@ class LitGroup(click.Group):
         except Exception:
             pass
 
+    @staticmethod
+    def _emit_update_nudge() -> None:
+        """Post-dispatch PyPI update nudge (task-self-update D2).
+
+        A passive one-liner on stderr when a newer litman is on PyPI. Sibling of
+        :meth:`_emit_staleness_nudge`, wired at the same post-dispatch point, but
+        with a STRICTER gate: interactive TTY only AND not opted out. On a
+        non-TTY (agent pipe) or opt-out there is zero network, zero cache read,
+        zero output (invariant: the agent is a pipe consumer and must stay
+        uncluttered — red line AC5).
+
+        The whole machinery lives behind that gate: the TTL-gated network refresh
+        (one ≤2s urllib GET only when the cache is stale) fires here, then the
+        nudge reads the freshened cache. Frequency is capped at once per 24h via
+        ``last_nudged_at`` in the cache. Wrapped so any failure degrades to a
+        silent skip and never crashes the user's command.
+        """
+        try:
+            from litman.commands._drift import _default_tty_probe
+            from litman.core import update_check
+
+            if not _default_tty_probe() or update_check.opt_out():
+                return
+            update_check.refresh_cache_if_stale()
+            due = update_check.consume_nudge()
+            if due is None:
+                return
+            current, latest = due
+            Console(stderr=True).print(
+                f"[dim]tip: litman {latest} is available (you have {current}) "
+                "— run 'lit self-update'[/dim]"
+            )
+        except Exception:
+            pass
+
     def format_commands(
         self, ctx: click.Context, formatter: click.HelpFormatter
     ) -> None:
@@ -521,7 +608,10 @@ class LitGroup(click.Group):
 )
 @click.version_option(version=__version__, prog_name="lit")
 def cli() -> None:
-    """litman — local-first, AI-augmented literature management CLI.
+    """litman — keep every paper you read on your own computer, and let an AI
+    assistant do the filing.
+
+    New here? Run lit setup.
 
     Run lit help COMMAND (or lit COMMAND --help) for command-specific
     help, e.g. lit help code add.
@@ -562,6 +652,8 @@ cli.add_command(sync_group)
 cli.add_command(vault_group)
 cli.add_command(export_cmd)
 cli.add_command(gui_cmd)
+cli.add_command(agent_cmd)
+cli.add_command(self_update_cmd)
 
 
 @cli.command(hidden=True)
@@ -630,8 +722,53 @@ def _force_utf8_output() -> None:
                 pass
 
 
+def _ensure_std_streams() -> None:
+    """Give the process real streams when Windows handed it none.
+
+    The desktop shortcut runs ``litw``, a windows-subsystem launcher, so the OS
+    attaches no console and CPython sets ``sys.stdout``/``sys.stderr`` to None.
+    Rich and uvicorn's logging both write to those streams; left as None the
+    first print raises inside a process that has nowhere to show the traceback.
+
+    Point them at a log file instead of ``os.devnull``, because hiding the
+    console also hides every error message: without this file a silent failure
+    to start leaves the user nothing to read. Truncated per launch — it is a
+    crash-diagnosis file, not an audit trail, and uvicorn logs a line per HTTP
+    request. ``os.devnull`` is the fallback: no console must never mean no
+    start, even on a box where the log dir cannot be created.
+
+    A no-op everywhere else, including piped/redirected POSIX runs, where both
+    streams are real objects.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    from platformdirs import user_log_dir
+
+    from litman.core.vault_registry import REGISTRY_APP_NAME
+
+    stream = None
+    try:
+        log_dir = Path(user_log_dir(REGISTRY_APP_NAME))
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stream = open(  # noqa: SIM115 — lives for the process
+            log_dir / "litw.log", "w", encoding="utf-8", errors="replace", buffering=1
+        )
+    except OSError:
+        try:
+            stream = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+        except OSError:
+            return
+
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main() -> None:
     """Entry point invoked by the ``lit`` console script."""
+    _ensure_std_streams()
     _force_utf8_output()
     try:
         cli()

@@ -16,6 +16,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.notes import has_discussion_reminder
 from litman.exceptions import (
     AddError,
     DuplicateDOIError,
@@ -112,9 +113,22 @@ def test_add_creates_paper_folder(
     assert (paper_dir / "metadata.yaml").is_file()
     assert (paper_dir / "notes.md").is_file()
 
+    # The discussion log starts empty but present, carrying the append-format
+    # header the next writer reads: every paper folder has the same file set.
+    discussion = paper_dir / "discussion.md"
+    assert discussion.is_file()
+    body = discussion.read_text(encoding="utf-8")
+    assert body.startswith(f"# Discussion log for {paper_id}")
+    assert has_discussion_reminder(body)
+    assert os.access(discussion, os.W_OK)  # not truth-locked: the agent appends
+
     # Original PDF moved into the vault (mv semantics, not cp): the source
     # disappearing is the user-visible "ingest succeeded" signal.
     assert not fake_pdf.exists()
+
+    # D2: the success panel states the mv semantics explicitly so the source
+    # file "disappearing" reads as intended, not as data loss.
+    assert "Source PDF moved into the vault" in result.output
 
 
 @pytest.mark.skipif(
@@ -653,6 +667,40 @@ def test_add_nonexistent_pdf_rejected_by_click(
     assert "doi" not in mock_crossref
 
 
+def test_add_rejects_non_pdf_before_touching_vault(
+    vault: Path,
+    mock_crossref: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    """A renamed .txt (no %PDF- header) is refused before any fetch or vault
+    write, and the source file survives (D4).
+
+    Guards mv semantics: `lit add` unlinks the source on success, so a non-PDF
+    must fail while the source is still the user's only copy.
+    """
+    not_pdf = tmp_path / "not-really.pdf"
+    not_pdf.write_text("This is a plain text file, not a PDF.\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(not_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, AddError)
+    assert "does not look like a PDF" in str(result.exception)
+    # Validation runs before the CrossRef fetch — no network call happened.
+    assert "doi" not in mock_crossref
+    # Source untouched; nothing written into the vault.
+    assert not_pdf.exists()
+    assert not (vault / "papers" / _PAPER_ID).exists()
+    assert list((vault / "papers").iterdir()) == []
+
+
 def test_add_missing_year_raises_id_error(
     vault: Path,
     fake_pdf: Path,
@@ -799,3 +847,89 @@ def test_add_scan_failure_does_not_block_ingest(
     assert (paper_dir / "notes.md").is_file()
     assert "Warning" in result.output
     assert "scan failed" in result.output
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: ingesting the Nth paper costs what the 2nd did
+# ---------------------------------------------------------------------------
+
+
+def _seed_indexed_paper(vault: Path, paper_id: str, **fields: Any) -> None:
+    """Write a paper directly to disk (INDEX is reconciled by the caller)."""
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+    lines = [f"id: {paper_id}", "title: Seeded", "authors:", "  - S, A."]
+    for key, value in fields.items():
+        lines.append(f"{key}: {value}")
+    (paper_dir / "metadata.yaml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+
+
+def test_add_indexes_the_new_paper_without_rescanning_the_vault(
+    vault: Path,
+    fake_pdf: Path,
+    mock_crossref: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a fresh INDEX, ingest splices the new paper onto the projections
+    and links only its own buckets — no metadata.yaml but its own is read.
+    list_papers is booby-trapped to prove it (real-default e2e)."""
+    from litman.core.correctors import reconcile_derived
+
+    _seed_indexed_paper(vault, "2020_Prior_Work", status="inbox")
+    reconcile_derived(vault, project_refs=False)
+
+    def _boom(v: Path) -> list[dict[str, Any]]:
+        raise AssertionError("full vault scan ran on the add fast path")
+
+    monkeypatch.setattr("litman.core.document.list_papers", _boom)
+    monkeypatch.setattr("litman.core.correctors.views.rebuild_views", _boom)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in index["papers"]}
+    assert ids == {"2020_Prior_Work", _PAPER_ID}
+    # The new paper joined by-status/inbox; the seeded one kept its link.
+    inbox = vault / "views" / "by-status" / "inbox"
+    assert (inbox / _PAPER_ID).is_symlink()
+    assert (inbox / "2020_Prior_Work").is_symlink()
+
+
+def test_add_with_stale_index_falls_back_to_the_full_rebuild(
+    vault: Path,
+    fake_pdf: Path,
+    mock_crossref: dict[str, Any],
+) -> None:
+    """A paper on disk that INDEX never saw fails the freshness probe, so
+    ingest takes the wholesale rebuild — which also heals the omission."""
+    _seed_indexed_paper(vault, "2020_Unindexed_Paper", status="inbox")
+    # No reconcile: INDEX.json does not know about the seeded paper.
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1093/bioinformatics/btae364",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    ids = {p["id"] for p in index["papers"]}
+    assert ids == {"2020_Unindexed_Paper", _PAPER_ID}
+    assert (
+        vault / "views" / "by-status" / "inbox" / "2020_Unindexed_Paper"
+    ).is_symlink()

@@ -28,12 +28,16 @@ resolution — the ergonomics shim lives entirely in commands/.
 from __future__ import annotations
 
 import os
+from difflib import get_close_matches
 from pathlib import Path
 
 import click
 
 from litman.core.dedup import find_paper_by_doi
+from litman.core.document import list_papers
 from litman.core.library import find_vault
+from litman.core.query import recency_key
+from litman.core.views import load_index_papers
 from litman.exceptions import LitmanError, PaperNotFoundError
 
 
@@ -78,10 +82,16 @@ def resolve_paper_id(vault: Path, query: str) -> str:
     matches = [pid for pid in all_ids if q_lower in pid.lower()]
 
     if not matches:
-        raise PaperNotFoundError(
-            f"No paper matching {query!r} in vault {vault.name!r}. "
-            "Run `lit list` to see available ids."
-        )
+        # A non-substring typo (e.g. "2020_Vaswni") lands here. Offer the
+        # closest ids as a did-you-mean before falling back to `lit list`.
+        # Message-only: the exception type / exit code are unchanged, so an
+        # agent parsing failures is unaffected.
+        msg = f"No paper matching {query!r} in vault {vault.name!r}. "
+        suggestions = get_close_matches(query, all_ids, n=3)
+        if suggestions:
+            msg += f"Did you mean: {', '.join(suggestions)}? "
+        msg += "Run `lit list` to see available ids."
+        raise PaperNotFoundError(msg)
     if len(matches) == 1:
         return matches[0]
     raise PaperNotFoundError(
@@ -214,3 +224,37 @@ def complete_paper_id(
         )
     except Exception:
         return []
+
+
+def most_recent_paper_id(vault: Path) -> str:
+    """The paper the user engaged with most recently.
+
+    Backs the no-argument form of ``lit open`` / ``lit show``: after a
+    reading session the paper you want is nearly always the one you just
+    had open, and retyping its id to get back to it is pure friction.
+
+    Ranked by :func:`litman.core.query.recency_key` — the same key
+    ``lit list --sort recent`` and the web UI's reading list use, never a
+    second sort path. Reads the INDEX projection, which carries
+    ``updated-at``, so this is a single JSON read rather than a scan of
+    every paper; a missing / stale / older-schema index falls back to the
+    scan exactly as every other fast path does.
+
+    ``sorted`` is stable and both sources yield papers id-ascending, so
+    equal-recency ties break id-ascending — the same paper ``lit list
+    --sort recent`` would put at the top.
+
+    Raises:
+        PaperNotFoundError: the vault holds no papers.
+    """
+    papers = load_index_papers(vault)
+    if papers is None:
+        papers = list_papers(vault)
+    if not papers:
+        raise PaperNotFoundError(
+            "No paper given, and this vault has no papers yet. "
+            "Run `lit add <pdf> --doi <doi>` to add one."
+        )
+
+    ranked = sorted(papers, key=lambda p: recency_key(vault, p), reverse=True)
+    return str(ranked[0]["id"])

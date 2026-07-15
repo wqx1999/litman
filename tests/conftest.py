@@ -144,6 +144,40 @@ def vault_with_paper(tmp_path: Path) -> tuple[Path, str]:
     return vault, paper_id
 
 
+@pytest.fixture
+def fake_junction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Path], Path]:
+    """Factory: plant a Windows-junction stand-in at the given path.
+
+    On NTFS every litman link is a directory junction — a mount-point
+    reparse point, which Python does NOT consider a symlink: only the
+    ``is_junction()`` API sees it. POSIX hosts cannot create one, so the
+    stand-in is a real empty directory plus an ``is_junction`` patch scoped
+    to the planted paths. Deletion behaves like Windows too: ``unlink()``
+    raises and the ``rmdir()`` fallback inside ``remove_link_if_present``
+    removes the entry without recursing anywhere. An existing symlink at the
+    path (a POSIX-built fixture link) is replaced in place.
+    """
+    planted: set[Path] = set()
+    real_is_junction = Path.is_junction
+
+    def _plant(path: Path) -> Path:
+        if path.is_symlink():
+            path.unlink()
+        path.mkdir(parents=True, exist_ok=True)
+        if not planted:
+            monkeypatch.setattr(
+                Path,
+                "is_junction",
+                lambda self: self in planted or real_is_junction(self),
+            )
+        planted.add(path)
+        return path
+
+    return _plant
+
+
 @pytest.fixture(autouse=True)
 def _isolate_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -161,3 +195,26 @@ def _isolate_registry(
     empty, so nothing needs to be created on disk.
     """
     monkeypatch.setenv(REGISTRY_ENV_VAR, str(tmp_path / "litman-registry"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_skills_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point call-time skill probes at an empty per-test dir, not ~/.claude.
+
+    ``skill_status`` (behind the health-check ``skill_drift`` arm, the GUI
+    agent-status probe and ``lit install-skill``'s freshness check) compares
+    the machine's installed skills against the bundled ones. Left on the real
+    home it would make results depend on the developer's box — a stale
+    ``~/.claude/skills`` copy flips every clean-vault health-check test to
+    exit 1 (passes in CI, fails locally). An absent dir reads as "no skills
+    installed", which is the neutral state every test starts from. Tests that
+    need a populated skills dir pass ``parent_dir=`` explicitly or re-patch
+    ``default_skills_parent_dir`` themselves (a test-body patch wins — it is
+    applied after this fixture).
+    """
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir",
+        lambda: tmp_path / "skills-parent",
+    )

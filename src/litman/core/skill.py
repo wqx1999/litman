@@ -18,6 +18,10 @@ API split:
   skill — used by ``lit install-skill`` with no ``--skill`` flag, so
   users adding lit-reading later can re-run the same command to pick
   up new bundled skills.
+* :func:`skill_status` / :func:`aggregate_skill_state` compare installed
+  copies byte-for-byte against the bundle — the freshness probes behind
+  the health-check ``skill_drift`` arm, the GUI agent-status endpoint and
+  ``lit install-skill``'s re-run behaviour.
 """
 
 from __future__ import annotations
@@ -27,11 +31,26 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
+from litman.core.portable_link import is_portable_link
 from litman.exceptions import LitmanError
 
+def default_skills_parent_dir() -> Path:
+    """The per-user skills dir Claude Code auto-discovers, at call time.
+
+    ``DEFAULT_PARENT_DIR`` below freezes ``Path.home()`` at import; every
+    runtime probe (``skill_status`` / ``installed_skill_names`` and the
+    health-check / GUI callers behind them) resolves through this helper
+    instead, so a redirected ``$HOME`` is honored and the test suite can
+    isolate itself from the developer's real skills dir by patching one seam.
+    """
+    return Path.home() / ".claude" / "skills"
+
+
 # Default parent dir under which each skill gets its own subdir.
-# Claude Code auto-discovers user-level skills here.
-DEFAULT_PARENT_DIR = Path.home() / ".claude" / "skills"
+# Claude Code auto-discovers user-level skills here. Import-time snapshot,
+# kept for CLI option defaults (help text shows a concrete path); runtime
+# probes use :func:`default_skills_parent_dir`.
+DEFAULT_PARENT_DIR = default_skills_parent_dir()
 
 # Backwards-compatibility re-exports — some early tests / scripts import these.
 # ``SKILL_NAME`` historically pointed at the only bundled skill; now there are
@@ -134,7 +153,8 @@ def install_skill(
     Returns:
         A summary dict with keys ``name`` (str), ``target`` (Path),
         ``files`` (list of copied filenames), ``mode``
-        (``"created"`` | ``"overwritten"``).
+        (``"created"`` | ``"overwritten"`` | ``"linked"`` = target is a
+        symlink/junction, left entirely untouched).
 
     Raises:
         SkillInstallError: target exists and ``overwrite`` is False; or
@@ -150,7 +170,19 @@ def install_skill(
         )
 
     if target is None:
-        target = DEFAULT_PARENT_DIR / name
+        target = default_skills_parent_dir() / name
+
+    if is_portable_link(target):
+        # A linked skill dir (symlink or Windows junction) points at a copy
+        # managed elsewhere — typically a development checkout. Copying
+        # "through" the link would overwrite those source files in place, so
+        # it is refused even with ``overwrite=True`` and reported instead.
+        return {
+            "name": name,
+            "target": target,
+            "files": [],
+            "mode": "linked",
+        }
 
     target_exists = target.exists()
     if target_exists and not overwrite:
@@ -176,23 +208,101 @@ def install_skill(
 
 
 def installed_skill_names(
-    parent_dir: Path = DEFAULT_PARENT_DIR,
+    parent_dir: Path | None = None,
 ) -> set[str]:
     """Return the subset of bundled skill names whose target directory
-    already exists under ``parent_dir``.
+    already exists under ``parent_dir`` (default: the call-time skills dir).
 
     Mirrors :func:`litman.commands.install_completion.completion_installed`
     so wizards / setup flows can detect a prior install and skip rather than
     crash on the first ``SkillInstallError`` from :func:`install_skill`.
     Presence of the directory — not its contents — is the signal: a
     half-populated dir still counts as installed, because :func:`install_skill`
-    would still refuse without ``overwrite=True``.
+    would still refuse without ``overwrite=True``. For a content-level
+    verdict (up to date vs stale) use :func:`skill_status`.
     """
+    if parent_dir is None:
+        parent_dir = default_skills_parent_dir()
     return {
         name
         for name in list_bundled_skills()
         if (parent_dir / name).exists()
     }
+
+
+def skill_status(
+    parent_dir: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Compare every bundled skill against its installed copy.
+
+    The installed skill directory is a deploy artifact of the package: a
+    litman upgrade ships new bundled content but never touches the installed
+    copy, so presence alone says nothing about freshness. This is the single
+    content-level probe behind the health-check ``skill_drift`` arm, the GUI
+    agent-status endpoint and ``lit install-skill``'s re-run behaviour.
+
+    Returns ``{skill_name: {"state": ..., "stale_files": [...]}}`` with one
+    entry per bundled skill:
+
+    * ``"absent"``  — nothing at ``parent_dir/<name>``.
+    * ``"linked"``  — the directory is a symlink / Windows junction. A linked
+      skill points at a copy managed elsewhere (e.g. a development checkout);
+      its content is deliberately not compared and it is never stale.
+    * ``"stale"``   — directory exists but at least one bundled file is
+      missing or differs byte-for-byte; ``stale_files`` names them.
+    * ``"current"`` — every bundled file is present and byte-identical.
+
+    Files the user added next to ``SKILL.md`` never affect the state (they
+    are also never touched by an overwrite — same contract as
+    :func:`install_skill`).
+    """
+    if parent_dir is None:
+        parent_dir = default_skills_parent_dir()
+    out: dict[str, dict[str, Any]] = {}
+    for name in list_bundled_skills():
+        target = parent_dir / name
+        if is_portable_link(target):
+            out[name] = {"state": "linked", "stale_files": []}
+            continue
+        if not target.exists():
+            out[name] = {"state": "absent", "stale_files": []}
+            continue
+        stale_files: list[str] = []
+        for item in _iter_skill_files(bundled_skill_root(name)):
+            dest = target / item.name
+            try:
+                same = dest.read_bytes() == item.read_bytes()
+            except OSError:
+                # Missing or unreadable installed file — either way the
+                # installed copy no longer matches the bundle.
+                same = False
+            if not same:
+                stale_files.append(item.name)
+        out[name] = {
+            "state": "stale" if stale_files else "current",
+            "stale_files": stale_files,
+        }
+    return out
+
+
+def aggregate_skill_state(parent_dir: Path | None = None) -> str:
+    """One-word skill state for the agent-onboarding status endpoint.
+
+    ``"stale"`` if any installed skill is out of date, ``"absent"`` if no
+    bundled skill is installed at all, else ``"current"``. A partial install
+    (some skills present, others never installed) counts as ``"current"``:
+    installing only one bundled skill is a deliberate choice
+    (``lit install-skill --skill``), not drift. ``linked`` dirs count as
+    current — they are dev-managed and never nagged about.
+    """
+    states = [
+        info["state"] for info in skill_status(parent_dir).values()
+    ]
+    if "stale" in states:
+        return "stale"
+    if all(state == "absent" for state in states):
+        return "absent"
+    return "current"
 
 
 def uninstall_skill(
@@ -220,10 +330,10 @@ def uninstall_skill(
         left behind).
     """
     target = parent_dir / name
-    if target.is_symlink():
-        # A symlinked skill dir points outside the tree we manage: deleting
-        # "through" it could reach files elsewhere, and rmdir on a symlink
-        # errors. Leave it entirely untouched.
+    if is_portable_link(target):
+        # A linked skill dir (symlink or Windows junction) points outside
+        # the tree we manage: deleting "through" it could reach files
+        # elsewhere, and rmdir on a link errors. Leave it entirely untouched.
         return {
             "name": name,
             "target": target,

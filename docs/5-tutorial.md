@@ -20,7 +20,7 @@ public repository so the code-binding step works for real. A second paper,
 have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
-> **Tested with** litman 1.0.0 on Unix (Linux and macOS), June 2026, with Claude
+> **Tested with** litman 1.2.0 on Unix (Linux and macOS), July 2026, with Claude
 > Sonnet 4.6 driving the agent path in Claude Code. The command output shown
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.
@@ -33,10 +33,12 @@ way. Reach for whichever fits the moment:
 - 🖥️ **Web UI** — the browser app you open with `lit gui`: a classification tree,
   a tabbed PDF reader, and a context panel. This is the human's home for reading,
   annotating, and everyday curation — where you spend most of a reading day.
-- 🤖 **Agent** — what you say in Claude Code. The bundled skills (`lit-library`
-  for the write side, `lit-reading` for the read side) turn your sentence into the
-  exact `lit` command, and the agent does the heavier lifting too: extracting
-  metadata, drafting notes, traversing the links between papers.
+- 🤖 **Agent** — what you say to your AI agent. `lit agent` starts it in the
+  library directory (the Web UI's agent button launches the same thing). The
+  bundled skills (`lit-library` for the write side, `lit-reading` for the read
+  side) turn your sentence into the exact `lit` command, and the agent does the
+  heavier lifting too: extracting metadata, drafting notes, traversing the links
+  between papers.
 - ⌨️ **CLI** — the `lit` command you type yourself. It is the complete surface
   underneath the other two; drop to it whenever you want precision or a script.
 
@@ -82,19 +84,32 @@ You do these three steps once per machine (steps 1–2) and once per project
 ## 1. Install litman
 
 Command-line only — you install the tool before any agent or Web UI can use it.
-litman installs with [pipx](https://pipx.pypa.io/), which keeps it in its own
-isolated environment and puts `lit` on your PATH:
+One line installs litman and everything it needs, and puts `lit` on your PATH:
 
 ```console
-$ pipx install litman
+$ curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
 $ lit --version          # confirms lit is installed and on your PATH
 ```
 
-(Plain `pip install litman` works too if you manage your own environment.)
+On Windows, run the PowerShell one-liner instead:
 
-**To remove it:** run `lit uninstall` first — it strips the agent skills, the
-shell completion, and the vault registry while leaving your papers untouched —
-then `pipx uninstall litman` to remove the CLI itself.
+```console
+> powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+```
+
+Prefer [pipx](https://pipx.pypa.io/)? `pipx install litman` works too (then run
+`lit gui --make-shortcut` once to get the shortcut).
+
+The one-line installer also drops a **litman** shortcut — on your Desktop
+(Windows), in Launchpad (macOS), or in your applications menu (Linux).
+Double-click it to launch
+straight into the browser app, where the welcome page creates your first library
+and the agent button sets up your AI agent — no `lit setup` needed.
+
+**To remove it:** run `lit uninstall` first — it strips the agent skills, this
+shortcut, the shell completion, the vault registry, and your agent preferences,
+while leaving your papers untouched — then remove the CLI with `uv tool uninstall
+litman` (or `pipx uninstall litman` if you used pipx).
 
 ## 2. Set up your library
 
@@ -109,14 +124,17 @@ below.
 
 ```console
 $ lit init ~/research
+Parent directory /home/you/research does not exist. Create it? [Y/n]:
 ```
 
-This creates `~/research/literature_vault/` with the standard layout, registers
+(One Enter — the prompt only appears when the folder is not there yet.) This
+creates `~/research/literature_vault/` with the standard layout, registers
 it, and makes it active. Because it is the active library, every later command
 finds it with no flags — you do not set any environment variable.
 
-Prefer a guided wizard? `lit setup` walks the same setup plus shell completion
-and the agent skills. It also offers cloud sync — **decline that step**; this
+Prefer a guided wizard? `lit setup` walks the same setup plus shell completion,
+the agent skills, and the desktop shortcut. It also offers cloud sync — **decline
+that step**; this
 tutorial stays sync-off (see [4-commands.md](4-commands.md) under `lit sync`).
 
 **To unregister this library:** `lit vault remove literature_vault`. That removes
@@ -211,7 +229,7 @@ $ lit list
 
 **To remove a paper:** preview the impact with `lit rm 2025_Geylan_PepINVENT
 --dry-run` first, then `lit rm 2025_Geylan_PepINVENT` moves it to the trash after
-a `Delete? [y/N]` prompt. It stays recoverable with `lit trash restore
+a `Continue? [y/N]` prompt. It stays recoverable with `lit trash restore
 2025_Geylan_PepINVENT`; `--purge` deletes permanently instead. (The Web UI can
 soft-delete and restore too.)
 
@@ -246,7 +264,7 @@ you.
 🖥️ **Web UI:** the reader has a discussion tab beside the PDF. Jot questions and
 objections there as they occur, without leaving the page.
 
-🤖 **Agent:** talk through the paper in Claude Code. When you say *"note that down"*
+🤖 **Agent:** talk through the paper with your agent. When you say *"note that down"*
 or work through a question, the `lit-reading` skill appends the exchange to
 `discussion.md`.
 
@@ -275,23 +293,18 @@ it into its notes"* → the skill registers any missing taxonomy values, sets th
 fields, and drafts the summary into `notes.md`. Review and edit the draft; it is a
 starting point, not the final word.
 
-⌨️ **CLI:** the same, one operation at a time. The scalar fields set directly:
-
-```console
-$ lit modify 2025_Geylan_PepINVENT --set type=research
-$ lit modify 2025_Geylan_PepINVENT --set priority=A
-```
-
-The controlled-vocabulary fields are **register-first**: a value must exist in the
-TAXONOMY before it can be tagged onto a paper, so register then tag (this is what
+⌨️ **CLI:** the same. `--set` and `--add-tag` are repeatable, so one command
+carries the whole reclassification. The controlled-vocabulary fields are
+**register-first** — a value must exist in the TAXONOMY before it can be tagged
+onto a paper — so register once, then tag everything in one call (this is what
 the UI's type-a-new-value and the agent both do for you underneath):
 
 ```console
 $ lit taxonomy add topics peptide-design de-novo-design
 $ lit taxonomy add methods reinforcement-learning
-$ lit modify 2025_Geylan_PepINVENT --add-tag topics=peptide-design
-$ lit modify 2025_Geylan_PepINVENT --add-tag topics=de-novo-design
-$ lit modify 2025_Geylan_PepINVENT --add-tag methods=reinforcement-learning
+$ lit modify 2025_Geylan_PepINVENT --set type=research --set priority=A \
+    --add-tag topics=peptide-design --add-tag topics=de-novo-design \
+    --add-tag methods=reinforcement-learning
 ```
 
 The metadata is schema-less, so you can also record anything else with a plain

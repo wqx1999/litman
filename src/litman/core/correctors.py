@@ -48,6 +48,7 @@ def reconcile_derived(
     *,
     papers: list[dict] | None = None,
     project_refs: bool = True,
+    views_delta: list[tuple[str, dict, dict]] | None = None,
 ) -> dict[str, int]:
     """Recompute the derived artifacts (INDEX.json + views/ [+ project refs]) from TRUTH.
 
@@ -77,8 +78,23 @@ def reconcile_derived(
             spliced its in-memory diff into ``list_papers`` output passes it in
             to avoid a redundant re-read). ``None`` → load fresh from disk
             (the ``--fix`` / corrector path, which always rebuilds from truth).
+            When ``project_refs=True`` the entries must be FULL metadata dicts
+            (``list_papers`` output), not INDEX projections — REFERENCES.md
+            renders ``relevance-<project>``, which the projection does not
+            carry.
         project_refs: When ``True`` (default), also rebuild every configured
             project's symlinks + ``REFERENCES.md``.
+        views_delta: Optional ``(paper_id, old_view_fields, new_view_fields)``
+            triples from :func:`litman.core.views.view_fields_snapshot`. When
+            given, ``views/`` is updated incrementally for exactly those papers
+            instead of wiped and rebuilt — the single-paper-edit fast path
+            (``_apply_modify``), where a full rebuild made every tag/status
+            edit O(whole vault). INDEX is still re-rendered from ``papers`` in
+            the same call, so the two stay coupled. Correctness contract lives
+            on :func:`views.update_views_for_paper` (equivalent to a rebuild on
+            a consistent tree; a full rebuild remains the repair path).
+            ``None`` (default, and always for the corrector / ``--fix`` path)
+            → wholesale ``rebuild_views``.
 
     Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>}``.
 
@@ -95,7 +111,16 @@ def reconcile_derived(
         papers = list_papers(vault)
 
     views.write_index(vault, papers)
-    view_counts = views.rebuild_views(vault, papers)
+    if views_delta is None:
+        view_counts = views.rebuild_views(vault, papers)
+    else:
+        view_counts = {}
+        for changed_id, old_fields, new_fields in views_delta:
+            created = views.update_views_for_paper(
+                vault, changed_id, old_fields, new_fields
+            )
+            for view_name, n in created.items():
+                view_counts[view_name] = view_counts.get(view_name, 0) + n
 
     n_projects = 0
     if project_refs:
@@ -122,8 +147,12 @@ def reconcile_derived(
         if config is not None:
             projects = dict(config.projects)
             if projects:
-                rebuild_all_project_links(vault, projects)
-                rebuild_all_project_refs(vault, projects)
+                # Reuse the already-loaded paper list — before this, each
+                # rebuild_all_* ran its own full list_papers scan, so a
+                # projects-touching write (and every `--fix`) paid the vault
+                # scan three times over.
+                rebuild_all_project_links(vault, projects, papers=papers)
+                rebuild_all_project_refs(vault, projects, papers=papers)
                 n_projects = len(projects)
 
     return {

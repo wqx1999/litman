@@ -14,7 +14,8 @@ Pipeline (M2.9 + M4.1):
     5. Create ``papers/<id>/``, atomically populated with::
        paper.pdf
        metadata.yaml
-       notes.md   (placeholder)
+       notes.md         (placeholder)
+       discussion.md    (empty log + its format reminder)
     6. Remove the source PDF (``mv`` semantics — file disappearing from the
        source dir is the user-visible success signal). The atomic block uses
        ``copy2`` so a mid-write failure does not strand the original; the
@@ -34,6 +35,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands._options import library_option, vault_option
 from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
@@ -46,7 +48,8 @@ from litman.core.dedup import (
 from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
-from litman.core.notes import WIKILINK_REMINDER
+from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.views import load_index_papers, view_fields_snapshot
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
 from litman.importers.crossref import fetch_crossref, parse_crossref
@@ -60,6 +63,29 @@ _yaml = ThreadLocalYAML(
     preserve_quotes=True,
 )
 
+# PDF magic number. A valid PDF opens with "%PDF-"; readers tolerate a little
+# junk before it, so sniff the first block rather than demanding offset 0.
+_PDF_MAGIC = b"%PDF-"
+_PDF_SNIFF_BYTES = 1024
+
+
+def _looks_like_pdf(path: Path) -> bool:
+    """True if the file carries the PDF magic number in its first block.
+
+    `lit add` copies the PDF into the vault and then unlinks the source (mv
+    semantics), so ingesting a non-PDF — a renamed .txt, a truncated download,
+    an HTML error page saved as .pdf — would land junk in the vault AND remove
+    the only copy of the source. This guard runs before any vault write so the
+    source stays put on rejection. An unreadable file counts as "not a PDF";
+    the caller turns a False into a friendly error.
+    """
+    try:
+        with path.open("rb") as f:
+            head = f.read(_PDF_SNIFF_BYTES)
+    except OSError:
+        return False
+    return _PDF_MAGIC in head
+
 
 def _build_metadata(
     parsed: dict[str, Any],
@@ -69,7 +95,7 @@ def _build_metadata(
     """Assemble the full metadata.yaml dict in design-doc field order.
 
     Schema-less by intent (§7.3): unknown-yet fields are emitted as ``None`` /
-    ``[]`` so the user can fill them later in ``lit edit`` / ``lit modify``.
+    ``[]`` so the user can fill them later with ``lit modify``.
 
     The audit fields ``created-at`` and ``updated-at`` are technical (machine-
     maintained); ``read-date`` and ``last-revisited`` are semantic (user-set).
@@ -160,7 +186,7 @@ def _resolve_collision(
     if auto_suffix:
         return auto_suffix_id(vault, primary_id)
 
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         raise AddError(
             f"Paper id {primary_id!r} already exists at "
             f"{vault / 'papers' / primary_id} and stdin is not a TTY. "
@@ -270,22 +296,8 @@ def _validate_id_override(
         "Required for non-interactive (non-TTY) batch use."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def add_cmd(
     pdf_path: Path,
     doi: str | None,
@@ -300,13 +312,26 @@ def add_cmd(
     Source of metadata: either --doi (CrossRef fetch) or
     --from-llm-json <path> (LLM-prepared JSON file). Exactly one is
     required. Refuses on duplicate DOI, derives a canonical id, and
-    creates papers/<id>/ containing paper.pdf, metadata.yaml,
-    and an empty notes.md.
+    creates papers/<id>/ containing paper.pdf, metadata.yaml, an empty
+    notes.md, and an empty discussion.md.
+
+    The source PDF is moved into the vault: the original file is removed
+    after a successful ingest.
     """
     if (doi is None) == (from_llm_json is None):
         raise AddError(
             "Provide exactly one of --doi <doi> or --from-llm-json <path>. "
             "These flags are mutually exclusive."
+        )
+
+    # Validate the file is a PDF before any network fetch or vault write. Both
+    # ingest paths (--doi / --from-llm-json) pass through here, and the source
+    # is unlinked on success, so a non-PDF must fail while the source is still
+    # untouched — never after the vault has been written or the source removed.
+    if not _looks_like_pdf(pdf_path):
+        raise AddError(
+            f"{str(pdf_path)!r} does not look like a PDF (missing the %PDF- "
+            "header). Pass the paper's PDF file."
         )
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
@@ -432,15 +457,23 @@ def add_cmd(
     # The source PDF is copied (not moved) inside the atomic block so that a
     # mid-write failure leaves the original intact; the unlink runs after the
     # block once the vault is known-consistent.
+    new_metadata = _build_metadata(parsed, paper_id)
     try:
         paper_dir.mkdir(parents=True)
         with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
-            _yaml.dump(_build_metadata(parsed, paper_id), f)
+            _yaml.dump(new_metadata, f)
         (paper_dir / "notes.md").write_text(
             f"# {parsed['title']}\n\n"
             f"{WIKILINK_REMINDER}\n\n"
             "(Personal notes go here.)\n",
             encoding="utf-8",
+        )
+        # The discussion log starts empty but not absent: its header carries the
+        # append-format contract every writer reads before adding a section, and
+        # a paper folder whose file set never varies is one less special case in
+        # the Web UI, the skills, and health-check.
+        (paper_dir / "discussion.md").write_text(
+            discussion_scaffold(paper_id), encoding="utf-8"
         )
         shutil.copy2(pdf_path, paper_dir / "paper.pdf")
         # Read-only lock the two new TRUTH files (M32). These are fresh
@@ -476,8 +509,31 @@ def add_cmd(
     # cleanup below — that would strand the source (mv semantics broken) AND
     # leave INDEX lagging with no warning. Treat it as the same best-effort the
     # comment already promised.
+    #
+    # Fast path: splice the just-written metadata onto the verified INDEX
+    # projections and move only the buckets this paper joins, so ingesting the
+    # 301st paper costs the same as the 2nd (before, every add re-read every
+    # metadata.yaml and relinked every bucket — a batch import paid that
+    # quadratically). ``pending_ids`` tells the freshness probe that this one
+    # id is expected on disk but not yet in INDEX; a stale INDEX for any other
+    # reason returns None and takes the wholesale rebuild, which self-heals.
     try:
-        reconcile_derived(vault, project_refs=False)
+        indexed = load_index_papers(vault, pending_ids={paper_id})
+        if indexed is None:
+            reconcile_derived(vault, project_refs=False)
+        else:
+            reconcile_derived(
+                vault,
+                papers=[*indexed, dict(new_metadata)],
+                project_refs=False,
+                views_delta=[
+                    (
+                        paper_id,
+                        view_fields_snapshot({}),
+                        view_fields_snapshot(new_metadata),
+                    )
+                ],
+            )
     except Exception as exc:
         console.print(
             f"[yellow]Warning:[/] INDEX/views rebuild failed "
@@ -488,9 +544,11 @@ def add_cmd(
     # Remove the source PDF (mv semantics). Tolerate failure: a successful
     # ingest must not be reported as failure just because the source could not
     # be removed (e.g. read-only source dir).
+    source_removed = True
     try:
         pdf_path.unlink()
     except OSError as exc:
+        source_removed = False
         console.print(
             f"[yellow]Warning:[/] could not remove source PDF "
             f"{str(pdf_path)!r} ({exc.__class__.__name__}); paper was still "
@@ -549,6 +607,13 @@ def add_cmd(
         "\\[/code_candidates]"
     )
 
+    # mv semantics: tell the user the source PDF is now in the vault, not a
+    # copy. Only claim it when the unlink above actually succeeded — a
+    # read-only source dir already printed a warning and left the file behind.
+    source_line = (
+        "\n[dim]Source PDF moved into the vault.[/]" if source_removed else ""
+    )
+
     # Escape every interpolated metadata value (review F24): a title / journal
     # / author / url carrying Rich markup like "[/]" or "[red]" would otherwise
     # raise MarkupError here — AFTER the paper is ingested and the source PDF
@@ -562,6 +627,7 @@ def add_cmd(
             f"[bold]Year:[/] {escape(str(parsed['year']))}    "
             f"[bold]Journal:[/] {escape(str(parsed['journal']))}\n"
             f"[bold]Authors:[/] {escape(author_summary)}"
+            f"{source_line}"
             f"{code_block}",
             title="lit add",
             border_style="green",

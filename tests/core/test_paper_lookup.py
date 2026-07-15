@@ -91,6 +91,30 @@ def test_resolve_substring_none_raises(vault: Path) -> None:
     assert "Nonexistent" in str(excinfo.value)
 
 
+def test_resolve_typo_suggests_did_you_mean(vault: Path) -> None:
+    """A non-substring typo close to a real id gets a did-you-mean hint (D6).
+
+    "2024_Jvnes_Bar" is not a substring of any id, so it falls through to the
+    zero-match branch — but difflib recognizes it as a near-miss of
+    "2024_Jones_Bar" and surfaces it.
+    """
+    with pytest.raises(PaperNotFoundError) as excinfo:
+        resolve_paper_id(vault, "2024_Jvnes_Bar")
+    msg = str(excinfo.value)
+    assert "No paper matching" in msg
+    assert "Did you mean" in msg
+    assert "2024_Jones_Bar" in msg
+
+
+def test_resolve_typo_no_close_match_omits_hint(vault: Path) -> None:
+    """A query with no close id keeps the plain message (no did-you-mean)."""
+    with pytest.raises(PaperNotFoundError) as excinfo:
+        resolve_paper_id(vault, "zzzzzzzzzzzz")
+    msg = str(excinfo.value)
+    assert "No paper matching" in msg
+    assert "Did you mean" not in msg
+
+
 def test_resolve_case_fold(vault: Path) -> None:
     """Substring match is case-insensitive."""
     assert resolve_paper_id(vault, "pandi_synthesis") == "2024_Pandi_Synthesis"

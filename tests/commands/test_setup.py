@@ -45,22 +45,57 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+def _fake_skill_status(**states: str):
+    """Build a ``skill_status()``-shaped dict: every bundled skill defaults
+    to the given ``default`` state (kwarg), individual skills overridable by
+    name with ``-`` spelled ``_`` (``lit_library="stale"``)."""
+    from litman.core.skill import list_bundled_skills
+
+    default = states.pop("default", "absent")
+    by_name = {k.replace("_", "-"): v for k, v in states.items()}
+    return {
+        name: {"state": by_name.get(name, default), "stale_files": []}
+        for name in list_bundled_skills()
+    }
+
+
 @pytest.fixture(autouse=True)
 def pretend_no_skills_installed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub ``installed_skill_names`` to return an empty set by default.
+    """Stub ``skill_status`` to report every bundled skill absent by default.
 
-    Why: ``DEFAULT_PARENT_DIR`` in ``litman.core.skill`` is computed at
-    module-load time from the *real* ``$HOME``, before pytest's monkeypatch
-    redirects ``$HOME``. The helper therefore scans the developer's real
-    ``~/.claude/skills/``, which on machines that have already run
-    ``lit install-skill`` returns a non-empty set — silently flipping setup
-    tests from the "no skills installed" branch to the "already installed"
-    branch and breaking their scripted input. Tests that specifically need
-    the "already installed" branch override this fixture with their own
-    ``monkeypatch.setattr`` call.
+    Why: left un-stubbed, the probe scans the developer's real
+    ``~/.claude/skills/`` (the shared conftest ``_isolate_skills_dir``
+    fixture already neutralizes that, but this module's branch selection
+    must not silently depend on it) — on machines that have already run
+    ``lit install-skill`` that would flip setup tests from the "no skills
+    installed" branch to the "already installed" branch and break their
+    scripted input. Tests that need the installed / stale branches override
+    with their own ``monkeypatch.setattr`` call.
     """
     monkeypatch.setattr(
-        "litman.commands.setup.installed_skill_names", lambda: set()
+        "litman.commands.setup.skill_status",
+        lambda: _fake_skill_status(default="absent"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def pin_step5_to_auto_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin step 5 (desktop shortcut) to its no-prompt auto-skip branch.
+
+    The step probes machine-global state — an existing shortcut under
+    XDG_DATA_HOME / APPDATA and the DISPLAY env — so on a workstation with a
+    display (or a shortcut already created) it would consume an extra scripted
+    ``input`` answer and silently break every pre-existing test here. Step-5
+    tests override these two attributes explicitly.
+    """
+    monkeypatch.setattr(
+        "litman.commands.setup.shortcut_path",
+        lambda: tmp_path / "pin-step5" / "litman.desktop",
+    )
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: False
     )
 
 
@@ -96,6 +131,7 @@ def test_setup_non_tty_errors() -> None:
         "install-skill",
         "init",
         "sync setup",
+        "gui --make-shortcut",
     ):
         assert cmd in out
 
@@ -114,7 +150,7 @@ def test_setup_decline_everything(
 
     runner = CliRunner()
     # completion no / skill skip / vault no. (sync auto-skips: rclone absent.)
-    result = runner.invoke(cli, ["setup"], input="n\n2\nn\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n")
     assert result.exit_code == 0, result.output
 
     # Nothing was registered.
@@ -139,7 +175,7 @@ def test_setup_creates_first_vault(
     runner = CliRunner()
     # completion no / skill skip / vault yes / accept default name / parent.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\n\n{parent}\n"
+        cli, ["setup"], input=f"n\nn\ny\n\n{parent}\n"
     )
     assert result.exit_code == 0, result.output
 
@@ -181,7 +217,7 @@ def test_setup_second_vault_uses_chosen_name(
     # completion no / skill skip / vault yes -> "create another" -> override
     # the suggested default with 'fork1' -> parent dir.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\nfork1\n{parent2}\n"
+        cli, ["setup"], input=f"n\nn\ny\nfork1\n{parent2}\n"
     )
     assert result.exit_code == 0, result.output
 
@@ -210,7 +246,7 @@ def test_setup_first_vault_custom_name(
     runner = CliRunner()
     # completion no / skill skip / vault yes / typed name / parent.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n2\ny\npepforge_lib\n{parent}\n"
+        cli, ["setup"], input=f"n\nn\ny\npepforge_lib\n{parent}\n"
     )
     assert result.exit_code == 0, result.output
 
@@ -247,7 +283,7 @@ def test_setup_sync_when_configurable(
     runner = CliRunner()
     # completion no / skill skip / vault: have one -> "create another" no /
     # sync yes.
-    result = runner.invoke(cli, ["setup"], input="n\n2\nn\ny\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\ny\n")
     assert result.exit_code == 0, result.output
     assert calls == [{}]
 
@@ -289,7 +325,7 @@ def test_setup_sync_already_configured_reconfigure_default_no(
     runner = CliRunner()
     # completion no / skill skip / vault "create another" no / reconfigure:
     # press Enter (empty line) to accept the N default.
-    result = runner.invoke(cli, ["setup"], input="n\n2\nn\n\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n\n")
     assert result.exit_code == 0, result.output
 
     # Pressing Enter accepted default=False: no reconfiguration happened.
@@ -299,66 +335,59 @@ def test_setup_sync_already_configured_reconfigure_default_no(
     assert "sync" in result.output
 
 
-def test_setup_skill_step_offers_reinstall_when_installed_default_no(
+def test_setup_skill_step_auto_skips_when_up_to_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Re-run idempotency for step 2: when bundled skill targets are already
-    present, the wizard offers a Reinstall prompt (so users can refresh after
-    a litman upgrade) but defaults to N. Declining must NOT call
-    install_skill_cmd (which would raise SkillInstallError without --force)
-    and must continue to step 3 / 4."""
+    """Re-run idempotency for step 2: every bundled skill installed AND
+    byte-identical to the bundle → nothing to refresh, so the step auto-skips
+    (no prompt, no scripted-input slot) while still recording the machine
+    default and pointing at `install-skill --force` for a manual re-copy."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
 
-    # Pretend every bundled skill is already installed. Stubbing the helper
-    # in the setup module's import path avoids the module-load-time
-    # snapshotting of DEFAULT_PARENT_DIR (which freezes to the real HOME
-    # before fake_home redirects $HOME, so creating dirs under fake_home is
-    # not picked up by the real helper).
-    from litman.core.skill import list_bundled_skills
-
-    bundled = set(list_bundled_skills())
     monkeypatch.setattr(
-        "litman.commands.setup.installed_skill_names",
-        lambda: bundled,
+        "litman.commands.setup.skill_status",
+        lambda: _fake_skill_status(default="current"),
     )
-    # If the wizard slipped through to install, fail loudly: invoking the
-    # real install_skill_cmd would raise SkillInstallError mid-wizard.
+    # If the wizard slipped through to install, fail loudly.
     calls: list[dict] = []
     monkeypatch.setattr(
         "litman.commands.setup.install_skill_cmd",
         _make_recording_stub(calls),
     )
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.agent_prefs.save_default_agent",
+        lambda name: recorded.append(name),
+    )
 
     runner = CliRunner()
-    # completion no / skill reinstall no / vault no.
-    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n")
+    # completion no / (skill consumes NO input) / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\nn\n")
     assert result.exit_code == 0, result.output
     assert calls == []  # install_skill_cmd was NOT called
-    assert "already installed" in result.output
-    assert "Reinstall" in result.output
-    # The "1) Claude Code / 2) skip" picker only fires when nothing is
-    # installed; it must not appear in the already-installed branch.
-    assert "Install agent skill?" not in result.output
+    assert "up to date" in result.output
+    assert recorded == ["claude"]
+    # Neither the fresh-install confirm nor a refresh prompt may appear.
+    assert "Install the Claude Code agent skill now?" not in result.output
+    assert "Refresh" not in result.output
 
 
-def test_setup_skill_step_reinstall_yes_invokes_with_force(
+def test_setup_skill_step_stale_prompts_refresh_default_yes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Accepting the Reinstall prompt must call install_skill_cmd with
-    force=True (the underlying flag the wizard now exposes). Asserts the
-    wizard does not silently swallow the --force capability."""
+    """Skills installed but out of date → the wizard surfaces the drift with
+    a [Y/n] refresh prompt defaulting to Y; plain Enter must call
+    install_skill_cmd with force=True (the underlying flag the wizard
+    exposes — feedback_wizard_mirrors_command_flags)."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
 
-    from litman.core.skill import list_bundled_skills
-
-    bundled = set(list_bundled_skills())
     monkeypatch.setattr(
-        "litman.commands.setup.installed_skill_names",
-        lambda: bundled,
+        "litman.commands.setup.skill_status",
+        lambda: _fake_skill_status(default="current", lit_library="stale"),
     )
     calls: list[dict] = []
     monkeypatch.setattr(
@@ -367,11 +396,73 @@ def test_setup_skill_step_reinstall_yes_invokes_with_force(
     )
 
     runner = CliRunner()
-    # completion no / skill reinstall yes / vault no.
-    result = runner.invoke(cli, ["setup"], input="n\ny\nn\n")
+    # completion no / skill refresh: Enter accepts the Y default / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\n\nn\n")
     assert result.exit_code == 0, result.output
+    assert "out of date" in result.output
+    assert "lit-library" in result.output
     assert len(calls) == 1
     assert calls[0].get("force") is True
+
+
+def test_setup_skill_step_stale_refresh_declined_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Declining the stale-refresh prompt must NOT install and must continue
+    the wizard (the drift stays flagged by health-check for later)."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    monkeypatch.setattr(
+        "litman.commands.setup.skill_status",
+        lambda: _fake_skill_status(default="stale"),
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.install_skill_cmd",
+        _make_recording_stub(calls),
+    )
+
+    runner = CliRunner()
+    # completion no / skill refresh no / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\nn\nn\n")
+    assert result.exit_code == 0, result.output
+    assert calls == []
+    assert "out of date" in result.output
+
+
+def test_setup_skill_step_fresh_install_accepts_via_confirm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh-install branch (no skills present): the step is now a plain
+    [Y/n] confirm, not a numbered picker. Pressing Enter accepts the Yes
+    default -> installs the Claude Code skill WITHOUT --force and records the
+    machine-level default agent (so `lit setup` clears the GUI red dot too).
+    Also proves the 'more agents coming' roadmap note is shown."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    # pretend_no_skills_installed autouse fixture -> fresh-install branch.
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.install_skill_cmd",
+        _make_recording_stub(calls),
+    )
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        "litman.commands.setup.agent_prefs.save_default_agent",
+        lambda name: recorded.append(name),
+    )
+
+    runner = CliRunner()
+    # completion no / skill: press Enter to accept the Y default / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\n\nn\n")
+    assert result.exit_code == 0, result.output
+    assert calls == [{}]  # install_skill_cmd invoked WITHOUT force
+    assert recorded == ["claude"]  # machine-level default recorded
+    assert "coming" in result.output  # roadmap note for the placeholder agents
 
 
 def test_setup_completion_step_skips_when_installed(
@@ -390,7 +481,7 @@ def test_setup_completion_step_skips_when_installed(
     runner = CliRunner()
     # No line reserved for completion (it must not prompt): skill skip /
     # vault no.
-    result = runner.invoke(cli, ["setup"], input="2\nn\n")
+    result = runner.invoke(cli, ["setup"], input="n\nn\n")
     assert result.exit_code == 0, result.output
     assert "already installed" in result.output
 
@@ -408,3 +499,91 @@ def _make_recording_stub(calls: list[dict]):
         calls.append(dict(kwargs))
 
     return _stub
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — desktop shortcut (task-gui-desktop-entry D4)
+# ---------------------------------------------------------------------------
+
+
+def test_setup_step5_skips_when_shortcut_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    existing = tmp_path / "apps" / "litman.desktop"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("[Desktop Entry]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "litman.commands.setup.shortcut_path", lambda: existing
+    )
+    # Display present: proves the exists-probe short-circuits BEFORE any
+    # prompt (input script carries no 5th answer).
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "already exists" in result.output
+    assert "shortcut (already exists)" in result.output
+
+
+def test_setup_step5_headless_skips_without_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    # autouse pin: no existing shortcut + display_available -> False.
+    # Input carries no 5th answer — a prompt would exhaust it and abort.
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "shortcut (headless session)" in result.output
+
+
+def test_setup_step5_prompt_names_underlying_command_and_declines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\nn\n")
+    assert result.exit_code == 0, result.output
+    # Wizard prompts must surface the underlying command.
+    assert "lit gui --make-shortcut" in result.output
+    assert "shortcut (declined)" in result.output
+
+
+def test_setup_step5_accept_creates_shortcut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_tty(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    # One which-stub serves both steps: no rclone (step 4 auto-skips) and a
+    # deterministic `lit` path for the shortcut's Exec line.
+    monkeypatch.setattr(
+        "litman.commands.setup.shutil.which",
+        lambda name: "/opt/lit/bin/lit" if name == "lit" else None,
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    dest = tmp_path / "xdg" / "applications" / "litman.desktop"
+    monkeypatch.setattr(
+        "litman.commands.setup.shortcut_path", lambda: dest
+    )
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\nn\nn\ny\n")
+    assert result.exit_code == 0, result.output
+    assert dest.is_file()
+    assert '"/opt/lit/bin/lit" gui --window' in dest.read_text(
+        encoding="utf-8"
+    )
+    assert "desktop shortcut" in result.output

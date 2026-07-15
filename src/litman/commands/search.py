@@ -9,6 +9,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.query import split_csv
 from litman.core.search import search_notes
@@ -45,22 +46,8 @@ _IN_CHOICES = ("notes", "discussion")
     default=None,
     help="Keep only the first N hits (bounded retrieval). Default: unbounded.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def search_cmd(
     query: str,
     in_files_raw: str,
@@ -72,7 +59,7 @@ def search_cmd(
     """Search your notes.md / discussion.md for a substring (case-insensitive).
 
     Searches only the markdown you author per paper — NOT the PDF full text,
-    NOT trashed papers, NOT the views/ symlink hubs. Each hit is one matched
+    NOT trashed papers, NOT the views/ link hubs. Each hit is one matched
     line. Default output is JSON ({id,file,line,snippet}) for agent bounded
     retrieval; pass --format table for a human view. --limit N caps the hit
     count for bounded retrieval.

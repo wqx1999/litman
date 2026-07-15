@@ -13,20 +13,21 @@ relative symlinks. A linked paper means three things in concert:
    (the git checkout, not the metadata wrapper).
 
 Atomicity: the metadata + INDEX.json write goes through ``staged_write``;
-symlink creation and REFERENCES.md regeneration are post-staging steps
+link creation and REFERENCES.md regeneration are post-staging steps
 (filesystem-mutating but cheap to redo, recoverable via
 ``lit link --rebuild-all``).
 
-Cross-platform: symlink creation routes through ``core.portable_link``,
-which gracefully degrades on filesystems that refuse symlinks (Windows
-without Developer Mode, FAT32, etc.). The metadata side of every
-operation succeeds regardless; only the convenience symlinks may be
-skipped (ADR-005).
+Cross-platform: link creation routes through ``core.portable_link``
+(relative symlinks on POSIX, junctions on Windows), which gracefully
+degrades on filesystems that cannot hold links (FAT32/exFAT, network
+shares). The metadata side of every operation succeeds regardless; only
+the convenience links may be skipped (ADR-005).
 """
 
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,8 @@ from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.portable_link import (
-    make_relative_symlink,
+    is_portable_link,
+    make_portable_link,
     remove_link_if_present,
 )
 from litman.core.project_refs import (
@@ -143,7 +145,9 @@ def reconcile_project_code_links(
     ``code-clones``) by some paper tagged with ``project`` whose
     ``codes/<repo>/repo`` clone is present locally should have exactly one
     symlink, and nothing else should. This reconciles the on-disk symlink set
-    to that expected set — creating the missing, removing the orphaned —
+    to that expected set — creating the missing, removing the orphaned, and
+    re-pointing the dangling (a link whose name matches but whose target is
+    gone, e.g. after the vault moved, is treated as missing, not present) —
     without the full-vault wipe ``rebuild_all_project_links`` performs.
     Idempotent.
 
@@ -166,14 +170,22 @@ def reconcile_project_code_links(
 
     code_dir = project_dir / CODE_SUBDIR
     on_disk: set[str] = set()
+    resolving: set[str] = set()
     if code_dir.is_dir():
         for child in code_dir.iterdir():
-            if child.is_symlink():
+            if is_portable_link(child):
                 on_disk.add(child.name)
+                # exists() FOLLOWS the link. A dangling bridge (the vault —
+                # or the clone — moved out from under it) must count as
+                # ABSENT: by name it looks present and the create loop would
+                # skip it, leaving reconcile powerless on exactly the state
+                # it exists to repair. The upsert re-points it in place.
+                if child.exists():
+                    resolving.add(child.name)
 
     created: list[str] = []
     for repo_name, repo_target in expected.items():
-        if repo_name not in on_disk and make_relative_symlink(
+        if repo_name not in resolving and make_portable_link(
             code_dir / repo_name, repo_target
         ):
             created.append(repo_name)
@@ -182,6 +194,88 @@ def reconcile_project_code_links(
         if remove_link_if_present(code_dir / repo_name):
             removed.append(repo_name)
     return {"created": sorted(created), "removed": sorted(removed)}
+
+
+def find_dangling_bridges(
+    projects: dict[str, str],
+    dir_status: dict[str, bool | None],
+    exists_fn: Callable[[list[str]], dict[str, bool | None]],
+) -> dict[str, list[Path]]:
+    """Per project: bridge symlinks whose target is definitely gone.
+
+    The one shared detection core behind ``check_project_bridge_dangling``
+    (the cheap health check), the Tier-1 ``[Y/n]`` rebuild prompt, and the
+    server's switch-time heal — a single collector so the three can never
+    disagree about what "dangling" means.
+
+    A bridge is ``<project_dir>/litman_reflib/<id>`` or
+    ``<project_dir>/litman_code/<repo>``: a relative symlink that leaves the
+    project tree and re-enters the vault at the location the vault had when
+    the link was written. Moving the vault dangles every bridge at once while
+    the vault itself and each project stay individually healthy — which is
+    why nothing else sees it: ``check_project_references`` compares link
+    NAMES against membership, and the names still match.
+
+    Args:
+        projects: lit-config.yaml ``projects:`` map (name → path, raw).
+        dir_status: bounded-stat verdict per expanded project path (``True``
+            / ``False`` / ``None``). Only projects definitely present are
+            scanned — a missing dir is ``project_path_exists``'s finding, not
+            a bridge problem.
+        exists_fn: batch target probe keyed by path string
+            (``_exists_bounded`` in production — mount-safe per ADR-014).
+            ``Path.exists()`` FOLLOWS symlinks, so ``False`` on a just-listed
+            link means the TARGET is gone; ``None`` (slow / dropped mount) is
+            never counted as dangling.
+
+    Returns:
+        ``{project_name: [dangling link paths]}`` for projects with at least
+        one definitely-dangling bridge; insertion order follows sorted
+        project names, links sorted within each hub.
+    """
+    links: dict[str, list[Path]] = {}
+    for name in sorted(projects):
+        project_dir = Path(projects[name]).expanduser()
+        if dir_status.get(str(project_dir)) is not True:
+            continue
+        if not project_dir.is_dir():
+            continue
+        hub_links: list[Path] = []
+        try:
+            for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
+                hub = project_dir / sub
+                if not hub.is_dir():
+                    continue
+                for child in sorted(hub.iterdir()):
+                    if is_portable_link(child):
+                        hub_links.append(child)
+        except OSError:
+            # A hub that vanishes or refuses listing between the bounded dir
+            # probe and this scan (dying mount, chmod'd hub): skip THIS
+            # project, keep scanning the rest. On the Tier-1 hot path an
+            # exception escaping here would take down the whole drift hook
+            # (its outer wrapper swallows everything, registry/project
+            # prompts included). Skipping one project's scan is the
+            # documented, bounded loss (invariant #14); Tier-2 health-check
+            # revisits it.
+            continue
+        if hub_links:
+            links[name] = hub_links
+
+    if not links:
+        return {}
+
+    target_status = exists_fn(
+        [str(p) for name_links in links.values() for p in name_links]
+    )
+    out: dict[str, list[Path]] = {}
+    for name, name_links in links.items():
+        dangling = [
+            p for p in name_links if target_status.get(str(p)) is False
+        ]
+        if dangling:
+            out[name] = dangling
+    return out
 
 
 def refresh_project_code_links(
@@ -319,12 +413,12 @@ def link_paper_to_project(
     paper_link_path, code_link_paths = _project_link_paths(
         project_dir, paper_id, code_clones
     )
-    make_relative_symlink(
+    make_portable_link(
         paper_link_path, (vault / "papers" / paper_id).resolve()
     )
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
-    code_links_symlink_unsupported: list[str] = []
+    code_links_unsupported: list[str] = []
     for repo_name, link_path in zip(code_clones, code_link_paths, strict=True):
         repo_target = (vault / "codes" / repo_name / "repo").resolve()
         if not repo_target.exists():
@@ -332,14 +426,14 @@ def link_paper_to_project(
             # `lit code restore-all`, then `lit link --rebuild-all`.
             code_links_missing_repo.append(repo_name)
             continue
-        if make_relative_symlink(link_path, repo_target):
+        if make_portable_link(link_path, repo_target):
             code_links_created.append(repo_name)
         else:
-            # review F31: the repo IS present; the platform refused the symlink
-            # (Windows w/o Developer Mode, FAT32/exFAT, ...). This is NOT a
-            # missing repo — directing the user to `restore-all` would be a
-            # dead end. Track it separately so the CLI gives accurate guidance.
-            code_links_symlink_unsupported.append(repo_name)
+            # review F31: the repo IS present; the filesystem refused the link
+            # (FAT32/exFAT, network shares). This is NOT a missing repo —
+            # directing the user to `restore-all` would be a dead end. Track it
+            # separately so the CLI gives accurate guidance.
+            code_links_unsupported.append(repo_name)
 
     # 7) REFERENCES.md
     refs_path = write_references_md(vault, project, project_dir)
@@ -354,7 +448,7 @@ def link_paper_to_project(
         "paper_link": paper_link_path,
         "code_links": code_links_created,
         "code_links_skipped_missing_repo": code_links_missing_repo,
-        "code_links_skipped_symlink_unsupported": code_links_symlink_unsupported,
+        "code_links_skipped_links_unsupported": code_links_unsupported,
         "references_md": refs_path,
     }
 
@@ -439,7 +533,7 @@ def unlink_paper_from_project(
     code_links_kept = []
     for repo_name in code_clones:
         link_path = project_dir / CODE_SUBDIR / repo_name
-        if not link_path.is_symlink():
+        if not is_portable_link(link_path):
             continue
         # Check fresh papers (excludes the just-unlinked paper). If another
         # paper tagged with this project still binds the repo, KEEP the
@@ -637,22 +731,27 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
         literature_dir = project_dir / LITERATURE_SUBDIR
         if literature_dir.is_dir():
             for child in literature_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
+                remove_link_if_present(child)
             refs = literature_dir / REFERENCES_FILENAME
             if refs.exists():
                 refs.unlink()
         # Symmetric teardown of litman_code/ (parallel to rm.py's
         # _teardown_project_links). The project is gone, so every
-        # litman_code/<repo> symlink is an orphan — no shared-lib retention
-        # judgment needed. Without this, those symlinks become permanent
+        # litman_code/<repo> link is an orphan — no shared-lib retention
+        # judgment needed. Without this, those links become permanent
         # orphans that no later rebuild_all_project_links revisits (the project
         # is already out of the registry), violating invariant #14.
         code_dir = project_dir / CODE_SUBDIR
         if code_dir.is_dir():
             for child in code_dir.iterdir():
-                if child.is_symlink():
-                    child.unlink()
+                remove_link_if_present(child)
+        # The hubs themselves were litman's litter too: rmdir only when
+        # empty, so anything the user parked inside survives untouched.
+        for hub in (literature_dir, code_dir):
+            try:
+                hub.rmdir()
+            except OSError:
+                pass
 
     return n_changed, referencing
 
@@ -814,6 +913,8 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
 def rebuild_all_project_links(
     vault: Path,
     registry: dict[str, str],
+    *,
+    papers: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Recreate every project's symlinks + REFERENCES.md from scratch.
 
@@ -826,8 +927,13 @@ def rebuild_all_project_links(
     Does NOT touch metadata — assumes the vault's metadata.yaml files
     are the source of truth (which they are). Only the on-disk symlinks
     + REFERENCES.md get refreshed.
+
+    ``papers`` reuses an already-loaded FULL metadata list (``list_papers``
+    output — the downstream REFERENCES.md render reads
+    ``relevance-<project>``, which INDEX projections lack); ``None`` scans.
     """
-    papers = list_papers(vault)
+    if papers is None:
+        papers = list_papers(vault)
     out: dict[str, dict[str, Any]] = {}
 
     for project, project_dir_str in sorted(registry.items()):
@@ -851,8 +957,7 @@ def rebuild_all_project_links(
             sub_dir = project_dir / sub
             if sub_dir.exists():
                 for child in sub_dir.iterdir():
-                    if child.is_symlink():
-                        child.unlink()
+                    remove_link_if_present(child)
             else:
                 sub_dir.mkdir(exist_ok=True)
         # Preserve REFERENCES.md across the wipe — it lives in
@@ -867,7 +972,7 @@ def rebuild_all_project_links(
             paper_dir = (vault / "papers" / pid).resolve()
             if not paper_dir.is_dir():
                 continue
-            if make_relative_symlink(
+            if make_portable_link(
                 project_dir / LITERATURE_SUBDIR / pid, paper_dir
             ):
                 n_paper_links += 1
@@ -875,7 +980,7 @@ def rebuild_all_project_links(
                 repo_target = (vault / "codes" / repo_name / "repo").resolve()
                 if not repo_target.exists():
                     continue
-                if make_relative_symlink(
+                if make_portable_link(
                     project_dir / CODE_SUBDIR / repo_name, repo_target
                 ):
                     n_code_links += 1

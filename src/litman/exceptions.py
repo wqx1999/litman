@@ -161,3 +161,9 @@ class VaultRegistryError(LitmanError):
     vault not being discoverable in a single command run): registry errors
     surface from the user-level registry layer, not from any single vault.
     """
+
+
+class SelfUpdateError(LitmanError):
+    """`lit self-update` cannot upgrade: neither uv nor pipx is available, or
+    the chosen installer's upgrade subprocess failed / timed out.
+    """

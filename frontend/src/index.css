@@ -48,6 +48,9 @@
   --ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-soft: cubic-bezier(0.32, 0.72, 0, 1);
   --animate-grow-in: grow-in 0.28s var(--ease-fluid);
+  /* Gentle radiating halo for the "update available" dot on the logo — a slow
+     outward pulse with a rest gap so it catches the eye without nagging. */
+  --animate-update-halo: update-halo 2.4s var(--ease-soft) infinite;
 }
 
 /* ============================================================
@@ -210,5 +213,22 @@ body {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+/* Halo for the update-available dot (see `--animate-update-halo`). Radiates the
+   solid dot outward and fades it, then holds invisible so pulses feel spaced. */
+@keyframes update-halo {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
   }
 }

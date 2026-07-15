@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.taxonomy import USER_DICTS
 from litman.core.views import INDEX_PAPER_FIELDS
@@ -666,3 +667,244 @@ def test_list_limit_json_unaffected_by_title_fix(vault: Path) -> None:
     result = _invoke(vault, "--year", "2024", "--limit", "1", "--format", "json")
     payload = json.loads(result.output)
     assert len(payload) == 1
+
+
+# ---------------------------------------------------------------------------
+# D7: interactive-TTY row cap for the default (id) sort
+# ---------------------------------------------------------------------------
+
+
+def _seed_n_papers(vault: Path, n: int) -> None:
+    """Seed n papers with zero-padded, id-sortable names 2000_A_0001..000n."""
+    for i in range(1, n + 1):
+        _seed_paper(
+            vault, f"2000_A_{i:04d}",
+            year=2000, type="research", status="inbox", priority="B",
+            title=f"Paper number {i}",
+        )
+
+
+def test_list_tty_cap_default_sort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default (id) sort on an interactive TTY caps the table at 30 rows, with a
+    title + caption pointing at --limit / --format json for the rest."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: True)
+    result = _invoke(v)
+    assert result.exit_code == 0
+    assert "showing 30 of 35" in result.output
+    assert "--format json" in result.output  # caption hint
+    # id-asc order: the first paper shows; rows 31-35 are cut.
+    assert "2000_A_0001" in result.output
+    assert "2000_A_0035" not in result.output
+
+
+def test_list_no_tty_cap_when_piped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red line: non-TTY (piped / agent / redirected) output is never capped."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: False)
+    result = _invoke(v)
+    assert result.exit_code == 0
+    assert "showing 30 of 35" not in result.output
+    assert "Papers (35 of 35)" in result.output
+    assert "2000_A_0035" in result.output
+
+
+def test_list_json_never_capped_on_tty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red line: --format json returns the full list even on a TTY."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: True)
+    result = _invoke(v, "--format", "json")
+    payload = json.loads(result.output)
+    assert len(payload) == 35
+
+
+def test_list_explicit_limit_overrides_tty_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red line: an explicit --limit is the user's own bound and disables the
+    30-row TTY cap (--limit 40 shows all 35)."""
+    v = create_vault(tmp_path)
+    _seed_n_papers(v, 35)
+    monkeypatch.setattr("litman.commands.list._stdout_isatty", lambda: True)
+    result = _invoke(v, "--limit", "40")
+    assert result.exit_code == 0
+    assert "showing 30 of 35" not in result.output
+    assert "2000_A_0035" in result.output
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: identical output, no vault scan, honest fallbacks
+# ---------------------------------------------------------------------------
+
+
+def _reconcile(v: Path) -> None:
+    from litman.core.correctors import reconcile_derived
+
+    reconcile_derived(v, project_refs=False)
+
+
+def test_list_output_is_byte_identical_between_index_and_scan(
+    vault: Path,
+) -> None:
+    """The red line: the fast path may change the cost, never the bytes.
+    Same vault, --format json and the table, INDEX present vs deleted."""
+    _reconcile(vault)
+    fast_json = _invoke(vault, "--format", "json")
+    fast_table = _invoke(vault)
+    assert fast_json.exit_code == 0
+
+    (vault / "INDEX.json").unlink()
+    scan_json = _invoke(vault, "--format", "json")
+    scan_table = _invoke(vault)
+
+    assert fast_json.output == scan_json.output
+    assert fast_table.output == scan_table.output
+    assert len(json.loads(fast_json.output)) == 3
+
+
+def test_list_fast_path_never_opens_metadata(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a fresh INDEX, both output formats are served without a single
+    metadata.yaml read (the documented agent contract, now real)."""
+    _reconcile(vault)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the fast path")
+
+    monkeypatch.setattr("litman.commands.list.list_papers", _boom)
+    result = _invoke(vault, "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert {p["id"] for p in json.loads(result.output)} == {
+        "2023_Pandi_Cellfree", "2024_Smith_BERT", "2024_Doe_GNN",
+    }
+    filtered = _invoke(vault, "--status", "deep-read", "--format", "json")
+    assert [p["id"] for p in json.loads(filtered.output)] == [
+        "2024_Smith_BERT"
+    ]
+    table = _invoke(vault)
+    assert table.exit_code == 0
+
+
+def test_list_stale_index_falls_back_silently_and_sees_the_new_paper(
+    vault: Path,
+) -> None:
+    """A paper seeded behind INDEX's back fails the freshness probe: the
+    scan serves the truth (all 4 papers) and the JSON stays clean."""
+    _reconcile(vault)
+    _seed_paper(vault, "2025_New_Late", title="Late", authors=["N."])
+    result = _invoke(vault, "--format", "json")
+    assert result.exit_code == 0
+    assert len(json.loads(result.output)) == 4
+
+
+def test_list_added_since_reads_created_at_from_disk(vault: Path) -> None:
+    """--added-since needs created-at, which the INDEX projection does not
+    carry — the query must take the scan even when INDEX is fresh. (If it
+    were wrongly served from INDEX, every paper would be excluded.)"""
+    _seed_paper(
+        vault, "2026_Fresh_Addition",
+        title="Fresh", authors=["F."],
+        **{"created-at": "'2026-06-01T10:00:00+02:00'"},
+    )
+    _reconcile(vault)
+    kept = _invoke(vault, "--added-since", "2026-01-01", "--format", "json")
+    assert [p["id"] for p in json.loads(kept.output)] == [
+        "2026_Fresh_Addition"
+    ]
+    none = _invoke(vault, "--added-since", "2027-01-01", "--format", "json")
+    assert json.loads(none.output) == []
+
+
+def _stagger_updated_at(v: Path) -> None:
+    """Give the three fixture papers distinct updated-at stamps."""
+    for paper_id, stamp in [
+        ("2023_Pandi_Cellfree", "2026-01-01T10:00:00+02:00"),
+        ("2024_Smith_BERT", "2026-03-01T10:00:00+02:00"),
+        ("2024_Doe_GNN", "2026-02-01T10:00:00+02:00"),
+    ]:
+        meta = v / "papers" / paper_id / "metadata.yaml"
+        meta.write_text(
+            meta.read_text(encoding="utf-8")
+            + f"updated-at: '{stamp}'\n",
+            encoding="utf-8",
+        )
+
+
+def test_list_sort_recent_reads_updated_at_from_disk(vault: Path) -> None:
+    """--sort recent ranks on updated-at: with a fresh INDEX the ranking must
+    reflect each paper's own stamp (it is served from the projection now)."""
+    _stagger_updated_at(vault)
+    _reconcile(vault)
+    result = _invoke(vault, "--sort", "recent", "--format", "json")
+    assert [p["id"] for p in json.loads(result.output)] == [
+        "2024_Smith_BERT", "2024_Doe_GNN", "2023_Pandi_Cellfree",
+    ]
+
+
+def test_list_sort_recent_is_identical_with_and_without_index(
+    vault: Path,
+) -> None:
+    """updated-at joined the projection, so --sort recent is INDEX-served. The
+    ranking must be exactly the scan's — the projection writes updated-at as an
+    ISO string where the scan hands recency_key a datetime, and if that
+    round-trip lost the clock, same-day edits would reorder."""
+    _stagger_updated_at(vault)
+    _reconcile(vault)
+    fast = _invoke(vault, "--sort", "recent", "--format", "json")
+    fast_table = _invoke(vault, "--sort", "recent")
+
+    (vault / "INDEX.json").unlink()
+    scan = _invoke(vault, "--sort", "recent", "--format", "json")
+    scan_table = _invoke(vault, "--sort", "recent")
+
+    assert fast.output == scan.output
+    assert fast_table.output == scan_table.output
+
+
+def test_list_sort_recent_does_not_scan_the_vault(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real default path, with the scan booby-trapped: --sort recent must
+    come back from the INDEX alone."""
+    _stagger_updated_at(vault)
+    _reconcile(vault)
+
+    def _boom(v: Path) -> list:
+        raise AssertionError("full vault scan ran on the --sort recent path")
+
+    monkeypatch.setattr("litman.commands.list.list_papers", _boom)
+    result = _invoke(vault, "--sort", "recent", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert [p["id"] for p in json.loads(result.output)] == [
+        "2024_Smith_BERT", "2024_Doe_GNN", "2023_Pandi_Cellfree",
+    ]
+
+
+def test_list_added_since_still_scans(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--added-since ranks on created-at, which is deliberately NOT in the
+    projection — it must still take the scan rather than silently answer from
+    an INDEX that cannot know the answer."""
+    _reconcile(vault)
+    calls: list[Path] = []
+    real = list_papers
+
+    def _counting(v: Path) -> list:
+        calls.append(v)
+        return real(v)
+
+    monkeypatch.setattr("litman.commands.list.list_papers", _counting)
+    result = _invoke(vault, "--added-since", "2000-01-01", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert calls, "--added-since answered without reading created-at"

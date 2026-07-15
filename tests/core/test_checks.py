@@ -16,6 +16,7 @@ import pytest
 from litman.core.checks import (
     all_fixed_enums,
     check_config_readable,
+    check_duplicate_doi,
     check_schema,
     check_taxonomy_drift,
     fixed_enum_allows_none,
@@ -44,6 +45,46 @@ def _minimal_paper(**overrides: object) -> dict[str, object]:
     }
     base.update(overrides)
     return base
+
+
+# ---------------------------------------------------------------------------
+# duplicate_doi: two papers must never share a DOI
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_doi_flags_the_collision_once_naming_all_holders(
+    vault: Path,
+) -> None:
+    """One error per colliding DOI, listing every id — the danger is that
+    --paper-doi destructive commands (rm) resolve to an arbitrary holder."""
+    papers = [
+        _minimal_paper(id="2024_A_One", doi="10.1/x"),
+        # Case variant: DOI matching is case-insensitive vault-wide.
+        _minimal_paper(id="2023_B_Two", doi="10.1/X"),
+        _minimal_paper(id="2022_C_Three", doi="10.9/unique"),
+    ]
+
+    issues = check_duplicate_doi(vault, papers)
+
+    assert len(issues) == 1
+    assert issues[0].category == "duplicate_doi"
+    assert issues[0].severity == "error"
+    assert "2024_A_One" in issues[0].message
+    assert "2023_B_Two" in issues[0].message
+    assert "2022_C_Three" not in issues[0].message
+
+
+def test_duplicate_doi_silent_when_dois_are_unique_or_absent(
+    vault: Path,
+) -> None:
+    papers = [
+        _minimal_paper(id="2024_A_One", doi="10.1/x"),
+        _minimal_paper(id="2023_B_Two", doi="10.2/y"),
+        _minimal_paper(id="2022_C_Three"),  # no doi at all
+        _minimal_paper(id="2021_D_Four", doi=None),
+    ]
+
+    assert check_duplicate_doi(vault, papers) == []
 
 
 # ---------------------------------------------------------------------------

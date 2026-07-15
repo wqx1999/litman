@@ -53,7 +53,14 @@ from litman.core.vault_registry import (
 
 
 def _default_tty_probe() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    # A windows-subsystem process (the litw desktop launcher) has stdin set
+    # to None, and None.isatty() is an AttributeError, not an answer.
+    return (
+        sys.stdin is not None
+        and sys.stdout is not None
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
 
 
 def _exists_bounded(
@@ -364,3 +371,139 @@ def check_and_prompt_project_drift(
                 f"[/bold] there to rebuild litman_reflib).[/dim]"
             )
     console.print()
+
+
+def check_and_prompt_bridge_drift(
+    *,
+    stdin_is_tty: Callable[[], bool] | None = None,
+    exists_fn: Callable[[list[str]], dict[str, bool | None]] | None = None,
+    load_config_fn: Callable[[Path], object] | None = None,
+) -> None:
+    """Surface dangling project bridge symlinks and offer a one-Enter rebuild.
+
+    The ``resolve`` corrector for ``check_project_bridge_dangling`` (ledger
+    #3's cheap arm). The ``litman_reflib/<id>`` / ``litman_code/<repo>``
+    symlinks encode the vault's location at link-creation time, so moving the
+    vault dangles every bridge in every project at once — while the vault
+    itself keeps working perfectly (its internal ``views/`` links are
+    vault-relative and travel with it). Nothing errors; the user only finds
+    out when a ``cd`` into a bridge fails. This prompt is the recovery seam:
+    once the moved vault is registered again, the very next ``lit`` command
+    offers the rebuild.
+
+    Behavior (mirrors the two siblings above):
+
+    * No active vault / active dir not definitely present / unreadable config
+      / no projects → silent return (those cases belong to the registry- and
+      project-drift segments; the common path adds zero noise).
+    * Re-probe with the bounded stat. Only a definitely-dangling link (target
+      stat is ``False``) counts; ``None`` is skipped (ADR-014: a slow mount
+      must never look like a moved vault).
+    * TTY → one summary + ``Rebuild ... now? [Y/n]`` (default Y — the rebuild
+      is a lossless derived-artifact regen, same class as the registry-prune
+      default). On Y: ``rebuild_all_project_links`` +
+      ``rebuild_all_project_refs``, the same repair pair in the same order as
+      the project-path heal above and ``lit refresh-views``. Reading metadata
+      here is fine: invariant #15 constrains hook-time detection, not a
+      repair the user just consented to.
+    * Non-TTY → one stderr warning naming the projects + the fix commands,
+      zero mutation.
+
+    Args:
+        stdin_is_tty: TTY probe indirection (tests force either branch).
+        exists_fn: Bounded existence probe indirection (default
+            :func:`_exists_bounded`); used for BOTH the project-dir gate and
+            the link-target probe.
+        load_config_fn: Config loader indirection (default
+            ``core.config.load_config``).
+    """
+    probe = stdin_is_tty or _default_tty_probe
+    exists = exists_fn or _exists_bounded
+
+    try:
+        reg = load_registry()
+    except VaultRegistryError:
+        return
+
+    active = find_active(reg)
+    if active is None:
+        return
+    if exists([active.path]).get(active.path) is not True:
+        return
+
+    if load_config_fn is None:
+        from litman.core.config import load_config as load_config_fn  # type: ignore[assignment]
+
+    vault = Path(active.path)
+    try:
+        config = load_config_fn(vault)
+        projects: dict[str, str] = dict(config.projects)
+    except Exception:
+        # A broken config surfaces its own diagnostic elsewhere; never crash
+        # the user's actual command from inside the hook.
+        return
+    if not projects:
+        return
+
+    from litman.core.project_link import find_dangling_bridges
+
+    dir_status = exists(
+        [str(Path(p).expanduser()) for p in projects.values()]
+    )
+    dangling = find_dangling_bridges(projects, dir_status, exists)
+    if not dangling:
+        return
+
+    n_links = sum(len(links) for links in dangling.values())
+    if not probe():
+        err = Console(stderr=True)
+        joined = ", ".join(
+            f"{name} ({len(links)} link{'s' if len(links) != 1 else ''})"
+            for name, links in dangling.items()
+        )
+        # soft_wrap: the message embeds copy-paste commands (see the registry
+        # warning above for why a hard wrap would break them).
+        err.print(
+            f"[yellow]warning:[/] {n_links} project bridge "
+            f"link{'s point' if n_links != 1 else ' points'} at nothing "
+            f"(library moved?): {joined}. Run "
+            f"[bold]lit health-check --fix[/] (or [bold]lit refresh-views[/]) "
+            "to rebuild them.",
+            soft_wrap=True,
+        )
+        return
+
+    console = Console()
+    console.print()
+    console.print(
+        f"[yellow]⚠[/]  {n_links} project bridge "
+        f"link{'s point' if n_links != 1 else ' points'} at nothing — "
+        "the library, or what a link targeted, has moved:"
+    )
+    for name, links in dangling.items():
+        console.print(
+            f"    [bold]{name}[/] → {len(links)} dangling (e.g. {links[0]})"
+        )
+    if not click.confirm(
+        "Rebuild all project links from the library's current location now?",
+        default=True,
+    ):
+        console.print(
+            "[dim]Kept for now. You'll be reminded again next time.[/]\n"
+        )
+        return
+
+    from litman.core.project_link import rebuild_all_project_links
+    from litman.core.project_refs import rebuild_all_project_refs
+
+    link_status = rebuild_all_project_links(vault, projects)
+    # Double-writes REFERENCES.md (links-rebuild already wrote it) — kept for
+    # parity with the project-path heal above and refresh-views.
+    rebuild_all_project_refs(vault, projects)
+    n_rebuilt = sum(
+        1 for info in link_status.values() if info.get("status") == "rebuilt"
+    )
+    console.print(
+        f"[green]Rebuilt project links for {n_rebuilt} "
+        f"project{'s' if n_rebuilt != 1 else ''}.[/]\n"
+    )

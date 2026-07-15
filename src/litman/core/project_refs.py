@@ -232,6 +232,7 @@ def rebuild_all_project_refs(
     project_registry: dict[str, str],
     *,
     now: str | None = None,
+    papers: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Regenerate ``REFERENCES.md`` for every project in the registry.
 
@@ -243,6 +244,9 @@ def rebuild_all_project_refs(
         vault: Vault root.
         project_registry: ``lit-config.yaml``'s ``projects`` mapping.
         now: Override timestamp — testing only.
+        papers: Already-loaded FULL metadata list to reuse (must carry
+            ``relevance-<project>``, i.e. ``list_papers`` output, never
+            INDEX projections). ``None`` → scan the vault.
 
     Returns:
         ``{project_name: {"status": "written" | "skipped" | "error",
@@ -250,7 +254,8 @@ def rebuild_all_project_refs(
                            "n_papers": int,
                            "detail": str}}``
     """
-    papers = list_papers(vault)
+    if papers is None:
+        papers = list_papers(vault)
     out: dict[str, dict[str, Any]] = {}
     for project, project_dir_str in sorted(project_registry.items()):
         project_dir = Path(project_dir_str).expanduser()

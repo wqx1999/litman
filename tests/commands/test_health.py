@@ -28,11 +28,13 @@ from litman.core.checks import (
     check_dangling_refs,
     check_dangling_wikilinks,
     check_inbox_staleness,
+    check_discussion_scaffold,
     check_paper_dir_validity,
     check_pdf_viewer,
     check_project_config_consistency,
     check_project_path_exists,
     check_schema,
+    check_skill_drift,
     check_stale_staging,
     check_taxonomy_drift,
     check_trash_health,
@@ -40,7 +42,7 @@ from litman.core.checks import (
 )
 from litman.core.document import list_papers
 from litman.core.library import create_vault
-from litman.core.notes import WIKILINK_REMINDER
+from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -58,7 +60,9 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
 
     Override individual fields via kwargs. Pass ``override_id=<str>`` to
     write a different value into the ``id`` field than the directory name
-    (used for id_consistency tests).
+    (used for id_consistency tests). Pass ``no_discussion=True`` to leave out
+    ``discussion.md`` (the pre-scaffold shape the discussion_scaffold check
+    flags).
     """
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +106,13 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     # to assert the missing-pdf finding can delete it).
     if not fields.get("no_pdf"):
         (paper_dir / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
+    # Same reasoning for the discussion log: `lit add` scaffolds it, so a
+    # fixture paper without one is not "complete" — it is the pre-scaffold shape
+    # the discussion_scaffold check exists to flag. Opt out with no_discussion.
+    if not fields.get("no_discussion"):
+        (paper_dir / "discussion.md").write_text(
+            discussion_scaffold(paper_id), encoding="utf-8"
+        )
 
 
 @pytest.fixture
@@ -260,13 +271,79 @@ def test_paper_dir_validity_missing_pdf_is_an_error(vault: Path) -> None:
     assert pdf[0].paper_id == "2024_Foo_Bar"
 
 
-def test_paper_dir_validity_notes_discussion_absence_not_flagged(vault: Path) -> None:
-    """notes.md / discussion.md absence is a legitimate state — not flagged."""
-    _write_paper(vault, "2024_Foo_Bar")  # writes metadata + pdf, no notes
+def test_paper_dir_validity_ignores_authored_markdown(vault: Path) -> None:
+    """This check never looks at the authored markdown.
+
+    notes.md absence stays a legitimate state (nothing depends on it existing);
+    discussion.md absence IS a finding, but ``check_discussion_scaffold``'s, not
+    this one's.
+    """
+    _write_paper(vault, "2024_Foo_Bar", no_discussion=True)  # metadata + pdf only
     paper_dir = vault / "papers" / "2024_Foo_Bar"
     assert not (paper_dir / "notes.md").exists()
     assert not (paper_dir / "discussion.md").exists()
     assert check_paper_dir_validity(vault, list_papers(vault)) == []
+
+
+# --- discussion_scaffold -----------------------------------------------------
+
+
+def test_discussion_scaffold_clean(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")  # the fixture scaffolds discussion.md
+    assert check_discussion_scaffold(vault, list_papers(vault)) == []
+
+
+def test_discussion_scaffold_flags_missing_file(vault: Path) -> None:
+    """A paper added before the scaffold landed has no discussion.md at all."""
+    _write_paper(vault, "2024_Foo_Bar", no_discussion=True)
+    issues = check_discussion_scaffold(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "discussion_scaffold"
+    assert issues[0].severity == "info"
+    assert issues[0].paper_id == "2024_Foo_Bar"
+
+
+def test_discussion_scaffold_flags_stripped_header(vault: Path) -> None:
+    """The log exists but its append-format header was edited away."""
+    _write_paper(vault, "2024_Foo_Bar")
+    disc = vault / "papers" / "2024_Foo_Bar" / "discussion.md"
+    disc.write_text("# Discussion log\n\n## 2026-07-11 10:00\n\nq\n", encoding="utf-8")
+    issues = check_discussion_scaffold(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert "append-format header" in issues[0].message
+
+
+def test_fix_backfills_discussion_and_keeps_the_log(vault: Path) -> None:
+    """--fix creates the missing log and restores a torn-out header — additively.
+
+    The paper with an existing (header-less) log keeps every dated section it
+    already holds: this fix only ever adds the anchor back.
+    """
+    _write_paper(vault, "2024_Foo_Bar", no_discussion=True)
+    _write_paper(vault, "2024_Baz_Qux")
+    torn = vault / "papers" / "2024_Baz_Qux" / "discussion.md"
+    torn.write_text(
+        "# Discussion log for 2024_Baz_Qux\n\n## 2026-06-30 09:27\n\n"
+        "**Question:** why does it work?\n",
+        encoding="utf-8",
+    )
+
+    issues = check_discussion_scaffold(vault, list_papers(vault))
+    assert len(issues) == 2
+    counts = apply_autofix(vault, issues)
+    assert counts["discussion_scaffold"] == 2
+
+    created = (vault / "papers" / "2024_Foo_Bar" / "discussion.md").read_text(
+        encoding="utf-8"
+    )
+    assert created.startswith("# Discussion log for 2024_Foo_Bar")
+
+    healed = torn.read_text(encoding="utf-8")
+    assert "## 2026-06-30 09:27" in healed
+    assert "**Question:** why does it work?" in healed
+
+    # And the vault is clean afterwards.
+    assert check_discussion_scaffold(vault, list_papers(vault)) == []
 
 
 # --- index_vs_disk (M30 #1) -------------------------------------------------
@@ -393,6 +470,45 @@ def test_views_vs_metadata_stale_symlink_is_error(vault: Path) -> None:
     del shutil  # keep import used
 
 
+def test_views_vs_metadata_junction_links_are_seen(
+    vault: Path, fake_junction
+) -> None:
+    """Windows regression (2026-07-14 manual round): view links are junctions
+    there, and junctions answer ``is_junction()`` only. With bare
+    ``is_symlink()`` detection the on-disk scan was always empty, so a
+    perfectly healthy library reported one "link is missing" error PER LINK,
+    exited 1, and ``--fix`` rebuilt the same links forever without ever
+    converging."""
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    _build_index(vault)
+    # Swap the POSIX-built symlinks for junction stand-ins — what the same
+    # vault looks like on NTFS.
+    for view, bucket in (("by-topic", "amp"), ("by-status", "deep-read")):
+        fake_junction(vault / "views" / view / bucket / "2024_Foo_Bar")
+    assert check_views_vs_metadata(vault, list_papers(vault)) == []
+
+
+def test_views_vs_metadata_stale_junction_is_error(
+    vault: Path, fake_junction
+) -> None:
+    """The stale arm needs junction eyes too: with the empty on-disk scan a
+    leftover junction in a bucket the paper no longer belongs to was silently
+    never reported on Windows."""
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["amp"])
+    _build_index(vault)
+    fake_junction(
+        vault / "views" / "by-topic" / "ghost-topic" / "2024_Foo_Bar"
+    )
+    issues = check_views_vs_metadata(vault, list_papers(vault))
+    stale = [i for i in issues if "no matching metadata tag" in i.message]
+    assert len(stale) == 1
+    assert stale[0].category == "views_vs_metadata"
+
+
 # --- relevance_orphan (M30 #11) ---------------------------------------------
 
 
@@ -476,6 +592,48 @@ def test_project_references_unreachable_dir_skipped(
     _configure_project(vault, "gone", tmp_path / "nonexistent")
     _write_paper(vault, "2024_Foo_Bar", projects=["gone"])
     assert check_project_references(vault, list_papers(vault)) == []
+
+
+# --- project_bridge_dangling (#3's cheap arm) --------------------------------
+
+
+def test_project_bridge_dangling_moved_vault_reported_and_fixed(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The state the name-set check is blind to: the vault moved, every
+    bridge dangles, yet every link NAME still matches membership. The cheap
+    check reports it and ``--fix``'s klass-A regen re-points the bridges."""
+    from litman.core.checks import check_project_bridge_dangling
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)  # builds litman_reflib + REFERENCES.md — bridges healthy
+    assert check_project_bridge_dangling(vault, []) == []
+
+    moved = tmp_path / "moved_vault"
+    vault.rename(moved)
+    link = proj / "litman_reflib" / "2024_Foo_Bar"
+    assert link.is_symlink() and not link.exists()  # dangling, name intact
+
+    issues = check_project_bridge_dangling(moved, [])
+    assert len(issues) == 1
+    assert issues[0].category == "project_bridge_dangling"
+    assert issues[0].severity == "error"
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(moved)])
+    flat = " ".join(result.output.split())
+    assert result.exit_code == 1
+    assert "myproj" in flat
+    assert "points at nothing" in flat  # n=1 → singular verb
+
+    runner.invoke(cli, ["health-check", "--fix", "--library", str(moved)])
+    assert link.is_symlink()
+    assert link.resolve() == (moved / "papers" / "2024_Foo_Bar").resolve()
+    assert check_project_bridge_dangling(moved, []) == []
 
 
 # --- dangling_refs ----------------------------------------------------------
@@ -935,8 +1093,11 @@ def test_pdf_viewer_clean_when_platform_default_available(
 def test_pdf_viewer_warns_when_no_platform_default(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Desktop arm: a display is reachable, so 'install xdg-utils' is real
+    advice and the finding stays a warning (headless arm is tested below)."""
     monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
     monkeypatch.setattr(viewer_mod.shutil, "which", lambda cmd: None)
+    monkeypatch.setenv("DISPLAY", ":0")
     issues = check_pdf_viewer(vault, [])
     assert len(issues) == 1
     assert issues[0].category == "pdf_viewer"
@@ -983,10 +1144,16 @@ def test_pdf_viewer_clean_when_configured_present(
     assert check_pdf_viewer(vault, []) == []
 
 
-def test_pdf_viewer_warns_when_xdg_open_headless(
+def test_pdf_viewer_headless_is_info_so_health_can_still_exit_zero(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Linux + xdg-open present + no configured viewer + headless → warn."""
+    """Linux + xdg-open present + no configured viewer + headless → info.
+
+    "This SSH/cron session has no screen" is an environment fact, not vault
+    damage. As a warning it made ``lit health-check`` exit 1 forever on every
+    headless box, breaking its documented cron/CI-gate use — the same failure
+    mode ``links_unsupported`` was demoted for.
+    """
     monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
     monkeypatch.setattr(
         viewer_mod.shutil,
@@ -998,10 +1165,29 @@ def test_pdf_viewer_warns_when_xdg_open_headless(
     issues = check_pdf_viewer(vault, [])
     assert len(issues) == 1
     assert issues[0].category == "pdf_viewer"
-    assert issues[0].severity == "warning"
+    assert issues[0].severity == "info"
     # Distinct from the "not installed" message.
     assert "no graphical display" in issues[0].message
     assert "no platform PDF viewer" not in issues[0].message
+
+
+def test_pdf_viewer_missing_is_info_headless_but_warning_on_a_desktop(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No viewer at all: env-shaped info on a headless box (nothing there to
+    install a display for), actionable warning on a desktop (installing
+    xdg-utils genuinely fixes `lit open`)."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "linux")
+    monkeypatch.setattr(viewer_mod.shutil, "which", lambda cmd: None)
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    headless = check_pdf_viewer(vault, [])
+    assert [i.severity for i in headless] == ["info"]
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    desktop = check_pdf_viewer(vault, [])
+    assert [i.severity for i in desktop] == ["warning"]
 
 
 def test_pdf_viewer_clean_when_xdg_open_with_display(
@@ -1017,6 +1203,106 @@ def test_pdf_viewer_clean_when_xdg_open_with_display(
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     assert check_pdf_viewer(vault, []) == []
+
+
+# --- skill_drift --------------------------------------------------------------
+#
+# The conftest ``_isolate_skills_dir`` autouse fixture points the call-time
+# skills dir at an empty per-test path; tests that need installed skills
+# re-patch ``default_skills_parent_dir`` at a dir they populate (a test-body
+# patch wins over the fixture's).
+
+
+def _plant_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    from litman.core.skill import install_all_skills
+
+    parent = tmp_path / "installed-skills"
+    install_all_skills(parent_dir=parent)
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: parent
+    )
+    return parent
+
+
+def test_skill_drift_clean_when_no_skills_installed(vault: Path) -> None:
+    """Never installing a skill is a respected opt-out, not drift."""
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_clean_when_current(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plant_skills(tmp_path, monkeypatch)
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_stale_is_warning_naming_skill_and_file(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = _plant_skills(tmp_path, monkeypatch)
+    (parent / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    issues = check_skill_drift(vault, [])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "skill_drift"
+    assert issue.severity == "warning"
+    assert "lit-library" in issue.message
+    assert "SKILL.md" in issue.message
+    assert "--fix" in (issue.hint or "")
+
+
+def test_skill_drift_linked_dir_is_clean(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlinked skill dir is dev-managed; diverging is the point."""
+    parent = tmp_path / "installed-skills"
+    parent.mkdir()
+    real = tmp_path / "dev-checkout" / "lit-library"
+    real.mkdir(parents=True)
+    (parent / "lit-library").symlink_to(real)
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: parent
+    )
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_category_is_auto_fixable(vault: Path) -> None:
+    assert "skill_drift" in AUTO_FIXABLE_CATEGORIES
+
+
+def test_health_check_cli_stale_skill_warns_and_fix_refreshes(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end through the REAL default probe (inject-seam lesson): a
+    stale installed skill gates a clean vault at exit 1; ``--fix`` re-copies
+    the bundled files, keeps the user's own file, and the post-fix pass is
+    clean (exit 0)."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    parent = _plant_skills(tmp_path, monkeypatch)
+    stale_md = parent / "lit-library" / "SKILL.md"
+    stale_md.write_text("OUTDATED\n", encoding="utf-8")
+    user_file = parent / "lit-library" / "my_local_notes.md"
+    user_file.write_text("mine\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 1
+    assert "skill_drift" in result.output or "skill" in result.output.lower()
+    assert "fixable via --fix" in result.output
+
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "skill_drift" in result.output
+    text = stale_md.read_text(encoding="utf-8")
+    assert "OUTDATED" not in text
+    assert "name: lit-library" in text
+    assert user_file.read_text(encoding="utf-8") == "mine\n"
 
 
 # --- code_clone_integrity ---------------------------------------------------
@@ -1255,7 +1541,12 @@ def test_apply_autofix_skips_non_fixable_categories(vault: Path) -> None:
 
 def test_auto_fixable_categories_constant() -> None:
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
-        {"stale_staging", "orphan_trash_sidecar"}
+        {
+            "stale_staging",
+            "orphan_trash_sidecar",
+            "discussion_scaffold",
+            "skill_drift",
+        }
     )
 
 
@@ -1784,3 +2075,186 @@ def test_health_check_unregistered_library_does_not_refresh(
 
     # The active entry (pointing at `registered`, not `vault`) is untouched.
     assert find_active(load_registry()).last_health_check_at is None
+
+
+# ===========================================================================
+# Link-less drive (FAT32 / exFAT sticks, network shares — nowhere to store
+# POSIX symlinks or Windows junctions)
+#
+# The regression these pin: such a drive cannot hold ANY of litman's three
+# link kinds, so `views_vs_metadata` + `project_references` used to emit
+# ~6 errors per paper that `--fix` could not repair — a 50-paper library showed
+# ~300 permanently-red errors and exit 1, forever. That is an environment
+# limitation reported as library damage, and it is the thing that makes a new
+# user conclude litman is broken and leave.
+# ===========================================================================
+
+
+def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake the OS boundary, not litman's helpers — every layer above runs real."""
+    from litman.core.portable_link import reset_link_probe_cache
+
+    def boom(self: Path, target: Any, target_is_directory: bool = False) -> None:
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "symlink_to", boom)
+    reset_link_probe_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_link_probe_cache() -> Any:
+    from litman.core.portable_link import reset_link_probe_cache
+
+    reset_link_probe_cache()
+    yield
+    reset_link_probe_cache()
+
+
+def _linkless_vault(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A library built the way it happens on a drive that cannot hold links.
+
+    Order matters and is the whole point: links are dead BEFORE any derived
+    state is written, exactly as they are for a real user. So `regen` (what
+    `lit add` / `lit link` run) writes INDEX.json and REFERENCES.md — plain files,
+    which any filesystem holds — and silently skips every link. Building the
+    vault first and disabling links after would leave the links on disk and
+    test nothing.
+    """
+    from litman.core.correctors import regen
+    from litman.core.project_link import add_project
+    from litman.core.taxonomy import add_taxonomy_values
+
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")  # quiet pdf_viewer
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    add_project(vault, "myproj", proj)
+    add_taxonomy_values(vault, "topics", ["peptides"])
+    add_taxonomy_values(vault, "methods", ["diffusion"])
+    _write_paper(
+        vault,
+        "2024_Foo_Bar",
+        projects=["myproj"],
+        topics=["peptides"],
+        methods=["diffusion"],
+    )
+
+    _no_links(monkeypatch)
+    regen(vault)  # the derived write every command performs (INDEX + views + refs)
+    return proj
+
+
+def test_linkless_drive_reports_one_info_and_nothing_else(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole point: a healthy library on a link-less drive is GREEN.
+
+    This paper expects 4 view links + 1 project bridge, none of which can be
+    made. Before, that was 5 unfixable errors — and exit 1 — for one paper.
+    """
+    from litman.core.checks import run_all_checks
+
+    _linkless_vault(vault, tmp_path, monkeypatch)
+    issues = run_all_checks(vault, list_papers(vault))
+
+    assert [i for i in issues if i.category == "views_vs_metadata"] == []
+    assert [i for i in issues if i.category == "project_references"] == []
+
+    advisories = [i for i in issues if i.category == "links_unsupported"]
+    assert len(advisories) == 1
+    assert advisories[0].severity == "info"
+
+    # Nothing that gates the exit code — info is advisory by definition.
+    assert [i for i in issues if i.severity != "info"] == [], [
+        (i.category, i.severity, i.message) for i in issues if i.severity != "info"
+    ]
+
+
+def test_linkless_drive_health_check_cli_is_green(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the real command: exit 0, and the user is told why views/ is empty."""
+    _linkless_vault(vault, tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    flat = " ".join(result.output.split())
+
+    assert result.exit_code == 0, result.output
+    assert "folder links cannot be created here" in flat
+    assert "your library itself is fine" in flat
+    # And NOT a wall of unfixable red.
+    assert "but the link is missing" not in flat
+    assert "membership implies a litman_reflib" not in flat
+    # And never a trip into system settings (the junction tier's whole point).
+    assert "Developer Mode" not in result.output
+    assert "administrator" not in result.output.lower()
+
+
+def test_linkless_drive_still_reports_stale_links(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Suppression is one-directional.
+
+    Removing a link works on any filesystem, so a leftover view is a REAL,
+    FIXABLE defect even here. Silencing it too would have been a much worse bug
+    than the one being fixed — it would hide damage instead of noise.
+    """
+    from litman.core.checks import check_views_vs_metadata
+
+    _write_paper(vault, "2024_Foo_Bar", topics=["peptides"])
+    stale_bucket = vault / "views" / "by-topic" / "ghost-topic"
+    stale_bucket.mkdir(parents=True)
+    (stale_bucket / "2024_Foo_Bar").symlink_to("../../../papers/2024_Foo_Bar")
+
+    _no_links(monkeypatch)
+    issues = check_views_vs_metadata(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "has no matching metadata tag" in issues[0].message
+
+
+def test_vault_can_link_but_project_drive_cannot(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vault on an internal drive + a project on an exFAT stick: only the
+    project goes quiet.
+
+    Probing once for the whole process would let the vault's verdict speak for a
+    filesystem it knows nothing about, and the project's real drift would be
+    hidden (or its impossible links reported).
+    """
+    from litman.core.checks import check_project_references, check_views_vs_metadata
+    from litman.core.correctors import regen
+    from litman.core.portable_link import (
+        _LINK_MECHANISM,
+        reset_link_probe_cache,
+    )
+
+    proj = tmp_path / "exfat_proj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"], topics=["peptides"])
+    regen(vault)  # views + bridges all built for real
+
+    # Now pin the verdicts: the vault can, the project cannot.
+    reset_link_probe_cache()
+    _LINK_MECHANISM[str(vault)] = "symlink"
+    _LINK_MECHANISM[str(proj)] = "none"
+
+    # Tear the project's bridge away; the vault's views stay intact.
+    for child in (proj / "litman_reflib").iterdir():
+        if child.is_symlink():
+            child.unlink()
+
+    # The project's missing bridge is suppressed (that drive cannot make it)...
+    refs = [
+        i
+        for i in check_project_references(vault, list_papers(vault))
+        if "link for" in i.message
+    ]
+    assert refs == []
+    # ...while the vault's views are still fully checked and still clean.
+    assert check_views_vs_metadata(vault, list_papers(vault)) == []

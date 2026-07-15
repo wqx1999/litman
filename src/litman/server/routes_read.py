@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
+from litman.core.config import CONFIG_FILENAME
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
 from litman.core.id import is_valid_id
@@ -25,7 +26,11 @@ from litman.core.query import recency_key
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy
 from litman.core.vault_registry import find_active, load_registry
-from litman.core.views import project_paper
+from litman.core.views import (
+    INDEX_PAPER_FIELDS,
+    load_index_papers,
+    project_paper,
+)
 from litman.exceptions import CorruptMetadataError, PaperNotFoundError
 
 router = APIRouter(prefix="/api")
@@ -50,7 +55,21 @@ def _index_papers(vault: Path) -> list[dict[str, Any]] | None:
     except (OSError, json.JSONDecodeError):
         return None
     papers = payload.get("papers")
-    return papers if isinstance(papers, list) else None
+    if not isinstance(papers, list):
+        return None
+    # Schema-staleness guard: an INDEX.json written by an older litman carries
+    # an older projection (no `authors`, no `updated-at`). Compare the whole
+    # field set rather than probing one name, so adding a field to the
+    # projection never again means remembering to edit this line. Treat a
+    # mismatch as "not available" so the caller re-projects live off
+    # metadata.yaml — the API always serves the current schema; the on-disk
+    # INDEX catches up on the vault's next write / refresh-views.
+    if papers and (
+        not isinstance(papers[0], dict)
+        or set(papers[0]) != set(INDEX_PAPER_FIELDS)
+    ):
+        return None
+    return papers
 
 
 # The three left-nav smart-lists. Their membership/ordering depends on
@@ -63,7 +82,7 @@ _SMART_LIST_VIEWS = frozenset({"reading", "recent-read", "backlog"})
 
 
 def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
-    """Order ``list_papers`` for one smart-list view.
+    """Order the vault's papers for one smart-list view.
 
     - ``reading``     = unread, recency DESC.
     - ``recent-read`` = read (read-date set), read-date DESC.
@@ -75,14 +94,28 @@ def _smart_list(vault: Path, view: str) -> list[dict[str, Any]]:
     setting a paper aside never makes it vanish from the list (anti-drift).
     Membership is purely read-date-based; ``status`` only changes row styling.
     """
-    papers = list_papers(vault)
     if view == "recent-read":
+        # Both the membership test and the sort key are read-date, which the
+        # INDEX projection carries — so a verified INDEX serves this view
+        # without opening a single metadata.yaml. Same order either way: INDEX
+        # entries are id-sorted, exactly like list_papers' output.
+        indexed = load_index_papers(vault)
+        papers = indexed if indexed is not None else list_papers(vault)
         read = [p for p in papers if p.get("read-date")]
         # str ISO sort is fine; list.sort is stable so equal read-dates keep
-        # the incoming id-ascending order from list_papers as a tiebreak.
+        # the incoming id-ascending order as a tiebreak.
         read.sort(key=lambda p: str(p.get("read-date") or ""), reverse=True)
         return read
 
+    # reading / backlog rank by recency_key, which reads `updated-at` and the
+    # PDF's mtime. `updated-at` is in the projection, so a verified INDEX
+    # serves the default view too: 300 stat() calls instead of 300 YAML
+    # parses. The projection serializes `updated-at` back to a full ISO string
+    # (views._timestamp_to_iso), which recency_key parses to the same instant
+    # it computes from the typed object a scan hands it — so the order is
+    # identical on both paths, not merely similar.
+    indexed = load_index_papers(vault)
+    papers = indexed if indexed is not None else list_papers(vault)
     unread = [p for p in papers if not p.get("read-date")]
     unread.sort(
         key=lambda p: recency_key(vault, p),
@@ -126,6 +159,58 @@ def get_papers(
     return [project_paper(p) for p in _smart_list(vault, view)]
 
 
+@router.get("/version")
+def get_version() -> dict[str, str | None]:
+    """Current litman version + the latest available release, if any.
+
+    PURE READ (invariant #16): reads ONLY the local update-check cache — it never
+    fetches PyPI in the request path. ``latest`` is the newer version when the
+    cache shows one strictly greater than ``current``, else ``null`` (no cache,
+    stale/empty, already current, or opted out). The server's startup task
+    populates the cache; the TopBar shows a badge only when ``latest`` is set.
+    """
+    from litman import __version__
+    from litman.core.update_check import available_update
+
+    upd = available_update()
+    return {"current": __version__, "latest": upd[1] if upd else None}
+
+
+@router.get("/capabilities")
+def get_capabilities(request: Request) -> dict[str, Any]:
+    """What this host can do — currently just: which folder-link mechanism works.
+
+    ``links`` is ``"symlink"`` (POSIX), ``"junction"`` (Windows) or ``"none"``
+    (a drive that cannot hold links at all — FAT32 / exFAT, network shares).
+    The SPA raises its advisory only on ``"none"``; both working mechanisms are
+    silent, fully-functional states.
+
+    Cheap enough for the frontend to call on page load, which is the whole
+    reason it is not folded into ``GET /health``: that endpoint is Tier-2 (it
+    reads every ``metadata.yaml``) and is deliberately fetched only when the
+    user opens the health panel. But a GUI-only user needs to be TOLD, at boot,
+    why ``views/`` is empty and why the shortcuts never appeared in their
+    project folders — the CLI's stderr warning goes nowhere, because the desktop
+    shortcut launches the console-less ``litw`` entry point.
+
+    ``link_mechanism`` probes once per directory per process, so the
+    long-lived server pays exactly one probe for the life of the process and
+    every later boot of the SPA is answered from cache.
+
+    Not a TRUTH write (invariant #16): the probe creates a dot-prefixed,
+    pid-suffixed scratch entry and removes it in a ``finally``. It never
+    touches metadata, INDEX, or anything under ``papers/``.
+    """
+    import sys
+
+    from litman.core.portable_link import link_mechanism
+
+    return {
+        "links": link_mechanism(_vault(request)),
+        "platform": sys.platform,
+    }
+
+
 @router.get("/health")
 def get_health(request: Request) -> list[dict[str, Any]]:
     """Run every health-check probe and return the flat ``Issue[]`` list.
@@ -163,17 +248,27 @@ def get_doc_mtimes(request: Request) -> dict[str, dict[str, float | None]]:
     """Per-paper notes.md / discussion.md mtimes (epoch seconds), for change detection.
 
     PURE READ (invariant #16): stat only — never reads file contents, never writes.
-    One entry per paper currently in the vault (same enumeration get_health uses,
-    list_papers); each value is Path.stat().st_mtime, or null when absent. The webUI
-    resync diff compares this against its previous in-memory snapshot to surface
-    notes/discussion edits made OUTSIDE the GUI (agents write these files directly —
-    there is no lit command to hook). O(papers) stats per call; fine for single-user.
+    One entry per paper currently in the vault (same enumeration get_health uses);
+    each value is Path.stat().st_mtime, or null when absent. The webUI resync diff
+    compares this against its previous in-memory snapshot to surface notes/discussion
+    edits made OUTSIDE the GUI (agents write these files directly — there is no lit
+    command to hook). O(papers) stats per call; fine for single-user.
+
+    The endpoint needs ids and nothing else, so a verified INDEX supplies them —
+    the resync sweep fires on every window focus, and parsing every metadata.yaml
+    for a field it does not read made the GUI pay a full vault scan per focus. A
+    stale / older-schema INDEX falls back to ``list_papers``, whose id set (which
+    drops broken paper dirs) the probe already matches, so the enumeration is the
+    same either way.
     """
     vault = _vault(request)
+    indexed = load_index_papers(vault)
+    papers = indexed if indexed is not None else list_papers(vault)
     out: dict[str, dict[str, float | None]] = {}
-    for paper in list_papers(vault):
-        paper_dir = vault / "papers" / paper["id"]
-        out[paper["id"]] = {
+    for paper in papers:
+        paper_id = str(paper["id"])
+        paper_dir = vault / "papers" / paper_id
+        out[paper_id] = {
             "notes": _stat_mtime(paper_dir / "notes.md"),
             "discussion": _stat_mtime(paper_dir / "discussion.md"),
         }
@@ -255,7 +350,21 @@ def get_search(
 
 @router.get("/paper/{paper_id}")
 def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
-    """Full metadata for one paper (same loader ``lit show`` uses)."""
+    """Full metadata for one paper (same loader ``lit show`` uses).
+
+    The projection fields come through ``project_paper``, exactly as
+    ``GET /api/papers`` serves them, and every other key in metadata.yaml —
+    ``relevance-<project>``, ``created-at``, the relation lists, any custom
+    field a user invented — is passed through untouched.
+
+    Why the projection is applied at all, when this endpoint's job is to
+    return everything: metadata.yaml is schemaless (invariant #7), so a
+    missing field simply is not there. Served raw, one paper could arrive
+    with ``topics`` and the next without it, while the frontend's PaperMeta
+    extends IndexPaper and declares all of them present. Consumers happen to
+    defend themselves today; the projection makes the two endpoints agree on
+    the fields they share, so they no longer have to.
+    """
     vault = _vault(request)
     try:
         meta = find_paper(vault, paper_id)
@@ -273,13 +382,18 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
             status_code=404,
             detail=f"No usable metadata for paper {paper_id!r} (file is empty).",
         )
+
+    out = project_paper(meta)
+    out.update(
+        {k: v for k, v in meta.items() if k not in INDEX_PAPER_FIELDS}
+    )
     # Derived display hint (not persisted): which code-clones links are dangling
     # — codes/<name>/ gone — so the cockpit marks them instead of showing a
     # deleted codebase as live. Same criterion as lit health-check (invariant #12).
-    meta["code-clones-missing"] = missing_code_clones(
+    out["code-clones-missing"] = missing_code_clones(
         vault, meta.get("code-clones") or []
     )
-    return meta
+    return out
 
 
 @router.get("/paper/{paper_id}/cite")
@@ -353,15 +467,53 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
     md_path = vault / "papers" / paper_id / filename
     if not md_path.is_file():
         raise HTTPException(status_code=404, detail=f"No {filename} for {paper_id!r}.")
-    return {"text": md_path.read_text(encoding="utf-8")}
+    try:
+        return {"text": md_path.read_text(encoding="utf-8")}
+    except (OSError, UnicodeDecodeError) as exc:
+        # Present but unservable (external editor saved it non-UTF-8, cloud
+        # client left a husk): damaged data, not a missing resource — the
+        # same clean-500 contract as get_paper's CorruptMetadataError arm,
+        # never an unhandled traceback.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"papers/{paper_id}/{filename} cannot be read "
+                f"(not UTF-8, or unreadable): {exc}"
+            ),
+        ) from exc
+
+
+def _taxonomy_text(vault: Path) -> str:
+    """TAXONOMY.md's text, or a described 500 when it cannot be served.
+
+    A missing / non-UTF-8 TAXONOMY.md is damaged TRUTH (health-check's beat
+    on the CLI side). Left unguarded it took down /api/taxonomy AND
+    /api/projects with raw tracebacks, which the frontend swallows into a
+    silently empty panel.
+    """
+    path = vault / "TAXONOMY.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "TAXONOMY.md is missing from this library — run "
+                "`lit health-check` to diagnose."
+            ),
+        ) from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"TAXONOMY.md cannot be read (not UTF-8, or unreadable): {exc}",
+        ) from exc
 
 
 @router.get("/taxonomy")
 def get_taxonomy(request: Request) -> dict[str, list[str]]:
     """The TAXONOMY controlled vocabulary, one list per dict key."""
     vault = _vault(request)
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-    return parse_taxonomy(text)
+    return parse_taxonomy(_taxonomy_text(vault))
 
 
 @router.get("/fixed-enums")
@@ -392,8 +544,7 @@ def get_projects(request: Request) -> list[dict[str, str]]:
     from litman.core.config import load_config
 
     vault = _vault(request)
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-    taxonomy_names = set(parse_taxonomy(text)["projects"])
+    taxonomy_names = set(parse_taxonomy(_taxonomy_text(vault))["projects"])
     config_map = load_config(vault).projects
     config_names = set(config_map)
 
@@ -415,13 +566,38 @@ def get_projects(request: Request) -> list[dict[str, str]]:
 
 @router.get("/vaults")
 def get_vaults(request: Request) -> dict[str, Any]:
-    """Registry entries plus which one is active (for the switch-vault dropdown)."""
+    """Registry entries plus which one is active (for the switch-vault dropdown).
+
+    ``served`` is the vault this running server is actually bound to, or ``None``
+    when it started with no vault (welcome-page mode). It is distinct from
+    ``active`` (the registry's active *name*): a server can start in no-vault
+    mode even while the registry names an active entry whose path has moved, so
+    the frontend keys the welcome page off ``served``, not ``active``.
+
+    Each entry carries ``exists``: whether its registered path still holds a
+    vault, probed on every call (the registry stores paths, and a folder can be
+    moved or deleted behind litman's back at any moment). The sentinel is the
+    ``lit-config.yaml`` — the same one the 410 middleware guard stats and the
+    same test ``apply_vault_use(require_path=True)`` applies before it will
+    switch, so a vault reported ``exists: false`` is exactly a vault ``PUT
+    /vaults/active`` would reject — the frontend marks it in the selector rather
+    than letting the user pick it and collect a 400. A bare directory (an
+    unrelated same-name folder at the old path) reads as missing, not as the
+    vault having come back.
+    """
     reg = load_registry()
     active = find_active(reg)
+    served = request.app.state.vault
     return {
         "active": active.name if active else None,
+        "served": str(served) if served is not None else None,
         "vaults": [
-            {"name": v.name, "path": v.path, "active": v.is_active}
+            {
+                "name": v.name,
+                "path": v.path,
+                "active": v.is_active,
+                "exists": (Path(v.path).expanduser() / CONFIG_FILENAME).is_file(),
+            }
             for v in reg.vaults
         ],
     }

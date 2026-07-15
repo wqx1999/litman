@@ -28,6 +28,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.commands._options import library_option, vault_option
 from litman.core.checks import run_push_integrity_errors
 from litman.core.config import CONFIG_FILENAME, load_config
 from litman.core.document import list_papers
@@ -92,22 +93,8 @@ def sync_group() -> None:
         "(e.g. 'litman-vault/'). Prompted interactively if omitted."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def sync_setup_cmd(
     remote_arg: str | None,
     path_arg: str | None,
@@ -425,22 +412,8 @@ def _preflight_integrity_gate(
     "health-check reports errors. --yes does NOT bypass the gate (it only "
     "skips the size confirmation); only --force does.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def sync_push_cmd(
     exclude_repos_flag: bool | None,
     dry_run: bool,
@@ -534,22 +507,8 @@ def sync_push_cmd(
     help="Preview only — print what rclone would transfer, then exit "
     "without modifying the local vault.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def sync_pull_cmd(
     exclude_repos_flag: bool | None,
     dry_run: bool,
@@ -608,22 +567,8 @@ def sync_pull_cmd(
 
 
 @sync_group.command("status")
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     """Show last-push / last-pull timestamps and local vs. remote file counts.
 

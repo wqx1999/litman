@@ -3,10 +3,16 @@
 
 import type { ToastVariant } from './ui/Toast'
 
-/** The INDEX.json / `lit list --format json` thin projection (12 fields). */
+/** The INDEX.json / `lit list --format json` thin projection (14 fields).
+ *
+ * Served by GET /api/papers and — for the fields it covers — by
+ * GET /api/paper/{id}, which runs the same projection before merging the rest
+ * of metadata.yaml back in. So every field here is always present on both. */
 export interface IndexPaper {
   id: string
   title: string | null
+  /** "Family, Given" strings; `[]` when absent (list-field projection rule). */
+  authors: string[]
   year: number | null
   type: string | null
   priority: string | null
@@ -17,6 +23,9 @@ export interface IndexPaper {
   data: string[]
   doi: string | null
   'read-date': string | null
+  /** ISO 8601 with time of day (not truncated to a date): the reading list
+   * ranks by it, so papers edited on the same day must not tie. */
+  'updated-at': string | null
 }
 
 /** GET /api/doc-mtimes payload: per-paper notes/discussion file mtimes (epoch
@@ -26,12 +35,10 @@ export type DocMtimes = Record<string, { notes: number | null; discussion: numbe
 
 /** Full metadata.yaml for one paper (superset of IndexPaper). */
 export interface PaperMeta extends IndexPaper {
-  authors?: string[]
   journal?: string | null
   'arxiv-id'?: string | null
   github?: string | null
   'created-at'?: string | null
-  'updated-at'?: string | null
   'last-revisited'?: string | null
   related?: string[]
   extends?: string[]
@@ -48,9 +55,17 @@ export interface PaperMeta extends IndexPaper {
 /** The smart-list views the server computes (sorted by recency / read-date). */
 export type SmartListView = 'reading' | 'recent-read' | 'backlog'
 
-/** Where a search term matched. `id`/`title` are resolved client-side off the
- * loaded INDEX; `notes`/`discussion` come from /api/search. */
-export type SearchScope = 'id' | 'title' | 'notes' | 'discussion'
+/** Where a search term matched. `id`/`title`/`author`/`doi`/`year` are
+ * resolved client-side off the loaded INDEX; `notes`/`discussion` come from
+ * /api/search. */
+export type SearchScope =
+  | 'id'
+  | 'title'
+  | 'author'
+  | 'doi'
+  | 'year'
+  | 'notes'
+  | 'discussion'
 
 /** One notes/discussion hit from /api/search (one per paper, notes preferred). */
 export interface SearchHit {
@@ -93,20 +108,38 @@ export interface FixedEnums {
   type: FixedEnumField
 }
 
+/** How a registered project stands, as `GET /api/projects` joins TAXONOMY.md's
+ * projects section against lit-config.yaml's projects map — the same join that
+ * backs `lit project list`. `path-missing` means the folder is no longer there;
+ * the two `-only` states mean the project is registered in one truth source but
+ * not the other. See `projectHealth` in projects.ts for what each means to the
+ * user. */
+export type ProjectStatus = 'ok' | 'path-missing' | 'config-only' | 'taxonomy-only'
+
 export interface ProjectEntry {
   name: string
+  /** Empty string for a `taxonomy-only` project: it has no path to show. */
   path: string
-  status: string
+  status: ProjectStatus
 }
 
 export interface VaultEntry {
   name: string
   path: string
   active: boolean
+  /** Whether `path` still holds a library (its lit-config.yaml), re-probed by
+   * the server on every `GET /api/vaults`. A vault whose folder was moved,
+   * deleted, or replaced by an unrelated folder comes back false, and switching
+   * to it would be refused — the UI marks it missing. */
+  exists: boolean
 }
 
 export interface VaultsPayload {
   active: string | null
+  /** The vault this server is actually bound to, or null when it started with no
+   * vault (welcome-page mode). Distinct from `active` (the registry's active
+   * name): the frontend keys the welcome page off this, not `active`. */
+  served: string | null
   vaults: VaultEntry[]
 }
 

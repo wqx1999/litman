@@ -27,7 +27,8 @@ def _stdin_is_tty() -> bool:
     monkeypatching ``sys.stdin`` itself (which ``click.testing.CliRunner``
     swaps wholesale during ``invoke``).
     """
-    return sys.stdin.isatty()
+    # stdin is None under a windows-subsystem launcher (litw): not a tty.
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
 def _confirm_destructive(warning_lines: list[str], *, yes: bool) -> bool:

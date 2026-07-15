@@ -173,8 +173,10 @@ def test_lit_config_seed_is_valid_yaml(tmp_path: Path) -> None:
     assert config["library_name"] == "custom_lib"
     # git_auto_commit was removed when the vault stopped being a git repo.
     assert "git_auto_commit" not in config
-    assert "by-topic" in config["view_definitions"]
-    assert "doi" in config["unique_keys"]
+    # view_definitions / unique_keys are legacy keys nothing reads: still
+    # accepted from older libraries, no longer written into new ones.
+    assert "view_definitions" not in config
+    assert "unique_keys" not in config
 
 
 # ---------------------------------------------------------------------------
@@ -201,11 +203,46 @@ def test_lit_init_custom_name_flag(tmp_path: Path) -> None:
 
 
 def test_lit_init_missing_parent_exits_nonzero(tmp_path: Path) -> None:
+    """Non-interactive contract unchanged: automation gets the explicit error."""
     runner = CliRunner()
     missing = tmp_path / "nope"
     result = runner.invoke(cli, ["init", str(missing)])
     assert result.exit_code != 0
     assert isinstance(result.exception, ParentNotFoundError)
+
+
+def test_lit_init_missing_parent_interactive_offers_to_create_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tutorial's first command is `lit init ~/research` on a machine
+    where ~/research does not exist — one Enter must repair that, not an
+    error telling the user to mkdir by hand."""
+    from litman.commands import init as init_mod
+
+    monkeypatch.setattr(init_mod, "_stdin_isatty", lambda: True)
+    runner = CliRunner()
+    missing = tmp_path / "research"
+
+    result = runner.invoke(cli, ["init", str(missing)], input="\n")  # default Y
+
+    assert result.exit_code == 0, result.output
+    assert (missing / "literature_vault" / "papers").is_dir()
+
+
+def test_lit_init_missing_parent_interactive_decline_keeps_the_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.commands import init as init_mod
+
+    monkeypatch.setattr(init_mod, "_stdin_isatty", lambda: True)
+    runner = CliRunner()
+    missing = tmp_path / "research"
+
+    result = runner.invoke(cli, ["init", str(missing)], input="n\n")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ParentNotFoundError)
+    assert not missing.exists()
 
 
 def test_lit_init_existing_vault_refused(tmp_path: Path) -> None:
@@ -350,3 +387,43 @@ def test_init_output_has_no_export_lit_library(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["init", str(parent)])
     assert result.exit_code == 0, result.output
     assert "export LIT_LIBRARY" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# apply_init — the create+register core shared with POST /api/vaults/create
+# ---------------------------------------------------------------------------
+
+
+def test_apply_init_creates_registers_and_marks_health(tmp_path: Path) -> None:
+    """First vault → created on disk, registered active, health-checked (not stale)."""
+    from litman.commands.init import apply_init
+    from litman.core.vault_registry import find_by_name
+
+    parent = tmp_path / "p"
+    parent.mkdir()
+    vault, entry = apply_init(parent, "mylib")
+
+    assert vault == parent / "mylib"
+    assert (vault / "lit-config.yaml").is_file()
+    assert entry.is_active
+    assert entry.last_health_check_at is not None
+    persisted = find_by_name(load_registry(), "mylib")
+    assert persisted is not None
+    assert Path(persisted.path).resolve() == vault.resolve()
+
+
+def test_apply_init_name_clash_raises_before_creating(tmp_path: Path) -> None:
+    """A registry-name clash raises before anything lands on disk."""
+    from litman.commands.init import apply_init
+    from litman.exceptions import VaultRegistryError
+
+    parent = tmp_path / "p"
+    parent.mkdir()
+    existing = create_vault(parent, name="taken")
+    save_registry(add_vault(load_registry(), "taken", existing))
+
+    with pytest.raises(VaultRegistryError):
+        apply_init(parent, "taken")
+    # No half-built second vault under a different subdir name was attempted,
+    # and the clashing name was never re-created.
+    assert not (parent / "taken2").exists()

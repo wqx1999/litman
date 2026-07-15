@@ -1,16 +1,20 @@
 """``lit uninstall`` — reverse ``lit setup`` (teardown counterpart).
 
-Removes the artifacts ``lit setup`` placed OUTSIDE the pipx venv:
+Removes the artifacts ``lit setup`` placed OUTSIDE the tool venv (uv or pipx):
 
 * the bundled Claude Code skills (``~/.claude/skills/lit-*``),
+* the desktop shortcut (Start Menu ``.lnk`` / ``.desktop`` / ``.app``),
 * the shell tab-completion block(s),
-* the vault registry (``vaults.yaml`` — the list of vault names/paths).
+* the vault registry (``vaults.yaml`` — the list of vault names/paths),
+* the machine-level ``preferences.yaml`` (the chosen default agent),
+* the app-window browser profile (Chromium state for ``lit gui --window``).
 
 It deliberately does NOT remove the ``lit`` CLI itself: a running command
-cannot cleanly delete the pipx environment it is executing from, so the
-final ``pipx uninstall litman`` step is printed for the user to run. It
-also NEVER touches vault data — papers, PDFs, notes and annotations stay
-exactly where they are; only the registry pointers to them are dropped.
+cannot cleanly delete the environment it is executing from, so the final
+CLI-removal step (``uv tool uninstall litman`` / ``pipx uninstall litman``)
+is printed for the user to run. It also NEVER touches vault data — papers,
+PDFs, notes and annotations stay exactly where they are; only the registry
+pointers to them are dropped.
 """
 
 from __future__ import annotations
@@ -22,20 +26,28 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands.gui import (
+    browser_profile_dir,
+    remove_browser_profile,
+    remove_shortcut,
+    shortcut_path,
+)
 from litman.commands.install_completion import (
     SUPPORTED_SHELLS,
     completion_installed,
     uninstall_completion,
 )
+from litman.core.agent_prefs import prefs_path, remove_prefs
 from litman.core.skill import installed_skill_names, uninstall_skill
 from litman.core.vault_registry import registry_path, remove_registry
 
 console = Console()
 
-_PIPX_STEP = (
+_REMOVE_CLI_STEP = (
     "Remove the CLI itself (a running command can't delete its own\n"
-    "pipx environment):\n"
-    "  [bold]pipx uninstall litman[/]"
+    "environment) — use whichever installed it:\n"
+    "  [bold]uv tool uninstall litman[/]   [dim](installed with uv)[/]\n"
+    "  [bold]pipx uninstall litman[/]      [dim](installed with pipx)[/]"
 )
 
 _VAULT_SAFE = (
@@ -62,12 +74,14 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     """Remove what `lit setup` installed, except the CLI and your vaults.
 
     Reverses the setup wizard: deletes the bundled Claude Code skills, the
-    shell tab-completion block, and the vault registry (the list of vault
-    names/paths — NOT the vaults themselves). Your papers, PDFs, notes and
-    annotations are never touched.
+    desktop shortcut, the shell tab-completion block, the vault registry (the
+    list of vault names/paths — NOT the vaults themselves), the machine-level
+    agent preferences, and the browser profile the app window uses. Your
+    papers, PDFs, notes and annotations are never touched.
 
     This does NOT uninstall the lit CLI, because a running command can't
-    delete its own pipx environment. Finish with: pipx uninstall litman.
+    delete its own environment. Finish with `uv tool uninstall litman` or
+    `pipx uninstall litman`, depending on how you installed it.
 
     Use --dry-run to preview, -y/--yes to skip the confirmation.
     """
@@ -75,14 +89,23 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     skills_parent = home / ".claude" / "skills"
 
     skills = sorted(installed_skill_names(skills_parent))
+    shortcut = shortcut_path()
+    shortcut_present = shortcut.exists()
     shells = [s for s in SUPPORTED_SHELLS if completion_installed(s, home)]
     reg = registry_path()
     reg_present = reg.is_file()
+    prefs = prefs_path()
+    prefs_present = prefs.is_file()
+    profile = browser_profile_dir()
+    profile_present = profile.is_dir()
 
     plan_lines: list[str] = []
     if skills:
         plan_lines.append(f"[bold]Claude Code skills[/] [dim]({skills_parent})[/]:")
         plan_lines += [f"  [red]•[/] {escape(name)}" for name in skills]
+    if shortcut_present:
+        plan_lines.append("[bold]Desktop shortcut:[/]")
+        plan_lines.append(f"  [red]•[/] {escape(str(shortcut))}")
     if shells:
         plan_lines.append("[bold]Shell completion:[/]")
         plan_lines += [f"  [red]•[/] {escape(s)}" for s in shells]
@@ -91,12 +114,23 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             "[bold]Vault registry[/] [dim](de-registers vaults; data kept)[/]:"
         )
         plan_lines.append(f"  [red]•[/] {escape(str(reg))}")
+    if prefs_present:
+        plan_lines.append(
+            "[bold]Agent preferences[/] [dim](machine-level default agent)[/]:"
+        )
+        plan_lines.append(f"  [red]•[/] {escape(str(prefs))}")
+    if profile_present:
+        plan_lines.append(
+            "[bold]App-window browser profile[/] "
+            "[dim](Chromium state for `lit gui --window`)[/]:"
+        )
+        plan_lines.append(f"  [red]•[/] {escape(str(profile))}")
 
     if not plan_lines:
         console.print(
             Panel.fit(
                 "Nothing to remove — no bundled skills, shell completion, or "
-                "vault registry found.\n\n" + _PIPX_STEP,
+                "vault registry found.\n\n" + _REMOVE_CLI_STEP,
                 title="lit uninstall",
                 border_style="yellow",
             )
@@ -113,7 +147,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
 
     if dry_run:
         console.print("[dim](dry run — nothing was changed.)[/]")
-        console.print(Panel.fit(_PIPX_STEP, border_style="cyan"))
+        console.print(Panel.fit(_REMOVE_CLI_STEP, border_style="cyan"))
         return
 
     if not yes:
@@ -133,15 +167,24 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             )
         elif result["mode"] == "skipped":
             done.append(f"skill {name} (skipped — symlinked dir left in place)")
+    if shortcut_present and remove_shortcut() is not None:
+        done.append("desktop shortcut")
     for shell in shells:
         if uninstall_completion(shell, home)["removed"]:
             done.append(f"completion ({shell})")
     if reg_present and remove_registry()["removed"]:
         done.append("vault registry")
+    # After the registry file: only now can the shared config dir be empty, so
+    # remove_prefs() gets the chance to rmdir it (remove_registry keeps a dir
+    # that still holds preferences.yaml).
+    if prefs_present and remove_prefs()["removed"]:
+        done.append("agent preferences")
+    if profile_present and remove_browser_profile() is not None:
+        done.append("app-window browser profile")
 
     out = ["[bold green]Removed:[/]"]
     out += [f"  [green]•[/] {escape(x)}" for x in done]
-    out += ["", _VAULT_SAFE, "", _PIPX_STEP]
+    out += ["", _VAULT_SAFE, "", _REMOVE_CLI_STEP]
     console.print(
         Panel.fit("\n".join(out), title="lit uninstall", border_style="green")
     )

@@ -31,7 +31,7 @@ def maybe_first_time_registry_prompt() -> None:
         return
     if os.environ.get(REGISTRY_ENV_VAR, "").strip():
         return
-    if not sys.stdin.isatty():
+    if sys.stdin is None or not sys.stdin.isatty():
         return
 
     default_path = registry_path_default()

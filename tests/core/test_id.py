@@ -10,6 +10,7 @@ from litman.core.id import (
     derive_keyword,
     derive_keyword_alternatives,
     find_case_fold_collision,
+    is_valid_id,
 )
 from litman.exceptions import IDError
 
@@ -238,3 +239,35 @@ def test_case_fold_collision_returns_first_match() -> None:
     existing = ["FOO", "Foo"]
     clash = find_case_fold_collision(existing, "foo")
     assert clash in {"FOO", "Foo"}
+
+
+# ---------------------------------------------------------------------------
+# is_valid_id — filesystem-safety gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "paper_id",
+    ["2024_Foo_Bar", "a", "2023_Pandi_Cell-free", "v1.2.3-x", "A_b.c-d"],
+)
+def test_valid_ids_accepted(paper_id: str) -> None:
+    assert is_valid_id(paper_id)
+
+
+@pytest.mark.parametrize(
+    "paper_id",
+    [
+        "",
+        ".hidden",
+        "a..b",
+        "a/b",
+        "a\\b",
+        "has space",
+        # Trailing dot: Windows strips it when creating the directory, so the
+        # folder would exist under a different name than the id claims.
+        "2024_Foo.",
+        "2024_Foo_Bar.",
+    ],
+)
+def test_invalid_ids_rejected(paper_id: str) -> None:
+    assert not is_valid_id(paper_id)

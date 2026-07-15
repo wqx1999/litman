@@ -52,8 +52,19 @@ from litman.core.dates import (
     is_iso_date,
     is_iso_datetime,
 )
+from litman.core.dedup import normalize_doi
 from litman.core.id import is_valid_id
-from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
+from litman.core.notes import (
+    enumerate_markdown_files,
+    has_discussion_reminder,
+    heal_discussion_scaffold,
+    parse_wikilink_target,
+)
+from litman.core.portable_link import (
+    is_portable_link,
+    links_supported,
+    links_unsupported_hint,
+)
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
@@ -90,7 +101,7 @@ class Issue:
 # Tag value vocabularies. Kept as module constants so tests can assert a
 # CheckSpec's tags are drawn from these exact sets without re-deriving them.
 TIERS: frozenset[str] = frozenset({"cheap", "full"})
-KLASSES: frozenset[str] = frozenset({"A", "B-ext", "B-auth", "validity"})
+KLASSES: frozenset[str] = frozenset({"A", "B-ext", "B-auth", "validity", "env"})
 CORRECTIONS: frozenset[str] = frozenset(
     {"regen", "resolve", "annotate", "report"}
 )
@@ -116,8 +127,11 @@ class CheckSpec:
             INDEX/registry/listing/bounded-stat only, invariant #15) or
             ``"full"`` (Tier-2 ``health-check`` only).
         klass: drift class — ``"A"`` (derived↔truth), ``"B-ext"``
-            (truth↔external dir), ``"B-auth"`` (truth↔authored truth), or
-            ``"validity"`` (truth-internal integrity, not a drift).
+            (truth↔external dir), ``"B-auth"`` (truth↔authored truth),
+            ``"validity"`` (truth-internal integrity, not a drift), or
+            ``"env"`` (a capability of the host, not a state of the library —
+            nothing drifted and nothing is broken, so it can never be
+            "corrected", only reported).
         correction: ``"regen"`` / ``"resolve"`` / ``"annotate"`` /
             ``"report"`` — the correction mode this check's findings map to.
     """
@@ -125,7 +139,7 @@ class CheckSpec:
     category: str
     fn: _CheckFn
     tier: Literal["cheap", "full"]
-    klass: Literal["A", "B-ext", "B-auth", "validity"]
+    klass: Literal["A", "B-ext", "B-auth", "validity", "env"]
     correction: Literal["regen", "resolve", "annotate", "report"]
 
 
@@ -133,8 +147,18 @@ class CheckSpec:
 # Phase 1 keeps this exactly as the historical set (stale_staging +
 # orphan_trash_sidecar). Broadening ``--fix`` to all klass-A regen is Phase 2;
 # until then this stays a literal so external ``--fix`` behavior is unchanged.
+# ``discussion_scaffold`` joins them as a third validity fix: creating a missing
+# empty log (or restoring its header) is a pure add, never an overwrite.
+# ``skill_drift`` is the fourth: re-copying the bundled skill files over a
+# stale installed copy is lossless (the installed dir is a deploy artifact;
+# user-added files next to SKILL.md are never touched).
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
-    {"stale_staging", "orphan_trash_sidecar"}
+    {
+        "stale_staging",
+        "orphan_trash_sidecar",
+        "discussion_scaffold",
+        "skill_drift",
+    }
 )
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
@@ -402,8 +426,11 @@ def check_paper_dir_validity(
     * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename);
     * ``paper.pdf`` missing (``lit open`` depends on it; irreplaceable).
 
-    ``notes.md`` / ``discussion.md`` absence is NOT checked — empty/deleted is
-    a legitimate state (nothing in the system depends on them existing).
+    ``notes.md`` absence is NOT checked — empty/deleted is a legitimate state
+    (nothing in the system depends on it existing). ``discussion.md`` absence
+    is, but by its own check (:func:`check_discussion_scaffold`): its header
+    carries the append-format contract, so a paper without one is a paper whose
+    next discussion has no format to follow.
     """
     out: list[Issue] = []
     papers_dir = vault / "papers"
@@ -544,6 +571,128 @@ def check_paper_dir_validity(
                     hint="restore the PDF into the paper folder",
                 )
             )
+    return out
+
+
+def check_discussion_scaffold(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``papers/<id>/discussion.md`` exists and carries its format reminder.
+
+    ``lit add`` seeds every new paper with an empty discussion log whose header
+    states the append format (one dated ``##`` section per discussion, wikilinks
+    for cross-references). That header is the contract the next writer — agent
+    or human — reads before appending, so a missing file or a stripped-out
+    reminder means the next discussion has nothing to follow.
+
+    Papers added before the scaffold landed have no ``discussion.md`` at all;
+    this is the check that surfaces them, and ``--fix`` backfills. Both findings
+    are ``info``: nothing is broken or lost, the anchor is just absent.
+
+    Auto-fixable and lossless — :func:`heal_discussion_scaffold` creates the
+    file or re-inserts the reminder, and never touches an existing dated
+    section.
+    """
+    out: list[Issue] = []
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        disc_path = vault / "papers" / paper_id / "discussion.md"
+        if not disc_path.is_file():
+            out.append(
+                Issue(
+                    category="discussion_scaffold",
+                    severity="info",
+                    paper_id=paper_id,
+                    message=(
+                        f"papers/{paper_id}/discussion.md is missing — "
+                        "the discussion log and its append-format header"
+                    ),
+                    hint="`lit health-check --fix` creates the empty log",
+                )
+            )
+            continue
+        try:
+            text = disc_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # Unreadable is a real finding, not a silent skip (invariant #14).
+            out.append(
+                Issue(
+                    category="discussion_scaffold",
+                    severity="warning",
+                    paper_id=paper_id,
+                    message=(
+                        f"papers/{paper_id}/discussion.md cannot be read "
+                        "(permissions, or not UTF-8)"
+                    ),
+                    hint="fix the file by hand — --fix will not overwrite it",
+                )
+            )
+            continue
+        if not has_discussion_reminder(text):
+            out.append(
+                Issue(
+                    category="discussion_scaffold",
+                    severity="info",
+                    paper_id=paper_id,
+                    message=(
+                        f"papers/{paper_id}/discussion.md has lost its "
+                        "append-format header"
+                    ),
+                    hint="`lit health-check --fix` re-inserts it",
+                )
+            )
+    return out
+
+
+def check_duplicate_doi(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
+    """No two papers share a DOI (ledger: validity, report-only).
+
+    ``lit add`` refuses a duplicate at ingest and ``lit modify --set doi=``
+    refuses to create one, but metadata restored from a backup or written by
+    an older litman can still collide. The collision is dangerous out of
+    proportion to its looks: every ``--paper-doi`` lookup (``show`` / ``cite``
+    / ``rm``!) resolves to the alphabetically-first match, so a destructive
+    command aimed by DOI can hit the wrong paper. One finding per colliding
+    DOI, naming every holder — severity ``error`` because lookups are already
+    misrouting.
+
+    Not auto-fixable: only the user knows which paper genuinely owns the DOI.
+    """
+    by_doi: dict[str, list[str]] = {}
+    for paper in papers:
+        paper_id = paper.get("id")
+        doi = paper.get("doi")
+        if not paper_id or not doi:
+            continue
+        normalized = normalize_doi(str(doi))
+        if not normalized:
+            continue
+        by_doi.setdefault(normalized, []).append(str(paper_id))
+
+    out: list[Issue] = []
+    for normalized, ids in sorted(by_doi.items()):
+        if len(ids) < 2:
+            continue
+        joined = ", ".join(sorted(ids))
+        out.append(
+            Issue(
+                category="duplicate_doi",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"DOI {normalized!r} is shared by {len(ids)} papers: "
+                    f"{joined} — every --paper-doi lookup (show / cite / rm) "
+                    "resolves to one of them arbitrarily"
+                ),
+                hint=(
+                    "decide which paper owns the DOI, then fix the others: "
+                    "`lit modify <id> --set doi=<correct-doi>` (or --set "
+                    "doi= to clear)"
+                ),
+            )
+        )
     return out
 
 
@@ -1001,23 +1150,23 @@ def check_dangling_wikilinks(
 def check_views_vs_metadata(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """``views/by-*/`` symlink hubs ↔ metadata (ledger #2; full, klass A).
+    """``views/by-*/`` link hubs ↔ metadata (ledger #2; full, klass A).
 
-    The ``views/by-{project,topic,method,status}/`` symlink hubs are a derived
+    The ``views/by-{project,topic,method,status}/`` link hubs are a derived
     projection of each paper's list/scalar tag fields (see ``core/views.py``).
     Out-of-band edits (manual ``rm`` of a paper, hand-edited tags) leave them
-    disagreeing with metadata. Full-tier because the "missing symlink"
+    disagreeing with metadata. Full-tier because the "missing link"
     direction needs the per-paper tag values (not in the thin INDEX
     projection). Repair is the shared klass-A regen (``rebuild_views``).
 
     Two directions, both ``error`` (a wrong view misleads the agent's
     bucket-based retrieval):
 
-    * **dangling / extra symlink** — a ``views/<view>/<bucket>/<id>`` entry
+    * **dangling / extra link** — a ``views/<view>/<bucket>/<id>`` entry
       whose owning paper no longer carries that tag value (or no longer
-      exists). The symlink claims a membership metadata does not.
-    * **missing symlink** — a paper's tag value implies a
-      ``views/<view>/<value>/<id>`` symlink that is absent on disk.
+      exists). The link claims a membership metadata does not.
+    * **missing link** — a paper's tag value implies a
+      ``views/<view>/<value>/<id>`` link that is absent on disk.
 
     Uses the same ``LIST_VIEW_FIELDS`` / ``SCALAR_VIEW_FIELDS`` /
     ``_safe_name`` mapping as the builder so detection and repair cannot drift.
@@ -1033,6 +1182,8 @@ def check_views_vs_metadata(
         # No views hub yet — nothing derived to disagree. A first write
         # command / regen creates it.
         return []
+
+    can_link = links_supported(vault)
 
     # Expected membership per view: {view_name: {(bucket, paper_id)}}.
     expected: dict[str, set[tuple[str, str]]] = {
@@ -1060,7 +1211,7 @@ def check_views_vs_metadata(
                 if not bucket.is_dir():
                     continue
                 for entry in bucket.iterdir():
-                    if entry.is_symlink():
+                    if is_portable_link(entry):
                         on_disk.add((bucket.name, entry.name))
 
         for bucket, pid in sorted(on_disk - expected[view_name]):
@@ -1070,12 +1221,27 @@ def check_views_vs_metadata(
                     severity="error",
                     paper_id=pid,
                     message=(
-                        f"views/{view_name}/{bucket}/{pid} symlink has no "
+                        f"views/{view_name}/{bucket}/{pid} link has no "
                         "matching metadata tag (stale derived view)"
                     ),
                     hint="run `lit health-check --fix` to rebuild views from metadata",
                 )
             )
+        if not can_link:
+            # This filesystem cannot hold folder links at all (FAT32 / exFAT,
+            # network shares — POSIX symlinks and Windows junctions both need
+            # link storage). Every expected view would report "missing" and
+            # `--fix` could not repair a single one — a 50-paper library would
+            # show ~300 permanently-red errors that no user action inside
+            # litman can clear. That is an environment capability, not library
+            # damage, and reporting it as damage is a lie that drives users
+            # away. `links_unsupported` says it once, as info.
+            #
+            # The stale arm above is NOT suppressed: removing a link works on
+            # any filesystem, so a leftover view is still a real, fixable
+            # defect.
+            continue
+
         for bucket, pid in sorted(expected[view_name] - on_disk):
             out.append(
                 Issue(
@@ -1084,7 +1250,7 @@ def check_views_vs_metadata(
                     paper_id=pid,
                     message=(
                         f"metadata implies views/{view_name}/{bucket}/{pid} "
-                        "but the symlink is missing (derived view out of date)"
+                        "but the link is missing (derived view out of date)"
                     ),
                     hint="run `lit health-check --fix` to rebuild views from metadata",
                 )
@@ -1480,19 +1646,19 @@ def check_project_references(
     set (papers whose ``projects`` field contains the name):
 
     * the generated ``REFERENCES.md`` content vs the freshly rendered content;
-    * the ``litman_reflib/<id>`` symlink set vs the membership ids;
-    * the ``litman_code/<repo>`` symlink set vs the repos bound (via
+    * the ``litman_reflib/<id>`` link set vs the membership ids;
+    * the ``litman_code/<repo>`` link set vs the repos bound (via
       ``code-clones``) by member papers whose clone is present locally.
 
     Any mismatch is a klass-A drift (the derived artifact is a pure function of
-    metadata). The code-symlink arm specifically catches the
+    metadata). The code-link arm specifically catches the
     ``lit code add``/``link``/``unlink`` staleness window: those commands mutate
-    ``code-clones`` and refresh the symlinks via ``refresh_project_code_links``,
+    ``code-clones`` and refresh the links via ``refresh_project_code_links``,
     so a leftover mismatch means the refresh was bypassed (hand-edit, partial
     write, an older binary). Full-tier: needs per-paper ``projects`` /
     ``relevance`` / ``code-clones`` (REFERENCES.md embeds relevance). Repair is
     the shared regen (``rebuild_all_project_refs`` + ``rebuild_all_project_links``,
-    which rebuilds BOTH symlink hubs). Only checked when the project dir is
+    which rebuilds BOTH link hubs). Only checked when the project dir is
     definitely present — an unreachable / not-yet-mounted dir is left to
     ``project_path_exists`` (ledger #5), not flagged as content drift here.
     """
@@ -1592,11 +1758,11 @@ def check_project_references(
                 )
             )
 
-        # 2) litman_reflib/<id> symlink set vs membership.
+        # 2) litman_reflib/<id> link set vs membership.
         link_ids: set[str] = set()
         if reflib.is_dir():
             for entry in reflib.iterdir():
-                if entry.is_symlink():
+                if is_portable_link(entry):
                     link_ids.add(entry.name)
         for extra in sorted(link_ids - member_ids):
             out.append(
@@ -1605,27 +1771,37 @@ def check_project_references(
                     severity="error",
                     paper_id=extra,
                     message=(
-                        f"{project_dir / LITERATURE_SUBDIR / extra} symlink has "
+                        f"{project_dir / LITERATURE_SUBDIR / extra} link has "
                         f"no matching membership in project {name!r}"
                     ),
                     hint="run `lit health-check --fix` to rebuild project links",
                 )
             )
-        for missing in sorted(member_ids - link_ids):
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=missing,
-                    message=(
-                        f"project {name!r} membership implies a litman_reflib "
-                        f"symlink for {missing!r} but it is missing"
-                    ),
-                    hint="run `lit health-check --fix` to rebuild project links",
-                )
-            )
+        # Probed on the PROJECT dir, not the vault: a vault on an internal
+        # drive and a project folder on an exFAT stick give different answers,
+        # so one project can be reportable while another is not. When the
+        # filesystem cannot hold links the bridges were never made, `--fix`
+        # cannot make them, and reporting one error per member paper is noise
+        # no user can clear — `links_unsupported` states it once instead. The
+        # `extra` arms above stay live: removing a link works anywhere.
+        project_can_link = links_supported(project_dir)
 
-        # 3) litman_code/<repo> symlink set vs derived code-clone membership.
+        if project_can_link:
+            for missing in sorted(member_ids - link_ids):
+                out.append(
+                    Issue(
+                        category="project_references",
+                        severity="error",
+                        paper_id=missing,
+                        message=(
+                            f"project {name!r} membership implies a litman_reflib "
+                            f"link for {missing!r} but it is missing"
+                        ),
+                        hint="run `lit health-check --fix` to rebuild project links",
+                    )
+                )
+
+        # 3) litman_code/<repo> link set vs derived code-clone membership.
         #    Parallel to the litman_reflib block: expected = every repo bound
         #    (code-clones) by a member paper whose codes/<repo>/repo clone is
         #    present locally (mirrors rebuild_all_project_links, which skips
@@ -1640,7 +1816,7 @@ def check_project_references(
         code_link_names: set[str] = set()
         if code_dir.is_dir():
             for entry in code_dir.iterdir():
-                if entry.is_symlink():
+                if is_portable_link(entry):
                     code_link_names.add(entry.name)
         for extra in sorted(code_link_names - expected_repos):
             out.append(
@@ -1649,26 +1825,96 @@ def check_project_references(
                     severity="error",
                     paper_id=None,
                     message=(
-                        f"{code_dir / extra} symlink has no matching code-clone "
+                        f"{code_dir / extra} link has no matching code-clone "
                         f"membership in project {name!r} (stale project link)"
                     ),
                     hint="run `lit health-check --fix` to rebuild project links",
                 )
             )
-        for missing in sorted(expected_repos - code_link_names):
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=None,
-                    message=(
-                        f"project {name!r} membership implies a litman_code "
-                        f"symlink for {missing!r} but it is missing"
-                    ),
-                    hint="run `lit health-check --fix` to rebuild project links",
+        if project_can_link:
+            for missing in sorted(expected_repos - code_link_names):
+                out.append(
+                    Issue(
+                        category="project_references",
+                        severity="error",
+                        paper_id=None,
+                        message=(
+                            f"project {name!r} membership implies a litman_code "
+                            f"link for {missing!r} but it is missing"
+                        ),
+                        hint="run `lit health-check --fix` to rebuild project links",
+                    )
                 )
-            )
     return out
+
+
+def check_link_support(
+    vault: Path,
+    papers: list[dict[str, Any]],
+) -> list[Issue]:
+    """Report — once — that this filesystem cannot hold folder links.
+
+    Not a drift check (klass ``env``): nothing is out of date and nothing is
+    broken. It states a capability of the drive, so that the *absence* of
+    views/ and of the litman_reflib / litman_code shortcuts is explained rather
+    than silent, while ``views_vs_metadata`` and ``project_references`` stay
+    quiet about links they know cannot exist.
+
+    This fires only where NO link mechanism works: POSIX symlinks and Windows
+    junctions both need a filesystem that stores links, which FAT32 / exFAT and
+    most network shares do not. It is a property of the drive, not of the
+    user's privileges — no setting, elevation or mode change would alter the
+    verdict, so the hint recommends none.
+
+    Severity is ``info`` on purpose, and ``health-check`` does not gate its
+    exit code on info: a library on such a drive is perfectly healthy, and must
+    not be told otherwise.
+
+    Scopes probed: the vault (which owns ``views/``) and every configured
+    project directory that exists (each owns its own bridges). They are probed
+    separately because they can live on different filesystems — a vault on an
+    internal drive and a project on an exFAT stick disagree. All failing scopes
+    collapse into a single finding: a vault on such a drive fails all of them
+    at once and deserves one line, not N.
+    """
+    from litman.core.config import load_config
+
+    scopes: list[str] = []
+
+    if vault.is_dir() and not links_supported(vault):
+        scopes.append("the library (views/)")
+
+    try:
+        config = load_config(vault)
+    except ConfigError:
+        config = None
+    if config is not None:
+        for name in sorted(config.projects):
+            project_dir = Path(config.projects[name]).expanduser()
+            if not project_dir.is_dir():
+                # Unreachable / missing — project_path_exists owns that case.
+                continue
+            if not links_supported(project_dir):
+                scopes.append(f"project {name!r} (litman_reflib / litman_code)")
+
+    if not scopes:
+        return []
+
+    return [
+        Issue(
+            category="links_unsupported",
+            severity="info",
+            paper_id=None,
+            message=(
+                "folder links cannot be created here — "
+                + ", ".join(scopes)
+                + ". Those shortcuts are skipped; your library itself is fine: "
+                "metadata.yaml and INDEX.json are authoritative, and every "
+                "command, the web UI and the agent workflow work normally."
+            ),
+            hint=links_unsupported_hint(),
+        )
+    ]
 
 
 def _references_banner_timestamp(text: str) -> str:
@@ -1690,6 +1936,87 @@ def _strip_references_banner(text: str) -> str:
         for line in text.splitlines()
         if not line.startswith("<!-- ")
     )
+
+
+def check_project_bridge_dangling(
+    vault: Path,
+    papers: list[dict[str, Any]],
+    *,
+    exists_status: dict[str, bool | None] | None = None,
+) -> list[Issue]:
+    """Project bridge links still resolve (ledger #3's cheap arm; klass A).
+
+    The ``litman_reflib/<id>`` / ``litman_code/<repo>`` links bridge a
+    project working directory into the vault ACROSS trees: their stored
+    target (relative on POSIX, absolute for Windows junctions) points at
+    wherever the vault was when the link was written. Moving the vault (or deleting a
+    linked target) dangles them — and the name-set comparison in
+    ``check_project_references`` cannot see it, because the names still match
+    membership. This check probes what names cannot say: does each bridge
+    still resolve?
+
+    Metadata-free (invariant #15): config projects map + hub directory
+    listings + a bounded-stat of the link targets — never a per-paper
+    ``metadata.yaml``. That earns it tier=cheap, so the Tier-1 hook surfaces
+    a moved library at the user's NEXT command (surface-drift-eagerly, M28)
+    instead of waiting for a manual ``health-check`` nobody remembers to run.
+
+    Mount-safe (ADR-014): targets are probed with the bounded stat; ``None``
+    (slow / dropped mount) is never flagged — only a definite ``False`` is
+    drift. Projects whose own directory is not definitely present are skipped
+    (``project_path_exists`` owns that finding).
+
+    One issue per project, not per link: a moved vault dangles every bridge
+    at once and the repair is a wholesale rebuild, so per-link issues would
+    repeat the same fact N times.
+
+    ``exists_status``: the Tier-1 hook threads its shared bounded-stat of the
+    project DIR paths in; the per-link target probe is always this check's
+    own second bounded call (the shared probe never stats link targets).
+    """
+    from litman.commands._drift import _exists_bounded
+    from litman.core.config import load_config
+    from litman.core.project_link import find_dangling_bridges
+
+    try:
+        config = load_config(vault)
+    except ConfigError:
+        # Owned by check_config_readable (same tier, fires in the same hook).
+        return []
+    if not config.projects:
+        return []
+
+    paths = {
+        name: str(Path(path_str).expanduser())
+        for name, path_str in config.projects.items()
+    }
+    if exists_status is None:
+        dir_status = _exists_bounded(list(paths.values()))
+    else:
+        dir_status = {p: exists_status.get(p) for p in paths.values()}
+
+    out: list[Issue] = []
+    for name, dangling in find_dangling_bridges(
+        dict(config.projects), dir_status, _exists_bounded
+    ).items():
+        out.append(
+            Issue(
+                category="project_bridge_dangling",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"project {name!r}: {len(dangling)} bridge "
+                    f"link{'s point' if len(dangling) != 1 else ' points'} "
+                    f"at nothing (e.g. {dangling[0]}) — the library, or what "
+                    "a link targeted, has moved"
+                ),
+                hint=(
+                    "run `lit health-check --fix` (or `lit refresh-views`) "
+                    "to rebuild project links"
+                ),
+            )
+        )
+    return out
 
 
 def check_relevance_orphan(
@@ -1910,8 +2237,15 @@ def check_pdf_viewer(
     * Configured ``default_pdf_viewer`` set but not on PATH → warning;
       ``lit open`` would exit 2 with a "install / fix config" hint.
     * No configured viewer and the platform default (``xdg-open`` /
-      ``wslview``) is missing on Linux → warning. (macOS always has
-      ``open``; Windows always has ``os.startfile``.)
+      ``wslview``) is missing on Linux → warning on a desktop (installing
+      xdg-utils genuinely fixes it), info on a headless session. (macOS
+      always has ``open``; Windows always has ``os.startfile``.)
+    * ``xdg-open`` present but no display reachable → info, never warning:
+      "this SSH/cron session has no screen" is an environment fact, not
+      vault damage, and a warning would make health-check exit 1 forever on
+      every headless box — the exact failure mode ``links_unsupported`` was
+      demoted for. ``lit open`` there prints the path, which is the correct
+      behavior, not a defect.
 
     Lazy imports avoid pulling pydantic + the viewer module at health-check
     module-load time — both are heavier than checks needs for the unrelated
@@ -1953,7 +2287,9 @@ def check_pdf_viewer(
         out.append(
             Issue(
                 category="pdf_viewer",
-                severity="warning",
+                # Headless: environmental, unfixable from here (info).
+                # Desktop: actionable gap — installing xdg-utils fixes it.
+                severity="info" if is_headless() else "warning",
                 paper_id=None,
                 message=(
                     "no platform PDF viewer detected — "
@@ -1969,7 +2305,7 @@ def check_pdf_viewer(
         out.append(
             Issue(
                 category="pdf_viewer",
-                severity="warning",
+                severity="info",
                 paper_id=None,
                 message=(
                     "xdg-open is installed but no graphical display is "
@@ -1980,6 +2316,63 @@ def check_pdf_viewer(
                     "set default_pdf_viewer in lit-config.yaml to a viewer "
                     "usable without an X display, or run lit open from a "
                     "session with DISPLAY/WAYLAND_DISPLAY set"
+                ),
+            )
+        )
+    return out
+
+
+def check_skill_drift(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Installed agent skills vs this litman's bundled copies (machine-level).
+
+    The installed skill directory is a deploy artifact of the *package*:
+    ``lit install-skill`` copies the bundled files out, and a litman upgrade
+    ships new bundled content without touching the installed copy. A stale
+    copy fails silently — the agent keeps following an outdated SOP against
+    the newer CLI — so it is surfaced here as a warning and refreshed by
+    ``--fix`` (a lossless re-copy; files the user added next to SKILL.md are
+    never touched).
+
+    Deliberately NOT flagged:
+
+    * absent skills — never installing one is a respected opt-out (the CLI
+      is fully usable without skills), and ``--fix`` installing something the
+      user removed would be picking a side (ADR-015);
+    * ``linked`` dirs — a symlink/junction points at a copy managed
+      elsewhere (a development checkout), where diverging is the point.
+
+    Machine-level, so ``vault`` / ``papers`` are unused — like the pdf-viewer
+    probe this reports host state per run, not vault state.
+    """
+    from litman.core.skill import skill_status
+
+    try:
+        statuses = skill_status()
+    except OSError:
+        # Unreadable skills dir / broken package resources — not a vault
+        # problem; the install-skill command is where that error belongs.
+        return []
+
+    out: list[Issue] = []
+    for name in sorted(statuses):
+        info = statuses[name]
+        if info["state"] != "stale":
+            continue
+        files = ", ".join(info["stale_files"])
+        out.append(
+            Issue(
+                category="skill_drift",
+                severity="warning",
+                paper_id=None,
+                message=(
+                    f"installed agent skill '{name}' is out of date with "
+                    f"this litman install ({files})"
+                ),
+                hint=(
+                    "refresh with `lit health-check --fix` or "
+                    "`lit install-skill --force`"
                 ),
             )
         )
@@ -2286,9 +2679,27 @@ def check_code_clone_integrity(
 #       Cheap: reads only INDEX ids + papers/ listing, no per-paper metadata
 #       (invariant #15) → tier=cheap. Tier-1 repairs it metadata-free.
 #   views_vs_metadata (#2) — views/by-*/ (derived) ↔ metadata → klass=A, regen.
-#       Full: the missing-symlink direction needs per-paper tag values.
+#       Full: the missing-link direction needs per-paper tag values.
 #   project_references (#3) — project REFERENCES.md / litman_reflib (derived) ↔
 #       membership → klass=A, regen. Full (reads projects + relevance).
+#   project_bridge_dangling (#3's cheap arm) — the litman_reflib/litman_code
+#       bridge links resolve to a live target. Disjoint from
+#       project_references by construction: that check compares link NAMES to
+#       membership and is blind to a link whose name matches but whose target
+#       moved (the vault-moved case). Cheap: config + hub listing +
+#       bounded-stat of link targets, no per-paper metadata (invariant #15) →
+#       tier=cheap, klass=A, regen (`--fix` regen repairs it; the Tier-1 hook
+#       gates the same rebuild behind a [Y/n] because rebuilding reads
+#       metadata).
+#   links_unsupported — the ONLY klass=env entry: a capability of the host,
+#       not a state of the library. Nothing drifted, nothing is broken, and no
+#       correction exists (hence report + severity=info, which health-check does
+#       not gate its exit code on). It exists so that when a filesystem cannot
+#       hold folder links — POSIX symlinks and Windows junctions alike need
+#       link storage, which FAT32 / exFAT and most network shares lack —
+#       views_vs_metadata and project_references can go SILENT about links they
+#       know cannot exist, and the absence is still explained once instead of
+#       reported ~6x per paper as unfixable damage.
 #   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
 #       the user/CLI to re-sync → klass=B-auth, correction=report.
 #   dangling_wikilinks — authored prose marked in place (`(deleted)`) →
@@ -2311,13 +2722,38 @@ def check_code_clone_integrity(
 #       diagnostics, surface only → klass=validity, correction=report.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
+    CheckSpec("duplicate_doi", check_duplicate_doi, "full", "validity", "report"),
     CheckSpec(
         "paper_dir_validity", check_paper_dir_validity, "full", "validity", "report"
+    ),
+    # Not klass A: the log is authored TRUTH, not a derived artifact, so `--fix`
+    # must not route it through the wholesale `regen` (which would report it
+    # healed while writing no file). It rides the validity-fix path instead.
+    CheckSpec(
+        "discussion_scaffold",
+        check_discussion_scaffold,
+        "full",
+        "validity",
+        "regen",
     ),
     CheckSpec("index_vs_disk", check_index_vs_disk, "cheap", "A", "regen"),
     CheckSpec("views_vs_metadata", check_views_vs_metadata, "full", "A", "regen"),
     CheckSpec(
         "project_references", check_project_references, "full", "A", "regen"
+    ),
+    CheckSpec(
+        "project_bridge_dangling",
+        check_project_bridge_dangling,
+        "cheap",
+        "A",
+        "regen",
+    ),
+    CheckSpec(
+        "links_unsupported",
+        check_link_support,
+        "full",
+        "env",
+        "report",
     ),
     CheckSpec("dangling_refs", check_dangling_refs, "full", "B-auth", "report"),
     CheckSpec(
@@ -2354,6 +2790,13 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("stale_staging", check_stale_staging, "full", "validity", "report"),
     CheckSpec("trash_health", check_trash_health, "full", "validity", "report"),
     CheckSpec("pdf_viewer", check_pdf_viewer, "full", "validity", "report"),
+    # skill_drift — the installed agent-skill copies are deploy artifacts of
+    # the *package* (regen = re-copy, lossless), but they are machine-level,
+    # not vault-derived: klass A would route them into the vault-wide regen
+    # (which never touches the skills dir) and into the klass-A category
+    # sets. Like discussion_scaffold they ride the validity-fix path instead
+    # (AUTO_FIXABLE_CATEGORIES + apply_autofix).
+    CheckSpec("skill_drift", check_skill_drift, "full", "validity", "regen"),
     CheckSpec(
         "code_clone_integrity",
         check_code_clone_integrity,
@@ -2459,10 +2902,56 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
     * ``stale_staging``  — drops every ``.litman-staging/<op-id>/`` entry.
     * ``orphan_trash_sidecar`` — deletes ``<entry>.meta.yaml`` files in
       ``.trash/`` whose entry dir is missing.
+    * ``discussion_scaffold`` — creates the missing ``discussion.md`` (or
+      re-inserts its append-format header) for each flagged paper. Additive
+      only: an existing log keeps every dated section it already holds.
+    * ``skill_drift`` — re-copies each stale installed agent skill from the
+      bundled package content (lossless: the installed dir is a deploy
+      artifact, and files the user added next to SKILL.md are kept).
     """
     counts: dict[str, int] = {}
 
     fixable_present = {i.category for i in issues if i.category in AUTO_FIXABLE_CATEGORIES}
+
+    if "skill_drift" in fixable_present:
+        from litman.core.skill import (
+            SkillInstallError,
+            install_skill,
+            skill_status,
+        )
+
+        n = 0
+        # Re-derive which skills are stale (issues carry prose, not state);
+        # only those are refreshed — absent skills stay a respected opt-out.
+        for name, info in sorted(skill_status().items()):
+            if info["state"] != "stale":
+                continue
+            try:
+                install_skill(overwrite=True, name=name)
+            except (SkillInstallError, OSError):
+                # Best-effort: an unwritable skills dir must not abort the
+                # whole `--fix` run. The skill stays flagged and is re-offered
+                # on the next health-check.
+                continue
+            n += 1
+        counts["skill_drift"] = n
+
+    if "discussion_scaffold" in fixable_present:
+        n = 0
+        for issue in issues:
+            if issue.category != "discussion_scaffold" or not issue.paper_id:
+                continue
+            try:
+                if heal_discussion_scaffold(vault, issue.paper_id):
+                    n += 1
+            except (OSError, UnicodeDecodeError):
+                # An unwritable folder or an unreadable (non-UTF-8) log must not
+                # abort the whole `--fix` and discard the fixes already applied
+                # — and the unreadable one is never blindly overwritten, which
+                # is what its finding promised. It stays flagged and is
+                # re-offered on the next health-check.
+                continue
+        counts["discussion_scaffold"] = n
 
     if "stale_staging" in fixable_present:
         counts["stale_staging"] = cleanup_stale_staging(vault)

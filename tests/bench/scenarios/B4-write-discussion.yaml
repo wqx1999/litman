@@ -8,15 +8,15 @@ invariants: [1]
 routing_label: lit-reading            # 记下这次讨论
 seed: seed-1paper-diffdock
 precondition: |
-  #1 已入库，discussion.md 不存在或为空。
+  #1 已入库。discussion.md 由 `lit add` scaffold 出来，只有 H1 + 格式注释，无任何
+  dated section。
 intent: |
   "我们刚聊的关于 DiffDock 的几个点，帮我记到这篇的讨论里：(1) 它把分子对接从回归
   单一位姿改成了扩散式的生成建模，采样多个候选位姿；(2) 它的置信度模型给出的排序，
   对挑出真正可用的位姿很关键；(3) 对我们做的肽-受体体系，盲对接设定可能比重对接更
   贴近真实用例。"
 expected_end_state:
-  - "path_exists: papers/<diffdock>/discussion.md"
-  - "vault_file_nonempty: papers/<diffdock>/discussion.md"
+  - "vault_file_contains: papers/<diffdock>/discussion.md :: ~## 20"
 auto_fail:
   - 改动 metadata.yaml 结构化字段（讨论只落 discussion.md）
 adherence_flags:
@@ -27,11 +27,14 @@ notes: |
   → 整张 prose-blocked 藏住这桩真失败（cc_haiku_260604_0 r0 即此）。现把三个要点**内联
   进 intent**，agent 有可蒸馏的素材，单轮即可完成。
 
-  判分用 `vault_file_nonempty`（新 verb，锚 vault 根，读 vault 内 markdown；`file_*` 只
-  读 cwd 锚不到）：它精准抓住两种真失败——(a) 问而不写 → discussion.md 不存在/空；
-  (b) 写进 notes.md 而非 discussion.md（adherence_flag）→ discussion.md 仍空。
+  **判分锚点换过一次（v1.2.0 discussion scaffold）。** 原来用 `path_exists` +
+  `vault_file_nonempty`：`lit add` 那时不建 discussion.md，"文件存在且非空" 就等价于
+  "agent 真写了"。scaffold 落地后每篇论文一入库就带一个 H1 + 格式注释的空 log，这两行
+  **恒真**——尺子被工具自己喂饱了。
 
-  **刻意不**对 discussion.md 内容做关键词断言：agent 蒸馏时会改写/可能用英文，任何固定
-  关键词（如 "扩散"）都会因语言/措辞漂移 false-negative，等于把刚清的污染塞回尺子。
-  "是否忠实含三个要点" 这一内容质量判断留作可选人工复核；可机检的真失败（没写 / 写错
-  文件）已由上面两行覆盖。
+  现在锚 `## 20`：格式契约要求每次讨论追加一个 `## YYYY-MM-DD HH:MM` 段，scaffold 自己
+  只有注释里那句字面量 `## YYYY-MM-DD HH:MM`（不含 "## 20"），所以这个断言**只有真追加
+  了一段带日期的讨论才成立**。它仍抓住原来那两种真失败——(a) 问而不写；(b) 写进 notes.md
+  而非 discussion.md——且**不是关键词断言**：日期不随 agent 用中文还是英文蒸馏而漂移，
+  原卡"刻意不锚关键词（如'扩散'）"的理由在这里依然成立、也依然被遵守。
+  "是否忠实含三个要点" 仍留作可选人工复核。

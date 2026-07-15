@@ -15,12 +15,14 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.commands.gui import browser_profile_dir, remove_shortcut, shortcut_path
 from litman.commands.install_completion import (
     _build_plan,
     _install_block,
     completion_installed,
     uninstall_completion,
 )
+from litman.core.agent_prefs import prefs_path, remove_prefs, save_default_agent
 from litman.core.library import create_vault
 from litman.core.skill import (
     install_all_skills,
@@ -192,6 +194,41 @@ def test_uninstall_yes_removes_everything(
     assert not reg.exists()
 
 
+def test_uninstall_removes_the_app_window_browser_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `lit gui --window` leaves tens of MB of Chromium state behind; an
+    # uninstall that keeps it is not an uninstall.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    _seed_artifacts(tmp_path)
+    profile = browser_profile_dir()
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Default" / "Preferences").write_text("{}", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "browser profile" in result.output
+    assert not profile.exists()
+
+
+def test_uninstall_dry_run_lists_but_keeps_the_browser_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    _seed_artifacts(tmp_path)
+    profile = browser_profile_dir()
+    profile.mkdir(parents=True)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "browser profile" in result.output
+    assert profile.exists()
+
+
 def test_uninstall_decline_aborts_without_removing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,7 +260,11 @@ def test_uninstall_registered_in_help(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("HOME", str(tmp_path))
     result = CliRunner().invoke(cli, ["uninstall", "--help"])
     assert result.exit_code == 0
-    assert "pipx uninstall litman" in result.output
+    # help names the installer-neutral CLI-removal step; collapse whitespace so
+    # click's line-wrapping can't split the phrases.
+    normalized = " ".join(result.output.split())
+    assert "uv tool uninstall litman" in normalized
+    assert "pipx uninstall litman" in normalized
 
 
 # --------------------------------------------------------------------------
@@ -390,3 +431,150 @@ def test_remove_registry_keeps_nonempty_config_dir(
     assert not reg.exists()
     assert reg.parent.is_dir()  # dir kept because a sibling remains
     assert sibling.exists()
+
+
+# --------------------------------------------------------------------------
+# remove_shortcut
+# --------------------------------------------------------------------------
+
+
+def _seed_shortcut(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Write a dummy shortcut file at the platform ``shortcut_path()``.
+
+    HOME must already be redirected by the caller; XDG_DATA_HOME is cleared so
+    the Linux path resolves under the redirected HOME (not the dev's real
+    ~/.local/share).
+    """
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    target = shortcut_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("[Desktop Entry]\n", encoding="utf-8")
+    return target
+
+
+def test_remove_shortcut_deletes_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    target = _seed_shortcut(monkeypatch)
+    assert target.exists()
+
+    removed = remove_shortcut()
+
+    assert removed == target
+    assert not target.exists()
+
+
+def test_remove_shortcut_absent_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert remove_shortcut() is None
+
+
+def test_remove_shortcut_removes_app_bundle_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The macOS artifact is a ``.app`` directory bundle — remove it whole,
+    not just a single file."""
+    bundle = tmp_path / "litman.app"
+    (bundle / "Contents").mkdir(parents=True)
+    (bundle / "Contents" / "Info.plist").write_text("x", encoding="utf-8")
+    monkeypatch.setattr("litman.commands.gui.shortcut_path", lambda: bundle)
+
+    removed = remove_shortcut()
+
+    assert removed == bundle
+    assert not bundle.exists()
+
+
+# --------------------------------------------------------------------------
+# remove_prefs
+# --------------------------------------------------------------------------
+
+
+def test_remove_prefs_deletes_file_and_empty_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    save_default_agent("claude")
+    prefs = prefs_path()
+    assert prefs.is_file()
+
+    result = remove_prefs()
+
+    assert result["removed"] is True
+    assert result["dir_removed"] is True
+    assert not prefs.exists()
+    assert not prefs.parent.exists()
+
+
+def test_remove_prefs_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    assert remove_prefs()["removed"] is False
+
+
+def test_remove_prefs_keeps_nonempty_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    save_default_agent("claude")
+    prefs = prefs_path()
+    sibling = prefs.parent / "vaults.yaml"
+    sibling.write_text("vaults: {}\n", encoding="utf-8")
+
+    result = remove_prefs()
+
+    assert result["removed"] is True
+    assert result["dir_removed"] is False
+    assert prefs.parent.is_dir()  # dir kept because vaults.yaml remains
+    assert sibling.exists()
+
+
+# --------------------------------------------------------------------------
+# lit uninstall — shortcut + preferences coverage
+# --------------------------------------------------------------------------
+
+
+def test_uninstall_yes_removes_shortcut_and_prefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit uninstall -y` must also carry off the desktop shortcut and the
+    machine-level preferences.yaml — and, with both config files gone, the
+    shared config dir itself."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    reg = _seed_artifacts(tmp_path)
+    save_default_agent("claude")
+    prefs = prefs_path()
+    shortcut = _seed_shortcut(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not shortcut.exists()
+    assert not prefs.exists()
+    # registry + preferences both gone → the shared config dir is removed too
+    assert not reg.parent.exists()
+
+
+def test_uninstall_dry_run_lists_shortcut_and_prefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    save_default_agent("claude")
+    shortcut = _seed_shortcut(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "Desktop shortcut" in normalized
+    assert "Agent preferences" in normalized
+    # dry run changes nothing
+    assert shortcut.exists()
+    assert prefs_path().is_file()

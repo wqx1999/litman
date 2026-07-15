@@ -83,6 +83,30 @@ def test_cli_vault_add_first_registers_and_activates(
     assert reg.vaults[0].is_active is True
 
 
+def test_cli_vault_add_stamps_health_check_no_nudge(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """D5: registering an existing vault starts its health-check clock (mirrors
+    `lit init`), so the very next command is not hit by a staleness nudge.
+
+    Without the stamp, last_health_check_at stays None, which reads as
+    "never checked == stale" and the post-command nudge fires immediately.
+    """
+    runner = CliRunner()
+    add = runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    assert add.exit_code == 0, add.output
+
+    reg = load_registry()
+    entry = find_by_name(reg, "main")
+    assert entry is not None
+    assert entry.last_health_check_at is not None
+
+    # First command after registering: fresh clock → no staleness nudge.
+    listed = runner.invoke(cli, ["list"])
+    assert listed.exit_code == 0, listed.output
+    assert "14+ days" not in listed.output
+
+
 def test_cli_vault_add_second_not_active_by_default(
     fake_home: Path, vault_a: Path, vault_b: Path
 ) -> None:

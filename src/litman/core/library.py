@@ -64,9 +64,15 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
 
     vault = parent / name
     if vault.exists() and any(vault.iterdir()):
+        # Whatever is sitting there is NOT necessarily a vault — it is just a
+        # non-empty directory, and it may well be a folder of the user's own
+        # files that happens to collide on name. So the advice is to go around
+        # it, never to clear it out. The two suggestions are also the two inputs
+        # the user has in front of them, in the CLI (--name / PARENT_DIR) and in
+        # the GUI's New-vault dialog (Name / Location) alike.
         raise VaultExistsError(
-            f"Target vault path already exists and is non-empty: {vault}. "
-            "Pick a different --name or remove the existing vault."
+            f"Target vault path already exists and is not empty: {vault}. "
+            "Pick a different name, or a different location."
         )
 
     # Track whether we created the root so we know whether to remove it on
@@ -180,10 +186,10 @@ def find_vault(explicit: Path | None = None) -> Path:
             return parent
 
     raise LibraryNotFoundError(
-        "No vault found. Run `lit init <parent-dir>` to create one (it "
-        "registers automatically), or `lit vault add <name> <path>` to "
-        "register an existing vault. Advanced: set $LIT_LIBRARY or pass "
-        "--library <vault-path>."
+        "No vault found. New to litman? Run `lit setup`. Or create a vault "
+        "directly with `lit init <parent-dir>` (it registers automatically), "
+        "or `lit vault add <name> <path>` to register an existing vault. "
+        "Advanced: set $LIT_LIBRARY or pass --library <vault-path>."
     )
 
 

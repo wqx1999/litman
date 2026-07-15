@@ -365,8 +365,44 @@ def test_project_set_path_happy(
     )
     assert result.exit_code == 0, result.output
     assert _config_projects(vault) == {"p": str(b)}
-    # Always prints the rebuild hint.
+    # Non-interactive: no prompt possible, so the manual hint survives here.
     assert "lit link --rebuild-all" in result.output
+
+
+def test_project_set_path_interactive_rebuilds_links_with_one_enter(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """House rule: repairable drift gets a [Y/n] default-Y at the point of
+    use. set-path dangles every project link at the old location — pressing
+    Enter must leave litman_reflib rebuilt at the new one, with no
+    "remember to run lit link --rebuild-all later" homework."""
+    from litman.commands import project as project_mod
+
+    a = tmp_path / "a"
+    a.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
+    paper_dir = vault / "papers" / "2024_P_One"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_P_One\ntitle: T\nprojects: [p]\n", encoding="utf-8"
+    )
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(a), "--library", str(vault)],
+    )
+
+    monkeypatch.setattr(project_mod, "_stdin_isatty", lambda: True)
+    result = runner.invoke(
+        cli,
+        ["project", "set-path", "p", str(b), "--library", str(vault)],
+        input="\n",  # the one Enter (default Y)
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (b / "litman_reflib" / "2024_P_One").is_symlink()
+    assert "lit link --rebuild-all" not in result.output
 
 
 def test_project_set_path_same_is_noop(
@@ -422,18 +458,84 @@ def test_project_set_path_unregistered_rejected(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_project_rm_no_refs_no_prompt(
+def test_project_rm_of_an_empty_project_still_confirms(
     vault: Path, proj_dir: Path
 ) -> None:
+    """Zero papers is not zero damage, so the gate is unconditional.
+
+    Removing an unreferenced project still drops its path binding from
+    lit-config.yaml and deletes litman_reflib/ + REFERENCES.md from the
+    user's own folder — outside the vault, where the trash cannot reach.
+    """
     runner = CliRunner()
     runner.invoke(
         cli,
         ["project", "add", "p", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    # No --yes, no input: should execute without prompting (no refs).
+    # Non-tty (CliRunner's default) and no --yes: refuse, change nothing.
     result = runner.invoke(
         cli, ["project", "rm", "p", "--library", str(vault)]
+    )
+    assert result.exit_code != 0
+    assert "Non-interactive environment" in result.output
+    assert _taxonomy_projects(vault) == ["p"]
+    assert _config_projects(vault) != {}
+
+
+def test_project_rm_of_an_empty_project_says_no_papers_are_affected(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warning names what IS destroyed, so the Enter is an informed one."""
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli, ["project", "rm", "p", "--library", str(vault)], input="y\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "0 paper(s)" in result.output
+    assert "TAXONOMY.md and lit-config.yaml" in result.output
+    assert str(proj_dir) in result.output
+    assert _taxonomy_projects(vault) == []
+    assert _config_projects(vault) == {}
+
+
+def test_project_rm_of_an_empty_project_aborts_on_n(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli, ["project", "rm", "p", "--library", str(vault)], input="n\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "Aborted" in result.output
+    assert _taxonomy_projects(vault) == ["p"]
+    assert _config_projects(vault) != {}
+
+
+def test_project_rm_of_an_empty_project_still_honours_yes(
+    vault: Path, proj_dir: Path
+) -> None:
+    """The scripted path is unchanged: --yes removes it with no prompt."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "p", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    result = runner.invoke(
+        cli, ["project", "rm", "p", "--yes", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert _taxonomy_projects(vault) == []
@@ -564,6 +666,40 @@ def test_project_rm_atomicity_index_matches_metadata(
         meta = _meta(vault, p["id"])
         assert meta["projects"] == p["projects"]
         assert p["projects"] == []
+
+
+def test_project_rm_junction_bridges_torn_down(
+    vault: Path, proj_dir: Path, fake_junction
+) -> None:
+    """Windows regression (2026-07-14 manual round): with a paper still
+    linked, ``project rm --yes`` reported success but skipped the junction
+    bridges — bare ``is_symlink()`` sees nothing on NTFS — leaving orphan
+    links pointing into the vault from a project that no longer exists
+    (exactly what invariant #14's teardown comment promises never happens).
+    The emptied hubs are litman's litter and go with the project; the user's
+    own files stay."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    reflib = proj_dir / "litman_reflib"
+    bridge = fake_junction(reflib / "2024_A")
+    (reflib / "REFERENCES.md").write_text("# refs\n", encoding="utf-8")
+    (proj_dir / "my_own_file.txt").write_text("mine", encoding="utf-8")
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert not bridge.exists()
+    assert not reflib.exists()  # emptied hub removed with the project
+    assert (proj_dir / "my_own_file.txt").exists()
+    # The vault side of the bridge is untouched.
+    assert (vault / "papers" / "2024_A" / "metadata.yaml").is_file()
 
 
 def test_project_rm_stray_stdin_no_yes_aborts_unmutated(

@@ -147,3 +147,61 @@ def test_search_table_format(vault: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "2023_A_Foo" in result.output
     assert "notes" in result.output
+
+
+def test_search_ignores_html_comments(vault: Path) -> None:
+    """Scaffold reminders live in HTML comments and are NOT searchable content.
+
+    Both scaffolds seed one (notes.md the wikilink reminder, discussion.md the
+    append-format header). Left in the corpus they would return a hit on EVERY
+    paper for a word only the scaffold uses — noise no user wrote. This is the
+    same reasoning health-check's dangling-wikilink scan already applies.
+    """
+    _seed_paper(
+        vault,
+        "2025_C_Baz",
+        notes="# Notes\n\n<!-- seeded scaffold: quokka -->\n\nreal body\n",
+    )
+    assert json.loads(_invoke(vault, "quokka").output) == []
+    # The authored line around it is still perfectly findable.
+    hits = json.loads(_invoke(vault, "real body").output)
+    assert [h["id"] for h in hits] == ["2025_C_Baz"]
+
+
+def test_search_keeps_line_numbers_across_a_masked_comment(vault: Path) -> None:
+    """Masking must not shift the reported line: the Web UI scrolls to it."""
+    _seed_paper(
+        vault,
+        "2025_D_Qux",
+        discussion="# Log\n\n<!-- multi\nline\ncomment -->\n\nthe real turn\n",
+    )
+    hits = json.loads(_invoke(vault, "the real turn").output)
+    assert len(hits) == 1
+    assert hits[0]["line"] == 7  # the line it really sits on
+    assert hits[0]["snippet"] == "the real turn"
+
+
+def test_search_finds_prose_on_a_line_that_ends_in_a_comment(vault: Path) -> None:
+    """Only the commented span is blanked, not the whole line."""
+    _seed_paper(vault, "2025_E_Mix", notes="authored words <!-- hidden words -->\n")
+    assert [h["id"] for h in json.loads(_invoke(vault, "authored").output)] == [
+        "2025_E_Mix"
+    ]
+    assert json.loads(_invoke(vault, "hidden").output) == []
+
+
+def test_search_keeps_line_numbers_when_a_comment_holds_a_form_feed(
+    vault: Path,
+) -> None:
+    """splitlines() breaks on \\x0c too — pdftotext page separators pasted
+    into notes. A mask that turned it into a space would shift every later
+    hit's line number and drop the file's last line from the corpus."""
+    _seed_paper(
+        vault,
+        "2025_F_Feed",
+        notes="line one\n<!-- page\x0cbreak -->\nTARGET after comment\n",
+    )
+    hits = json.loads(_invoke(vault, "TARGET after comment").output)
+    assert len(hits) == 1
+    assert hits[0]["line"] == 4  # \x0c splits the comment line in two
+    assert hits[0]["snippet"] == "TARGET after comment"

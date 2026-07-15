@@ -9,6 +9,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands._options import library_option, vault_option
+from litman.commands._usage import reject_second_positional
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import (
@@ -31,6 +33,7 @@ console = Console()
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
 )
+@click.argument("misplaced_project", required=False)
 @click.option(
     "--paper-doi",
     "paper_doi",
@@ -62,28 +65,15 @@ console = Console()
     default=False,
     help=(
         "Cross-machine recovery: skip <paper-id>/--project and instead "
-        "rebuild every registered project's symlinks + REFERENCES.md "
+        "rebuild every registered project's links + REFERENCES.md "
         "from scratch, based on each paper's projects field."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def link_cmd(
     paper_id: str | None,
+    misplaced_project: str | None,
     paper_doi: str | None,
     project: str | None,
     relevance: str | None,
@@ -91,7 +81,7 @@ def link_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Link a paper to a project: tag + symlinks + REFERENCES.md.
+    """Link a paper to a project: tag + links + REFERENCES.md.
 
     Single-paper mode (the paper id accepts a full id, a unique substring,
     or --paper-doi <DOI>):
@@ -101,7 +91,7 @@ def link_cmd(
         lit link <paper-id> --project <name> --relevance "Direct baseline"
         lit link --paper-doi 10.1038/... --project <name>
 
-    Cross-machine recovery mode (rebuild every project's symlinks +
+    Cross-machine recovery mode (rebuild every project's links +
     REFERENCES.md from each paper's projects field):
 
     \b
@@ -111,6 +101,12 @@ def link_cmd(
     linking, and its directory must exist on disk (lit-config.yaml stores
     only the path, not the directory itself).
     """
+    if misplaced_project is not None:
+        raise reject_second_positional(
+            taken=paper_id or "",
+            extra=misplaced_project,
+            correct=f"lit link {paper_id} --project {misplaced_project}",
+        )
     if rebuild_all:
         if paper_id or project or paper_doi:
             raise LitmanError(
@@ -190,25 +186,26 @@ def link_cmd(
             )
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (already linked)")
-    body_lines.append(f"[dim]Paper symlink:[/] {result['paper_link']}")
+    body_lines.append(f"[dim]Paper link:[/] {result['paper_link']}")
     if result["code_links"]:
         body_lines.append(
-            f"[dim]Code symlinks:[/] {', '.join(escape(r) for r in result['code_links'])}"
+            f"[dim]Code links:[/] {', '.join(escape(r) for r in result['code_links'])}"
         )
     if result["code_links_skipped_missing_repo"]:
         body_lines.append(
-            f"[yellow]Code symlinks skipped (repo missing locally):[/] "
+            f"[yellow]Code links skipped (repo missing locally):[/] "
             f"{', '.join(escape(r) for r in result['code_links_skipped_missing_repo'])} "
             "[dim](run `lit code restore-all` then `lit link --rebuild-all`)[/]"
         )
-    if result.get("code_links_skipped_symlink_unsupported"):
-        # review F31: repo present, but this platform refuses symlinks — the
+    if result.get("code_links_skipped_links_unsupported"):
+        # review F31: repo present, but this filesystem cannot hold links — the
         # binding holds; restore-all would NOT help here.
         body_lines.append(
-            f"[yellow]Code symlinks skipped (symlinks unsupported here):[/] "
-            f"{', '.join(escape(r) for r in result['code_links_skipped_symlink_unsupported'])} "
-            "[dim](binding kept; symlinks need Developer Mode / a POSIX "
-            "filesystem)[/]"
+            f"[yellow]Code links skipped (this drive cannot hold folder "
+            f"links):[/] "
+            f"{', '.join(escape(r) for r in result['code_links_skipped_links_unsupported'])} "
+            "[dim](binding kept; keep the library and project on an internal "
+            "drive)[/]"
         )
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     if result["added_to_projects"] and not result["set_relevance"]:
@@ -227,6 +224,7 @@ def link_cmd(
 @click.argument(
     "paper_id", required=False, shell_complete=complete_paper_id
 )
+@click.argument("misplaced_project", required=False)
 @click.option(
     "--paper-doi",
     "paper_doi",
@@ -239,8 +237,8 @@ def link_cmd(
 @click.option(
     "--project",
     "project",
-    required=True,
-    help="Project name to unlink from.",
+    default=None,
+    help="Project name to unlink from. Required.",
 )
 @click.option(
     "--keep-relevance",
@@ -252,39 +250,41 @@ def link_cmd(
         "recover it from terminal scrollback if needed)."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def unlink_cmd(
     paper_id: str | None,
+    misplaced_project: str | None,
     paper_doi: str | None,
-    project: str,
+    project: str | None,
     keep_relevance: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Unlink a paper from a project: remove tag + symlinks + REFERENCES.md.
+    """Unlink a paper from a project: remove tag + links + REFERENCES.md.
 
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.
 
-    The reverse of lit link. Code symlinks under the project are
+    The reverse of lit link. Code links under the project are
     only removed if no OTHER linked paper in the project still
     references the same repo (shared-utility-lib case).
     """
+    # --project is checked here rather than declared required=True: Click
+    # enforces a required option during parsing, before any command body runs,
+    # so `lit unlink <paper> <project>` would die on "Missing option
+    # '--project'" and never reach the guard that can name the right command.
+    # Same message Click would have printed, for the case where it really is
+    # just missing.
+    if misplaced_project is not None:
+        raise reject_second_positional(
+            taken=paper_id or "",
+            extra=misplaced_project,
+            correct=f"lit unlink {paper_id} --project {misplaced_project}",
+        )
+    if not project:
+        raise click.UsageError("Missing option '--project'.")
+
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     config = load_config(vault)
@@ -311,12 +311,12 @@ def unlink_cmd(
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (was not linked)")
     body_lines.append(
-        f"[dim]Paper symlink:[/] "
+        f"[dim]Paper link:[/] "
         f"{'removed' if result['paper_link_removed'] else 'absent (already)'}"
     )
     if result["code_links_removed"]:
         body_lines.append(
-            f"[dim]Code symlinks removed:[/] "
+            f"[dim]Code links removed:[/] "
             f"{', '.join(escape(r) for r in result['code_links_removed'])}"
         )
     if result["code_links_kept"]:
@@ -324,7 +324,7 @@ def unlink_cmd(
             f"{escape(r)} (still used by {', '.join(escape(p) for p in users)})"
             for r, users in result["code_links_kept"]
         )
-        body_lines.append(f"[dim]Code symlinks kept:[/] {kept}")
+        body_lines.append(f"[dim]Code links kept:[/] {kept}")
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     console.print(
         Panel.fit("\n".join(body_lines), title="lit unlink", border_style="green")

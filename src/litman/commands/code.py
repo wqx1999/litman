@@ -11,6 +11,7 @@ preserved in its ``repo-meta.yaml``).
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.commands._options import format_option, library_option, vault_option
+from litman.commands._usage import reject_second_positional
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -88,6 +91,7 @@ def code_group() -> None:
 
 @code_group.command("add")
 @click.argument("source")
+@click.argument("misplaced_paper", required=False)
 @click.option(
     "--name",
     "repo_name",
@@ -142,24 +146,11 @@ def code_group() -> None:
         "Ignored for URL sources."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def code_add_cmd(
     source: str,
+    misplaced_paper: str | None,
     repo_name: str | None,
     paper_id: str | None,
     paper_doi: str | None,
@@ -186,6 +177,22 @@ def code_add_cmd(
     unique substring) or --paper-doi <DOI>, also appends <repo-name>
     to that paper's code-clones list atomically.
     """
+    if misplaced_paper is not None:
+        # `lit code add <paper> <url>` reads as naturally as `<url> <paper>`,
+        # so work out which word is the source rather than assuming an order —
+        # otherwise the command we hand back still has them the wrong way round.
+        if _is_url(source) or Path(source).expanduser().is_dir():
+            src, paper = source, misplaced_paper
+        elif _is_url(misplaced_paper) or Path(misplaced_paper).expanduser().is_dir():
+            src, paper = misplaced_paper, source
+        else:
+            src, paper = source, misplaced_paper  # neither looks like a source
+        raise reject_second_positional(
+            taken=source,
+            extra=misplaced_paper,
+            correct=f"lit code add {src} --paper {paper}",
+        )
+
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
     if paper_id is not None or paper_doi is not None:
@@ -346,26 +353,14 @@ def code_add_cmd(
     default=False,
     help="Show only repos with no paper bindings (papers: []).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@format_option
+@library_option
+@vault_option
 def code_list_cmd(
     paper_id: str | None,
     paper_doi: str | None,
     orphan: bool,
+    output_format: str,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -400,6 +395,24 @@ def code_list_cmd(
         repos = [r for r in repos if paper_id in (r.get("papers") or [])]
     elif orphan:
         repos = [r for r in repos if not (r.get("papers") or [])]
+
+    if output_format == "json":
+        # Each repo-meta.yaml as it is on disk, not the table's summarised
+        # cells — the Papers column renders "3 (id, ...)" and agents want the
+        # ids. list_repos' synthetic _path is dropped: it is private (leading
+        # underscore), and codes/<name>/ is derivable from the name anyway.
+        # Before the no-repos message, so no matches is `[]`, not prose.
+        click.echo(
+            json.dumps(
+                [
+                    {k: v for k, v in meta.items() if not k.startswith("_")}
+                    for meta in repos
+                ],
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return
 
     if not repos:
         msg_parts = ["No code repos"]
@@ -451,6 +464,7 @@ def code_list_cmd(
 
 @code_group.command("link")
 @click.argument("repo_name")
+@click.argument("misplaced_paper", required=False)
 @click.option(
     "--paper",
     "paper_id",
@@ -470,24 +484,11 @@ def code_list_cmd(
         "Mutually exclusive with --paper."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def code_link_cmd(
     repo_name: str,
+    misplaced_paper: str | None,
     paper_id: str | None,
     paper_doi: str | None,
     library: Path | None,
@@ -500,6 +501,12 @@ def code_link_cmd(
     atomically. Idempotent: if the binding is already present on both sides,
     no metadata is touched.
     """
+    if misplaced_paper is not None:
+        raise reject_second_positional(
+            taken=repo_name,
+            extra=misplaced_paper,
+            correct=f"lit code link {repo_name} --paper {misplaced_paper}",
+        )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     changed = bind_paper_to_repo(vault, paper_id, repo_name)
@@ -521,6 +528,7 @@ def code_link_cmd(
 
 @code_group.command("unlink")
 @click.argument("repo_name")
+@click.argument("misplaced_paper", required=False)
 @click.option(
     "--paper",
     "paper_id",
@@ -540,24 +548,11 @@ def code_link_cmd(
         "Mutually exclusive with --paper."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def code_unlink_cmd(
     repo_name: str,
+    misplaced_paper: str | None,
     paper_id: str | None,
     paper_doi: str | None,
     library: Path | None,
@@ -573,6 +568,12 @@ def code_unlink_cmd(
     the paper side, so it also repairs a dangling code-clones reference.
     Idempotent: a no-op if the binding is already absent on both sides.
     """
+    if misplaced_paper is not None:
+        raise reject_second_positional(
+            taken=repo_name,
+            extra=misplaced_paper,
+            correct=f"lit code unlink {repo_name} --paper {misplaced_paper}",
+        )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
     changed = unbind_paper_from_repo(vault, paper_id, repo_name)
@@ -600,22 +601,8 @@ def code_unlink_cmd(
     default=False,
     help="Promote a shallow clone to full history (git fetch --unshallow).",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def code_update_cmd(
     repo_name: str,
     unshallow: bool,
@@ -675,22 +662,8 @@ def code_update_cmd(
     default=False,
     help="Skip the y/N confirmation prompt.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def code_rm_cmd(
     repo_name: str,
     cascade: bool,
@@ -794,22 +767,8 @@ def code_rm_cmd(
     default=False,
     help="Preview which repos would be re-cloned without running git.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def code_restore_all_cmd(
     depth: int | None,
     dry_run: bool,

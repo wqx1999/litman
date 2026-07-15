@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ApiError,
+  createVault,
+  fetchCapabilities,
   fetchDocMtimes,
   fetchFixedEnums,
   fetchPaper,
@@ -9,6 +12,7 @@ import {
   fetchTrash,
   fetchSearch,
   fetchVaults,
+  fetchVersion,
   putActiveVault,
   putDiscussion,
   putNotes,
@@ -41,6 +45,7 @@ import type {
   VaultsPayload,
 } from './types'
 import TopBar from './topbar/TopBar'
+import WelcomePage from './welcome/WelcomePage'
 import TrashView from './trash/TrashView'
 import SwitchVaultDialog from './topbar/SwitchVaultDialog'
 import BrowsePanel from './nav/BrowsePanel'
@@ -51,6 +56,11 @@ import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
+
+// Link advisory, dismissed for good. localStorage (not the server) because
+// this is a per-person "yes, I know" — nothing about the library changed, and a
+// second machine reading the same vault deserves to be told once too.
+const LINK_NOTICE_DISMISSED = 'litman.linkNoticeDismissed'
 
 // Single-value fields filter on `p[f]` (string | null); array fields filter on
 // `p[f]` (string[]). Status is filtered in the `visible` pipeline like the rest
@@ -227,8 +237,33 @@ function diffResync(
   return out
 }
 
+/** A fetch that failed at the network level (connection refused, tunnel down)
+ * rejects with a TypeError; an HTTP error Response reaches the api helpers,
+ * which throw an ApiError. Only the former means "server unreachable". */
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError
+}
+
+/** The server can no longer see the library it is bound to — the vault directory
+ * was moved, renamed or deleted while the GUI was open. The server's vault guard
+ * answers 410 before any route runs, so this arrives over a perfectly healthy
+ * connection: it is not a failed request, it is a lost library. Kept strictly
+ * apart from the 409 "no vault yet" that raises the welcome page — a user whose
+ * library merely moved must never be invited to create a new one on top of it. */
+function isVaultGone(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 410
+}
+
 export default function App() {
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
+  // The vault this server is serving: `undefined` = not yet known (pre-bootstrap),
+  // `null` = none (render the welcome page), a string = a real vault (render the
+  // normal three-column view). Gates the mount seed + list load so a no-vault
+  // server never fires a storm of 409s behind the welcome page.
+  const [served, setServed] = useState<string | null | undefined>(undefined)
+  // The newer litman version on PyPI (null = up to date / unknown). Read once on
+  // mount from the server's update-check cache; drives the TopBar update dot.
+  const [updateLatest, setUpdateLatest] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -256,6 +291,51 @@ export default function App() {
   // but over the WHOLE library (a global quick-jump), not just the current
   // smart-list — so we keep the full INDEX separate from the list-mode `papers`.
   const [allPapers, setAllPapers] = useState<IndexPaper[]>([])
+  // Whether the full INDEX has been fetched successfully at least once. Gates
+  // the vault-empty distinction (an unfetched or failed [] must never read as
+  // "your vault is empty" — that state belongs only to a confirmed 0-paper
+  // INDEX). Stays true across vault switches: reloadForVault re-fetches without
+  // clearing, so allPapers is always a real (possibly stale-for-a-tick) INDEX.
+  const [allLoaded, setAllLoaded] = useState(false)
+  // Server reachability. Set when a read-path fetch fails at the network level
+  // (server down, SSH tunnel dropped — fetch rejects with a TypeError), cleared
+  // by the next successful read. Drives the top-center banner plus a 5s retry
+  // loop below. An HTTP error status deliberately does NOT trip this: that is
+  // a server bug, not a disconnect, and keeps its existing error paths.
+  const [disconnected, setDisconnected] = useState(false)
+  // The library this server is bound to is no longer on disk (410 from the vault
+  // guard): the user moved, renamed or deleted the directory while the GUI was
+  // open. Drives its own banner and shares the 5s retry loop, so putting the
+  // folder back heals the session with no restart.
+  const [vaultGone, setVaultGone] = useState(false)
+  // This drive cannot hold folder links at all (FAT32 / exFAT, network
+  // shares — POSIX symlinks and Windows junctions alike), so views/ and the
+  // litman_reflib / litman_code project shortcuts are silently absent. The
+  // library is FINE — this is an advisory, not an error, and it is the only
+  // channel a GUI-only user has: the CLI's warning goes to stderr and the
+  // desktop shortcut launches the console-less `litw`, so nobody ever sees
+  // it. Dismissable, and the dismissal sticks. Never shown for a working
+  // mechanism ('symlink' / 'junction'): those are silent full-function states.
+  const [linkNotice, setLinkNotice] = useState(false)
+  // One place decides what a failed read means, so every catch site agrees.
+  // Each verdict clears the other flag, so the banners are mutually exclusive
+  // and the one showing is always the FRESHER fact: a 410 arrived over a
+  // working connection (proof the server is reachable), and a network error
+  // means nothing can currently back the claim that the library is gone — if
+  // the server comes back still missing it, the next sweep's 410 re-raises
+  // the red banner.
+  const classifyFetchError = useCallback((err: unknown) => {
+    if (isVaultGone(err)) {
+      setVaultGone(true)
+      setDisconnected(false)
+    } else if (isNetworkError(err)) {
+      setDisconnected(true)
+      setVaultGone(false)
+    }
+  }, [])
+  // The current list fetch failed — BrowsePanel renders an explicit failure
+  // line instead of an empty state that would read as "no papers".
+  const [listFailed, setListFailed] = useState(false)
   // notes/discussion hits from /api/search (debounced, async). The token guards
   // against an earlier slower response overwriting a newer one.
   const [serverHits, setServerHits] = useState<SearchHit[]>([])
@@ -272,7 +352,7 @@ export default function App() {
   // Session activity log: every notify (toast) also appends here so a GUI-only
   // user has a scrollback the last-write-wins toast can't give. In-memory ring
   // (cap 200, newest kept), cleared on refresh (AC4 — no persistence, no second
-  // write口 to disk, invariant #16). `logUnread` lights a dot on the log icon
+  // write path to disk, invariant #16). `logUnread` lights a dot on the log icon
   // until the panel is opened.
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([])
   const [logUnread, setLogUnread] = useState(false)
@@ -426,6 +506,25 @@ export default function App() {
   // confirm) is open, so the shortcut dispatcher's modal guard suppresses global
   // write-shortcuts behind it — mirrors projectsOpen / observabilityOpen.
   const [vaultManagerOpen, setVaultManagerOpen] = useState(false)
+  // Same mirror for the agent panel (picker / copy box).
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false)
+  // TopBar's agent opener, registered on mount, so the `` ` `` shortcut drives
+  // the same handler as the button. State (not a bare ref) because the shortcut
+  // hook takes it as a dep. The setState updater form is required: a function
+  // value would otherwise be mistaken for an updater and invoked.
+  const [openAgent, setOpenAgent] = useState<(() => void) | null>(null)
+  const registerAgentOpen = useCallback(
+    (open: (() => void) | null) => setOpenAgent(() => open),
+    [],
+  )
+  // Same idiom for TopBar's vault manager, so the vault-gone banner's button and
+  // the toolbar's vault icon open the one panel — the banner is a shortcut to an
+  // existing door, not a second door.
+  const [openVaultManager, setOpenVaultManager] = useState<(() => void) | null>(null)
+  const registerVaultManagerOpen = useCallback(
+    (open: (() => void) | null) => setOpenVaultManager(() => open),
+    [],
+  )
   // The Cockpit's imperative handle (curation triggers for ⌥-shortcuts). A ref
   // so registering it doesn't re-render; a state copy drives the hook's deps.
   const [cockpitHandle, setCockpitHandle] = useState<CockpitHandle | null>(null)
@@ -434,13 +533,28 @@ export default function App() {
     [],
   )
 
-  const loadList = useCallback((mode: ListMode) => {
-    setLoadingList(true)
-    const view = SMART_VIEWS.has(mode) ? (mode as SmartListView) : undefined
-    fetchPapers(view)
-      .then(setPapers)
-      .finally(() => setLoadingList(false))
-  }, [])
+  const loadList = useCallback(
+    (mode: ListMode) => {
+      setLoadingList(true)
+      const view = SMART_VIEWS.has(mode) ? (mode as SmartListView) : undefined
+      fetchPapers(view)
+        .then((ps) => {
+          setPapers(ps)
+          setListFailed(false)
+          // A guarded read landed: the server answered AND the library is on
+          // disk (the 410 guard runs before every list route), so both banners
+          // can retire — not just the amber one.
+          setDisconnected(false)
+          setVaultGone(false)
+        })
+        .catch((err) => {
+          setListFailed(true)
+          classifyFetchError(err)
+        })
+        .finally(() => setLoadingList(false))
+    },
+    [classifyFetchError],
+  )
 
   // Refresh this vault's trash list (backs the left-nav footer count + the trash
   // view). Cheap (cap-100, one bounded call), so it is pulled on mount and again
@@ -449,13 +563,54 @@ export default function App() {
     setTrashLoading(true)
     return fetchTrash()
       .then(setTrashEntries)
-      .catch(() => setTrashEntries([]))
+      .catch((err) => {
+        // The empty fallback keeps the footer count harmless, but the failure
+        // itself must still be classified — the trash view may be the only
+        // thing being fetched (trash mode), and a 410 here has to raise the
+        // vault-gone banner like everywhere else.
+        classifyFetchError(err)
+        setTrashEntries([])
+      })
       .finally(() => setTrashLoading(false))
-  }, [])
+  }, [classifyFetchError])
+
+  // Bootstrap: learn which vault (if any) the server is serving. This runs
+  // BEFORE the heavy seed below so a no-vault server renders the welcome page
+  // instead of firing a storm of 409s. Re-run by the welcome page after it
+  // creates or opens a vault (which flips `served` and mounts the normal view).
+  const bootstrap = useCallback(() => {
+    return fetchVaults()
+      .then((v) => {
+        setVaults(v)
+        setServed(v.served)
+      })
+      .catch(classifyFetchError)
+  }, [classifyFetchError])
 
   useEffect(() => {
-    fetchVaults().then(setVaults)
-    fetchFixedEnums().then(setFixedEnums)
+    void bootstrap()
+  }, [bootstrap])
+
+  useEffect(() => {
+    // Only seed once a real vault is being served: `undefined` = still
+    // bootstrapping, `null` = welcome page (no vault to seed from).
+    if (!served) return
+    fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
+    // Update-check badge: pure cache read, best-effort (a failure just leaves
+    // the dot off — this is a passive reminder, never blocking).
+    fetchVersion()
+      .then((v) => setUpdateLatest(v.latest))
+      .catch(() => {})
+    // Link-capability advisory: cheap (one cached probe server-side) so it
+    // can run on load, unlike the Tier-2 health panel. Best-effort — a failure
+    // just leaves the notice off; it must never block or error the boot path.
+    if (localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
+      fetchCapabilities()
+        .then((c) => {
+          if (c.links === 'none') setLinkNotice(true)
+        })
+        .catch(() => {})
+    }
     // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
     // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
     // resync never diffs against an empty baseline (which would log every paper
@@ -463,7 +618,10 @@ export default function App() {
     // effects above; docMtimesRef (never rendered) is seeded here directly. The
     // full INDEX (no view) also backs global id/title matching + wikilink lookup.
     void Promise.all([
-      fetchPapers().then(setAllPapers),
+      fetchPapers().then((ps) => {
+        setAllPapers(ps)
+        setAllLoaded(true)
+      }),
       fetchTaxonomy().then(setTaxonomy),
       fetchProjects().then(setProjects),
       loadTrash(),
@@ -478,15 +636,19 @@ export default function App() {
         // diffs correctly — self-heal instead of logging every paper as "+ added".
         resyncReadyRef.current = true
       })
-      .catch(() => {
+      .catch((err) => {
         // Swallow the rejected Promise.all so it isn't an unhandled rejection;
-        // the gate stays false and a later resync re-seeds.
+        // the gate stays false and a later resync re-seeds. A network-level
+        // failure additionally raises the disconnected banner, a vanished
+        // library the vault-gone one.
+        classifyFetchError(err)
       })
-  }, [loadTrash])
+  }, [served, loadTrash, classifyFetchError])
 
   useEffect(() => {
+    if (!served) return
     loadList(listMode)
-  }, [listMode, loadList])
+  }, [served, listMode, loadList])
 
   // Debounced notes/discussion search. id/title match instantly off allPapers
   // (no network); only the markdown scopes need the server. An empty query
@@ -538,6 +700,11 @@ export default function App() {
     return papers.filter((p) => (p.projects || []).includes(projectScope))
   }, [papers, projectScope])
 
+  // A truly empty vault: the full INDEX was fetched and holds zero papers.
+  // Distinct from "the current view/filters match nothing" — BrowsePanel shows
+  // a getting-started card for the former and a plain no-match line otherwise.
+  const vaultEmpty = allLoaded && allPapers.length === 0
+
   // Multi-dimensional filter: cross-dimension AND, within-dimension OR.
   const visible = useMemo(() => {
     let out = scoped
@@ -586,14 +753,20 @@ export default function App() {
     setFilters(emptyFilters())
   }, [])
 
-  const selectPaper = useCallback((id: string) => {
-    setSelectedId(id)
-    setCockpitLoading(true)
-    fetchPaper(id)
-      .then(setCockpitPaper)
-      .catch(() => setCockpitPaper(null))
-      .finally(() => setCockpitLoading(false))
-  }, [])
+  const selectPaper = useCallback(
+    (id: string) => {
+      setSelectedId(id)
+      setCockpitLoading(true)
+      fetchPaper(id)
+        .then(setCockpitPaper)
+        .catch((err) => {
+          classifyFetchError(err)
+          setCockpitPaper(null)
+        })
+        .finally(() => setCockpitLoading(false))
+    },
+    [classifyFetchError],
+  )
 
   // After a cockpit structured write: re-fetch the selected paper so the cockpit
   // reflects the change, AND refresh both the current smart-list (a status /
@@ -608,7 +781,10 @@ export default function App() {
         .catch(() => setCockpitPaper(null))
     }
     loadList(listMode)
-    fetchPapers().then(setAllPapers)
+    fetchPapers().then((ps) => {
+      setAllPapers(ps)
+      setAllLoaded(true)
+    })
   }, [selectedId, loadList, listMode])
 
   // After a write that changes the shared vocabulary (a new taxonomy value, a
@@ -682,25 +858,40 @@ export default function App() {
       // Commit through the same setters the rest of the app uses (the mirror
       // effects advance the diff refs from here); docMtimesRef is ref-only.
       setAllPapers(freshAll)
+      setAllLoaded(true)
       setPapers(freshList)
       setTaxonomy(freshTax)
       setProjects(freshProjects)
       setTrashEntries(freshTrash)
       setVaults(freshVaults)
+      // Track the server's binding, not just the registry list: a vault switch
+      // repoints the server, and the vault-gone banner names `served` — left
+      // stale, it would name the PREVIOUS library's (perfectly healthy) path
+      // if the current one later went missing.
+      setServed(freshVaults.served)
       docMtimesRef.current = freshMtimes
       resyncReadyRef.current = true
+      // A whole sweep landed — the server is reachable and the library is back
+      // under the path it is bound to (moving the folder back heals the session).
+      setDisconnected(false)
+      setVaultGone(false)
+      setListFailed(false)
       if (selectedId) {
         fetchPaper(selectedId)
           .then(setCockpitPaper)
           .catch(() => setCockpitPaper(null))
       }
       setMdReloadToken((t) => t + 1)
-    } catch {
-      // A failed sweep is a no-op: leave the UI and the diff baseline untouched
-      // (a transient fetch error must not wipe the view or desync the baseline);
-      // the next resync retries.
+    } catch (err) {
+      // A failed sweep is a data no-op: leave the UI and the diff baseline
+      // untouched (a transient fetch error must not wipe the view or desync
+      // the baseline); the next resync retries. A network-level failure raises
+      // the disconnected banner, a 410 the vault-gone one — both cleared by the
+      // next successful sweep. Keeping the stale list on screen is deliberate:
+      // it is the last thing that was true, and the banner says so.
+      classifyFetchError(err)
     }
-  }, [listMode, selectedId, appendLog])
+  }, [listMode, selectedId, appendLog, classifyFetchError])
 
   // Auto-resync when the browser regains focus / the tab becomes visible — the
   // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
@@ -726,6 +917,18 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [doResync])
+
+  // While either banner is up, re-run the sweep every 5s so recovery is automatic
+  // (banner clears, data refreshes) without waiting for a focus switch or a
+  // manual refresh. The interval exists only while a banner is up: a successful
+  // sweep flips both flags off, which tears it down. For the vault-gone banner
+  // this is what makes "put the folder back where it was" a complete fix — the
+  // session heals itself within 5s, no restart, no re-registration.
+  useEffect(() => {
+    if (!disconnected && !vaultGone) return
+    const t = setInterval(() => void doResync(), 5000)
+    return () => clearInterval(t)
+  }, [disconnected, vaultGone, doResync])
 
   // Manual refresh (TopBar button): force an immediate sweep (bypass the throttle)
   // and confirm with a toast — this is the explicit-feedback path, whereas the
@@ -1072,14 +1275,36 @@ export default function App() {
     // The doc-mtime baseline is per-vault; drop it so the first resync in the new
     // vault seeds afresh instead of diffing it against the old vault's mtimes.
     docMtimesRef.current = null
-    fetchVaults().then(setVaults)
-    fetchProjects().then(setProjects)
-    fetchTaxonomy().then(setTaxonomy)
-    fetchFixedEnums().then(setFixedEnums)
-    fetchPapers().then(setAllPapers)
+    // The switch that brought us here just succeeded, so the server answered
+    // and is bound to a live vault again — retire both banners now rather than
+    // leaving the red one to claim (for up to one 5s sweep) that the NEW
+    // library is the one that is gone.
+    setDisconnected(false)
+    setVaultGone(false)
+    // Every one of these goes through classifyFetchError. A vault switch is
+    // exactly when the server is most likely to blink (it is rebinding), and
+    // without a catch the rejection was silent: the panels stayed empty and
+    // nothing said why — the failure mode this banner exists to prevent.
+    fetchVaults()
+      .then((v) => {
+        setVaults(v)
+        // Keep `served` on the server's actual binding (see doResync) — this is
+        // the path the vault-gone banner would name.
+        setServed(v.served)
+      })
+      .catch(classifyFetchError)
+    fetchProjects().then(setProjects).catch(classifyFetchError)
+    fetchTaxonomy().then(setTaxonomy).catch(classifyFetchError)
+    fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
+    fetchPapers()
+      .then((ps) => {
+        setAllPapers(ps)
+        setAllLoaded(true)
+      })
+      .catch(classifyFetchError)
     loadList(listMode)
     loadTrash()
-  }, [loadList, listMode, loadTrash])
+  }, [loadList, listMode, loadTrash, classifyFetchError])
 
   const confirmSwitchVault = useCallback(async () => {
     const name = pendingVault
@@ -1091,7 +1316,16 @@ export default function App() {
       reloadForVault()
       setPendingVault(null)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err))
+      // A failed switch closes the confirm too: the server rejects a switch to a
+      // vault whose folder is gone, and pressing Switch again would fail the same
+      // way — leaving the dialog up reads as if nothing happened. Refresh the
+      // vault list on the way out so the selector marks it missing (best-effort:
+      // if the switch failed because the server died, this fetch dies with it).
+      notify(err instanceof Error ? err.message : String(err), 'error')
+      setPendingVault(null)
+      fetchVaults()
+        .then(setVaults)
+        .catch(() => {})
     } finally {
       setSwitchingVault(false)
     }
@@ -1108,8 +1342,39 @@ export default function App() {
     async (name: string, path: string, setActive: boolean) => {
       await registerVault(name, path)
       notify(`Registered vault “${name}”.`, 'success')
-      await fetchVaults().then(setVaults)
+      // Best-effort: the register already succeeded, so a failure HERE must not
+      // propagate into the dialog's catch — it would render as if the register
+      // failed, contradicting the success toast, and a resubmit would then 400
+      // on the duplicate name. The next sweep repairs a stale list.
+      await fetchVaults()
+        .then(setVaults)
+        .catch(() => {})
       if (setActive) switchVault(name)
+    },
+    [notify, switchVault],
+  )
+
+  // Create a NEW vault directory + register it — the `lit init` backend, the same
+  // route the welcome page uses. Until now that route was reachable only on the
+  // welcome page, i.e. only for a user who had no vault at all: once you had one,
+  // a second library could be made only from the CLI. Creating never switches you
+  // (only the very first vault becomes active), so `setActive` reuses the same
+  // switchVault flow onRegisterVault does — no new repoint logic. Rethrows so the
+  // dialog can show the backend's verbatim 400 (missing parent, non-empty target,
+  // name clash) inline.
+  const onCreateVault = useCallback(
+    async (parentDir: string, name: string, setActive: boolean) => {
+      const created = await createVault(parentDir, name)
+      notify(`Created vault “${created.name}” at ${created.path}.`, 'success')
+      // Best-effort, same reason as onRegisterVault: the vault exists on disk
+      // now, so a failed list refresh must not reach the dialog as a failed
+      // create — resubmitting would 400 on the (real) name clash.
+      await fetchVaults()
+        .then(setVaults)
+        .catch(() => {})
+      // The first-ever vault is already active and the server already repointed
+      // itself; asking to switch to it would be a no-op confirm dialog.
+      if (setActive && !created.active) switchVault(created.name)
     },
     [notify, switchVault],
   )
@@ -1242,7 +1507,9 @@ export default function App() {
       ...cockpitHandle,
       triggerRead: () => {
         cockpitHandle.triggerRead()
-        notify('已标记已读 · ⌥⇧R 撤销')
+        // Modifiers spelled out, per the cheat sheet's own convention: a glyph
+        // is an extra decode step, and ⌥ names a key Windows keyboards lack.
+        notify('Marked read · Alt+Shift+R to undo')
       },
     }
   }, [cockpitHandle, notify])
@@ -1261,9 +1528,33 @@ export default function App() {
     projectsOpen ||
     observabilityOpen ||
     vaultManagerOpen ||
+    agentPanelOpen ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
+
+  // J/K walk the middle-list selection through the same rows BrowsePanel
+  // renders (`visible` — every filter applied), Enter opens the selection's
+  // PDF. Clamped at the ends; J with nothing selected starts at the first
+  // row, K at the last. BrowsePanel scrolls the moved selection into view.
+  const moveSelection = useCallback(
+    (delta: 1 | -1) => {
+      if (visible.length === 0) return
+      const idx = selectedId ? visible.findIndex((p) => p.id === selectedId) : -1
+      const next =
+        idx === -1
+          ? delta === 1
+            ? 0
+            : visible.length - 1
+          : Math.min(visible.length - 1, Math.max(0, idx + delta))
+      const target = visible[next]
+      if (target && target.id !== selectedId) selectPaper(target.id)
+    },
+    [visible, selectedId, selectPaper],
+  )
+  const openSelected = useCallback(() => {
+    if (selectedId) openPdf(selectedId)
+  }, [selectedId, openPdf])
 
   useKeyboardShortcuts({
     anyModalOpen,
@@ -1273,6 +1564,9 @@ export default function App() {
     toggleRight,
     activateAdjacentTab,
     activateTabByIndex,
+    moveSelection,
+    openSelected,
+    openAgent,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -1283,13 +1577,100 @@ export default function App() {
     notify,
   })
 
+  // Welcome page: no vault to serve (fresh install, or the active registry entry
+  // moved). Rendered in place of the whole three-column view; creating or opening
+  // a vault re-runs bootstrap, which flips `served` and mounts the normal view.
+  // (All hooks above run unconditionally — this branch only gates rendering.)
+  if (served === undefined) return null // pre-bootstrap; sub-100ms on localhost
+  if (served === null) {
+    return <WelcomePage vaults={vaults} onEnter={() => void bootstrap()} />
+  }
+
   return (
     // `relative` anchors the focus-mode TopBar, which detaches to `absolute`
     // and slides in/out from the top edge (see TopBar) so the reading area
     // reclaims the header's height.
     <div className="relative flex h-full flex-col bg-stone-100 text-stone-800 antialiased">
+      {/* Vault-gone banner: the library this window is bound to is no longer on
+       * disk. Takes precedence over the disconnected banner (a 410 proves the
+       * server answered, so the two can never both be true). The list behind it
+       * is deliberately left on screen — it is the last thing that was true, and
+       * every write is refused server-side until the library is found again, so
+       * nothing stale can be acted on. Red, not amber: this one is not retrying
+       * its way out of a blip. Putting the folder back still heals it silently
+       * (the 5s sweep clears the banner); the button is for the other case. */}
+      {vaultGone ? (
+        <div className="fixed left-1/2 top-3 z-50 flex max-w-[min(44rem,92vw)] -translate-x-1/2 items-center gap-3 rounded-full bg-red-100 py-1.5 pl-4 pr-1.5 text-sm text-red-900 shadow-md ring-1 ring-red-200 dark:bg-red-950/80 dark:text-red-100 dark:ring-red-900">
+          <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
+          <span className="truncate">
+            This library is no longer at{' '}
+            <span className="font-mono text-[0.8em]">{served}</span> — it was moved,
+            renamed or deleted.
+          </span>
+          <button
+            type="button"
+            onClick={() => openVaultManager?.()}
+            className="shrink-0 rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-red-900 shadow-sm ring-1 ring-red-200 transition duration-200 ease-fluid hover:bg-white dark:bg-red-900/60 dark:text-red-50 dark:ring-red-800 dark:hover:bg-red-900"
+          >
+            Find it
+          </button>
+        </div>
+      ) : (
+        /* Server-unreachable banner: floats top-center above everything, lives
+         * exactly as long as `disconnected` (the 5s retry loop clears it). Amber
+         * needs explicit dark: overrides — unlike stone it is not ramp-inverted
+         * by the .dark block in index.css. */
+        disconnected && (
+          <div className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm text-amber-800 shadow-md ring-1 ring-amber-200 dark:bg-amber-950/70 dark:text-amber-200 dark:ring-amber-900">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+            Can't reach the litman server — retrying…
+          </div>
+        )
+      )}
+      {/* Link advisory. Sits BELOW the two fault banners (top-14, and it is
+       * not part of their either/or) because it is not a fault: the library is
+       * healthy, it just cannot be decorated with views/ and project shortcuts
+       * on this drive. Stone, not red or amber — the colour is the message.
+       * Fires only when NO link mechanism works (links === 'none'), i.e. the
+       * drive itself cannot store links — so it states that fact and stops.
+       * Deliberately no settings deep-link, no Developer Mode, no elevation
+       * advice: none of them would change a FAT32 verdict, and an app steering
+       * users into system dialogs reads as malware. */}
+      {linkNotice && !vaultGone && !disconnected && (
+        <div className="fixed left-1/2 top-14 z-40 flex max-w-[min(46rem,92vw)] -translate-x-1/2 items-start gap-3 rounded-2xl bg-stone-100 py-2 pl-4 pr-2 text-sm text-stone-700 shadow-md ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:ring-stone-700">
+          <div className="min-w-0 py-0.5">
+            <span>
+              This drive can't hold folder links, so{' '}
+              <span className="font-mono text-[0.85em]">views/</span> and the
+              project shortcuts aren't being made.{' '}
+              <span className="text-stone-500 dark:text-stone-400">
+                Your library is fine — every command, this app and the agent
+                workflow all work normally.
+              </span>
+            </span>
+            <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
+              Usual on USB sticks (FAT32 / exFAT) and network drives; a library
+              on an internal drive gets the shortcuts automatically.
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => {
+                localStorage.setItem(LINK_NOTICE_DISMISSED, '1')
+                setLinkNotice(false)
+              }}
+              className="rounded-full px-2 py-1 text-xs text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200 hover:text-stone-700 dark:text-stone-400 dark:hover:bg-stone-700 dark:hover:text-stone-100"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
       <TopBar
         vaults={vaults}
+        updateAvailable={updateLatest}
         projects={projects}
         allPapers={allPapers}
         search={search}
@@ -1303,6 +1684,7 @@ export default function App() {
         onProjectsChanged={refreshProjects}
         onSwitchVault={switchVault}
         onRegisterVault={onRegisterVault}
+        onCreateVault={onCreateVault}
         onUnregisterVault={onUnregisterVault}
         switching={switchingVault}
         notify={notify}
@@ -1315,6 +1697,9 @@ export default function App() {
         logUnread={logUnread}
         onLogOpened={markLogRead}
         onObservabilityOpenChange={setObservabilityOpen}
+        onAgentOpenChange={setAgentPanelOpen}
+        onRegisterAgentOpen={registerAgentOpen}
+        onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
       />
       <div className="flex min-h-0 flex-1">
@@ -1332,6 +1717,8 @@ export default function App() {
             <BrowsePanel
               scoped={scoped}
               visible={visible}
+              vaultEmpty={vaultEmpty}
+              loadFailed={listFailed}
               loading={loadingList}
               projects={projectNames}
               projectScope={projectScope}

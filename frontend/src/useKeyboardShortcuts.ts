@@ -26,6 +26,21 @@ export interface ShortcutDeps {
   /** Jump straight to the Nth center tab (1-based). Out-of-range = no-op. */
   activateTabByIndex: (n: number) => void
 
+  // --- Tier 1: middle-list navigation (global, focus-guarded) -------------
+  /** Move the paper-list selection down/up by one (J/K). Clamped at the ends;
+   * J with nothing selected starts at the first row, K at the last. */
+  moveSelection: (delta: 1 | -1) => void
+  /** Open the selected paper's PDF tab (Enter). No-op without a selection. */
+  openSelected: () => void
+
+  // --- Tier 1: agent launch (global, focus-guarded) -----------------------
+  /** Open the AI agent: launch it in a terminal, or raise the onboarding panel
+   * when it is not configured yet — TopBar's button owns that branch and the
+   * shortcut reuses the same handler, so the two can never disagree. Null until
+   * TopBar registers its handle (the welcome page renders no TopBar), in which
+   * case the key is inert. */
+  openAgent: (() => void) | null
+
   // --- Cheat sheet (`?`) ---------------------------------------------------
   cheatSheetOpen: boolean
   toggleCheatSheet: () => void
@@ -52,8 +67,9 @@ export interface ShortcutDeps {
 /** Is focus currently inside a text-entry surface? Bare single-keys and
  * ⌥-combos must not fire there (typing "H" in notes must not switch a PDF tool;
  * ⌥-combos can compose characters / move the caret in a field). Covers <input>,
- * <textarea>, and any contentEditable host. */
-function isEditingTarget(el: EventTarget | null): boolean {
+ * <textarea>, and any contentEditable host. Exported for the SearchBox's own
+ * bare-key listener (`/`), which needs the identical guard. */
+export function isEditingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false
   const tag = el.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA') return true
@@ -102,6 +118,9 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleRight,
     activateAdjacentTab,
     activateTabByIndex,
+    moveSelection,
+    openSelected,
+    openAgent,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -189,7 +208,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           // selection (preventDefault stops the OS menu-key / dead-key glyph).
           e.preventDefault()
           if (!selectedId || !cockpit) {
-            notify('未选中论文')
+            notify('No paper selected')
             return
           }
           action(cockpit)
@@ -199,11 +218,56 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
         return
       }
 
+      // --- Backquote — launch the agent (Shift optional) --------------------
+      // The key left of "1": the universal "summon a console" convention
+      // (Quake, VS Code, …), which is what launching the agent is.
+      //
+      // Accepted WITH OR WITHOUT Shift, so it sits above the Tier-1 modifier
+      // reject. The keycap is engraved `~` over `` ` `` and readers scan for
+      // the tilde, so the cheat sheet shows `~`; were Shift rejected, anyone
+      // following that label would press Shift+` and get silence. Precedent:
+      // `?` is itself Shift+/ and is handled the same way, above. Ctrl/Cmd are
+      // excluded at the top and Alt by the Tier-2 block, so only Shift can
+      // still be set here.
+      //
+      // Matched on e.code (physical position), so a layout printing another
+      // glyph on that key still fires.
+      if (e.code === 'Backquote') {
+        e.preventDefault()
+        openAgent?.()
+        return
+      }
+
       // --- Tier 1: bare single keys (no modifiers) -------------------------
       // Reject any modifier so e.g. Ctrl+F (page find) is never swallowed.
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
 
+      // --- Enter — open the selected paper's PDF ---------------------------
+      // Only on inert targets: a focused button / link / select keeps its
+      // native Enter activation (this would otherwise double-fire — e.g.
+      // activate the control AND open a tab).
+      if (e.key === 'Enter') {
+        const t = e.target
+        if (
+          t instanceof HTMLElement &&
+          ['BUTTON', 'A', 'SELECT', 'SUMMARY'].includes(t.tagName)
+        ) {
+          return
+        }
+        e.preventDefault()
+        openSelected()
+        return
+      }
+
       switch (e.code) {
+        case 'KeyJ':
+          e.preventDefault()
+          moveSelection(1)
+          return
+        case 'KeyK':
+          e.preventDefault()
+          moveSelection(-1)
+          return
         case 'KeyF':
           e.preventDefault()
           toggleFocus()
@@ -272,6 +336,9 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleRight,
     activateAdjacentTab,
     activateTabByIndex,
+    moveSelection,
+    openSelected,
+    openAgent,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,

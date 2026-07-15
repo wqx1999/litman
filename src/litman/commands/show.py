@@ -10,10 +10,15 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from litman.commands._options import library_option, vault_option
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.paper_lookup import (
+    complete_paper_id,
+    most_recent_paper_id,
+    resolve_paper_input,
+)
 
 console = Console()
 
@@ -40,22 +45,8 @@ console = Console()
     "file paths; 'json' emits the FULL metadata dict (every field, not the "
     "INDEX projection) for agent bounded retrieval.",
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def show_cmd(
     paper_id: str | None,
     paper_doi: str | None,
@@ -65,11 +56,24 @@ def show_cmd(
 ) -> None:
     """Show one paper's metadata.yaml plus PDF / notes paths.
 
-    The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass --paper-doi <DOI> instead. --format json emits the
-    full metadata dict (all fields) for agents.
+    With no argument, shows the paper you engaged with most recently — the
+    same paper `lit list --sort recent` puts at the top. The paper id
+    otherwise accepts a full id, a unique case-insensitive substring, or
+    omit it and pass --paper-doi <DOI> instead. --format json emits the full
+    metadata dict (all fields) for agents.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+
+    if not paper_id and not paper_doi:
+        # Announced on stderr, not stdout: --format json owns stdout, and a
+        # note about how the input was read must not land in the payload.
+        # Raises on an empty vault.
+        paper_id = most_recent_paper_id(vault)
+        Console(stderr=True).print(
+            f"[dim]No paper given — showing the most recently engaged: "
+            f"{paper_id}[/]"
+        )
+
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
 
     meta = find_paper(vault, paper_id)

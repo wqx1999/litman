@@ -27,7 +27,8 @@ half-update footgun); see ``commands/taxonomy.py``.
 from __future__ import annotations
 
 import io
-from collections.abc import Callable
+import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -36,12 +37,14 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._options import format_option, library_option, vault_option
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_link import (
     add_project,
+    rebuild_all_project_links,
     remove_project,
     rename_project,
     set_project_path,
@@ -49,6 +52,7 @@ from litman.core.project_link import (
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
+    rebuild_all_project_refs,
 )
 from litman.core.taxonomy import (
     find_referencing_papers,
@@ -58,6 +62,11 @@ from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
 console = Console()
+
+
+def _stdin_isatty() -> bool:
+    """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
+    return sys.stdin is not None and sys.stdin.isatty()
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -108,30 +117,6 @@ def project_group() -> None:
     """
 
 
-# Reused option blocks — keep the --library / --vault shape identical to
-# every other litman command.
-def _library_option(fn: Callable[..., Any]) -> Callable[..., Any]:
-    return click.option(
-        "--library",
-        type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-        default=None,
-        envvar="LIT_LIBRARY",
-        help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-    )(fn)
-
-
-def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
-    return click.option(
-        "--vault",
-        "vault_name",
-        default=None,
-        help=(
-            "Vault name from ~/.config/litman/vaults.yaml. "
-            "Mutually exclusive with --library."
-        ),
-    )(fn)
-
-
 # ---------------------------------------------------------------------------
 # add
 # ---------------------------------------------------------------------------
@@ -154,8 +139,8 @@ def _vault_option(fn: Callable[..., Any]) -> Callable[..., Any]:
         "parent). litman does not create it."
     ),
 )
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_add_cmd(
     name: str,
     project_path: Path,
@@ -182,10 +167,35 @@ def project_add_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _project_status(*, in_taxonomy: bool, in_config: bool, path_str: str) -> str:
+    """The drift marker for one project, as a bare machine-readable token.
+
+    The table decorates these with ✓ / ⚠; JSON gets the token itself. One
+    function so the two renderings cannot disagree about what is drifting.
+    """
+    if not in_taxonomy:
+        return "config-only"
+    if not in_config:
+        return "taxonomy-only"
+    if path_str and Path(path_str).expanduser().is_dir():
+        return "ok"
+    return "path-missing"
+
+
+_STATUS_CELL = {
+    "ok": "[green]✓[/]",
+    "path-missing": "[yellow]⚠ path-missing[/]",
+    "config-only": "[yellow]⚠ config-only[/]",
+    "taxonomy-only": "[yellow]⚠ taxonomy-only[/]",
+}
+
+
 @project_group.command("list")
-@_library_option
-@_vault_option
+@format_option
+@library_option
+@vault_option
 def project_list_cmd(
+    output_format: str,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -210,6 +220,27 @@ def project_list_cmd(
     config_names = set(config_map)
     all_names = sorted(taxonomy_names | config_names)
 
+    if output_format == "json":
+        # Before the no-projects message: an empty registry is `[]`, not prose.
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "name": name,
+                        "path": config_map.get(name) or None,
+                        "status": _project_status(
+                            in_taxonomy=name in taxonomy_names,
+                            in_config=name in config_names,
+                            path_str=config_map.get(name, ""),
+                        ),
+                    }
+                    for name in all_names
+                ],
+                ensure_ascii=False,
+            )
+        )
+        return
+
     if not all_names:
         console.print("[dim](no projects registered)[/]")
         console.print(
@@ -224,20 +255,13 @@ def project_list_cmd(
     table.add_column("status")
 
     for name in all_names:
-        in_tax = name in taxonomy_names
-        in_cfg = name in config_names
         path_str = config_map.get(name, "")
-        if in_tax and in_cfg:
-            path_ok = bool(path_str) and Path(path_str).expanduser().is_dir()
-            status = (
-                "[green]✓[/]"
-                if path_ok
-                else "[yellow]⚠ path-missing[/]"
-            )
-        elif in_cfg:
-            status = "[yellow]⚠ config-only[/]"
-        else:
-            status = "[yellow]⚠ taxonomy-only[/]"
+        token = _project_status(
+            in_taxonomy=name in taxonomy_names,
+            in_config=name in config_names,
+            path_str=path_str,
+        )
+        status = _STATUS_CELL[token]
         table.add_row(
             escape(name),
             escape(path_str) if path_str else "[dim]—[/]",
@@ -254,8 +278,8 @@ def project_list_cmd(
 @project_group.command("rename")
 @click.argument("old")
 @click.argument("new")
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_rename_cmd(
     old: str,
     new: str,
@@ -300,8 +324,8 @@ def project_rename_cmd(
         path_type=Path,
     ),
 )
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_set_path_cmd(
     name: str,
     new_path: Path,
@@ -333,11 +357,37 @@ def project_set_path_cmd(
     console.print(
         f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}"
     )
-    console.print(
-        "[dim]ℹ If the project directory wasn't physically moved, run "
-        "`lit link --rebuild-all` to recreate symlinks at the new "
-        "location.[/]"
-    )
+    # The registry change does not move the directory, so litman_reflib /
+    # litman_code keep pointing at the OLD location until rebuilt. Repairable
+    # drift gets a one-Enter [Y/n] at the point of use (the Tier-1 heal in
+    # _drift.py already rebuilds automatically; this is parity) — the bare
+    # "remember to run a command later" hint survives only for non-TTY runs.
+    if _stdin_isatty() and click.confirm(
+        "Rebuild the project links at the new location now?", default=True
+    ):
+        registry = {
+            pname: str(ppath)
+            for pname, ppath in load_config(vault).projects.items()
+        }
+        link_status = rebuild_all_project_links(vault, registry)
+        rebuild_all_project_refs(vault, registry)
+        if link_status.get(name_str, {}).get("status") == "rebuilt":
+            console.print(
+                f"[green]✓ Rebuilt[/] {escape(name_str)}'s links at the new "
+                "location."
+            )
+        else:
+            console.print(
+                "[dim]Config updated; the directory is not reachable here "
+                "yet — links rebuild once it exists (`lit refresh-views` "
+                "there).[/dim]"
+            )
+    else:
+        console.print(
+            "[dim]ℹ If the project directory wasn't physically moved, run "
+            "`lit link --rebuild-all` to recreate the links at the new "
+            "location.[/]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +405,8 @@ def project_set_path_cmd(
     default=False,
     help="Skip the confirmation prompt (for agents / scripts / CI).",
 )
-@_library_option
-@_vault_option
+@library_option
+@vault_option
 def project_rm_cmd(
     name: str,
     yes: bool,
@@ -365,10 +415,17 @@ def project_rm_cmd(
 ) -> None:
     """Delete a project: cascade-untag papers + drop from both truth sources.
 
-    Cascade-with-confirm: if any paper references the project, a warning
-    block lists them and a y/N prompt gates the teardown. --yes / -y
-    skips the prompt; a non-tty without --yes aborts cleanly. With no
-    references the command executes immediately (nothing to warn about).
+    Always confirms. A warning block lists what will be destroyed and a y/N
+    prompt gates the teardown; --yes / -y skips it, a non-tty without --yes
+    aborts cleanly.
+
+    The gate does not depend on any paper referencing the project, because
+    zero papers is not zero damage: deleting an empty project still drops
+    its path binding from lit-config.yaml and deletes litman_reflib/ and
+    REFERENCES.md from the user's own project folder — files that live
+    outside the vault, which the trash does not cover. Undoing it takes
+    three commands and remembering the path that was bound. When there is
+    nothing to cascade the block says so, and the Enter is cheap.
     """
     name = name.strip()
     vault = find_vault(resolve_library_or_vault(library, vault_name))
@@ -401,23 +458,29 @@ def project_rm_cmd(
             warning_lines.append(
                 f"  ... and {len(referencing) - 10} more"
             )
-        warning_lines.append("")
-        warning_lines.append("Removing will:")
+    else:
+        warning_lines = [
+            f"[yellow]⚠[/] '{escape(name)}' is referenced by "
+            f"[bold]0[/] paper(s) — nothing will be untagged.",
+        ]
+    warning_lines.append("")
+    warning_lines.append("Removing will:")
+    if referencing:
         warning_lines.append(
             f"  • Untag these {len(referencing)} paper(s): drop "
             f"'{escape(name)}' from their projects field"
         )
+    warning_lines.append(
+        "  • Remove from TAXONOMY.md and lit-config.yaml"
+    )
+    if project_dir is not None:
         warning_lines.append(
-            "  • Remove from TAXONOMY.md and lit-config.yaml"
+            f"  • Delete {escape(str(project_dir))}/"
+            f"{LITERATURE_SUBDIR}/ links + {REFERENCES_FILENAME}"
         )
-        if project_dir is not None:
-            warning_lines.append(
-                f"  • Delete {escape(str(project_dir))}/"
-                f"{LITERATURE_SUBDIR}/ symlinks + {REFERENCES_FILENAME}"
-            )
-        if not _confirm_destructive(warning_lines, yes=yes):
-            console.print("[dim]Aborted. Nothing changed.[/]")
-            return
+    if not _confirm_destructive(warning_lines, yes=yes):
+        console.print("[dim]Aborted. Nothing changed.[/]")
+        return
 
     # The cascade write (dual TAXONOMY + config rewrite, metadata + INDEX, derived
     # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI

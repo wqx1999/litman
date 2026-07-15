@@ -19,7 +19,7 @@ rendering, friendly error wording).
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.commands._options import format_option
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
 from litman.core.sync import humanize_bytes
 from litman.core.vault_registry import (
@@ -38,6 +39,7 @@ from litman.core.vault_registry import (
     find_active,
     find_by_name,
     load_registry,
+    mark_health_checked,
     remove_vault,
     save_registry,
 )
@@ -200,6 +202,15 @@ def vault_add_cmd(
         imported_at=imported_at,
         set_active=set_active_flag,
     )
+    # Mirror `lit init` (review F17): the dir was validated as a real vault
+    # above, so start its health-check staleness clock now. Otherwise
+    # last_health_check_at=None reads as "never checked == stale" and the
+    # post-command nudge fires on the very first command after registering.
+    updated = mark_health_checked(
+        updated,
+        name,
+        datetime.now(timezone.utc).isoformat(),
+    )
     save_registry(updated)
 
     new_entry = find_by_name(updated, name)
@@ -248,8 +259,33 @@ def vault_use_cmd(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _vault_row(entry: VaultEntry) -> dict[str, Any]:
+    """One registered vault as a JSON row, keyed the way vaults.yaml is.
+
+    ``papers`` is null — not 0 — when the vault's folder is not on this
+    machine: the table's red "?" means "cannot know", and 0 would read as
+    "an empty vault". The table's single Provenance column is the join of
+    the registry's two provenance fields; JSON keeps them apart.
+    """
+    vault_path = Path(entry.path)
+    papers = (
+        _vault_summary(vault_path, with_size=False)["papers"]
+        if vault_path.is_dir()
+        else None
+    )
+    return {
+        "name": entry.name,
+        "path": entry.path,
+        "is_active": entry.is_active,
+        "papers": papers,
+        "imported_from": entry.imported_from,
+        "imported_at": entry.imported_at,
+    }
+
+
 @vault_group.command("list")
-def vault_list_cmd() -> None:
+@format_option
+def vault_list_cmd(output_format: str) -> None:
     """Show every registered vault.
 
     Each row shows: name, active marker (✓ for the active vault), path,
@@ -257,6 +293,17 @@ def vault_list_cmd() -> None:
     they exceed the column width; copy from a wider terminal if needed.
     """
     registry = load_registry()
+
+    if output_format == "json":
+        # Before the empty-registry message: no vaults is `[]`, not prose.
+        click.echo(
+            json.dumps(
+                [_vault_row(e) for e in registry.vaults],
+                ensure_ascii=False,
+            )
+        )
+        return
+
     if not registry.vaults:
         console.print(
             "[yellow]No vaults registered.[/] "

@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from litman.core.atomic import staged_write
 from litman.core.id import is_valid_id
-from litman.core.notes import ensure_wikilink_reminder
+from litman.core.notes import ensure_discussion_scaffold, ensure_wikilink_reminder
 
 router = APIRouter(prefix="/api")
 
@@ -95,8 +95,8 @@ async def put_notes(request: Request, paper_id: str) -> dict[str, object]:
     Reject a traversal-style id → 404, and require the PAPER to exist (its
     ``papers/{id}/`` dir) → 404 if absent. The notes.md file itself is
     CREATE-or-overwrite: unlike paper.pdf (which only ``lit add`` produces),
-    notes.md / discussion.md are whitelist members the GUI may create — and in
-    practice must, since ``lit add`` scaffolds notes.md but never discussion.md.
+    notes.md / discussion.md are whitelist members the GUI may create — which it
+    still may need to, for a paper predating either scaffold.
     Goes through ``staged_write`` so a crash mid-write can never tear the note.
     """
     vault = request.app.state.vault
@@ -121,10 +121,12 @@ async def put_discussion(request: Request, paper_id: str) -> dict[str, object]:
     """Atomically write ``papers/{id}/discussion.md`` with the posted text.
 
     Same whitelist path as :func:`put_notes` (full overwrite, never an append:
-    per-line append is the agent SOP and has no GUI caller), but WITHOUT the
-    wikilink reminder — discussion.md carries no scaffold nudge. Like notes it is
-    CREATE-or-overwrite: ``lit add`` never scaffolds discussion.md, so the first
-    GUI save for a paper is always a create.
+    per-line append is the agent SOP and has no GUI caller), with its own
+    scaffold heal: :func:`ensure_discussion_scaffold` puts the append-format
+    header back if the edit stripped it, the way notes gets its wikilink nudge
+    back. Also CREATE-or-overwrite — a paper predating the scaffold has no
+    discussion.md until ``lit health-check --fix`` backfills it, so the first
+    GUI save can still be the create.
     """
     vault = request.app.state.vault
 
@@ -135,8 +137,9 @@ async def put_discussion(request: Request, paper_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
 
     text = await _md_text_body(request)
+    healed = ensure_discussion_scaffold(text, paper_id)
 
     with staged_write(vault) as sw:
-        sw.write_text(f"papers/{paper_id}/discussion.md", text)
+        sw.write_text(f"papers/{paper_id}/discussion.md", healed)
 
-    return {"ok": True, "bytes": len(text.encode("utf-8"))}
+    return {"ok": True, "bytes": len(healed.encode("utf-8"))}

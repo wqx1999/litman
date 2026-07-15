@@ -20,7 +20,7 @@ import { createPortal } from 'react-dom'
  * they stay roughly square. */
 function Key({ children }: { children: string }) {
   return (
-    <kbd className="inline-flex min-w-[1.5rem] items-center justify-center rounded-md border border-stone-300 bg-stone-50 px-1.5 py-0.5 text-[11px] font-medium text-stone-700 shadow-sm">
+    <kbd className="inline-flex min-w-[1.5rem] items-center justify-center whitespace-nowrap rounded-md border border-stone-300 bg-stone-50 px-1.5 py-0.5 text-[11px] font-medium text-stone-700 shadow-sm">
       {children}
     </kbd>
   )
@@ -72,6 +72,25 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    title: 'Agent',
+    // Labelled `~`, not `` ` ``: the backtick glyph is near-invisible at keycap
+    // size, and the tilde is what the eye finds on the physical key. The
+    // dispatcher accepts the key with or without Shift, so this label cannot
+    // teach a press that does nothing.
+    note: 'The key left of "1", with or without Shift. Opens setup when no agent is configured.',
+    rows: [{ chords: [['~']], action: 'Launch your AI agent' }],
+  },
+  {
+    title: 'Papers list & search',
+    note: 'Move through the middle list; Enter opens the PDF.',
+    rows: [
+      { chords: [['J']], action: 'Next paper' },
+      { chords: [['K']], action: 'Previous paper' },
+      { chords: [['Enter']], action: 'Open the selected paper' },
+      { chords: [['/']], action: 'Focus search' },
+    ],
+  },
+  {
     title: 'Tabs',
     note: 'Switch the open document tabs.',
     rows: [
@@ -107,7 +126,9 @@ const SECTIONS: Section[] = [
     title: 'System (unchanged)',
     rows: [
       { chords: [['Ctrl', 'S']], action: 'Save the current tab' },
-      { chords: [['Ctrl', '+'], ['Ctrl', '−'], ['Ctrl', '0']], action: 'PDF zoom' },
+      // One chord, not three: "Ctrl + / Ctrl − / Ctrl 0" was the only row wide
+      // enough to break the keycap column's alignment.
+      { chords: [['Ctrl', '+ / − / 0']], action: 'PDF zoom' },
       { chords: [['Ctrl', 'K']], action: 'Focus search' },
     ],
   },
@@ -126,31 +147,37 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
         }}
         role="dialog"
         aria-label="Keyboard shortcuts"
-        className="max-h-[80vh] w-[34rem] max-w-[92vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="max-h-[85vh] w-[52rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="mb-3 text-sm font-semibold text-stone-900">
+        <h2 className="mb-4 text-sm font-semibold text-stone-900">
           Keyboard shortcuts
         </h2>
 
-        {/* Two-column flow keeps the four groups compact on a single card. */}
-        <div className="columns-1 gap-6 sm:columns-2">
+        {/* Column FLOW (not a grid): sections pack bottom-up, so a one-row group
+         * never leaves a hole the height of its neighbour. break-inside-avoid
+         * keeps a section whole. */}
+        <div className="columns-1 gap-8 sm:columns-2">
           {SECTIONS.map((section) => (
-            <section key={section.title} className="mb-4 break-inside-avoid">
-              <h3 className="mb-0.5 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <section key={section.title} className="mb-5 break-inside-avoid">
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                 {section.title}
               </h3>
               {section.note && (
-                <p className="mb-1.5 text-[11px] leading-snug text-stone-400">
+                <p className="mb-2 text-[11px] leading-snug text-stone-400">
                   {section.note}
                 </p>
               )}
-              <ul className="space-y-1">
+              <ul className="space-y-1.5">
                 {section.rows.map((row) => (
+                  // Fixed 9rem keycap column, right-aligned (macOS menu
+                  // convention). A rigid track — not flex justify-between —
+                  // means the keycaps land on the same x in every row and the
+                  // description can never squeeze them into a wrap.
                   <li
                     key={row.action}
-                    className="flex items-center justify-between gap-3"
+                    className="grid grid-cols-[1fr_9rem] items-baseline gap-3"
                   >
-                    <span className="text-xs text-stone-700">
+                    <span className="text-xs leading-5 text-stone-700">
                       {row.action}
                       {row.scope && (
                         <span className="ml-1.5 text-[10px] font-medium text-stone-400">
@@ -158,7 +185,7 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
                         </span>
                       )}
                     </span>
-                    <span className="flex shrink-0 items-center gap-1.5">
+                    <span className="flex items-center justify-end gap-1.5">
                       {row.chords.map((chord, i) => (
                         <span key={i} className="flex items-center gap-1.5">
                           {i > 0 && (
@@ -175,7 +202,7 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
-        <div className="mt-2 flex justify-end">
+        <div className="mt-1 flex justify-end">
           <button
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"

@@ -99,6 +99,127 @@ def test_modify_set_int_coercion(vault_with_paper: tuple[Path, str]) -> None:
     assert isinstance(meta["year"], int)
 
 
+def _seed_second_paper(vault: Path, paper_id: str, doi: str) -> None:
+    """A minimal second paper so DOI-collision tests have a victim."""
+    paper_dir = vault / "papers" / paper_id
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        f"id: {paper_id}\n"
+        "title: Second Paper\n"
+        "authors:\n"
+        "  - Second, Bob\n"
+        "year: 2023\n"
+        f"doi: {doi}\n"
+        "created-at: '2026-04-28T10:00:00+02:00'\n"
+        "updated-at: '2026-04-28T10:00:00+02:00'\n"
+        "projects: []\n"
+        "topics: []\n"
+        "methods: []\n"
+        "data: []\n"
+        "type: research\n"
+        "status: inbox\n"
+        "priority: B\n",
+        encoding="utf-8",
+    )
+
+
+def test_modify_set_doi_owned_by_another_paper_rejected(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """`lit add` refuses duplicate DOIs; --set doi= must not be a backdoor.
+
+    Two papers sharing a DOI makes every --paper-doi lookup (show / cite /
+    rm!) resolve to an arbitrary one, so the collision must die here.
+    """
+    vault, paper_id = vault_with_paper
+    _seed_second_paper(vault, "2023_Second_Paper", doi="10.9/other")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        # 10.1/x is vault_with_paper's DOI.
+        ["modify", "2023_Second_Paper", "--set", "doi=10.1/x",
+         "--library", str(vault)],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "already belongs to another paper" in str(result.exception)
+    assert paper_id in str(result.exception)  # names the paper that owns it
+    assert _read_meta(vault, "2023_Second_Paper")["doi"] == "10.9/other"
+
+
+def test_modify_set_doi_case_variant_rejected(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """DOI matching is case-insensitive (dedup semantics), so is the gate."""
+    vault, _paper_id = vault_with_paper
+    _seed_second_paper(vault, "2023_Second_Paper", doi="10.9/other")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", "2023_Second_Paper", "--set", "doi=10.1/X",
+         "--library", str(vault)],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "already belongs to another paper" in str(result.exception)
+
+
+def test_modify_set_doi_to_own_value_allowed(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Re-setting a paper's own DOI is not a collision (self-match)."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "doi=10.1/x", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["doi"] == "10.1/x"
+
+
+def test_modify_set_year_rejects_non_numeric(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """A string year passes every downstream check and only surfaces as an
+    invalid `year = {notayear}` in exported BibTeX — refuse it at the door."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "year=notayear", "--library", str(vault)],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ModifyError)
+    assert "year must be a number" in str(result.exception)
+    assert _read_meta(vault, paper_id)["year"] == 2024  # untouched
+
+
+def test_modify_set_year_unset_still_allowed(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """`--set year=` (clear) stays legal — absence is a valid state; only a
+    non-numeric VALUE is rejected."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "year=", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["year"] is None
+
+
 def test_modify_set_empty_value_unsets(vault_with_paper: tuple[Path, str]) -> None:
     vault, paper_id = vault_with_paper
     runner = CliRunner()
@@ -1131,3 +1252,195 @@ def test_modify_rm_tag_opposite_lacks_item_is_noop(
     # Opposite untouched: still empty AND not re-stamped.
     assert _read_meta(vault, b)["extended-by"] == []
     assert _read_meta(vault, b)["updated-at"] == seed_updated
+
+
+# ---------------------------------------------------------------------------
+# INDEX fast path: a single-field edit must not rescan the vault
+# ---------------------------------------------------------------------------
+
+
+def test_modify_serves_the_edit_from_index_without_a_vault_scan(
+    vault_with_paper: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a fresh INDEX, a tag/status edit reads no metadata.yaml beyond
+    its own paper: the splice base comes from INDEX.json and the views move
+    incrementally. list_papers is booby-trapped to prove the scan is gone —
+    the real-default e2e for the whole fast path."""
+    vault, paper_id = vault_with_paper
+
+    def _boom(v: Path) -> list[dict[str, Any]]:
+        raise AssertionError("full vault scan ran on the fast path")
+
+    monkeypatch.setattr("litman.commands.modify.list_papers", _boom)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "status=skim", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    # INDEX re-rendered with the change spliced in.
+    entries = {p["id"]: p for p in _read_index(vault)["papers"]}
+    assert entries[paper_id]["status"] == "skim"
+    # Views moved incrementally: new bucket linked, emptied bucket gone.
+    assert (vault / "views" / "by-status" / "skim" / paper_id).is_symlink()
+    assert not (vault / "views" / "by-status" / "inbox").exists()
+
+
+def test_modify_with_stale_index_falls_back_to_the_scan_and_heals(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A paper dir added behind INDEX's back fails the freshness probe, so
+    the edit takes the full scan — and the rendered INDEX now carries both
+    papers (the fallback is also the self-heal)."""
+    vault, paper_id = vault_with_paper
+    late = vault / "papers" / "2025_Late_Arrival"
+    late.mkdir(parents=True)
+    (late / "metadata.yaml").write_text(
+        "id: 2025_Late_Arrival\ntitle: Late\nauthors:\n  - L, A.\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    ids = {p["id"] for p in _read_index(vault)["papers"]}
+    assert ids == {paper_id, "2025_Late_Arrival"}
+
+
+def test_modify_views_state_equals_a_full_rebuild(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """After a real CLI edit through the incremental path, a wholesale
+    reconcile must find nothing to change in views/ — the equivalence
+    contract, checked end to end."""
+    from litman.core.correctors import reconcile_derived
+
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "status=deep-read",
+            "--add-tag", "topics=peptide",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    def _tree(root: Path) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for p in sorted(root.rglob("*")):
+            rel = p.relative_to(root).as_posix()
+            out[rel] = "link" if p.is_symlink() else (
+                "dir" if p.is_dir() else "file"
+            )
+        return out
+
+    incremental = _tree(vault / "views")
+    reconcile_derived(vault, project_refs=False)
+    assert _tree(vault / "views") == incremental
+
+
+# ---------------------------------------------------------------------------
+# --set <singular> — the one-letter miss for --add-tag <plural>
+# ---------------------------------------------------------------------------
+
+
+def test_set_singular_tag_field_still_writes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Schemaless is a root invariant (#7): warn, never refuse."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topic=docking", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["topic"] == "docking"
+
+
+def test_set_singular_tag_field_warns_and_names_the_right_command(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The write is silent otherwise: register-first only guards --add-tag."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topic=docking", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--add-tag topics=docking" in result.stderr
+
+
+def test_set_singular_warning_goes_to_stderr_not_stdout(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topic=docking", "--library", str(vault)],
+    )
+    assert "--add-tag" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("singular", "plural"),
+    [
+        ("topic", "topics"),
+        ("method", "methods"),
+        ("project", "projects"),
+        ("author", "authors"),
+        ("extend", "extends"),
+        ("datum", "data"),  # the irregular plural the naive key+"s" rule misses
+    ],
+)
+def test_every_tag_field_singular_is_caught(
+    vault_with_paper: tuple[Path, str], singular: str, plural: str
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", f"{singular}=x", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert f"--add-tag {plural}=x" in result.stderr
+
+
+def test_an_unrelated_custom_field_is_not_nagged_about(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A schemaless store must not nag: only singulars of a real tag field warn."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "funding=ERC-2024",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["funding"] == "ERC-2024"
+    assert result.stderr == "", result.stderr
+
+
+def test_the_plural_itself_is_still_refused_not_warned(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """--set topics= would clobber the list; that stays a hard error."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "topics=docking", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert "would clobber" in str(result.exception)

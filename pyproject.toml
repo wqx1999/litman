@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "litman"
 dynamic = ["version"]
-description = "Local-first, AI-augmented literature management CLI"
+description = "Keep every paper you read on your own computer, and let an AI assistant do the filing."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -23,6 +23,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering",
@@ -50,10 +51,18 @@ dev = [
 [project.scripts]
 lit = "litman.cli:main"
 
+# Same entry point, windows subsystem. On Windows the console window is decided
+# by the exe's PE header, not by the shortcut, so the desktop icon has to launch
+# a console-less twin or it drags a black box along behind the app window. POSIX
+# installers make this an ordinary script identical to `lit`.
+[project.gui-scripts]
+litw = "litman.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/wqx1999/litman"
 Repository = "https://github.com/wqx1999/litman"
 Documentation = "https://github.com/wqx1999/litman/blob/main/docs/0-readme.md"
+Changelog = "https://github.com/wqx1999/litman/blob/main/CHANGELOG.md"
 Issues = "https://github.com/wqx1999/litman/issues"
 
 # Single source of truth for the version: src/litman/__init__.py __version__.
@@ -81,6 +90,9 @@ include = ["litman*"]
 # patterns the asset tree is dropped because it carries no Python sources.
 "litman" = [
     "assets/webui/*", "assets/webui/**/*",
+    # Desktop-shortcut icons (`lit gui --make-shortcut`); resolved at runtime
+    # via importlib.resources.
+    "assets/icons/*",
 ]
 # Bundle the journal abbreviation table (CC0, used by `lit cite` / the webUI
 # cite endpoint). Without this the wheel drops the CSV (no Python sources in

@@ -24,9 +24,14 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.paper_lookup import complete_paper_id, find_paper_id_by_doi
+from litman.core.paper_lookup import (
+    complete_paper_id,
+    find_paper_id_by_doi,
+    most_recent_paper_id,
+)
 from litman.core.viewer import launch_pdf, resolve_paper_id
 from litman.exceptions import (
     AmbiguousPaperIdError,
@@ -50,22 +55,8 @@ console = Console()
         "Mutually exclusive with the positional paper id."
     ),
 )
-@click.option(
-    "--library",
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=None,
-    envvar="LIT_LIBRARY",
-    help="Override the active vault. Discovery order: this flag / $LIT_LIBRARY, then the active registered vault, then cwd-walk.",
-)
-@click.option(
-    "--vault",
-    "vault_name",
-    default=None,
-    help=(
-        "Vault name from ~/.config/litman/vaults.yaml. "
-        "Mutually exclusive with --library."
-    ),
-)
+@library_option
+@vault_option
 def open_cmd(
     paper_id: str | None,
     paper_doi: str | None,
@@ -74,10 +65,12 @@ def open_cmd(
 ) -> None:
     """Open a paper's PDF in the configured (or platform default) viewer.
 
-    The paper id accepts a full id, a unique case-insensitive substring,
-    or omit it and pass --paper-doi <DOI> instead. Multiple substring
-    matches print the candidate list and exit 1 so the user can re-run
-    with a more specific id.
+    With no argument, opens the paper you engaged with most recently — the
+    same paper `lit list --sort recent` puts at the top. The paper id
+    otherwise accepts a full id, a unique case-insensitive substring, or
+    omit it and pass --paper-doi <DOI> instead. Multiple substring matches
+    print the candidate list and exit 1 so the user can re-run with a more
+    specific id.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
@@ -89,12 +82,15 @@ def open_cmd(
             "Pass one or the other, not both."
         )
     if not has_id and not has_doi:
-        raise LitmanError(
-            "No paper specified. Pass a paper id (full or unique substring) "
-            "or --paper-doi <DOI>."
+        # Coming back to the paper you just closed should not cost you its id.
+        # Announced on stderr, because it reports how the input was read rather
+        # than being part of the command's output. Raises on an empty vault.
+        resolved_id = most_recent_paper_id(vault)
+        Console(stderr=True).print(
+            f"[dim]No paper given — opening the most recently engaged: "
+            f"{escape(resolved_id)}[/]"
         )
-
-    if has_doi:
+    elif has_doi:
         assert paper_doi is not None
         resolved_id = find_paper_id_by_doi(vault, paper_doi)
     else:

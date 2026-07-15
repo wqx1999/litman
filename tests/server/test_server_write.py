@@ -6,7 +6,7 @@ create-or-overwrite, paper.pdf is overwrite-only):
 
 * ``PUT /api/paper/{id}/pdf-annotations`` → paper.pdf
 * ``PUT /api/paper/{id}/notes``          → notes.md (with wikilink reminder)
-* ``PUT /api/paper/{id}/discussion``     → discussion.md (no reminder)
+* ``PUT /api/paper/{id}/discussion``     → discussion.md (with format header)
 
 Guarded with ``importorskip`` so the suite still collects when the optional
 ``web`` extra is absent (invariant #5)."""
@@ -137,7 +137,11 @@ def test_put_empty_body_400(
 # notes.md / discussion.md overwrites (Phase 3a)
 # ---------------------------------------------------------------------------
 
-from litman.core.notes import WIKILINK_REMINDER
+from litman.core.notes import (
+    WIKILINK_REMINDER,
+    discussion_scaffold,
+    has_discussion_reminder,
+)
 
 
 def _plant_md(vault: Path, paper_id: str, name: str, body: str) -> Path:
@@ -197,8 +201,8 @@ def test_put_notes_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
 def test_put_notes_creates_when_absent(vault_with_paper: tuple[Path, str]) -> None:
     """notes.md is CREATE-or-overwrite: an absent file is created, not 404'd.
 
-    (``lit add`` scaffolds notes.md, but a paper can still lack it; discussion.md
-    is never scaffolded, so the GUI must be able to start one — same code path.)
+    (``lit add`` scaffolds notes.md, but a paper can still lack it — a hand-built
+    or pre-scaffold paper folder — so the GUI must be able to start one.)
     """
     vault, paper_id = vault_with_paper
     notes_path = vault / "papers" / paper_id / "notes.md"
@@ -257,10 +261,13 @@ def test_put_discussion_full_overwrite(
     """
     vault, paper_id = vault_with_paper
     md_path = _plant_md(
-        vault, paper_id, "discussion.md", "# Discussion\n\nold turn\n"
+        vault,
+        paper_id,
+        "discussion.md",
+        discussion_scaffold(paper_id) + "\nold turn\n",
     )
 
-    new_text = "# Discussion\n\nfresh single turn\n"
+    new_text = discussion_scaffold(paper_id) + "\nfresh single turn\n"
     resp = _client(vault).put(
         f"/api/paper/{paper_id}/discussion", json={"text": new_text}
     )
@@ -272,19 +279,29 @@ def test_put_discussion_full_overwrite(
     assert "old turn" not in on_disk  # NOT old+new concatenation
 
 
-def test_put_discussion_no_wikilink_reminder(
+def test_put_discussion_heals_stripped_format_header(
     vault_with_paper: tuple[Path, str],
 ) -> None:
-    """discussion does NOT get the wikilink reminder (only notes does)."""
-    vault, paper_id = vault_with_paper
-    md_path = _plant_md(vault, paper_id, "discussion.md", "# Discussion\n\nseed\n")
+    """An edit that dropped the append-format header gets it back on save.
 
-    new_text = "# Discussion\n\nno reminder here\n"
+    Mirrors notes' wikilink-reminder heal: the header is the contract the next
+    writer reads, so the GUI must not be the way a paper loses it.
+    """
+    vault, paper_id = vault_with_paper
+    md_path = _plant_md(
+        vault, paper_id, "discussion.md", discussion_scaffold(paper_id)
+    )
+
     resp = _client(vault).put(
-        f"/api/paper/{paper_id}/discussion", json={"text": new_text}
+        f"/api/paper/{paper_id}/discussion",
+        json={"text": "# Discussion log for x\n\nheader torn out\n"},
     )
     assert resp.status_code == 200
-    assert WIKILINK_REMINDER not in md_path.read_text(encoding="utf-8")
+    on_disk = md_path.read_text(encoding="utf-8")
+    assert has_discussion_reminder(on_disk)
+    assert "header torn out" in on_disk
+    # The notes nudge stays a notes thing — discussion carries its own.
+    assert WIKILINK_REMINDER not in on_disk
 
 
 def test_put_discussion_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
@@ -297,8 +314,10 @@ def test_put_discussion_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
 def test_put_discussion_creates_when_absent(
     vault_with_paper: tuple[Path, str],
 ) -> None:
-    """discussion.md is CREATE-or-overwrite — ``lit add`` never scaffolds it, so
-    the first GUI save creates the file (the dogfood case that exposed the bug).
+    """discussion.md is CREATE-or-overwrite. ``lit add`` scaffolds it for every
+    new paper, but a paper predating the scaffold (and not yet backfilled by
+    ``lit health-check --fix``) still has none — the first GUI save creates it,
+    format header and all.
     """
     vault, paper_id = vault_with_paper
     disc_path = vault / "papers" / paper_id / "discussion.md"
@@ -310,7 +329,8 @@ def test_put_discussion_creates_when_absent(
     )
     assert resp.status_code == 200
     on_disk = disc_path.read_text(encoding="utf-8")
-    assert on_disk == "# Discussion\n\nfirst thought\n"  # exact, no reminder
+    assert "first thought" in on_disk
+    assert has_discussion_reminder(on_disk)
     assert WIKILINK_REMINDER not in on_disk
 
 

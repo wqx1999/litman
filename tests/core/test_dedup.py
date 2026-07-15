@@ -280,3 +280,104 @@ def test_auto_suffix_exhausted_raises(vault: Path) -> None:
         _write_paper(vault, f"2024_Smith_Foo_{c}")
     with pytest.raises(AddError, match="exhausted"):
         auto_suffix_id(vault, "2024_Smith_Foo")
+
+
+# ---------------------------------------------------------------------------
+# find_paper_by_doi: the INDEX fast path must not change WHICH paper is found
+# ---------------------------------------------------------------------------
+
+
+def _reconcile(v: Path) -> None:
+    from litman.core.correctors import reconcile_derived
+
+    reconcile_derived(v, project_refs=False)
+
+
+def test_find_by_doi_hits_through_index_without_scanning(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a fresh INDEX the lookup reads INDEX + the one hit's metadata —
+    every other metadata.yaml stays shut (booby-trapped read_text proves it)."""
+    _write_paper(vault, "2024_A_One", doi="10.1/one")
+    _write_paper(vault, "2024_B_Two", doi="10.2/two")
+    _write_paper(vault, "2024_C_Three", doi="10.3/three")
+    _reconcile(vault)
+
+    real_read = Path.read_text
+    opened: list[str] = []
+
+    def _spy(self: Path, *a: Any, **kw: Any) -> str:
+        if self.name == "metadata.yaml":
+            opened.append(self.parent.name)
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _spy)
+    hit = find_paper_by_doi(vault, "10.2/two")
+    assert hit is not None
+    assert hit[0] == "2024_B_Two"
+    assert hit[1]["doi"] == "10.2/two"
+    assert opened == ["2024_B_Two"]
+
+
+def test_find_by_doi_miss_on_fresh_index_is_conclusive(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh INDEX that carries no such DOI answers None without opening a
+    single metadata.yaml (the `lit add` dedup check on a new paper)."""
+    _write_paper(vault, "2024_A_One", doi="10.1/one")
+    _reconcile(vault)
+
+    real_read = Path.read_text
+
+    def _spy(self: Path, *a: Any, **kw: Any) -> str:
+        assert self.name != "metadata.yaml", "scanned on a conclusive miss"
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _spy)
+    assert find_paper_by_doi(vault, "10.9/absent") is None
+
+
+def test_find_by_doi_picks_the_same_paper_as_the_scan_on_a_duplicate(
+    vault: Path,
+) -> None:
+    """Red line: in a vault that already holds a duplicate DOI (a health-check
+    violation), the fast path must select the SAME paper the scan did —
+    `lit rm --paper-doi` deletes what this returns."""
+    _write_paper(vault, "2024_Z_Last", doi="10.5/dup")
+    _write_paper(vault, "2024_A_First", doi="10.5/dup")
+    _reconcile(vault)
+
+    fast = find_paper_by_doi(vault, "10.5/dup")
+    (vault / "INDEX.json").unlink()
+    scan = find_paper_by_doi(vault, "10.5/dup")
+
+    assert fast is not None and scan is not None
+    assert fast[0] == scan[0] == "2024_A_First"  # id-ascending first match
+
+
+def test_find_by_doi_falls_back_when_index_is_stale(vault: Path) -> None:
+    """A paper added behind INDEX's back must still be found (probe fails →
+    scan), or `lit add` would ingest a duplicate DOI."""
+    _write_paper(vault, "2024_A_One", doi="10.1/one")
+    _reconcile(vault)
+    _write_paper(vault, "2024_B_Unindexed", doi="10.2/late")
+
+    hit = find_paper_by_doi(vault, "10.2/late")
+    assert hit is not None and hit[0] == "2024_B_Unindexed"
+
+
+def test_find_by_doi_falls_back_when_the_hits_metadata_is_unreadable(
+    vault: Path,
+) -> None:
+    """INDEX says this paper holds the DOI but its metadata.yaml is corrupt:
+    the scan (which skips corrupt files) decides — here it finds the other
+    paper that also carries the DOI, exactly as before the fast path."""
+    _write_paper(vault, "2024_A_Corrupt", doi="10.5/dup")
+    _write_paper(vault, "2024_B_Fine", doi="10.5/dup")
+    _reconcile(vault)
+    (vault / "papers" / "2024_A_Corrupt" / "metadata.yaml").write_bytes(
+        b"\xff\xfe not utf-8 at all"
+    )
+
+    hit = find_paper_by_doi(vault, "10.5/dup")
+    assert hit is not None and hit[0] == "2024_B_Fine"

@@ -592,6 +592,21 @@ def test_resolve_vault_param_unknown_raises(vault_a: Path) -> None:
         resolve_vault_param(reg, "ghost")
 
 
+def test_resolve_vault_param_path_shaped_value_redirects_to_library(
+    vault_a: Path,
+) -> None:
+    """--vault takes a NAME, --library a path — a path-shaped --vault value
+    must point at the right flag, not send the user to `lit vault add`."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError, match=r"--library /some/where"):
+        resolve_vault_param(reg, "/some/where")
+    with pytest.raises(VaultRegistryError, match="--library ~/vaults"):
+        resolve_vault_param(reg, "~/vaults")
+    # A plain wrong NAME keeps the `lit vault add` guidance.
+    with pytest.raises(VaultRegistryError, match="lit vault add"):
+        resolve_vault_param(reg, "ghost")
+
+
 # ---------------------------------------------------------------------------
 # find_vault() — discovery chain integration
 # ---------------------------------------------------------------------------
