@@ -80,9 +80,11 @@ on an AI agent, which you install separately — litman ships the skills it
 drives, not a model. `lit agent` starts yours in the library directory; the app's
 agent button does the same.
 
-[Claude Code](https://claude.ai/code) is the supported agent today. Codex,
-Cursor, Gemini CLI, and OpenCode are next: they already appear in litman's agent
-picker, greyed out until the release that turns them on.
+[Claude Code](https://claude.ai/code), [Gemini
+CLI](https://github.com/google-gemini/gemini-cli), and
+[Cursor](https://cursor.com/cli) are the supported agents today. Codex and
+OpenCode are next: they already appear in litman's agent picker, greyed out
+until the release that turns them on.
 
 Your agent works with whatever model you give it. We ran eight of them through 22
 everyday tasks:

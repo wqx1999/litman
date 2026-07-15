@@ -50,7 +50,10 @@ def _status(client: TestClient) -> dict:
 def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
-    assert resp.json() == {"agents": ["claude"], "default": "claude"}
+    assert resp.json() == {
+        "agents": ["claude", "cursor", "gemini"],
+        "default": "claude",
+    }
 
 
 def test_launch_unknown_agent_is_400(vault: Path) -> None:
@@ -149,13 +152,26 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
     assert supported == {
         "claude": True,
         "codex": False,
-        "cursor": False,
-        "gemini": False,
+        "cursor": True,
+        "gemini": True,
         "opencode": False,
     }
     for e in body["agents"]:
-        assert set(e) == {"name", "display", "supported", "detected", "install_url"}
+        assert set(e) == {
+            "name",
+            "display",
+            "supported",
+            "detected",
+            "install_url",
+            "skill_state",
+        }
         assert isinstance(e["detected"], bool)
+        # Per-agent skill verdict: probed for supported agents, null for
+        # the greyed placeholders (their adapters are never called).
+        if e["supported"]:
+            assert e["skill_state"] in {"absent", "stale", "current"}
+        else:
+            assert e["skill_state"] is None
     # top-level fields present
     assert "default" in body
     assert isinstance(body["skill_installed"], bool)
@@ -172,13 +188,76 @@ def test_status_sets_no_store_cache_header(vault: Path) -> None:
     assert resp.headers["cache-control"] == "no-store"
 
 
-def test_status_never_leaks_claude_skill_path(vault: Path) -> None:
-    """The ~/.claude/skills filesystem path must never appear in the status
-    contract (the install-url is docs.claude.com, which is fine — the red line
-    is the skills *directory*, not the substring "claude")."""
+def test_status_never_leaks_skill_paths(vault: Path) -> None:
+    """No skills filesystem path — neither ~/.claude/skills nor the shared
+    ~/.agents/skills — may appear anywhere in the status contract (the
+    install-url is docs.claude.com, which is fine — the red line is the
+    skills *directory*, not the substring "claude")."""
     raw = _client(vault).get("/api/agent/status").text
     assert ".claude/skills" not in raw
+    assert ".agents/skills" not in raw
     assert "/skills" not in raw
+
+
+def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
+    """Per-agent skill_state reads each agent's own directory: installing
+    into the shared open-standard dir flips gemini AND cursor (they share
+    it by design) while claude stays absent, and vice versa. Drives the
+    REAL resolvers + copies (conftest isolates both dirs at tmp paths)."""
+    from litman.core import skill
+
+    client = _client(vault)
+
+    def states() -> dict[str, str | None]:
+        return {
+            e["name"]: e["skill_state"] for e in _status(client)["agents"]
+        }
+
+    before = states()
+    assert before["claude"] == "absent"
+    assert before["gemini"] == "absent"
+    assert before["cursor"] == "absent"
+    assert before["codex"] is None
+    assert before["opencode"] is None
+
+    skill.install_all_skills(parent_dir=skill.standard_skills_parent_dir())
+    after_standard = states()
+    assert after_standard["gemini"] == "current"
+    assert after_standard["cursor"] == "current"  # shared directory
+    assert after_standard["claude"] == "absent"  # untouched
+
+    skill.install_all_skills(parent_dir=skill.default_skills_parent_dir())
+    assert states()["claude"] == "current"
+
+    # Tamper the standard-dir copy: gemini/cursor flip stale, claude stays.
+    tampered = (
+        skill.standard_skills_parent_dir() / "lit-library" / "SKILL.md"
+    )
+    tampered.write_text("OUTDATED\n", encoding="utf-8")
+    tampered_states = states()
+    assert tampered_states["gemini"] == "stale"
+    assert tampered_states["cursor"] == "stale"
+    assert tampered_states["claude"] == "current"
+
+
+def test_skill_install_gemini_lands_in_standard_dir(vault: Path) -> None:
+    """POST /api/agent/skill/install {"agent": "gemini"} really copies the
+    bundled skills into the open-standard dir (no adapter stubbed) and the
+    claude dir stays untouched."""
+    from litman.core import skill
+
+    client = _client(vault)
+    resp = client.post("/api/agent/skill/install", json={"agent": "gemini"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["agent"] == "gemini"
+    assert "SKILL.md" in body["files"]
+
+    standard = skill.standard_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (standard / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
 
 
 # ---------------------------------------------------------------------------
@@ -379,4 +458,34 @@ def test_needs_setup_false_when_detected_and_skill_installed(
     body = _status(_client(vault))
     assert body["skill_installed"] is True
     assert body["skill_state"] == "current"
+    assert body["needs_setup"] is False
+
+
+def test_needs_setup_default_gemini_follows_standard_dir(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=gemini row of the needs_setup matrix: the top-level
+    skill_state follows the DEFAULT agent's directory (the open-standard
+    dir), not claude's — real resolvers + real copies, only `detect`
+    stubbed."""
+    from litman.core import skill
+
+    monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "gemini")
+    monkeypatch.setattr(agents, "detect", lambda spec: True)
+    client = _client(vault)
+
+    body = _status(client)
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+    # Installing into the CLAUDE dir must not satisfy a gemini default.
+    skill.install_all_skills(parent_dir=skill.default_skills_parent_dir())
+    body = _status(client)
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+    skill.install_all_skills(parent_dir=skill.standard_skills_parent_dir())
+    body = _status(client)
+    assert body["skill_state"] == "current"
+    assert body["skill_installed"] is True
     assert body["needs_setup"] is False

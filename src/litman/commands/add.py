@@ -277,7 +277,7 @@ def _validate_id_override(
         "LLM-prepared metadata JSON (see "
         "litman.importers.llm.LLMCandidateMeta for the schema). Pass a file "
         "path, or '-' to read the JSON from stdin (no temp file). Used by "
-        "the lit-library Claude Code skill. Mutually exclusive with --doi."
+        "the lit-library agent skill. Mutually exclusive with --doi."
     ),
 )
 @click.option(

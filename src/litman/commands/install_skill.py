@@ -1,8 +1,11 @@
-"""``lit install-skill`` — copy bundled Claude Code skills (M4.3 + M9.2).
+"""``lit install-skill`` — copy the bundled agent skills (M4.3 + M9.2).
 
 Default behaviour installs **every** bundled skill (currently
-``lit-library`` + ``lit-reading``) into ``~/.claude/skills/<name>/``,
-each under its own subdir. Use ``--skill <name>`` to install just one.
+``lit-library`` + ``lit-reading``) into the skills directory of the
+machine-level default agent, each skill under its own subdir. ``--agent
+<name>`` targets another supported agent's directory instead;
+``--parent-dir <path>`` is the manual escape hatch (mutually exclusive
+with ``--agent``). Use ``--skill <name>`` to install just one skill.
 
 Re-running the command is the upgrade path and is drift-aware: an
 installed skill whose content matches this litman's bundle reports
@@ -22,8 +25,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.core import agent_prefs, agents
 from litman.core.skill import (
-    DEFAULT_PARENT_DIR,
     SkillInstallError,
     bundled_skill_root,
     install_skill,
@@ -51,13 +54,24 @@ def _stdin_is_tty() -> bool:
     ),
 )
 @click.option(
+    "--agent",
+    "agent_name",
+    type=click.Choice([spec.name for spec in agents.supported_agents()]),
+    default=None,
+    help=(
+        "Install into this agent's skills directory. Default: the "
+        "machine-level default agent (lit agent --set-default). "
+        "Mutually exclusive with --parent-dir."
+    ),
+)
+@click.option(
     "--parent-dir",
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-    default=DEFAULT_PARENT_DIR,
-    show_default=True,
+    default=None,
     help=(
         "Parent directory under which each skill gets its own subdir. "
-        "Default puts skills where Claude Code auto-discovers them."
+        "Default follows the default agent's directory, where that agent "
+        "auto-discovers skills. Mutually exclusive with --agent."
     ),
 )
 @click.option(
@@ -72,23 +86,46 @@ def _stdin_is_tty() -> bool:
     ),
 )
 def install_skill_cmd(
-    skill_name: str | None, parent_dir: Path, force: bool
+    skill_name: str | None,
+    agent_name: str | None,
+    parent_dir: Path | None,
+    force: bool,
 ) -> None:
-    """Install the bundled litman Claude Code skills.
+    """Install the bundled litman agent skills.
 
     Currently bundled: lit-library (vault write / management) and
     lit-reading (paper-discussion read companion). Both are
     **optional** — the lit CLI is fully usable without any skill,
     but installing them makes agent-mediated workflows nicer.
 
+    Skills land in the directory your default agent discovers; --agent
+    targets another supported agent's directory instead.
+
     Safe to re-run after a litman upgrade: skills that already match
     this litman's bundled content are reported up to date, out-of-date
     ones are offered a refresh.
 
-    Running this command does NOT install Claude Code itself, configure
+    Running this command does NOT install the agent itself, configure
     API keys, or modify any of the user's other skills. It only copies
-    files into --parent-dir.
+    files into the chosen directory.
     """
+    if agent_name is not None and parent_dir is not None:
+        raise click.UsageError(
+            "--agent and --parent-dir are mutually exclusive; pass at "
+            "most one."
+        )
+    if parent_dir is None:
+        resolved = agent_name or (
+            agent_prefs.load_default_agent() or agents.default_agent_name()
+        )
+        try:
+            parent_dir = agents.agent_skills_parent_dir(resolved)
+        except ValueError as exc:
+            # Only reachable for a bare run whose recorded default is not a
+            # supported catalog agent (hand-edited preferences) — --agent is
+            # already validated by click.Choice.
+            raise click.UsageError(str(exc)) from exc
+
     if skill_name is not None:
         bundled_skill_root(skill_name)  # unknown name → SkillInstallError
         names = [skill_name]
@@ -161,10 +198,8 @@ def install_skill_cmd(
     available = ", ".join(list_bundled_skills())
     lines.append("")
     lines.append(
-        "[dim]Next:[/] open a new Claude Code session — the agent will "
-        "pick up the skill(s) via their frontmatter. "
-        "(No restart needed; Claude Code scans the skills dir on each "
-        "session start.)"
+        "[dim]Next:[/] open a new agent session — skills are discovered "
+        "on session start."
     )
     lines.append(f"[dim]Bundled skills available: {escape(available)}[/]")
 

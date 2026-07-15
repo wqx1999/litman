@@ -8,18 +8,22 @@ consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
-litman ships exactly one *supported* agent today, Claude Code. The other four
-(Codex / Cursor / Gemini CLI / OpenCode) exist here as ``supported=False``
-placeholders so the picker renders a stable, greyed-out roadmap and so the
-seam is already N-agent shaped; a later release fills in their real adapters.
-Their adapter callables raise :class:`NotImplementedError` — generic code never
-reaches them (every consumer gates on ``supported``), so a programming error
-that *does* call one fails loudly instead of silently misbehaving.
+litman supports three agents today: Claude Code (skills under
+``~/.claude/skills``) plus Gemini CLI and Cursor, which both discover the
+Agent Skills open-standard directory ``~/.agents/skills`` — one shared install
+serves them both, so installing the skill "for gemini" also makes it current
+"for cursor" (shared-directory semantics, not a bug). The remaining two
+(Codex / OpenCode) exist here as ``supported=False`` placeholders so the
+picker renders a stable, greyed-out roadmap and so the seam is already
+N-agent shaped; a later release fills in their real adapters. Their adapter
+callables raise :class:`NotImplementedError` — generic code never reaches
+them (every consumer gates on ``supported``), so a programming error that
+*does* call one fails loudly instead of silently misbehaving.
 
-The Claude-Code-specific ``~/.claude/skills`` location is reached ONLY through
-the claude adapter's callables (they delegate to :mod:`litman.core.skill`); it
-must never leak into an endpoint, the ``/api/agent/status`` contract, or the
-frontend. That agent-agnostic boundary is what keeps adding an agent cheap.
+The per-agent skills locations are reached ONLY through the catalog adapters
+(they delegate to :mod:`litman.core.skill`); they must never leak into an
+endpoint, the ``/api/agent/status`` contract, or the frontend. That
+agent-agnostic boundary is what keeps adding an agent cheap.
 """
 
 from __future__ import annotations
@@ -28,8 +32,10 @@ import shlex
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from litman.core import skill
 from litman.core.skill import aggregate_skill_state, install_all_skills
 
 # Fallback default when the user has not chosen one (no per-vault override
@@ -72,19 +78,26 @@ class AgentSpec:
     detect_bin: str
     skill_state: Callable[[], str]
     install_skill: Callable[[], Any]
+    # Where this agent discovers skills, resolved at call time (so a
+    # redirected $HOME / test patch on litman.core.skill.* is honored).
+    # Catalog-internal: consumers go through agent_skills_parent_dir() /
+    # skills_parent_dirs(), never read the path into an endpoint contract.
+    skills_dir: Callable[[], Path] | None = None
 
 
-# The one supported agent today. Its skill adapter reuses core.skill
-# verbatim: skill_state content-compares the installed copies against the
-# bundle ("absent" — nothing installed / "stale" — installed but out of
-# date with this litman / "current"), and install == copy every bundled
-# skill in, overwriting (install_all_skills; linked dev-checkout dirs are
-# left untouched). Those two callables are the ONLY place the
-# ~/.claude/skills path is reachable.
+# Every supported agent's skill adapter reuses core.skill verbatim:
+# skill_state content-compares the installed copies against the bundle
+# ("absent" — nothing installed / "stale" — installed but out of date with
+# this litman / "current"), and install == copy every bundled skill in,
+# overwriting (install_all_skills; linked dev-checkout dirs are left
+# untouched). The adapter callables are the ONLY place the skills paths are
+# reachable. The skill.<resolver>() calls go through the module attribute
+# (not a from-import) so a single patch on litman.core.skill.* intercepts
+# them — the test suite's skills-dir isolation depends on that.
 #
-# The four placeholders below carry best-effort launch commands / install
-# URLs so their adapters can be implemented without re-editing this table;
-# verify each vendor's exact CLI + docs URL when un-greying it.
+# The placeholders below carry best-effort launch commands / install URLs so
+# their adapters can be implemented without re-editing this table; verify
+# each vendor's exact CLI + docs URL when un-greying one.
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="claude",
@@ -95,6 +108,7 @@ AGENTS: tuple[AgentSpec, ...] = (
         detect_bin="claude",
         skill_state=lambda: aggregate_skill_state(),
         install_skill=lambda: install_all_skills(overwrite=True),
+        skills_dir=lambda: skill.default_skills_parent_dir(),
     ),
     AgentSpec(
         name="codex",
@@ -110,21 +124,31 @@ AGENTS: tuple[AgentSpec, ...] = (
         name="cursor",
         display="Cursor",
         launch="cursor-agent",
-        supported=False,
+        supported=True,
         install_url="https://cursor.com/cli",
         detect_bin="cursor-agent",
-        skill_state=_unsupported("cursor"),
-        install_skill=_unsupported("cursor"),
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.standard_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),
     AgentSpec(
         name="gemini",
         display="Gemini CLI",
         launch="gemini",
-        supported=False,
+        supported=True,
         install_url="https://github.com/google-gemini/gemini-cli",
         detect_bin="gemini",
-        skill_state=_unsupported("gemini"),
-        install_skill=_unsupported("gemini"),
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.standard_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),
     AgentSpec(
         name="opencode",
@@ -155,6 +179,45 @@ def supported_agents() -> list[AgentSpec]:
 def default_agent_name() -> str:
     """The catalog fallback default when the user has not chosen one."""
     return _DEFAULT_AGENT_NAME
+
+
+def agent_skills_parent_dir(name: str) -> Path:
+    """Resolve one supported agent's skills parent dir by catalog name.
+
+    The single lookup the CLI / setup / health-check layers go through — the
+    path knowledge itself stays in the catalog + :mod:`litman.core.skill`.
+
+    Raises:
+        ValueError: ``name`` is unknown, or a ``supported=False`` placeholder
+            (no skills directory to install into) — the message lists the
+            supported agent names.
+    """
+    spec = get_agent(name)
+    if spec is None or not spec.supported or spec.skills_dir is None:
+        known = ", ".join(s.name for s in supported_agents())
+        raise ValueError(
+            f"No skills directory for agent {name!r}. "
+            f"Supported agents: {known}."
+        )
+    return spec.skills_dir()
+
+
+def skills_parent_dirs() -> list[Path]:
+    """Distinct skills parent dirs across supported agents, stable order.
+
+    Catalog order, first occurrence wins — today that is the Claude Code dir
+    followed by the shared open-standard dir. ``lit uninstall`` sweeps this
+    full list (not just the default agent's dir) so switching defaults never
+    orphans litman files in a previously used agent's directory.
+    """
+    out: list[Path] = []
+    for spec in AGENTS:
+        if not spec.supported or spec.skills_dir is None:
+            continue
+        parent = spec.skills_dir()
+        if parent not in out:
+            out.append(parent)
+    return out
 
 
 def detect(spec: AgentSpec) -> bool:

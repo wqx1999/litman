@@ -21,15 +21,16 @@ exclusively from the server-side catalog; any ``command`` / ``target`` /
 ``path`` field in a request body is ignored and never executed — the
 localhost-bound server must not become a remote-code-execution surface.
 
-RED LINE: the Claude-specific ``~/.claude/skills`` path stays inside the
-catalog's claude adapter — it never appears in a response or the status
-contract, so new agents can be added without changing this file's shape.
+RED LINE: the per-agent skills paths (``~/.claude/skills``, the shared
+open-standard ``~/.agents/skills``) stay inside the catalog adapters — they
+never appear in a response or the status contract, so new agents can be
+added without changing this file's shape.
 
-None of these endpoints write to the vault: the skill install writes
-``~/.claude/skills`` and the default write goes to the machine-level
-``preferences.yaml`` — neither is a TRUTH/DERIVED vault surface, so
-invariant #16 (the WebUI structured-write whitelist) does not apply and there
-is no drift-ledger pair to register.
+None of these endpoints write to the vault: the skill install writes the
+agent's skills directory under the user's home and the default write goes to
+the machine-level ``preferences.yaml`` — neither is a TRUTH/DERIVED vault
+surface, so invariant #16 (the WebUI structured-write whitelist) does not
+apply and there is no drift-ledger pair to register.
 """
 
 from __future__ import annotations
@@ -135,12 +136,17 @@ def agent_status(response: Response) -> dict[str, object]:
         needs_setup == NOT( default chosen AND supported AND detected AND
                             skill_installed AND skill up to date )
 
-    ``skill_state`` is the content-level verdict for the resolved default's
-    skill: ``"absent"`` (nothing installed), ``"stale"`` (installed but out of
-    date with the running litman — the panel offers an update, and it is part
-    of ``needs_setup`` so the red dot surfaces it), or ``"current"``.
-    ``skill_installed`` (== state != "absent") stays alongside for the panel's
-    install-vs-update branch.
+    Each catalog entry carries its own ``skill_state``: the content-level
+    verdict for THAT agent's skill install — ``"absent"`` (nothing
+    installed), ``"stale"`` (installed but out of date with the running
+    litman), ``"current"``, or ``null`` for a ``supported=False`` placeholder
+    (never probed). The panel's per-card install/update/ready branch reads
+    this per-row value; agents sharing a skills directory legitimately share
+    a state.
+
+    The top-level ``skill_state`` is the resolved default's verdict, kept for
+    the ``needs_setup`` formula and older consumers. ``skill_installed``
+    (== state != "absent") stays alongside for the same reason.
 
     ``Cache-Control: no-store`` is mandatory: ``detected`` (is the agent binary
     on PATH?) and ``skill_state`` are live machine state that flips the
@@ -157,20 +163,21 @@ def agent_status(response: Response) -> dict[str, object]:
             "supported": spec.supported,
             "detected": agents.detect(spec),
             "install_url": spec.install_url,
+            # Per-agent skill verdict; placeholders are never probed (their
+            # adapters loud-fail by design).
+            "skill_state": spec.skill_state() if spec.supported else None,
         }
         for spec in agents.AGENTS
     ]
 
     default = agent_prefs.load_default_agent()
 
-    # skill_state reports the *resolved* default's skill so the panel can
-    # show "Ready" vs "Install skill" vs "Update skill" even before the user
-    # has committed a default. Only a supported agent has a skill adapter to
-    # probe.
-    probe = agents.get_agent(default or agents.default_agent_name())
-    skill_state = (
-        probe.skill_state() if (probe and probe.supported) else "absent"
-    )
+    # The top-level skill_state reports the *resolved* default's skill so the
+    # red-dot formula works even before the user has committed a default.
+    # Reuse the per-entry probe results (an unknown or unsupported resolved
+    # name maps to None → "absent", same as before entries carried states).
+    states = {e["name"]: e["skill_state"] for e in entries}
+    skill_state = states.get(default or agents.default_agent_name()) or "absent"
     skill_installed = skill_state != "absent"
 
     default_spec = agents.get_agent(default) if default else None

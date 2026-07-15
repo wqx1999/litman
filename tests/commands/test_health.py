@@ -1274,6 +1274,104 @@ def test_skill_drift_category_is_auto_fixable(vault: Path) -> None:
     assert "skill_drift" in AUTO_FIXABLE_CATEGORIES
 
 
+def _plant_standard_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Install the bundle into an open-standard dir stand-in (the gemini /
+    cursor location) and point the standard resolver at it."""
+    from litman.core.skill import install_all_skills
+
+    parent = tmp_path / "installed-standard-skills"
+    install_all_skills(parent_dir=parent)
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: parent
+    )
+    return parent
+
+
+def test_skill_drift_probes_only_default_agent_dir(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=claude (nothing recorded): a stale copy in the gemini/cursor
+    standard dir is NOT reported — non-default directories are not the
+    check's business (they surface in the GUI per-agent panel and the moment
+    that agent becomes the default)."""
+    standard = _plant_standard_skills(tmp_path, monkeypatch)
+    (standard / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_default_gemini_detects_standard_dir(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=gemini: the SAME stale standard-dir copy is now drift, the
+    message names the default agent, and a stale claude-dir copy is ignored
+    (default-dir semantics both ways). No literal path in the message —
+    issues flow into GET /api/health verbatim."""
+    from litman.core import agent_prefs
+
+    claude_parent = _plant_skills(tmp_path, monkeypatch)
+    standard = _plant_standard_skills(tmp_path, monkeypatch)
+    (standard / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    (claude_parent / "lit-reading" / "SKILL.md").write_text(
+        "ALSO OUTDATED\n", encoding="utf-8"
+    )
+    agent_prefs.save_default_agent("gemini")  # registry dir is isolated
+
+    issues = check_skill_drift(vault, [])
+    assert len(issues) == 1  # the claude-dir staleness is not reported
+    issue = issues[0]
+    assert "lit-library" in issue.message
+    assert "gemini" in issue.message
+    assert str(standard) not in issue.message
+    assert str(standard) not in (issue.hint or "")
+
+
+def test_skill_drift_default_gemini_absent_is_not_drift(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=gemini with nothing installed in the standard dir: absent is
+    a respected opt-out, even when the claude dir has (stale) skills."""
+    from litman.core import agent_prefs
+
+    parent = _plant_skills(tmp_path, monkeypatch)
+    (parent / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    agent_prefs.save_default_agent("gemini")
+    assert check_skill_drift(vault, []) == []
+
+
+def test_apply_autofix_skill_drift_targets_default_agent_dir(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """审查 W3 regression: probe and --fix must agree on the directory. With
+    default=gemini, the fix refreshes the standard dir and leaves a stale
+    claude-dir copy alone — otherwise the check could never come clean."""
+    from litman.core import agent_prefs
+
+    claude_parent = _plant_skills(tmp_path, monkeypatch)
+    standard = _plant_standard_skills(tmp_path, monkeypatch)
+    stale_standard = standard / "lit-library" / "SKILL.md"
+    stale_standard.write_text("OUTDATED\n", encoding="utf-8")
+    stale_claude = claude_parent / "lit-library" / "SKILL.md"
+    stale_claude.write_text("CLAUDE-DIR OUTDATED\n", encoding="utf-8")
+    agent_prefs.save_default_agent("gemini")
+
+    issues = check_skill_drift(vault, [])
+    counts = apply_autofix(vault, issues)
+    assert counts["skill_drift"] == 1
+    assert "OUTDATED" not in stale_standard.read_text(encoding="utf-8")
+    # The non-default claude dir was NOT touched by the fix.
+    assert stale_claude.read_text(encoding="utf-8") == "CLAUDE-DIR OUTDATED\n"
+    # Post-fix pass is clean for the default agent.
+    assert check_skill_drift(vault, []) == []
+
+
 def test_health_check_cli_stale_skill_warns_and_fix_refreshes(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

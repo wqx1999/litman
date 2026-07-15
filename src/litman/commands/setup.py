@@ -34,7 +34,7 @@ from litman.commands.install_completion import (
 )
 from litman.commands.install_skill import install_skill_cmd
 from litman.commands.sync import sync_setup_cmd
-from litman.core import agent_prefs
+from litman.core import agent_prefs, agents
 from litman.core.config import load_config
 from litman.core.library import DEFAULT_VAULT_NAME, find_vault
 from litman.core.skill import skill_status
@@ -61,7 +61,7 @@ def setup_cmd(ctx: click.Context) -> None:
 
     Chains five optional steps behind simple prompts:
       1. shell tab-completion    (default: yes)
-      2. agent skill             (default: Claude Code)
+      2. agent skill             (pick your agent; default: your current one)
       3. create your first vault (default: yes, if you have none)
       4. cloud sync              (default: no)
       5. desktop shortcut        (default: yes, if the session has a display)
@@ -88,7 +88,7 @@ def setup_cmd(ctx: click.Context) -> None:
         Panel.fit(
             "This wizard chains five optional steps:\n"
             "  1. shell tab-completion\n"
-            "  2. agent skill (Claude Code)\n"
+            "  2. agent skill\n"
             "  3. create your first vault\n"
             "  4. cloud sync\n"
             "  5. desktop shortcut\n\n"
@@ -141,21 +141,41 @@ def _step_skill(
 ) -> None:
     console.rule("[bold]Step 2/5 — agent skill")
 
-    # Re-run idempotency: probe content-level state first (skill_status) and
-    # expose --force as a prompt only where it changes anything, so wizard
-    # users can refresh skills after a litman upgrade without dropping to
-    # the standalone command (feedback_wizard_mirrors_command_flags):
-    # up-to-date installs auto-skip, stale ones prompt [Y/n] default Y.
-    # Keep CLI setup and GUI onboarding on one machine-level default agent so
-    # `lit setup` clears the GUI red dot too. preferences.yaml is machine-
-    # global config, NOT a vault TRUTH/DERIVED surface — invariant #16 (the
-    # WebUI structured-write whitelist) does not apply. Called on every path
-    # where the Claude Code skill ends up present (freshly installed or
-    # already there); NOT when the user skips the step outright.
-    def _record_claude_default() -> None:
-        agent_prefs.save_default_agent("claude")
+    # Strict three-beat order: ask which agent → record it as the machine-
+    # level default → install into that agent's directory. The choice is
+    # recorded BEFORE the install so a failed or declined skill step never
+    # loses it (bare `lit install-skill`, the GUI red dot and health-check
+    # all follow this default). preferences.yaml is machine-global config,
+    # NOT a vault TRUTH/DERIVED surface — invariant #16 (the WebUI
+    # structured-write whitelist) does not apply.
+    console.print(
+        "An agent skill lets your AI agent drive litman (optional; the "
+        "CLI works fully without it)."
+    )
+    console.print(
+        "[dim]More agents coming (Codex, OpenCode); manage agents anytime "
+        "in the GUI.[/]"
+    )
+    names = [spec.name for spec in agents.supported_agents()]
+    current = agent_prefs.load_default_agent()
+    chosen = click.prompt(
+        "Which agent do you use?",
+        type=click.Choice(names),
+        default=current if current in names else agents.default_agent_name(),
+        show_choices=True,
+    )
+    agent_prefs.save_default_agent(chosen)
+    display = agents.get_agent(chosen).display
 
-    statuses = skill_status()
+    # Re-run idempotency: probe content-level state first (skill_status,
+    # against the chosen agent's directory) and expose --force as a prompt
+    # only where it changes anything, so wizard users can refresh skills
+    # after a litman upgrade without dropping to the standalone command
+    # (feedback_wizard_mirrors_command_flags): up-to-date installs
+    # auto-skip, stale ones prompt [Y/n] default Y.
+    statuses = skill_status(
+        parent_dir=agents.agent_skills_parent_dir(chosen)
+    )
     bundled = set(statuses)
     already = {
         name
@@ -176,7 +196,6 @@ def _step_skill(
                     f"(lit install-skill --force re-copies them "
                     f"regardless.)[/]"
                 )
-                _record_claude_default()
                 skipped.append("skill (up to date)")
                 return
             console.print(
@@ -188,12 +207,10 @@ def _step_skill(
                 "(files you added are kept)",
                 default=True,
             ):
-                _record_claude_default()
                 skipped.append("skill (stale, refresh declined)")
                 return
-            ctx.invoke(install_skill_cmd, force=True)
-            _record_claude_default()
-            did.append("skill (refreshed, Claude Code)")
+            ctx.invoke(install_skill_cmd, agent_name=chosen, force=True)
+            did.append(f"skill (refreshed, {display})")
             return
         missing = bundled - already
         console.print(
@@ -210,36 +227,19 @@ def _step_skill(
             "bundled version)?",
             default=True,
         ):
-            _record_claude_default()
             skipped.append("skill (partially installed)")
             return
-        ctx.invoke(install_skill_cmd, force=True)
-        _record_claude_default()
-        did.append("skill (refreshed, Claude Code)")
+        ctx.invoke(install_skill_cmd, agent_name=chosen, force=True)
+        did.append(f"skill (refreshed, {display})")
         return
 
-    console.print(
-        "An agent skill lets Claude Code drive litman (optional; the CLI "
-        "works fully without it)."
-    )
-    console.print(
-        "[dim]More agents coming (Codex, Cursor, Gemini CLI, OpenCode); "
-        "manage agents anytime in the GUI. For now the skill targets "
-        "Claude Code.[/]"
-    )
-    # A plain [Y/n] confirm, not a numbered menu: Claude Code is the only
-    # installable backend today, so a two-item "1) install / 2) skip" list
-    # merely dresses a yes/no up as a picker and reads ambiguously (users
-    # press "1" thinking it means skip). When a *second* installable backend
-    # ships, switch this back to a numbered choice.
     if not click.confirm(
-        "Install the Claude Code agent skill now?", default=True
+        f"Install the {display} agent skill now?", default=True
     ):
         skipped.append("skill (declined)")
         return
-    ctx.invoke(install_skill_cmd)  # installs all bundled Claude Code skills
-    _record_claude_default()
-    did.append("skill (Claude Code)")
+    ctx.invoke(install_skill_cmd, agent_name=chosen)
+    did.append(f"skill ({display})")
 
 
 def _step_vault(

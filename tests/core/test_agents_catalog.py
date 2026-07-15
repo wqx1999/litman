@@ -1,14 +1,18 @@
-"""Agent catalog tests (task-agent-onboarding, AC5).
+"""Agent catalog tests (task-agent-onboarding AC5 + task-multi-agent-skills).
 
 The catalog is the code-level source of truth for which agents litman can
-launch/onboard. These tests pin the five-agent shape, the claude-only
-``supported`` flag, generic (per-agent-branch-free) detection, the claude
-skill adapter's delegation to ``core.skill``, and the loud failure of an
-unsupported agent's placeholder adapter. Detection is driven entirely through
-a monkeypatched ``shutil.which`` — no real binary is probed.
+launch/onboard. These tests pin the five-agent shape, the supported set
+(claude + gemini + cursor), generic (per-agent-branch-free) detection, the
+skill adapters' delegation to ``core.skill`` (claude → the Claude Code dir,
+gemini/cursor → the shared open-standard dir), the per-agent skills-dir
+resolvers, and the loud failure of an unsupported agent's placeholder
+adapter. Detection is driven entirely through a monkeypatched
+``shutil.which`` — no real binary is probed.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -16,9 +20,11 @@ from litman.core import agents
 from litman.core.agents import (
     AGENTS,
     AgentSpec,
+    agent_skills_parent_dir,
     default_agent_name,
     detect,
     get_agent,
+    skills_parent_dirs,
     supported_agents,
 )
 
@@ -29,10 +35,10 @@ def test_catalog_has_exactly_five_named_agents() -> None:
     assert len(set(names)) == 5
 
 
-def test_only_claude_is_supported() -> None:
+def test_supported_set_is_claude_gemini_cursor() -> None:
     supported = {spec.name for spec in AGENTS if spec.supported}
-    assert supported == {"claude"}
-    assert [s.name for s in supported_agents()] == ["claude"]
+    assert supported == {"claude", "gemini", "cursor"}
+    assert [s.name for s in supported_agents()] == ["claude", "cursor", "gemini"]
 
 
 def test_every_spec_carries_display_and_install_url() -> None:
@@ -143,11 +149,135 @@ def test_claude_skill_state_routes_to_aggregate_skill_state(
     assert get_agent("claude").skill_state() == "stale"
 
 
-@pytest.mark.parametrize("name", ["codex", "cursor", "gemini", "opencode"])
+@pytest.mark.parametrize("name", ["codex", "opencode"])
 def test_unsupported_agent_adapters_raise_not_implemented(name: str) -> None:
     spec = get_agent(name)
     assert spec.supported is False
+    assert spec.skills_dir is None
     with pytest.raises(NotImplementedError):
         spec.install_skill()
     with pytest.raises(NotImplementedError):
         spec.skill_state()
+
+
+# ---------------------------------------------------------------------------
+# gemini / cursor adapters — the shared open-standard directory
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["gemini", "cursor"])
+def test_new_agent_skill_state_probes_standard_dir(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gemini/cursor probes resolve the open-standard dir at CALL time
+    (module-attribute seam): a patched resolver + a real install there flips
+    the state, no other seam touched."""
+    standard = tmp_path / "std-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    spec = get_agent(name)
+    assert spec.skill_state() == "absent"
+
+    from litman.core.skill import install_all_skills
+
+    install_all_skills(parent_dir=standard)
+    assert spec.skill_state() == "current"
+
+
+@pytest.mark.parametrize("name", ["gemini", "cursor"])
+def test_new_agent_install_skill_writes_standard_dir(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standard = tmp_path / "std-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    results = get_agent(name).install_skill()
+    assert results  # every bundled skill installed
+    for result in results:
+        assert (standard / result["name"] / "SKILL.md").is_file()
+
+
+def test_claude_and_standard_dirs_are_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installing for gemini/cursor never touches the claude dir and vice
+    versa — the two supported locations are independent."""
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir",
+        lambda: tmp_path / "claude-skills",
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir",
+        lambda: tmp_path / "std-skills",
+    )
+    get_agent("gemini").install_skill()
+    assert get_agent("cursor").skill_state() == "current"  # shared dir
+    assert get_agent("claude").skill_state() == "absent"
+
+    get_agent("claude").install_skill()
+    assert get_agent("claude").skill_state() == "current"
+    (tmp_path / "std-skills" / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    assert get_agent("gemini").skill_state() == "stale"
+    assert get_agent("claude").skill_state() == "current"  # unaffected
+
+
+# ---------------------------------------------------------------------------
+# skills-dir resolvers (agent_skills_parent_dir / skills_parent_dirs)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_skills_parent_dir_routes_by_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claude_dir = tmp_path / "claude-skills"
+    standard = tmp_path / "std-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: claude_dir
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    assert agent_skills_parent_dir("claude") == claude_dir
+    assert agent_skills_parent_dir("gemini") == standard
+    assert agent_skills_parent_dir("cursor") == standard
+
+
+@pytest.mark.parametrize("name", ["codex", "opencode", "nope"])
+def test_agent_skills_parent_dir_rejects_non_supported(name: str) -> None:
+    with pytest.raises(ValueError, match="Supported agents"):
+        agent_skills_parent_dir(name)
+
+
+def test_skills_parent_dirs_dedupes_with_stable_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claude dir + the shared open-standard dir = exactly two, catalog
+    order, the gemini/cursor duplicate collapsed."""
+    claude_dir = tmp_path / "claude-skills"
+    standard = tmp_path / "std-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: claude_dir
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    assert skills_parent_dirs() == [claude_dir, standard]
+
+
+@pytest.mark.no_skills_isolation
+def test_standard_skills_parent_dir_respects_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """$HOME redirect is honored at call time (same seam contract as the
+    claude resolver). Opted out of the autouse isolation, which patches the
+    very resolver under test; $HOME is redirected instead."""
+    from litman.core.skill import standard_skills_parent_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    assert standard_skills_parent_dir() == (
+        tmp_path / "elsewhere" / ".agents" / "skills"
+    )

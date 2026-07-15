@@ -522,6 +522,105 @@ def test_cli_install_skill_help_mentions_options() -> None:
     result = runner.invoke(cli, ["install-skill", "--help"])
     assert result.exit_code == 0
     assert "--skill" in result.output
+    assert "--agent" in result.output
     assert "--parent-dir" in result.output
     assert "--force" in result.output
     assert "optional" in result.output.lower()
+    # No hardcoded skills path in the help — the default follows the
+    # default agent, resolved at run time.
+    assert ".claude/skills" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI: --agent + default-agent resolution (task-multi-agent-skills)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_install_skill_agent_gemini_writes_standard_dir() -> None:
+    """--agent gemini resolves the open-standard dir through the catalog
+    (both resolvers isolated at tmp by the conftest fixture)."""
+    from litman.core import skill
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "gemini"])
+    assert result.exit_code == 0, result.output
+    standard = skill.standard_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (standard / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+
+
+def test_cli_install_skill_agent_and_parent_dir_conflict(
+    tmp_path: Path,
+) -> None:
+    result = CliRunner().invoke(
+        cli,
+        [
+            "install-skill",
+            "--agent",
+            "gemini",
+            "--parent-dir",
+            str(tmp_path / "skills"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert not (tmp_path / "skills").exists()
+
+
+def test_cli_install_skill_agent_unknown_name_lists_supported() -> None:
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "nope"])
+    assert result.exit_code != 0
+    # click.Choice error names the valid agents.
+    assert "claude" in result.output
+    assert "gemini" in result.output
+    assert "cursor" in result.output
+
+
+def test_cli_install_skill_agent_unsupported_placeholder_rejected() -> None:
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "codex"])
+    assert result.exit_code != 0
+
+
+def test_cli_install_skill_bare_defaults_to_claude_dir() -> None:
+    """No flags, no recorded default → the resolved default is claude and
+    the skills land in the Claude Code dir (byte-for-byte the pre-1.3
+    behaviour)."""
+    from litman.core import skill
+
+    result = CliRunner().invoke(cli, ["install-skill"])
+    assert result.exit_code == 0, result.output
+    claude_dir = skill.default_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (claude_dir / name / "SKILL.md").is_file()
+    assert not skill.standard_skills_parent_dir().exists()
+
+
+def test_cli_install_skill_bare_follows_recorded_default() -> None:
+    """With the machine default set to gemini, the bare command installs
+    into the open-standard dir — otherwise it would silently install to the
+    wrong place for that user."""
+    from litman.core import agent_prefs, skill
+
+    agent_prefs.save_default_agent("gemini")  # registry dir is isolated
+    result = CliRunner().invoke(cli, ["install-skill"])
+    assert result.exit_code == 0, result.output
+    standard = skill.standard_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (standard / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+
+
+def test_cli_install_skill_explicit_parent_dir_still_wins(
+    tmp_path: Path,
+) -> None:
+    """--parent-dir stays the manual escape hatch: an explicit path is used
+    verbatim, whatever the recorded default agent."""
+    from litman.core import agent_prefs
+
+    agent_prefs.save_default_agent("gemini")
+    parent = tmp_path / "elsewhere"
+    result = CliRunner().invoke(
+        cli, ["install-skill", "--parent-dir", str(parent)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (parent / "lit-library" / "SKILL.md").is_file()

@@ -1,7 +1,11 @@
 """Skill installation helpers for ``lit install-skill`` (M4.3 + M9.2).
 
-Copies every bundled Claude Code skill from the installed litman package
-into the user's skill directory (default ``~/.claude/skills/<name>/``).
+Copies every bundled agent skill from the installed litman package into a
+per-user skills directory: ``~/.claude/skills/<name>/`` for Claude Code, or
+the Agent Skills open-standard directory ``~/.agents/skills/<name>/`` that
+Gemini CLI and Cursor both discover. Which directory a caller targets is
+decided by the agent catalog (:mod:`litman.core.agents`); every helper here
+is directory-neutral and just takes ``parent_dir``.
 
 The skill files live inside the package at
 ``src/litman/skills/<skill-name>/`` and are reachable via
@@ -46,9 +50,20 @@ def default_skills_parent_dir() -> Path:
     return Path.home() / ".claude" / "skills"
 
 
+def standard_skills_parent_dir() -> Path:
+    """The shared skills dir of the Agent Skills open standard
+    (``~/.agents/skills``) — Gemini CLI and Cursor both discover it.
+
+    Same call-time seam contract as :func:`default_skills_parent_dir`: a
+    redirected ``$HOME`` is honored, and the test suite isolates itself from
+    the developer's real ``~/.agents/skills`` by patching this one function.
+    """
+    return Path.home() / ".agents" / "skills"
+
+
 # Default parent dir under which each skill gets its own subdir.
 # Claude Code auto-discovers user-level skills here. Import-time snapshot,
-# kept for CLI option defaults (help text shows a concrete path); runtime
+# kept as a pinned value for tests and back-compat imports; runtime
 # probes use :func:`default_skills_parent_dir`.
 DEFAULT_PARENT_DIR = default_skills_parent_dir()
 
@@ -140,8 +155,8 @@ def install_skill(
         target: Destination directory for the skill (e.g.
             ``~/.claude/skills/lit-reading``). Created with parents if
             missing. When ``None`` (the default), uses
-            ``DEFAULT_PARENT_DIR / name`` so a fresh install lands where
-            Claude Code auto-discovers it. Must not exist unless
+            ``default_skills_parent_dir() / name`` so a fresh install lands
+            where Claude Code auto-discovers it. Must not exist unless
             ``overwrite=True``.
         overwrite: When ``True``, an existing ``target`` is replaced
             file-by-file; files in ``target`` that are NOT part of the
@@ -307,7 +322,7 @@ def aggregate_skill_state(parent_dir: Path | None = None) -> str:
 
 def uninstall_skill(
     name: str,
-    parent_dir: Path = DEFAULT_PARENT_DIR,
+    parent_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Remove one bundled skill's files from ``parent_dir/name/``.
 
@@ -318,8 +333,9 @@ def uninstall_skill(
 
     Args:
         name: Bundled skill subdirectory name (e.g. ``"lit-library"``).
-        parent_dir: Directory that holds the skill's own subdir. Defaults
-            to ``~/.claude/skills/``.
+        parent_dir: Directory that holds the skill's own subdir. ``None``
+            (the default) resolves the call-time
+            :func:`default_skills_parent_dir`.
 
     Returns:
         A summary dict with keys ``name`` (str), ``target`` (Path),
@@ -329,6 +345,8 @@ def uninstall_skill(
         ``"absent"`` = nothing was there), ``leftover`` (list of filenames
         left behind).
     """
+    if parent_dir is None:
+        parent_dir = default_skills_parent_dir()
     target = parent_dir / name
     if is_portable_link(target):
         # A linked skill dir (symlink or Windows junction) points outside
@@ -384,7 +402,7 @@ def uninstall_skill(
 
 
 def install_all_skills(
-    parent_dir: Path = DEFAULT_PARENT_DIR,
+    parent_dir: Path | None = None,
     overwrite: bool = False,
 ) -> list[dict[str, Any]]:
     """Install every bundled skill into ``parent_dir/<name>/``.
@@ -396,13 +414,16 @@ def install_all_skills(
 
     Args:
         parent_dir: Directory under which each skill gets its own
-            subdirectory. Defaults to ``~/.claude/skills/``.
+            subdirectory. ``None`` (the default) resolves the call-time
+            :func:`default_skills_parent_dir`.
         overwrite: Forwarded to :func:`install_skill`.
 
     Returns:
         A list of the summary dicts returned by :func:`install_skill`,
         in the same order as :func:`list_bundled_skills`.
     """
+    if parent_dir is None:
+        parent_dir = default_skills_parent_dir()
     results: list[dict[str, Any]] = []
     for skill_name in list_bundled_skills():
         result = install_skill(

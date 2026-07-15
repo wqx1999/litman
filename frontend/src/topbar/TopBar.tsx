@@ -2289,12 +2289,14 @@ function AgentPanel({
   )
 }
 
-/** The onboarding step of the agent panel: a row per catalog agent, the one
+/** The onboarding step of the agent panel: a row per catalog agent, each
  * `supported` agent selectable with a state-driven action (get it → install
- * skill → update skill when stale → ready), the rest greyed "coming soon"
- * placeholders (roadmap signal + stable layout). Everything is data-driven off
- * the status payload — no agent name or skill path is hardcoded here (the
- * red-line agent-agnostic frontend).
+ * skill → update skill when stale → ready) read off its OWN row's
+ * `skill_state` (agents install into different skill locations, so the
+ * resolved default's top-level state says nothing about the other rows), the
+ * rest greyed "coming soon" placeholders (roadmap signal + stable layout).
+ * Everything is data-driven off the status payload — no agent name or skill
+ * path is hardcoded here (the red-line agent-agnostic frontend).
  * Auto-themes via the inverted stone ramp + `.dark .bg-white`; no `dark:`. */
 function AgentSetup({
   status,
@@ -2347,7 +2349,7 @@ function AgentSetup({
                     Get {agent.display} →
                   </a>
                 </div>
-              ) : !status.skill_installed ? (
+              ) : !agent.skill_state || agent.skill_state === 'absent' ? (
                 <button
                   type="button"
                   disabled={busy}
@@ -2356,7 +2358,7 @@ function AgentSetup({
                 >
                   {busy ? 'Installing…' : 'Install skill'}
                 </button>
-              ) : status.skill_state === 'stale' ? (
+              ) : agent.skill_state === 'stale' ? (
                 /* Installed but out of date with the running litman (server-
                    side content comparison). Same install endpoint — it
                    overwrites the bundled files and keeps the user's own. */

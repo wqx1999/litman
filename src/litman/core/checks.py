@@ -2322,6 +2322,25 @@ def check_pdf_viewer(
     return out
 
 
+def _default_agent_skill_probe() -> tuple[str, Path] | None:
+    """The resolved default agent's name + skills dir, or ``None``.
+
+    The single resolution both :func:`check_skill_drift` and the
+    ``skill_drift`` arm of :func:`apply_autofix` go through — probe and fix
+    must agree on the directory, or a gemini default would have its drift
+    detected in the open-standard dir but "fixed" into the claude dir and
+    never come clean. ``None`` means the recorded default is not a supported
+    catalog agent (hand-edited preferences) — nothing to probe.
+    """
+    from litman.core import agent_prefs, agents
+
+    name = agent_prefs.load_default_agent() or agents.default_agent_name()
+    spec = agents.get_agent(name)
+    if spec is None or not spec.supported or spec.skills_dir is None:
+        return None
+    return name, spec.skills_dir()
+
+
 def check_skill_drift(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -2334,6 +2353,15 @@ def check_skill_drift(
     the newer CLI — so it is surfaced here as a warning and refreshed by
     ``--fix`` (a lossless re-copy; files the user added next to SKILL.md are
     never touched).
+
+    Only the *default* agent's skills directory is probed. Sweeping every
+    known directory would make the check nag forever about agents the user
+    tried once and abandoned — a non-default agent's staleness surfaces at
+    the moment it is used (the GUI agent panel computes per-agent state live)
+    and the moment it becomes the default. The issue message names the agent
+    (which pins down the directory) but never the path itself: issues flow
+    verbatim into ``GET /api/health``, and skills paths stay out of API
+    responses.
 
     Deliberately NOT flagged:
 
@@ -2348,8 +2376,12 @@ def check_skill_drift(
     """
     from litman.core.skill import skill_status
 
+    probe = _default_agent_skill_probe()
+    if probe is None:
+        return []
+    agent_name, parent_dir = probe
     try:
-        statuses = skill_status()
+        statuses = skill_status(parent_dir=parent_dir)
     except OSError:
         # Unreadable skills dir / broken package resources — not a vault
         # problem; the install-skill command is where that error belongs.
@@ -2367,8 +2399,9 @@ def check_skill_drift(
                 severity="warning",
                 paper_id=None,
                 message=(
-                    f"installed agent skill '{name}' is out of date with "
-                    f"this litman install ({files})"
+                    f"installed agent skill '{name}' (default agent: "
+                    f"{agent_name}) is out of date with this litman "
+                    f"install ({files})"
                 ),
                 hint=(
                     "refresh with `lit health-check --fix` or "
@@ -2921,19 +2954,29 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
         )
 
         n = 0
-        # Re-derive which skills are stale (issues carry prose, not state);
-        # only those are refreshed — absent skills stay a respected opt-out.
-        for name, info in sorted(skill_status().items()):
-            if info["state"] != "stale":
-                continue
-            try:
-                install_skill(overwrite=True, name=name)
-            except (SkillInstallError, OSError):
-                # Best-effort: an unwritable skills dir must not abort the
-                # whole `--fix` run. The skill stays flagged and is re-offered
-                # on the next health-check.
-                continue
-            n += 1
+        # Same resolution as check_skill_drift: the fix targets the resolved
+        # default agent's directory — the one the issues came from.
+        probe = _default_agent_skill_probe()
+        if probe is not None:
+            _agent_name, parent_dir = probe
+            # Re-derive which skills are stale (issues carry prose, not
+            # state); only those are refreshed — absent skills stay a
+            # respected opt-out.
+            for name, info in sorted(
+                skill_status(parent_dir=parent_dir).items()
+            ):
+                if info["state"] != "stale":
+                    continue
+                try:
+                    install_skill(
+                        target=parent_dir / name, overwrite=True, name=name
+                    )
+                except (SkillInstallError, OSError):
+                    # Best-effort: an unwritable skills dir must not abort
+                    # the whole `--fix` run. The skill stays flagged and is
+                    # re-offered on the next health-check.
+                    continue
+                n += 1
         counts["skill_drift"] = n
 
     if "discussion_scaffold" in fixable_present:

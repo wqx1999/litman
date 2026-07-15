@@ -5,6 +5,32 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.0 — unreleased
+
+### Added
+
+- **Gemini CLI and Cursor are supported agents.** Both are selectable in the
+  GUI agent picker and launchable with `lit agent gemini` / `lit agent cursor`.
+  Their skills install once into the shared `~/.agents/skills` directory (the
+  Agent Skills open standard), which both agents discover — so installing for
+  one makes it current for the other. Claude Code keeps its own
+  `~/.claude/skills` location, unchanged. Codex and OpenCode remain listed as
+  coming soon.
+- **`lit install-skill --agent <name>`** installs the skills into the named
+  agent's directory. With no flags the command now follows your default agent;
+  users who never changed the default get exactly the previous behaviour.
+- **`lit setup` asks which agent you use** (step 2) and records the answer as
+  the machine-level default before installing its skill — pressing Enter keeps
+  the previous Claude Code flow.
+
+### Changed
+
+- The GUI agent panel shows each supported agent's own install/update/ready
+  state instead of repeating the default agent's state on every card.
+- `lit health-check` probes skill drift in the default agent's skills
+  directory (and `--fix` refreshes that same directory). `lit uninstall`
+  still sweeps every known skills directory.
+
 ## 1.2.0 — 2026-07-15
 
 ### Added
