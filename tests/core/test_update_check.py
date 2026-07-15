@@ -21,6 +21,16 @@ from litman.core import update_check
 
 
 @pytest.fixture(autouse=True)
+def _pin_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the current version so these version-comparison tests stay hermetic
+    across release bumps. The product reads ``litman.__version__`` live (via
+    ``update_check._current_version``), so the forged-cache ``latest`` values
+    and the ``1.1.0`` literals below are all relative to this pin, not to
+    whatever version happens to be shipping."""
+    monkeypatch.setattr("litman.__version__", "1.1.0")
+
+
+@pytest.fixture(autouse=True)
 def _clear_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure the opt-out env is off unless a test sets it explicitly."""
     monkeypatch.delenv(update_check.OPT_OUT_ENV, raising=False)

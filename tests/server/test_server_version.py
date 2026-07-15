@@ -28,6 +28,14 @@ from litman.server import create_app
 
 
 @pytest.fixture(autouse=True)
+def _pin_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the current version so the ``/api/version`` assertions stay hermetic
+    across release bumps. ``get_version`` reads ``litman.__version__`` live, so
+    the ``1.1.0`` literals below are relative to this pin."""
+    monkeypatch.setattr("litman.__version__", "1.1.0")
+
+
+@pytest.fixture(autouse=True)
 def _clear_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(update_check.OPT_OUT_ENV, raising=False)
 

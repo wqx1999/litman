@@ -28,6 +28,14 @@ _TIP = "is available"
 
 
 @pytest.fixture(autouse=True)
+def _pin_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the current version so the nudge message assertion (``you have
+    1.1.0``) stays hermetic across release bumps. The nudge reads
+    ``litman.__version__`` live via ``update_check._current_version``."""
+    monkeypatch.setattr("litman.__version__", "1.1.0")
+
+
+@pytest.fixture(autouse=True)
 def _clear_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(update_check.OPT_OUT_ENV, raising=False)
 
