@@ -97,26 +97,56 @@ class CardScore:
 class BenchReport:
     """The full batch report (M34 §6.3 deterministic subset).
 
+    The reported unit is an ``(agent, model)`` pair, not a model: the same weights
+    served through three scaffolds are three different data points.
+
+    ``model_requested`` is what we asked for; ``model_served`` is what the agent
+    said it served, VERBATIM (a display name for cursor, ``None`` for agy, which
+    reports nothing). Both are kept raw because they carry information the family
+    does not — "Sonnet 4.6 200K Medium No Thinking" vs "Claude Sonnet 4.6
+    (Thinking)" are the same weights with thinking off and on, and the reader is
+    entitled to see that rather than be told they are equivalent.
+    ``model_family`` is the explicit-lookup normalization for grouping, or ``None``
+    when the string is not in the table (never a guess).
+
+    ``agent_flags`` records the permission flags the adapter actually used. It
+    comes from our side of the boundary because the agents' own streams cannot be
+    trusted for it (cursor reports ``permissionMode: "default"`` while ``--force``
+    is in effect), and because "this run was scored with tool approval globally
+    disabled" is a fact the reader must not have to dig for.
+
     ``routing`` is the aggregated routing-accuracy section (overall RA + summed
-    misroute / miss / spurious / na + per-card RA), or ``None`` when no routing
-    card was scored (no ``routing_run_fn`` was passed to :func:`run_batch`). A
-    ``None`` section reads as an honest "RA not scored", never a fake 0.
+    misroute / miss / spurious / na + per-card RA), or ``None`` when RA was not
+    scored — either no ``routing_run_fn`` was passed (dry run) or the agent cannot
+    expose skill activation at all. ``coverage["routing_ra"]`` distinguishes those
+    two: ``"not_scored"`` vs ``"not_measurable"``. Either way the section is an
+    honest absence, never a fake 0.
 
     ``tokens`` is the run's grand-total token accounting (an ``auto_scored``
     bucket summed over executed cards, a ``routing`` bucket summed over the
     routing classification spawns, and a ``total``), or ``None`` when no live
-    usage was observed (dry run / fakes). Lets the reader compute cost per
-    model without re-reading every transcript.
+    usage was observed — a dry run, or an agent with no counters at all (agy).
+
+    ``qualification`` is the Phase 0 instrument-qualification record: it gates the
+    run, and it is also a deliverable — a reader must be able to see that the
+    binary answered, the tools were authorized, the skills came from the repo, the
+    evidence chain recorded something and the model was pinned (or, for agy, that
+    the model could NOT be verified).
     """
 
-    model: str
+    agent: str
+    model_requested: str
     rounds: int
     trr_mean: float
     trr_std: float
     cards: list[CardScore]
+    model_served: str | None = None
+    model_family: str | None = None
+    agent_flags: list[str] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=dict)
     routing: dict[str, Any] | None = None
     tokens: dict[str, Any] | None = None
+    qualification: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -146,13 +176,34 @@ def _usage_of(run: Any) -> dict:
     return {}
 
 
+def _served_model_of(run: Any) -> str | None:
+    """The model string one run handle's agent reported serving, if any.
+
+    ``None`` for fakes (dry runs) and for agents that report no model at all —
+    both read downstream as "we do not know", which is the truth."""
+    if isinstance(run, dict):
+        return getattr(run.get("run"), "model_served", None)
+    return None
+
+
 def _sum_usage(usages: list[dict]) -> dict:
     """Sum a list of per-spawn ``usage`` dicts into one bucket.
 
     Adds the four token counters and counts the contributing ``spawns``. Empty
     input -> ``{}`` so callers can treat "no usage" as falsy. Cost is NOT summed
     here: dollar figures are derived downstream from these counters x the
-    provider's own prices (see :func:`harness.executor._parse_usage`)."""
+    provider's own prices (see :func:`harness.agents.claude._parse_usage`).
+
+    Spawns that reported NO usage (``{}`` / ``None`` — an agent with no counters,
+    or a run that died before reporting) are dropped rather than added as zeros,
+    and they do not inflate ``spawns`` either: a bucket of "3 spawns, 0 tokens" is
+    a claim we cannot make. An all-unreported list yields ``{}``, which surfaces
+    as ``None`` in the report.
+
+    Every dict reaching here is already in the internal snake_case key set — each
+    adapter normalizes at its own edge. That matters more than it looks: cursor
+    counts in camelCase, and summing those keys with ``.get(k, 0)`` raises nothing
+    and returns a tidy, wholly fictional zero."""
     contributing = [u for u in usages if u]
     if not contributing:
         return {}
@@ -221,6 +272,7 @@ def build_live_run_card_fn(
     fixtures_pdfs_dir: Path,
     seeds_dir: Path,
     work_root: Path,
+    agent: str = "claude",
     base_url: str | None = None,
     auth_token: str | None = None,
     run_card_impl: Callable[..., Any] | None = None,
@@ -229,10 +281,10 @@ def build_live_run_card_fn(
     """Build the live ``run_card_fn`` the batch loop calls (one per round).
 
     Bridges the batch contract ``run_card_fn(card, *, round, model, **_)`` to the
-    executor contract ``run_card(card, run_vault, *, fixtures_pdfs_dir, model,
-    ...) -> ExecutorResult`` (M34 §3.6.A — this is the ONLY place that touches the
-    executor, and it hardwires no ``--model`` / ``stream-json`` / ``claude``
-    literal; ``model`` is passed straight through).
+    executor contract ``run_card(card, run_vault, *, fixtures_pdfs_dir, agent,
+    model, ...) -> ExecutorResult`` (M34 §3.6.A — this is the ONLY place that
+    touches the executor, and it hardwires no ``--model`` / ``stream-json`` /
+    ``claude`` literal; ``agent`` and ``model`` are passed straight through).
 
     Each returned ``_run`` call:
 
@@ -289,6 +341,7 @@ def build_live_run_card_fn(
                 card,
                 run_vault,
                 fixtures_pdfs_dir=Path(fixtures_pdfs_dir),
+                agent=agent,
                 model=model,
                 base_url=base_url,
                 auth_token=auth_token,
@@ -312,26 +365,34 @@ def build_live_routing_run_fn(
     seeds_dir: Path,
     work_root: Path,
     routing_seed: str = "seed-empty",
+    agent: str = "claude",
     base_url: str | None = None,
     auth_token: str | None = None,
-    observe_impl: Callable[..., str | None] | None = None,
+    observe_impl: Callable[..., Any] | None = None,
     ensure_seed_impl: Callable[..., Path] | None = None,
     usage_sink: list[dict] | None = None,
-) -> Callable[..., list[str | None]]:
+) -> Callable[..., Any]:
     """Build the live ``routing_run_fn`` :func:`run_batch` calls per routing card.
 
     Bridges the batch contract ``routing_run_fn(card, *, model) -> list[str|None]``
     (one observed skill per case, in ``card.cases`` order) to the executor's
     per-utterance probe (M34 §3.6.A — like the execution adapter, this is the ONLY
     place that touches the executor for routing, and it hardwires no ``--model`` /
-    ``stream-json`` / ``claude`` literal; ``model`` is passed straight through).
+    ``stream-json`` / ``claude`` literal; ``agent`` / ``model`` pass straight
+    through).
+
+    For an agent with no skill-activation signal at all it returns the
+    :data:`~harness.agents.NOT_MEASURABLE` sentinel INSTEAD of a list, without
+    spawning anything: the capability is a known property of the agent, so there is
+    nothing to learn from ~14 classification spawns, and a list of ``None`` would
+    be scored as a clean sweep of routing misses.
 
     Each case routes against its own fresh disposable run vault (a ``cp`` of
     ``routing_seed`` — routing is pure classification, so a minimal initialized
     vault suffices) so the cases never interfere; the run dir is removed after the
     probe. ``observe_impl`` (default :func:`harness.executor.observe_skill_for_utterance`)
     is injectable so the tests drive the adapter with canned skills, never spawning
-    a live agent (M34 §3.5 hard boundary). It spawns ``claude -p`` per utterance in
+    a live agent (M34 §3.5 hard boundary). It spawns a live agent per utterance in
     production, exercised ONLY under Phase G authorization.
 
     When ``usage_sink`` is provided AND the default (real) ``observe_impl`` is in
@@ -340,7 +401,10 @@ def build_live_routing_run_fn(
     doubles (tests) never receive ``usage_sink``, so their signatures are
     untouched and the M34 §3.5 boundary holds.
     """
+    from harness.agents import NOT_MEASURABLE, get_adapter
     from harness.runlit import RunVault
+
+    routing_measurable = get_adapter(agent).capabilities.routing
 
     default_observe = observe_impl is None
     if observe_impl is None:
@@ -353,7 +417,9 @@ def build_live_routing_run_fn(
 
         ensure_seed_impl = _default_ensure_seed
 
-    def _run(card: Any, *, model: str, **_: Any) -> list[str | None]:
+    def _run(card: Any, *, model: str, **_: Any) -> Any:
+        if not routing_measurable:
+            return NOT_MEASURABLE
         seed_vault = ensure_seed_impl(str(routing_seed))
         observed: list[str | None] = []
         for case in _card_field(card, "cases") or []:
@@ -362,6 +428,7 @@ def build_live_routing_run_fn(
             rv.__enter__()  # cp seed -> <work_root>/bench-<uuid>/vault
             kwargs: dict[str, Any] = dict(
                 fixtures_pdfs_dir=Path(work_root) / "_routing_no_fixtures",
+                agent=agent,
                 model=model,
                 base_url=base_url,
                 auth_token=auth_token,
@@ -395,13 +462,15 @@ def run_batch(
     *,
     model: str,
     rounds: int,
+    agent: str = "claude",
     run_card_fn: Callable[..., Any] | None = None,
-    routing_run_fn: Callable[..., list[str | None]] | None = None,
+    routing_run_fn: Callable[..., Any] | None = None,
     score_fn: Callable[..., tuple[int, list]] = resolve,
     run_kwargs: dict[str, Any] | None = None,
     score_kwargs: dict[str, Any] | None = None,
     transcript_dir: Path | None = None,
     routing_usage_sink: list[dict] | None = None,
+    qualification: dict[str, Any] | None = None,
 ) -> BenchReport:
     """Run every non-skipped EXECUTION card ``rounds`` times and aggregate.
 
@@ -430,13 +499,27 @@ def run_batch(
     ``routing_run_fn(card, model=model)`` to obtain the observed skill per case (in
     ``card.cases`` order), then :func:`harness.routing.score_routing` scores the
     card against its in-scope skills and the per-card :class:`RoutingResult` is
-    folded into the report's ``routing`` section. With ``routing_run_fn=None`` (a
-    dry / execution-only run) RA is left unscored and ``report.routing`` is
-    ``None`` — never a fabricated 0 (invariant #14 no-silent-skip spirit).
+    folded into the report's ``routing`` section.
+
+    RA can be absent for two DIFFERENT reasons, and the report distinguishes them
+    in ``coverage["routing_ra"]``:
+
+    * ``"not_scored"``     — no ``routing_run_fn`` (a dry / execution-only run);
+    * ``"not_measurable"`` — ``routing_run_fn`` returned
+      :data:`~harness.agents.NOT_MEASURABLE`: this agent has no skill-activation
+      signal, so its RA is not something we have. The cards are still tagged and
+      counted, and they are kept OUT of the RA denominator — scoring them would
+      turn "we cannot see this" into "it missed every one".
+
+    In both cases ``report.routing`` is ``None``: an honest absence, never a
+    fabricated 0 (invariant #14 no-silent-skip spirit).
 
     Skipped cards are recorded with their tag and excluded from all metrics.
     Only ``auto-scored`` cards contribute to ``trr_mean`` / ``trr_std``.
     """
+    from harness.agents import NOT_MEASURABLE, get_adapter, model_family
+
+    adapter = get_adapter(agent)
     if run_card_fn is None:
         raise ValueError(
             "run_batch needs an explicit run_card_fn: build the live adapter via "
@@ -466,6 +549,10 @@ def run_batch(
     counts = {"auto-scored": 0, "prose-blocked": 0, "routing": 0, "skipped": 0, "multi-turn": 0}
     auto_means: list[float] = []
     routing_results: list[tuple[str, RoutingResult]] = []
+    routing_not_measurable: list[str] = []
+    # The model the agent SAID it served, harvested from the runs themselves
+    # (first one to report). Stays None for an agent that reports none.
+    served: str | None = None
 
     for card in cards:
         cid = str(_card_field(card, "id"))
@@ -483,12 +570,18 @@ def run_batch(
             card_scores.append(CardScore(card_id=cid, tag=tag, rounds=[], mean=0.0))
             if routing_run_fn is not None:
                 observed = routing_run_fn(card, model=model)
-                rr = score_routing(
-                    card,
-                    observed,
-                    present_skills=_card_field(card, "in_scope_skills") or [],
-                )
-                routing_results.append((cid, rr))
+                if observed is NOT_MEASURABLE:
+                    # This agent exposes no skill-activation signal. Record the
+                    # card as unmeasurable and do NOT score it: score_routing
+                    # would read the absence as a miss per case.
+                    routing_not_measurable.append(cid)
+                else:
+                    rr = score_routing(
+                        card,
+                        observed,
+                        present_skills=_card_field(card, "in_scope_skills") or [],
+                    )
+                    routing_results.append((cid, rr))
             continue
 
         round_scores: list[int] = []
@@ -500,6 +593,8 @@ def run_batch(
                 # Snapshot the spawn's token usage BEFORE _maybe_cleanup; cheap
                 # and independent of the opt-in transcript dump below.
                 round_usages.append(_usage_of(run))
+                if served is None:
+                    served = _served_model_of(run)
                 if transcript_dir is not None:
                     # Opt-in only: dump the in-memory transcript (commands +
                     # final answer + per-assertion trail) BEFORE _maybe_cleanup
@@ -537,6 +632,20 @@ def run_batch(
         "multi_turn_cards": [c.card_id for c in card_scores if c.tag == "multi-turn"],
         "trr_denominator": len(auto_means),
     }
+    # WHY the RA axis is (or is not) a number. "not_measurable" is an agent-type
+    # property — the RA denominator excludes these cards entirely rather than
+    # counting them as misses.
+    if routing_not_measurable:
+        coverage["routing_ra"] = "not_measurable"
+        coverage["routing_ra_reason"] = (
+            f"{agent} exposes no skill-activation signal (no Skill tool, no "
+            "file-read events); RA cannot be observed for this agent"
+        )
+        coverage["routing_not_measurable_cards"] = routing_not_measurable
+    elif routing_results:
+        coverage["routing_ra"] = "scored"
+    else:
+        coverage["routing_ra"] = "not_scored"
 
     # Grand-total token accounting: execution cards (per-card usage already summed
     # across rounds) + the routing classification spawns. ``None`` when no live
@@ -553,14 +662,26 @@ def run_batch(
         }
 
     return BenchReport(
-        model=model,
+        agent=agent,
+        model_requested=model,
         rounds=rounds,
         trr_mean=trr_mean,
         trr_std=trr_std,
         cards=card_scores,
+        model_served=served,
+        # The request is a fallback ONLY for an agent that never reports a model
+        # (agy). For everyone else `served is None` means nothing observed one — a
+        # dry run, a routing-only run (only execution rounds harvest it), or spawns
+        # that all died before reporting — and naming a family from what we merely
+        # ASKED for would dress that gap up as knowledge.
+        model_family=model_family(
+            served, model, fallback_to_requested=not adapter.capabilities.served_model
+        ),
+        agent_flags=list(adapter.permission_flags),
         coverage=coverage,
         routing=_aggregate_routing(routing_results),
         tokens=tokens,
+        qualification=qualification,
     )
 
 
@@ -691,8 +812,14 @@ def _dump_transcript(
             payload["final_text"] = getattr(result, "final_text", None)
             payload["exit_code"] = getattr(result, "exit_code", None)
             # Per-spawn token accounting (input / output / cache); {} on a hard
-            # API error that aborted before any usage was reported.
+            # API error that aborted before any usage was reported, or on an agent
+            # with no counters — never a zero.
             payload["usage"] = getattr(result, "usage", None) or None
+            # The argv the HARNESS built, verbatim. The only trustworthy record of
+            # how this spawn was authorized: cursor's own stream reports
+            # permissionMode "default" even while --force is in effect.
+            payload["argv"] = getattr(result, "argv", None) or None
+            payload["model_served"] = getattr(result, "model_served", None)
         else:
             # A fake handle (int / tuple); record what little we have.
             payload["run_repr"] = str(run)
@@ -736,13 +863,24 @@ def _maybe_cleanup(run: Any) -> None:
 def report_to_dict(report: BenchReport) -> dict[str, Any]:
     """Project a :class:`BenchReport` to a JSON-serializable dict.
 
-    The ``routing`` key is the aggregated RA section, or ``None`` when no routing
-    card was scored (no ``routing_run_fn`` — e.g. a dry run). The ``tokens`` key
-    is the grand-total token accounting (or ``None`` for a dry run); each card
-    carries its own per-card ``usage`` so cost can be attributed per task.
+    The ``routing`` key is the aggregated RA section, or ``None`` when RA was not
+    scored (dry run) or cannot be measured for this agent — ``coverage["routing_ra"]``
+    says which. The ``tokens`` key is the grand-total token accounting (``None``
+    for a dry run, or for an agent with no counters); each card carries its own
+    per-card ``usage`` so cost can be attributed per task.
+
+    ``model`` is kept as an alias of ``model_requested`` for one version: report
+    JSONs already on disk are read by the user's own analysis scripts, and dropping
+    the key would have them silently read ``None`` rather than fail.
     """
     return {
-        "model": report.model,
+        "agent": report.agent,
+        "model_requested": report.model_requested,
+        "model_served": report.model_served,
+        "model_family": report.model_family,
+        "agent_flags": report.agent_flags,
+        # Back-compat alias (see docstring) — deliberately duplicated, not moved.
+        "model": report.model_requested,
         "rounds": report.rounds,
         "trr_mean": report.trr_mean,
         "trr_std": report.trr_std,
@@ -759,4 +897,5 @@ def report_to_dict(report: BenchReport) -> dict[str, Any]:
         "coverage": report.coverage,
         "routing": report.routing,
         "tokens": report.tokens,
+        "qualification": report.qualification,
     }

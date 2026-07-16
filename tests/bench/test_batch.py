@@ -171,7 +171,8 @@ def test_run_batch_pre_scored_tuple_handle() -> None:
 
 def test_report_to_dict_round_trips() -> None:
     report = BenchReport(
-        model="m",
+        agent="claude",
+        model_requested="m",
         rounds=2,
         trr_mean=0.5,
         trr_std=0.1,
@@ -245,7 +246,7 @@ def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) ->
     and returns a {vault,jsonl,cwd,run,_cleanup} handle (no live agent)."""
     captured: dict = {}
 
-    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         captured["card"] = card
         captured["run_vault"] = Path(run_vault)
         captured["fixtures_pdfs_dir"] = Path(fixtures_pdfs_dir)
@@ -294,7 +295,7 @@ def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) ->
 def test_build_live_run_card_fn_cleanup_removes_run_dir(tmp_path: Path) -> None:
     """The handle's _cleanup removes the whole disposable run dir."""
 
-    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         return ExecutorResult()
 
     run_fn = build_live_run_card_fn(
@@ -316,7 +317,7 @@ def test_build_live_run_card_fn_defaults_anthropic_auth(tmp_path: Path) -> None:
     """Default (no base_url/auth_token) passes None through — Anthropic mode."""
     seen: dict = {}
 
-    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         seen["base_url"] = base_url
         seen["auth_token"] = auth_token
         return ExecutorResult()
@@ -599,7 +600,7 @@ def test_build_live_run_card_fn_cleans_up_when_run_card_impl_raises(tmp_path: Pa
 
     seen: dict = {}
 
-    def boom_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def boom_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         # __enter__ already copied the seed; capture the run dir, then fail like a
         # real install_repo_skills RuntimeError / claude-bin FileNotFoundError.
         seen["run_dir"] = Path(run_vault).parent
@@ -755,7 +756,7 @@ def test_build_live_routing_run_fn_delegates_per_case(tmp_path: Path) -> None:
     observe_impl is a fake."""
     calls: list[str] = []
 
-    def fake_observe(utt, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_observe(utt, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         calls.append(str(utt))
         # the run vault is a real cp of the seed (so the adapter exercised RunVault)
         assert Path(run_vault).is_dir()
@@ -783,3 +784,285 @@ def test_build_live_routing_run_fn_delegates_per_case(tmp_path: Path) -> None:
     observed = run_fn(card, model="some-model")
     assert calls == ["把这篇加到库里", "继续读"]
     assert observed == ["lit-library", None]
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent reporting: (agent, model) as the unit, and honest absences
+# ---------------------------------------------------------------------------
+
+
+def _exec_card() -> dict:
+    return {"id": "X", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+
+
+def test_report_unit_is_agent_plus_model() -> None:
+    """The same weights served through three scaffolds are three data points."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    report = run_batch(
+        [_exec_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert report.agent == "cursor"
+    assert report.model_requested == "claude-sonnet-4-6"
+
+
+def test_agent_flags_record_how_the_run_was_authorized() -> None:
+    """Read from OUR adapter, never from the agent's stream: cursor reports
+    permissionMode "default" while --force is in effect, so a transcript cannot be
+    audited for this. A reader must see "this round ran with approval disabled"."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    for agent, expected in [
+        ("claude", ["--permission-mode", "bypassPermissions"]),
+        ("cursor", ["--force"]),
+        ("agy", ["--dangerously-skip-permissions"]),
+    ]:
+        report = run_batch(
+            [_exec_card()], agent=agent, model="m", rounds=1, run_card_fn=fake_run
+        )
+        assert report.agent_flags == expected
+        assert report_to_dict(report)["agent_flags"] == expected
+
+
+def test_model_served_is_harvested_from_the_runs() -> None:
+    def fake_run(card, *, round, model, **_):
+        return {
+            "vault": Path("/tmp/nope"),
+            "jsonl": [],
+            "run": ExecutorResult(model_served="Sonnet 4.6 200K Medium No Thinking"),
+        }
+
+    report = run_batch(
+        [_exec_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.model_served == "Sonnet 4.6 200K Medium No Thinking"
+    assert report.model_family == "claude-sonnet-4.6"  # explicit table, not a guess
+
+
+def test_agent_that_reports_no_model_says_so() -> None:
+    """agy: model_served is None. The family still resolves from what we REQUESTED
+    (so a controlled comparison can group it), and Phase 0 records that agy's model
+    went unverified — nothing here pretends the served model is known."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    report = run_batch(
+        [_exec_card()], agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert report.model_served is None
+    assert report.model_family == "claude-sonnet-4.6"
+
+
+def test_old_model_key_survives_as_an_alias() -> None:
+    """report.json parsers already on the user's disk must not start reading None."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    report = run_batch([_exec_card()], agent="cursor", model="claude-sonnet-4-6",
+                       rounds=1, run_card_fn=fake_run)
+    payload = report_to_dict(report)
+    assert payload["model"] == "claude-sonnet-4-6" == payload["model_requested"]
+
+
+# ---------------------------------------------------------------------------
+# The routing axis: "cannot measure" is not "missed every one"
+# ---------------------------------------------------------------------------
+
+
+def test_not_measurable_routing_is_excluded_from_ra_not_scored_as_zero() -> None:
+    """The most insidious pitfall in the design, at the aggregation layer.
+
+    An agent with no skill-activation signal must NOT get RA 0.0. The cards stay
+    tagged and counted; the RA section is an honest absence; and coverage says WHY
+    it is absent so a reader can tell this apart from a dry run."""
+    from harness.agents import NOT_MEASURABLE
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    def unmeasurable_routing(card, *, model):
+        return NOT_MEASURABLE
+
+    report = run_batch(
+        [_routing_card()], agent="agy", model="m", rounds=1,
+        run_card_fn=fake_run, routing_run_fn=unmeasurable_routing,
+    )
+
+    assert report.routing is None                       # NOT {"ra": 0.0, ...}
+    assert report.coverage["routing_ra"] == "not_measurable"
+    assert report.coverage["routing_not_measurable_cards"] == ["I-route"]
+    assert "agy" in report.coverage["routing_ra_reason"]
+    assert report.coverage["counts"]["routing"] == 1    # still counted
+    payload = report_to_dict(report)
+    assert payload["routing"] is None
+    assert payload["coverage"]["routing_ra"] == "not_measurable"
+
+
+def test_coverage_distinguishes_not_scored_from_not_measurable() -> None:
+    """Both leave report.routing None. They are completely different facts."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    dry = run_batch([_routing_card()], model="m", rounds=1, run_card_fn=fake_run)
+    assert dry.routing is None
+    assert dry.coverage["routing_ra"] == "not_scored"
+
+    def fake_routing_run(card, *, model):
+        return ["lit-library", "lit-library", "lit-reading", "lit-library"]
+
+    scored = run_batch(
+        [_routing_card()], model="m", rounds=1,
+        run_card_fn=fake_run, routing_run_fn=fake_routing_run,
+    )
+    assert scored.coverage["routing_ra"] == "scored"
+
+
+def test_score_routing_rejects_the_sentinel_loudly() -> None:
+    """Defence in depth. If the sentinel ever reaches the scorer it is NOT None, so
+    it would fall through to the miss branch and produce a confident RA of 0.0."""
+    import pytest
+
+    from harness.agents import NOT_MEASURABLE
+    from harness.routing import score_routing
+
+    with pytest.raises(ValueError, match="NOT_MEASURABLE"):
+        score_routing(
+            _routing_card(),
+            [NOT_MEASURABLE, NOT_MEASURABLE, NOT_MEASURABLE, NOT_MEASURABLE],
+            present_skills=["lit-library", "lit-reading"],
+        )
+
+
+def test_routing_adapter_short_circuits_without_spawning(tmp_path: Path) -> None:
+    """For an agent whose RA is unmeasurable the adapter returns the sentinel up
+    front: ~14 classification spawns per card would buy exactly nothing."""
+    from harness.agents import NOT_MEASURABLE
+
+    def explode(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError("must not probe an agent whose RA is unmeasurable")
+
+    run_fn = build_live_routing_run_fn(
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        agent="agy",
+        observe_impl=explode,
+        ensure_seed_impl=explode,
+    )
+    assert run_fn(_routing_card(), model="m") is NOT_MEASURABLE
+
+
+# ---------------------------------------------------------------------------
+# Token accounting across agents with different counter support
+# ---------------------------------------------------------------------------
+
+
+def test_sum_usage_never_treats_a_missing_report_as_zero() -> None:
+    """A spawn that reported no usage (agy has no counters; a crashed run reported
+    none) must be DROPPED, not added as zeros — and it must not inflate `spawns`
+    either. "3 spawns, 0 tokens" is a claim we cannot make."""
+    from harness.batch import _sum_usage
+
+    real = {
+        "input_tokens": 10, "output_tokens": 20,
+        "cache_creation_input_tokens": 30, "cache_read_input_tokens": 40,
+    }
+    mixed = _sum_usage([real, {}, None, real])  # type: ignore[list-item]
+    assert mixed["input_tokens"] == 20
+    assert mixed["output_tokens"] == 40
+    assert mixed["spawns"] == 2  # the two unreported spawns are not counted
+
+
+def test_sum_usage_of_an_agent_with_no_counters_is_absent_not_zero() -> None:
+    from harness.batch import _sum_usage
+
+    assert _sum_usage([{}, None, {}]) == {}  # type: ignore[list-item]
+
+
+def test_tokens_section_is_none_for_an_agent_with_no_counters() -> None:
+    """agy's tokens must read None all the way to the report — never a 0 bucket."""
+
+    def fake_run(card, *, round, model, **_):
+        return {"vault": Path("/tmp/nope"), "jsonl": [], "run": ExecutorResult(usage={})}
+
+    report = run_batch(
+        [_exec_card()], agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=2,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.tokens is None
+    assert report_to_dict(report)["tokens"] is None
+    assert report.trr_mean == 1.0  # TRR is still scored: only tokens are unmeasurable
+
+
+def test_cursor_usage_reaches_the_report_normalized() -> None:
+    """End-to-end for the camelCase pitfall: the adapter normalizes at its edge, so
+    the batch's snake_case summing sees real numbers rather than a silent zero."""
+    from harness.agents.cursor import normalize_usage
+
+    raw = {"inputTokens": 4, "outputTokens": 86,
+           "cacheReadTokens": 19868, "cacheWriteTokens": 20024}
+
+    def fake_run(card, *, round, model, **_):
+        return {
+            "vault": Path("/tmp/nope"), "jsonl": [],
+            "run": ExecutorResult(usage=normalize_usage(raw)),
+        }
+
+    report = run_batch(
+        [_exec_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.tokens["total"]["input_tokens"] == 4
+    assert report.tokens["total"]["cache_read_input_tokens"] == 19868
+    assert report.tokens["total"]["spawns"] == 1
+
+
+def test_qualification_rides_into_the_report() -> None:
+    """Phase 0 is a deliverable, not just a gate: a reader must see what was
+    verified — and, for agy, what could not be."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    sheet = {"agent": "agy", "ok": True, "checks": [
+        {"name": "model_pinned", "status": "skip", "detail": "UNVERIFIED"},
+    ]}
+    report = run_batch(
+        [_exec_card()], agent="agy", model="m", rounds=1,
+        run_card_fn=fake_run, qualification=sheet,
+    )
+    assert report_to_dict(report)["qualification"] == sheet
+
+
+def test_family_is_not_invented_when_no_run_observed_a_model() -> None:
+    """Minor 8: only execution rounds harvest `model_served`, so a routing-only
+    run (or one whose spawns all died before reporting) leaves it None for an
+    agent that DOES report models. The family must stay None there — deriving it
+    from the request would dress the gap up as knowledge."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    routing_only = run_batch(
+        [_routing_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert routing_only.model_served is None
+    assert routing_only.model_family is None  # NOT "claude-sonnet-4.6"
+
+    # agy is the one agent for which the request IS the only source there is.
+    agy = run_batch(
+        [_routing_card()], agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert agy.model_served is None
+    assert agy.model_family == "claude-sonnet-4.6"

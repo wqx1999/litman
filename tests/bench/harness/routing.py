@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from harness.agents import NOT_MEASURABLE
+
 
 @dataclass
 class CaseTrail:
@@ -92,7 +94,24 @@ def score_routing(
     order (``None`` = the agent invoked no skill). ``present_skills`` is the set
     of skills installed in this run (OQ2: a case referencing an absent skill is
     N/A). Returns a :class:`RoutingResult` with RA + counts + per-case trail.
+
+    An agent that cannot expose skill activation at all never reaches here — the
+    caller short-circuits on :data:`~harness.agents.NOT_MEASURABLE`. The guard
+    below exists because the failure mode is otherwise invisible: the sentinel is
+    not ``None``, so it would fall through to the miss branch and score a
+    perfectly confident RA of 0.0 for an agent we simply cannot measure.
     """
+    if observed_skills is NOT_MEASURABLE or any(
+        o is NOT_MEASURABLE for o in observed_skills
+    ):
+        raise ValueError(
+            "score_routing was handed the NOT_MEASURABLE sentinel: this agent "
+            "exposes no skill-activation signal, which is NOT a routing miss. "
+            "The caller must short-circuit before scoring (harness.batch.run_batch "
+            "tags such cards not_measurable and leaves them out of the RA "
+            "denominator)."
+        )
+
     cases = _card_field(card, "cases") or []
     if len(observed_skills) != len(cases):
         raise ValueError(

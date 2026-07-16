@@ -1,24 +1,30 @@
 """Deterministic tests for the executor stream parser (Phase E plumbing).
 
 These NEVER spawn a live ``claude -p`` agent (M34 §3.5 hard boundary). They run
-:func:`harness.executor.parse_stream` over a hand-authored recorded stream-json
-fixture and exercise ``_lit_calls_from_bash`` / ``as_jsonl_records`` /
+:func:`harness.agents.claude.parse_stream` over a hand-authored recorded
+stream-json fixture and exercise ``_lit_calls_from_bash`` / ``as_jsonl_records`` /
 ``stdout_blob`` on stubbed data only.
+
+The claude-specific pieces moved to :mod:`harness.agents.claude` when the executor
+became agent-neutral; the BEHAVIOUR under test here is unchanged, which is the
+point — a live TRR/RA baseline exists for this path.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from harness import executor as executor_mod
+from harness.agents import claude as claude_mod
+from harness.agents.claude import _lit_calls_from_bash, executor_env, parse_stream
 from harness.executor import (
     ExecutorResult,
     LitCall,
     ToolResult,
-    _lit_calls_from_bash,
-    executor_env,
     neutral_cwd_for,
-    parse_stream,
     run_card,
     stdout_blob,
 )
@@ -241,13 +247,14 @@ def _stub_run_card_io(monkeypatch, calls: dict) -> None:
 
     ``seed_auth`` becomes a spy (records its call), ``install_repo_skills`` a
     no-op, and ``subprocess.run`` returns a canned empty stream so NO ``claude``
-    process is ever spawned (M34 §3.5 hard boundary).
+    process is ever spawned (M34 §3.5 hard boundary). Both spies are patched on
+    :mod:`harness.agents.claude`, which is where the adapter calls them from.
     """
     def spy_seed_auth(config_dir):
         calls["seed_auth"] = calls.get("seed_auth", 0) + 1
 
-    monkeypatch.setattr(executor_mod, "seed_auth", spy_seed_auth)
-    monkeypatch.setattr(executor_mod, "install_repo_skills", lambda *a, **k: None)
+    monkeypatch.setattr(claude_mod, "seed_auth", spy_seed_auth)
+    monkeypatch.setattr(claude_mod, "install_repo_skills", lambda *a, **k: None)
 
     class _Proc:
         stdout = ""
@@ -298,3 +305,230 @@ def test_neutral_cwd_for_convention(tmp_path: Path) -> None:
     """neutral_cwd_for is the single source of truth for <run_dir>/cwd."""
     run_vault = tmp_path / "bench-z" / "vault"
     assert neutral_cwd_for(run_vault) == tmp_path / "bench-z" / "cwd"
+
+
+# ---------------------------------------------------------------------------
+# The REAL adapters, driven end-to-end through run_card (AC8 / the M34 lesson)
+# ---------------------------------------------------------------------------
+#
+# The bench is full of injectable seams (run_card_impl / observe_impl / score_fn),
+# and the lesson that earned this section is that a suite can be entirely green
+# with every seam filled by a fake while the real default underneath is broken.
+# So: below, the ONLY thing replaced is the agent spawn itself — and it is replaced
+# with a REAL recorded stream. Dispatch, the adapter's prepare/isolation, argv
+# assembly and parsing are all production code.
+
+AGENT_STREAMS_DIR = Path(__file__).resolve().parent / "fixtures" / "agent-streams"
+
+
+def _replay(monkeypatch, calls: dict, stdout: str) -> None:
+    """Stub ONLY the spawn; replay a recorded stream as the agent's stdout.
+
+    Rebinds the NAME ``harness.executor.subprocess`` rather than reaching through
+    it to patch ``subprocess.run``: the latter is the shared stdlib module object,
+    so patching there also silently stubs the test's own subprocess calls — which
+    is exactly how the agy shim below first appeared to record nothing.
+    """
+
+    class _Proc:
+        returncode = 0
+
+        def __init__(self, out: str) -> None:
+            self.stdout = out
+
+    def fake_subprocess_run(*a, **k):
+        calls["argv"] = a[0] if a else k.get("args")
+        calls["env"] = k.get("env")
+        calls["cwd"] = k.get("cwd")
+        return _Proc(stdout)
+
+    monkeypatch.setattr(
+        executor_mod,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_subprocess_run,
+            DEVNULL=subprocess.DEVNULL,
+            TimeoutExpired=subprocess.TimeoutExpired,
+        ),
+    )
+
+
+def test_run_card_drives_the_real_cursor_adapter(tmp_path: Path, monkeypatch) -> None:
+    """A real recorded cursor stream, through the real CursorAdapter, via run_card."""
+    from harness.agents import cursor as cursor_mod
+
+    # install_repo_skills shells out to `lit`; not what is under test here.
+    monkeypatch.setattr(cursor_mod, "install_repo_skills", lambda *a, **k: None)
+    # An empty fake user HOME: the auth seed must skip silently, and the test
+    # must never read the user's real ~/.config/cursor/auth.json.
+    monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+    stream = (AGENT_STREAMS_DIR / "cursor-shell-lit-version.raw.jsonl").read_text(
+        encoding="utf-8"
+    )
+    calls: dict = {}
+    _replay(monkeypatch, calls, stream)
+
+    run_vault = tmp_path / "bench-c" / "vault"
+    run_vault.mkdir(parents=True)
+    result = run_card(
+        Card(id="A1", intent="check the version", fixtures=[]),
+        run_vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        agent="cursor",
+    )
+
+    # (a) the real adapter built cursor's argv, with its permission flag.
+    assert calls["argv"][0].endswith("cursor-agent")
+    assert "--force" in calls["argv"]
+    assert "--model" in calls["argv"] and "claude-sonnet-4-6" in calls["argv"]
+    # (b) the real adapter isolated the run: HOME redirected, library shadowed.
+    assert calls["env"]["HOME"] == str(tmp_path / "bench-c" / "home")
+    assert calls["env"]["LIT_LIBRARY"] == str(run_vault)
+    # (c) cwd is the neutral dir under the run root (always local /tmp in prod).
+    assert calls["cwd"] == str(tmp_path / "bench-c" / "cwd")
+    # (d) the real cursor parser recovered the evidence from cursor's own shape.
+    assert [c.argv for c in result.lit_calls] == [["--version"]]
+    assert result.usage["input_tokens"] == 4          # camelCase normalized
+    assert result.model_served == "Sonnet 4.6 200K Medium No Thinking"
+    # (e) the harness recorded its own argv: the stream cannot be trusted for it.
+    assert result.argv == calls["argv"]
+
+
+def test_run_card_drives_the_real_agy_adapter(tmp_path: Path, monkeypatch) -> None:
+    """agy has no stream at all, so the real evidence path is the PATH shim: this
+    drives the real adapter and reads back what the real shim wrote."""
+    import json
+
+    from harness.agents import agy as agy_mod
+
+    # A fake logged-in user HOME (fabricated token; Path.home() follows $HOME),
+    # so seed_auth never sees the user's real credential file.
+    user_home = tmp_path / "userhome"
+    token = user_home / agy_mod.TOKEN_RELPATH
+    token.parent.mkdir(parents=True)
+    token.write_text('{"auth_method": "fake", "token": {"access_token": "fake"}}')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setattr(agy_mod, "install_repo_skills", lambda *a, **k: None)
+    monkeypatch.setattr(agy_mod, "LIT_BIN", Path("/bin/echo"))
+
+    calls: dict = {}
+    _replay(monkeypatch, calls, "I listed your papers.\n")
+
+    base = tmp_path / "bench-a"
+    run_vault = base / "vault"
+    run_vault.mkdir(parents=True)
+
+    result = run_card(
+        Card(id="A1", intent="list my papers", fixtures=[]),
+        run_vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        agent="agy",
+    )
+
+    # (a) `-p` last, permission flag present — the real adapter's argv.
+    assert calls["argv"][-2] == "-p"
+    assert "--dangerously-skip-permissions" in calls["argv"]
+    assert "Claude Sonnet 4.6 (Thinking)" in calls["argv"]  # agy's OWN default
+    # (b) the shim really landed, first on the child's PATH.
+    shim = base / "shim" / "lit"
+    assert shim.is_file() and os.access(shim, os.X_OK)
+    assert calls["env"]["PATH"].startswith(f"{base / 'shim'}:")
+    # (c) drive the shim the way the agent would, then re-parse: the evidence the
+    # adapter reports is whatever the shim actually recorded.
+    subprocess.run([str(shim), "list"], capture_output=True, text=True, env=calls["env"])
+    from harness.agents import get_adapter
+
+    after = get_adapter("agy").parse("I listed your papers.", base=base)
+    assert [c.argv for c in after.lit_calls] == [["list"]]
+    assert json.loads((base / "lit-calls.jsonl").read_text())["argv"] == ["list"]
+    # (d) unmeasurable axes stay absent, never zero.
+    assert result.usage == {}
+    assert result.model_served is None
+
+
+def test_run_card_claude_argv_is_unchanged(tmp_path: Path, monkeypatch) -> None:
+    """The incumbent path, pinned. A live TRR/RA baseline exists for exactly this
+    argv + evidence mechanism; drifting it would silently make the old numbers
+    incomparable to the new ones rather than fail anything."""
+    from harness.agents import claude as claude_mod
+
+    monkeypatch.setattr(claude_mod, "seed_auth", lambda *a, **k: None)
+    monkeypatch.setattr(claude_mod, "install_repo_skills", lambda *a, **k: None)
+    calls: dict = {}
+    _replay(monkeypatch, calls, "")
+
+    run_vault = tmp_path / "bench-k" / "vault"
+    run_vault.mkdir(parents=True)
+    run_card(
+        Card(id="A1", intent="do a thing", fixtures=[]),
+        run_vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+    )
+
+    assert calls["argv"][1:] == [
+        "-p", "do a thing",
+        "--model", "claude-sonnet-4-6",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--permission-mode", "bypassPermissions",
+    ]
+    assert calls["env"]["CLAUDE_CONFIG_DIR"] == str(tmp_path / "bench-k" / "claude-config")
+    assert calls["env"]["LIT_LIBRARY"] == str(run_vault)
+
+
+def test_run_card_defaults_the_model_per_agent(tmp_path: Path, monkeypatch) -> None:
+    """One shared default across three model namespaces would silently serve a
+    different model per agent."""
+    from harness.agents import agy as agy_mod
+
+    # Fake logged-in user HOME with a fabricated token (never the real file).
+    user_home = tmp_path / "userhome"
+    token = user_home / agy_mod.TOKEN_RELPATH
+    token.parent.mkdir(parents=True)
+    token.write_text('{"auth_method": "fake", "token": {"access_token": "fake"}}')
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setattr(agy_mod, "install_repo_skills", lambda *a, **k: None)
+    monkeypatch.setattr(agy_mod, "LIT_BIN", Path("/bin/echo"))
+    calls: dict = {}
+    _replay(monkeypatch, calls, "ok")
+
+    run_vault = tmp_path / "bench-m" / "vault"
+    run_vault.mkdir(parents=True)
+    run_card(
+        Card(id="A1", intent="x", fixtures=[]),
+        run_vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        agent="agy",
+    )
+    assert "Claude Sonnet 4.6 (Thinking)" in calls["argv"]
+    assert "claude-sonnet-4-6" not in calls["argv"]
+
+
+def test_on_prepared_fires_between_isolation_and_spawn(tmp_path: Path, monkeypatch) -> None:
+    """Phase 0's seam: the sentinel must land in the isolated skills copy AFTER the
+    adapter installed it and BEFORE the agent starts."""
+    from harness.agents import claude as claude_mod
+
+    monkeypatch.setattr(claude_mod, "seed_auth", lambda *a, **k: None)
+    monkeypatch.setattr(claude_mod, "install_repo_skills", lambda *a, **k: None)
+    order: list[str] = []
+
+    class _Proc:
+        stdout = ""
+        returncode = 0
+
+    def fake_subprocess_run(*a, **k):
+        order.append("spawn")
+        return _Proc()
+
+    monkeypatch.setattr(executor_mod.subprocess, "run", fake_subprocess_run)
+
+    run_vault = tmp_path / "bench-h" / "vault"
+    run_vault.mkdir(parents=True)
+    run_card(
+        Card(id="A1", intent="x", fixtures=[]),
+        run_vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        on_prepared=lambda base, env: order.append("prepared"),
+    )
+    assert order == ["prepared", "spawn"]
