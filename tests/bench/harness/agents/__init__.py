@@ -139,6 +139,12 @@ _MODEL_FAMILY: dict[str, str] = {
     "claude-opus-4-8": "claude-opus-4.8",
     # --- cursor: requests an id, reports a display name ----------------------
     "Sonnet 4.6 200K Medium No Thinking": "claude-sonnet-4.6",
+    # Cursor relabeled the same tier later in 2026-07: its display grammar now
+    # marks thinking explicitly ("... Thinking") and leaves non-thinking
+    # unmarked (verified against the full `cursor-agent models` listing), so
+    # the suffixless string below is the SAME non-thinking Sonnet 4.6 the entry
+    # above named. Both spellings stay: old transcripts report the old string.
+    "Sonnet 4.6 200K Medium": "claude-sonnet-4.6",
     # --- agy: requests a display name, reports nothing -----------------------
     "Claude Sonnet 4.6 (Thinking)": "claude-sonnet-4.6",
 }

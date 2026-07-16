@@ -70,6 +70,16 @@ def test_served_display_name_maps_to_the_same_family_as_the_requested_id() -> No
     ) == "claude-sonnet-4.6"
 
 
+def test_cursors_relabeled_suffixless_display_name_maps_to_the_same_family() -> None:
+    """Cursor dropped the "No Thinking" suffix from non-thinking display names
+    (its model list now marks thinking explicitly and leaves non-thinking
+    unmarked). Both spellings are table entries; neither is a regex guess."""
+    assert model_family(
+        "Sonnet 4.6 200K Medium", "claude-sonnet-4-6",
+        fallback_to_requested=False,
+    ) == "claude-sonnet-4.6"
+
+
 def test_falls_back_to_requested_only_when_nothing_was_served() -> None:
     """agy reports no model, so the family can only come from what we asked for —
     and the report says model_served is None so nobody mistakes it for verified."""
