@@ -50,8 +50,14 @@ from harness.scenarios import Card
 
 # Prompts kept mechanical: the gate tests the instrument, not the model's flair.
 PROBE_PROMPT = "Run the shell command: lit --version — then reply with ONLY its exact output."
+#: Must order the agent to USE the skill, not to find a file. Asked merely what
+#: its SKILL.md "contains", an agent goes looking on disk: it greps the cwd, and
+#: answers from whatever copy it stumbles on (a stale probe dir left in the work
+#: root, the user's installed copy) or gives up — either way the check reports a
+#: bad instrument while the isolation seam is fine. Invoking the skill is the
+#: only act that proves WHICH copy is loaded, so the prompt demands it.
 SENTINEL_PROMPT = (
-    "Your lit-library skill's SKILL.md contains a line starting with "
+    "Use your lit-library skill. It contains a line starting with "
     "`bench-sentinel:`. Reply with ONLY the value that follows that prefix."
 )
 
