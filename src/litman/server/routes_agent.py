@@ -21,8 +21,8 @@ exclusively from the server-side catalog; any ``command`` / ``target`` /
 ``path`` field in a request body is ignored and never executed — the
 localhost-bound server must not become a remote-code-execution surface.
 
-RED LINE: the per-agent skills paths (``~/.claude/skills``, the shared
-open-standard ``~/.agents/skills``) stay inside the catalog adapters — they
+RED LINE: the per-agent skills paths (the Claude Code dir, the open-standard
+dir, Antigravity CLI's app-data dir) stay inside the catalog adapters — they
 never appear in a response or the status contract, so new agents can be
 added without changing this file's shape.
 

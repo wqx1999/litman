@@ -3,13 +3,14 @@
 Every other skill test isolates through the resolver seams (the conftest
 ``_isolate_skills_dir`` patch or explicit ``parent_dir=``). If the live
 resolver chain broke — ``default_skills_parent_dir`` /
-``standard_skills_parent_dir`` themselves, or the catalog wiring on top of
-them — those tests would stay green while every real install landed in the
-wrong place. These tests therefore patch NOTHING inside litman: only
-``$HOME`` is redirected (honored by ``Path.home()`` at call time), and the
-full install → status → drift → fix → uninstall cycle runs through the real
-resolvers, once per supported skills location (the Claude Code dir and the
-shared open-standard dir).
+``standard_skills_parent_dir`` / ``antigravity_skills_parent_dir``
+themselves, or the catalog wiring on top of them — those tests would stay
+green while every real install landed in the wrong place. These tests
+therefore patch NOTHING inside litman: only ``$HOME`` is redirected (honored
+by ``Path.home()`` at call time), and the full install → status → drift →
+fix → uninstall cycle runs through the real resolvers, once per supported
+skills location (the Claude Code dir, the open-standard dir cursor reads,
+and the Antigravity CLI app-data dir).
 
 ``no_skills_isolation`` opts out of the autouse seam patch; the redirected
 ``$HOME`` is what keeps the developer's real skills dirs out of reach. The
@@ -30,13 +31,20 @@ from litman.core.checks import apply_autofix, check_skill_drift
 from litman.core.library import create_vault
 from litman.core.skill import list_bundled_skills
 
+_ALL_REL_DIRS = {
+    Path(".claude") / "skills",
+    Path(".agents") / "skills",
+    Path(".gemini") / "antigravity-cli" / "skills",
+}
+
 
 @pytest.mark.no_skills_isolation
 @pytest.mark.parametrize(
     ("agent", "rel_dir"),
     [
         ("claude", Path(".claude") / "skills"),
-        ("gemini", Path(".agents") / "skills"),
+        ("cursor", Path(".agents") / "skills"),
+        ("agy", Path(".gemini") / "antigravity-cli" / "skills"),
     ],
 )
 def test_full_skill_lifecycle_through_real_resolvers(
@@ -61,8 +69,7 @@ def test_full_skill_lifecycle_through_real_resolvers(
     for name in list_bundled_skills():
         assert (target / name / "SKILL.md").is_file()
     # ... and nothing landed anywhere else under home.
-    other = {Path(".claude") / "skills", Path(".agents") / "skills"} - {rel_dir}
-    for rel in other:
+    for rel in _ALL_REL_DIRS - {rel_dir}:
         assert not (home / rel).exists()
 
     # 2. status — the catalog adapter's live probe agrees, and a re-run is

@@ -138,25 +138,29 @@ without them. Copies files only; does not install an agent or configure any
 keys.
 
 Skills go where the agent auto-discovers them: `~/.claude/skills` for Claude
-Code, the shared `~/.agents/skills` for Gemini CLI and Cursor (one install
-serves both). With no flags the command targets your default agent's
-directory; `--agent` targets another agent's.
+Code, the open-standard `~/.agents/skills` for Cursor, and
+`~/.gemini/antigravity-cli/skills` for Antigravity CLI. With no flags the
+command targets your default agent's directory; `--agent` targets another
+agent's.
 
 Safe to re-run after upgrading litman: skills that already match the bundled
 content report "up to date", out-of-date ones are offered a refresh (`[Y/n]`,
-default yes; non-interactive runs need `--force` instead). A skill directory
-that is a symlink is always left untouched.
+default yes; non-interactive runs need `--force` instead). A run without
+`--agent`/`--parent-dir` also offers to refresh out-of-date litman skills it
+finds in the other agents' directories, with the same per-copy `[Y/n]` /
+`--force` rules. A skill directory that is a symlink is always left
+untouched.
 
 ```
 lit install-skill
-lit install-skill --agent gemini
+lit install-skill --agent agy
 lit install-skill --skill lit-reading
 ```
 
 | Flag | What it does |
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
-| `--agent <name>` | Install into this agent's skills directory (`claude`, `gemini`, `cursor`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
+| `--agent <name>` | Install into this agent's skills directory (`claude`, `agy`, `cursor`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
 | `--parent-dir <path>` | Install into this exact directory instead. Mutually exclusive with `--agent`. |
 | `--force` | Overwrite files inside an existing target without asking. Files not part of the bundled skill are left in place. |
 
@@ -793,7 +797,7 @@ session fully over to the agent (Ctrl-C and exit belong to the agent, not to
 
 ```
 lit agent                       # launch the default agent
-lit agent gemini                # launch a named agent from the catalog
+lit agent cursor                # launch a named agent from the catalog
 lit agent --set-default claude  # record the machine-level default agent
 ```
 
@@ -804,9 +808,9 @@ lit agent --set-default claude  # record the machine-level default agent
 
 The default agent is machine-level, not per-vault: it is recorded in
 `preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
-agent panel, or `lit agent --set-default`. Claude Code, Gemini CLI, and Cursor
-are the supported agents today; Codex and OpenCode sit in the catalog greyed
-out, and turn on in a later release.
+agent panel, or `lit agent --set-default`. Claude Code, Cursor, and
+Antigravity CLI (`agy`) are the supported agents today; Codex, Gemini CLI and
+OpenCode sit in the catalog greyed out, and turn on in a later release.
 
 Three things fail with a one-line error: a NAME that is not in the catalog, a
 catalog agent that is not supported yet, and a supported agent whose command is

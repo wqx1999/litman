@@ -13,6 +13,11 @@ installed skill whose content matches this litman's bundle reports
 interactive runs) or asks for ``--force`` (non-interactive runs, so an
 agent or script never overwrites silently). A linked skill dir
 (symlink / junction to a dev checkout) is always left untouched.
+
+A bare run additionally sweeps the OTHER known agent directories and
+offers to refresh any stale litman-skill copies it finds there (same
+consent model); explicit ``--agent`` / ``--parent-dir`` runs touch only
+what they name.
 """
 
 from __future__ import annotations
@@ -31,7 +36,9 @@ from litman.core.skill import (
     bundled_skill_root,
     install_skill,
     list_bundled_skills,
+    refresh_stale_copies,
     skill_status,
+    stale_skill_copies,
 )
 
 console = Console()
@@ -103,7 +110,9 @@ def install_skill_cmd(
 
     Safe to re-run after a litman upgrade: skills that already match
     this litman's bundled content are reported up to date, out-of-date
-    ones are offered a refresh.
+    ones are offered a refresh. A run without --agent/--parent-dir also
+    offers to refresh out-of-date copies found in the other agents'
+    directories.
 
     Running this command does NOT install the agent itself, configure
     API keys, or modify any of the user's other skills. It only copies
@@ -114,6 +123,10 @@ def install_skill_cmd(
             "--agent and --parent-dir are mutually exclusive; pass at "
             "most one."
         )
+    # A bare run (neither --agent nor --parent-dir) follows the default
+    # agent AND sweeps the other known directories for stale copies below;
+    # an explicit target is a precise instruction and never sweeps.
+    bare_run = agent_name is None and parent_dir is None
     if parent_dir is None:
         resolved = agent_name or (
             agent_prefs.load_default_agent() or agents.default_agent_name()
@@ -174,6 +187,42 @@ def install_skill_cmd(
             )
         )
 
+    # Cross-directory sweep, bare runs only: agents can read each other's
+    # skills directories (Cursor prefers ~/.claude/skills over the
+    # open-standard dir), so a stale copy installed for ANOTHER agent may be
+    # the one actually in effect. Same consent model as the main target:
+    # interactive runs ask per copy ([Y/n] default yes), non-interactive
+    # runs without --force only report, --force refreshes outright. Absent
+    # and linked copies are never touched.
+    swept: dict[Path, list[str]] = {}
+    sweep_declined: dict[Path, list[str]] = {}
+    sweep_blocked: dict[Path, list[str]] = {}
+    if bare_run:
+        other_dirs = [
+            d for d in agents.skills_parent_dirs() if d != parent_dir
+        ]
+        pending = stale_skill_copies(other_dirs)
+        if pending and force:
+            swept = refresh_stale_copies(other_dirs)
+        elif pending and _stdin_is_tty():
+            swept = refresh_stale_copies(
+                other_dirs,
+                confirm=lambda copy_dir, copy_name: click.confirm(
+                    f"Skill '{copy_name}' installed for another agent "
+                    f"({copy_dir}) is also out of date — refresh it too? "
+                    "(bundled files are overwritten; files you added "
+                    "are kept)",
+                    default=True,
+                ),
+            )
+            sweep_declined = {
+                d: names
+                for d, ns in pending.items()
+                if (names := [n for n in ns if n not in swept.get(d, [])])
+            }
+        elif pending:
+            sweep_blocked = pending
+
     lines = []
     for r in results:
         lines.append(
@@ -195,6 +244,23 @@ def install_skill_cmd(
         )
     for name in declined:
         lines.append(f"[dim]Skill skipped:[/] {escape(name)}")
+    for copy_dir, names in swept.items():
+        lines.append(
+            f"[bold green]Also refreshed for another agent:[/] "
+            f"{', '.join(escape(n) for n in names)} "
+            f"[dim]({copy_dir})[/]"
+        )
+    for copy_dir, names in sweep_declined.items():
+        lines.append(
+            f"[dim]Skipped (another agent's copy):[/] "
+            f"{', '.join(escape(n) for n in names)} ({copy_dir})"
+        )
+    for copy_dir, names in sweep_blocked.items():
+        lines.append(
+            f"[yellow]Out of date for another agent (left untouched):[/] "
+            f"{', '.join(escape(n) for n in names)} [dim]({copy_dir})[/] "
+            f"— re-run with --force to refresh"
+        )
     available = ", ".join(list_bundled_skills())
     lines.append("")
     lines.append(

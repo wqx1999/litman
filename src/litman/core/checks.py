@@ -2327,7 +2327,7 @@ def _default_agent_skill_probe() -> tuple[str, Path] | None:
 
     The single resolution both :func:`check_skill_drift` and the
     ``skill_drift`` arm of :func:`apply_autofix` go through — probe and fix
-    must agree on the directory, or a gemini default would have its drift
+    must agree on the directory, or a cursor default would have its drift
     detected in the open-standard dir but "fixed" into the claude dir and
     never come clean. ``None`` means the recorded default is not a supported
     catalog agent (hand-edited preferences) — nothing to probe.
@@ -2358,10 +2358,12 @@ def check_skill_drift(
     known directory would make the check nag forever about agents the user
     tried once and abandoned — a non-default agent's staleness surfaces at
     the moment it is used (the GUI agent panel computes per-agent state live)
-    and the moment it becomes the default. The issue message names the agent
-    (which pins down the directory) but never the path itself: issues flow
-    verbatim into ``GET /api/health``, and skills paths stay out of API
-    responses.
+    and the moment it becomes the default. (``--fix`` is wider than the
+    probe: it also refreshes stale copies in the other known directories —
+    see :func:`apply_autofix` — without widening what is reported here.)
+    The issue message names the agent (which pins down the directory) but
+    never the path itself: issues flow verbatim into ``GET /api/health``,
+    and skills paths stay out of API responses.
 
     Deliberately NOT flagged:
 
@@ -2940,7 +2942,12 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
       only: an existing log keeps every dated section it already holds.
     * ``skill_drift`` — re-copies each stale installed agent skill from the
       bundled package content (lossless: the installed dir is a deploy
-      artifact, and files the user added next to SKILL.md are kept).
+      artifact, and files the user added next to SKILL.md are kept). Every
+      run also sweeps the OTHER known agent directories for stale copies
+      and refreshes those too (counted under the same category): a stale
+      non-default copy may be the one an agent actually reads — Cursor
+      prefers the Claude dir over the open-standard one. The fix is wider
+      than the check on purpose; the check keeps its default-dir-only probe.
     """
     counts: dict[str, int] = {}
 
@@ -2978,6 +2985,25 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
                     continue
                 n += 1
         counts["skill_drift"] = n
+
+    # Cross-directory skill sweep — every fix run, not gated on a
+    # skill_drift finding: the check probes only the default agent's dir,
+    # but a stale copy installed for ANOTHER agent may be the one actually
+    # in effect (Cursor reads the Claude dir first). Autofix is already
+    # explicit consent, so stale copies elsewhere are refreshed outright
+    # (absent stays an opt-out, linked stays dev-managed); the helper is
+    # best-effort per copy for the same reason as the arm above.
+    from litman.core.agents import skills_parent_dirs
+    from litman.core.skill import refresh_stale_copies
+
+    probe = _default_agent_skill_probe()
+    main_dir = probe[1] if probe is not None else None
+    swept = refresh_stale_copies(
+        d for d in skills_parent_dirs() if d != main_dir
+    )
+    n_swept = sum(len(names) for names in swept.values())
+    if n_swept:
+        counts["skill_drift"] = counts.get("skill_drift", 0) + n_swept
 
     if "discussion_scaffold" in fixable_present:
         n = 0

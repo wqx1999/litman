@@ -8,17 +8,19 @@ consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
-litman supports three agents today: Claude Code (skills under
-``~/.claude/skills``) plus Gemini CLI and Cursor, which both discover the
-Agent Skills open-standard directory ``~/.agents/skills`` — one shared install
-serves them both, so installing the skill "for gemini" also makes it current
-"for cursor" (shared-directory semantics, not a bug). The remaining two
-(Codex / OpenCode) exist here as ``supported=False`` placeholders so the
-picker renders a stable, greyed-out roadmap and so the seam is already
-N-agent shaped; a later release fills in their real adapters. Their adapter
-callables raise :class:`NotImplementedError` — generic code never reaches
-them (every consumer gates on ``supported``), so a programming error that
-*does* call one fails loudly instead of silently misbehaving.
+litman supports three agents today, each with its own skills directory:
+Claude Code (``~/.claude/skills``), Cursor (the Agent Skills open-standard
+directory ``~/.agents/skills``, which it discovers alongside a
+compatibility read of the Claude dir), and Antigravity CLI (``agy``, whose
+only user-installable skills location is its own app-data directory
+``~/.gemini/antigravity-cli/skills`` — it does not read the open-standard
+dir). The remaining three (Codex / Gemini CLI / OpenCode) exist here as
+``supported=False`` placeholders so the picker renders a stable, greyed-out
+roadmap and so the seam is already N-agent shaped; a later release fills in
+their real adapters. Their adapter callables raise
+:class:`NotImplementedError` — generic code never reaches them (every
+consumer gates on ``supported``), so a programming error that *does* call
+one fails loudly instead of silently misbehaving.
 
 The per-agent skills locations are reached ONLY through the catalog adapters
 (they delegate to :mod:`litman.core.skill`); they must never leak into an
@@ -97,7 +99,16 @@ class AgentSpec:
 #
 # The placeholders below carry best-effort launch commands / install URLs so
 # their adapters can be implemented without re-editing this table; verify
-# each vendor's exact CLI + docs URL when un-greying one.
+# each vendor's exact CLI + docs URL when un-greying one. Un-greying is also
+# NOT just flipping the flag: third-party docs say Codex wants an
+# ``openai.yaml`` next to SKILL.md in ``~/.agents/skills`` and OpenCode reads
+# the XDG path ``~/.config/opencode/skills`` — neither vendor-verified yet.
+# Gemini CLI is greyed because its consumer-subscription OAuth was
+# discontinued upstream and its open-standard discovery was never verified on
+# a real install (an API-key / enterprise adapter would be its own task).
+#
+# Order: claude first (the fallback default tops the picker), the rest
+# alphabetical. The GUI picker and `skills_parent_dirs()` follow this order.
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="claude",
@@ -109,6 +120,21 @@ AGENTS: tuple[AgentSpec, ...] = (
         skill_state=lambda: aggregate_skill_state(),
         install_skill=lambda: install_all_skills(overwrite=True),
         skills_dir=lambda: skill.default_skills_parent_dir(),
+    ),
+    AgentSpec(
+        name="agy",
+        display="Antigravity CLI",
+        launch="agy",
+        supported=True,
+        install_url="https://antigravity.google/docs/cli-install",
+        detect_bin="agy",
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.antigravity_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.antigravity_skills_parent_dir(), overwrite=True
+        ),
+        skills_dir=lambda: skill.antigravity_skills_parent_dir(),
     ),
     AgentSpec(
         name="codex",
@@ -139,16 +165,11 @@ AGENTS: tuple[AgentSpec, ...] = (
         name="gemini",
         display="Gemini CLI",
         launch="gemini",
-        supported=True,
+        supported=False,
         install_url="https://github.com/google-gemini/gemini-cli",
         detect_bin="gemini",
-        skill_state=lambda: aggregate_skill_state(
-            parent_dir=skill.standard_skills_parent_dir()
-        ),
-        install_skill=lambda: install_all_skills(
-            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
-        ),
-        skills_dir=lambda: skill.standard_skills_parent_dir(),
+        skill_state=_unsupported("gemini"),
+        install_skill=_unsupported("gemini"),
     ),
     AgentSpec(
         name="opencode",
@@ -205,10 +226,11 @@ def agent_skills_parent_dir(name: str) -> Path:
 def skills_parent_dirs() -> list[Path]:
     """Distinct skills parent dirs across supported agents, stable order.
 
-    Catalog order, first occurrence wins — today that is the Claude Code dir
-    followed by the shared open-standard dir. ``lit uninstall`` sweeps this
-    full list (not just the default agent's dir) so switching defaults never
-    orphans litman files in a previously used agent's directory.
+    Catalog order, first occurrence wins — today that is the Claude Code
+    dir, Antigravity CLI's app-data dir, then the open-standard dir.
+    ``lit uninstall`` sweeps this full list (not just the default agent's
+    dir) so switching defaults never orphans litman files in a previously
+    used agent's directory.
     """
     out: list[Path] = []
     for spec in AGENTS:

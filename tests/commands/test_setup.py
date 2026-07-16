@@ -476,12 +476,12 @@ def test_setup_skill_step_fresh_install_accepts_via_confirm(
     assert "coming" in result.output  # roadmap note for the placeholder agents
 
 
-def test_setup_agent_choice_gemini_records_default_before_install(
+def test_setup_agent_choice_agy_records_default_before_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Choosing gemini end-to-end, strict three-beat order: the choice is
+    """Choosing agy end-to-end, strict three-beat order: the choice is
     recorded as the machine-level default BEFORE the install runs, and the
-    install targets the chosen agent (--agent gemini underneath)."""
+    install targets the chosen agent (--agent agy underneath)."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
@@ -498,15 +498,15 @@ def test_setup_agent_choice_gemini_records_default_before_install(
     )
 
     runner = CliRunner()
-    # completion no / agent choice: type gemini / skill install: Enter /
+    # completion no / agent choice: type agy / skill install: Enter /
     # vault no.
-    result = runner.invoke(cli, ["setup"], input="n\ngemini\n\nn\n")
+    result = runner.invoke(cli, ["setup"], input="n\nagy\n\nn\n")
     assert result.exit_code == 0, result.output
-    assert calls == [{"agent_name": "gemini"}]
+    assert calls == [{"agent_name": "agy"}]
     # The default was recorded strictly before the install ran.
-    assert events[0] == ("default", "gemini")
-    assert events[1] == ("install", {"agent_name": "gemini"})
-    assert "Gemini CLI" in result.output  # step speaks the display name
+    assert events[0] == ("default", "agy")
+    assert events[1] == ("install", {"agent_name": "agy"})
+    assert "Antigravity CLI" in result.output  # step speaks the display name
 
 
 def test_setup_agent_choice_recorded_even_when_skill_declined(
@@ -531,27 +531,27 @@ def test_setup_agent_choice_recorded_even_when_skill_declined(
     )
 
     runner = CliRunner()
-    # completion no / agent choice: gemini / skill install: no / vault no.
-    result = runner.invoke(cli, ["setup"], input="n\ngemini\nn\nn\n")
+    # completion no / agent choice: agy / skill install: no / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\nagy\nn\nn\n")
     assert result.exit_code == 0, result.output
     assert calls == []  # nothing installed
-    assert recorded == ["gemini"]  # ... but the choice stuck
+    assert recorded == ["agy"]  # ... but the choice stuck
     assert "skill (declined)" in result.output
 
 
 def test_setup_agent_prompt_defaults_to_recorded_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Re-running setup after choosing gemini: plain Enter keeps gemini (the
+    """Re-running setup after choosing agy: plain Enter keeps agy (the
     prompt default follows the recorded machine-level default), and the
-    probe runs against gemini's directory (parent_dir forwarded)."""
+    probe runs against agy's directory (parent_dir forwarded)."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
 
     monkeypatch.setattr(
         "litman.commands.setup.agent_prefs.load_default_agent",
-        lambda: "gemini",
+        lambda: "agy",
     )
     recorded: list[str] = []
     monkeypatch.setattr(
@@ -569,14 +569,75 @@ def test_setup_agent_prompt_defaults_to_recorded_default(
     from litman.core.agents import agent_skills_parent_dir
 
     runner = CliRunner()
-    # completion no / agent choice: Enter keeps gemini / (up to date: no
+    # completion no / agent choice: Enter keeps agy / (up to date: no
     # skill input) / vault no.
     result = runner.invoke(cli, ["setup"], input="n\n\nn\n")
     assert result.exit_code == 0, result.output
-    assert recorded == ["gemini"]
+    assert recorded == ["agy"]
     assert "up to date" in result.output  # idempotent re-run, zero prompts
-    # The probe hit gemini's skills dir (the conftest-isolated standard dir).
-    assert probed == [{"parent_dir": agent_skills_parent_dir("gemini")}]
+    # The probe hit agy's skills dir (the conftest-isolated antigravity dir).
+    assert probed == [{"parent_dir": agent_skills_parent_dir("agy")}]
+
+
+def test_setup_sweeps_other_agent_dirs_after_skill_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wizard's skill step ends with the cross-directory sweep: chosen
+    agent up to date, but a stale copy installed for ANOTHER agent gets its
+    own [Y/n] (default yes) and comes back current on plain Enter."""
+    from litman.core import skill
+    from litman.core.skill import install_all_skills
+
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    # Chosen agent (claude, the prompt default) reads as fully up to date.
+    monkeypatch.setattr(
+        "litman.commands.setup.skill_status",
+        lambda **kw: _fake_skill_status(default="current"),
+    )
+    # ... while the open-standard dir holds a stale real copy.
+    standard = skill.standard_skills_parent_dir()
+    install_all_skills(parent_dir=standard)
+    stale_md = standard / "lit-library" / "SKILL.md"
+    stale_md.write_text("OLD OTHER-AGENT COPY\n", encoding="utf-8")
+
+    runner = CliRunner()
+    # completion no / agent choice: Enter keeps claude / sweep refresh:
+    # Enter accepts the Y default / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\n\n\nn\n")
+    assert result.exit_code == 0, result.output
+    assert "another agent" in result.output
+    text = stale_md.read_text(encoding="utf-8")
+    assert "OLD OTHER-AGENT COPY" not in text
+    assert "name: lit-library" in text
+
+
+def test_setup_sweep_decline_leaves_other_agent_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from litman.core import skill
+    from litman.core.skill import install_all_skills
+
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+
+    monkeypatch.setattr(
+        "litman.commands.setup.skill_status",
+        lambda **kw: _fake_skill_status(default="current"),
+    )
+    standard = skill.standard_skills_parent_dir()
+    install_all_skills(parent_dir=standard)
+    stale_md = standard / "lit-library" / "SKILL.md"
+    stale_md.write_text("OLD OTHER-AGENT COPY\n", encoding="utf-8")
+
+    runner = CliRunner()
+    # completion no / agent Enter / sweep refresh: no / vault no.
+    result = runner.invoke(cli, ["setup"], input="n\n\nn\nn\n")
+    assert result.exit_code == 0, result.output
+    assert stale_md.read_text(encoding="utf-8") == "OLD OTHER-AGENT COPY\n"
 
 
 def test_setup_completion_step_skips_when_installed(

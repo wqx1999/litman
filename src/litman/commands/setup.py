@@ -37,7 +37,11 @@ from litman.commands.sync import sync_setup_cmd
 from litman.core import agent_prefs, agents
 from litman.core.config import load_config
 from litman.core.library import DEFAULT_VAULT_NAME, find_vault
-from litman.core.skill import skill_status
+from litman.core.skill import (
+    refresh_stale_copies,
+    skill_status,
+    stale_skill_copies,
+)
 from litman.core.vault_registry import (
     VaultRegistryError,
     ensure_name_registrable,
@@ -136,6 +140,36 @@ def _step_completion(
         skipped.append("completion (declined)")
 
 
+def _sweep_other_agent_skills(chosen: str, did: list[str]) -> None:
+    """Offer to refresh stale litman-skill copies in the OTHER agents' dirs.
+
+    Runs after the chosen agent's skills are settled (installed, refreshed
+    or confirmed up to date — not after a decline): agents can read each
+    other's directories (Cursor prefers the Claude dir over the
+    open-standard one), so a stale copy installed for another agent may be
+    the one actually in effect. Same consent model as the standalone
+    command's bare-run sweep — one [Y/n] (default yes) per stale copy;
+    absent and linked copies are never touched.
+    """
+    main_dir = agents.agent_skills_parent_dir(chosen)
+    other_dirs = [d for d in agents.skills_parent_dirs() if d != main_dir]
+    if not stale_skill_copies(other_dirs):
+        return
+    refreshed = refresh_stale_copies(
+        other_dirs,
+        confirm=lambda copy_dir, copy_name: click.confirm(
+            f"Skill '{copy_name}' installed for another agent ({copy_dir}) "
+            "is out of date with this litman — refresh it too? "
+            "(files you added are kept)",
+            default=True,
+        ),
+    )
+    n = sum(len(names) for names in refreshed.values())
+    if n:
+        did.append(f"skill (refreshed {n} cop{'ies' if n != 1 else 'y'} "
+                   "in other agent dirs)")
+
+
 def _step_skill(
     ctx: click.Context, did: list[str], skipped: list[str]
 ) -> None:
@@ -197,6 +231,7 @@ def _step_skill(
                     f"regardless.)[/]"
                 )
                 skipped.append("skill (up to date)")
+                _sweep_other_agent_skills(chosen, did)
                 return
             console.print(
                 f"[dim]Skills installed but out of date with this litman "
@@ -211,6 +246,7 @@ def _step_skill(
                 return
             ctx.invoke(install_skill_cmd, agent_name=chosen, force=True)
             did.append(f"skill (refreshed, {display})")
+            _sweep_other_agent_skills(chosen, did)
             return
         missing = bundled - already
         console.print(
@@ -231,6 +267,7 @@ def _step_skill(
             return
         ctx.invoke(install_skill_cmd, agent_name=chosen, force=True)
         did.append(f"skill (refreshed, {display})")
+        _sweep_other_agent_skills(chosen, did)
         return
 
     if not click.confirm(
@@ -240,6 +277,7 @@ def _step_skill(
         return
     ctx.invoke(install_skill_cmd, agent_name=chosen)
     did.append(f"skill ({display})")
+    _sweep_other_agent_skills(chosen, did)
 
 
 def _step_vault(

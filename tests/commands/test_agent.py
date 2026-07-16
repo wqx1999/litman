@@ -88,8 +88,9 @@ def test_agent_unknown_name_lists_catalog(vault: Path) -> None:
     assert "claude" in message  # the catalog names are listed
 
 
+@pytest.mark.parametrize("greyed", ["codex", "gemini", "opencode"])
 def test_agent_unsupported_name_is_rejected(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
+    vault: Path, monkeypatch: pytest.MonkeyPatch, greyed: str
 ) -> None:
     """A greyed placeholder (supported=False) is rejected before the PATH probe
     / exec — even if its binary happens to be installed."""
@@ -98,10 +99,12 @@ def test_agent_unsupported_name_is_rejected(
         "litman.commands.agent.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     monkeypatch.setattr(os, "execvp", lambda file, argv: execd.append((file, argv)))
-    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
+    result = CliRunner().invoke(agent_cmd, [greyed, "--library", str(vault)])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
-    assert "'codex' is not available yet" in str(result.exception)
+    message = str(result.exception)
+    assert f"'{greyed}' is not available yet" in message
+    assert "Supported agents: claude, agy, cursor" in message
     assert execd == []  # never reached the exec path
 
 

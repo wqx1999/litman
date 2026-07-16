@@ -9,16 +9,22 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Added
 
-- **Gemini CLI and Cursor are supported agents.** Both are selectable in the
-  GUI agent picker and launchable with `lit agent gemini` / `lit agent cursor`.
-  Their skills install once into the shared `~/.agents/skills` directory (the
-  Agent Skills open standard), which both agents discover — so installing for
-  one makes it current for the other. Claude Code keeps its own
-  `~/.claude/skills` location, unchanged. Codex and OpenCode remain listed as
-  coming soon.
+- **Cursor and Antigravity CLI are supported agents.** Both are selectable in
+  the GUI agent picker and launchable with `lit agent cursor` / `lit agent
+  agy`. Cursor's skills install into the Agent Skills open-standard directory
+  `~/.agents/skills`; Antigravity CLI's install into its own
+  `~/.gemini/antigravity-cli/skills`. Claude Code keeps its own
+  `~/.claude/skills` location, unchanged. Codex, Gemini CLI and OpenCode are
+  listed as coming soon.
 - **`lit install-skill --agent <name>`** installs the skills into the named
   agent's directory. With no flags the command now follows your default agent;
   users who never changed the default get exactly the previous behaviour.
+- **Skill copies for your other agents stay fresh.** A bare
+  `lit install-skill`, the setup wizard's skill step and `lit health-check
+  --fix` also refresh out-of-date litman skills found in the other agents'
+  directories — one `[Y/n]` per copy in interactive runs, automatic under
+  `--fix`; files you added next to a skill are always kept. Runs with an
+  explicit `--agent`/`--parent-dir` touch only what they name.
 - **`lit setup` asks which agent you use** (step 2) and records the answer as
   the machine-level default before installing its skill — pressing Enter keeps
   the previous Claude Code flow.
@@ -28,8 +34,9 @@ behaviour, a minor release adds it, a major release breaks it.
 - The GUI agent panel shows each supported agent's own install/update/ready
   state instead of repeating the default agent's state on every card.
 - `lit health-check` probes skill drift in the default agent's skills
-  directory (and `--fix` refreshes that same directory). `lit uninstall`
-  still sweeps every known skills directory.
+  directory (and `--fix` refreshes that directory, plus stale copies in the
+  other known directories). `lit uninstall` still sweeps every known skills
+  directory.
 
 ## 1.2.0 — 2026-07-15
 

@@ -1,11 +1,12 @@
 """Skill installation helpers for ``lit install-skill`` (M4.3 + M9.2).
 
 Copies every bundled agent skill from the installed litman package into a
-per-user skills directory: ``~/.claude/skills/<name>/`` for Claude Code, or
+per-user skills directory: ``~/.claude/skills/<name>/`` for Claude Code,
 the Agent Skills open-standard directory ``~/.agents/skills/<name>/`` that
-Gemini CLI and Cursor both discover. Which directory a caller targets is
-decided by the agent catalog (:mod:`litman.core.agents`); every helper here
-is directory-neutral and just takes ``parent_dir``.
+Cursor discovers, or Antigravity CLI's own app-data directory
+``~/.gemini/antigravity-cli/skills/<name>/``. Which directory a caller
+targets is decided by the agent catalog (:mod:`litman.core.agents`); every
+helper here is directory-neutral and just takes ``parent_dir``.
 
 The skill files live inside the package at
 ``src/litman/skills/<skill-name>/`` and are reachable via
@@ -30,6 +31,7 @@ API split:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -51,14 +53,26 @@ def default_skills_parent_dir() -> Path:
 
 
 def standard_skills_parent_dir() -> Path:
-    """The shared skills dir of the Agent Skills open standard
-    (``~/.agents/skills``) — Gemini CLI and Cursor both discover it.
+    """The skills dir of the Agent Skills open standard
+    (``~/.agents/skills``) — Cursor discovers it (verified on a real
+    install; vendor docs say Codex reads it too, re-verify when un-greying).
 
     Same call-time seam contract as :func:`default_skills_parent_dir`: a
     redirected ``$HOME`` is honored, and the test suite isolates itself from
     the developer's real ``~/.agents/skills`` by patching this one function.
     """
     return Path.home() / ".agents" / "skills"
+
+
+def antigravity_skills_parent_dir() -> Path:
+    """Antigravity CLI's user-installable skills dir, at call time.
+
+    This is inside agy's own app-data tree — NOT the ``~/.agents``
+    open-standard dir, which agy does not read. Same call-time seam
+    contract as the other resolvers ($HOME redirect honored; the test
+    suite isolates by patching this one function).
+    """
+    return Path.home() / ".gemini" / "antigravity-cli" / "skills"
 
 
 # Default parent dir under which each skill gets its own subdir.
@@ -433,3 +447,65 @@ def install_all_skills(
         )
         results.append(result)
     return results
+
+
+def stale_skill_copies(
+    parent_dirs: Iterable[Path],
+) -> dict[Path, list[str]]:
+    """Which bundled skills have a *stale* installed copy, per directory.
+
+    The scan half of the cross-directory refresh sweep: given the OTHER
+    known skills directories (the caller excludes its main target), report
+    each directory's stale bundled-skill copies. Agents can read each
+    other's directories (Cursor prefers ``~/.claude/skills`` over the
+    open-standard dir), so a stale copy elsewhere may be the one actually
+    in effect. Only ``stale`` qualifies — ``absent`` is a respected opt-out
+    (a sweep never first-installs), ``linked`` is dev-managed, ``current``
+    needs nothing. Directories with nothing stale are omitted.
+    """
+    out: dict[Path, list[str]] = {}
+    for parent in parent_dirs:
+        stale = sorted(
+            name
+            for name, info in skill_status(parent_dir=parent).items()
+            if info["state"] == "stale"
+        )
+        if stale:
+            out[parent] = stale
+    return out
+
+
+def refresh_stale_copies(
+    parent_dirs: Iterable[Path],
+    confirm: Callable[[Path, str], bool] | None = None,
+) -> dict[Path, list[str]]:
+    """Refresh the stale bundled-skill copies under ``parent_dirs``.
+
+    The action half of the cross-directory refresh sweep: every copy
+    :func:`stale_skill_copies` reports is re-copied from the bundle
+    (same lossless ``overwrite=True`` semantics as :func:`install_skill`;
+    files the user added next to SKILL.md are kept). ``confirm(parent_dir,
+    name)`` gates each copy individually; ``None`` refreshes everything
+    (for callers holding blanket consent — ``--force`` or ``--fix``). A
+    copy whose refresh fails (e.g. unwritable dir) is skipped best-effort:
+    it stays stale and resurfaces on the next sweep.
+
+    Returns ``{parent_dir: [refreshed skill names]}``, directories with
+    nothing refreshed omitted — ready for human output (terminal printing
+    may show these paths; the no-paths red line covers only the API
+    contract and the frontend).
+    """
+    out: dict[Path, list[str]] = {}
+    for parent, names in stale_skill_copies(parent_dirs).items():
+        done: list[str] = []
+        for name in names:
+            if confirm is not None and not confirm(parent, name):
+                continue
+            try:
+                install_skill(target=parent / name, overwrite=True, name=name)
+            except (SkillInstallError, OSError):
+                continue
+            done.append(name)
+        if done:
+            out[parent] = done
+    return out

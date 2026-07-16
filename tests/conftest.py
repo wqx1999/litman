@@ -211,13 +211,14 @@ def _isolate_skills_dir(
     home it would make results depend on the developer's box — a stale
     ``~/.claude/skills`` copy flips every clean-vault health-check test to
     exit 1 (passes in CI, fails locally). An absent dir reads as "no skills
-    installed", which is the neutral state every test starts from. Both
-    resolvers are patched: the Claude Code dir AND the open-standard
-    ``~/.agents/skills`` dir the gemini/cursor adapters probe — the per-agent
-    status chain would otherwise read the developer's real install. Tests
-    that need a populated skills dir pass ``parent_dir=`` explicitly or
-    re-patch a resolver themselves (a test-body patch wins — it is applied
-    after this fixture).
+    installed", which is the neutral state every test starts from. All three
+    resolvers are patched: the Claude Code dir, the open-standard
+    ``~/.agents/skills`` dir the cursor adapter probes, AND the Antigravity
+    CLI app-data dir the agy adapter probes — the per-agent status chain
+    would otherwise read the developer's real install. Tests that need a
+    populated skills dir pass ``parent_dir=`` explicitly or re-patch a
+    resolver themselves (a test-body patch wins — it is applied after this
+    fixture).
 
     The ``no_skills_isolation`` marker opts a test out entirely — that is for
     the HOME-only end-to-end tests that must drive the REAL resolver chain
@@ -232,4 +233,8 @@ def _isolate_skills_dir(
     monkeypatch.setattr(
         "litman.core.skill.standard_skills_parent_dir",
         lambda: tmp_path / "agents-skills-parent",
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: tmp_path / "antigravity-skills-parent",
     )

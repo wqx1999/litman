@@ -375,7 +375,7 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 }
 
 /** One agent's onboarding view: display name, whether litman supports it today
- * (Claude Code, Gemini CLI and Cursor — the rest are greyed roadmap
+ * (Claude Code, Cursor and Antigravity CLI — the rest are greyed roadmap
  * placeholders), whether its launch command is on PATH, its official install
  * page, and `skill_state` — the server's content-level verdict for THIS
  * agent's skill install ('absent' | 'stale' | 'current'; null for an
