@@ -8,7 +8,7 @@ needs_network: true          # 同 J1，含 clone 步
 invariants: [12, 14]
 routing_label: [lit-library, lit-reading]
 seed: seed-empty
-skip_reason: "needs_network — 同 J1（整链含 git clone）；沙箱无网，只能在用户机器试跑阶段做"
+skip_reason: "needs_network — 同 J1（整链含 git clone）。**“沙箱无网”是错的前提**：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功。真实跳过原因是**范围**：本轮只做尺子对账，不解封；与 E1/E2/H1/J1/J2 同列，留下一批。（同 J1：分步喂的多轮链与单轮冷启动方法学不合，解封时一并处理。）"
 precondition: |
   同 J1，但在第 4 步(绑项目)与第 5 步(clone)之间，harness 删掉 #4 的一个 code-clone 目录
   （留反向引用）制造 dangling。

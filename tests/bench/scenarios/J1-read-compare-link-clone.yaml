@@ -8,7 +8,7 @@ needs_network: true          # 第 5 步 clone PeptideBERT 的 repo
 invariants: [1, 7, 11, 12]
 routing_label: [lit-library, lit-reading]   # 多步跨两 skill，逐步判
 seed: seed-empty
-skip_reason: "needs_network — 第 5 步 git clone 在沙箱无网；整链含 clone，只能在用户机器试跑阶段做"
+skip_reason: "needs_network — 整链第 5 步含 git clone。**“沙箱无网”是错的前提**：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达。真实跳过原因是**范围**：本轮只做尺子对账，不解封；与 E1/E2/H1/J1-corrupt/J2 同列，留下一批。（另注：本卡 intent 是分步喂的多轮链，与 bench 的单轮冷启动方法学本就不合 —— 解封时要先解决这个，不只是网。）"
 precondition: |
   隔离库已 init，项目 PepCodec 已注册。#4/#5 的 PDF 待加。
 intent: |

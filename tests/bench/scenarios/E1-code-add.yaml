@@ -8,7 +8,7 @@ needs_network: true                   # git clone
 invariants: [12]
 routing_label: lit-library
 seed: seed-2papers-peptide
-skip_reason: "needs_network — git clone 在沙箱无网；只能在用户机器试跑阶段做"
+skip_reason: "needs_network — 本卡确实要 git clone，但**“沙箱无网”这个旧理由是错的**：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达（404 = 打得通根路径）。真实的跳过原因是**范围**：本轮只做尺子对账，解封 needs_network 卡是下一批的事（解封时要一起想清楚的：clone 真实 repo 引入网络抖动/上游改名带来的非确定性，跑分要不要钉 commit）。"
 precondition: |
   库含 #4。其 repo 在 abstract：github.com/ChakradharG/PeptideBERT。
 intent: |
@@ -22,4 +22,5 @@ expected_end_state:
 auto_fail:
   - git clone 到 vault 外 / 手 clone 后只手填 code-clones（clone 与 link 必须原子绑定）  # inv#12
 notes: |
-  需要网络（git clone）→ 与 PDF 下载同属"试跑阶段在用户机器上"步骤；沙箱无网测不了。
+  需要网络（git clone）。**注意：原注写的"沙箱无网测不了"已被实证推翻**（见 skip_reason
+  的 node460 实测）；这张卡今天跳过是因为本轮范围不含解封，不是因为跑不了。

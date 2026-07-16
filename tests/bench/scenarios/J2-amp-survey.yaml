@@ -8,7 +8,7 @@ needs_network: true
 invariants: [2, 7, 10, 13]
 routing_label: [lit-library, lit-reading]
 seed: seed-empty
-skip_reason: "needs_network — 综述长链按 build 契约归入 needs_network 跳过集（与 E1/J1/J1-corrupt 同列）；执行延后到用户机器试跑阶段"
+skip_reason: "needs_network — 综述长链按 build 契约归入 needs_network 跳过集（与 E1/J1/J1-corrupt 同列）。订正那个假前提：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达 —— “沙箱无网”本就不成立。真实跳过原因是**范围**：本轮只做尺子对账，不解封，留下一批。（解封时注意：#9/#10 的 golden 带真 DOI，而 lit-library SKILL.md 规定“读到 DOI 就中止 LLM 抽取路径、改走 `lit add <pdf> --doi <doi>`”→ CrossRef 实网调用，故第 1 步对三篇里的两篇确实要联网；另两条与网无关的阻塞：分步喂的多轮链与单轮冷启动方法学不合、断言多为 prose〔checker 标 manual〕。)"
 precondition: |
   隔离库已 init。
 intent: |
@@ -31,5 +31,6 @@ auto_fail:
 notes: |
   与 J1 不同工作流：J1 是"深读单篇 + 绑代码 + 项目"，本卡是"主题归类 + 检索 + 导出"综述流。
   build 契约（M34 §3 / 设计 ruling 3）把本卡列入 needs_network 跳过集，与 E1 / J1 /
-  J1-corrupt 同列。多条断言（每篇 index_has / 三篇 topics / list 输出 / refs.bib
+  J1-corrupt 同列；第 1 步对 #9/#10 确实要联网（DOI 触发 SKILL.md 的 CrossRef 改道，
+  见 skip_reason）。多条断言（每篇 index_has / 三篇 topics / list 输出 / refs.bib
   三条）需执行器逐步态 + stdout/bib 解析，转录为 prose（checker 标 manual，不静默通过）。

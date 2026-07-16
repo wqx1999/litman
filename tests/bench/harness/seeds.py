@@ -265,6 +265,46 @@ SEED_SPECS: dict[str, SeedSpec] = {
             "symmetric `related` edge (C4 retrieval / G2 ripple precondition)."
         ),
     ),
+    # --- 2 papers, #4 read AND revisited (both dates FIXED) -----------------
+    # C2's precondition: #4 is finished (read-date + status) and was re-opened
+    # once, on a known past date. `last-revisited` is the ONLY field that is
+    # show-only across EVERY exit — not just the lookup commands, but `lit cite`
+    # and `lit export` too (measured; the card's notes carry the table). That is
+    # what lets C2 assert `ran: show` honestly. A superset of seed-2papers-peptide
+    # (same three steps, one `modify` appended) rather than an edit of it:
+    # A3/D1/F1/G1/C4/G2 all start from that seed and must not inherit a
+    # read/revisited #4.
+    "seed-2papers-peptide-revisited": SeedSpec(
+        name="seed-2papers-peptide-revisited",
+        steps=(
+            _INIT,
+            _add(4),
+            _add(5),
+            _relate(4, 5),
+            # All three values FIXED, never "today": the card asserts the exact
+            # date back, so a re-run tomorrow must score identically (same
+            # reasoning as seed-1paper-diffdock-read's read-date).
+            # `read-date` is not optional dressing: `last-revisited` without it
+            # is a semantically impossible state (you cannot re-read what you
+            # never read — `lit revisit`, the sugar for this `--set`, requires a
+            # finished paper), and a seed must not build a vault the product
+            # itself would never produce.
+            _modify(
+                4,
+                set_=(
+                    ("read-date", "2026-05-01"),
+                    ("status", "deep-read"),
+                    ("last-revisited", "2026-06-15"),
+                ),
+            ),
+        ),
+        description=(
+            "#4 PeptideBERT + #5 Multi-Peptide (related edge, as "
+            "seed-2papers-peptide), plus #4 read (read-date=2026-05-01, "
+            "status=deep-read) and revisited on 2026-06-15 — C2's show-only "
+            "precondition."
+        ),
+    ),
     # --- 5 papers + tagged + a project --------------------------------------
     # Governance / export / list-filter cards (C1, D2, F1-with-content). Two
     # papers carry topic "diffusion" so D2's `taxonomy rm diffusion` has a real

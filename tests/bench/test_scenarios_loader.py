@@ -167,6 +167,88 @@ def test_no_card_stages_an_already_seeded_paper() -> None:
         )
 
 
+def test_every_card_names_a_seed_that_exists() -> None:
+    """A card's ``seed`` is resolved at RUN time, so a typo here is a live-run
+    crash (or worse, a silently wrong precondition) rather than a red test. The
+    corpus and the seed set are edited in different files by different changes —
+    this is the only thing tying them together."""
+    from harness.seeds import SEED_SPECS
+
+    for c in _all_cards():
+        if c.seed is None:
+            continue
+        assert c.seed in SEED_SPECS, (
+            f"{c.id} names seed {c.seed!r}, which is not in SEED_SPECS "
+            f"(known: {sorted(SEED_SPECS)})"
+        )
+
+
+def test_c2_asks_a_question_only_show_can_answer() -> None:
+    """C2's whole point, pinned as a card-level property.
+
+    This card scores `ran: show`, which is honest ONLY while the question cannot
+    be answered any other way. Its original question (author + year) stopped
+    meeting that bar when ADR-022 put `authors` into the INDEX projection that
+    `lit list --format json` re-uses, and nobody noticed until three agents
+    answered correctly and all scored 0. The exit surface is enforced against the
+    live CLI in test_seeds.py; this test enforces that the CARD still rests on it.
+    """
+    from litman.core.views import INDEX_PAPER_FIELDS
+
+    card = {c.id: c for c in _all_cards()}["C2-show"]
+    assert card.seed == "seed-2papers-peptide-revisited"
+    end = " ".join(str(a) for a in card.expected_end_state)
+    assert "ran: show" in end
+    # The value the seed pins, not "today" — a re-run tomorrow scores the same.
+    assert "2026-06-15" in end
+    # The regression guard with teeth, read off the product's own projection
+    # constant: nothing this card asks for may be a field `lit list` hands over
+    # for free. `lit list --format json` re-uses INDEX_PAPER_FIELDS verbatim
+    # (views.project_paper), so this IS the list schema, not a copy of it.
+    assert "last-revisited" not in INDEX_PAPER_FIELDS
+
+
+def test_c2_proves_retrieval_through_stdout_not_through_the_prose() -> None:
+    """The assertion shape is load-bearing, so it is pinned rather than left to
+    whoever edits the card next.
+
+    `stdout_contains` greps what the agent's TOOLS returned and never reads
+    `final_text`, so no rendering choice by the model can intervene. That is the
+    whole point, and it is the property `answer_contains` lacks: the latter greps
+    the prose through `_norm` (whitespace + casefold, NO date normalization), which
+    measured a 33% false-negative rate on exactly this value — n=3 -> [1,0,1], and
+    the 0 had PERFECT tool choice and answered "2026 年 6 月 15 日".
+
+    Not claimed here: that `stdout_contains` proves the value came from `lit`. Its
+    fallback joins every tool_result, so a `cat` of metadata.yaml satisfies it
+    (measured, r2) — which is why the card pairs it with `ran: show` and why that
+    pairing is pinned by its own test above. See the verb's docstring.
+
+    So the card must NOT drift back to answer_contains, and must not grow a weak
+    `answer_contains: ~2026` either — `read-date` (2026-05-01) sits in the same
+    file, so that would pass an agent reporting the wrong field.
+    """
+    card = {c.id: c for c in _all_cards()}["C2-show"]
+    end = [str(a) for a in card.expected_end_state]
+    assert any(a.startswith("stdout_contains:") for a in end)
+    assert not any(a.startswith("answer_contains:") for a in end), (
+        "C2 asserts retrieval through tool output, never the prose (see its notes); "
+        "answer_contains on a date measured [1,0,1] with the 0 being a correct "
+        "answer rendered as 2026 年 6 月 15 日"
+    )
+
+
+def test_c2_guards_the_value_it_reads_against_a_stray_revisit_stamp() -> None:
+    """The intent says 回看, which is `lit revisit`'s own trigger vocabulary in
+    lit-reading. An agent that stamps turns last-revisited into today and the card
+    fails with no signal about why — this guard makes the failure name its cause
+    (B2-revisit sets the precedent with its read-date-unchanged assertion).
+    """
+    card = {c.id: c for c in _all_cards()}["C2-show"]
+    end = " ".join(str(a) for a in card.expected_end_state)
+    assert "yaml_eq" in end and "last-revisited == 2026-06-15" in end
+
+
 def test_load_card_rejects_missing_id(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text("title: no id here\nintent: x\n", encoding="utf-8")

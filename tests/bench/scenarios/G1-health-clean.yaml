@@ -13,6 +13,28 @@ intent: |
   "检查一下我的库现在干不干净。"
 expected_end_state:
   - "ran: health-check"
-  - "health: clean"                      # 退出 0，零 finding
+  - "health: clean"                      # 零 error（**不是**"退出 0"，见 notes）
 auto_fail:
-  - health-check 报 finding（正常操作就把库搞脏 = litman bug，不是 agent 的错）
+  - health-check 报 error（正常操作就把库搞脏 = litman bug，不是 agent 的错）
+notes: |
+  **`health: clean` = 零 error，不等于 `lit health-check` 退出 0。** 断言那行原来的注释
+  写的是"退出 0，零 finding"——那是 CLI 的语义，不是这条 DSL 在做的事：checker 的
+  `_check_health_clean()` 只数 `severity == "error"`，而 `lit health-check` 是
+  `any(severity != "info")` 才退 1，**error 和 warning 都 gate**。所以只报 warning 的库
+  在这条断言下算干净、在 CLI 下算不干净。两者对齐是另一场仗（22 张卡踩这条缝），
+  本轮只订正文案不动行为，见 ruler-audit spec §6.1。
+
+  **这条缝此刻就在承重**（实测）：包括本卡在内的 22 张卡当下都正踩着两条
+  `skill_drift` warning，绿全靠那个 error-only 过滤。`check_skill_drift` 是
+  **machine 级**检查，走的是**跑预言机那个进程**（= harness 进程）的 `Path.home()`，
+  任何 per-agent 的隔离都够不到它 —— 想对齐这条 verb，得先隔离 harness 自己的 home。
+
+  **claude 的 HOME 拉平改善的是 agent 看见的东西，不是本卡的判分。** claude 的 adapter
+  早先不重定向 HOME，agent 跑的 `lit health-check` **子进程**会走到用户真实的
+  `~/.claude/skills`，报两条 `skill_drift` warning + 退出 1 —— 说的是维护者机器上那份
+  装旧了的 skill 副本，与被测库无关（cursor 的 skill 落 cwd、agy 的 HOME 本就隔离，
+  两家都不触发）。于是 agent 被问"库干不干净"时被告知"不干净"，而库其实是干净的；
+  拉平后 agent 看见退出 0。**但本卡的判分从未受此影响**：预言机
+  （`checker._health_issues`）在 harness 进程里直接 `run_all_checks(vault)`，从不读
+  agent 那次 `lit health-check`，子进程的 HOME 改不到它。别把拉平理解成"顺带修好了 G1"。
+

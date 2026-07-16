@@ -202,11 +202,14 @@ def test_answer_contains_verb_on_stubbed_run(tmp_path: Path) -> None:
 
 
 def test_executor_env_default_anthropic_mode(tmp_path: Path) -> None:
-    """Default (no base_url) sets the three isolation vars, no proxy vars."""
-    env = executor_env(tmp_path / "vault", tmp_path / "reg", tmp_path / "cfg")
+    """Default (no base_url) sets the four isolation vars, no proxy vars."""
+    env = executor_env(
+        tmp_path / "vault", tmp_path / "reg", tmp_path / "cfg", tmp_path / "home"
+    )
     assert env["LIT_LIBRARY"] == str(tmp_path / "vault")
     assert env["LITMAN_REGISTRY_DIR"] == str(tmp_path / "reg")
     assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "cfg")
+    assert env["HOME"] == str(tmp_path / "home")
     # External-mode vars are absent in the default mode.
     assert "ANTHROPIC_BASE_URL" not in env
     assert "ANTHROPIC_AUTH_TOKEN" not in env
@@ -218,6 +221,7 @@ def test_executor_env_external_mode_sets_proxy_vars(tmp_path: Path) -> None:
         tmp_path / "vault",
         tmp_path / "reg",
         tmp_path / "cfg",
+        tmp_path / "home",
         base_url="https://proxy.example/v1",
         auth_token="tok-xyz",
     )
@@ -225,12 +229,13 @@ def test_executor_env_external_mode_sets_proxy_vars(tmp_path: Path) -> None:
     assert env["ANTHROPIC_AUTH_TOKEN"] == "tok-xyz"
     # The default isolation vars are unchanged.
     assert env["LIT_LIBRARY"] == str(tmp_path / "vault")
+    assert env["HOME"] == str(tmp_path / "home")
 
 
 def test_executor_env_external_mode_without_token(tmp_path: Path) -> None:
     """base_url with no token sets the URL but no token var (best-effort slot)."""
     env = executor_env(
-        tmp_path / "vault", tmp_path / "reg", tmp_path / "cfg",
+        tmp_path / "vault", tmp_path / "reg", tmp_path / "cfg", tmp_path / "home",
         base_url="https://proxy.example/v1",
     )
     assert env["ANTHROPIC_BASE_URL"] == "https://proxy.example/v1"

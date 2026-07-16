@@ -444,6 +444,27 @@ def _check_pdf_eq(vault: Path, arg: str, *, golden_dir: Path) -> AssertResult:
 
 
 def _check_health_clean(vault: Path) -> AssertResult:
+    """``health: clean`` — zero **error**-severity findings in the run vault.
+
+    Deliberately NOT the same bar as the CLI's exit code, and you need the gap
+    before reading any card that asserts this. ``lit health-check`` exits 1 when
+    ``any(i.severity != "info")`` — **errors AND warnings** gate it — so a vault
+    carrying only warnings is ``clean`` here and "not clean" there. 22 cards assert
+    this verb (the ruler-audit spec §6.1 carries the decision to leave the gap).
+
+    That gap is load-bearing today, which is the part to read before "aligning"
+    anything: **all 22 cards are sitting on 2 ``skill_drift`` warnings right now**,
+    and the error-only filter is the only reason they are green.
+    ``check_skill_drift`` is a MACHINE-level check — its ``vault`` / ``papers``
+    args are unused, it reports HOST state — and it resolves the installed skills
+    dir through **this process's** ``Path.home()``. This oracle runs in the HARNESS
+    process, so the claude adapter's HOME redirect (which only ever lands in the
+    agent's child env) does not touch it, and no per-agent isolation can.
+
+    So making the verb match the CLI would turn 22 cards red over the developer's
+    own installed skill copies, for a reason that has nothing to do with any
+    vault. Isolating the HARNESS's own home is the prerequisite for that work.
+    """
     issues = _health_issues(vault)
     errors = [i for i in issues if i.severity == "error"]
     ok = len(errors) == 0
@@ -597,7 +618,7 @@ def _check_count(vault: Path, arg: str) -> AssertResult:
 
 
 def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> AssertResult:
-    """``stdout_contains: ~substr`` — grep the agent's captured lit-call stdout.
+    """``stdout_contains: ~substr`` — grep the output the agent's TOOLS returned.
 
     Greps ``record["stdout"]`` of every jsonl record first (the executor widens
     its records to carry each lit call's captured stdout, paired by
@@ -610,6 +631,21 @@ def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> Asse
     ``tool_use_id`` (best-effort pairing), so the blob recovers the real output
     that lives in an unpaired result block. This can only make a TRUE match more
     findable; the blob holds only real agent output, never a fabricated pass.
+
+    **That fallback is NOT lit-specific — do not write a card as if it were.**
+    ``stdout_blob`` joins EVERY ``tool_result``: a ``cat``, a ``Read``, a ``grep``,
+    not only the lit calls the paragraph above describes. So this verb answers
+    "did this text reach the agent through some tool?", never "did the agent get it
+    out of litman". Measured (2026-07-17, C2-show r2): an agent that ran no ``lit``
+    at all and read ``metadata.yaml`` directly PASSED ``stdout_contains``; only its
+    card's companion ``ran:`` assertion failed it. A card that means "the value came
+    from litman" must pair this with ``ran:`` — this verb alone cannot carry it.
+
+    What it DOES guarantee, and why C2-show rests on it: it never reads
+    ``final_text``, so no rendering choice the model makes can affect the verdict.
+    That is exactly the property ``answer_contains`` lacks — measured on the same
+    card, a correct answer written "2026 年 6 月 15 日" scored 0 against an ISO
+    substring, with perfect tool choice.
     """
     sub = arg.strip().lstrip("~").strip()
     blob = "\n".join(str(r.get("stdout", "")) for r in jsonl)

@@ -1,18 +1,54 @@
-"""Claude Code adapter — the incumbent path, held byte-identical on purpose.
+"""Claude Code adapter — driving ``claude -p`` in an isolated HOME + config dir.
 
-Everything in this module is the pre-multi-agent executor's claude code, moved
-verbatim from ``harness.executor``. The argv, the child env, the isolation seam
-(``CLAUDE_CONFIG_DIR`` + a copied ``.credentials.json``) and the stream-json
-parsing are unchanged, because a live TRR/RA baseline already exists for this
-path: change how claude's evidence is gathered and every historical number
-silently stops being comparable to the new ones. New capability goes to the other
-adapters; this one only got a ``model_served`` read (purely additive — it touches
-no field the baseline was computed from).
+Everything here except the isolation seam is the pre-multi-agent executor's
+claude code, moved verbatim from ``harness.executor``: the argv, the stream-json
+parsing and the evidence recovery are unchanged on purpose, because how a run's
+evidence is GATHERED must not drift silently under a comparison.
 
-Isolation: ``CLAUDE_CONFIG_DIR`` re-homes both the skills and the config, so
-:func:`seed_auth` copies the OAuth credential back in — and ONLY the credential,
-never ``settings.json``, so the executor's settings stay clean and reproducible.
-The permission mode is set on the CLI, not in a settings file.
+Isolation, and why it changed. ``CLAUDE_CONFIG_DIR`` re-homes the skills and the
+config, so :func:`seed_auth` copies the OAuth credential back in — and ONLY the
+credential, never ``settings.json``, so the executor's settings stay clean and
+reproducible. The permission mode is set on the CLI, not in a settings file.
+``HOME`` is redirected TOO, which cursor and agy always did and claude did not.
+What that buys, measured rather than assumed (2026-07-16):
+
+* ``lit health-check`` run BY THE AGENT no longer walks the user's real
+  ``~/.claude/skills``. It used to: the check resolves installed skills through
+  ``Path.home()`` (``litman.core.skill``), the ``lit`` subprocess inherits this
+  env, and a real home with a stale installed copy yields two ``skill_drift``
+  warnings + exit 1. So an agent asked "is my library clean?" was told "no" — by
+  findings describing the MAINTAINER's laptop, about a vault that was in fact
+  clean. Redirected, those skills read as absent (ADR-015 opt-out) and the agent
+  sees exit 0. What this fixes is the agent's ANSWER, and only that.
+* The user's ``$HOME``-relative state is out of reach generally — the same
+  property cursor and agy already had. (``$XDG_CONFIG_HOME`` is popped too, and
+  it is the only override of this kind we set; the other ``XDG_*`` dirs are not
+  set in this environment and are not handled — same footing as cursor.)
+
+What it does NOT fix, measured after the change, because the obvious reading is
+wrong: **any card's verdict**. The ``health: clean`` oracle
+(``harness.checker._health_issues``) calls ``run_all_checks`` in the HARNESS
+process against the run-vault path. It never reads the agent's ``lit
+health-check``, and no child env var reaches it — so it still returns those same
+two ``skill_drift`` warnings today. Every ``health: clean`` card is green only
+because the verb counts ``severity == "error"``. Nothing here cleaned a card up.
+
+What it also does NOT buy: the ``skills`` list on
+claude's ``system/init`` is **unchanged by the redirect** — 18 before, the same 18
+after, name for name. Those 18 are 16 skills BUILT INTO the claude CLI plus the 2
+repo-source litman ones; the user's own ``~/.claude/skills`` never appeared in it,
+because ``CLAUDE_CONFIG_DIR`` was already re-homing the skills dir correctly. So
+"claude sees 18 candidates where cursor and agy see 2" is a product difference
+between the CLIs (claude ships built-ins; the others do not), NOT an isolation
+leak, and no env var here will close it. Do not read the count as a seam.
+
+This does move claude off the exact env the 2026-06-04 haiku baseline ran under —
+accepted deliberately (see the ruler-audit spec): that comparability was already
+gone, since both the product and the scenario cards changed underneath the
+baseline, and a half-closed seam only hides which of the two moved.
+``XDG_CONFIG_HOME`` is dropped alongside ``HOME`` for the reason cursor
+documents: a set ``XDG_CONFIG_HOME`` points back at the real ``~/.config`` and
+quietly re-opens the seam that ``HOME`` just closed.
 
 Evidence: the ``--output-format stream-json --verbose`` event stream. ``Skill``
 tool_use blocks give the routing label; ``Bash`` commands are split on shell
@@ -55,7 +91,13 @@ PERMISSION_FLAGS = ("--permission-mode", "bypassPermissions")
 
 
 def _real_config_dir() -> Path:
-    """The user's real Claude Code config dir (where auth credentials live)."""
+    """The user's real Claude Code config dir (where auth credentials live).
+
+    Reads the HARNESS process's env and ``Path.home()``, both of which are the
+    real ones: the redirected ``HOME`` this adapter builds lives only in the
+    CHILD's env dict, so it cannot reach back and hide the credential we are
+    about to copy out of here.
+    """
     env = os.environ.get("CLAUDE_CONFIG_DIR")
     if env:
         return Path(env)
@@ -81,30 +123,46 @@ def executor_env(
     run_vault: Path,
     registry_dir: Path,
     config_dir: Path,
+    home: Path,
     *,
     base_url: str | None = None,
     auth_token: str | None = None,
 ) -> dict[str, str]:
     """Child env for the ``claude`` executor process.
 
-    Starts from ``os.environ`` (PATH / conda / the user's API auth survive — the
-    executor must authenticate as a normal claude session), then:
+    Starts from ``os.environ`` (PATH / conda survive — note PATH is what resolves
+    the agent's bare ``lit``, and it is inherited, so redirecting ``HOME`` below
+    does not disturb it), then:
 
     * ``LIT_LIBRARY=<run_vault>`` — the agent's bare ``lit`` targets the /tmp copy;
     * ``LITMAN_REGISTRY_DIR=<registry_dir>`` — no real registry;
-    * ``CLAUDE_CONFIG_DIR=<config_dir>`` — isolated skills + claude config.
+    * ``CLAUDE_CONFIG_DIR=<config_dir>`` — isolated skills + claude config;
+    * ``HOME=<home>`` — a per-run empty home, so nothing installed in the user's
+      real one (skills, and whatever else claude keeps beside its config dir) is
+      visible to the run. ``CLAUDE_CONFIG_DIR`` does NOT subsume this: it re-homes
+      the config dir only, and everything claude reads from ``$HOME`` directly
+      stayed reachable until this line existed. See the module docstring.
+    * ``XDG_CONFIG_HOME`` — **dropped**, never redirected: if it is set it points
+      at the real ``~/.config`` by absolute path, which survives a ``HOME`` change
+      and re-opens the seam (cursor hit exactly this).
 
-    Two auth modes. When ``base_url`` is ``None`` (default Anthropic mode) the env
-    is byte-identical to before — OAuth via the copied ``.credentials.json``. When
-    ``base_url`` is set (external mode: ``claude`` CLI pointed at an
-    Anthropic-compatible proxy such as LiteLLM / claude-code-router) we also export
-    ``ANTHROPIC_BASE_URL`` + the auth token so the proxy authenticates; OAuth is
-    skipped in this mode (see :meth:`ClaudeAdapter.prepare`).
+    ``home`` is required rather than defaulted precisely because it is a seam: an
+    optional one would let a new call site inherit the real ``HOME`` by saying
+    nothing, which is the bug this parameter exists to make impossible.
+
+    Two auth modes. When ``base_url`` is ``None`` (default Anthropic mode) auth is
+    OAuth via the copied ``.credentials.json``. When ``base_url`` is set (external
+    mode: ``claude`` CLI pointed at an Anthropic-compatible proxy such as LiteLLM
+    / claude-code-router) we also export ``ANTHROPIC_BASE_URL`` + the auth token so
+    the proxy authenticates; OAuth is skipped in this mode (see
+    :meth:`ClaudeAdapter.prepare`).
     """
     env = os.environ.copy()
     env["LIT_LIBRARY"] = str(run_vault)
     env["LITMAN_REGISTRY_DIR"] = str(registry_dir)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    env["HOME"] = str(home)
+    env.pop("XDG_CONFIG_HOME", None)
     if base_url is not None:
         # env var names confirmed at external-model integration time per M34 §3.6.B
         env["ANTHROPIC_BASE_URL"] = str(base_url)
@@ -326,8 +384,15 @@ class ClaudeAdapter:
         registry_dir.mkdir(parents=True, exist_ok=True)
         config_dir = base / "claude-config"
         config_dir.mkdir(parents=True, exist_ok=True)
+        # A brand-new empty HOME per run, same shape as cursor's and agy's. It is
+        # seeded with NOTHING: claude's credential goes to CLAUDE_CONFIG_DIR (via
+        # seed_auth just below), not here, so an empty dir is the whole story.
+        home = base / "home"
+        home.mkdir(parents=True, exist_ok=True)
         # External mode authenticates via the proxy (ANTHROPIC_BASE_URL + token);
         # only the default Anthropic mode needs the OAuth credentials copied in.
+        # seed_auth reads the REAL home (harness process) and writes into the
+        # isolated config dir — the redirect above lives in the child's env only.
         if base_url is None:
             seed_auth(config_dir)
         install_repo_skills(self.skills_dir(base))
@@ -335,6 +400,7 @@ class ClaudeAdapter:
             run_vault,
             registry_dir,
             config_dir,
+            home,
             base_url=base_url,
             auth_token=auth_token,
         )
