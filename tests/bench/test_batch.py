@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from harness.batch import (
+    BatchAbortedError,
     BenchReport,
     CardScore,
     build_live_routing_run_fn,
@@ -1217,3 +1218,458 @@ def test_family_is_not_invented_when_no_run_observed_a_model() -> None:
     )
     assert agy.model_served is None
     assert agy.model_family == "claude-sonnet-4.6"
+
+
+# ---------------------------------------------------------------------------
+# Errors are errors, not zeros (the quota running out is not a wrong answer)
+# ---------------------------------------------------------------------------
+
+
+def _dead_run(*, exit_code: int = 1, timed_out: bool = False, model_served=None) -> dict:
+    """A run handle shaped exactly like a spawn that died: empty everything."""
+    return {
+        "vault": Path("/tmp/nope"),
+        "jsonl": [],
+        "run": ExecutorResult(
+            exit_code=exit_code, timed_out=timed_out, model_served=model_served
+        ),
+    }
+
+
+def _live_run(*, model_served=None, resolved_marker: str = "") -> dict:
+    """A run handle shaped like a spawn that completed normally."""
+    return {
+        "vault": Path("/tmp/nope"),
+        "jsonl": [],
+        "run": ExecutorResult(
+            exit_code=0, timed_out=False, model_served=model_served,
+            final_text=resolved_marker,
+        ),
+    }
+
+
+def test_errored_card_is_not_scored_zero() -> None:
+    """AC1. A dead spawn scores 0 through the checker (empty stdout satisfies no
+    assertion) — that 0 is the INSTRUMENT's, and reporting it as the model's is
+    the bug this exists to kill. The card must carry an error and vanish from the
+    TRR denominator instead."""
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1)
+
+    report = run_batch(
+        [_exec_card()], agent="claude", model="m", rounds=3,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+    )
+    (card,) = report.cards
+    assert card.error is not None
+    assert card.error["reason"] == "exit"
+    assert card.error["exit_code"] == 1
+    assert report.coverage["errored_cards"] == ["X"]
+    assert report.coverage["trr_denominator"] == 0  # NOT 1-with-a-zero-in-it
+    assert report_to_dict(report)["cards"][0]["error"] == card.error
+
+
+def test_timed_out_card_is_errored_too() -> None:
+    """AC1, the other death: the executor kills a hung spawn and flags timed_out
+    with exit_code -1. Both facts were already recorded and neither was read."""
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=-1, timed_out=True)
+
+    report = run_batch(
+        [_exec_card()], agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+    )
+    (card,) = report.cards
+    assert card.error["reason"] == "timeout"
+    assert card.error["timed_out"] is True
+    assert report.coverage["trr_denominator"] == 0
+
+
+def test_errored_card_stops_burning_rounds() -> None:
+    """D5: a card that died in round 0 does not get rounds 1 and 2 spent on it —
+    rounds are the unit of variance, so a 1-of-3 card is not comparable to a
+    3-of-3 one and there is nothing to salvage by continuing."""
+    calls: list[int] = []
+
+    def fake_run(card, *, round, model, **_):
+        calls.append(round)
+        return _dead_run(exit_code=1)
+
+    run_batch(
+        [_exec_card()], agent="claude", model="m", rounds=3,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+    )
+    assert calls == [0]  # not [0, 1, 2]
+
+
+def test_trr_denominator_excludes_errored_cards() -> None:
+    """AC2. Ten cards: five perfect, five dead. TRR is 1.0 over n=5.
+
+    Before this fix the answer here was 0.5 over n=10 — five real results and five
+    dead spawns averaged into one number, published under the model's name, with
+    nothing anywhere saying half the batch never ran. That number is the entire
+    reason this code exists."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(10)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _live_run() if int(card["id"][1:]) < 5 else _dead_run(exit_code=1)
+
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run,
+        score_fn=lambda card, **kw: (1, []),
+        max_consecutive_errors=0,  # the breaker is a separate concern; test TRR here
+    )
+    assert report.trr_mean == 1.0
+    assert report.coverage["trr_denominator"] == 5
+    assert report.coverage["errored_cards"] == ["C5", "C6", "C7", "C8", "C9"]
+
+
+def test_fake_int_handle_is_never_an_error() -> None:
+    """AC3. --dry-run's _fake_run_card returns a bare int. _error_of must read
+    "no run handle" as "no error", or the dry run — and every fake in this file —
+    would report the whole corpus as errored."""
+    from harness.batch import _error_of
+
+    assert _error_of(0) is None
+    assert _error_of(1) is None
+    assert _error_of((1, [])) is None
+    assert _error_of({"vault": "/tmp/v", "jsonl": []}) is None  # no "run" key
+    assert _error_of({"vault": "/tmp/v", "run": None}) is None  # run key, None value
+    assert _error_of(_live_run()) is None
+
+
+# ---------------------------------------------------------------------------
+# The other death: the agent does not stop, it serves a cheaper model
+# ---------------------------------------------------------------------------
+
+
+def test_model_change_mid_run_aborts() -> None:
+    """AC3b. The dangerous failure: nothing breaks, the cards keep scoring, and
+    card 4 onward is measured with a different ruler. Harvesting the model once
+    (the old behavior) reports the FIRST model with total confidence and never
+    looks again."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+    seen: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        seen.append(card["id"])
+        served = (
+            "claude-haiku-4-5-20251001" if int(card["id"][1:]) < 3 else "claude-haiku-3"
+        )
+        return _live_run(model_served=served)
+
+    with pytest.raises(BatchAbortedError) as ei:
+        run_batch(
+            cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        )
+    msg = str(ei.value)
+    assert "claude-haiku-4-5-20251001" in msg  # the baseline
+    assert "claude-haiku-3" in msg             # what it changed to
+    assert "C3" in msg                         # where it changed
+    assert ei.value.detail["reason"] == "model_changed"
+    # It STOPPED. C4 and C5 were never spawned — that is the requirement; the
+    # exception type is only how it is announced.
+    assert seen == ["C0", "C1", "C2", "C3"]
+
+
+def test_model_going_silent_mid_run_aborts() -> None:
+    """An agent that reported a model for three cards and then reports none is not
+    a card to score. Silence is not permission."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(4)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        served = "claude-haiku-4-5-20251001" if int(card["id"][1:]) < 2 else None
+        return _live_run(model_served=served)
+
+    with pytest.raises(BatchAbortedError):
+        run_batch(
+            cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        )
+
+
+def test_dead_spawn_is_errored_not_reported_as_a_model_change() -> None:
+    """AC3c. THE central confusion this task exists to end.
+
+    A dead spawn emits no init event, so model_served is None — it looks exactly
+    like "the model changed from X to None". Check the error FIRST and it is a
+    spent quota (errored card, honest). Check the model first and the report says
+    the ruler changed, sending the reader to debug the wrong thing entirely.
+    Reversing the two checks in run_batch turns this test red."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(3)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        if card["id"] == "C0":
+            return _live_run(model_served="claude-haiku-4-5-20251001")
+        # Out of quota: the process dies. No init event ⇒ no model reported.
+        return _dead_run(exit_code=1, model_served=None)
+
+    report = run_batch(
+        cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        max_consecutive_errors=0,
+    )
+    assert report.coverage["errored_cards"] == ["C1", "C2"]
+    assert report.model_served == "claude-haiku-4-5-20251001"
+    assert report.trr_mean == 1.0
+    assert report.coverage["trr_denominator"] == 1
+
+
+def test_agy_model_check_is_a_noop() -> None:
+    """AC3d. agy reports no model, ever. `None == None` every round proves
+    nothing, so the check must not run at all for it — reading those Nones as a
+    signal would either alarm on every card or, worse, look like verification."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(5)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _live_run(model_served=None)
+
+    report = run_batch(
+        cards, agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.coverage["trr_denominator"] == 5  # ran to the end, no alarm
+    assert report.model_served is None
+
+
+# ---------------------------------------------------------------------------
+# The breaker: N in a row means the quota is gone, not that the model got worse
+# ---------------------------------------------------------------------------
+
+
+def test_three_consecutive_errors_abort_the_batch() -> None:
+    """AC4. The requirement is that it STOPS — assert the call list, not the
+    exception type. An abort that still spawns card 4 has not saved anything."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+    seen: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        seen.append(card["id"])
+        return _dead_run(exit_code=1)
+
+    with pytest.raises(BatchAbortedError) as ei:
+        run_batch(
+            cards, agent="claude", model="m", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+            max_consecutive_errors=3,
+        )
+    assert seen == ["C0", "C1", "C2"]  # C3+ never spawned
+    assert ei.value.detail["reason"] == "consecutive_errors"
+    assert ei.value.detail["streak"] == ["C0", "C1", "C2"]
+    assert "C0" in str(ei.value)
+
+
+def test_an_abort_counts_only_the_cards_it_really_measured() -> None:
+    """An abort message's whole job is to tell the reader what their money bought.
+
+    ``len(card_scores)`` would count cards nothing was ever spawned for (skipped)
+    and cards that died (errored), so the model-change branch would print "the 3
+    card(s) already measured are valid" when only one of them was. It is prose, not
+    a metric in report.json, which is exactly why it is easy to leave wrong: no
+    assertion elsewhere would ever notice.
+    """
+    import pytest
+
+    cards = [
+        {"id": "C0", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+        {"id": "S1", "layer": "f", "skip_reason": "needs a pty"},
+        {"id": "E1", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+        {"id": "C2", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        if card["id"] == "E1":
+            return _dead_run(exit_code=1)
+        model_now = "MODEL-Y" if card["id"] == "C2" else "MODEL-X"
+        return _live_run(model_served=model_now)
+
+    with pytest.raises(BatchAbortedError) as ei:
+        run_batch(
+            cards, agent="claude", model="m", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        )
+
+    assert ei.value.detail["reason"] == "model_changed"
+    # C0 only: S1 was never spawned, E1 died, C2 is the card that flipped.
+    assert ei.value.completed == 1
+    assert "the 1 card(s) already measured are valid" in str(ei.value)
+
+
+def test_intermittent_errors_do_not_abort() -> None:
+    """AC4 second half. Flaky-error-then-success is the noise a bench averages
+    over; a CUMULATIVE counter would abort every long run eventually."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1) if int(card["id"][1:]) % 2 == 0 else _live_run()
+
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        max_consecutive_errors=3,
+    )
+    assert report.coverage["errored_cards"] == ["C0", "C2", "C4"]
+    assert report.coverage["trr_denominator"] == 3
+    assert report.trr_mean == 1.0
+
+
+def test_breaker_can_be_disabled() -> None:
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(4)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1)
+
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+        max_consecutive_errors=0,
+    )
+    assert len(report.coverage["errored_cards"]) == 4
+
+
+def test_errored_cards_are_journaled_before_the_breaker_fires() -> None:
+    """The cards that triggered the abort must reach on_card_done: a resume
+    retries exactly the cards whose last journal record is an error (D7), so an
+    abort that dropped them would make the failures un-retryable."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+    done: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1)
+
+    with pytest.raises(BatchAbortedError):
+        run_batch(
+            cards, agent="claude", model="m", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+            on_card_done=lambda s: done.append(s.card_id),
+        )
+    assert done == ["C0", "C1", "C2"]
+
+
+def test_seed_canary_still_fires_on_an_errored_round(tmp_path: Path) -> None:
+    """A spawn can write through to the shared seed and THEN die. The corpse is no
+    alibi, so the canary must run for errored rounds too — and it must WIN over
+    the new error path: a poisoned corpus reported as a billing problem is the
+    louder alarm silenced by the quieter one.
+
+    End-to-end through the real build_live_run_card_fn for the reason the sibling
+    test above gives: what is under test is WHERE the alarm is wired.
+    """
+    import pytest
+
+    from harness import seeds
+
+    seed_vault, work_root = _stamped_seed(tmp_path)
+
+    def poisoning_dead_run(
+        card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token
+    ):
+        (seed_vault / "papers" / "leaked.txt").write_text("poison", encoding="utf-8")
+        return ExecutorResult(exit_code=1)  # ... and then the spawn dies
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        run_card_impl=poisoning_dead_run,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    with pytest.raises(seeds.SeedLeakError, match="MUTATED"):
+        run_batch(
+            [{"id": "D4-unlink", "seed": "seed-5papers-tagged", "expected_end_state": []}],
+            model="m",
+            rounds=1,
+            run_card_fn=run_fn,
+            score_fn=lambda card, **kw: (0, []),
+        )
+
+
+# ---------------------------------------------------------------------------
+# prior_scores: the invariant lives where it is enforced
+# ---------------------------------------------------------------------------
+
+
+def test_an_errored_prior_score_is_refused() -> None:
+    """Adopting an errored prior would put one card in errored_cards AND in the
+    TRR denominator — "did not run" and "scored 0.0" in the same report, from the
+    code written to make that impossible. The only caller filters correctly today;
+    that is a fact about a module one import away, which is how the seed leak
+    survived. So the loop checks."""
+    import pytest
+
+    prior = CardScore("X", "auto-scored", [], 0.0, error={"reason": "exit"})
+    with pytest.raises(ValueError, match="error"):
+        run_batch(
+            [_exec_card()], agent="claude", model="m", rounds=1,
+            run_card_fn=lambda card, **kw: 1, prior_scores=[prior],
+        )
+
+
+def test_a_routing_prior_score_is_refused() -> None:
+    """A routing card's RA trail is not in a CardScore, so restoring one would
+    shrink the RA denominator in silence."""
+    import pytest
+
+    prior = CardScore("I-route-batch-1", "routing", [], 0.0)
+    with pytest.raises(ValueError, match="routing"):
+        run_batch(
+            [_exec_card()], agent="claude", model="m", rounds=1,
+            run_card_fn=lambda card, **kw: 1, prior_scores=[prior],
+        )
+
+
+def test_a_good_prior_score_is_adopted_without_rerunning_it() -> None:
+    ran: list[str] = []
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(2)
+    ]
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=lambda card, **kw: ran.append(card["id"]) or 1,
+        score_fn=lambda card, **kw: (1, []),
+        prior_scores=[CardScore("C0", "auto-scored", [1], 1.0)],
+    )
+    assert ran == ["C1"]  # C0 was not re-run
+    assert report.coverage["trr_denominator"] == 2  # but it still counts
+    assert report.trr_mean == 1.0

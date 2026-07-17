@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).resolve().parent
@@ -63,11 +64,24 @@ if str(BENCH_DIR) not in sys.path:
 
 from harness.agents import AGENT_NAMES, get_adapter  # noqa: E402
 from harness.batch import (  # noqa: E402
+    BatchAbortedError,
     BenchReport,
+    CardScore,
     build_live_routing_run_fn,
     build_live_run_card_fn,
     report_to_dict,
     run_batch,
+)
+from harness.provenance import (  # noqa: E402
+    JOURNAL_NAME,
+    append_record,
+    baseline_session,
+    card_record,
+    check_resumable,
+    read_records,
+    resumable_scores,
+    ruler_fingerprint,
+    session_record,
 )
 from harness.qualify import format_qualification, qualification_to_dict, qualify  # noqa: E402
 from harness.scenarios import load_all_cards  # noqa: E402
@@ -75,6 +89,13 @@ from harness.seeds import GOLDEN_DIR  # noqa: E402
 
 DEFAULT_AGENT = "claude"
 DEFAULT_ROUNDS = 3
+
+#: Exit code for a batch that stopped early with valid-but-incomplete data (a
+#: spent quota, or the served model changing mid-run). Distinct from Phase 0's
+#: failure (1) ON PURPOSE: Phase 0 means nothing ran and nothing was spent, this
+#: means cards were measured and are waiting in the journal for a --resume. A
+#: launcher that cannot tell those apart cannot decide whether to re-submit.
+EXIT_BATCH_ABORTED = 3
 
 # Bench dir layout (M34 §0): fixtures committed under the bench tree; the
 # disposable run vaults live under /tmp (NOT /work — §4.6 EDQUOT).
@@ -107,6 +128,7 @@ def build_report(args: argparse.Namespace) -> BenchReport:
     # total. None in dry mode (no routing spawns).
     routing_usage: list[dict] | None = None
     qualification: dict | None = None
+    served_now: str | None = None
     if dry:
         # Non-live: a fake execution scorer + NO routing_run_fn, so routing cards
         # are tagged/counted but RA stays unscored (the routing seam would spawn a
@@ -136,6 +158,12 @@ def build_report(args: argparse.Namespace) -> BenchReport:
                 "qualified, so no cards were run and no tokens were spent. Fix the "
                 "FAIL lines above and re-submit."
             )
+        # Phase 0 has already asked the agent which model it serves, before any
+        # card. That answer is what a resume must be judged against, and having it
+        # HERE is what makes a refusal free: a mismatch caught now costs nothing,
+        # while one caught from the first card's run handle has already paid for a
+        # card to learn what Phase 0 knew.
+        served_now = qual.model_served
         # Live (Phase G authorization ONLY): both adapters are the SOLE executor
         # touchpoints (M34 §3.6.A). agent / model / base_url / auth_token pass
         # straight through, not interpreted here. The routing adapter spawns a live
@@ -161,6 +189,90 @@ def build_report(args: argparse.Namespace) -> BenchReport:
 
     transcript_dir = Path(args.keep_transcript) if args.keep_transcript else None
 
+    # --- provenance: what ruler is this sitting, and may it continue another? ---
+    # Built AFTER Phase 0 (it needs the served model) and BEFORE the first card
+    # (a refusal must cost nothing). Recorded even for a run that is not resumable
+    # and never resumed: report.json has never carried what measured it — the
+    # SLURM wrapper's meta.json did, and that file is overwritten by the next
+    # submission — so every run from here on states its own instrument.
+    session = session_record(
+        started_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        agent=args.agent,
+        # Whether anything was spawned at all. Journaled because it is NOT implied
+        # by the other fields: a dry run and a live agy run agree on every one of
+        # them (agy reports no served model, so both record None), and without this
+        # a live sitting could resume a dry journal and adopt its hard-coded zeros
+        # as measured cards.
+        dry=dry,
+        model_requested=args.model,
+        model_served=served_now,
+        rounds=args.rounds,
+        cards=[c.id for c in cards],
+        ruler=ruler_fingerprint(),
+    )
+    sessions = [session]
+    prior_scores: list[CardScore] = []
+    on_card_done = None
+    journal = Path(args.run_dir) / JOURNAL_NAME if args.run_dir else None
+
+    if journal is not None:
+        records = read_records(journal)
+        baseline = baseline_session(records)
+        if records and baseline is None:
+            raise SystemExit(
+                f"{journal} has card records but no session record naming the "
+                "conditions they were measured under, so nothing can be proven "
+                "about them. Move it aside and start a fresh run dir."
+            )
+        if baseline is not None:
+            if not args.resume:
+                # D6. Both silent readings of this are traps: continuing would
+                # hand someone who meant to re-measure a free report identical to
+                # last time, and overwriting would throw away cards that were paid
+                # for. Neither is worth the convenience of not typing a flag.
+                raise SystemExit(
+                    f"{journal} already holds a run of {len(resumable_scores(records))} "
+                    f"completed card(s) started at {baseline.get('started_at')}. "
+                    "Pass --resume to continue it (finished cards are skipped), or "
+                    "use a different --run-dir to measure again from scratch. "
+                    "Refusing to guess which you meant: one answer silently "
+                    "re-reports old numbers, the other silently destroys them."
+                )
+            why = check_resumable(
+                baseline,
+                session,
+                served_model_verifiable=get_adapter(args.agent).capabilities.served_model,
+            )
+            if why is not None:
+                raise SystemExit(
+                    f"--resume refused: {why}\n"
+                    f"No cards were run and nothing was spent. The {len(records)} "
+                    f"record(s) in {journal} are untouched."
+                )
+            prior_scores = resumable_scores(records)
+            sessions = [r for r in records if r.get("type") == "session"] + [session]
+            print(
+                f"resuming {journal}: {len(prior_scores)} card(s) already measured "
+                f"will be skipped, {len(cards) - len(prior_scores)} to go.\n"
+            )
+        elif args.resume:
+            # Not fatal: unlike D6's two readings, starting fresh here destroys
+            # nothing and invents nothing — it only costs a full run. But it is the
+            # shape of a mistyped --run-dir, so it must not pass in silence.
+            print(
+                f"WARNING: --resume was passed but {journal} does not exist; there "
+                "is nothing to resume, so this run starts from scratch and pays "
+                "for every card. If you meant to continue an earlier run, check "
+                "the --run-dir path.\n",
+                file=sys.stderr,
+            )
+        append_record(journal, session)
+
+        def on_card_done(score: CardScore) -> None:
+            # Flushed per card: the point is to survive a SIGKILL between two
+            # cards, which is exactly how a wall-clock limit ends a run.
+            append_record(journal, card_record(score))
+
     return run_batch(
         cards,
         agent=args.agent,
@@ -169,6 +281,9 @@ def build_report(args: argparse.Namespace) -> BenchReport:
         run_card_fn=run_card_fn,
         routing_run_fn=routing_run_fn,
         qualification=qualification,
+        prior_scores=prior_scores,
+        on_card_done=on_card_done,
+        sessions=sessions,
         # FIX A: the auto-scorer (harness.checker.resolve) needs golden_dir as a
         # required kwarg (pdf_eq dereferences golden_dir.parent/"pdfs"). The live
         # handle carries no golden_dir, so thread the committed fixtures here.
@@ -208,17 +323,45 @@ def format_report(report: BenchReport) -> str:
     else:
         family = "(nothing observed a model)"
     lines.append(f"model served: {served}   family: {family}")
+    if report.model_identity == "unverified":
+        # Standing property of this agent, printed for every run of it — not a
+        # finding about this one. The sentence says what is UNKNOWABLE, never that
+        # something happened: we have no evidence the model ever changed, and
+        # printing a suspicion where a measurement belongs is the same error as
+        # printing a guess as a number.
+        lines.append(f"model identity: UNVERIFIED — {report.model_identity_reason}")
     if report.agent_flags:
         lines.append(f"agent flags: {' '.join(report.agent_flags)}")
+    if report.sessions and len(report.sessions) > 1:
+        # A report stitched from several sittings is still valid, but it is not the
+        # same artifact as one taken in a single sitting, and that is the reader's
+        # call to make, not ours to hide.
+        stamps = ", ".join(str(s.get("started_at")) for s in report.sessions)
+        lines.append(
+            f"NOTE: stitched from {len(report.sessions)} sessions (resumed): {stamps}"
+        )
     lines.append("=" * 60)
     counts = report.coverage.get("counts", {})
     lines.append(
         "coverage: "
         + ", ".join(f"{k}={v}" for k, v in counts.items())
     )
-    lines.append(
+    errored = report.coverage.get("errored_cards") or []
+    trr_line = (
         f"TRR (auto-scored, n={report.coverage.get('trr_denominator', 0)}): "
         f"{report.trr_mean:.3f} +/- {report.trr_std:.3f}"
+    )
+    if errored:
+        # The denominator moved, so say so ON the line that reports it. A reader
+        # comparing this TRR to last week's must not have to notice a count in a
+        # different paragraph to learn that n cards never ran.
+        trr_line += f"  [denominator excludes {len(errored)} errored card(s)]"
+    lines.append(trr_line)
+    # Always printed, including the 0 case: "errored: 0" is the sentence that
+    # makes "errored: 7" legible to someone who has never seen it non-zero.
+    lines.append(
+        f"errored (did NOT run — excluded from TRR, never scored 0): {len(errored)}"
+        + (f" — {', '.join(errored)}" if errored else "")
     )
     routing = report.routing
     if routing is None:
@@ -241,6 +384,17 @@ def format_report(report: BenchReport) -> str:
     for c in report.cards:
         if c.tag in ("skipped", "routing", "multi-turn"):
             lines.append(f"  [{c.tag:>13}] {c.card_id}")
+        elif c.error:
+            # NEVER "mean=0.000" here. Its mean is a placeholder for a card that
+            # did not run, and printing it next to the cards that did is the whole
+            # bug in one line of output.
+            lines.append(
+                f"  [      ERRORED] {c.card_id}: DID NOT RUN "
+                f"(reason={c.error.get('reason')} "
+                f"exit_code={c.error.get('exit_code')} "
+                f"timed_out={c.error.get('timed_out')}) "
+                f"— not scored, excluded from TRR"
+            )
         else:
             line = f"  [{c.tag:>13}] {c.card_id}: mean={c.mean:.3f} rounds={c.rounds}"
             if c.usage:
@@ -329,11 +483,29 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "continue the run already journaled in --run-dir: execution cards that "
+            "finished are skipped, cards that errored are retried, and the report "
+            "covers the whole corpus. Routing (I-*) cards are re-run every time — "
+            "their per-utterance trail is not journaled, so skipping them would "
+            "quietly shrink the RA denominator; budget for those spawns. Refuses "
+            "if anything about the instrument changed (agent / model / rounds / "
+            "cards / dry-vs-live / litman / scenarios / harness)"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="exercise the pipeline with a non-live fake executor (no claude -p)",
     )
     args = parser.parse_args(argv)
+
+    # The journal lives in the run dir; without one there is nothing to resume
+    # from and nowhere to resume to.
+    if args.resume and not args.run_dir:
+        parser.error("--resume needs --run-dir: the journal it continues lives there.")
 
     # The proxy flags need an agent that honors ANTHROPIC_BASE_URL. The adapters
     # reject them too, but that fires inside the first card — AFTER Phase 0 has
@@ -374,7 +546,49 @@ def main(argv: list[str] | None = None) -> int:
         if args.keep_transcript is None:
             args.keep_transcript = str(run_dir / "transcripts")
 
-    report = build_report(args)
+    try:
+        report = build_report(args)
+    except BatchAbortedError as e:
+        # D4: NO report.json. The batch measured real cards and they are safe in
+        # the journal, but "report.json" has exactly one meaning — one complete
+        # measurement — and a file that sometimes means half a run is a file whose
+        # TRR will eventually be quoted by someone who did not read the fine print.
+        print(f"\nBATCH ABORTED: {e}", file=sys.stderr)
+        if not args.run_dir:
+            print(
+                "Nothing was journaled, because this run had no --run-dir: the "
+                "cards it measured are gone. Use --run-dir next time so an abort "
+                "is resumable.",
+                file=sys.stderr,
+            )
+        elif e.detail.get("reason") == "model_changed":
+            # NOT "--resume". The gate re-checks the served model at Phase 0 and
+            # refuses a mismatch by design (D1), so telling this user to resume is
+            # telling them to spend a live Phase 0 to be told no. Say what will
+            # actually happen instead of the generic advice.
+            print(
+                f"The {e.completed} card(s) in {Path(args.run_dir) / JOURNAL_NAME} "
+                f"are still valid — every one of them was served by "
+                f"{e.detail.get('model_baseline')!r}. But this run dir can only be "
+                f"resumed while that model is being served again: --resume re-checks "
+                f"the served model at Phase 0 and refuses (correctly) while it "
+                f"reports {e.detail.get('model_observed')!r}. If the change is "
+                f"permanent — which is what a downgraded quota looks like — start a "
+                f"NEW run dir and measure again. Do not try to make one report out "
+                f"of two rulers. No report.json was written.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"The journal at {Path(args.run_dir) / JOURNAL_NAME} holds every "
+                f"card measured so far. Re-submit the same command with --resume "
+                f"in this run dir to continue; no finished card is paid for twice, "
+                f"and the cards that errored are retried. No report.json was "
+                f"written: it means a complete run, and this was not one.",
+                file=sys.stderr,
+            )
+        raise SystemExit(EXIT_BATCH_ABORTED) from e
+
     print(format_report(report))
 
     if args.out:
