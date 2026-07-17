@@ -282,6 +282,19 @@ def test_c2_intent_still_asks_for_the_field_only_show_can_answer() -> None:
     So: 回看 must stay in the intent. If a future edit needs to drop it, the card needs a
     different out-of-projection field — not a generic question — and that is a change to a
     signed decision, i.e. wangq's call, not an editor's.
+
+    One more rule the intent lives under (wangq, 2026-07-17, "按严格的来"): it must not
+    reach for the skill's OWN wording for `show` — "full record" (SKILL.md:161), "full
+    field set" (:39/:125/:129), "full metadata dict" (:135/:182). An intent that does lets
+    the agent keyword-match its way to `show` instead of reasoning from the projection
+    boundary, and both routes score the same, so no measurement separates them. The
+    shipping intent names no tool and no tool-doc phrase; it only asserts the value is
+    stored, which the skill already implies (:125 lists the projection and sends anything
+    beyond it to `lit show --format json`).
+
+    And before adding any word to this intent: `grep -rn '<word>' src/litman/skills/`.
+    翻出来 is `lit revisit`'s documented trigger (:146, :306) — putting it here would make
+    the agent stamp last-revisited and trip the yaml_eq guard. Nearly did exactly that.
     """
     card = {c.id: c for c in _all_cards()}["C2-show"]
     assert "回看" in card.intent, (
@@ -303,10 +316,10 @@ def test_c2_intent_names_the_library() -> None:
     the lit-library skill in its own prose. The skill was found; the question just did not
     read as answerable.
 
-    Do NOT read the fix as "add 库". Measured, adding it alone: [0, 0] -> [0, 1, 0]. The
-    word 回看 standing alone reads as access history, and that had to go too — the shipping
-    intent frames it as a stored record ("完整记录调出来看看——我想知道上次回看是哪天"),
-    which is why both halves are pinned separately.
+    Do NOT read the fix as "add 库". Measured, adding it alone: [0, 0] -> [0, 1, 0]. 回看
+    standing alone reads as access history, and that had to go too — the shipping intent
+    asserts the value is stored ("上次回看的日期库里是记着的"), which is why both halves
+    are pinned separately.
 
     The failure this prevents is the nasty kind: NOT a false negative — the agent really did
     skip `show`, so 0 was "correct". The card was simply measuring a different capability
