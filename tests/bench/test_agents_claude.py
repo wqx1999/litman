@@ -206,6 +206,9 @@ def test_the_credential_still_seeds_from_the_configured_source(
     ), "the seeded credential is not the fabricated one this test planted"
     # And it went to the config dir, NOT into the fake HOME.
     assert not (Path(env["HOME"]) / ".claude" / ".credentials.json").exists()
+    # Token path untaken (no CLAUDE_CODE_OAUTH_TOKEN in the harness env — conftest
+    # clears it): the child env carries no static token, only the seeded snapshot.
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
 def test_a_set_claude_config_dir_would_bypass_a_faked_home(
@@ -251,6 +254,42 @@ def test_external_mode_skips_the_credential_but_still_redirects_home(
 
     assert env["HOME"] == str(tmp_path / "home")
     assert not (tmp_path / "claude-config" / ".credentials.json").exists()
+
+
+def test_oauth_token_env_skips_the_credential_and_injects_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The opt-in static-token path (Anthropic mode, ``base_url=None``).
+
+    With ``CLAUDE_CODE_OAUTH_TOKEN`` exported in the harness env, ``prepare`` copies
+    NO rotating credential — a static ``claude setup-token`` token never refreshes,
+    so there is no refresh-token rotation race to lose across concurrent cards — and
+    the token is injected into the child env instead. Everything else ``prepare``
+    does is unchanged: HOME redirected, CLAUDE_CONFIG_DIR set, repo skills installed.
+
+    The token is FABRICATED (this repo is public) and asserted by equality only —
+    it is not a real credential, so there is no secret to leak in a failure diff.
+    """
+    fake_token = "sk-ant-oat-FAKE-benchtest"
+    user_home = _fake_user_home(tmp_path, monkeypatch)
+    installed = _stub_skill_install(monkeypatch)
+    # A credential exists in the fake real-home; the token path must NOT copy it —
+    # this is what makes the "no .credentials.json" assertion below load-bearing.
+    cred = user_home / ".claude" / ".credentials.json"
+    cred.parent.mkdir(parents=True)
+    cred.write_text('{"fake": "not-a-real-token"}', encoding="utf-8")
+    # Set AFTER the autouse fixture ran (which cleared it): opts this test in.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", fake_token)
+
+    env = ClaudeAdapter().prepare(tmp_path, run_vault=tmp_path / "vault")
+
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == fake_token
+    # No rotating credential seeded — the whole point of the static token.
+    assert not (tmp_path / "claude-config" / ".credentials.json").exists()
+    # The rest of prepare is unchanged.
+    assert env["HOME"] == str(tmp_path / "home")
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "claude-config")
+    assert installed == [tmp_path / "claude-config" / "skills"]
 
 
 def test_the_redirect_leaves_path_alone(tmp_path: Path, monkeypatch) -> None:

@@ -51,9 +51,18 @@ def _no_real_credential_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
     but they are the same question — "which var names a real config dir absolutely"
     — and two copies of one answer drift. Adding an agent means adding its var
     THERE, and both sides move together.
+
+    ``CLAUDE_CODE_OAUTH_TOKEN`` is cleared too, but it is NOT in that tuple: it
+    does not name a config dir (it is a bearer token the harness deliberately
+    PASSES to claude, so ``isolated_env`` must keep it, not drop it). It is
+    cleared HERE for determinism only — exported in the maintainer's shell it
+    would silently switch every claude test onto the token path and skip
+    ``seed_auth``, turning the seed tests falsely green or red. A test that wants
+    the token path sets it explicitly after this runs.
     """
     from harness.agents import HOME_ESCAPING_CONFIG_VARS
 
     for var in HOME_ESCAPING_CONFIG_VARS:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 

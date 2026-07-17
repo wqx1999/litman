@@ -94,6 +94,19 @@ PERMISSION_FLAGS = ("--permission-mode", "bypassPermissions")
 # ---------------------------------------------------------------------------
 
 
+def _oauth_token_from_env() -> str | None:
+    """The operator's static ``claude setup-token`` credential, or ``None``.
+
+    Read from the HARNESS process env, the same source as ``_real_config_dir()``:
+    it is an operator credential, not a per-card input, so it is never plumbed
+    through ``run_card``. Present ⇒ the token path (no rotating credential copied,
+    no refresh, no rotation race); absent ⇒ today's ``seed_auth`` snapshot path.
+    An empty string counts as absent.
+    """
+    tok = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    return tok or None
+
+
 def _real_config_dir() -> Path:
     """The user's real Claude Code config dir (where auth credentials live).
 
@@ -147,12 +160,14 @@ def executor_env(
     optional one would let a new call site inherit the real ``HOME`` by saying
     nothing, which is the bug this parameter exists to make impossible.
 
-    Two auth modes. When ``base_url`` is ``None`` (default Anthropic mode) auth is
-    OAuth via the copied ``.credentials.json``. When ``base_url`` is set (external
-    mode: ``claude`` CLI pointed at an Anthropic-compatible proxy such as LiteLLM
-    / claude-code-router) we also export ``ANTHROPIC_BASE_URL`` + the auth token so
-    the proxy authenticates; OAuth is skipped in this mode (see
-    :meth:`ClaudeAdapter.prepare`).
+    Auth modes. When ``base_url`` is ``None`` (default Anthropic mode) auth is
+    OAuth: either the copied ``.credentials.json`` or, when the operator exports
+    ``CLAUDE_CODE_OAUTH_TOKEN``, that static non-rotating token injected here
+    instead (the two are mutually exclusive — see :meth:`ClaudeAdapter.prepare`).
+    When ``base_url`` is set (external mode: ``claude`` CLI pointed at an
+    Anthropic-compatible proxy such as LiteLLM / claude-code-router) we export
+    ``ANTHROPIC_BASE_URL`` + the auth token so the proxy authenticates; neither
+    OAuth path applies in this mode.
     """
     env = isolated_env(home=home, run_vault=run_vault, registry_dir=registry_dir)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
@@ -161,6 +176,15 @@ def executor_env(
         env["ANTHROPIC_BASE_URL"] = str(base_url)
         if auth_token is not None:
             env["ANTHROPIC_AUTH_TOKEN"] = str(auth_token)
+    else:
+        # Anthropic mode. isolated_env already inherits this var from os.environ,
+        # so the explicit set is belt-and-suspenders: it makes the token path
+        # assertable in a test and survives isolated_env ever moving to an
+        # allowlist. Not touched in proxy mode — that path authenticates via the
+        # ANTHROPIC_* pair above.
+        token = _oauth_token_from_env()
+        if token is not None:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return env
 
 
@@ -355,7 +379,14 @@ class ClaudeAdapter:
         # only the default Anthropic mode needs the OAuth credentials copied in.
         # seed_auth reads the REAL home (harness process) and writes into the
         # isolated config dir — the redirect above lives in the child's env only.
-        if base_url is None:
+        #
+        # And only when no static token is set: a CLAUDE_CODE_OAUTH_TOKEN in the
+        # harness env means the operator opted into the non-rotating credential,
+        # which executor_env injects — copying a rotating snapshot too would just
+        # re-introduce the refresh-token rotation race the token exists to avoid.
+        # The two paths are mutually exclusive. Proxy mode (base_url set) copies
+        # neither and is unchanged.
+        if base_url is None and _oauth_token_from_env() is None:
             seed_auth(config_dir)
         install_repo_skills(self.skills_dir(base))
         return executor_env(
