@@ -199,6 +199,17 @@ _MODEL_FAMILY: dict[str, str] = {
     "claude-haiku-4-5-20251001": "claude-haiku-4.5",
     "claude-opus-4-8": "claude-opus-4.8",
     # --- cursor: requests an id, reports a display name ----------------------
+    # Composer is cursor's own model, so its family groups exactly one cell and
+    # the key/value repetition below is honest rather than redundant: nothing
+    # else serves these weights. It still needs BOTH spellings — the id we send
+    # and the name it echoes never match as strings, and _check_model_pinned
+    # consults the table precisely when they differ, so omitting either one fails
+    # a run whose model is in fact pinned. Both verified 2026-07-17 against the
+    # `cursor-agent models` listing ("composer-2.5 - Composer 2.5") and a live
+    # Phase 0 probe (served "Composer 2.5"; the listing's trailing "(current)"
+    # marks the active selection and is not part of the name).
+    "composer-2.5": "composer-2.5",
+    "Composer 2.5": "composer-2.5",
     "Sonnet 4.6 200K Medium No Thinking": "claude-sonnet-4.6",
     # Cursor relabeled the same tier later in 2026-07: its display grammar now
     # marks thinking explicitly ("... Thinking") and leaves non-thinking
