@@ -60,12 +60,16 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shlex
 import shutil
 from pathlib import Path
 
 from harness.agents import AgentCapabilities, isolated_env
+
+# Moved to a shared module now that opencode needs the same splitter (D2). Kept
+# importable from THIS namespace on purpose: `test_executor` and the claude tests
+# do `from harness.agents.claude import _lit_calls_from_bash`, and this re-export
+# means the move is behavior-preserving down to the import path.
+from harness.agents._shell import _lit_calls_from_bash
 from harness.executor import (
     ExecutorResult,
     LitCall,
@@ -175,41 +179,6 @@ def _iter_content_blocks(event: dict):
         for block in content:
             if isinstance(block, dict):
                 yield block
-
-
-# Shell statement separators we split a compound command on before looking for
-# ``lit`` segments (so ``lit add ... && rm -f tmp`` does not swallow ``rm`` into
-# the lit argv, and ``echo x && lit list`` is found correctly).
-_CMD_SEP = re.compile(r"&&|\|\||[;|\n]")
-# A leading ``VAR=value`` env assignment to skip before the command word.
-_ENV_ASSIGN = re.compile(r"^[A-Za-z_]\w*=")
-
-
-def _lit_calls_from_bash(command: str) -> list[list[str]]:
-    """Extract every ``lit`` invocation's argv from a Bash command string.
-
-    Splits the command on shell separators (``&&`` / ``||`` / ``;`` / ``|`` /
-    newline), then for each segment skips any leading ``VAR=val`` assignments and,
-    if the command word is ``lit`` (or a path ending ``/lit``), captures the rest
-    as argv. A single Bash command may issue several ``lit`` calls, so this
-    returns a list. Best-effort — used for substring ``ran:`` evidence, not exact
-    replay (``$VAR`` stays literal, redirects survive as tokens).
-    """
-    calls: list[list[str]] = []
-    for segment in _CMD_SEP.split(command):
-        segment = segment.strip()
-        if not segment:
-            continue
-        try:
-            tokens = shlex.split(segment)
-        except ValueError:
-            tokens = segment.split()
-        i = 0
-        while i < len(tokens) and _ENV_ASSIGN.match(tokens[i]):
-            i += 1
-        if i < len(tokens) and (tokens[i] == "lit" or tokens[i].endswith("/lit")):
-            calls.append(tokens[i + 1 :])
-    return calls
 
 
 def _tool_result_content(block: dict) -> str:

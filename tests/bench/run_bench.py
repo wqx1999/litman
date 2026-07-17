@@ -5,8 +5,9 @@ A thin CLI over :mod:`harness.batch`. Runs every non-skipped card N rounds
 against a chosen ``(agent, model)`` pair, prints the per-card mean(resolved) +
 TRR(mean±std) + an honest coverage report, and optionally dumps the full report to
 JSON. This is the "one command to swap the agent/model and run the whole suite"
-UX: ``--agent`` picks the scaffold (``claude`` / ``cursor`` / ``agy``), and a
-controlled comparison is the same ``--model`` run three times.
+UX: ``--agent`` picks the scaffold (``claude`` / ``cursor`` / ``agy`` /
+``opencode``), and a controlled comparison is the same ``--model`` run across each
+scaffold.
 
 Before any card runs, LIVE mode qualifies the instrument
 (:func:`harness.qualify.qualify`) against the chosen agent and aborts non-zero if
@@ -445,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "executor model tier; defaults to the chosen agent's own default "
-            "(the three agents do NOT share a model namespace)"
+            "(the agents do NOT share a model namespace)"
         ),
     )
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS, help="repeats per card")

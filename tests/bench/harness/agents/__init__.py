@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from harness.executor import ExecutorResult
 
-AGENT_NAMES = ("claude", "cursor", "agy")
+AGENT_NAMES = ("claude", "cursor", "agy", "opencode")
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +81,20 @@ AGENT_NAMES = ("claude", "cursor", "agy")
 #: oversight.
 HOME_ESCAPING_CONFIG_VARS: tuple[str, ...] = (
     # cursor's login lives in ~/.config/cursor; every XDG-respecting CLI reads it.
+    # opencode reads its config from ~/.config/opencode too, so this covers it.
     "XDG_CONFIG_HOME",
     # claude._real_config_dir() reads this FIRST, before ~/.claude.
     "CLAUDE_CONFIG_DIR",
+    # opencode keeps its auth.json AND its session db under $XDG_DATA_HOME
+    # (default ~/.local/share/opencode) — the most dangerous of the three, since a
+    # set one reaches the real credential. XDG_CACHE_HOME / XDG_STATE_HOME round
+    # out the set opencode (and any XDG-respecting CLI) resolves before $HOME.
+    # Unset on this machine today, so the HOME redirect already isolates; listed
+    # anyway per the tuple's rule — an agent's before-$HOME vars go here or the
+    # isolation leaks the day someone's environment sets them.
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
 )
 
 
@@ -219,6 +230,14 @@ _MODEL_FAMILY: dict[str, str] = {
     "Sonnet 4.6 200K Medium": "claude-sonnet-4.6",
     # --- agy: requests a display name, reports nothing -----------------------
     "Claude Sonnet 4.6 (Thinking)": "claude-sonnet-4.6",
+    # --- opencode: requests "<provider>/<model>", export echoes it verbatim ---
+    # opencode's own free model, groups a single cell (self -> self) like cursor's
+    # Composer. Unlike cursor the served string is IDENTICAL to the requested one
+    # (export returns the same id), so check 6's exact-match branch already carries
+    # it and this entry only names the family for a smoke run's report. Which
+    # CONTROLLED model opencode routes for the real comparison is wangq's call
+    # (spec "待 wangq 决定"); that entry lands when the model is chosen.
+    "opencode/deepseek-v4-flash-free": "deepseek-v4-flash-free",
 }
 
 
@@ -341,6 +360,10 @@ def get_adapter(name: str) -> AgentAdapter:
         from harness.agents.agy import AgyAdapter
 
         return AgyAdapter()
+    if name == "opencode":
+        from harness.agents.opencode import OpencodeAdapter
+
+        return OpencodeAdapter()
     raise ValueError(
         f"unknown agent {name!r}; known agents: {', '.join(AGENT_NAMES)}"
     )
