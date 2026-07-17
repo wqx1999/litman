@@ -710,6 +710,11 @@ def run_batch(
     # Whether re-checking means anything for this agent at all (agy reports no
     # model, so `None == None` every round proves exactly nothing — see below).
     model_verifiable = adapter.capabilities.served_model
+    # How many LIVE rounds ran and scored but did not surface a served model
+    # (opencode's after-the-fact `opencode export` missing on a large session).
+    # Disclosed in coverage so a None round is never silently swallowed; stays 0
+    # for agy, whose gate below never runs.
+    model_unverified_rounds = 0
     for prior_score in prior_scores or []:
         # A prior score is adopted verbatim into the aggregate, so a bad one is not
         # a crash — it is a QUIET wrong number, and of the worst kind. An errored
@@ -834,12 +839,23 @@ def run_batch(
             # prevent. Errors are diagnosed above; only survivors are compared.
             if model_verifiable:
                 observed_model = _served_model_of(run)
-                if served is None:
+                if observed_model is None:
+                    # A LIVE round (round_error is None above) that ran and scored
+                    # but whose served model could not be harvested — opencode reads
+                    # it from an after-the-fact `opencode export` that occasionally
+                    # misses on a large session. This is a MEASUREMENT gap, not a
+                    # change of ruler: a single None cannot tell a genuine downgrade
+                    # to-something-modelless apart from the harvest itself failing,
+                    # so it neither updates the baseline nor aborts. It is DISCLOSED
+                    # (coverage["model_unverified_rounds"]), not acted on — silence
+                    # is not permission, but it is not proof of a changed model.
+                    model_unverified_rounds += 1
+                elif served is None:
                     served = observed_model
                 elif observed_model != served:
-                    # Includes observed_model is None: an agent that reported a
-                    # model for 14 cards and then stopped is not a reading we can
-                    # score, and silence is not permission.
+                    # A concrete baseline followed by a DIFFERENT concrete model: the
+                    # ruler really changed and every card after it was measured with
+                    # a different one, so the batch stops here.
                     raise BatchAbortedError(
                         f"served model changed mid-run at card {cid!r} round {i}: "
                         f"the run started on {served!r} and this round reports "
@@ -918,6 +934,10 @@ def run_batch(
         # disclosure are the same edit, so a number can never quietly shrink its
         # own denominator.
         "errored_cards": [c.card_id for c in card_scores if c.error],
+        # Live rounds that ran and scored but whose served model could not be
+        # harvested (the gate above). Disclosed, never acted on; 0 for agy, whose
+        # gate is a no-op. Carried into report.json via report_to_dict's coverage.
+        "model_unverified_rounds": model_unverified_rounds,
         "trr_denominator": len(auto_means),
     }
     # WHY the RA axis is (or is not) a number. "not_measurable" is an agent-type

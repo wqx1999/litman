@@ -67,7 +67,14 @@ class _FakeCompleted:
 
 
 def _stub_export(monkeypatch, returncode: int, stdout: str) -> list[dict]:
-    """Replace the export subprocess; return a list the calls are recorded into."""
+    """Replace the export subprocess AND freeze the retry backoff; return a list the
+    calls are recorded into.
+
+    Every call gets the SAME ``(returncode, stdout)``, so a non-zero return exercises
+    ``_run_export``'s retry (two calls). ``time.sleep`` is stubbed to a no-op so that
+    retry never injects a real wall-clock delay into the unit suite (spec D3: stub
+    both ``subprocess.run`` and ``time.sleep`` at the ``harness.agents.opencode``
+    boundary)."""
     calls: list[dict] = []
 
     def fake_run(argv, **kwargs):
@@ -75,7 +82,34 @@ def _stub_export(monkeypatch, returncode: int, stdout: str) -> list[dict]:
         return _FakeCompleted(returncode, stdout)
 
     monkeypatch.setattr("harness.agents.opencode.subprocess.run", fake_run)
+    monkeypatch.setattr("harness.agents.opencode.time.sleep", lambda _s: None)
     return calls
+
+
+def _stub_export_sequence(monkeypatch, responses: list) -> dict:
+    """Stub the export subprocess with a SEQUENCE of per-call responses and freeze
+    the retry backoff so the test never actually sleeps.
+
+    Each response is either a ``_FakeCompleted`` (returned) or an exception instance
+    (raised — e.g. ``subprocess.TimeoutExpired``, to exercise the timeout path).
+    Returns a record with the per-call argv/env list and the number of backoff
+    sleeps, so a test can PIN 'it retried exactly once' rather than trust it."""
+    seq = list(responses)
+    record: dict = {"calls": [], "sleeps": 0}
+
+    def fake_run(argv, **kwargs):
+        record["calls"].append({"argv": argv, "env": kwargs.get("env")})
+        outcome = seq.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    def fake_sleep(_seconds):
+        record["sleeps"] += 1
+
+    monkeypatch.setattr("harness.agents.opencode.subprocess.run", fake_run)
+    monkeypatch.setattr("harness.agents.opencode.time.sleep", fake_sleep)
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +255,9 @@ def test_export_nonzero_exit_yields_none_not_the_request(
     tmp_path: Path, monkeypatch
 ) -> None:
     """(b) A non-zero ``opencode export`` -> None. Drives _run_export's real exit
-    check (subprocess stubbed to return code 1)."""
+    check: with the stub returning code 1 on every call, both the first attempt and
+    the one backoff retry fail, so the harvest gives up and reports None (the backoff
+    is stubbed to a no-op, so this adds no real delay)."""
     _stub_export(monkeypatch, 1, "irrelevant when the exit is non-zero")
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
@@ -245,6 +281,83 @@ def test_export_json_without_a_model_block_yields_none(
     _stub_export(monkeypatch, 0, '{"info": {"id": "ses_x"}}')
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
+
+
+# ---------------------------------------------------------------------------
+# Export robustness — timeout + one backoff retry (task-bench-model-gate-none D3)
+# The export harvest misses occasionally on a large session; one fixed-backoff
+# retry recovers the timing miss, and a hung export (TimeoutExpired) is a failed
+# attempt, never a crash. Drives the REAL _run_export -> _served_model -> parse.
+# ---------------------------------------------------------------------------
+
+
+def test_export_first_miss_then_retry_succeeds_recovers_the_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC7. The realistic timing miss: the first ``opencode export`` exits non-zero
+    (session db not flushed yet), the one backoff retry succeeds, and the model is
+    recovered end-to-end — subprocess + sleep are the only things stubbed."""
+    rec = _stub_export_sequence(
+        monkeypatch, [_FakeCompleted(1, ""), _FakeCompleted(0, EXPORT_JSON)]
+    )
+    result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
+    assert result.model_served == "opencode/deepseek-v4-flash-free"
+    assert len(rec["calls"]) == 2  # it really retried
+    assert rec["sleeps"] == 1      # exactly one backoff between the two attempts
+
+
+def test_export_both_attempts_fail_yields_none(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC7. Two non-zero exits in a row -> None (never the requested/default model).
+    The retry is best-effort, not a guarantee; D1 downstream degrades this safely."""
+    rec = _stub_export_sequence(
+        monkeypatch, [_FakeCompleted(1, ""), _FakeCompleted(1, "")]
+    )
+    result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
+    assert result.model_served is None
+    assert result.model_served != OpencodeAdapter.default_model
+    assert len(rec["calls"]) == 2
+
+
+def test_export_timeout_is_a_failure_not_a_crash(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC7. A hung export raises ``subprocess.TimeoutExpired``; that is treated as
+    THIS attempt failing (it must not bubble up as a crash), so the retry runs. Here
+    the first attempt times out and the second succeeds -> the model is recovered."""
+    import subprocess
+
+    rec = _stub_export_sequence(
+        monkeypatch,
+        [
+            subprocess.TimeoutExpired(cmd=["opencode", "export"], timeout=60.0),
+            _FakeCompleted(0, EXPORT_JSON),
+        ],
+    )
+    result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
+    assert result.model_served == "opencode/deepseek-v4-flash-free"
+    assert len(rec["calls"]) == 2
+    assert rec["sleeps"] == 1
+
+
+def test_export_timeout_twice_yields_none_without_raising(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC7. Two timeouts in a row -> None, and the ``TimeoutExpired`` never escapes
+    ``_run_export`` (a bubbled crash would kill the whole card)."""
+    import subprocess
+
+    rec = _stub_export_sequence(
+        monkeypatch,
+        [
+            subprocess.TimeoutExpired(cmd=["opencode", "export"], timeout=60.0),
+            subprocess.TimeoutExpired(cmd=["opencode", "export"], timeout=60.0),
+        ],
+    )
+    result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
+    assert result.model_served is None
+    assert len(rec["calls"]) == 2
 
 
 # ---------------------------------------------------------------------------

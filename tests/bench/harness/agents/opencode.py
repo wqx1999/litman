@@ -52,6 +52,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from harness.agents import AgentCapabilities, isolated_env
@@ -213,6 +214,15 @@ def parse_stream(lines: list[str]) -> tuple[ExecutorResult, str | None]:
     return result, session_id
 
 
+#: Cap for the export subprocess: it only reads a local session db, so a slow one
+#: is hung, not working, and the executor's per-card timeout does NOT cover this
+#: after-the-fact child — an uncapped hang would stall the whole round.
+_EXPORT_TIMEOUT_S = 60.0
+#: Fixed (not randomized — tests must stay deterministic) backoff before the one
+#: retry: the session db may not be flushed the instant the run ends.
+_EXPORT_RETRY_BACKOFF_S = 1.5
+
+
 def _run_export(bin_: str, session_id: str, env: dict[str, str] | None) -> str | None:
     """Run ``opencode export <sid>`` in the RUN's isolated env; stdout or ``None``.
 
@@ -221,20 +231,36 @@ def _run_export(bin_: str, session_id: str, env: dict[str, str] | None) -> str |
     is GLOBAL BY SESSION ID (verified live — it resolves a session from any cwd
     under the same HOME; the session's ``directory`` field only records where it was
     created), so it finds the run's session even though the live agent ran in
-    ``neutral_cwd``. ``None`` on a non-zero exit: the served model is then
+    ``neutral_cwd``.
+
+    Runs at most twice. The harvest misses occasionally (a large session's db may
+    not be flushed the instant the run ends), so one fixed-backoff retry recovers a
+    good share of those timing misses at low risk. ANY attempt that does not return
+    clean stdout is this-attempt-failed and triggers the retry — a non-zero exit OR
+    a :class:`subprocess.TimeoutExpired` (a hung export must not stall the round);
+    the retry is deliberately not keyed to one exit code, since the exact failure
+    mode was never pinned. Two failures return ``None`` — the served model is then
     unrecoverable, and the caller reports ``None`` rather than inventing the
-    requested model.
+    requested model. Parsing the model string out of stdout stays in
+    :meth:`OpencodeAdapter._served_model`; this function only hands back stdout.
     """
-    proc = subprocess.run(
-        [bin_, "export", session_id],
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
+    for attempt in range(2):
+        if attempt:
+            time.sleep(_EXPORT_RETRY_BACKOFF_S)
+        try:
+            proc = subprocess.run(
+                [bin_, "export", session_id],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=_EXPORT_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if proc.returncode == 0:
+            return proc.stdout
+    return None
 
 
 # ---------------------------------------------------------------------------

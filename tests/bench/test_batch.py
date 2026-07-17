@@ -1384,25 +1384,66 @@ def test_model_change_mid_run_aborts() -> None:
     assert seen == ["C0", "C1", "C2", "C3"]
 
 
-def test_model_going_silent_mid_run_aborts() -> None:
-    """An agent that reported a model for three cards and then reports none is not
-    a card to score. Silence is not permission."""
-    import pytest
+def test_export_miss_is_unverified_not_a_change() -> None:
+    """AC1/AC2 (was ``test_model_going_silent_mid_run_aborts``, now reversed).
 
+    A LIVE spawn that ran and scored but whose served model could not be harvested
+    (opencode reads it from an after-the-fact ``opencode export`` that occasionally
+    misses on a large session) is a MEASUREMENT gap, not a change of ruler. A single
+    None cannot tell a genuine downgrade-to-something-modelless apart from the
+    harvest simply failing, so the batch does NOT abort: it runs to the last card,
+    the baseline (the first concrete reading) stands untouched, and each such round
+    is DISCLOSED in ``model_unverified_rounds``. The card answered correctly, so it
+    stays in the TRR denominator. 'Silence is not permission' survives — as
+    disclosure (the count lands in report.json), not as an abort."""
     cards = [
         {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
         for i in range(4)
     ]
+    seen: list[str] = []
 
     def fake_run(card, *, round, model, **_):
+        seen.append(card["id"])
+        # Baseline harvested on C0/C1; C2/C3 are live + correct but export missed.
         served = "claude-haiku-4-5-20251001" if int(card["id"][1:]) < 2 else None
         return _live_run(model_served=served)
 
-    with pytest.raises(BatchAbortedError):
-        run_batch(
-            cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
-            run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
-        )
+    report = run_batch(
+        cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    # It ran to the END — no abort, every card spawned.
+    assert seen == ["C0", "C1", "C2", "C3"]
+    # The two live-but-unharvested rounds are disclosed, not acted on.
+    assert report.coverage["model_unverified_rounds"] == 2
+    # A None round neither updates the baseline nor aborts: the first concrete
+    # reading stands.
+    assert report.model_served == "claude-haiku-4-5-20251001"
+    # Every card answered correctly and every card counts — TRR over all 4.
+    assert report.coverage["trr_denominator"] == 4
+    assert report.trr_mean == 1.0
+    # And the disclosure lands in report.json (AC6, positive case > 0).
+    assert report_to_dict(report)["coverage"]["model_unverified_rounds"] == 2
+
+
+def test_all_rounds_verified_reports_zero_unverified() -> None:
+    """AC6 (reverse case). When every live round surfaces the same served model,
+    nothing is unverified: the count is 0, and it still lands in report.json — so
+    the field is a real measurement, not a flag that only ever appears when set."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(3)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _live_run(model_served="claude-haiku-4-5-20251001")
+
+    report = run_batch(
+        cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.coverage["model_unverified_rounds"] == 0
+    assert report_to_dict(report)["coverage"]["model_unverified_rounds"] == 0
 
 
 def test_dead_spawn_is_errored_not_reported_as_a_model_change() -> None:
@@ -1453,6 +1494,11 @@ def test_agy_model_check_is_a_noop() -> None:
     )
     assert report.coverage["trr_denominator"] == 5  # ran to the end, no alarm
     assert report.model_served is None
+    # D2 boundary: the gate never runs for agy, so model_unverified_rounds is a
+    # flat 0 — agy's "we cannot check" is carried by model_identity, and the count
+    # must NOT be repurposed to imply agy served 5 unverified rounds.
+    assert report.coverage["model_unverified_rounds"] == 0
+    assert report.model_identity == "unverified"
 
 
 # ---------------------------------------------------------------------------
