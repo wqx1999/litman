@@ -239,14 +239,84 @@ def test_c2_proves_retrieval_through_stdout_not_through_the_prose() -> None:
 
 
 def test_c2_guards_the_value_it_reads_against_a_stray_revisit_stamp() -> None:
-    """The intent says 回看, which is `lit revisit`'s own trigger vocabulary in
-    lit-reading. An agent that stamps turns last-revisited into today and the card
-    fails with no signal about why — this guard makes the failure name its cause
-    (B2-revisit sets the precedent with its read-date-unchanged assertion).
+    """An agent that stamps a revisit turns last-revisited into today, and the card then
+    fails with no signal about why — this guard makes the failure name its cause. The
+    precedent is B2-revisit's own read-date-unchanged assertion. Cheap paranoia on a
+    pure-read card needs no stronger justification than that.
+
+    ⚠️ 2026-07-17: this docstring used to claim 回看 "is `lit revisit`'s own trigger
+    vocabulary in lit-reading". That is FALSE — `grep -r 回看 src/litman/` returns zero.
+    revisit's documented triggers (lit-reading/SKILL.md:3, :146, :306) are 又把X翻出来想了想
+    / 重新看了下X / re-opened X / looking at X again. 回看 is semantically adjacent, nothing
+    more, and the card's own ⑤ measurement shows haiku read it as 浏览历史 instead. The false
+    claim shipped in 6682bf1 and I restored it once during rework before re-grepping — the
+    very failure this spec exists to stop: an assertion about the product, never checked
+    against the product.
     """
     card = {c.id: c for c in _all_cards()}["C2-show"]
     end = " ".join(str(a) for a in card.expected_end_state)
     assert "yaml_eq" in end and "last-revisited == 2026-06-15" in end
+
+
+def test_c2_intent_still_asks_for_the_field_only_show_can_answer() -> None:
+    """wangq's signed decision (2026-07-16): C2's intent asks an OUT-OF-PROJECTION
+    field. The test above pins the assertion side; this pins the intent side, because
+    ① can be reopened from either.
+
+    Why the intent side is load-bearing, measured 2026-07-17. An intent that asks
+    generically ("详细信息给我看看") scores well — haiku [1, 1, 1] — and is broken:
+    `lit list --title X --format json` hands over the 14-field projection, which IS a
+    reasonable "详细信息". An agent taking that path answers ADEQUATELY and fails both
+    assertions → false negative. That is ADR-022's disease (three agents right, all 0),
+    reintroduced from the intent instead of the projection.
+
+    Keeping 回看 in the intent is what makes the `list` path *wrong* rather than merely
+    incomplete. Live proof, from the "上次回看的日期记录是什么？" probe, round 1:
+
+        lit calls = [list]  ->  answered "上次回看日期是 2026-05-01"
+
+    which is `read-date`, not `last-revisited` (2026-06-15). Same tool path; the intent
+    alone decides whether scoring it 0 is a true negative or a lie. (That agent is the
+    exact one the card's notes predicted: "把 read-date 当成回看日期报出来".)
+
+    So: 回看 must stay in the intent. If a future edit needs to drop it, the card needs a
+    different out-of-projection field — not a generic question — and that is a change to a
+    signed decision, i.e. wangq's call, not an editor's.
+    """
+    card = {c.id: c for c in _all_cards()}["C2-show"]
+    assert "回看" in card.intent, (
+        "C2's intent must ask for last-revisited (wangq's signed decision: 问投影外字段). "
+        "A generic 'show me the details' lets `lit list` answer adequately while both "
+        "assertions fail — the ADR-022 false negative, reopened from the intent side"
+    )
+
+
+def test_c2_intent_names_the_library() -> None:
+    """Weaker than the test above, and honest about it: naming the domain is neither
+    necessary (C3-search-notes says 笔记, never 库, and passes) nor sufficient (G1 names
+    库 and still drew "你说的库是指什么？" 4/4). It is pinned for C2 only, and only
+    because C2 was measured breaking without it.
+
+    Until 2026-07-17 this card was the only retrieval card naming no domain (C1 "把我库里…",
+    C4 "我库里还有没有…", G1 "检查一下我的库…"). It scored haiku [0, 0] by REFUSING to try —
+    "我没有直接的权限访问你的文献库来查询 PeptideBERT 论文的浏览历史" — in a round that named
+    the lit-library skill in its own prose. The skill was found; the question just did not
+    read as answerable.
+
+    Do NOT read the fix as "add 库". Measured, adding it alone: [0, 0] -> [0, 1, 0]. The
+    word 回看 standing alone reads as access history, and that had to go too — the shipping
+    intent frames it as a stored record ("完整记录调出来看看——我想知道上次回看是哪天"),
+    which is why both halves are pinned separately.
+
+    The failure this prevents is the nasty kind: NOT a false negative — the agent really did
+    skip `show`, so 0 was "correct". The card was simply measuring a different capability
+    (does the agent guess a library exists) from the one it claims. Invisible in the score.
+    """
+    card = {c.id: c for c in _all_cards()}["C2-show"]
+    assert "库" in card.intent, (
+        "C2's intent must name the library; measured without it: haiku [0, 0], the agent "
+        "refusing to try. Necessary but NOT sufficient — see this test's docstring"
+    )
 
 
 def test_load_card_rejects_missing_id(tmp_path: Path) -> None:
