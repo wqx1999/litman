@@ -13,7 +13,15 @@ from pathlib import Path
 import pytest
 
 from harness import seeds
-from harness.seeds import SEED_SPECS, build_seed, ensure_seeds, litman_fingerprint
+from harness.seeds import (
+    SEED_DIGEST_FILE,
+    SEED_SPECS,
+    assert_seed_intact,
+    build_seed,
+    ensure_seeds,
+    litman_fingerprint,
+    seed_digest,
+)
 
 
 def _papers(vault: Path) -> list[str]:
@@ -300,12 +308,15 @@ def test_build_is_idempotent_cache_hit() -> None:
     v1 = build_seed("seed-1paper-diffdock")
     key_file = v1.parent / ".seed-key"
     assert key_file.read_text(encoding="utf-8").strip() == litman_fingerprint()
-    # Mark the cache so we can detect an unwanted rebuild.
-    marker = v1.parent / "_cache_marker"
-    marker.write_text("kept", encoding="utf-8")
+    # Detect an unwanted rebuild by watching `.seed-key`'s mtime (a rebuild
+    # rewrites it) rather than by dropping a marker file in the seed root: the
+    # cache hit now verifies a CONTENT digest of that root, so a marker would
+    # itself read as a mutated seed and force the very rebuild it exists to
+    # detect. Nanosecond resolution — a rebuild takes seconds, so no collision.
+    stamped_at = key_file.stat().st_mtime_ns
     v2 = build_seed("seed-1paper-diffdock")
     assert v2 == v1
-    assert marker.exists(), "cache hit should not rebuild (marker was wiped)"
+    assert key_file.stat().st_mtime_ns == stamped_at, "cache hit should not rebuild"
 
 
 def test_force_rebuild_wipes_cache_marker() -> None:
@@ -327,6 +338,140 @@ def test_stale_key_forces_rebuild() -> None:
     assert v2 == v1
     assert not marker.exists(), "stale key should have forced a rebuild"
     assert key_file.read_text(encoding="utf-8").strip() == litman_fingerprint()
+
+
+# ---------------------------------------------------------------------------
+# Seed integrity: the .seed-digest stamp, the canary, the self-healing cache
+# ---------------------------------------------------------------------------
+
+
+def test_build_stamps_a_digest_that_matches_the_seed_it_describes() -> None:
+    """The stamp build_seed writes reproduces on a re-read of the same seed.
+
+    Pins the ordering trap: `.seed-key` is INSIDE the digest scope, so stamping
+    before writing the key would bake in a digest nothing can reproduce; and
+    `.seed-digest` must be OUT of scope, since no file can contain the hash of a
+    tree containing itself.
+    """
+    vault = build_seed("seed-empty")
+    seed_root = vault.parent
+    stamp = seed_root / SEED_DIGEST_FILE
+    assert stamp.is_file(), "build_seed must stamp the seed it just built"
+    assert stamp.read_text(encoding="utf-8").strip() == seed_digest(seed_root)
+    # A stamped seed is by definition intact.
+    assert_seed_intact(seed_root)
+
+
+def test_digest_excludes_only_its_own_stamp() -> None:
+    """.seed-digest is out of scope; .seed-key is IN it (it must not move either)."""
+    vault = build_seed("seed-empty")
+    seed_root = vault.parent
+    before = seed_digest(seed_root)
+
+    # Rewriting the stamp itself cannot change the digest...
+    (seed_root / SEED_DIGEST_FILE).write_text("0" * 64 + "\n", encoding="utf-8")
+    assert seed_digest(seed_root) == before
+    # ...but the key is in scope.
+    key = seed_root / ".seed-key"
+    key.write_text(key.read_text(encoding="utf-8") + "x", encoding="utf-8")
+    assert seed_digest(seed_root) != before
+    build_seed("seed-empty", force=True)  # restore for later tests
+
+
+def test_digest_reads_symlinks_instead_of_following_them(tmp_path: Path) -> None:
+    """Retargeting a symlink must move the digest.
+
+    The whole poisoning mode is deleting/retargeting bridge symlinks. A digest
+    that FOLLOWED links would hash the target's bytes and read a retargeted link
+    whose new target happens to have identical content as "nothing changed".
+    """
+    root = tmp_path / "seed"
+    (root / "papers").mkdir(parents=True)
+    (root / "papers" / "a").write_text("same", encoding="utf-8")
+    (root / "papers" / "b").write_text("same", encoding="utf-8")
+    link = root / "bridge"
+    link.symlink_to("papers/a")
+    before = seed_digest(root)
+
+    link.unlink()
+    link.symlink_to("papers/b")  # same target CONTENT, different target PATH
+    assert seed_digest(root) != before, "digest must track the link, not its target"
+
+
+def test_digest_notices_an_equal_length_edit(tmp_path: Path) -> None:
+    """Content hashing, not size: an equal-length edit is a real poisoning."""
+    root = tmp_path / "seed"
+    root.mkdir()
+    f = root / "metadata.yaml"
+    f.write_text("read-date: 2026-05-01\n", encoding="utf-8")
+    before = seed_digest(root)
+    f.write_text("read-date: 2026-06-15\n", encoding="utf-8")  # same byte count
+    assert seed_digest(root) != before
+
+
+def test_digest_separates_fields_so_paths_cannot_collide(tmp_path: Path) -> None:
+    """("a","12") vs ("a1","2") — no separator means identical hashes."""
+    one = tmp_path / "one"
+    (one / "a").mkdir(parents=True)
+    (one / "a" / "12").write_text("", encoding="utf-8")
+    two = tmp_path / "two"
+    (two / "a1").mkdir(parents=True)
+    (two / "a1" / "2").write_text("", encoding="utf-8")
+    assert seed_digest(one) != seed_digest(two)
+
+
+def test_assert_seed_intact_is_a_noop_without_a_stamp(tmp_path: Path) -> None:
+    """An unstamped root is a hand-made test seed — never alarm on it.
+
+    Load-bearing: test_batch.py's `_fake_seed` returns `tmp_path/"seed"` while its
+    callers pass `work_root=tmp_path/"work"`, so the run dirs live INSIDE the root
+    a digest would cover and every round would look like a leak.
+    """
+    root = tmp_path / "fake-seed"
+    root.mkdir()
+    (root / "lit-config.yaml").write_text("schema: 1\n", encoding="utf-8")
+    assert_seed_intact(root)  # no stamp -> silent
+    (root / "whatever").write_text("mutated freely", encoding="utf-8")
+    assert_seed_intact(root)  # still silent
+
+
+def test_assert_seed_intact_raises_on_a_mutated_stamped_seed(tmp_path: Path) -> None:
+    root = tmp_path / "seed"
+    root.mkdir()
+    (root / "paper.txt").write_text("original", encoding="utf-8")
+    seeds._stamp_seed(root)
+    assert_seed_intact(root)
+
+    (root / "paper.txt").write_text("poisoned", encoding="utf-8")
+    with pytest.raises(seeds.SeedLeakError, match="MUTATED"):
+        assert_seed_intact(root)
+
+
+@pytest.mark.slow
+def test_a_poisoned_cache_heals_itself_on_the_next_build() -> None:
+    """AC5: the exact damage `lit unlink` did to the shared seed, undone.
+
+    Before the stamp, a poisoned seed kept its matching `.seed-key` (litman had
+    not changed), so the cache-hit test waved it through on every future run on
+    the node — the poison outlived the run that caused it, and nothing short of a
+    human remembering to `rm -rf /tmp/litman-bench-seeds` recovered it.
+    """
+    vault = build_seed("seed-5papers-tagged")
+    seed_root = vault.parent
+    bridge = seed_root / "projects" / "PepCodec" / "litman_reflib"
+    links = [p for p in bridge.iterdir() if p.is_symlink()]
+    assert links, "seed precondition: PepCodec has a bridge symlink to unlink"
+
+    victim = links[0]
+    victim.unlink()  # exactly what an escaped `lit unlink` did
+    assert not victim.exists()
+    with pytest.raises(seeds.SeedLeakError):
+        assert_seed_intact(seed_root)
+
+    rebuilt = build_seed("seed-5papers-tagged")
+    assert rebuilt == vault
+    assert victim.is_symlink(), "poisoned cache must be rebuilt, not reused"
+    assert_seed_intact(seed_root)  # and re-stamped
 
 
 def test_ensure_seeds_returns_paths() -> None:

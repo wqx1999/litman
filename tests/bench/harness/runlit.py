@@ -14,6 +14,14 @@ Two isolations, both enforced here, never left to a scenario's good behaviour:
   2026-06-02).
 * **Between scoring units (comparability).** Each :class:`RunVault` is a fresh
   ``cp`` of the seed, so N repeats start identical and a failure never cascades.
+  Copying ``vault/`` is not by itself enough to mean that: a seed's
+  ``lit-config.yaml`` lives INSIDE the vault and names its projects by ABSOLUTE
+  path, so the copy inherits pointers straight back to the shared seed and any
+  project write follows them home. :meth:`RunVault._localize_projects` closes
+  that hole. It matters more than one run: seeds are cached ACROSS runs, so a
+  card that got through poisoned every later card on the node, not just its own
+  run. :func:`harness.seeds.assert_seed_intact` is the standing proof it stays
+  closed.
 
 Every ``lit`` invocation is a real **subprocess** (so the jsonl captures true
 argv / exit / stdout / stderr and env injection works), is flag-driven (the
@@ -76,10 +84,12 @@ class RunVault:
             rv.run("list", log=True)
         # run dir is gone here
 
-    On ``__enter__`` it ``cp``-copies the seed into ``<run_root>/bench-<uuid>/vault``
-    and prepares an isolated registry dir alongside. On ``__exit__`` it removes
-    the entire run dir (best-effort; a leftover under /tmp is a quota nuisance,
-    not a correctness bug, so cleanup never masks a test failure by raising).
+    On ``__enter__`` it ``cp``-copies the seed into ``<run_root>/bench-<uuid>/vault``,
+    prepares an isolated registry dir alongside, and localizes the seed's
+    ``projects/`` into the run dir (:meth:`_localize_projects` — without it the
+    copy still points at the shared seed). On ``__exit__`` it removes the entire
+    run dir (best-effort; a leftover under /tmp is a quota nuisance, not a
+    correctness bug, so cleanup never masks a test failure by raising).
     """
 
     def __init__(self, seed_path: Path, run_root: Path = DEFAULT_RUN_ROOT) -> None:
@@ -101,7 +111,88 @@ class RunVault:
         self.registry_dir.mkdir()
         self.log_path = self.run_dir / RUN_LOG_FILENAME
         self.env = isolated_env(self.registry_dir)
+        try:
+            self._localize_projects()
+        except BaseException:
+            # The copytree above is already on disk; __enter__ raising means no
+            # caller ever gets the handle whose _cleanup would remove it (one
+            # full vault leaked per round). __exit__ is idempotent + rmtree'd
+            # with ignore_errors, so calling it eagerly here is safe.
+            self.__exit__()
+            raise
         return self
+
+    def _localize_projects(self) -> None:
+        """Copy the seed's ``projects/`` sibling in and repoint the config at it.
+
+        **Copying the vault is not isolation.** A seed built with ``lit project
+        add`` has the project's ABSOLUTE path baked into ``vault/lit-config.yaml``
+        — which lives inside the vault, so the copy inherits it verbatim and
+        still aims every project write back at the SHARED seed: ``lit unlink``,
+        ``lit refresh``'s REFERENCES rebuild, ``lit link --rebuild-all``, a drift
+        auto-repair. Copying the directory without repointing the config changes
+        nothing (lit follows the absolute path home); repointing without copying
+        leaves it dangling. It takes both.
+
+        ``projects/`` lands as the vault's SIBLING (``<run_dir>/projects``,
+        mirroring the seed root's own layout) because the bridge symlinks are
+        relative (``../../../vault/papers/<id>``): that shape makes them resolve
+        to THIS run's papers with no link rebuild.
+
+        Paths are moved through ``lit project set-path``, never by editing the
+        YAML: ``lit project --help`` is explicit that both truth sources are kept
+        consistent by its subcommands and that neither side may be hand-edited.
+        """
+        assert self.run_dir is not None and self.vault is not None
+
+        seed_root = self.seed_path.resolve().parent
+        src_projects = seed_root / "projects"
+        if src_projects.is_dir():
+            shutil.copytree(src_projects, self.run_dir / "projects", symlinks=True)
+
+        config = self.vault / "lit-config.yaml"
+        if not config.is_file():
+            return
+        # ruamel, not PyYAML, to match harness.checker and litman itself: ruamel
+        # is the only YAML litman declares, so PyYAML is here transitively at
+        # best. This module is imported by harness.batch, which makes an import
+        # error the whole bench's problem.
+        from ruamel.yaml import YAML
+
+        payload = YAML(typ="safe").load(config.read_text(encoding="utf-8")) or {}
+        for name, configured in (payload.get("projects") or {}).items():
+            try:
+                # Remap by RELPATH, never <run_dir>/projects/<name>: a project's
+                # NAME is a label papers tag with and may differ from its folder
+                # name (`lit project add --help`), so the two only coincide by
+                # convention.
+                rel = Path(str(configured)).resolve().relative_to(seed_root)
+            except ValueError:
+                raise RuntimeError(
+                    f"seed {seed_root} has project {name!r} configured at "
+                    f"{configured!r}, which is OUTSIDE the seed root. The run copy "
+                    "cannot contain it, so the card would write through to that "
+                    "path for real. No seed builds this today; if one now does, "
+                    "that is a new case to design for, not to silently rewrite."
+                ) from None
+            result = self.run(
+                "project", "set-path", str(name), str(self.run_dir / rel),
+                # log=False: littest-run.jsonl is the scoring evidence that "the
+                # CLI was actually invoked" BY THE AGENT. Harness plumbing in that
+                # file would make the card's own `ran:` assertions read commands
+                # nobody asked the agent for.
+                log=False,
+            )
+            if result.exit_code != 0:
+                # Loud, because the silent version is this whole bug: a set-path
+                # that fails leaves the config aimed at the shared seed, and the
+                # card then poisons it exactly as before — while everything looks
+                # normal.
+                raise RuntimeError(
+                    f"could not localize project {name!r} into the run copy: "
+                    f"`lit project set-path` exited {result.exit_code}\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
 
     def __exit__(self, *exc: object) -> None:
         if self.run_dir is not None and self.run_dir.exists():

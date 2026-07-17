@@ -283,8 +283,11 @@ def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) ->
     assert captured["fixtures_pdfs_dir"] == tmp_path / "pdfs"
     assert ensure_seed.seen == "seed-1paper-diffdock"  # type: ignore[attr-defined]
 
-    # (b) the handle shape the scorer consumes.
-    assert set(handle) == {"vault", "jsonl", "cwd", "run", "_cleanup"}
+    # (b) the handle shape the scorer consumes. `_seed_root` is reserved
+    # bookkeeping (stripped before score_fn) — it is where run_batch's seed
+    # canary looks, so the adapter must always hand it over.
+    assert set(handle) == {"vault", "jsonl", "cwd", "run", "_cleanup", "_seed_root"}
+    assert handle["_seed_root"] == (tmp_path / "seed").parent
     assert handle["vault"] == captured["run_vault"]
     assert handle["vault"].is_dir()  # the cp landed
     assert handle["cwd"] == handle["vault"].parent / "cwd"  # neutral_cwd convention
@@ -643,6 +646,116 @@ def _routing_card() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# The seed canary — a card that escapes its sandbox must abort the batch
+# ---------------------------------------------------------------------------
+
+
+def _stamped_seed(tmp_path: Path) -> tuple[Path, Path]:
+    """A seed root stamped the way ``build_seed`` stamps it, + a work root.
+
+    Returns ``(seed_vault, work_root)``. The work root is a SIBLING of the seed
+    root, not a child: the canary digests the whole seed root, so run dirs inside
+    it would read as mutations. (``_fake_seed`` above has neither property — its
+    root is ``tmp_path`` itself, which contains ``work/`` — which is exactly why
+    the canary stays silent for it.)
+    """
+    from harness import seeds
+
+    seed_root = tmp_path / "seedroot"
+    vault = seed_root / "vault"
+    (vault / "papers").mkdir(parents=True)
+    (vault / "lit-config.yaml").write_text("schema: 1\n", encoding="utf-8")
+    seeds._stamp_seed(seed_root)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    return vault, work_root
+
+
+def test_a_card_that_poisons_the_seed_aborts_the_whole_batch(tmp_path: Path) -> None:
+    """A run that mutates the shared seed kills the batch — no report survives.
+
+    Driven END-TO-END through run_batch + the REAL build_live_run_card_fn, not
+    against the canary helper directly. That is the point of the test: the alarm
+    only works because of WHERE it is wired (the round loop, not
+    ``RunVault.__exit__``, whose exceptions ``_maybe_cleanup`` swallows by
+    contract). A test that only proved "the helper raises" would stay green with
+    the alarm wired somewhere it can never be heard, and the live path dead.
+
+    Note the round scores 1: a card can do everything right and still poison the
+    seed for its successors, so a passing score is no defence.
+    """
+    import pytest
+
+    from harness import seeds
+
+    seed_vault, work_root = _stamped_seed(tmp_path)
+
+    def poisoning_run_card(
+        card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token
+    ):
+        # What the real leak did: a `lit` call inside the run copy followed a
+        # baked-in absolute path back out and wrote to the shared seed.
+        (seed_vault / "papers" / "leaked.txt").write_text("poison", encoding="utf-8")
+        return ExecutorResult()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        run_card_impl=poisoning_run_card,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    report = None
+    with pytest.raises(seeds.SeedLeakError, match="MUTATED"):
+        report = run_batch(
+            [{"id": "D4-unlink", "seed": "seed-5papers-tagged", "expected_end_state": []}],
+            model="m",
+            rounds=1,
+            run_card_fn=run_fn,
+            score_fn=lambda card, **kw: (1, []),
+        )
+
+    assert report is None, "a run whose seed moved under it must not report a number"
+    # Cleanup still ran: aborting must not also leak the run dir.
+    assert list(work_root.iterdir()) == [], "run dir should still have been removed"
+
+
+def test_the_canary_stays_silent_when_the_seed_is_left_alone(tmp_path: Path) -> None:
+    """The counterpart: an honest card on a STAMPED seed reports normally.
+
+    Without this, a canary that fired unconditionally would pass the test above
+    while making every real run abort.
+    """
+    seed_vault, work_root = _stamped_seed(tmp_path)
+
+    def honest_run_card(
+        card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token
+    ):
+        # Writes only inside its own disposable copy, as a card should.
+        (Path(run_vault) / "papers" / "scratch.txt").write_text("ok", encoding="utf-8")
+        return ExecutorResult()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        run_card_impl=honest_run_card,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    report = run_batch(
+        [{"id": "D4-unlink", "seed": "seed-5papers-tagged", "expected_end_state": []}],
+        model="m",
+        rounds=2,
+        run_card_fn=run_fn,
+        score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.trr_mean == 1.0
+    assert report.cards[0].rounds == [1, 1]
+
+
 def test_run_batch_routing_run_fn_none_leaves_ra_unscored() -> None:
     """Without routing_run_fn the routing card is tagged/counted but RA is None
     (honest 'not scored', never a fake 0)."""
@@ -784,6 +897,44 @@ def test_build_live_routing_run_fn_delegates_per_case(tmp_path: Path) -> None:
     observed = run_fn(card, model="some-model")
     assert calls == ["把这篇加到库里", "继续读"]
     assert observed == ["lit-library", None]
+
+
+def test_a_routing_probe_that_poisons_the_seed_aborts_too(tmp_path: Path) -> None:
+    """The routing path spawns live agents against a cached seed, so it carries
+    the same canary as the card loop — an asymmetry here would be a hole in the
+    same wall. Aborts on the FIRST poisoned case: the second must never run."""
+    import pytest
+
+    from harness import seeds
+
+    seed_vault, work_root = _stamped_seed(tmp_path)
+    calls: list[str] = []
+
+    def poisoning_observe(utt, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
+        calls.append(str(utt))
+        (seed_vault / "papers" / "leaked.txt").write_text("poison", encoding="utf-8")
+        return "lit-library"
+
+    run_fn = build_live_routing_run_fn(
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        observe_impl=poisoning_observe,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    with pytest.raises(seeds.SeedLeakError, match="routing probe"):
+        run_fn(
+            {
+                "id": "I",
+                "layer": "routing",
+                "in_scope_skills": ["lit-library"],
+                "cases": [{"utt": "第一句"}, {"utt": "第二句"}],
+            },
+            model="m",
+        )
+
+    assert calls == ["第一句"], "the batch must stop at the case that leaked"
+    assert list(work_root.iterdir()) == [], "aborting must not also leak the run dir"
 
 
 # ---------------------------------------------------------------------------

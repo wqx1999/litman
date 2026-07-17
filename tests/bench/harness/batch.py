@@ -64,6 +64,7 @@ from typing import Any, Callable
 
 from harness.checker import _split_assertion, resolve
 from harness.routing import RoutingResult, score_routing
+from harness.seeds import assert_seed_intact
 
 
 def _card_field(card: Any, name: str) -> Any:
@@ -297,10 +298,13 @@ def build_live_run_card_fn(
        hand-rolled cp/rm),
     3. calls ``run_card_impl`` (default :func:`harness.executor.run_card`) with
        the run vault + ``model`` / ``base_url`` / ``auth_token`` passed through,
-    4. returns a scoreable handle ``{vault, jsonl, cwd, run, _cleanup}`` —
-       ``cwd`` is :func:`harness.executor.neutral_cwd_for` (where ``lit export``
+    4. returns a scoreable handle ``{vault, jsonl, cwd, run, _cleanup, _seed_root}``
+       — ``cwd`` is :func:`harness.executor.neutral_cwd_for` (where ``lit export``
        drops ``refs.bib``); ``_cleanup`` rm's the whole run dir (called by
-       :func:`run_batch` AFTER scoring, so the vault survives the check).
+       :func:`run_batch` AFTER scoring, so the vault survives the check);
+       ``_seed_root`` is the seed this round copied from, which
+       :func:`run_batch` re-digests afterwards to prove the round did not write
+       through to it (:func:`harness.seeds.assert_seed_intact`).
 
     ``run_card_impl`` / ``ensure_seed_impl`` are injectable so the tests drive the
     full adapter with a canned :class:`ExecutorResult` + a tmp seed dir, never
@@ -352,6 +356,9 @@ def build_live_run_card_fn(
                 "cwd": neutral_cwd_for(run_vault),
                 "run": result,
                 "_cleanup": rv.__exit__,  # rm -rf the whole run dir
+                # Where run_batch's canary looks. Reserved (_-prefixed) so
+                # _score_one strips it before score_fn sees the handle.
+                "_seed_root": Path(seed_vault).parent,
             }
         except BaseException:
             rv.__exit__(*sys.exc_info())
@@ -438,6 +445,16 @@ def build_live_routing_run_fn(
                 kwargs["usage_sink"] = usage_sink
             try:
                 skill = observe_impl(str(utt), rv.vault, **kwargs)
+                # Same canary as the card loop, for the same reason: this spawns
+                # a live agent against a shared, cross-run-cached seed. The known
+                # leak (an absolute project path in lit-config.yaml) cannot reach
+                # seed-empty, which has no projects at all — but the canary is
+                # here for the vectors nobody has enumerated, and reasoning about
+                # which of those exist is precisely what failed before.
+                assert_seed_intact(
+                    Path(seed_vault).resolve().parent,
+                    culprit=f"routing probe {str(utt)!r}",
+                )
             finally:
                 rv.__exit__()  # routing probe leaves nothing to score; rm now
             observed.append(skill)
@@ -602,6 +619,10 @@ def run_batch(
                     _dump_transcript(
                         transcript_dir, cid, i, model, run, resolved, _trail
                     )
+                # Canary LAST inside the try, after the transcript dump: if this
+                # round escaped its sandbox, the dump is the evidence of which
+                # commands did it, and it must survive the abort.
+                _assert_seed_intact(run, card_id=cid, round=i)
             finally:
                 _maybe_cleanup(run)
             round_scores.append(int(resolved))
@@ -740,11 +761,11 @@ def _score_one(
 
     The live adapter returns a mapping carrying the artifacts ``score_fn`` needs
     (``vault`` / ``jsonl`` / ``cwd`` / ``run``) plus reserved ``_``-prefixed
-    bookkeeping keys (``_cleanup``); a test fake may return an ``int`` (pre-scored)
-    or a ``(resolved, trail)`` tuple directly. Reserved keys are stripped before
-    spreading into ``score_fn`` so :func:`harness.checker.resolve` never sees an
-    unexpected ``_cleanup`` kwarg. An int short-circuits to that score; a mapping
-    is folded by ``score_fn``.
+    bookkeeping keys (``_cleanup`` / ``_seed_root``); a test fake may return an
+    ``int`` (pre-scored) or a ``(resolved, trail)`` tuple directly. Reserved keys
+    are stripped before spreading into ``score_fn`` so
+    :func:`harness.checker.resolve` never sees an unexpected ``_cleanup`` kwarg.
+    An int short-circuits to that score; a mapping is folded by ``score_fn``.
     """
     if isinstance(run, int):
         return run, []
@@ -836,6 +857,40 @@ def _dump_transcript(
             f"WARNING: failed to write transcript {card_id}-r{round}: {e}",
             file=sys.stderr,
         )
+
+
+def _assert_seed_intact(run: Any, *, card_id: str, round: int) -> None:
+    """Fire the seed canary for one round, if the handle names a seed root.
+
+    ``card_id``/``round`` travel into the error text because the digest cannot
+    know them and the reader needs them: ``run_batch`` prints nothing per card,
+    so without this the traceback says a seed moved and leaves the operator to
+    guess which of N cards moved it.
+
+    Called from the round loop — NOT from ``RunVault.__exit__``, which is where
+    it looks like it belongs. Three reasons it cannot live there, each fatal on
+    its own:
+
+    * **It would be swallowed.** ``_cleanup`` IS ``rv.__exit__``, and
+      :func:`_maybe_cleanup` wraps it in ``except Exception: pass`` by documented
+      contract ("Cleanup never raises into the caller"). The alarm would fire,
+      get eaten, and the round would score and report as if nothing happened —
+      precisely the silent-poisoning failure this exists to end.
+    * **It would mask real errors.** ``__exit__`` also runs on the error path
+      (``rv.__exit__(*sys.exc_info())``) and in ``finally``; raising from there
+      REPLACES the exception that actually broke the run.
+    * **It would leak the run dir.** ``__exit__`` owns the rmtree; raising before
+      it skips the cleanup it was called to do.
+
+    Fakes (ints / tuples / dicts without ``_seed_root``) carry no seed root, so
+    this is a no-op for them.
+    """
+    if isinstance(run, dict):
+        seed_root = run.get("_seed_root")
+        if seed_root is not None:
+            assert_seed_intact(
+                Path(seed_root), culprit=f"card {card_id!r} round {round}"
+            )
 
 
 def _maybe_cleanup(run: Any) -> None:
