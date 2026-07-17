@@ -252,8 +252,8 @@ def test_seed_auth_raises_with_login_instructions_when_not_logged_in(
     assert "never performs a login" in msg
 
 
-def test_prepare_rejects_the_claude_only_proxy_flags(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="claude-only"):
+def test_prepare_rejects_proxy_flags_it_cannot_honor(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no Anthropic-compatible proxy mode"):
         AgyAdapter().prepare(
             tmp_path, run_vault=tmp_path / "vault", base_url="https://proxy.example/v1"
         )

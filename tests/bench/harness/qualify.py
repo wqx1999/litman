@@ -21,13 +21,15 @@ The seven checks (§6):
 4. ``skill_source``      — the skill it loaded is the repo source: a sentinel
    planted in the isolated copy comes back in the agent's answer. If it comes back
    empty, the agent read someone else's skill (or none).
-5. ``evidence_chain``    — the evidence source recorded the call (a shim log entry
-   for agy, a parsed lit argv for claude/cursor). This is the one that catches "the
-   agent worked fine, the parser did not".
+5. ``evidence_chain``    — the evidence source recorded the call. This is the one
+   that catches "the agent worked fine, the parser did not". A failure names the
+   adapter's own ``evidence_source`` (today: a shim log for agy, the event stream
+   for claude/cursor) rather than guessing from the agent's name.
 6. ``model_pinned``      — served and requested normalize to the same family.
-   SKIPPED for agy, which reports no model — and the skip is written into the
-   report as "agy's model was NOT verified", because a silent skip here is how a
-   whole run gets served by the wrong model without anyone noticing.
+   SKIPPED for any agent whose ``capabilities.served_model`` is False (today only
+   agy) — and the skip is written into the report as "that agent's model was NOT
+   verified", because a silent skip here is how a whole run gets served by the
+   wrong model without anyone noticing.
 7. ``tokens``            — the counters are actually there. SKIPPED where the
    capability sheet already says they do not exist.
 
@@ -258,7 +260,7 @@ def qualify(
             return qual
 
         qual.model_served = getattr(result, "model_served", None)
-        qual.checks.extend(_checks_from_probe(agent, model, caps, result))
+        qual.checks.extend(_checks_from_probe(adapter, model, caps, result))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -300,8 +302,13 @@ def _check_binary(adapter: Any, version_impl: Callable[[str], int] | None) -> Qu
     return QualCheck("binary", STATUS_PASS, adapter.bin)
 
 
-def _checks_from_probe(agent: str, model: str, caps: Any, result: Any) -> list[QualCheck]:
-    """Checks 2/3/5/6/7, all read off the single ``lit --version`` probe run."""
+def _checks_from_probe(adapter: Any, model: str, caps: Any, result: Any) -> list[QualCheck]:
+    """Checks 2/3/5/6/7, all read off the single ``lit --version`` probe run.
+
+    Takes the ADAPTER, not its name: check 5's failure text has to name the source
+    the reader should go looking in, and only the adapter knows which mechanism
+    recovered (or failed to recover) the argv.
+    """
     checks: list[QualCheck] = []
 
     # 2. headless drive
@@ -344,18 +351,17 @@ def _checks_from_probe(agent: str, model: str, caps: Any, result: Any) -> list[Q
             )
         )
     else:
-        source = "lit-calls.jsonl (PATH shim)" if agent == "agy" else "the event stream"
         checks.append(
             QualCheck(
                 "evidence_chain",
                 STATUS_FAIL,
-                f"no lit argv recovered from {source}; every card would score 0 "
-                "for reasons that have nothing to do with litman",
+                f"no lit argv recovered from {adapter.evidence_source}; every card "
+                "would score 0 for reasons that have nothing to do with litman",
             )
         )
 
     # 6. model pinned
-    checks.append(_check_model_pinned(agent, model, caps, result))
+    checks.append(_check_model_pinned(adapter.name, model, caps, result))
 
     # 7. token counters
     #
@@ -372,8 +378,8 @@ def _checks_from_probe(agent: str, model: str, caps: Any, result: Any) -> list[Q
             QualCheck(
                 "tokens",
                 STATUS_SKIP,
-                f"{agent} emits no token counters; the report's tokens section "
-                "is None for this agent, not 0",
+                f"{adapter.name} emits no token counters; the report's tokens "
+                "section is None for this agent, not 0",
             )
         )
     elif usage.get("input_tokens") and usage.get("output_tokens"):
@@ -389,7 +395,8 @@ def _checks_from_probe(agent: str, model: str, caps: Any, result: Any) -> list[Q
             QualCheck(
                 "tokens",
                 STATUS_FAIL,
-                f"{agent} should report counters but the probe carried {usage!r}. "
+                f"{adapter.name} should report counters but the probe carried "
+                f"{usage!r}. "
                 "A live generation cannot cost 0 input + 0 output tokens, so the "
                 "counter keys have most likely been renamed upstream — which would "
                 "publish this run's token totals as 0",

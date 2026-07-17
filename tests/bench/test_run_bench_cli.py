@@ -10,7 +10,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import run_bench
+from harness.agents import AGENT_NAMES, get_adapter
+
+
+def _proxy_agents() -> list[str]:
+    """Agents declaring an Anthropic-compatible proxy mode. Called, never cached.
+
+    Resolved inside a test body, NOT at import time. A module-level comprehension
+    over ``get_adapter(n).supports_anthropic_proxy`` reads the attribute during
+    COLLECTION, so an adapter that simply forgot to declare it aborts the whole
+    session with a bare AttributeError pointing at this file — and
+    ``test_every_agent_declares_the_whole_adapter_surface``, the test written to
+    explain exactly that mistake, never gets to run. Deferring it keeps the
+    purpose-built test the one that reports.
+    """
+    return [n for n in AGENT_NAMES if get_adapter(n).supports_anthropic_proxy]
 
 
 def test_run_dir_files_report_and_transcripts(tmp_path: Path) -> None:
@@ -59,33 +75,46 @@ def test_run_dir_explicit_out_overrides_but_transcripts_still_default(tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# --base-url is claude-only, and must be refused BEFORE anything spawns
+# --base-url needs a proxy-capable agent, and must be refused BEFORE anything spawns
 # ---------------------------------------------------------------------------
 
 
-def test_proxy_flags_are_refused_for_non_claude_agents(capsys) -> None:
-    """cursor/agy `prepare()` also raise — but that fires inside the first card,
-    after Phase 0 has already burned two live spawns, and surfaces as a bare
-    traceback. argparse must refuse it at the boundary instead."""
-    import pytest
+@pytest.mark.parametrize("agent", AGENT_NAMES)
+def test_proxy_flags_are_refused_for_agents_without_a_proxy_mode(agent, capsys) -> None:
+    """Their `prepare()` also raises — but that fires inside the first card, after
+    Phase 0 has already burned two live spawns, and surfaces as a bare traceback.
+    argparse must refuse it at the boundary instead.
 
-    for agent in ("cursor", "agy"):
-        with pytest.raises(SystemExit) as e:
-            run_bench.main(
-                ["--agent", agent, "--base-url", "http://localhost:4000", "--dry-run"]
-            )
-        assert e.value.code == 2  # argparse usage error, not a traceback
-        err = capsys.readouterr().err
-        assert "claude-only" in err
-        assert "--agent claude" in err  # tells the user the way out
+    Parametrized over every agent and branched INSIDE the body, so the roster is
+    never hand-listed and the next agent is covered whichever way it declares.
+    """
+    supported = _proxy_agents()
+    if agent in supported:
+        pytest.skip(f"{agent} has a proxy mode; its accept path is tested separately")
+
+    with pytest.raises(SystemExit) as e:
+        run_bench.main(
+            ["--agent", agent, "--base-url", "http://localhost:4000", "--dry-run"]
+        )
+    assert e.value.code == 2  # argparse usage error, not a traceback
+    err = capsys.readouterr().err
+    assert "proxy mode" in err
+    # The way out is named from the registry, so the day a second proxy-capable
+    # agent lands the message stops advertising only claude. Asserting the list is
+    # non-empty first: an empty loop below would assert nothing while looking like
+    # it did — the same shape as the bug this whole change repairs.
+    assert supported, "no agent declares a proxy mode; the error text has no way out"
+    for name in supported:
+        assert f"--agent {name}" in err
 
 
-def test_auth_token_alone_is_also_refused_for_non_claude(capsys) -> None:
-    import pytest
-
+@pytest.mark.parametrize("agent", AGENT_NAMES)
+def test_auth_token_alone_is_also_refused(agent, capsys) -> None:
+    if agent in _proxy_agents():
+        pytest.skip(f"{agent} has a proxy mode")
     with pytest.raises(SystemExit):
-        run_bench.main(["--agent", "agy", "--auth-token", "tok", "--dry-run"])
-    assert "claude-only" in capsys.readouterr().err
+        run_bench.main(["--agent", agent, "--auth-token", "tok", "--dry-run"])
+    assert "proxy mode" in capsys.readouterr().err
 
 
 def test_proxy_flags_are_still_accepted_for_claude(tmp_path: Path) -> None:
@@ -130,8 +159,6 @@ def test_a_failed_qualification_exits_nonzero_before_any_live_wiring(
     reach the live adapter builders. Every other test here drives --dry-run
     (which skips the gate), so if the SystemExit at the gate were ever softened
     to a print-and-continue, this is the only test that goes red."""
-    import pytest
-
     from harness.qualify import QualCheck, Qualification
 
     monkeypatch.delenv("LITMAN_BENCH_FAKE", raising=False)

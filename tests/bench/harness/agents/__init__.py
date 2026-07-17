@@ -48,6 +48,7 @@ be trusted for this: cursor still reports ``permissionMode: "default"`` while
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -56,6 +57,66 @@ if TYPE_CHECKING:
     from harness.executor import ExecutorResult
 
 AGENT_NAMES = ("claude", "cursor", "agy")
+
+
+# ---------------------------------------------------------------------------
+# The isolation seam, shared
+# ---------------------------------------------------------------------------
+
+#: Env vars that name a config/credential dir by ABSOLUTE path, so they outlive a
+#: ``$HOME`` redirect and re-open the isolation seam. :func:`isolated_env` drops
+#: every one from the child env; an adapter that legitimately uses one re-sets it
+#: to its OWN isolated path afterwards (claude does exactly that with
+#: ``CLAUDE_CONFIG_DIR``). ``tests/bench/conftest.py`` clears the same tuple from
+#: the TEST process, so the child-side and test-side lists cannot drift.
+#:
+#: NOT exhaustive, and it cannot be: this is a denylist applied to an inherited
+#: ``os.environ``, so it only knows the vars of the agents written so far. Adding
+#: an agent means asking which var ITS CLI resolves BEFORE ``$HOME`` and putting
+#: it here — that question has a different answer for every vendor, and getting it
+#: wrong leaks a real credential rather than failing. The structural alternative
+#: (build the child env from an ALLOWLIST instead of copying ``os.environ``) is not
+#: taken, because PATH/conda/locale/proxy vars all have to survive and enumerating
+#: them is its own denylist in disguise; this is a deliberate trade, not an
+#: oversight.
+HOME_ESCAPING_CONFIG_VARS: tuple[str, ...] = (
+    # cursor's login lives in ~/.config/cursor; every XDG-respecting CLI reads it.
+    "XDG_CONFIG_HOME",
+    # claude._real_config_dir() reads this FIRST, before ~/.claude.
+    "CLAUDE_CONFIG_DIR",
+)
+
+
+def isolated_env(*, home: Path, run_vault: Path, registry_dir: Path) -> dict[str, str]:
+    """The child env EVERY adapter starts from: real home sealed, ``lit`` re-aimed.
+
+    Starts from ``os.environ`` so PATH and conda survive — PATH is what resolves
+    the agent's bare ``lit``, which is what the skills teach it to type, and it is
+    deliberately inherited — then applies the three redirects and drops the vars
+    that would otherwise outlive them:
+
+    * ``LIT_LIBRARY`` / ``LITMAN_REGISTRY_DIR`` — the agent's ``lit`` targets the
+      run's disposable vault and registry, never the maintainer's real library;
+    * ``HOME`` — a per-run home, so nothing installed in the real one (skills above
+      all) is visible to the run;
+    * every var in :data:`HOME_ESCAPING_CONFIG_VARS` — **dropped, never
+      redirected**. Read that tuple's comment before adding an agent: the list is
+      a denylist and is only complete for the agents written so far.
+
+    Shared rather than copied per adapter because it *is* the isolation contract
+    that ``test_agents_registry`` asserts for every name in :data:`AGENT_NAMES`.
+    Three hand-rolled copies is exactly how ``agy`` shipped with no
+    ``XDG_CONFIG_HOME`` drop at all while the parametrized test stayed green (the
+    test only ever saw an env where the var was already unset, so it asserted
+    nothing). An adapter layers its OWN vars on top of the returned dict.
+    """
+    env = os.environ.copy()
+    env["LIT_LIBRARY"] = str(run_vault)
+    env["LITMAN_REGISTRY_DIR"] = str(registry_dir)
+    env["HOME"] = str(home)
+    for var in HOME_ESCAPING_CONFIG_VARS:
+        env.pop(var, None)
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +259,7 @@ def known_model_strings() -> list[str]:
 class AgentAdapter(Protocol):
     """What ``harness.executor.run_card`` needs from one agent CLI."""
 
-    #: "claude" | "cursor" | "agy"
+    #: This adapter's registry key — one of :data:`AGENT_NAMES`.
     name: str
     #: The CLI binary (env-overridable per adapter module).
     bin: str
@@ -209,6 +270,26 @@ class AgentAdapter(Protocol):
     capabilities: AgentCapabilities
     #: The permission flags this adapter hard-codes, verbatim, for the report.
     permission_flags: tuple[str, ...]
+    #: True only for an agent whose CLI honors ``ANTHROPIC_BASE_URL`` /
+    #: ``ANTHROPIC_AUTH_TOKEN`` — what ``--base-url`` / ``--auth-token`` export.
+    #: Declared here so ``run_bench`` can refuse at the CLI boundary before Phase 0
+    #: burns a live spawn; each adapter's ``prepare`` still raises as the backstop.
+    #:
+    #: Named for the Anthropic shape ON PURPOSE. An agent can have a perfectly good
+    #: proxy mode with different env vars (an OpenAI-shaped one, say) and must still
+    #: declare False here — ``--base-url`` exports the Anthropic pair and nothing
+    #: else. A generic ``supports_anthropic_proxy`` would read as an invitation to declare
+    #: True and then be refused for a mode it really has.
+    supports_anthropic_proxy: bool
+    #: Where THIS agent's ``lit`` argv is recovered from, in prose, for the
+    #: qualification sheet's failure text: agy's PATH-shim log is a FILE on disk,
+    #: claude's and cursor's is the CLI's own event stream. A reader told the wrong
+    #: one debugs the wrong thing.
+    #:
+    #: Convention, not a contract: the tests check it is a non-empty string and
+    #: nothing more. An adapter that says "the event stream" while using a shim
+    #: passes. It is a label for a human, and it is only as true as its author.
+    evidence_source: str
 
     def skills_dir(self, base: Path) -> Path:
         """Where THIS agent discovers skills, inside the run's isolated home."""
@@ -256,12 +337,14 @@ def get_adapter(name: str) -> AgentAdapter:
 
 __all__ = [
     "AGENT_NAMES",
+    "HOME_ESCAPING_CONFIG_VARS",
     "NOT_MEASURABLE",
     "AgentAdapter",
     "AgentCapabilities",
     "NotMeasurable",
     "family_of",
     "get_adapter",
+    "isolated_env",
     "known_model_strings",
     "model_family",
 ]

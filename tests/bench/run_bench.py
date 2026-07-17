@@ -335,15 +335,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # The proxy flags are claude-only. The adapters reject them too, but that fires
-    # inside the first card — AFTER Phase 0 has already burned two live spawns —
-    # and surfaces as a bare traceback. Refuse at the boundary instead, before
-    # anything is spawned.
-    if (args.base_url is not None or args.auth_token is not None) and args.agent != "claude":
+    # The proxy flags need an agent that honors ANTHROPIC_BASE_URL. The adapters
+    # reject them too, but that fires inside the first card — AFTER Phase 0 has
+    # already burned two live spawns — and surfaces as a bare traceback. Refuse at
+    # the boundary instead, before anything is spawned.
+    #
+    # Asks the adapter rather than testing the name: a hard-coded `!= "claude"`
+    # silently auto-refuses every agent added after it was written — including one
+    # that does support a proxy — and the refusal reads like someone's decision.
+    if (args.base_url is not None or args.auth_token is not None) and not get_adapter(
+        args.agent
+    ).supports_anthropic_proxy:
+        supported = [n for n in AGENT_NAMES if get_adapter(n).supports_anthropic_proxy]
+        # Guarded: with no proxy-capable agent registered, the join is empty and
+        # the sentence trails off into "or use ." — a way out that names nothing.
+        way_out = (
+            "Drop them, or use " + " / ".join("--agent " + n for n in supported) + "."
+            if supported
+            else "Drop them — no registered agent has one."
+        )
         parser.error(
-            f"--base-url / --auth-token are claude-only (the external-model proxy "
-            f"mode); --agent {args.agent} has no Anthropic-compatible proxy mode. "
-            f"Drop them, or use --agent claude."
+            f"--base-url / --auth-token need an agent with an Anthropic-compatible "
+            f"proxy mode; --agent {args.agent} has none. {way_out}"
         )
 
     # Resolve the model against the CHOSEN agent, not a shared module constant:

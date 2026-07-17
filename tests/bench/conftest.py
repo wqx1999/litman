@@ -44,7 +44,16 @@ def _no_real_credential_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
     anyway — an unset HOME would look isolated and not be. Faking a home stays the
     individual test's job; this fixture only guarantees that when a test does fake
     one, nothing silently overrides it.
+
+    The list is :data:`harness.agents.HOME_ESCAPING_CONFIG_VARS`, shared with
+    :func:`harness.agents.isolated_env` rather than repeated here: this fixture
+    protects the TEST process and ``isolated_env`` protects the AGENT's process,
+    but they are the same question — "which var names a real config dir absolutely"
+    — and two copies of one answer drift. Adding an agent means adding its var
+    THERE, and both sides move together.
     """
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    from harness.agents import HOME_ESCAPING_CONFIG_VARS
+
+    for var in HOME_ESCAPING_CONFIG_VARS:
+        monkeypatch.delenv(var, raising=False)
 

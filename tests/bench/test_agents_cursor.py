@@ -208,10 +208,14 @@ def test_capabilities_are_declared_not_inferred() -> None:
     )
 
 
-def test_prepare_rejects_the_claude_only_proxy_flags(tmp_path: Path) -> None:
+def test_prepare_rejects_proxy_flags_it_cannot_honor(tmp_path: Path) -> None:
     """--base-url would be silently ignored otherwise: an un-proxied run reported
-    as a proxied one is a wrong data point, not a warning."""
-    with pytest.raises(ValueError, match="claude-only"):
+    as a proxied one is a wrong data point, not a warning.
+
+    Its registry-level twin asserts this for EVERY agent, derived from
+    ``supports_anthropic_proxy``; this one stays as cursor's own backstop and pins the text.
+    """
+    with pytest.raises(ValueError, match="no Anthropic-compatible proxy mode"):
         CursorAdapter().prepare(
             tmp_path, run_vault=tmp_path / "vault", base_url="https://proxy.example/v1"
         )

@@ -65,7 +65,7 @@ import shlex
 import shutil
 from pathlib import Path
 
-from harness.agents import AgentCapabilities
+from harness.agents import AgentCapabilities, isolated_env
 from harness.executor import (
     ExecutorResult,
     LitCall,
@@ -130,21 +130,14 @@ def executor_env(
 ) -> dict[str, str]:
     """Child env for the ``claude`` executor process.
 
-    Starts from ``os.environ`` (PATH / conda survive — note PATH is what resolves
-    the agent's bare ``lit``, and it is inherited, so redirecting ``HOME`` below
-    does not disturb it), then:
+    The shared isolation seam (:func:`harness.agents.isolated_env`) does the part
+    every agent needs — ``LIT_LIBRARY`` / ``LITMAN_REGISTRY_DIR`` / ``HOME``
+    redirected, ``XDG_CONFIG_HOME`` dropped. Layered on top, claude-only:
 
-    * ``LIT_LIBRARY=<run_vault>`` — the agent's bare ``lit`` targets the /tmp copy;
-    * ``LITMAN_REGISTRY_DIR=<registry_dir>`` — no real registry;
-    * ``CLAUDE_CONFIG_DIR=<config_dir>`` — isolated skills + claude config;
-    * ``HOME=<home>`` — a per-run empty home, so nothing installed in the user's
-      real one (skills, and whatever else claude keeps beside its config dir) is
-      visible to the run. ``CLAUDE_CONFIG_DIR`` does NOT subsume this: it re-homes
-      the config dir only, and everything claude reads from ``$HOME`` directly
-      stayed reachable until this line existed. See the module docstring.
-    * ``XDG_CONFIG_HOME`` — **dropped**, never redirected: if it is set it points
-      at the real ``~/.config`` by absolute path, which survives a ``HOME`` change
-      and re-opens the seam (cursor hit exactly this).
+    * ``CLAUDE_CONFIG_DIR=<config_dir>`` — isolated skills + claude config. It does
+      NOT subsume the ``HOME`` redirect: it re-homes the config dir only, and
+      everything claude reads from ``$HOME`` directly stayed reachable until that
+      redirect existed. See the module docstring.
 
     ``home`` is required rather than defaulted precisely because it is a seam: an
     optional one would let a new call site inherit the real ``HOME`` by saying
@@ -157,12 +150,8 @@ def executor_env(
     the proxy authenticates; OAuth is skipped in this mode (see
     :meth:`ClaudeAdapter.prepare`).
     """
-    env = os.environ.copy()
-    env["LIT_LIBRARY"] = str(run_vault)
-    env["LITMAN_REGISTRY_DIR"] = str(registry_dir)
+    env = isolated_env(home=home, run_vault=run_vault, registry_dir=registry_dir)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
-    env["HOME"] = str(home)
-    env.pop("XDG_CONFIG_HOME", None)
     if base_url is not None:
         # env var names confirmed at external-model integration time per M34 §3.6.B
         env["ANTHROPIC_BASE_URL"] = str(base_url)
@@ -355,6 +344,10 @@ class ClaudeAdapter:
     name = "claude"
     default_model = DEFAULT_MODEL
     permission_flags = PERMISSION_FLAGS
+    # The only agent with an Anthropic-compatible proxy mode: the CLI honors
+    # ANTHROPIC_BASE_URL, which is what --base-url / --auth-token export.
+    supports_anthropic_proxy = True
+    evidence_source = "the event stream"
     capabilities = AgentCapabilities(
         tokens=True,        # four counters on the result event
         turns=True,         # num_turns on the result event

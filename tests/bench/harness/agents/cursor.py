@@ -51,7 +51,7 @@ import re
 import shutil
 from pathlib import Path
 
-from harness.agents import AgentCapabilities
+from harness.agents import AgentCapabilities, isolated_env
 from harness.executor import (
     ExecutorResult,
     LitCall,
@@ -250,6 +250,8 @@ class CursorAdapter:
     name = "cursor"
     default_model = DEFAULT_MODEL
     permission_flags = PERMISSION_FLAGS
+    supports_anthropic_proxy = False  # no Anthropic-compatible proxy mode
+    evidence_source = "the event stream"
     capabilities = AgentCapabilities(
         tokens=True,         # four counters, camelCase (normalize_usage)
         turns=False,         # no turn count anywhere in the stream
@@ -285,7 +287,9 @@ class CursorAdapter:
         if base_url is not None:
             raise ValueError(
                 "cursor has no Anthropic-compatible proxy mode: --base-url / "
-                "--auth-token are claude-only. Drop them, or run --agent claude."
+                "--auth-token need an agent whose supports_anthropic_proxy is True. "
+                "(run_bench refuses this at the CLI boundary; reaching here means "
+                "a caller bypassed it.)"
             )
         home = base / "home"
         auth_dir = home / ".config" / "cursor"
@@ -299,14 +303,11 @@ class CursorAdapter:
         registry_dir = base / "cursor-registry"
         registry_dir.mkdir(parents=True, exist_ok=True)
 
-        env = os.environ.copy()
-        env["LIT_LIBRARY"] = str(run_vault)
-        env["LITMAN_REGISTRY_DIR"] = str(registry_dir)
-        env["HOME"] = str(home)
-        # HOME is the isolation seam, but a set XDG_CONFIG_HOME would still point
-        # cursor at the user's real ~/.config — drop it so the fake HOME wins.
-        env.pop("XDG_CONFIG_HOME", None)
-        return env
+        # Nothing cursor-specific to layer on: the shared seam is the whole env.
+        # (The XDG_CONFIG_HOME drop matters most here — ~/.config/cursor is where
+        # cursor's own login lives, so a set XDG_CONFIG_HOME would walk straight
+        # past the redirected HOME to the real one.)
+        return isolated_env(home=home, run_vault=run_vault, registry_dir=registry_dir)
 
     def build_argv(self, prompt: str, *, model: str) -> list[str]:
         return [

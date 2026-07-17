@@ -52,7 +52,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from harness.agents import AgentCapabilities
+from harness.agents import AgentCapabilities, isolated_env
 from harness.executor import (
     ExecutorResult,
     LitCall,
@@ -193,6 +193,10 @@ class AgyAdapter:
     name = "agy"
     default_model = DEFAULT_MODEL
     permission_flags = PERMISSION_FLAGS
+    supports_anthropic_proxy = False  # no Anthropic-compatible proxy mode
+    # The only agent whose lit argv comes from a file rather than the stream: it
+    # emits no tool events, so a PATH shim logs the calls instead.
+    evidence_source = "lit-calls.jsonl (PATH shim)"
     capabilities = AgentCapabilities(
         tokens=False,        # no counters emitted at all
         turns=False,
@@ -221,7 +225,9 @@ class AgyAdapter:
         if base_url is not None:
             raise ValueError(
                 "agy has no Anthropic-compatible proxy mode: --base-url / "
-                "--auth-token are claude-only. Drop them, or run --agent claude."
+                "--auth-token need an agent whose supports_anthropic_proxy is True. "
+                "(run_bench refuses this at the CLI boundary; reaching here means "
+                "a caller bypassed it.)"
             )
         # A brand-new HOME per run (measured: costs ~1s over a warm one), holding
         # exactly two things — the seeded token and the repo-source skills. There
@@ -236,10 +242,10 @@ class AgyAdapter:
         registry_dir = base / "agy-registry"
         registry_dir.mkdir(parents=True, exist_ok=True)
 
-        env = os.environ.copy()
-        env["LIT_LIBRARY"] = str(run_vault)
-        env["LITMAN_REGISTRY_DIR"] = str(registry_dir)
-        env["HOME"] = str(home)
+        env = isolated_env(home=home, run_vault=run_vault, registry_dir=registry_dir)
+        # agy-only: the shim dir goes FIRST so the agent's bare `lit` hits the
+        # logging wrapper, not the real binary. isolated_env inherits PATH intact
+        # precisely so there is something to prepend to.
         env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
         return env
 

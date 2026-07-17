@@ -5,13 +5,16 @@ NEVER spawns anything (M34 §3.5 hard boundary).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from harness.agents import (
     AGENT_NAMES,
+    HOME_ESCAPING_CONFIG_VARS,
     NOT_MEASURABLE,
+    AgentCapabilities,
     family_of,
     get_adapter,
     known_model_strings,
@@ -22,6 +25,40 @@ from harness.agents import (
 def test_every_named_agent_resolves() -> None:
     for name in AGENT_NAMES:
         assert get_adapter(name).name == name
+
+
+@pytest.mark.parametrize("agent", AGENT_NAMES)
+def test_every_agent_declares_the_whole_adapter_surface(agent) -> None:
+    """Every attribute the harness reads off an adapter, declared by all of them.
+
+    ``AgentAdapter`` is a bare ``Protocol``: nothing inherits it, nothing is
+    ``runtime_checkable``, and no adapter is ever type-checked against it (mypy is
+    strict but cannot resolve ``harness.*``, so ``get_adapter``'s return annotation
+    degrades to Any). An adapter that simply omits an attribute imports cleanly and
+    dies of ``AttributeError`` when something first reads it — for
+    ``supports_anthropic_proxy`` that is the CLI boundary, but for
+    ``evidence_source`` it is qualify's FAIL branch, i.e. mid-run, after the spawn
+    is paid for.
+
+    Parametrized over ``AGENT_NAMES`` so a fourth adapter cannot join the registry
+    without answering all of it. That is the whole point: both declarations below
+    replaced hard-coded name tests (``args.agent != "claude"`` in run_bench,
+    ``if agent == "agy"`` in qualify), and a name test is what grows back when the
+    alternative is remembering.
+
+    Presence and type only. ``evidence_source``'s CONTENT is unchecked — see its
+    Protocol comment; this test does not make it true, only present.
+    """
+    adapter = get_adapter(agent)
+    assert adapter.name == agent
+    assert isinstance(adapter.bin, str) and adapter.bin
+    assert isinstance(adapter.default_model, str) and adapter.default_model
+    assert isinstance(adapter.permission_flags, tuple)
+    assert isinstance(adapter.capabilities, AgentCapabilities)
+    assert isinstance(adapter.supports_anthropic_proxy, bool)
+    assert isinstance(adapter.evidence_source, str) and adapter.evidence_source
+    for method in ("skills_dir", "prepare", "build_argv", "parse"):
+        assert callable(getattr(adapter, method)), f"{agent} has no {method}()"
 
 
 def test_unknown_agent_names_the_known_ones() -> None:
@@ -78,10 +115,24 @@ def _isolate_the_world(tmp_path, monkeypatch) -> Path:
     ``$CLAUDE_CONFIG_DIR`` FIRST, so with that var exported this helper would hand
     ``prepare()`` the developer's real config dir and quietly copy a live
     credential into ``tmp_path`` — with every assertion below still green.
+
+    Every var in ``HOME_ESCAPING_CONFIG_VARS`` is deliberately SET here, pointing
+    into the FAKE home, rather than left alone. conftest deletes them from every
+    test env, so a test that only fakes ``$HOME`` asserts ``"XDG_CONFIG_HOME" not
+    in env`` against an env where it was never present — passing without the
+    adapter doing anything. Not hypothetical: agy shipped with no drop at all and
+    the parametrized check below stayed green for it. Setting them is what turns
+    that check from a decoration into a gate, so these two lines are the gate.
+
+    Derived from the tuple rather than hand-set, so the day an agent adds its var
+    there this helper exercises it with no edit — it can never be the reason a new
+    var goes unasserted.
     """
     user_home = tmp_path / "userhome"
     (user_home / ".claude").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(user_home))
+    for var in HOME_ESCAPING_CONFIG_VARS:
+        monkeypatch.setenv(var, str(user_home / ".config"))
 
     # Assumes each registered name is also its module name (true today; a
     # divergence raises here rather than silently skipping a stub).
@@ -129,13 +180,30 @@ def test_no_agent_can_see_the_users_real_home(agent, tmp_path, monkeypatch) -> N
     base = tmp_path / "base"
     base.mkdir()
 
+    # PRECONDITION, asserted rather than assumed. Everything below only means
+    # something if these vars are actually SET when prepare() runs: against an env
+    # where they were never present, "not in env" passes for an adapter that does
+    # nothing at all — which is the exact bug this test failed to catch for agy.
+    # Without this, deleting one line of _isolate_the_world silently restores that
+    # bug at full green. The gate needs its own gate.
+    for var in HOME_ESCAPING_CONFIG_VARS:
+        assert var in os.environ, (
+            f"{var} is not set going into prepare() — _isolate_the_world stopped "
+            f"setting it, so every assertion below is vacuous"
+        )
+
     env = get_adapter(agent).prepare(base, run_vault=base / "vault")
 
     assert env["HOME"] == str(base / "home"), f"{agent} does not redirect HOME"
     assert env["HOME"] != str(user_home)
-    # A set XDG_CONFIG_HOME names the real ~/.config absolutely: it survives the
-    # HOME change and re-opens the seam. Nobody may leave it in the child env.
-    assert "XDG_CONFIG_HOME" not in env
+    # These name a real config dir ABSOLUTELY: they survive the HOME change and
+    # re-open the seam. Nobody may leave one in the child env. An adapter that
+    # legitimately uses one (claude / CLAUDE_CONFIG_DIR) re-sets it to its OWN
+    # isolated path, which is why the check is "not the real one", not "absent".
+    for var in HOME_ESCAPING_CONFIG_VARS:
+        assert env.get(var) != os.environ[var], (
+            f"{agent} passes the real {var} through to the child"
+        )
     # And the redirect must not have been achieved by pointing at something that
     # does not exist — the agent has to be able to write into its own home.
     assert Path(env["HOME"]).is_dir()
@@ -155,6 +223,49 @@ def test_every_agent_redirects_the_registry_and_the_vault(
 
     assert env["LIT_LIBRARY"] == str(base / "vault")
     assert Path(env["LITMAN_REGISTRY_DIR"]).parent == base
+
+
+@pytest.mark.parametrize("agent", AGENT_NAMES)
+def test_declared_proxy_support_matches_what_prepare_actually_does(
+    agent, tmp_path, monkeypatch
+) -> None:
+    """The declaration must agree with what ``prepare()`` actually does.
+
+    ``run_bench`` refuses ``--base-url`` / ``--auth-token`` for any agent declaring
+    ``supports_anthropic_proxy=False``, and refuses BEFORE Phase 0 spawns anything.
+    A wrong declaration is therefore invisible: ``False`` on an agent that does
+    support the Anthropic proxy shape silently removes a working mode, and ``True``
+    on one that does not defers the error to a live run. Neither shows up unless
+    the declaration is checked against the behavior.
+
+    What this does NOT prove: that the CLI itself honors the vars. An adapter can
+    export ``ANTHROPIC_BASE_URL`` to a binary that ignores it and pass here. This
+    checks the adapter against itself — only a live run checks it against the agent.
+    """
+    _isolate_the_world(tmp_path, monkeypatch)
+    base = tmp_path / "base"
+    base.mkdir()
+    adapter = get_adapter(agent)
+
+    if adapter.supports_anthropic_proxy:
+        env = adapter.prepare(
+            base,
+            run_vault=base / "vault",
+            base_url="https://proxy.example/v1",
+            auth_token="fake-token-not-a-real-one",
+        )
+        assert env["ANTHROPIC_BASE_URL"] == "https://proxy.example/v1"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "fake-token-not-a-real-one"
+    else:
+        # Must refuse, not ignore: silently dropping base_url would run the card
+        # against the DEFAULT endpoint and report it as the external model.
+        with pytest.raises(ValueError, match="proxy"):
+            adapter.prepare(
+                base,
+                run_vault=base / "vault",
+                base_url="https://proxy.example/v1",
+                auth_token="fake-token-not-a-real-one",
+            )
 
 
 # ---------------------------------------------------------------------------
