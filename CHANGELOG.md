@@ -5,6 +5,21 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.2.1 — unreleased
+
+### Fixed
+
+- **The app window no longer takes the server down with it during Edge's
+  first-run restart.** `lit gui --window` stops the server when you close the
+  app window, which it read off the spawned browser process exiting. A brand-new
+  profile broke that: Edge restarts itself partway through its first run, the
+  process litman launched exits, and the server went down under a live window —
+  a blank app seconds after it opened. Shutdown now needs both signals — the
+  browser process is gone *and* no page still holds litman's window-open
+  connection — so it rides through the handoff. One consequence of following the
+  page rather than the process: a second tab you opened on the same server keeps
+  it alive after the app window closes.
+
 ## 1.2.0 — 2026-07-15
 
 ### Added
