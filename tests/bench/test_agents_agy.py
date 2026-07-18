@@ -214,15 +214,31 @@ def test_read_lit_calls_is_empty_when_the_agent_ran_no_lit(tmp_path: Path) -> No
 def test_build_argv_keeps_p_last() -> None:
     """`agy -p --model X "prompt"` swallows --model into the prompt. Order is
     load-bearing, not cosmetic."""
-    argv = AgyAdapter().build_argv("do a thing", model="Claude Sonnet 4.6 (Thinking)")
+    argv = AgyAdapter().build_argv(
+        "do a thing", model="Claude Sonnet 4.6 (Thinking)", cwd=Path("/x/cwd")
+    )
     assert argv[-2:] == ["-p", "do a thing"]
     assert argv[1] == "--dangerously-skip-permissions"
-    assert argv[2:4] == ["--model", "Claude Sonnet 4.6 (Thinking)"]
+
+
+def test_build_argv_relocates_the_bash_tool_before_p() -> None:
+    """agy's bash tool runs in a HOME scratch, not the process cwd; `--add-dir`
+    pins it to the neutral cwd. It MUST land before `-p` (which must stay last,
+    or --model gets swallowed into the prompt)."""
+    argv = AgyAdapter().build_argv(
+        "do a thing", model="Claude Sonnet 4.6 (Thinking)", cwd=Path("/x/cwd")
+    )
+    i = argv.index("--add-dir")
+    assert argv[i : i + 2] == ["--add-dir", "/x/cwd"]
+    assert argv[-2] == "-p"
+    assert argv[-1] == "do a thing"
 
 
 def test_model_with_spaces_and_parens_stays_one_argv_element() -> None:
     """The model name is a display name; it never goes through a shell."""
-    argv = AgyAdapter().build_argv("x", model="Claude Sonnet 4.6 (Thinking)")
+    argv = AgyAdapter().build_argv(
+        "x", model="Claude Sonnet 4.6 (Thinking)", cwd=Path("/x/cwd")
+    )
     assert "Claude Sonnet 4.6 (Thinking)" in argv
 
 

@@ -334,8 +334,12 @@ class AgentAdapter(Protocol):
     ) -> dict[str, str]:
         """Isolate the agent, install the repo-source skills, return a child env."""
 
-    def build_argv(self, prompt: str, *, model: str) -> list[str]:
-        """The exact argv to spawn (permission flags included)."""
+    def build_argv(self, prompt: str, *, model: str, cwd: Path) -> list[str]:
+        """The exact argv to spawn (permission flags included).
+
+        ``cwd`` is the run's neutral cwd; an agent whose internal tools do not
+        honor the process cwd must relocate them here via its own flag.
+        """
 
     def parse(self, stdout: str, *, base: Path) -> ExecutorResult:
         """Recover the run's evidence. ``base`` is the run dir (agy's shim log)."""

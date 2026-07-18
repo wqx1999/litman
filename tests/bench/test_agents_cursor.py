@@ -191,7 +191,9 @@ def test_served_model_is_kept_as_the_raw_display_name() -> None:
 
 
 def test_build_argv_pins_the_model_and_carries_the_force_flag() -> None:
-    argv = CursorAdapter().build_argv("do a thing", model="claude-sonnet-4-6")
+    argv = CursorAdapter().build_argv(
+        "do a thing", model="claude-sonnet-4-6", cwd=Path("/x/cwd")
+    )
     assert argv[1:3] == ["-p", "do a thing"]
     assert "--model" in argv and "claude-sonnet-4-6" in argv
     assert "--output-format" in argv and "stream-json" in argv
@@ -199,6 +201,26 @@ def test_build_argv_pins_the_model_and_carries_the_force_flag() -> None:
     # across agents, and records the flag it used in the report.
     assert "--force" in argv
     assert CursorAdapter().permission_flags == ("--force",)
+
+
+def test_build_argv_ignores_cwd_and_keeps_the_baseline_argv() -> None:
+    """cursor honors the process cwd, so `cwd` must NOT add a directory flag and
+    the argv must stay element-for-element what it was before the param existed
+    (protects the existing live baseline)."""
+    adapter = CursorAdapter()
+    argv = adapter.build_argv(
+        "do a thing", model="claude-sonnet-4-6", cwd=Path("/x/cwd")
+    )
+    assert "--dir" not in argv and "--add-dir" not in argv
+    assert "/x/cwd" not in argv
+    assert argv == [
+        adapter.bin,
+        "-p",
+        "do a thing",
+        "--model", "claude-sonnet-4-6",
+        "--output-format", "stream-json",
+        "--force",
+    ]
 
 
 def test_capabilities_are_declared_not_inferred() -> None:

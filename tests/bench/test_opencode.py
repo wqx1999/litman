@@ -514,7 +514,9 @@ def test_served_model_capability_distinguishes_opencode_from_agy() -> None:
 
 
 def test_build_argv_pins_the_model_and_carries_the_auto_flag() -> None:
-    argv = OpencodeAdapter().build_argv("do a thing", model="opencode/some-model")
+    argv = OpencodeAdapter().build_argv(
+        "do a thing", model="opencode/some-model", cwd=Path("/x/cwd")
+    )
     assert argv[1] == "run"
     assert "--format" in argv and "json" in argv
     assert "--model" in argv and "opencode/some-model" in argv
@@ -522,6 +524,18 @@ def test_build_argv_pins_the_model_and_carries_the_auto_flag() -> None:
     assert "--auto" in argv
     assert OpencodeAdapter().permission_flags == ("--auto",)
     # The prompt is the final positional argument.
+    assert argv[-1] == "do a thing"
+
+
+def test_build_argv_relocates_the_bash_tool_to_the_neutral_cwd() -> None:
+    """opencode's bash tool ignores the process cwd (defaults to the repo root);
+    `--dir` pins it to the run's neutral cwd. The flag/value pair must be adjacent
+    and the positional prompt must stay last."""
+    argv = OpencodeAdapter().build_argv(
+        "do a thing", model="opencode/some-model", cwd=Path("/x/cwd")
+    )
+    i = argv.index("--dir")
+    assert argv[i : i + 2] == ["--dir", "/x/cwd"]
     assert argv[-1] == "do a thing"
 
 

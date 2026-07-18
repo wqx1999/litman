@@ -354,12 +354,16 @@ class OpencodeAdapter:
         self._env = env
         return env
 
-    def build_argv(self, prompt: str, *, model: str) -> list[str]:
+    def build_argv(self, prompt: str, *, model: str, cwd: Path) -> list[str]:
+        # opencode's bash tool does NOT honor the process cwd (it defaults to the
+        # repo work-tree root); `--dir` pins it to the run's neutral cwd. The
+        # positional message MUST stay last, so --dir goes before it.
         return [
             self.bin,
             "run",
             "--format", "json",
             *PERMISSION_FLAGS,
+            "--dir", str(cwd),
             "--model", model,
             prompt,
         ]

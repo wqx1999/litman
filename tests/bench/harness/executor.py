@@ -343,7 +343,7 @@ def run_card(
         staged.append(dst)
 
     prompt = build_prompt(card, staged)
-    argv = adapter.build_argv(prompt, model=model)
+    argv = adapter.build_argv(prompt, model=model, cwd=neutral_cwd)
 
     timed_out = False
     try:

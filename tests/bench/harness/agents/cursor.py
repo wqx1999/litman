@@ -309,7 +309,9 @@ class CursorAdapter:
         # past the redirected HOME to the real one.)
         return isolated_env(home=home, run_vault=run_vault, registry_dir=registry_dir)
 
-    def build_argv(self, prompt: str, *, model: str) -> list[str]:
+    def build_argv(self, prompt: str, *, model: str, cwd: Path) -> list[str]:
+        # `cwd` accepted but unused: cursor's tools honor the process cwd
+        # (executor sets it to neutral_cwd), so the argv stays byte-identical.
         return [
             self.bin,
             "-p",

@@ -398,7 +398,10 @@ class ClaudeAdapter:
             auth_token=auth_token,
         )
 
-    def build_argv(self, prompt: str, *, model: str) -> list[str]:
+    def build_argv(self, prompt: str, *, model: str, cwd: Path) -> list[str]:
+        # `cwd` accepted but unused: claude's tools honor the process cwd
+        # (executor sets it to neutral_cwd), so the argv stays byte-identical to
+        # protect the existing live baseline.
         return [
             self.bin,
             "-p",

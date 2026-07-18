@@ -74,6 +74,27 @@ def test_claude_capabilities_declare_the_served_model() -> None:
     assert get_adapter("claude").capabilities.served_model is True
 
 
+def test_build_argv_ignores_cwd_and_keeps_the_baseline_argv() -> None:
+    """claude honors the process cwd, so `cwd` must NOT add a directory flag and
+    the argv must stay element-for-element what it was before the param existed
+    (protects the existing live baseline)."""
+    adapter = ClaudeAdapter()
+    argv = adapter.build_argv(
+        "do a thing", model="claude-sonnet-4-6", cwd=Path("/x/cwd")
+    )
+    assert "--dir" not in argv and "--add-dir" not in argv
+    assert "/x/cwd" not in argv
+    assert argv == [
+        adapter.bin,
+        "-p",
+        "do a thing",
+        "--model", "claude-sonnet-4-6",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--permission-mode", "bypassPermissions",
+    ]
+
+
 def test_the_fixture_carries_no_home_paths_or_private_names() -> None:
     """This repo is public and the recording was made against a real home.
 

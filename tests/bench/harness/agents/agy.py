@@ -249,12 +249,15 @@ class AgyAdapter:
         env["PATH"] = f"{shim_dir}{os.pathsep}{env.get('PATH', '')}"
         return env
 
-    def build_argv(self, prompt: str, *, model: str) -> list[str]:
+    def build_argv(self, prompt: str, *, model: str, cwd: Path) -> list[str]:
         # `-p` MUST come last: `agy -p --model X "prompt"` swallows `--model` as
         # part of the prompt. The order is not cosmetic — do not "tidy" it.
+        # agy's bash tool runs in a HOME scratch, not the process cwd; `--add-dir`
+        # relocates it to the run's neutral cwd, and it must go BEFORE `-p`.
         return [
             self.bin,
             *PERMISSION_FLAGS,
+            "--add-dir", str(cwd),
             "--model", model,
             "-p", prompt,
         ]
