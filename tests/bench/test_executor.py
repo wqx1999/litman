@@ -17,18 +17,23 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from harness import executor as executor_mod
 from harness.agents import claude as claude_mod
 from harness.agents.claude import _lit_calls_from_bash, executor_env, parse_stream
 from harness.executor import (
+    ACTIVE_VAULT_NAME,
     ExecutorResult,
     LitCall,
     ToolResult,
     neutral_cwd_for,
+    register_active_vault,
     run_card,
     stdout_blob,
 )
 from harness.scenarios import Card
+from harness.seeds import LIT_BIN
 
 STREAMS_DIR = Path(__file__).resolve().parent / "fixtures" / "streams"
 
@@ -516,6 +521,9 @@ def test_on_prepared_fires_between_isolation_and_spawn(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(claude_mod, "seed_auth", lambda *a, **k: None)
     monkeypatch.setattr(claude_mod, "install_repo_skills", lambda *a, **k: None)
+    # Registration is an orthogonal side effect that also shells out; no-op it so
+    # its subprocess.run does not read as a spawn in the ordering under test.
+    monkeypatch.setattr(executor_mod, "register_active_vault", lambda *a, **k: None)
     order: list[str] = []
 
     class _Proc:
@@ -537,3 +545,148 @@ def test_on_prepared_fires_between_isolation_and_spawn(tmp_path: Path, monkeypat
         on_prepared=lambda base, env: order.append("prepared"),
     )
     assert order == ["prepared", "spawn"]
+
+
+# ---------------------------------------------------------------------------
+# register_active_vault: the run's registry stops lying to the agent
+# ---------------------------------------------------------------------------
+#
+# The isolation aims LIT_LIBRARY at the run vault but leaves the registry empty,
+# so `lit vault list` reports "No vaults registered" while `lit list`/`export`
+# resolve fine — a self-contradicting environment that scores an agent's
+# correct-given-the-lie refusal as a failure. register_active_vault registers the
+# run vault as active so the two views agree, matching a real machine (exactly one
+# active vault). The first two tests drive REAL lit (the inject-seam lesson: a
+# helper whose only job is to shell out must be proven against the real binary,
+# not just a fake proc), the third pins the run_card wiring.
+
+
+def _real_lit_env(run_vault: Path, registry: Path) -> dict[str, str]:
+    """The self-contradicting env the isolation produces: LIT_LIBRARY at the run
+    vault, registry redirected at an empty throwaway dir."""
+    return {
+        **os.environ,
+        "LIT_LIBRARY": str(run_vault),
+        "LITMAN_REGISTRY_DIR": str(registry),
+    }
+
+
+def test_register_active_vault_makes_the_run_vault_active(tmp_path: Path) -> None:
+    """AC1 — real lit: registration flips `lit vault list` from 'No vaults
+    registered' to showing the run vault as the single ACTIVE one, and `--use`
+    really took effect (lit resolves it with LIT_LIBRARY cleared)."""
+    import json
+
+    registry = tmp_path / "reg"
+    registry.mkdir()
+    parent = tmp_path / "runroot"
+    parent.mkdir()
+
+    # A REAL vault, deliberately NOT registered — the empty-registry state the
+    # isolation produces (seeds build with `lit init --no-register`).
+    init = subprocess.run(
+        [str(LIT_BIN), "init", str(parent), "--name", "bench-runvault", "--no-register"],
+        env={**os.environ, "LITMAN_REGISTRY_DIR": str(registry)},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert init.returncode == 0, init.stderr or init.stdout
+    run_vault = parent / "bench-runvault"
+    env = _real_lit_env(run_vault, registry)
+
+    # Before: lit authoritatively lies — the vault is reachable via LIT_LIBRARY
+    # but the registry is empty.
+    before = subprocess.run(
+        [str(LIT_BIN), "vault", "list"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert "No vaults registered" in before.stdout
+
+    register_active_vault(run_vault, env)
+
+    # After: the run vault shows up and the lie is gone.
+    after = subprocess.run(
+        [str(LIT_BIN), "vault", "list"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert "No vaults registered" not in after.stdout
+    assert ACTIVE_VAULT_NAME in after.stdout
+
+    # Structured proof: exactly one vault, named `bench`, at the run path, active.
+    rows = json.loads(
+        subprocess.run(
+            [str(LIT_BIN), "vault", "list", "--format", "json"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    assert len(rows) == 1
+    assert rows[0]["name"] == ACTIVE_VAULT_NAME
+    assert rows[0]["path"] == str(run_vault)
+    assert rows[0]["is_active"] is True
+
+    # `--use` really took effect: with LIT_LIBRARY cleared, lit still resolves the
+    # vault through the active-registry entry (active, not merely registered).
+    reg_only = {k: v for k, v in env.items() if k != "LIT_LIBRARY"}
+    resolved = subprocess.run(
+        [str(LIT_BIN), "list"],
+        env=reg_only,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert resolved.returncode == 0, resolved.stderr or resolved.stdout
+
+
+def test_register_active_vault_raises_on_non_vault(tmp_path: Path) -> None:
+    """AC4 — real lit: a dir with no lit-config.yaml is not a vault; registration
+    must raise loudly (a broken seed, not a state to score around), surfacing
+    lit's exit code and output."""
+    not_a_vault = tmp_path / "not-a-vault"
+    not_a_vault.mkdir()
+    env = _real_lit_env(not_a_vault, tmp_path / "reg")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        register_active_vault(not_a_vault, env)
+
+    msg = str(excinfo.value)
+    assert "could not register the run vault as active" in msg
+    assert "exited 1" in msg  # lit's non-zero exit is surfaced
+    assert "lit-config.yaml" in msg  # lit's own diagnosis is carried through
+
+
+def test_run_card_registers_the_active_vault(tmp_path: Path, monkeypatch) -> None:
+    """AC3 — wiring: run_card calls register_active_vault exactly once, with the
+    run vault and the isolated env (LIT_LIBRARY aimed at that vault). Spawn is
+    stubbed as usual so no live agent starts."""
+    calls: dict = {}
+    _stub_run_card_io(monkeypatch, calls)
+
+    recorded: list[tuple] = []
+
+    def spy_register(run_vault, env):
+        recorded.append((Path(run_vault), dict(env)))
+
+    monkeypatch.setattr(executor_mod, "register_active_vault", spy_register)
+
+    run_vault = tmp_path / "bench-reg" / "vault"
+    run_vault.mkdir(parents=True)
+    run_card(
+        Card(id="A1", intent="do a thing", fixtures=[]),
+        run_vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+    )
+
+    assert len(recorded) == 1
+    got_vault, got_env = recorded[0]
+    assert got_vault == run_vault
+    assert got_env["LIT_LIBRARY"] == str(run_vault)

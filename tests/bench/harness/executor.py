@@ -229,6 +229,42 @@ def neutral_cwd_for(run_vault: Path) -> Path:
     return Path(run_vault).parent / "cwd"
 
 
+ACTIVE_VAULT_NAME = "bench"
+
+
+def register_active_vault(run_vault: Path, env: dict[str, str]) -> None:
+    """Register the just-built run vault as the active vault in the run's
+    disposable registry, so `lit vault list`/`use` agree with `lit list`/`export`.
+
+    The isolation sets LIT_LIBRARY at the run vault (so list/export resolve it)
+    but leaves LITMAN_REGISTRY_DIR pointing at an empty registry, so `lit vault
+    list` reports "No vaults registered". An agent that checks vault registration
+    before acting believes that and gives up — its correct-given-the-lie refusal
+    then scores as a failure. Registering the run vault (which LIT_LIBRARY already
+    names) as active makes the environment self-consistent and matches how a real
+    machine always looks: exactly one active vault.
+
+    Safe: the registry is a throwaway dir under the run root; `--use` cannot reach
+    the real library. Uses the CLI, never hand-edits vaults.yaml (lit forbids it).
+    Loud on failure: a non-zero exit means the run vault is not a vault (no
+    lit-config.yaml) — a broken seed, not something to score around.
+    """
+    proc = subprocess.run(
+        [str(LIT_BIN), "vault", "add", ACTIVE_VAULT_NAME, str(run_vault), "--use"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"could not register the run vault as active: "
+            f"`lit vault add {ACTIVE_VAULT_NAME} <run-vault> --use` exited "
+            f"{proc.returncode}\nstdout:\n{proc.stdout}\n"
+            f"stderr:\n{getattr(proc, 'stderr', '')}"
+        )
+
+
 def run_card(
     card: Card,
     run_vault: Path,
@@ -274,6 +310,7 @@ def run_card(
     env = adapter.prepare(
         base, run_vault=run_vault, base_url=base_url, auth_token=auth_token
     )
+    register_active_vault(run_vault, env)
     if on_prepared is not None:
         on_prepared(base, env)
 
