@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from harness.proc import run_bounded
 from harness.scenarios import Card, executor_view
 from harness.seeds import LIT_BIN
 
@@ -345,21 +346,8 @@ def run_card(
     prompt = build_prompt(card, staged)
     argv = adapter.build_argv(prompt, model=model, cwd=neutral_cwd)
 
-    timed_out = False
-    try:
-        proc = subprocess.run(
-            argv,
-            env=env,
-            cwd=str(neutral_cwd),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        stdout, exit_code = proc.stdout, proc.returncode
-    except subprocess.TimeoutExpired as e:
-        stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        exit_code, timed_out = -1, True
+    r = run_bounded(argv, env=env, cwd=str(neutral_cwd), timeout=timeout_s, text=True)
+    stdout, exit_code, timed_out = r.stdout, r.exit_code, r.timed_out
 
     result = adapter.parse(stdout, base=base)
     result.exit_code = exit_code

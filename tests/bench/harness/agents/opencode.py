@@ -51,7 +51,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -63,6 +62,7 @@ from harness.executor import (
     ToolResult,
     install_repo_skills,
 )
+from harness.proc import run_bounded
 
 OPENCODE_BIN = os.environ.get("LITMAN_BENCH_OPENCODE_BIN", "opencode")
 
@@ -237,7 +237,8 @@ def _run_export(bin_: str, session_id: str, env: dict[str, str] | None) -> str |
     not be flushed the instant the run ends), so one fixed-backoff retry recovers a
     good share of those timing misses at low risk. ANY attempt that does not return
     clean stdout is this-attempt-failed and triggers the retry — a non-zero exit OR
-    a :class:`subprocess.TimeoutExpired` (a hung export must not stall the round);
+    a timeout (``run_bounded`` reaps the export's whole process group and returns
+    ``timed_out=True`` rather than raising; a hung export must not stall the round);
     the retry is deliberately not keyed to one exit code, since the exact failure
     mode was never pinned. Two failures return ``None`` — the served model is then
     unrecoverable, and the caller reports ``None`` rather than inventing the
@@ -256,24 +257,17 @@ def _run_export(bin_: str, session_id: str, env: dict[str, str] | None) -> str |
     for attempt in range(2):
         if attempt:
             time.sleep(_EXPORT_RETRY_BACKOFF_S)
-        try:
-            proc = subprocess.run(
-                [bin_, "export", session_id],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=_EXPORT_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired:
+        r = run_bounded([bin_, "export", session_id], env=env, timeout=_EXPORT_TIMEOUT_S)
+        if r.timed_out:
             continue
-        if proc.returncode == 0:
+        if r.exit_code == 0:
             # Explicit utf-8 + errors="replace": export can truncate its stdout at a
             # 64KB boundary mid-multibyte-character (a lone lead byte with its
             # continuation cut off), which strict decoding raises on. Lenient decode
             # never raises; the mangled tail becomes U+FFFD and the now-broken JSON
             # degrades to None via _served_model's json.loads. Decode only here, on
             # the returned attempt — error/timeout paths never touch stdout.
-            return proc.stdout.decode("utf-8", errors="replace")
+            return r.stdout.decode("utf-8", errors="replace")
     return None
 
 

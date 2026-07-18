@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +31,7 @@ from harness.executor import (
     run_card,
     stdout_blob,
 )
+from harness.proc import BoundedResult
 from harness.scenarios import Card
 from harness.seeds import LIT_BIN
 
@@ -256,7 +256,7 @@ def _stub_run_card_io(monkeypatch, calls: dict) -> None:
     """Stub everything in run_card that would touch the network / a live agent.
 
     ``seed_auth`` becomes a spy (records its call), ``install_repo_skills`` a
-    no-op, and ``subprocess.run`` returns a canned empty stream so NO ``claude``
+    no-op, and ``run_bounded`` returns a canned empty stream so NO ``claude``
     process is ever spawned (M34 §3.5 hard boundary). Both spies are patched on
     :mod:`harness.agents.claude`, which is where the adapter calls them from.
     """
@@ -266,15 +266,11 @@ def _stub_run_card_io(monkeypatch, calls: dict) -> None:
     monkeypatch.setattr(claude_mod, "seed_auth", spy_seed_auth)
     monkeypatch.setattr(claude_mod, "install_repo_skills", lambda *a, **k: None)
 
-    class _Proc:
-        stdout = ""
-        returncode = 0
+    def fake_run_bounded(argv, **k):
+        calls["spawned_argv"] = argv
+        return BoundedResult(stdout="", stderr="", exit_code=0, timed_out=False)
 
-    def fake_subprocess_run(*a, **k):
-        calls["spawned_argv"] = a[0] if a else k.get("args")
-        return _Proc()
-
-    monkeypatch.setattr(executor_mod.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(executor_mod, "run_bounded", fake_run_bounded)
 
 
 def test_run_card_default_mode_calls_seed_auth(tmp_path: Path, monkeypatch) -> None:
@@ -334,33 +330,20 @@ AGENT_STREAMS_DIR = Path(__file__).resolve().parent / "fixtures" / "agent-stream
 def _replay(monkeypatch, calls: dict, stdout: str) -> None:
     """Stub ONLY the spawn; replay a recorded stream as the agent's stdout.
 
-    Rebinds the NAME ``harness.executor.subprocess`` rather than reaching through
-    it to patch ``subprocess.run``: the latter is the shared stdlib module object,
-    so patching there also silently stubs the test's own subprocess calls — which
-    is exactly how the agy shim below first appeared to record nothing.
+    Patches the NAME ``harness.executor.run_bounded`` — the bounded-spawn seam
+    ``run_card`` now goes through — rather than the shared stdlib
+    ``subprocess.run``. Patching the latter would also silently stub the test's own
+    subprocess calls (that is how the agy shim below first appeared to record
+    nothing); binding the local ``run_bounded`` name avoids that entirely.
     """
 
-    class _Proc:
-        returncode = 0
-
-        def __init__(self, out: str) -> None:
-            self.stdout = out
-
-    def fake_subprocess_run(*a, **k):
-        calls["argv"] = a[0] if a else k.get("args")
+    def fake_run_bounded(argv, **k):
+        calls["argv"] = argv
         calls["env"] = k.get("env")
         calls["cwd"] = k.get("cwd")
-        return _Proc(stdout)
+        return BoundedResult(stdout=stdout, stderr="", exit_code=0, timed_out=False)
 
-    monkeypatch.setattr(
-        executor_mod,
-        "subprocess",
-        SimpleNamespace(
-            run=fake_subprocess_run,
-            DEVNULL=subprocess.DEVNULL,
-            TimeoutExpired=subprocess.TimeoutExpired,
-        ),
-    )
+    monkeypatch.setattr(executor_mod, "run_bounded", fake_run_bounded)
 
 
 def test_run_card_drives_the_real_cursor_adapter(tmp_path: Path, monkeypatch) -> None:
@@ -526,15 +509,11 @@ def test_on_prepared_fires_between_isolation_and_spawn(tmp_path: Path, monkeypat
     monkeypatch.setattr(executor_mod, "register_active_vault", lambda *a, **k: None)
     order: list[str] = []
 
-    class _Proc:
-        stdout = ""
-        returncode = 0
-
-    def fake_subprocess_run(*a, **k):
+    def fake_run_bounded(argv, **k):
         order.append("spawn")
-        return _Proc()
+        return BoundedResult(stdout="", stderr="", exit_code=0, timed_out=False)
 
-    monkeypatch.setattr(executor_mod.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(executor_mod, "run_bounded", fake_run_bounded)
 
     run_vault = tmp_path / "bench-h" / "vault"
     run_vault.mkdir(parents=True)
