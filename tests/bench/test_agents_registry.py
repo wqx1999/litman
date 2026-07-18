@@ -146,6 +146,15 @@ def _isolate_the_world(tmp_path, monkeypatch) -> Path:
     token = user_home / TOKEN_RELPATH
     token.parent.mkdir(parents=True)
     token.write_text('{"fake": "not-a-real-token"}', encoding="utf-8")
+    # codex: fabricate its auth.json too — its seed_auth RAISES when absent (codex
+    # has no free tier), the same reason agy's token is fabricated above. Seeded at
+    # the real ~/.codex/auth.json location (relative to the faked HOME), which is
+    # what codex's seed_auth reads.
+    from harness.agents.codex import AUTH_RELPATH as CODEX_AUTH_RELPATH
+
+    codex_auth = user_home / CODEX_AUTH_RELPATH
+    codex_auth.parent.mkdir(parents=True, exist_ok=True)
+    codex_auth.write_text('{"fake": "not-a-real-token"}', encoding="utf-8")
     lit = tmp_path / "fake-lit"
     lit.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     lit.chmod(0o755)

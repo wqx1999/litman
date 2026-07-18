@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from harness.executor import ExecutorResult
 
-AGENT_NAMES = ("claude", "cursor", "agy", "opencode")
+AGENT_NAMES = ("claude", "cursor", "agy", "opencode", "codex")
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,11 @@ HOME_ESCAPING_CONFIG_VARS: tuple[str, ...] = (
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",
     "XDG_STATE_HOME",
+    # codex reads its auth + config from $CODEX_HOME, which it resolves BEFORE
+    # ~/.codex (i.e. before $HOME) — so a set one walks past the redirected HOME
+    # to the real login store. Dropped here, then re-set to the run's own isolated
+    # dir in CodexAdapter.prepare, exactly how claude handles CLAUDE_CONFIG_DIR.
+    "CODEX_HOME",
 )
 
 
@@ -238,6 +243,14 @@ _MODEL_FAMILY: dict[str, str] = {
     # CONTROLLED model opencode routes for the real comparison is wangq's call
     # (spec "待 wangq 决定"); that entry lands when the model is chosen.
     "opencode/deepseek-v4-flash-free": "deepseek-v4-flash-free",
+    # --- codex: requests an id, the rollout echoes it verbatim ----------------
+    # Codex's first-party models. Like opencode, the served string is IDENTICAL to
+    # the requested one (the rollout records the id we sent), so check 6's
+    # exact-match branch already carries them and these entries only name the
+    # family for a smoke run's report. gpt-5.6-sol is codex's resolved default.
+    "gpt-5.6-sol": "gpt-5.6-sol",
+    "gpt-5.6-terra": "gpt-5.6-terra",
+    "gpt-5.6-luna": "gpt-5.6-luna",
 }
 
 
@@ -368,6 +381,10 @@ def get_adapter(name: str) -> AgentAdapter:
         from harness.agents.opencode import OpencodeAdapter
 
         return OpencodeAdapter()
+    if name == "codex":
+        from harness.agents.codex import CodexAdapter
+
+        return CodexAdapter()
     raise ValueError(
         f"unknown agent {name!r}; known agents: {', '.join(AGENT_NAMES)}"
     )

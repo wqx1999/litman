@@ -1,0 +1,10 @@
+{"type": "thread.started", "thread_id": "019f767a-1111-2222-3333-000000000000"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "Let me check the registered vaults."}}
+{"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "/usr/bin/bash -lc \"sed -n '1,240p' /tmp/run/home/.agents/skills/lit-library/SKILL.md\"", "aggregated_output": "", "exit_code": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "/usr/bin/bash -lc \"sed -n '1,240p' /tmp/run/home/.agents/skills/lit-library/SKILL.md\"", "aggregated_output": "---\nname: lit-library\ndescription: drive the lit CLI to change the library.\n---\n# lit-library\n<redacted: SKILL.md body>\n", "exit_code": 0, "status": "completed"}}
+{"type": "item.started", "item": {"id": "item_2", "type": "command_execution", "command": "/usr/bin/bash -lc 'lit hello && lit vault list'", "aggregated_output": "", "exit_code": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "command_execution", "command": "/usr/bin/bash -lc 'lit hello && lit vault list'", "aggregated_output": "litman v1.2.0 is installed and importable.\nNo vaults registered. Run `lit vault add <name> <path>` to register one.\n", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "command_execution", "command": "/usr/bin/bash -lc \"sed -n '1,80p' /tmp/run/codexhome/plugins/openai-curated-remote/skills/git-helper/SKILL.md\"", "aggregated_output": "---\nname: git-helper\ndescription: <builtin plugin>\n---\n", "exit_code": 0, "status": "completed"}}
+{"type": "item.completed", "item": {"id": "item_4", "type": "agent_message", "text": "No vaults are registered. Register one with `lit vault add <name> <path>`."}}
+{"type": "turn.completed", "usage": {"input_tokens": 12558, "cached_input_tokens": 9984, "output_tokens": 11, "reasoning_output_tokens": 0}}
