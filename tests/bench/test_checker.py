@@ -501,42 +501,101 @@ def test_stdout_contains_falls_back_to_blob(synth_vault: Path) -> None:
     assert not miss.passed
 
 
-def test_stdout_not_contains(synth_vault: Path) -> None:
-    """C1: a filtered list must NOT surface the out-of-range paper."""
-    jsonl = [{"argv": ["list"], "stdout": "#4 PeptideBERT\n#5 Multi-Peptide"}]
-    # Absent -> passes (the negative assertion holds).
-    assert _ck("stdout_not_contains: ~DiffDock", synth_vault, jsonl).passed
-    # Present -> fails (the paper leaked into the filtered output).
-    assert not _ck("stdout_not_contains: ~PeptideBERT", synth_vault, jsonl).passed
+# ---------------------------------------------------------------------------
+# filtered_list_omits (scope-narrowed negative — only the LAST filtered lit list)
+# ---------------------------------------------------------------------------
 
 
-def test_stdout_not_contains_searches_widest_evidence(synth_vault: Path) -> None:
-    """Safety direction for the negative verb: a substring present ONLY in the
-    unmapped blob (not the per-record stdout) must still FAIL not_contains when a
-    run is threaded — never a false 'absent' pass."""
-    from harness.executor import ExecutorResult, LitCall, ToolResult
+def test_filtered_list_omits_explored_then_filtered_passes(synth_vault: Path) -> None:
+    """T1 (opencode shape): a full-library dump while exploring, then a correct
+    ``--topic peptide`` filter. The verb reads ONLY the last filtered list, so the
+    exploratory dump's DiffDock does not fail it."""
+    jsonl = [
+        {"argv": ["vault", "list", "2>&1"], "stdout": "LIT_LIBRARY=/tmp/run-vault"},
+        {"argv": ["list", "--format", "json", "2>&1"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+        {"argv": ["list", "--topic", "peptide", "--format", "json", "2>&1"],
+         "stdout": '[{"id":"2023_Guntuboina_PeptideBERT-Language"},{"id":"2024_Chen_Multi-Peptide"}]'},
+    ]
+    r = _ck("filtered_list_omits: ~DiffDock", synth_vault, jsonl)
+    assert r.passed, r.detail
 
-    run = ExecutorResult(
-        lit_calls=[LitCall(argv=["list"], raw="lit list", tool_use_id="b1")],
-        tool_results=[ToolResult(tool="Bash", content="#1 DiffDock", tool_use_id="OTHER")],
-    )
-    jsonl = run.as_jsonl_records()
-    assert jsonl[0]["stdout"] == ""  # unmapped -> empty per-record stdout
 
-    # Without run: per-record stdout is empty, so DiffDock looks (wrongly) absent.
-    no_run = check_assertion(
-        "stdout_not_contains: ~DiffDock", vault=synth_vault, jsonl=jsonl, golden_dir=GOLDEN_DIR
-    )
-    assert no_run.passed  # only the jsonl is visible here
-    # With run: the blob exposes DiffDock -> the negative assertion correctly fails.
-    with_run = check_assertion(
-        "stdout_not_contains: ~DiffDock",
-        vault=synth_vault,
-        jsonl=jsonl,
-        golden_dir=GOLDEN_DIR,
-        run=run,
-    )
-    assert not with_run.passed, with_run.detail
+def test_filtered_list_omits_no_filter_only_dump_fails(synth_vault: Path) -> None:
+    """T2 (agy shape): only ``list --help`` / ``list --format json`` (full dump) /
+    ``vault list`` — never a content-filter flag. No filtered result exists to
+    judge, so the verb FAILS with a 'no filtered' detail."""
+    jsonl = [
+        {"argv": ["list", "--help"], "stdout": "Usage: lit list ..."},
+        {"argv": ["list", "--format", "json", "2>&1"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+        {"argv": ["vault", "list", "--format", "json"], "stdout": "LIT_LIBRARY=/tmp/run-vault"},
+    ]
+    r = _ck("filtered_list_omits: ~DiffDock", synth_vault, jsonl)
+    assert not r.passed
+    assert "no filtered" in r.detail
+
+
+def test_filtered_list_omits_filtered_but_result_has_out_of_range_fails(
+    synth_vault: Path,
+) -> None:
+    """T3: a genuine filter (``--topic diffusion``) whose result DOES contain the
+    out-of-range paper — the verb faithfully fails (the agent filtered wrong)."""
+    jsonl = [
+        {"argv": ["list", "--format", "json"],
+         "stdout": '[{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+        {"argv": ["list", "--topic", "diffusion", "--format", "json"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"}]'},
+    ]
+    r = _ck("filtered_list_omits: ~DiffDock", synth_vault, jsonl)
+    assert not r.passed
+    assert "DiffDock" in r.detail
+
+
+def test_filtered_list_omits_format_limit_sort_are_not_filters(synth_vault: Path) -> None:
+    """T4: ``--format`` / ``--limit`` / ``--sort`` are output/paging flags, not
+    content filters. A ``list --format json`` full dump is therefore 'no filtered
+    list' — the verb FAILS rather than passing on the dump's stdout."""
+    jsonl = [
+        {"argv": ["list", "--format", "json", "--limit", "50", "--sort", "year"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+    ]
+    r = _ck("filtered_list_omits: ~DiffDock", synth_vault, jsonl)
+    assert not r.passed
+    assert "no filtered" in r.detail
+
+
+def test_filtered_list_omits_equals_form_output_flag_is_not_a_filter(synth_vault: Path) -> None:
+    """T5.1: the EQUALS form of an output flag (``--format=json``) must classify
+    the same as the space form — a full-library dump, NOT a content filter. The
+    membership test strips ``=value`` first, else ``--format=json`` would slip
+    through the exclusion set and be counted as a filter."""
+    jsonl = [
+        {"argv": ["list", "--format=json"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+    ]
+    r = _ck("filtered_list_omits: ~DiffDock", synth_vault, jsonl)
+    assert not r.passed
+    assert "no filtered" in r.detail
+
+
+def test_filtered_list_omits_equals_form_paging_after_filter_does_not_false_fail(
+    synth_vault: Path,
+) -> None:
+    """T5.2: a correct agent filters (``--topic peptide``, no DiffDock) then pages
+    the result with the EQUALS form (``--limit=50``, whose partial dump surfaces
+    DiffDock). ``--limit=50`` is paging, not a content filter, so the last FILTERED
+    list is still ``--topic peptide`` — the agent must NOT be false-failed. Without
+    the ``=value`` strip, ``--limit=50`` would be miscounted as the last filtered
+    call and its DiffDock would wrongly fail this exact case."""
+    jsonl = [
+        {"argv": ["list", "--topic", "peptide", "--format", "json"],
+         "stdout": '[{"id":"2023_Guntuboina_PeptideBERT-Language"},{"id":"2024_Chen_Multi-Peptide"}]'},
+        {"argv": ["list", "--limit=50"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+    ]
+    r = _ck("filtered_list_omits: ~DiffDock", synth_vault, jsonl)
+    assert r.passed, r.detail
 
 
 def test_answer_contains_no_run_is_hard_fail(synth_vault: Path) -> None:

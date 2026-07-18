@@ -34,12 +34,14 @@ Three evidence verbs score the agent's observable output:
   each lit call's captured stdout). When that misses and a ``run`` is threaded
   it falls back to the executor's ``stdout_blob`` (every captured result block),
   recovering output whose result block could not be paired to a call by id.
-* ``stdout_not_contains: ~substr`` is the negative of the above (e.g. C1: a
-  filtered ``lit list`` must NOT surface the out-of-range paper). It searches the
-  WIDEST evidence — jsonl stdout *and* ``stdout_blob`` when a ``run`` is threaded
-  — and passes only when the substring is absent from all of it. Widening the
-  search can only make a present substring easier to find, so it never yields a
-  false "absent" pass.
+* ``filtered_list_omits: ~substr`` is the SCOPE-NARROWED negative for "a filtered
+  ``lit list`` must NOT surface the out-of-range paper" (C1). Unlike a whole-session
+  negative, it reads ONLY the ``stdout`` of the LAST ``lit list`` call that carried
+  a content-filter flag (``--year`` / ``--topic`` / ... — not ``--format`` /
+  ``--limit`` / ``--sort`` / ``--help``), and never the ``stdout_blob``. So an agent
+  that dumps the full library while exploring and THEN filters correctly is not
+  punished for the exploratory dump; with no filtered ``lit list`` at all it FAILS
+  (the agent produced no file-side-filtered result to judge).
 * ``answer_contains: ~substr`` greps ``run.final_text`` (the agent's natural
   language answer, e.g. C2 "year=2023"). Needs ``run`` threaded; when it is
   ``None`` the result is a *failed* assertion (``detail="no run threaded"``),
@@ -660,25 +662,61 @@ def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> Asse
     )
 
 
-def _check_stdout_not_contains(jsonl: list[dict], arg: str, run: Any = None) -> AssertResult:
-    """``stdout_not_contains: ~substr`` — the negative of stdout_contains.
+# `lit list` flags that are NOT content filters (output format / paging / help).
+# Everything else shaped like `--flag` narrows the result set, so membership is
+# judged by EXCLUSION — a future filter flag is covered without editing this.
+_LIST_NON_FILTER_FLAGS = {"--format", "--limit", "--sort", "--help"}
 
-    Passes only when ``substr`` is absent from the WIDEST available evidence: the
-    joined jsonl ``record["stdout"]`` AND (when a ``run`` is threaded) the
-    executor's ``stdout_blob``. Searching the broadest space is the safe direction
-    for a negative assertion — a substring that is actually present is more likely
-    to be found and correctly fail, so this never yields a false "absent" pass.
+
+def _is_filtered_list(record: dict) -> bool:
+    """True iff this jsonl record is a ``lit list`` call carrying >=1 content-filter flag.
+
+    ``argv`` is the subcommand token list (no ``lit`` prefix), e.g.
+    ``['list','--topic','peptide','--format','json']``. A ``vault list ...`` call
+    has ``argv[0] == 'vault'`` and is correctly excluded. ``--format`` / ``--limit``
+    / ``--sort`` / ``--help`` are output / paging / help, not content filters; every
+    other ``--flag`` (``--year`` / ``--topic`` / ``--title`` / ``--status`` /
+    ``--author`` / ``--project`` / ``--unread`` ...) counts. Judging by exclusion
+    means a newly added filter flag is picked up with no edit here. The ``=value``
+    of a ``--flag=value`` token is stripped before the exclusion test, so the
+    equals form (``--format=json`` / ``--limit=50``) is classified identically to
+    the space form.
+    """
+    argv = record.get("argv") or []
+    if not argv or argv[0] != "list":
+        return False
+    return any(
+        a.startswith("--") and a.split("=", 1)[0] not in _LIST_NON_FILTER_FLAGS
+        for a in argv
+    )
+
+
+def _check_filtered_list_omits(jsonl: list[dict], arg: str) -> AssertResult:
+    """``filtered_list_omits: ~substr`` — scope-narrowed negative for C1.
+
+    Passes iff there is at least one ``lit list`` call carrying a content-filter
+    flag AND the stdout of the LAST such call omits ``substr``. With no filtered
+    ``lit list`` at all it FAILS — the agent produced no file-side-filtered result
+    to judge (dumping the whole library and picking in its head does not count).
+
+    Reads ONLY the jsonl ``argv`` + per-record ``stdout``; it deliberately never
+    touches the executor's ``stdout_blob``. Widening to the whole session is the
+    exact mistake this verb exists to avoid: an agent that dumps the full library
+    while exploring and THEN filters correctly must not be failed for the
+    out-of-range paper that appeared in the exploratory dump.
     """
     sub = arg.strip().lstrip("~").strip()
-    blob = "\n".join(str(r.get("stdout", "")) for r in jsonl)
-    present = _norm(sub) in _norm(blob)
-    if not present and run is not None:
-        from harness.executor import stdout_blob
-
-        present = _norm(sub) in _norm(stdout_blob(run))
+    filtered = [r for r in jsonl if _is_filtered_list(r)]
+    if not filtered:
+        return AssertResult(
+            "filtered_list_omits", arg, False,
+            "no filtered `lit list` call — agent produced no file-side-filtered result",
+        )
+    last_stdout = str(filtered[-1].get("stdout", ""))
+    present = _norm(sub) in _norm(last_stdout)
     return AssertResult(
-        "stdout_not_contains", arg, not present,
-        "" if not present else f"lit-call stdout unexpectedly contains {sub!r}",
+        "filtered_list_omits", arg, not present,
+        "" if not present else f"filtered list result unexpectedly contains {sub!r}",
     )
 
 
@@ -716,7 +754,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "file_exists", "file_contains", "file_nonempty",
         "vault_file_contains", "vault_file_nonempty",
         "count",
-        "stdout_contains", "stdout_not_contains", "answer_contains",
+        "stdout_contains", "filtered_list_omits", "answer_contains",
     }
 )
 
@@ -787,8 +825,8 @@ def check_assertion(
         return _check_count(vault, arg)
     if verb == "stdout_contains":
         return _check_stdout_contains(jsonl, arg, run)
-    if verb == "stdout_not_contains":
-        return _check_stdout_not_contains(jsonl, arg, run)
+    if verb == "filtered_list_omits":
+        return _check_filtered_list_omits(jsonl, arg)
     if verb == "answer_contains":
         return _check_answer_contains(run, arg)
 
