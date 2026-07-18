@@ -13,6 +13,7 @@ from __future__ import annotations
 import builtins
 import functools
 import importlib
+import io
 import re
 import shutil
 import socket
@@ -22,18 +23,23 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
 from click.testing import CliRunner
 
+from litman import cli
 from litman.commands import gui
 from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
     _find_free_port,
+    _open_when_ready,
     _quiet_browser_profile,
+    _spawn_ready_watcher,
     _stop_server_when_window_closes,
+    _terminate_splash_when_visible,
     browser_profile_dir,
     gui_cmd,
     remove_browser_profile,
@@ -111,20 +117,16 @@ def test_find_free_port_binds_loopback_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FakeTimer:
-    """threading.Timer stand-in that fires synchronously on start(), so the
-    open happens inside the CliRunner invocation instead of 1s later."""
-
-    def __init__(self, interval: float, fn) -> None:
-        self.interval = interval
-        self.fn = fn
-        self.daemon = False
-
-    def start(self) -> None:
-        self.fn()
-
-    def cancel(self) -> None:
-        pass
+def _sync_ready_watcher(server, open_browser, stop_event, after_open=None):
+    """`_spawn_ready_watcher` stand-in that fires the open synchronously — no
+    thread, no ``server.started`` poll — so the browser open and its splash
+    hand-off run inside the CliRunner invocation instead of racing it. Returns
+    None, so gui_cmd's ``finally`` skips the (unneeded) join. The readiness
+    poll itself is covered directly by the A1-A3 unit tests."""
+    open_browser()
+    if after_open is not None:
+        after_open()
+    return None
 
 
 class _FakeProc:
@@ -183,7 +185,11 @@ def gui_harness(monkeypatch):
         procs.append(proc)
         return proc
 
-    monkeypatch.setattr(threading, "Timer", _FakeTimer)
+    monkeypatch.setattr(gui, "_spawn_ready_watcher", _sync_ready_watcher)
+    # A console-less launch would Popen the splash; force "has a console" so
+    # these pre-splash tests keep exactly their old behaviour. Splash wiring
+    # has its own dedicated tests further down.
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: False)
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
     monkeypatch.setattr(subprocess, "Popen", _fake_popen)
     monkeypatch.setattr("uvicorn.Server", _FakeServer)
@@ -800,3 +806,501 @@ def test_bundled_icons_resolve_via_importlib_resources() -> None:
         icon = files("litman").joinpath("assets", "icons", name)
         assert icon.is_file(), f"missing bundled icon {name}"
         assert len(icon.read_bytes()) > 0
+
+
+# ===========================================================================
+# Part A — readiness poll replaces the flat 1s browser timer
+# ===========================================================================
+
+
+class _StartFlag:
+    """Minimal uvicorn.Server stand-in exposing just the ``started`` flag the
+    readiness poller reads."""
+
+    def __init__(self, started: bool = False) -> None:
+        self.started = started
+
+
+def test_open_when_ready_opens_only_after_started_flips() -> None:
+    # A1: the poller must wait for `server.started`, then open exactly once.
+    server = _StartFlag(started=False)
+    calls: list[float] = []
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_open_when_ready,
+        args=(server, lambda: calls.append(time.monotonic()), stop),
+        kwargs={"ready_timeout": 5.0, "ready_poll": 0.01},
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.1)
+    assert calls == []  # still closed: server has not started
+    server.started = True
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert len(calls) == 1  # opened once, and only after started flipped
+
+
+def test_open_when_ready_timeout_backstop_opens_anyway() -> None:
+    # A1: a server that never lists still gets a best-effort open at the
+    # deadline (the shipped "always try to open" behaviour), not a hang.
+    server = _StartFlag(started=False)
+    calls: list[int] = []
+    stop = threading.Event()
+    _open_when_ready(
+        server, lambda: calls.append(1), stop,
+        ready_timeout=0.05, ready_poll=0.01,
+    )
+    assert calls == [1]
+
+
+def test_open_when_ready_skips_open_when_already_stopped() -> None:
+    # D2/SF-2: if the stop event is set (server.run() raised before listening),
+    # the poller must never open a browser onto a dead server.
+    server = _StartFlag(started=False)
+    calls: list[int] = []
+    stop = threading.Event()
+    stop.set()
+    _open_when_ready(
+        server, lambda: calls.append(1), stop,
+        ready_timeout=5.0, ready_poll=0.01,
+    )
+    assert calls == []
+
+
+def test_open_when_ready_skips_open_when_stopped_after_ready() -> None:
+    # D2/SF-2 (the real race): started is True, but the stop event lands before
+    # the open. The re-check after the loop must still refuse to open.
+    server = _StartFlag(started=True)
+    calls: list[int] = []
+    stop = threading.Event()
+    stop.set()
+    _open_when_ready(
+        server, lambda: calls.append(1), stop,
+        ready_timeout=5.0, ready_poll=0.01,
+    )
+    assert calls == []
+
+
+def test_spawn_ready_watcher_runs_after_open_once_after_open() -> None:
+    # inject-seam (Part A -> Part C hand-off): drive the REAL
+    # _spawn_ready_watcher — so both the thread wiring AND the after_open kwarg
+    # being threaded into _open_when_ready are exercised — with a non-None
+    # after_open. The shipped splash hand-off branch (`if after_open is not
+    # None: after_open()`) is otherwise only reached via the _sync_ready_watcher
+    # stand-in, so a real wiring break would keep the whole suite green. The
+    # hand-off must fire exactly once, and only after the browser open.
+    server = _StartFlag(started=True)
+    order: list[str] = []
+    stop = threading.Event()
+    watcher = _spawn_ready_watcher(
+        server,
+        lambda: order.append("open"),
+        stop,
+        after_open=lambda: order.append("after"),
+    )
+    watcher.join(timeout=2)
+    assert not watcher.is_alive()
+    assert order == ["open", "after"]  # once, and after the open
+
+
+def test_spawn_ready_watcher_skips_after_open_on_stop_path() -> None:
+    # inject-seam (stop path): the A3 shape through the REAL watcher — stop set
+    # before the server ever lists. Neither the open nor the splash hand-off may
+    # run onto a server that is shutting down.
+    server = _StartFlag(started=False)
+    order: list[str] = []
+    stop = threading.Event()
+    stop.set()
+    watcher = _spawn_ready_watcher(
+        server,
+        lambda: order.append("open"),
+        stop,
+        after_open=lambda: order.append("after"),
+    )
+    watcher.join(timeout=2)
+    assert not watcher.is_alive()
+    assert order == []  # no open, no after_open
+
+
+def test_open_when_ready_real_server_default_constants() -> None:
+    # A2 (inject-seam real default): drive the REAL _spawn_ready_watcher +
+    # _open_when_ready with the shipped READY_TIMEOUT/READY_POLL against a real
+    # uvicorn.Server. The poller must open once the socket is actually
+    # listening. Server runs on the main thread (uvicorn installs signal
+    # handlers there); the watcher's open stops it so run() returns.
+    import uvicorn
+
+    from litman.server import create_app
+
+    port = _find_free_port(_DEFAULT_PORT)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            create_app(None), host="127.0.0.1", port=port, log_level="warning"
+        )
+    )
+    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+    opened: list[bool] = []
+    stop = threading.Event()
+
+    def _open() -> None:
+        opened.append(True)
+        server.should_exit = True
+
+    watcher = _spawn_ready_watcher(server, _open, stop)  # DEFAULT constants
+    try:
+        server.run()  # blocks until _open sets should_exit
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+
+    assert not watcher.is_alive()
+    assert opened == [True]  # opened after the real server became ready
+
+
+def test_ready_watcher_is_reaped_when_server_never_listens() -> None:
+    # A3: the stop event cleanly terminates the poller (no browser opened, no
+    # daemon left hanging) — what gui_cmd's finally relies on when run() raises.
+    server = _StartFlag(started=False)  # never lists
+    opened: list[int] = []
+    stop = threading.Event()
+    watcher = _spawn_ready_watcher(server, lambda: opened.append(1), stop)
+    stop.set()  # exactly what gui_cmd's finally does
+    watcher.join(timeout=2)
+    assert not watcher.is_alive()
+    assert watcher not in threading.enumerate()
+    assert opened == []
+
+
+def test_gui_cmd_reaps_ready_thread_when_server_run_raises(
+    monkeypatch, vault_with_paper
+) -> None:
+    # A3 through gui_cmd: server.run() raising must not leave the readiness
+    # thread (a real one here — not the synchronous harness) dangling.
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: False)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(webbrowser, "open", lambda url: None)
+
+    class _BoomServer:
+        def __init__(self, *a, **k) -> None:
+            self.started = False
+            self.should_exit = False
+
+        def run(self) -> None:
+            raise RuntimeError("startup boom")
+
+    monkeypatch.setattr("uvicorn.Server", _BoomServer)
+    monkeypatch.setattr("uvicorn.Config", lambda *a, **k: None)
+
+    before = set(threading.enumerate())
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code != 0  # the RuntimeError (a bug) propagates
+    time.sleep(0.2)
+    leaked = [
+        t for t in threading.enumerate() if t not in before and t.is_alive()
+    ]
+    assert leaked == [], f"leaked threads after server.run() raised: {leaked}"
+
+
+# ===========================================================================
+# Part C — tkinter splash (trigger, silent degradation, lifecycle, headless)
+# ===========================================================================
+
+
+class _Tty:
+    def isatty(self) -> bool:
+        return True
+
+
+def test_launched_without_console_true_for_litw_none_stdout(monkeypatch) -> None:
+    # C1: litw handed the process no stdio (recorded in _LAUNCHED_HEADLESS).
+    monkeypatch.setattr(cli, "_LAUNCHED_HEADLESS", True)
+    assert cli._launched_without_console() is True
+
+
+def test_launched_without_console_false_in_a_terminal(monkeypatch) -> None:
+    # C1: a real terminal (tty) already shows the console.print feedback.
+    monkeypatch.setattr(cli, "_LAUNCHED_HEADLESS", False)
+    monkeypatch.setattr(sys, "__stdout__", _Tty())
+    assert cli._launched_without_console() is False
+
+
+def test_launched_without_console_true_when_redirected_nontty(monkeypatch) -> None:
+    # C1: POSIX .desktop / .app launch — stdout is a real object but not a tty.
+    monkeypatch.setattr(cli, "_LAUNCHED_HEADLESS", False)
+    monkeypatch.setattr(sys, "__stdout__", io.StringIO())  # isatty() is False
+    assert cli._launched_without_console() is True
+
+
+def _splash_launched(argvs: list[list[str]]) -> bool:
+    return any("litman.commands._splash" in argv for argv in argvs)
+
+
+@pytest.fixture
+def splash_gui(monkeypatch):
+    """gui_cmd harness that records splash vs window Popens separately. Unlike
+    gui_harness it does NOT force _launched_without_console — each test sets the
+    console / display / window / chromium combination it needs. Defaults to no
+    Chromium (so --window falls back to a tab, keeping the splash hand-off from
+    blocking on a presence connection that will never come)."""
+    _FakeServer.instances.clear()
+    rec = SimpleNamespace(
+        splashes=[], window_procs=[], opened=[], argvs=[]
+    )
+
+    def _popen(argv, **kw):
+        rec.argvs.append(list(argv))
+        proc = _FakeProc(argv)
+        if "litman.commands._splash" in argv:
+            rec.splashes.append(proc)
+        else:
+            rec.window_procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    monkeypatch.setattr(webbrowser, "open", lambda url: rec.opened.append(url))
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+    monkeypatch.setattr("uvicorn.Config", lambda *a, **k: None)
+    monkeypatch.setattr(gui, "_spawn_ready_watcher", _sync_ready_watcher)
+    # We assert splash wiring, not the window watcher — stop it lingering.
+    monkeypatch.setattr(gui, "_stop_server_when_window_closes", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    return rec
+
+
+def test_want_splash_true_for_consoleless_window_with_display(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C1 truth table: litw --window + display → splash IS launched.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert _splash_launched(splash_gui.argvs)
+    assert len(splash_gui.splashes) == 1
+
+
+def test_want_splash_false_in_a_terminal_window(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C1 truth table: terminal --window (has a tty) → NO splash.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: False)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert not _splash_launched(splash_gui.argvs)
+
+
+def test_want_splash_false_without_window(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C1 truth table: tab mode (no --window), even console-less → NO splash.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert not _splash_launched(splash_gui.argvs)
+
+
+def test_want_splash_false_headless_keeps_remote_capability(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C5 red line: no display → want_splash is False, NO splash Popen ever, and
+    # the server still prints URL + tunnel line (remote capability intact).
+    vault, _pid = vault_with_paper
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert not _splash_launched(splash_gui.argvs)
+    assert "http://127.0.0.1:" in result.output
+    assert "SSH tunnel" in result.output
+
+
+def test_splash_popen_failure_degrades_silently(
+    monkeypatch, vault_with_paper
+) -> None:
+    # C2 (positive + reverse): a splash Popen that raises (no tkinter / no
+    # `python -m` in this env) must not surface — and, reverse-verified, the
+    # startup must actually COMPLETE (server started, browser opened, exit 0),
+    # not merely "no exception".
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+    monkeypatch.setattr(gui, "_spawn_ready_watcher", _sync_ready_watcher)
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # tab fallback
+    _FakeServer.instances.clear()
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+
+    def _popen(argv, **kw):
+        if "litman.commands._splash" in argv:
+            raise FileNotFoundError("splash cannot start here")
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    monkeypatch.setattr("uvicorn.Server", _FakeServer)
+    monkeypatch.setattr("uvicorn.Config", lambda *a, **k: None)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    (server,) = _FakeServer.instances
+    assert server.ran  # reverse-verify: the server actually started
+    assert opened == [_served_url(result.output)]  # ...and the browser opened
+
+
+class _FakeSplash:
+    def __init__(self) -> None:
+        self.terminated = 0
+
+    def terminate(self) -> None:
+        self.terminated += 1
+
+
+def test_terminate_splash_when_visible_closes_on_presence() -> None:
+    # C3: splash stays up until a page paints (presence connects), then closes.
+    splash = _FakeSplash()
+    tracker = PresenceTracker()
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_terminate_splash_when_visible,
+        args=(splash, tracker, stop),
+        kwargs={"splash_timeout": 5.0, "poll": 0.01},
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.1)
+    assert splash.terminated == 0  # no page yet — hold the splash
+    tracker.connect()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert splash.terminated == 1
+
+
+def test_terminate_splash_when_visible_backstops_on_timeout() -> None:
+    # C3: presence never arrives → the splash_timeout backstop still closes it.
+    splash = _FakeSplash()
+    _terminate_splash_when_visible(
+        splash, PresenceTracker(), threading.Event(),
+        splash_timeout=0.05, poll=0.01,
+    )
+    assert splash.terminated == 1
+
+
+def test_terminate_splash_when_visible_backstops_on_stop_event() -> None:
+    # C3: the server shutting down (stop set) closes the splash immediately.
+    splash = _FakeSplash()
+    stop = threading.Event()
+    stop.set()
+    _terminate_splash_when_visible(
+        splash, PresenceTracker(), stop, splash_timeout=5.0, poll=0.01
+    )
+    assert splash.terminated == 1
+
+
+def test_terminate_splash_when_visible_real_default_timeout() -> None:
+    # C3 inject-seam real default: exercise the shipped SPLASH_TIMEOUT (25s)
+    # end-to-end without waiting it out — presence is already connected, so it
+    # terminates at once through the real default path.
+    splash = _FakeSplash()
+    tracker = PresenceTracker()
+    tracker.connect()
+    _terminate_splash_when_visible(splash, tracker, threading.Event())
+    assert splash.terminated == 1
+
+
+def test_terminate_splash_when_visible_suppresses_oserror() -> None:
+    # C3: terminate is idempotent/suppressed — a splash already gone must not
+    # crash the watcher.
+    class _BadSplash:
+        def terminate(self) -> None:
+            raise OSError("already gone")
+
+    tracker = PresenceTracker()
+    tracker.connect()
+    _terminate_splash_when_visible(_BadSplash(), tracker, threading.Event())
+
+
+def test_splash_terminated_on_tab_fallback(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C3 (SF-5): --window with no Chromium falls back to a tab; there is no
+    # window to paint, so the splash is closed at once.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(splash_gui.splashes) == 1
+    assert splash_gui.splashes[0].terminated
+
+
+def test_window_success_hands_splash_to_presence_watcher(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C3: on a real app window, the splash close is handed to the presence
+    # watcher (not closed immediately) — with the true tracker and splash proc.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: "/usr/bin/google-chrome" if name == "google-chrome" else None,
+    )
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        gui, "_terminate_splash_when_visible",
+        lambda splash, presence, stop, **kw: calls.append((splash, presence)),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(splash_gui.window_procs) == 1  # a real window was spawned
+    assert len(calls) == 1
+    splash, presence = calls[0]
+    assert splash is splash_gui.splashes[0]
+    assert isinstance(presence, PresenceTracker)
+
+
+def test_splash_terminated_in_finally(
+    monkeypatch, splash_gui, vault_with_paper
+) -> None:
+    # C3: with the presence hand-off stubbed out, the ONLY thing left to close
+    # the splash on a real app window is gui_cmd's finally backstop.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: "/usr/bin/google-chrome" if name == "google-chrome" else None,
+    )
+    monkeypatch.setattr(gui, "_terminate_splash_when_visible", lambda *a, **k: None)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(splash_gui.splashes) == 1
+    assert splash_gui.splashes[0].terminated  # closed by the finally backstop

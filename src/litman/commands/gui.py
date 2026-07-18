@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ import click
 from platformdirs import user_cache_dir
 from rich.console import Console
 
+from litman.cli import _launched_without_console
 from litman.commands._options import library_option, vault_option
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
@@ -63,6 +65,18 @@ console = Console()
 
 _DEFAULT_PORT = 8765
 _MAX_PORT = 65535
+
+# Readiness poll (Part A) — replaces the old flat 1s browser timer with "open
+# the instant the server is listening". Injectable via _open_when_ready's
+# keyword args; these module constants are the shipped defaults.
+READY_TIMEOUT = 10.0
+READY_POLL = 0.02
+
+# Splash close backstop (Part C, gui.py side, seconds). The _splash.py
+# subprocess carries its own independent millisecond self-destruct
+# (SPLASH_TIMEOUT_MS) — two constants across two modules by design: the splash
+# process must stay import-light and cannot import this module.
+SPLASH_TIMEOUT = 25.0
 
 
 def _find_free_port(start: int) -> int:
@@ -280,6 +294,102 @@ def _stop_server_when_window_closes(
                 break
         time.sleep(poll)
     server.should_exit = True
+
+
+# ---------------------------------------------------------------------------
+# readiness poll (Part A) + splash hand-off (Part C)
+# ---------------------------------------------------------------------------
+
+
+def _open_when_ready(
+    server: Any,
+    open_browser: Callable[[], None],
+    stop_event: threading.Event,
+    *,
+    ready_timeout: float = READY_TIMEOUT,
+    ready_poll: float = READY_POLL,
+    after_open: Callable[[], None] | None = None,
+) -> None:
+    """Open the browser the instant the server is listening — no fixed guess.
+
+    Polls ``server.started`` (uvicorn sets it True once startup finished and
+    the socket is listening) every ``ready_poll`` seconds and opens the moment
+    it flips — typically 0.3-0.7s, versus the old flat 1s. ``ready_timeout`` is
+    the backstop: if startup wedges, open anyway (best effort — the shipped
+    "always try to open" behaviour) rather than hang forever.
+
+    ``stop_event`` is the abort. ``gui_cmd``'s ``finally`` sets it, so if
+    ``server.run()`` raised before it ever listened, this returns without
+    opening a browser onto a dead server. The re-check after the loop covers
+    the one-``ready_poll``-wide window where the event lands between the break
+    and the open. ``after_open`` runs once, right after the open, for the
+    splash hand-off (wait for the page to paint, then close the splash).
+    """
+    deadline = time.monotonic() + ready_timeout
+    while True:
+        if stop_event.is_set():
+            return
+        if getattr(server, "started", False):
+            break
+        if time.monotonic() >= deadline:
+            break
+        stop_event.wait(ready_poll)
+    if stop_event.is_set():
+        return
+    open_browser()
+    if after_open is not None:
+        after_open()
+
+
+def _spawn_ready_watcher(
+    server: Any,
+    open_browser: Callable[[], None],
+    stop_event: threading.Event,
+    after_open: Callable[[], None] | None = None,
+) -> threading.Thread:
+    """Start the readiness poller on its own daemon thread and return it.
+
+    A named seam so ``gui_cmd`` stays readable and the poll behaviour
+    (``_open_when_ready``) can be driven directly in tests.
+    """
+    thread = threading.Thread(
+        target=_open_when_ready,
+        args=(server, open_browser, stop_event),
+        kwargs={"after_open": after_open},
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _terminate_splash_when_visible(
+    splash_proc: subprocess.Popen[bytes],
+    presence: PresenceTracker,
+    stop_event: threading.Event,
+    *,
+    splash_timeout: float = SPLASH_TIMEOUT,
+    poll: float = READY_POLL,
+) -> None:
+    """Close the splash once a page has actually painted.
+
+    The smoothest hand-off holds the splash until the browser's first frame is
+    really up — signalled by the SPA opening its ``/api/presence`` socket
+    (``ever_connected``) — so the splash never blinks out before the window
+    blinks in. Backstops: ``splash_timeout`` (presence never arrives) and
+    ``stop_event`` (the server is shutting down). ``terminate`` is idempotent
+    and suppressed: other paths may have closed the splash already.
+    """
+    deadline = time.monotonic() + splash_timeout
+    while True:
+        if stop_event.is_set():
+            break
+        if presence.ever_connected:
+            break
+        if time.monotonic() >= deadline:
+            break
+        stop_event.wait(poll)
+    with contextlib.suppress(OSError):
+        splash_proc.terminate()
 
 
 # ---------------------------------------------------------------------------
@@ -567,12 +677,40 @@ def gui_cmd(
         )
         return
 
+    # Part C: launch the splash as early as possible — before importing uvicorn
+    # and building the app — so it paints while that heavy work runs. Only for a
+    # console-less --window launch that has a display: a terminal already gives
+    # feedback (its prints are visible), and a headless / ssh -L session must
+    # never spawn a window. Its own subprocess, never waited on; a missing
+    # tkinter or a failed Popen degrades to no splash and never blocks startup.
+    splash_proc: subprocess.Popen[bytes] | None = None
+    want_splash = (
+        window
+        and not no_browser
+        and display_available()
+        and _launched_without_console()
+    )
+    if want_splash:
+        with contextlib.suppress(Exception):
+            splash_proc = subprocess.Popen(
+                [sys.executable, "-m", "litman.commands._splash"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+
+    def _terminate_splash() -> None:
+        if splash_proc is not None:
+            with contextlib.suppress(OSError):
+                splash_proc.terminate()
+
     # fastapi + uvicorn are core dependencies, so this import normally always
     # succeeds; the guard only fires on a corrupted install, and points at a
     # reinstall rather than a (no-longer-existing) optional extra.
     try:
         import uvicorn
     except ImportError:
+        _terminate_splash()
         console.print(
             "[bold red]error:[/] the web UI needs fastapi + uvicorn, which are "
             "missing from this install."
@@ -624,8 +762,11 @@ def gui_cmd(
         uvicorn.Config(app, host="127.0.0.1", port=actual_port)
     )
 
-    browser_timer: threading.Timer | None = None
-    # The app window we spawned, if we spawned one. Appended from the timer
+    # Signals the readiness poller to stand down: set in `finally` so a server
+    # that raised before it ever listened never gets a browser opened onto it.
+    stop_event = threading.Event()
+    ready_thread: threading.Thread | None = None
+    # The app window we spawned, if we spawned one. Appended from the readiness
     # thread, read in `finally` — a list because a plain name cannot be rebound
     # across that boundary.
     owned: list[subprocess.Popen[bytes]] = []
@@ -642,6 +783,10 @@ def gui_cmd(
 
         def _open() -> None:
             if app_argv is None:
+                # A plain tab (no Chromium found, or tab mode): no window
+                # process to watch, and no page paint will close the splash —
+                # so close it now (SF-5).
+                _terminate_splash()
                 webbrowser.open(url)
                 return
             try:
@@ -658,7 +803,9 @@ def gui_cmd(
                 # The browser vanished between the `which` probe and now. A tab
                 # is a worse window, but no window at all is worse still — and
                 # without a process to watch, the server keeps the Ctrl+C
-                # contract rather than exiting immediately.
+                # contract rather than exiting immediately. No window to paint,
+                # so close the splash now (SF-5).
+                _terminate_splash()
                 webbrowser.open(url)
                 return
             owned.append(proc)
@@ -668,17 +815,35 @@ def gui_cmd(
                 daemon=True,
             ).start()
 
-        # The server comes up sub-second; 1s keeps the browser from racing it.
-        browser_timer = threading.Timer(1.0, _open)
-        browser_timer.daemon = True
-        browser_timer.start()
+        def _after_open() -> None:
+            # Splash hand-off: only a real app window has a page that will hold
+            # the presence socket, so wait for it to paint before closing the
+            # splash. The tab / default-browser fallbacks in _open already
+            # closed it (owned stays empty there); nothing to hold for.
+            if splash_proc is None:
+                return
+            if owned:
+                _terminate_splash_when_visible(
+                    splash_proc, app.state.presence, stop_event
+                )
+            else:
+                _terminate_splash()
+
+        ready_thread = _spawn_ready_watcher(
+            server, _open, stop_event, after_open=_after_open
+        )
 
     try:
         server.run()
     finally:
-        # No-op once fired; stops the open if server startup raised first.
-        if browser_timer is not None:
-            browser_timer.cancel()
+        # Tell the readiness poller to stand down and wait for it, so a server
+        # that raised before listening leaves no thread behind (and never opens
+        # a browser onto a dead server).
+        stop_event.set()
+        if ready_thread is not None:
+            ready_thread.join(timeout=READY_TIMEOUT + 1.0)
+        # Backstop: close the splash no matter which path brought us here.
+        _terminate_splash()
         # The other direction: the server stopped first (Ctrl+C, or a crash),
         # so close the window it was serving rather than leave a dead shell on
         # screen. Safe because the profile is ours alone — there are no other

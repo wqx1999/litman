@@ -24,13 +24,21 @@ _PLATFORM_SPECIFIC = (
 
 
 def _all_commands() -> list[tuple[str, click.Command]]:
-    """Every leaf command in the tree, as (dotted path, command)."""
+    """Every leaf command in the tree, as (dotted path, command).
+
+    Walks via ``list_commands`` / ``get_command`` (not the ``.commands`` dict):
+    the root group loads its subcommands lazily, so the dict is sparse until a
+    command is resolved — the public API resolves each on demand.
+    """
     found: list[tuple[str, click.Command]] = []
 
     def walk(name: str, cmd: click.Command) -> None:
         if isinstance(cmd, click.Group):
-            for sub_name, sub in cmd.commands.items():
-                walk(f"{name} {sub_name}", sub)
+            ctx = click.Context(cmd, info_name=name)
+            for sub_name in cmd.list_commands(ctx):
+                sub = cmd.get_command(ctx, sub_name)
+                if sub is not None:
+                    walk(f"{name} {sub_name}", sub)
         else:
             found.append((name, cmd))
 
