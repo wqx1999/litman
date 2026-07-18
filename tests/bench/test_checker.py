@@ -598,6 +598,85 @@ def test_filtered_list_omits_equals_form_paging_after_filter_does_not_false_fail
     assert r.passed, r.detail
 
 
+# ---------------------------------------------------------------------------
+# filtered_list_contains (scope-narrowed positive — only the LAST filtered lit list)
+# ---------------------------------------------------------------------------
+
+
+def test_filtered_list_contains_explored_then_filtered_passes(synth_vault: Path) -> None:
+    """T1 (claude/cursor shape): a full-library dump while exploring, then a correct
+    ``--topic peptide`` filter whose result contains PeptideBERT. The verb reads ONLY
+    the last filtered list, so it credits the filtered result."""
+    jsonl = [
+        {"argv": ["vault", "list", "2>&1"], "stdout": "LIT_LIBRARY=/tmp/run-vault"},
+        {"argv": ["list", "--format", "json", "2>&1"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+        {"argv": ["list", "--topic", "peptide", "--format", "json", "2>&1"],
+         "stdout": '[{"id":"2023_Guntuboina_PeptideBERT-Language"},{"id":"2024_Chen_Multi-Peptide"}]'},
+    ]
+    r = _ck("filtered_list_contains: ~PeptideBERT", synth_vault, jsonl)
+    assert r.passed, r.detail
+
+
+def test_filtered_list_contains_dump_has_substr_but_filtered_result_omits_fails(
+    synth_vault: Path,
+) -> None:
+    """★ T2 (the core anti-regression): the exploratory full-library dump's stdout
+    CONTAINS PeptideBERT, but the LAST filtered call (``--topic diffusion``) does
+    NOT. The positive is anchored on the filtered result, not the dump, so it must
+    FAIL — this is what proves a full-library dump cannot satisfy the positive."""
+    jsonl = [
+        {"argv": ["list", "--format", "json"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+        {"argv": ["list", "--topic", "diffusion", "--format", "json"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"}]'},
+    ]
+    r = _ck("filtered_list_contains: ~PeptideBERT", synth_vault, jsonl)
+    assert not r.passed
+    assert "does not contain" in r.detail
+
+
+def test_filtered_list_contains_no_filter_only_dump_fails(synth_vault: Path) -> None:
+    """T3 (agy/opencode shape): only ``list --help`` / ``list --format json`` (full
+    dump) / ``vault list`` — never a content-filter flag. No filtered result exists
+    to credit, so the positive FAILS with a 'no filtered' detail even though the
+    dump's stdout DOES contain PeptideBERT."""
+    jsonl = [
+        {"argv": ["list", "--help"], "stdout": "Usage: lit list ..."},
+        {"argv": ["list", "--format", "json", "2>&1"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+        {"argv": ["vault", "list", "--format", "json"], "stdout": "LIT_LIBRARY=/tmp/run-vault"},
+    ]
+    r = _ck("filtered_list_contains: ~PeptideBERT", synth_vault, jsonl)
+    assert not r.passed
+    assert "no filtered" in r.detail
+
+
+def test_filtered_list_contains_filtered_result_has_substr_passes(synth_vault: Path) -> None:
+    """T4: a genuine ``--topic peptide`` filter whose result contains Multi-Peptide
+    → passes (the in-range paper is surfaced by the filtered list)."""
+    jsonl = [
+        {"argv": ["list", "--topic", "peptide", "--format", "json"],
+         "stdout": '[{"id":"2023_Guntuboina_PeptideBERT-Language"},{"id":"2024_Chen_Multi-Peptide"}]'},
+    ]
+    r = _ck("filtered_list_contains: ~Multi-Peptide", synth_vault, jsonl)
+    assert r.passed, r.detail
+
+
+def test_filtered_list_contains_equals_form_output_flag_is_not_a_filter(synth_vault: Path) -> None:
+    """T5: the EQUALS form of an output flag (``--format=json``) classifies the same
+    as the space form — a full dump, not a content filter. So a dump-only session is
+    'no filtered list' and the positive FAILS, proving the reused ``_is_filtered_list``
+    equals-normalization holds on the positive side too."""
+    jsonl = [
+        {"argv": ["list", "--format=json"],
+         "stdout": '[{"id":"2022_Corso_DiffDock-Diffusion"},{"id":"2023_Guntuboina_PeptideBERT-Language"}]'},
+    ]
+    r = _ck("filtered_list_contains: ~PeptideBERT", synth_vault, jsonl)
+    assert not r.passed
+    assert "no filtered" in r.detail
+
+
 def test_answer_contains_no_run_is_hard_fail(synth_vault: Path) -> None:
     """run=None must FAIL, never silently pass (invariant #14 no-silent-skip)."""
     r = _ck("answer_contains: ~2023", synth_vault)  # no run threaded

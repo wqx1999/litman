@@ -27,7 +27,7 @@ Four further verbs read state the vault YAML does not own:
 * ``count`` matches over INDEX.json papers (e.g. ``count: title~PeptideBERT == 1``
   proves the dedup did not create a duplicate, M34 §3.5: A3).
 
-Three evidence verbs score the agent's observable output:
+Four evidence verbs score the agent's observable output:
 
 * ``stdout_contains: ~substr`` greps the joined ``record["stdout"]`` of the
   jsonl (works from the jsonl alone — the executor widens its records to carry
@@ -42,6 +42,13 @@ Three evidence verbs score the agent's observable output:
   that dumps the full library while exploring and THEN filters correctly is not
   punished for the exploratory dump; with no filtered ``lit list`` at all it FAILS
   (the agent produced no file-side-filtered result to judge).
+* ``filtered_list_contains: ~substr`` is the SCOPE-NARROWED positive twin of
+  ``filtered_list_omits``: it passes when the ``stdout`` of the LAST ``lit list``
+  call carrying a content-filter flag CONTAINS ``substr``, reads ONLY that filtered
+  call's stdout (never the ``stdout_blob``), and with no filtered ``lit list`` at
+  all it FAILS. Pairing it with the omits verb makes every C1 content assertion
+  speak to the SAME filtered result, so an agent that dumps the whole library and
+  picks in its head cannot satisfy any of them off the exploratory dump.
 * ``answer_contains: ~substr`` greps ``run.final_text`` (the agent's natural
   language answer, e.g. C2 "year=2023"). Needs ``run`` threaded; when it is
   ``None`` the result is a *failed* assertion (``detail="no run threaded"``),
@@ -720,6 +727,37 @@ def _check_filtered_list_omits(jsonl: list[dict], arg: str) -> AssertResult:
     )
 
 
+def _check_filtered_list_contains(jsonl: list[dict], arg: str) -> AssertResult:
+    """``filtered_list_contains: ~substr`` — scope-narrowed POSITIVE for C1.
+
+    Passes iff there is at least one ``lit list`` call carrying a content-filter
+    flag AND the stdout of the LAST such call CONTAINS ``substr``. With no filtered
+    ``lit list`` at all it FAILS — the agent produced no file-side-filtered result,
+    so it cannot be credited for surfacing the paper out of a full-library dump.
+
+    The positive twin of :func:`_check_filtered_list_omits`. Together they make C1
+    coherent: every content assertion speaks to the SAME last filtered list, so an
+    agent that dumps the whole library and picks in its head fails all of them
+    uniformly, and none can be satisfied off the exploratory dump. Reads ONLY the
+    jsonl ``argv`` + per-record ``stdout``; it deliberately never touches the
+    executor's ``stdout_blob`` (widening to the whole session is the exact mistake
+    the filtered_* pair exists to avoid).
+    """
+    sub = arg.strip().lstrip("~").strip()
+    filtered = [r for r in jsonl if _is_filtered_list(r)]
+    if not filtered:
+        return AssertResult(
+            "filtered_list_contains", arg, False,
+            "no filtered `lit list` call — agent produced no file-side-filtered result",
+        )
+    last_stdout = str(filtered[-1].get("stdout", ""))
+    present = _norm(sub) in _norm(last_stdout)
+    return AssertResult(
+        "filtered_list_contains", arg, present,
+        "" if present else f"filtered list result does not contain {sub!r}",
+    )
+
+
 def _check_answer_contains(run: Any, arg: str) -> AssertResult:
     """``answer_contains: ~substr`` — grep the agent's final natural-language answer.
 
@@ -754,7 +792,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "file_exists", "file_contains", "file_nonempty",
         "vault_file_contains", "vault_file_nonempty",
         "count",
-        "stdout_contains", "filtered_list_omits", "answer_contains",
+        "stdout_contains", "filtered_list_omits", "filtered_list_contains", "answer_contains",
     }
 )
 
@@ -827,6 +865,8 @@ def check_assertion(
         return _check_stdout_contains(jsonl, arg, run)
     if verb == "filtered_list_omits":
         return _check_filtered_list_omits(jsonl, arg)
+    if verb == "filtered_list_contains":
+        return _check_filtered_list_contains(jsonl, arg)
     if verb == "answer_contains":
         return _check_answer_contains(run, arg)
 

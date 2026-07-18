@@ -12,18 +12,17 @@ precondition: |
 intent: |
   "把我库里 2023 年以后、跟 peptide 有关的论文列出来。"
 expected_end_state:
-  - "ran: list"                          # lit list --year 2023,2024 --topic ...
-  - "stdout_contains: ~PeptideBERT"      # 输出含 #4
-  - "stdout_contains: ~Multi-Peptide"    # 输出含 #5
-  - "filtered_list_omits: ~DiffDock"     # 最后一次带筛选 flag 的 list 不含 #1(2022，越界)
+  - "ran: list"                               # lit list --year 2023,2024 --topic ...
+  - "filtered_list_contains: ~PeptideBERT"    # 最后一次筛选 list 含 #4
+  - "filtered_list_contains: ~Multi-Peptide"  # 最后一次筛选 list 含 #5
+  - "filtered_list_omits: ~DiffDock"          # 最后一次带筛选 flag 的 list 不含 #1(2022，越界)
 auto_fail:
   - grep / ls -R vault 而非 lit list                                    # ADR-007
   - 触碰真库
 notes: |
-  正向"输出含 #4、#5"用 stdout_contains（全场 scope 无害 = 召回：右论文在某次 lit
-  输出里出现过即可）。负向"不含 #1"用 filtered_list_omits，只查**最后一次带内容筛选
-  flag 的 lit list** 的 stdout。旧 stdout_not_contains 把全场所有调用拼起来扫，会把
-  "先 dump 全库探索一眼"那次的越界论文也算进去 → 惩罚了完全合理的探索动作。实锤
-  （2026-07-18 run）：opencode 正确跑了 --topic peptide（结果无 DiffDock），却因前面
-  一条 list --format json 的全库 dump 含 DiffDock 被冤挂 C1=0。缩到"真正的筛选结果那
-  次"后：真用 flag 筛的过、只 dump 全库靠脑补的（agy）挂。该卡全 DSL → auto-scored。
+  三条内容断言——含 #4、含 #5（filtered_list_contains）、不含 #1（filtered_list_omits）
+  ——全部只看**最后一次带内容筛选 flag 的 lit list**（--topic/--title/--year ...，非
+  --format/--limit/--sort/--help）的 stdout。真用 flag 筛的三条都过；只 dump 全库、靠
+  脑子筛的三条一起挂（无筛选调用 = 挂），正向不再能靠全库 dump 假过。实锤（2026-07-18
+  run）：agy/opencode 只跑 list --format json 全库 dump、答案对，但无筛选调用 → C1=0。
+  该卡全 DSL → auto-scored。
