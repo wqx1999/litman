@@ -556,9 +556,12 @@ def test_on_prepared_fires_between_isolation_and_spawn(tmp_path: Path, monkeypat
 # resolve fine — a self-contradicting environment that scores an agent's
 # correct-given-the-lie refusal as a failure. register_active_vault registers the
 # run vault as active so the two views agree, matching a real machine (exactly one
-# active vault). The first two tests drive REAL lit (the inject-seam lesson: a
-# helper whose only job is to shell out must be proven against the real binary,
-# not just a fake proc), the third pins the run_card wiring.
+# active vault). It registers ONLY a real vault (lit-config.yaml present); the
+# Phase 0 qualification probe's bare `_probe_base` vault has none and is skipped.
+#
+# AC1 / AC4-v2 / AC4b-v2 drive REAL lit (the inject-seam lesson: a helper whose
+# only job is to shell out must be proven against the real binary, not just a fake
+# proc). AC-qual-v2 and AC3 pin the run_card wiring with the spawn faked.
 
 
 def _real_lit_env(run_vault: Path, registry: Path) -> dict[str, str]:
@@ -647,21 +650,94 @@ def test_register_active_vault_makes_the_run_vault_active(tmp_path: Path) -> Non
     assert resolved.returncode == 0, resolved.stderr or resolved.stdout
 
 
-def test_register_active_vault_raises_on_non_vault(tmp_path: Path) -> None:
-    """AC4 — real lit: a dir with no lit-config.yaml is not a vault; registration
-    must raise loudly (a broken seed, not a state to score around), surfacing
-    lit's exit code and output."""
-    not_a_vault = tmp_path / "not-a-vault"
-    not_a_vault.mkdir()
-    env = _real_lit_env(not_a_vault, tmp_path / "reg")
+def test_register_active_vault_skips_a_bare_probe_vault(tmp_path: Path) -> None:
+    """AC4-v2 — real lit: the Phase 0 qualification probe's vault is a bare `mkdir`
+    dir with no lit-config.yaml (`_probe_base`'s shape). It is not a vault to
+    register, so register_active_vault returns None without raising and leaves the
+    registry empty. Reverse-verify: delete the `if not ...: return` guard in
+    executor.register_active_vault and this goes RED — real `lit vault add` rejects
+    the bare dir with exit 1, so the helper raises again."""
+    from harness.qualify import _probe_base
+
+    _, vault = _probe_base(tmp_path)  # exactly the bare probe shape the gate uses
+    assert not (vault / "lit-config.yaml").exists()
+    registry = tmp_path / "reg"
+    registry.mkdir()
+    env = _real_lit_env(vault, registry)
+
+    assert register_active_vault(vault, env) is None  # returns, does not raise
+
+    # The registry was never touched — `lit vault list` still reports it empty.
+    listing = subprocess.run(
+        [str(LIT_BIN), "vault", "list"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert "No vaults registered" in listing.stdout
+
+
+def test_register_active_vault_raises_when_a_real_vault_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC4b-v2 — the guard skips ONLY a non-vault; a directory that IS a vault
+    (real `lit init`, lit-config.yaml present) whose `lit vault add` still exits
+    non-zero is a broken seed and must raise, surfacing the exit code. Proves the
+    guard did not swallow real registration failures. subprocess is faked to force
+    the non-zero exit, so the guard's on-disk lit-config.yaml check passes on the
+    real vault while the add 'fails'."""
+    registry = tmp_path / "reg"
+    registry.mkdir()
+    parent = tmp_path / "runroot"
+    parent.mkdir()
+    init = subprocess.run(
+        [str(LIT_BIN), "init", str(parent), "--name", "bench-runvault", "--no-register"],
+        env={**os.environ, "LITMAN_REGISTRY_DIR": str(registry)},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert init.returncode == 0, init.stderr or init.stdout
+    run_vault = parent / "bench-runvault"
+    assert (run_vault / "lit-config.yaml").is_file()  # the guard will let this pass
+
+    class _Proc:
+        stdout = "boom"
+        returncode = 1
+
+    monkeypatch.setattr(executor_mod.subprocess, "run", lambda *a, **k: _Proc())
 
     with pytest.raises(RuntimeError) as excinfo:
-        register_active_vault(not_a_vault, env)
-
+        register_active_vault(run_vault, _real_lit_env(run_vault, registry))
     msg = str(excinfo.value)
     assert "could not register the run vault as active" in msg
-    assert "exited 1" in msg  # lit's non-zero exit is surfaced
-    assert "lit-config.yaml" in msg  # lit's own diagnosis is carried through
+    assert "exited 1" in msg  # the non-zero exit is surfaced
+
+
+def test_run_card_survives_a_bare_probe_vault(tmp_path: Path, monkeypatch) -> None:
+    """AC-qual-v2 — anti-regression main anchor: the qualification gate drives the
+    REAL run_card against a bare `_probe_base` vault (no lit-config.yaml). run_card
+    must NOT raise from registration — the guard skips a non-vault — and must
+    return an ExecutorResult normally. The spawn is faked via _replay (so no live
+    agent, and the real `lit vault add` never runs here); the real-lit proof that a
+    bare vault is skipped is AC4-v2. Together they cover the live path v1 missed."""
+    from harness.agents import claude as claude_mod
+    from harness.qualify import _probe_base
+
+    monkeypatch.setattr(claude_mod, "seed_auth", lambda *a, **k: None)
+    monkeypatch.setattr(claude_mod, "install_repo_skills", lambda *a, **k: None)
+    calls: dict = {}
+    _replay(monkeypatch, calls, "")
+
+    _, vault = _probe_base(tmp_path)  # the bare shape the gate hands run_card
+    assert not (vault / "lit-config.yaml").exists()
+    result = run_card(
+        Card(id="qual-probe", intent="do a thing", fixtures=[]),
+        vault,
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+    )
+    assert isinstance(result, ExecutorResult)
 
 
 def test_run_card_registers_the_active_vault(tmp_path: Path, monkeypatch) -> None:

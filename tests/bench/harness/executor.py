@@ -246,9 +246,18 @@ def register_active_vault(run_vault: Path, env: dict[str, str]) -> None:
 
     Safe: the registry is a throwaway dir under the run root; `--use` cannot reach
     the real library. Uses the CLI, never hand-edits vaults.yaml (lit forbids it).
-    Loud on failure: a non-zero exit means the run vault is not a vault (no
-    lit-config.yaml) — a broken seed, not something to score around.
+
+    run_card is the sole agent-neutral confluence, so its callers are three kinds:
+    scoring (a seed vault), routing (a seed-empty `init` vault) — both carry a
+    lit-config.yaml — and the Phase 0 qualification probe, whose vault is a bare
+    `mkdir` dir (:func:`harness.qualify._probe_base`) with NO lit-config.yaml,
+    because nothing the gate asks for reads the library. A bare dir is not a vault
+    to register — `lit vault add` would (correctly) reject it — so we skip it. The
+    raise is reserved for the real failure: a directory that IS a vault
+    (lit-config.yaml present) yet still fails to register (a broken seed).
     """
+    if not (run_vault / "lit-config.yaml").is_file():
+        return
     proc = subprocess.run(
         [str(LIT_BIN), "vault", "add", ACTIVE_VAULT_NAME, str(run_vault), "--use"],
         env=env,
