@@ -41,6 +41,7 @@ import pytest
 from harness.agents import get_adapter
 from harness.agents.opencode import (
     OpencodeAdapter,
+    _run_export,
     normalize_usage,
     parse_stream,
     seed_auth,
@@ -52,21 +53,28 @@ SKILL_STREAM = (STREAMS_DIR / "opencode-skill-lit.raw.jsonl").read_text(
     encoding="utf-8"
 )
 EXPORT_JSON = (STREAMS_DIR / "opencode-export.json").read_text(encoding="utf-8")
+# The real `subprocess.run(capture_output=True)` (no text=True) hands back bytes, so
+# every rc==0 stub stdout that _run_export will decode is fed as bytes.
+EXPORT_JSON_BYTES = EXPORT_JSON.encode("utf-8")
 
 # The bash callID in the recorded stream (its one compound lit command).
 BASH_CALL_ID = "call_00_sb4blQT9SocwWYYpuJSb4857"
 
 
 class _FakeCompleted:
-    """A stand-in for ``subprocess.CompletedProcess`` (returncode + stdout only)."""
+    """A stand-in for ``subprocess.CompletedProcess`` (returncode + stdout only).
 
-    def __init__(self, returncode: int, stdout: str) -> None:
+    ``stdout`` is ``bytes`` to mirror the real ``subprocess.run(capture_output=True)``
+    boundary: with ``text=True`` gone, ``_run_export`` receives raw bytes and does its
+    own explicit utf-8 decode."""
+
+    def __init__(self, returncode: int, stdout: bytes) -> None:
         self.returncode = returncode
         self.stdout = stdout
-        self.stderr = ""
+        self.stderr = b""
 
 
-def _stub_export(monkeypatch, returncode: int, stdout: str) -> list[dict]:
+def _stub_export(monkeypatch, returncode: int, stdout: bytes) -> list[dict]:
     """Replace the export subprocess AND freeze the retry backoff; return a list the
     calls are recorded into.
 
@@ -207,7 +215,7 @@ def test_served_model_comes_from_export_as_provider_slash_id(
     only the subprocess boundary stubbed to return the recorded export JSON. Because
     the export is of the stream's OWN session (see test above), the model recovered
     here is the model that served THIS stream — the real end-to-end AC2/AC9 claim."""
-    calls = _stub_export(monkeypatch, 0, EXPORT_JSON)
+    calls = _stub_export(monkeypatch, 0, EXPORT_JSON_BYTES)
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served == "opencode/deepseek-v4-flash-free"
     # It really shelled out to `opencode export <sid>` — not read from the stream.
@@ -223,7 +231,7 @@ def test_export_runs_in_the_runs_own_isolated_env(tmp_path: Path, monkeypatch) -
     )
     adapter = OpencodeAdapter()
     env = adapter.prepare(tmp_path, run_vault=tmp_path / "vault")
-    calls = _stub_export(monkeypatch, 0, EXPORT_JSON)
+    calls = _stub_export(monkeypatch, 0, EXPORT_JSON_BYTES)
 
     adapter.parse(SKILL_STREAM, base=tmp_path)
 
@@ -258,7 +266,7 @@ def test_export_nonzero_exit_yields_none_not_the_request(
     check: with the stub returning code 1 on every call, both the first attempt and
     the one backoff retry fail, so the harvest gives up and reports None (the backoff
     is stubbed to a no-op, so this adds no real delay)."""
-    _stub_export(monkeypatch, 1, "irrelevant when the exit is non-zero")
+    _stub_export(monkeypatch, 1, b"irrelevant when the exit is non-zero")
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
     # The exact case Phase 0 exists to catch: never fall back to what we asked for.
@@ -268,7 +276,7 @@ def test_export_nonzero_exit_yields_none_not_the_request(
 
 def test_export_invalid_json_yields_none(tmp_path: Path, monkeypatch) -> None:
     """(c) Export exits 0 but prints junk -> None, never a guess."""
-    _stub_export(monkeypatch, 0, "not json at all {[}")
+    _stub_export(monkeypatch, 0, b"not json at all {[}")
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
 
@@ -278,7 +286,7 @@ def test_export_json_without_a_model_block_yields_none(
 ) -> None:
     """Valid JSON, but info.model absent -> None (partial data is not a served
     model). Guards the ``provider_id and model_id`` check specifically."""
-    _stub_export(monkeypatch, 0, '{"info": {"id": "ses_x"}}')
+    _stub_export(monkeypatch, 0, b'{"info": {"id": "ses_x"}}')
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
 
@@ -298,7 +306,7 @@ def test_export_first_miss_then_retry_succeeds_recovers_the_model(
     (session db not flushed yet), the one backoff retry succeeds, and the model is
     recovered end-to-end — subprocess + sleep are the only things stubbed."""
     rec = _stub_export_sequence(
-        monkeypatch, [_FakeCompleted(1, ""), _FakeCompleted(0, EXPORT_JSON)]
+        monkeypatch, [_FakeCompleted(1, b""), _FakeCompleted(0, EXPORT_JSON_BYTES)]
     )
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served == "opencode/deepseek-v4-flash-free"
@@ -312,7 +320,7 @@ def test_export_both_attempts_fail_yields_none(
     """AC7. Two non-zero exits in a row -> None (never the requested/default model).
     The retry is best-effort, not a guarantee; D1 downstream degrades this safely."""
     rec = _stub_export_sequence(
-        monkeypatch, [_FakeCompleted(1, ""), _FakeCompleted(1, "")]
+        monkeypatch, [_FakeCompleted(1, b""), _FakeCompleted(1, b"")]
     )
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
@@ -332,7 +340,7 @@ def test_export_timeout_is_a_failure_not_a_crash(
         monkeypatch,
         [
             subprocess.TimeoutExpired(cmd=["opencode", "export"], timeout=60.0),
-            _FakeCompleted(0, EXPORT_JSON),
+            _FakeCompleted(0, EXPORT_JSON_BYTES),
         ],
     )
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
@@ -358,6 +366,43 @@ def test_export_timeout_twice_yields_none_without_raising(
     result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
     assert result.model_served is None
     assert len(rec["calls"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Lenient decode — a truncated `opencode export` degrades to None, never a crash
+# (r4: export cut its stdout at the 64KB boundary mid-multibyte-character, raising
+# UnicodeDecodeError — a ValueError, NOT json.JSONDecodeError — which sailed past
+# _served_model's guard and aborted the whole batch). Stdout is now captured as
+# bytes and leniently utf-8-decoded, so the mangled tail becomes a broken JSON that
+# json.loads turns into an honest None. Drives the REAL _run_export / _served_model.
+# ---------------------------------------------------------------------------
+
+# A valid JSON prefix cut off mid-3-byte-character: a lone 0xe6 lead byte with its
+# continuation bytes truncated at the boundary — exactly r4's `position 65535` shape.
+_TRUNCATED_EXPORT = b'{"info":{"model":{"providerID":"x","id":"y"' + b"\xe6"
+
+
+def test_run_export_lenient_decodes_a_truncated_multibyte_tail(monkeypatch) -> None:
+    """AC1. `opencode export` truncated its stdout mid-multibyte-character (r4's
+    64KB-boundary crash). _run_export must NOT raise: it decodes utf-8 with
+    errors="replace", so the lone lead byte becomes U+FFFD and a str comes back."""
+    _stub_export(monkeypatch, 0, _TRUNCATED_EXPORT)
+    out = _run_export("opencode", "ses_x", None)
+    assert isinstance(out, str)
+    assert out[-1] == "�"  # the truncated lead byte -> the replacement char
+
+
+def test_a_truncated_export_degrades_to_none_not_a_crash(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC2. The SAME 64KB-truncated bytes go the full _run_export -> _served_model
+    -> parse path. Lenient decode keeps the batch alive; the now-broken JSON then
+    fails json.loads, so the served model is an honest None — never a crash, and
+    never the requested model dressed up as served."""
+    _stub_export(monkeypatch, 0, _TRUNCATED_EXPORT)
+    result = OpencodeAdapter().parse(SKILL_STREAM, base=tmp_path)
+    assert result.model_served is None
+    assert result.model_served != OpencodeAdapter.default_model
 
 
 # ---------------------------------------------------------------------------

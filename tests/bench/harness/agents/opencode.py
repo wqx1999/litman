@@ -241,8 +241,17 @@ def _run_export(bin_: str, session_id: str, env: dict[str, str] | None) -> str |
     the retry is deliberately not keyed to one exit code, since the exact failure
     mode was never pinned. Two failures return ``None`` — the served model is then
     unrecoverable, and the caller reports ``None`` rather than inventing the
-    requested model. Parsing the model string out of stdout stays in
-    :meth:`OpencodeAdapter._served_model`; this function only hands back stdout.
+    requested model.
+
+    Stdout is captured as BYTES and decoded HERE with an explicit ``utf-8`` +
+    ``errors="replace"`` (not ``text=True``'s strict, locale-dependent decode):
+    ``opencode export`` can truncate at a 64KB boundary mid-multibyte-character, and
+    a strict decode raises ``UnicodeDecodeError`` (a ``ValueError``, NOT a
+    ``json.JSONDecodeError``) that would sail past ``_served_model``'s guard and abort
+    the whole round. Lenient decode never raises; the truncated tail degrades to a
+    U+FFFD and the now-unparseable JSON becomes an honest ``None`` downstream. Parsing
+    the model string out of stdout stays in :meth:`OpencodeAdapter._served_model`;
+    this function only hands back the decoded stdout.
     """
     for attempt in range(2):
         if attempt:
@@ -253,13 +262,18 @@ def _run_export(bin_: str, session_id: str, env: dict[str, str] | None) -> str |
                 env=env,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                text=True,
                 timeout=_EXPORT_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
             continue
         if proc.returncode == 0:
-            return proc.stdout
+            # Explicit utf-8 + errors="replace": export can truncate its stdout at a
+            # 64KB boundary mid-multibyte-character (a lone lead byte with its
+            # continuation cut off), which strict decoding raises on. Lenient decode
+            # never raises; the mangled tail becomes U+FFFD and the now-broken JSON
+            # degrades to None via _served_model's json.loads. Decode only here, on
+            # the returned attempt — error/timeout paths never touch stdout.
+            return proc.stdout.decode("utf-8", errors="replace")
     return None
 
 
