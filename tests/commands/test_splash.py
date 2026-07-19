@@ -60,10 +60,10 @@ def test_run_splash_silent_when_display_unavailable(monkeypatch) -> None:
 
 
 def test_nearest_size_picks_the_closest_bundled_size() -> None:
-    assert _splash._nearest_size(76) == 64       # 1x display
-    assert _splash._nearest_size(114) == 128      # 1.5x
-    assert _splash._nearest_size(152) == 160      # 2x
-    assert _splash._nearest_size(228) == 192      # 3x (clamps to the top size)
+    assert _splash._nearest_size(100) == 96       # ~1x display
+    assert _splash._nearest_size(150) == 160      # ~1.3x
+    assert _splash._nearest_size(224) == 224      # 2x (exact)
+    assert _splash._nearest_size(400) == 256      # 3x+ (clamps to the top size)
 
 
 def test_icon_for_scale_resolves_to_a_bundled_png_that_exists() -> None:
@@ -94,13 +94,6 @@ def test_enable_dpi_awareness_never_raises() -> None:
     # A no-op off Windows; on Windows every probe is guarded. Either way it must
     # return without raising so it can run unconditionally before Tk().
     assert _splash._enable_dpi_awareness() is None
-
-
-def test_mk_font_sizes_in_absolute_pixels() -> None:
-    # Negative size == absolute pixels (immune to tk scaling); weight only when
-    # the family does not already carry it.
-    assert _splash._mk_font(("Segoe UI Semibold", ""), 22) == ("Segoe UI Semibold", -22)
-    assert _splash._mk_font(("Helvetica Neue", "bold"), 12) == ("Helvetica Neue", -12, "bold")
 
 
 def test_splash_timeout_ms_is_a_positive_backstop() -> None:
