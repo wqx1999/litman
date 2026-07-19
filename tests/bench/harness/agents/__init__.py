@@ -226,6 +226,15 @@ _MODEL_FAMILY: dict[str, str] = {
     # marks the active selection and is not part of the name).
     "composer-2.5": "composer-2.5",
     "Composer 2.5": "composer-2.5",
+    # Grok 4.5 via cursor (R2 "swap the brain" run). Cursor requests the id and
+    # reports a display name, so BOTH spellings must map to the grok-4.5 family or
+    # _check_model_pinned fails a run that is in fact pinned. The served spelling
+    # below follows the composer precedent (listing "<id> - Cursor Grok 4.5
+    # Medium" -> served is the display name); the qualification smoke confirms it.
+    # If cursor reports a different string, model_pinned's FAIL names it verbatim
+    # and the exact spelling is added here.
+    "cursor-grok-4.5-medium": "grok-4.5",
+    "Cursor Grok 4.5 Medium": "grok-4.5",
     "Sonnet 4.6 200K Medium No Thinking": "claude-sonnet-4.6",
     # Cursor relabeled the same tier later in 2026-07: its display grammar now
     # marks thinking explicitly ("... Thinking") and leaves non-thinking
