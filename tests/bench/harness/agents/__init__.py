@@ -242,6 +242,27 @@ _MODEL_FAMILY: dict[str, str] = {
     # the suffixless string below is the SAME non-thinking Sonnet 4.6 the entry
     # above named. Both spellings stay: old transcripts report the old string.
     "Sonnet 4.6 200K Medium": "claude-sonnet-4.6",
+    # Cursor's frontier models for the capability-ladder rounds. Same shape as the
+    # grok rung: cursor requests the parameterized id (…-medium — one reasoning
+    # tier held constant across the sweep) and reports the listing's display name,
+    # so BOTH spellings must map to the family or _check_model_pinned fails a run
+    # that is in fact pinned. Served strings are the `cursor-agent --list-models`
+    # RHS (composer/grok precedent: the display name is what init echoes); each
+    # round's Phase 0 smoke confirms the exact string and corrects it here if it
+    # differs. The gpt-5.5 / gpt-5.6-{terra,luna,sol} families are shared with
+    # codex on purpose — same model, two scaffolds is the cross-harness control.
+    "gpt-5.5-medium": "gpt-5.5",
+    "GPT-5.5 1M": "gpt-5.5",
+    "gpt-5.6-terra-medium": "gpt-5.6-terra",
+    "GPT-5.6 Terra 1M": "gpt-5.6-terra",
+    "gpt-5.6-luna-medium": "gpt-5.6-luna",
+    "GPT-5.6 Luna 1M": "gpt-5.6-luna",
+    "gpt-5.6-sol-medium": "gpt-5.6-sol",
+    "GPT-5.6 Sol 1M": "gpt-5.6-sol",
+    "claude-sonnet-5-medium": "claude-sonnet-5",
+    "Sonnet 5 1M Medium": "claude-sonnet-5",
+    "claude-opus-4-8-medium": "claude-opus-4.8",
+    "Opus 4.8 1M Medium": "claude-opus-4.8",
     # --- agy: requests a display name, reports nothing -----------------------
     "Claude Sonnet 4.6 (Thinking)": "claude-sonnet-4.6",
     # --- opencode: requests "<provider>/<model>", export echoes it verbatim ---
@@ -260,6 +281,10 @@ _MODEL_FAMILY: dict[str, str] = {
     "gpt-5.6-sol": "gpt-5.6-sol",
     "gpt-5.6-terra": "gpt-5.6-terra",
     "gpt-5.6-luna": "gpt-5.6-luna",
+    # gpt-5.4 is the plain flagship (gpt-5.4-pro is NOT a codex id — it 400s
+    # invalid_request); gpt-5.5 is the next rung. Same self->self exact-echo shape.
+    "gpt-5.4": "gpt-5.4",
+    "gpt-5.5": "gpt-5.5",
 }
 
 
