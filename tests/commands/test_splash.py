@@ -11,6 +11,7 @@ never hangs, display or not. The real on-screen render is manual acceptance
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -58,10 +59,48 @@ def test_run_splash_silent_when_display_unavailable(monkeypatch) -> None:
     assert _splash.run_splash() is None
 
 
-def test_icon_file_resolves_to_bundled_png() -> None:
-    path = _splash._icon_file()
-    assert path.endswith("litman.png")
-    assert "assets" in path and "icons" in path
+def test_nearest_size_picks_the_closest_bundled_size() -> None:
+    assert _splash._nearest_size(76) == 64       # 1x display
+    assert _splash._nearest_size(114) == 128      # 1.5x
+    assert _splash._nearest_size(152) == 160      # 2x
+    assert _splash._nearest_size(228) == 192      # 3x (clamps to the top size)
+
+
+def test_icon_for_scale_resolves_to_a_bundled_png_that_exists() -> None:
+    for scale in (1.0, 1.5, 2.0, 3.0):
+        path = _splash._icon_for_scale(scale)
+        assert path.endswith(".png")
+        assert "assets" in path and "icons" in path
+        assert os.path.exists(path), f"missing bundled mark for scale {scale}: {path}"
+
+
+def test_every_declared_icon_size_is_bundled() -> None:
+    # Guards packaging: each size named in _ICON_SIZES must ship as a real file,
+    # or a high-DPI splash silently loses its mark.
+    for size in _splash._ICON_SIZES:
+        path = _splash._icon_for_scale(size / _splash._LOGO)
+        assert path.endswith(f"litman_{size}.png")
+        assert os.path.exists(path)
+
+
+def test_dpi_scale_is_one_off_windows() -> None:
+    # Off Windows Tk handles HiDPI itself; the manual factor must stay 1.0 so we
+    # never double-scale. (This test host is not win32.)
+    if sys.platform != "win32":
+        assert _splash._dpi_scale(object()) == 1.0
+
+
+def test_enable_dpi_awareness_never_raises() -> None:
+    # A no-op off Windows; on Windows every probe is guarded. Either way it must
+    # return without raising so it can run unconditionally before Tk().
+    assert _splash._enable_dpi_awareness() is None
+
+
+def test_mk_font_sizes_in_absolute_pixels() -> None:
+    # Negative size == absolute pixels (immune to tk scaling); weight only when
+    # the family does not already carry it.
+    assert _splash._mk_font(("Segoe UI Semibold", ""), 22) == ("Segoe UI Semibold", -22)
+    assert _splash._mk_font(("Helvetica Neue", "bold"), 12) == ("Helvetica Neue", -12, "bold")
 
 
 def test_splash_timeout_ms_is_a_positive_backstop() -> None:
