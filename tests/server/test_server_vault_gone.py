@@ -40,6 +40,7 @@ from litman.core.vault_registry import (
     find_by_name,
     load_registry,
     save_registry,
+    set_active,
 )
 from litman.server import create_app
 
@@ -623,6 +624,61 @@ def test_relocate_inactive_vault_does_not_repoint_the_server(
     assert Path(app.state.vault).resolve() == beta.resolve()
     entry = {v["name"]: v for v in client.get("/api/vaults").json()["vaults"]}["alpha"]
     assert Path(entry["path"]) == moved and entry["exists"] is True
+
+
+def test_relocate_served_vault_heals_even_when_active_moved_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """The served vault and the registry-active vault diverge whenever a
+    ``lit vault use`` in another terminal flips the active flag without repointing
+    THIS running server. When that served-but-now-inactive vault then moves, its
+    Locate must still rebind the live server: the 410 keys off ``app.state.vault``,
+    not the active flag, so gating the repoint on ``is_active`` alone once left the
+    banner permanently unclearable."""
+    served = create_vault(tmp_path, name="served")
+    other = create_vault(tmp_path, name="other")
+    save_registry(add_vault(load_registry(), "served", served, set_active=True))
+    save_registry(add_vault(load_registry(), "other", other))
+    app = create_app(served)  # this server is bound to `served`
+    client = TestClient(app)
+
+    moved = _move_away(served, tmp_path / "served-moved")
+    assert client.get("/api/papers").status_code == 410
+
+    # A CLI `lit vault use other` flips the active flag; the live server keeps
+    # serving the (now dead) `served` path — active and served have diverged.
+    save_registry(set_active(load_registry(), "other"))
+    assert find_active(load_registry()).name == "other"
+    assert client.get("/api/papers").status_code == 410  # still gone
+
+    # Locating the served-but-non-active vault must rebind the live server.
+    resp = client.put("/api/vaults/served/path", json={"path": str(moved)})
+    assert resp.status_code == 200
+    assert resp.json()["active"] is False  # honest: it is not the active entry
+    assert Path(app.state.vault).resolve() == moved.resolve()
+    assert client.get("/api/papers").status_code == 200  # the banner clears
+
+
+def test_relocate_unrelated_vault_does_not_yank_a_healthy_session(
+    tmp_path: Path,
+) -> None:
+    """The repoint keys off the SERVED vault, so relocating a DIFFERENT vault —
+    even the registry-active one — while a healthy vault is being served must not
+    move ``app.state.vault`` out from under the session."""
+    served = create_vault(tmp_path, name="served")
+    active = create_vault(tmp_path, name="active")
+    save_registry(add_vault(load_registry(), "served", served))
+    save_registry(add_vault(load_registry(), "active", active, set_active=True))
+    app = create_app(served)  # serving `served`, though `active` is the active entry
+    client = TestClient(app)
+    assert client.get("/api/papers").status_code == 200
+
+    moved = _move_away(active, tmp_path / "active-moved")
+    resp = client.put("/api/vaults/active/path", json={"path": str(moved)})
+    assert resp.status_code == 200
+    # The session stays on `served`; the active vault's relocate did not yank it.
+    assert Path(app.state.vault).resolve() == served.resolve()
+    assert client.get("/api/papers").status_code == 200
 
 
 def test_relocate_bad_path_is_400_with_the_core_message(tmp_path: Path) -> None:

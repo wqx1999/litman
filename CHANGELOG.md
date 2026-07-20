@@ -29,7 +29,10 @@ behaviour, a minor release adds it, a major release breaks it.
   grows a **Locate** action — on the library-moved banner and the first-run page —
   that reconnects the open session with no restart and no rename. Relocating the
   active library also rebuilds its projects' shortcuts, which the move had left
-  pointing at the old path.
+  pointing at the old path. Locate now clears the banner even when the moved
+  library is the one the open window is showing but no longer the *active* one
+  (for instance after switching the active library from another terminal) —
+  that case previously left the banner stuck for the life of the window.
 
 ## 1.2.0 — 2026-07-15
 

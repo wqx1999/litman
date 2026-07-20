@@ -18,6 +18,7 @@ read" ModifyError).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -782,15 +783,20 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     holding a lit-config.yaml); an unknown name or a bad path surfaces as
     VaultRegistryError → 400 with the core's verbatim message.
 
-    REPOINT RULE: if the relocated entry is the ACTIVE one, the running server is
-    repointed in place (``app.state.vault`` is set to the new path). The served
-    vault is the active vault at launch, so this is how a live 410 heals with no
-    restart (the vault-gone banner's "Find it" → Locate) and how a welcome-page
-    server whose active entry had moved slides straight into the library. When
-    the relocated entry is NOT active, ``app.state.vault`` is left untouched
-    (mirrors ``POST /vaults`` being active-agnostic). This is one of the routes
-    whitelisted in the no-vault / gone-vault middleware guard — without that it
-    would be refused by the very state it exists to heal.
+    REPOINT RULE: if the relocated vault is the one this server is SERVING
+    (``app.state.vault`` — what the 410 guard checks), the running server is
+    repointed in place to the new path, so a live 410 heals with no restart (the
+    vault-gone banner's "Find it" → Locate). This keys off the served vault, NOT
+    the active flag: the two diverge whenever the active entry changed without the
+    live server following (a ``lit vault use`` in another terminal), and it is the
+    served vault whose move raised the banner. A welcome-page server (nothing
+    served yet, its active entry having pointed at a moved directory) instead binds
+    the ACTIVE entry the user located, sliding straight into the library. When the
+    relocated vault is neither served here nor that welcome-page active entry,
+    ``app.state.vault`` is left untouched (mirrors ``POST /vaults`` being
+    active-agnostic). This is one of the routes whitelisted in the no-vault /
+    gone-vault middleware guard — without that it would be refused by the very
+    state it exists to heal.
     """
     try:
         payload = await request.json()
@@ -803,15 +809,49 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     if not isinstance(path, str) or not path.strip():
         raise HTTPException(status_code=400, detail="path must be a non-empty string.")
 
+    # Snapshot what this server is SERVING, and the entry's stored path, BEFORE the
+    # relocate overwrites it — the repoint decision below turns on whether the vault
+    # we are about to move is the one bound to this running server.
+    served_before = getattr(request.app.state, "vault", None)
+    prev_entry = find_by_name(load_registry(), name)
+    old_path = Path(prev_entry.path).expanduser() if prev_entry is not None else None
+
     try:
         entry = apply_vault_set_path(name, path)
     except VaultRegistryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not entry.is_active:
-        return {"ok": True, "name": entry.name, "path": entry.path, "active": False}
-
     target = Path(entry.path).expanduser()
+
+    # Rebind the running server when the vault just relocated is the one it is
+    # SERVING — ``app.state.vault``, which the 410 guard checks — regardless of the
+    # active flag. The served vault and the registry's active vault diverge whenever
+    # the active flag moved without the live server following (a ``lit vault use`` in
+    # another terminal, a switch that targeted a different entry); it is the SERVED
+    # vault whose disappearance raised the banner, so gating the repoint on
+    # ``is_active`` alone left that banner UNCLEARABLE — the relocate saved the new
+    # path to the registry but never rebound the server, and every later read went
+    # on 410'ing the dead old path. ``serves_this`` compares filesystem-normalised
+    # paths so a Windows case/separator difference between ``app.state.vault`` and
+    # the registry string does not read as "a different vault".
+    serves_this = (
+        served_before is not None
+        and old_path is not None
+        and os.path.normcase(os.path.normpath(str(served_before)))
+        == os.path.normcase(os.path.normpath(str(old_path)))
+    )
+    # Welcome-page arm: a server that launched with no live vault (its active entry
+    # already pointed at a moved directory) binds the ACTIVE entry the user just
+    # located, so it slides straight into the library.
+    bind_welcome = served_before is None and entry.is_active
+    if not (serves_this or bind_welcome):
+        return {
+            "ok": True,
+            "name": entry.name,
+            "path": entry.path,
+            "active": entry.is_active,
+        }
+
     request.app.state.vault = target
 
     # Bridge heal (ledger #3's cheap arm): relocating the active vault is now how
@@ -851,7 +891,12 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     except Exception:
         pass
 
-    return {"ok": True, "name": entry.name, "path": entry.path, "active": True}
+    return {
+        "ok": True,
+        "name": entry.name,
+        "path": entry.path,
+        "active": entry.is_active,
+    }
 
 
 @router.post("/vaults")
