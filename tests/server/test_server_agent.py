@@ -50,7 +50,10 @@ def _status(client: TestClient) -> dict:
 def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
-    assert resp.json() == {"agents": ["claude"], "default": "claude"}
+    assert resp.json() == {
+        "agents": ["claude", "agy", "cursor"],
+        "default": "claude",
+    }
 
 
 def test_launch_unknown_agent_is_400(vault: Path) -> None:
@@ -110,17 +113,20 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
     }
 
 
+@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
 def test_launch_unsupported_agent_is_400(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
+    vault: Path, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """A greyed placeholder (supported=False) is rejected before any PATH probe
-    / copy-fallback — inert on the launch axis too."""
+    / copy-fallback — inert on the launch axis too. gemini is back in this
+    set (its consumer OAuth was discontinued upstream; un-greying needs a
+    verified adapter)."""
     spawned: list[object] = []
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
         lambda a, c: spawned.append((a, c)) or True,
     )
-    resp = _client(vault).post("/api/agent/launch", json={"agent": "codex"})
+    resp = _client(vault).post("/api/agent/launch", json={"agent": name})
     assert resp.status_code == 400
     assert "not available yet" in resp.json()["detail"]
     assert spawned == []  # never reached the spawn path
@@ -136,10 +142,11 @@ def test_launch_non_string_agent_is_400(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_status_returns_five_catalog_entries(vault: Path) -> None:
+def test_status_returns_six_catalog_entries(vault: Path) -> None:
     body = _status(_client(vault))
     assert [e["name"] for e in body["agents"]] == [
         "claude",
+        "agy",
         "codex",
         "cursor",
         "gemini",
@@ -148,14 +155,28 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
     supported = {e["name"]: e["supported"] for e in body["agents"]}
     assert supported == {
         "claude": True,
+        "agy": True,
         "codex": False,
-        "cursor": False,
+        "cursor": True,
         "gemini": False,
         "opencode": False,
     }
     for e in body["agents"]:
-        assert set(e) == {"name", "display", "supported", "detected", "install_url"}
+        assert set(e) == {
+            "name",
+            "display",
+            "supported",
+            "detected",
+            "install_url",
+            "skill_state",
+        }
         assert isinstance(e["detected"], bool)
+        # Per-agent skill verdict: probed for supported agents, null for
+        # the greyed placeholders (their adapters are never called).
+        if e["supported"]:
+            assert e["skill_state"] in {"absent", "stale", "current"}
+        else:
+            assert e["skill_state"] is None
     # top-level fields present
     assert "default" in body
     assert isinstance(body["skill_installed"], bool)
@@ -172,13 +193,82 @@ def test_status_sets_no_store_cache_header(vault: Path) -> None:
     assert resp.headers["cache-control"] == "no-store"
 
 
-def test_status_never_leaks_claude_skill_path(vault: Path) -> None:
-    """The ~/.claude/skills filesystem path must never appear in the status
-    contract (the install-url is docs.claude.com, which is fine — the red line
-    is the skills *directory*, not the substring "claude")."""
+def test_status_never_leaks_skill_paths(vault: Path) -> None:
+    """No skills filesystem path — neither ~/.claude/skills nor the shared
+    ~/.agents/skills — may appear anywhere in the status contract (the
+    install-url is docs.claude.com, which is fine — the red line is the
+    skills *directory*, not the substring "claude")."""
     raw = _client(vault).get("/api/agent/status").text
     assert ".claude/skills" not in raw
+    assert ".agents/skills" not in raw
     assert "/skills" not in raw
+
+
+def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
+    """Per-agent skill_state reads each agent's own directory: installing
+    into any one of the three supported locations flips only that agent's
+    row, and a greyed placeholder always reads null. Drives the REAL
+    resolvers + copies (conftest isolates all three dirs at tmp paths)."""
+    from litman.core import skill
+
+    client = _client(vault)
+
+    def states() -> dict[str, str | None]:
+        return {
+            e["name"]: e["skill_state"] for e in _status(client)["agents"]
+        }
+
+    before = states()
+    assert before["claude"] == "absent"
+    assert before["agy"] == "absent"
+    assert before["cursor"] == "absent"
+    assert before["codex"] is None
+    assert before["gemini"] is None
+    assert before["opencode"] is None
+
+    skill.install_all_skills(parent_dir=skill.standard_skills_parent_dir())
+    after_standard = states()
+    assert after_standard["cursor"] == "current"
+    assert after_standard["claude"] == "absent"  # untouched
+    assert after_standard["agy"] == "absent"  # untouched
+
+    skill.install_all_skills(parent_dir=skill.default_skills_parent_dir())
+    assert states()["claude"] == "current"
+    skill.install_all_skills(
+        parent_dir=skill.antigravity_skills_parent_dir()
+    )
+    assert states()["agy"] == "current"
+
+    # Tamper the standard-dir copy: only cursor flips stale.
+    tampered = (
+        skill.standard_skills_parent_dir() / "lit-library" / "SKILL.md"
+    )
+    tampered.write_text("OUTDATED\n", encoding="utf-8")
+    tampered_states = states()
+    assert tampered_states["cursor"] == "stale"
+    assert tampered_states["claude"] == "current"
+    assert tampered_states["agy"] == "current"
+
+
+def test_skill_install_agy_lands_in_antigravity_dir(vault: Path) -> None:
+    """POST /api/agent/skill/install {"agent": "agy"} really copies the
+    bundled skills into the Antigravity CLI dir (no adapter stubbed) and
+    the other two locations stay untouched."""
+    from litman.core import skill
+
+    client = _client(vault)
+    resp = client.post("/api/agent/skill/install", json={"agent": "agy"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["agent"] == "agy"
+    assert "SKILL.md" in body["files"]
+
+    antigravity = skill.antigravity_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (antigravity / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+    assert not skill.standard_skills_parent_dir().exists()
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +367,13 @@ def test_skill_install_ignores_body_target_field(
     assert captured == {"overwrite": True, "kw": {}}
 
 
-def test_skill_install_unsupported_agent_is_400(vault: Path) -> None:
-    resp = _client(vault).post("/api/agent/skill/install", json={"agent": "codex"})
+@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
+def test_skill_install_unsupported_agent_is_400(
+    vault: Path, name: str
+) -> None:
+    resp = _client(vault).post(
+        "/api/agent/skill/install", json={"agent": name}
+    )
     assert resp.status_code == 400
 
 
@@ -379,4 +474,35 @@ def test_needs_setup_false_when_detected_and_skill_installed(
     body = _status(_client(vault))
     assert body["skill_installed"] is True
     assert body["skill_state"] == "current"
+    assert body["needs_setup"] is False
+
+
+def test_needs_setup_default_agy_follows_antigravity_dir(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=agy row of the needs_setup matrix: the top-level skill_state
+    follows the DEFAULT agent's directory (the Antigravity CLI dir), not
+    claude's — real resolvers + real copies, only `detect` stubbed."""
+    from litman.core import skill
+
+    monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "agy")
+    monkeypatch.setattr(agents, "detect", lambda spec: True)
+    client = _client(vault)
+
+    body = _status(client)
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+    # Installing into the CLAUDE dir must not satisfy an agy default.
+    skill.install_all_skills(parent_dir=skill.default_skills_parent_dir())
+    body = _status(client)
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+    skill.install_all_skills(
+        parent_dir=skill.antigravity_skills_parent_dir()
+    )
+    body = _status(client)
+    assert body["skill_state"] == "current"
+    assert body["skill_installed"] is True
     assert body["needs_setup"] is False

@@ -135,8 +135,9 @@ run it reports the result rather than leaving you to check.
 You reach this layer from either interface. `lit agent` starts the agent with
 the vault as its working directory, and the Web UI can install the skills and
 launch the agent for you. Which agent that is comes from a catalog held in the
-package: Claude Code is the supported entry today, with Codex, Cursor, Gemini
-CLI, and OpenCode listed and greyed out until the release that turns them on.
+package: Claude Code, Cursor, and Antigravity CLI are the supported entries
+today, with Codex, Gemini CLI and OpenCode listed and greyed out until the
+release that turns them on.
 Your choice is recorded in `preferences.yaml` next to the vault registry —
 machine-level, not per-vault, because which agent you run is a property of the
 machine.

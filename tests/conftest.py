@@ -199,9 +199,11 @@ def _isolate_registry(
 
 @pytest.fixture(autouse=True)
 def _isolate_skills_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Point call-time skill probes at an empty per-test dir, not ~/.claude.
+    """Point call-time skill probes at empty per-test dirs, not the real home.
 
     ``skill_status`` (behind the health-check ``skill_drift`` arm, the GUI
     agent-status probe and ``lit install-skill``'s freshness check) compares
@@ -209,12 +211,30 @@ def _isolate_skills_dir(
     home it would make results depend on the developer's box — a stale
     ``~/.claude/skills`` copy flips every clean-vault health-check test to
     exit 1 (passes in CI, fails locally). An absent dir reads as "no skills
-    installed", which is the neutral state every test starts from. Tests that
-    need a populated skills dir pass ``parent_dir=`` explicitly or re-patch
-    ``default_skills_parent_dir`` themselves (a test-body patch wins — it is
-    applied after this fixture).
+    installed", which is the neutral state every test starts from. All three
+    resolvers are patched: the Claude Code dir, the open-standard
+    ``~/.agents/skills`` dir the cursor adapter probes, AND the Antigravity
+    CLI app-data dir the agy adapter probes — the per-agent status chain
+    would otherwise read the developer's real install. Tests that need a
+    populated skills dir pass ``parent_dir=`` explicitly or re-patch a
+    resolver themselves (a test-body patch wins — it is applied after this
+    fixture).
+
+    The ``no_skills_isolation`` marker opts a test out entirely — that is for
+    the HOME-only end-to-end tests that must drive the REAL resolver chain
+    (inject-seam lesson); such a test must redirect ``$HOME`` itself.
     """
+    if request.node.get_closest_marker("no_skills_isolation"):
+        return
     monkeypatch.setattr(
         "litman.core.skill.default_skills_parent_dir",
         lambda: tmp_path / "skills-parent",
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir",
+        lambda: tmp_path / "agents-skills-parent",
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: tmp_path / "antigravity-skills-parent",
     )

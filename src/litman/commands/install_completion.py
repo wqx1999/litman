@@ -16,7 +16,7 @@ substring rather than exact whitespace match. If found, the install is a
 no-op (the eval line / source command is not duplicated).
 
 Not bundled with ``lit install-skill``: completion has no relationship to
-Claude Code skills and runs entirely inside the user's shell.
+agent skills and runs entirely inside the user's shell.
 """
 
 from __future__ import annotations

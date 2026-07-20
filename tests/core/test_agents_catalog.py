@@ -1,14 +1,20 @@
-"""Agent catalog tests (task-agent-onboarding, AC5).
+"""Agent catalog tests (task-agent-onboarding AC5 + the multi-agent-skills
+tasks).
 
 The catalog is the code-level source of truth for which agents litman can
-launch/onboard. These tests pin the five-agent shape, the claude-only
-``supported`` flag, generic (per-agent-branch-free) detection, the claude
-skill adapter's delegation to ``core.skill``, and the loud failure of an
-unsupported agent's placeholder adapter. Detection is driven entirely through
-a monkeypatched ``shutil.which`` — no real binary is probed.
+launch/onboard. These tests pin the six-agent shape and order (claude first,
+the rest alphabetical), the supported set (claude + agy + cursor), generic
+(per-agent-branch-free) detection, the skill adapters' delegation to
+``core.skill`` (claude → the Claude Code dir, cursor → the open-standard
+dir, agy → the Antigravity CLI app-data dir), the per-agent skills-dir
+resolvers, and the loud failure of an unsupported agent's placeholder
+adapter. Detection is driven entirely through a monkeypatched
+``shutil.which`` — no real binary is probed.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -16,23 +22,27 @@ from litman.core import agents
 from litman.core.agents import (
     AGENTS,
     AgentSpec,
+    agent_skills_parent_dir,
     default_agent_name,
     detect,
     get_agent,
+    skills_parent_dirs,
     supported_agents,
 )
 
 
-def test_catalog_has_exactly_five_named_agents() -> None:
+def test_catalog_has_exactly_six_named_agents() -> None:
+    """Claude first (the fallback default tops the picker), the rest
+    alphabetical — the GUI picker renders catalog order verbatim."""
     names = [spec.name for spec in AGENTS]
-    assert names == ["claude", "codex", "cursor", "gemini", "opencode"]
-    assert len(set(names)) == 5
+    assert names == ["claude", "agy", "codex", "cursor", "gemini", "opencode"]
+    assert len(set(names)) == 6
 
 
-def test_only_claude_is_supported() -> None:
+def test_supported_set_is_claude_agy_cursor() -> None:
     supported = {spec.name for spec in AGENTS if spec.supported}
-    assert supported == {"claude"}
-    assert [s.name for s in supported_agents()] == ["claude"]
+    assert supported == {"claude", "agy", "cursor"}
+    assert [s.name for s in supported_agents()] == ["claude", "agy", "cursor"]
 
 
 def test_every_spec_carries_display_and_install_url() -> None:
@@ -143,11 +153,204 @@ def test_claude_skill_state_routes_to_aggregate_skill_state(
     assert get_agent("claude").skill_state() == "stale"
 
 
-@pytest.mark.parametrize("name", ["codex", "cursor", "gemini", "opencode"])
+@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
 def test_unsupported_agent_adapters_raise_not_implemented(name: str) -> None:
     spec = get_agent(name)
     assert spec.supported is False
+    assert spec.skills_dir is None
     with pytest.raises(NotImplementedError):
         spec.install_skill()
     with pytest.raises(NotImplementedError):
         spec.skill_state()
+
+
+# ---------------------------------------------------------------------------
+# cursor / agy adapters — the open-standard vs the Antigravity app-data dir
+# ---------------------------------------------------------------------------
+
+
+def test_cursor_skill_state_probes_standard_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cursor probe resolves the open-standard dir at CALL time
+    (module-attribute seam): a patched resolver + a real install there flips
+    the state, no other seam touched."""
+    standard = tmp_path / "std-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    spec = get_agent("cursor")
+    assert spec.skill_state() == "absent"
+
+    from litman.core.skill import install_all_skills
+
+    install_all_skills(parent_dir=standard)
+    assert spec.skill_state() == "current"
+
+
+def test_agy_skill_state_probes_antigravity_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same call-time seam contract for the agy adapter, against its own
+    (non-open-standard) app-data directory."""
+    antigravity = tmp_path / "agy-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: antigravity,
+    )
+    spec = get_agent("agy")
+    assert spec.skill_state() == "absent"
+
+    from litman.core.skill import install_all_skills
+
+    install_all_skills(parent_dir=antigravity)
+    assert spec.skill_state() == "current"
+
+
+def test_cursor_install_skill_writes_standard_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    standard = tmp_path / "std-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    results = get_agent("cursor").install_skill()
+    assert results  # every bundled skill installed
+    for result in results:
+        assert (standard / result["name"] / "SKILL.md").is_file()
+
+
+def test_agy_install_skill_writes_antigravity_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    antigravity = tmp_path / "agy-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: antigravity,
+    )
+    results = get_agent("agy").install_skill()
+    assert results  # every bundled skill installed
+    for result in results:
+        assert (antigravity / result["name"] / "SKILL.md").is_file()
+
+
+def test_three_skills_dirs_are_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installing/tampering for any one supported agent never touches the
+    other two — the three supported locations are fully independent."""
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir",
+        lambda: tmp_path / "claude-skills",
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir",
+        lambda: tmp_path / "std-skills",
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: tmp_path / "agy-skills",
+    )
+    get_agent("cursor").install_skill()
+    assert get_agent("cursor").skill_state() == "current"
+    assert get_agent("claude").skill_state() == "absent"
+    assert get_agent("agy").skill_state() == "absent"
+
+    get_agent("claude").install_skill()
+    get_agent("agy").install_skill()
+    assert get_agent("claude").skill_state() == "current"
+    assert get_agent("agy").skill_state() == "current"
+
+    (tmp_path / "std-skills" / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    assert get_agent("cursor").skill_state() == "stale"
+    assert get_agent("claude").skill_state() == "current"  # unaffected
+    assert get_agent("agy").skill_state() == "current"  # unaffected
+
+    (tmp_path / "agy-skills" / "lit-reading" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    assert get_agent("agy").skill_state() == "stale"
+    assert get_agent("claude").skill_state() == "current"  # unaffected
+
+
+# ---------------------------------------------------------------------------
+# skills-dir resolvers (agent_skills_parent_dir / skills_parent_dirs)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_skills_parent_dir_routes_by_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claude_dir = tmp_path / "claude-skills"
+    standard = tmp_path / "std-skills"
+    antigravity = tmp_path / "agy-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: claude_dir
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: antigravity,
+    )
+    assert agent_skills_parent_dir("claude") == claude_dir
+    assert agent_skills_parent_dir("cursor") == standard
+    assert agent_skills_parent_dir("agy") == antigravity
+
+
+@pytest.mark.parametrize("name", ["codex", "gemini", "opencode", "nope"])
+def test_agent_skills_parent_dir_rejects_non_supported(name: str) -> None:
+    with pytest.raises(ValueError, match="Supported agents"):
+        agent_skills_parent_dir(name)
+
+
+def test_skills_parent_dirs_three_dirs_catalog_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exactly three distinct dirs today, catalog order (claude, agy,
+    cursor) with first-occurrence dedupe kept for any future sharers."""
+    claude_dir = tmp_path / "claude-skills"
+    standard = tmp_path / "std-skills"
+    antigravity = tmp_path / "agy-skills"
+    monkeypatch.setattr(
+        "litman.core.skill.default_skills_parent_dir", lambda: claude_dir
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: standard
+    )
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir",
+        lambda: antigravity,
+    )
+    assert skills_parent_dirs() == [claude_dir, antigravity, standard]
+
+
+@pytest.mark.no_skills_isolation
+def test_standard_skills_parent_dir_respects_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """$HOME redirect is honored at call time (same seam contract as the
+    claude resolver). Opted out of the autouse isolation, which patches the
+    very resolver under test; $HOME is redirected instead."""
+    from litman.core.skill import standard_skills_parent_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    assert standard_skills_parent_dir() == (
+        tmp_path / "elsewhere" / ".agents" / "skills"
+    )
+
+
+@pytest.mark.no_skills_isolation
+def test_antigravity_skills_parent_dir_respects_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same $HOME seam contract for the Antigravity CLI resolver."""
+    from litman.core.skill import antigravity_skills_parent_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    assert antigravity_skills_parent_dir() == (
+        tmp_path / "elsewhere" / ".gemini" / "antigravity-cli" / "skills"
+    )

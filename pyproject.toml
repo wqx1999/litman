@@ -129,3 +129,6 @@ files = ["src/litman", "tests"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "no_skills_isolation: opt out of the autouse skills-dir isolation; the test must redirect $HOME itself before touching any skill probe/install",
+]

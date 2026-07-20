@@ -80,7 +80,11 @@ def agent_cmd(
     # Greyed catalog placeholders (supported=False) are inert on every axis —
     # reject launch before the PATH probe (data-driven, no per-agent branch).
     if not spec.supported:
-        raise LitmanError(f"Agent '{agent_name}' is not available yet.")
+        supported = ", ".join(s.name for s in agents.supported_agents())
+        raise LitmanError(
+            f"Agent '{agent_name}' is not available yet. "
+            f"Supported agents: {supported}."
+        )
     argv = shlex.split(spec.launch)
     if shutil.which(argv[0]) is None:
         raise LitmanError(
