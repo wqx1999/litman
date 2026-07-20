@@ -19,6 +19,7 @@ import {
   registerVault,
   removePaper,
   restorePaper,
+  setVaultPath,
   unregisterVault,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
@@ -328,6 +329,20 @@ export default function App() {
     if (isVaultGone(err)) {
       setVaultGone(true)
       setDisconnected(false)
+      // Refresh the vault list on its OWN request, decoupled from the read
+      // sweep that just 410'd. `GET /api/vaults` is whitelisted, so it answers
+      // even in the gone state with `exists:false` for the moved vault — but in
+      // doResync it shares one all-or-nothing `Promise.all` with `fetchPapers`,
+      // whose 410 rejects the whole batch and discards this payload. Without a
+      // committed `exists:false`, the manager's Locate button (gated on
+      // `!v.exists`) never renders and the user is stuck. Best-effort: a failure
+      // here just leaves the last-known list, which the next sweep repairs.
+      void fetchVaults()
+        .then((v) => {
+          setVaults(v)
+          setServed(v.served)
+        })
+        .catch(() => {})
     } else if (isNetworkError(err)) {
       setDisconnected(true)
       setVaultGone(false)
@@ -1392,6 +1407,22 @@ export default function App() {
     [notify],
   )
 
+  // Re-point a moved vault at its new directory — the `lit vault set-path`
+  // backend, the move-recovery door the vault manager's Locate leads to (the 410
+  // banner's "Find it" opens that manager). When the relocated vault is the
+  // active/served one the server repoints itself in place, so a full resync
+  // re-pulls the library and clears the 410 banner in one step — no restart, no
+  // forced rename, no zombie entry. Rethrows so the inline Locate input can show
+  // the backend's verbatim 400 (bad path / unknown name).
+  const onRelocateVault = useCallback(
+    async (name: string, path: string) => {
+      await setVaultPath(name, path)
+      notify(`Re-pointed vault “${name}” to ${path}.`, 'success')
+      await doResync()
+    },
+    [notify, doResync],
+  )
+
   // --- Trash (recovery) view (Phase 4.9) -----------------------------------
   const openTrash = useCallback(() => {
     setTrashMode(true)
@@ -1686,6 +1717,7 @@ export default function App() {
         onRegisterVault={onRegisterVault}
         onCreateVault={onCreateVault}
         onUnregisterVault={onUnregisterVault}
+        onRelocateVault={onRelocateVault}
         switching={switchingVault}
         notify={notify}
         dark={dark}

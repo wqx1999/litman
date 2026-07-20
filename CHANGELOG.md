@@ -20,6 +20,17 @@ behaviour, a minor release adds it, a major release breaks it.
   page rather than the process: a second tab you opened on the same server keeps
   it alive after the app window closes.
 
+- **A moved library can be pointed at its new home — no forced rename.** When you
+  move or rename your library folder, litman's registry still records the old
+  path and there was no clean way to update it: the app's "Find it" opened a
+  panel that could only register a *new* name, re-registering under the old name
+  was refused, and relaunching landed on a dead-end first-run page. Now `lit vault
+  set-path <name> <new-path>` repoints a registered library in place, and the app
+  grows a **Locate** action — on the library-moved banner and the first-run page —
+  that reconnects the open session with no restart and no rename. Relocating the
+  active library also rebuilds its projects' shortcuts, which the move had left
+  pointing at the old path.
+
 ## 1.2.0 — 2026-07-15
 
 ### Added

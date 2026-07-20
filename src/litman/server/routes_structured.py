@@ -47,6 +47,7 @@ from litman.core.taxonomy import (
 )
 from litman.core.vault_registry import (
     add_vault,
+    apply_vault_set_path,
     apply_vault_use,
     find_by_name,
     load_registry,
@@ -765,6 +766,92 @@ async def put_active_vault(request: Request) -> dict[str, object]:
         pass
 
     return {"ok": True, "active": name, "path": str(target)}
+
+
+@router.put("/vaults/{name}/path")
+async def put_vault_path(request: Request, name: str) -> dict[str, object]:
+    """Re-point a registered vault at its new on-disk location through the ``lit
+    vault set-path`` backend — one of the doors out of the gone-vault state.
+
+    Body JSON ``{"path": str}``. Calls
+    :func:`litman.core.vault_registry.apply_vault_set_path` (the same
+    set_vault_path + save_registry the CLI's ``lit vault set-path`` runs), so the
+    registry write goes through one path (invariant #16), exactly as this route's
+    sibling ``PUT /vaults/active`` shares ``apply_vault_use`` with ``lit vault
+    use``. The new path must already be a litman vault (an existing directory
+    holding a lit-config.yaml); an unknown name or a bad path surfaces as
+    VaultRegistryError → 400 with the core's verbatim message.
+
+    REPOINT RULE: if the relocated entry is the ACTIVE one, the running server is
+    repointed in place (``app.state.vault`` is set to the new path). The served
+    vault is the active vault at launch, so this is how a live 410 heals with no
+    restart (the vault-gone banner's "Find it" → Locate) and how a welcome-page
+    server whose active entry had moved slides straight into the library. When
+    the relocated entry is NOT active, ``app.state.vault`` is left untouched
+    (mirrors ``POST /vaults`` being active-agnostic). This is one of the routes
+    whitelisted in the no-vault / gone-vault middleware guard — without that it
+    would be refused by the very state it exists to heal.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    path = payload.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise HTTPException(status_code=400, detail="path must be a non-empty string.")
+
+    try:
+        entry = apply_vault_set_path(name, path)
+    except VaultRegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not entry.is_active:
+        return {"ok": True, "name": entry.name, "path": entry.path, "active": False}
+
+    target = Path(entry.path).expanduser()
+    request.app.state.vault = target
+
+    # Bridge heal (ledger #3's cheap arm): relocating the active vault is now how
+    # the GUI's vault-gone recovery ends — it REPLACES the register+switch flow
+    # that ``put_active_vault`` heals below, so a GUI-only user who relocates
+    # would otherwise never get their project bridges rebuilt. The registry now
+    # points at the new location, but every project's litman_reflib/litman_code
+    # symlink still encodes the OLD one and dangles. A CLI user gets the Tier-1
+    # [Y/n] rebuild at their next command; a GUI-only user never runs one, so
+    # this is their only seam. Same probe-gating, detection collector and repair
+    # pair, in the same order, as ``put_active_vault`` — NARROWED to the projects
+    # that actually dangle (this path has no [Y/n], and rebuild_all_project_links
+    # wipes both hubs of every project it is handed, so a full-map heal would let
+    # a consent-free relocate clobber links a healthy project got elsewhere).
+    # Best-effort: the relocate is already persisted, so a heal failure must not
+    # turn a successful relocate into a 500 — ``lit health-check --fix`` stays
+    # the fallback.
+    try:
+        from litman.commands._drift import _exists_bounded
+        from litman.core.config import load_config
+        from litman.core.project_link import (
+            find_dangling_bridges,
+            rebuild_all_project_links,
+        )
+        from litman.core.project_refs import rebuild_all_project_refs
+
+        projects = dict(load_config(target).projects)
+        if projects:
+            dir_status = _exists_bounded(
+                [str(Path(p).expanduser()) for p in projects.values()]
+            )
+            dangling = find_dangling_bridges(projects, dir_status, _exists_bounded)
+            if dangling:
+                affected = {proj: projects[proj] for proj in dangling}
+                rebuild_all_project_links(target, affected)
+                rebuild_all_project_refs(target, affected)
+    except Exception:
+        pass
+
+    return {"ok": True, "name": entry.name, "path": entry.path, "active": True}
 
 
 @router.post("/vaults")

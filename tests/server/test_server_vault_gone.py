@@ -37,6 +37,7 @@ from litman.core.library import create_vault
 from litman.core.vault_registry import (
     add_vault,
     find_active,
+    find_by_name,
     load_registry,
     save_registry,
 )
@@ -546,3 +547,206 @@ def test_switch_between_healthy_vaults_rebuilds_nothing(
         == 200
     )
     assert calls == []
+
+
+# ===========================================================================
+# relocate: PUT /api/vaults/{name}/path — the door that HEALS the gone state
+#
+# The 410/409 recovery routes above unstick the user by register+switch or
+# create-new; relocate is the first-class "the library moved, here is its new
+# home" action, symmetric with `lit project set-path`. It heals a live 410 in
+# place when the moved vault is the active/served one, and it is whitelisted in
+# the middleware guard so the gone state cannot lock the user out of it.
+# ===========================================================================
+
+
+def test_relocate_active_vault_heals_a_live_410(tmp_path: Path) -> None:
+    """Scenario A: the served vault moved (410). Relocating it to its new home
+    repoints the running server in place — the next read succeeds, no restart."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    app = create_app(vault)
+    client = TestClient(app)
+
+    moved = _move_away(vault, tmp_path / "moved")
+    assert client.get("/api/papers").status_code == 410
+
+    resp = client.put("/api/vaults/lib/path", json={"path": str(moved)})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"ok": True, "name": "lib", "path": str(moved), "active": True}
+
+    # The 410 is gone: the server is bound to the new path, no restart.
+    assert Path(app.state.vault).resolve() == moved.resolve()
+    assert client.get("/api/papers").status_code == 200
+    assert Path(client.get("/api/vaults").json()["served"]) == moved
+
+
+def test_relocate_from_no_vault_state_slides_into_the_library(
+    tmp_path: Path,
+) -> None:
+    """Scenario B: the GUI was relaunched after the move, so the server booted
+    with NO vault (the active registry entry's path was already dead). Relocating
+    the active entry binds the server for the first time — the welcome page's
+    Locate. The route must be reachable in the no-vault (409) state, too."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    moved = _move_away(vault, tmp_path / "moved")
+
+    app = create_app(None)  # `lit gui` found no live vault to bind
+    client = TestClient(app)
+    assert client.get("/api/papers").status_code == 409  # welcome-page state
+
+    resp = client.put("/api/vaults/lib/path", json={"path": str(moved)})
+    assert resp.status_code == 200
+    assert resp.json()["active"] is True
+    assert Path(app.state.vault).resolve() == moved.resolve()
+    assert client.get("/api/papers").status_code == 200
+
+
+def test_relocate_inactive_vault_does_not_repoint_the_server(
+    tmp_path: Path,
+) -> None:
+    """Relocating a registered-but-not-served vault is a pure registry write —
+    ``app.state.vault`` must not move (mirrors POST /vaults being
+    active-agnostic)."""
+    beta, alpha = _register_pair(tmp_path)  # beta served+active, alpha inactive
+    app = create_app(beta)
+    client = TestClient(app)
+
+    moved = _move_away(alpha, tmp_path / "alpha-moved")
+    resp = client.put("/api/vaults/alpha/path", json={"path": str(moved)})
+    assert resp.status_code == 200
+    assert resp.json()["active"] is False
+
+    # The served vault is untouched; the registry entry followed the move.
+    assert Path(app.state.vault).resolve() == beta.resolve()
+    entry = {v["name"]: v for v in client.get("/api/vaults").json()["vaults"]}["alpha"]
+    assert Path(entry["path"]) == moved and entry["exists"] is True
+
+
+def test_relocate_bad_path_is_400_with_the_core_message(tmp_path: Path) -> None:
+    """A path that is not a litman vault surfaces the core's verbatim message,
+    and nothing is repointed."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    app = create_app(vault)
+    client = TestClient(app)
+
+    not_a_vault = tmp_path / "plain"
+    not_a_vault.mkdir()
+    resp = client.put("/api/vaults/lib/path", json={"path": str(not_a_vault)})
+    assert resp.status_code == 400
+    assert "lit-config.yaml" in resp.json()["detail"]
+    # Registry + server both unchanged.
+    assert Path(app.state.vault).resolve() == vault.resolve()
+    assert Path(find_by_name(load_registry(), "lib").path) == vault.resolve()
+
+
+def test_relocate_unknown_name_is_400(tmp_path: Path) -> None:
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    client = _client(vault)
+    resp = client.put("/api/vaults/ghost/path", json={"path": str(vault)})
+    assert resp.status_code == 400
+    assert "No vault named" in resp.json()["detail"]
+
+
+def test_relocate_route_is_whitelisted_in_the_guard() -> None:
+    """Unit check on the predicate: the relocate PUT is a vaultless door, while
+    the exact-match ``PUT /api/vaults/active`` is unaffected (it is not a
+    ``/path`` route) and an unrelated PUT stays refused."""
+    from litman.server import _vaultless_allowed
+
+    assert _vaultless_allowed("PUT", "/api/vaults/lib/path") is True
+    assert _vaultless_allowed("PUT", "/api/vaults/my.main/path") is True
+    # The switch route still resolves through the exact-match set, unchanged.
+    assert _vaultless_allowed("PUT", "/api/vaults/active") is True
+    # A non-relocate PUT under /api/vaults/ is NOT a door.
+    assert _vaultless_allowed("PUT", "/api/vaults/lib/rename") is False
+    assert _vaultless_allowed("PUT", "/api/paper/x/metadata") is False
+
+
+def test_relocate_active_vault_heals_project_bridges(tmp_path: Path) -> None:
+    """Relocating the active vault REPLACES the register+switch recovery, so it
+    must run the same best-effort bridge heal — a GUI-only user's project
+    litman_reflib/litman_code symlinks are rebuilt at the new location, or they
+    would silently dangle after the move."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    link = _link_paper_into_project(vault, tmp_path)
+    client = _client(vault)
+
+    moved = _move_away(vault, tmp_path / "moved")
+    assert link.is_symlink() and not link.exists()  # bridge dangles after the move
+
+    assert (
+        client.put("/api/vaults/lib/path", json={"path": str(moved)}).status_code
+        == 200
+    )
+
+    assert link.is_symlink() and link.exists()
+    assert link.resolve() == (moved / "papers" / "p1").resolve()
+
+
+def test_relocate_heal_touches_only_dangling_projects(tmp_path: Path) -> None:
+    """The consent-free heal is NARROWED to the projects that dangle (same
+    guarantee as the switch path): a healthy project's hub, pointing OUTSIDE the
+    relocated vault, must survive untouched — same inode, never rewritten."""
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    link = _link_paper_into_project(vault, tmp_path)
+
+    other = tmp_path / "otherproj"
+    (other / "litman_reflib").mkdir(parents=True)
+    foreign_target = tmp_path / "foreign_paper"
+    foreign_target.mkdir()
+    foreign_link = other / "litman_reflib" / "foreign"
+    foreign_link.symlink_to("../../foreign_paper")
+    assert foreign_link.exists()
+    ino_before = foreign_link.lstat().st_ino
+
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n"
+        f"  pepforge: {tmp_path / 'pepforge'}\n"
+        f"  other: {other}\n",
+        encoding="utf-8",
+    )
+
+    client = _client(vault)
+    moved = _move_away(vault, tmp_path / "moved")
+    assert (
+        client.put("/api/vaults/lib/path", json={"path": str(moved)}).status_code
+        == 200
+    )
+
+    # The dangling project healed...
+    assert link.exists()
+    assert link.resolve() == (moved / "papers" / "p1").resolve()
+    # ...and the healthy one was not even touched.
+    assert foreign_link.exists()
+    assert foreign_link.lstat().st_ino == ino_before
+
+
+def test_relocate_heal_failure_does_not_fail_the_relocate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort by contract: the relocate is already persisted when the heal
+    runs, so a rebuild blowing up must not turn the 200 into a 500 —
+    ``lit health-check --fix`` stays the fallback."""
+    import litman.core.project_link as project_link_mod
+
+    vault = create_vault(tmp_path, name="lib")
+    save_registry(add_vault(load_registry(), "lib", vault, set_active=True))
+    _link_paper_into_project(vault, tmp_path)
+    client = _client(vault)
+    moved = _move_away(vault, tmp_path / "moved")
+
+    def _boom(*a: object, **kw: object) -> dict:
+        raise RuntimeError("rebuild exploded")
+
+    monkeypatch.setattr(project_link_mod, "rebuild_all_project_links", _boom)
+
+    resp = client.put("/api/vaults/lib/path", json={"path": str(moved)})
+    assert resp.status_code == 200
+    assert Path(find_by_name(load_registry(), "lib").path) == moved.resolve()

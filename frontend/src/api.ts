@@ -475,6 +475,20 @@ export function unregisterVault(name: string): Promise<{ ok: boolean }> {
   return mutateJSON(`/api/vaults/${encodeURIComponent(name)}`, 'DELETE')
 }
 
+/** Re-point a registered vault at its new directory through the `lit vault
+ * set-path` backend — the move-recovery door (symmetric with `setProjectPath`).
+ * For when the vault folder was moved/renamed on disk and the registry's stored
+ * path went stale. When the relocated vault is the active/served one the running
+ * server repoints in place, healing a live 410 with no restart. The path must
+ * already be a litman vault (an existing dir containing a lit-config.yaml); a bad
+ * path or unknown name surfaces the backend's verbatim VaultRegistryError (400). */
+export function setVaultPath(
+  name: string,
+  path: string,
+): Promise<{ ok: boolean; name: string; path: string; active: boolean }> {
+  return mutateJSON(`/api/vaults/${encodeURIComponent(name)}/path`, 'PUT', { path })
+}
+
 /** Link a paper to a registered project through the `lit link` backend
  * (invariant #16 second-class write). Throws the backend's raw LinkError
  * message (400) when the project is unregistered or its dir is missing. */

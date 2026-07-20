@@ -39,9 +39,9 @@ _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
 # either because none was ever created (welcome page) or because the one it was
 # serving vanished mid-session (see ``_guard_vault``). Both states are escaped
 # through the same doors: list the registry, register an existing directory,
-# create a new one, switch the active entry, drop a stale entry. Everything
-# else under ``/api/`` is refused — the SPA + its assets (served off ``/``)
-# always pass, so the page that offers those doors still loads.
+# create a new one, switch the active entry, re-point a moved one, drop a stale
+# entry. Everything else under ``/api/`` is refused — the SPA + its assets
+# (served off ``/``) always pass, so the page that offers those doors still loads.
 _VAULTLESS_ALLOWED = frozenset(
     {
         ("GET", "/api/vaults"),
@@ -63,10 +63,23 @@ def _vaultless_allowed(method: str, path: str) -> bool:
     dialog the gone-state banner opens — renders an Unregister button on every
     row. Without this, that button answered with the middleware's complaint
     about a *different* vault than the one clicked.
+
+    ``PUT /api/vaults/{name}/path`` (relocate) carries the name in the path too,
+    and it is the endpoint that HEALS the gone state — re-pointing the moved
+    entry and, when it is the active one, repointing the server in place. Left
+    off the whitelist it would be refused by the very 409/410 it exists to
+    clear. It ends in ``/path``, which keeps the exact-match ``PUT
+    /api/vaults/active`` out of this arm.
     """
     if (method, path) in _VAULTLESS_ALLOWED:
         return True
-    return method == "DELETE" and path.startswith("/api/vaults/")
+    if method == "DELETE" and path.startswith("/api/vaults/"):
+        return True
+    return (
+        method == "PUT"
+        and path.startswith("/api/vaults/")
+        and path.endswith("/path")
+    )
 
 
 @asynccontextmanager
