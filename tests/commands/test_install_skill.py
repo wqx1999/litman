@@ -593,14 +593,6 @@ def test_cli_install_skill_agent_unknown_name_lists_supported() -> None:
     assert "opencode" in result.output
 
 
-@pytest.mark.parametrize("name", ["gemini"])
-def test_cli_install_skill_agent_unsupported_placeholder_rejected(
-    name: str,
-) -> None:
-    result = CliRunner().invoke(cli, ["install-skill", "--agent", name])
-    assert result.exit_code != 0
-
-
 def test_cli_install_skill_bare_defaults_to_claude_dir() -> None:
     """No flags, no recorded default → the resolved default is claude and
     the skills land in the Claude Code dir (byte-for-byte the pre-1.3

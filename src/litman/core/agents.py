@@ -15,12 +15,16 @@ only user-installable skills location is its own app-data directory
 dir). The other three — Cursor, Codex, and OpenCode — all discover skills
 from the Agent Skills open-standard directory ``~/.agents/skills`` and so
 share one adapter shape (Cursor additionally does a compatibility read of
-the Claude dir). Gemini CLI is the lone remaining ``supported=False``
-placeholder so the picker renders a stable, greyed-out roadmap and the seam
-stays N-agent shaped; a later release fills in its real adapter. Its adapter
-callables raise :class:`NotImplementedError` — generic code never reaches
-them (every consumer gates on ``supported``), so a programming error that
-*does* call one fails loudly instead of silently misbehaving.
+the Claude dir).
+
+All five are ``supported=True`` — the catalog carries no greyed placeholder
+today. The machinery for one nonetheless stays as dormant capability: the
+``supported`` flag on :class:`AgentSpec`, the :func:`_unsupported` placeholder
+adapter, and every consumer's ``supported`` gate. A future roadmap agent
+litman cannot yet drive is added as a single ``supported=False`` row whose
+adapter callables raise :class:`NotImplementedError` — generic code never
+reaches them (every consumer gates on ``supported``), so a programming error
+that *does* call one fails loudly instead of silently misbehaving.
 
 The per-agent skills locations are reached ONLY through the catalog adapters
 (they delegate to :mod:`litman.core.skill`); they must never leak into an
@@ -100,12 +104,7 @@ class AgentSpec:
 # Codex and OpenCode share the open-standard ``~/.agents/skills`` directory
 # with Cursor (the litman-bench harness measured both activating skills from
 # it and driving litman through them), so their adapters are copied verbatim
-# from Cursor's — no per-vendor resolver or generated config file. Gemini CLI
-# is greyed because its consumer-subscription OAuth was discontinued upstream
-# and its open-standard discovery was never verified on a real install (an
-# API-key / enterprise adapter would be its own task); its best-effort launch
-# command / install URL are kept so that adapter can be filled in without
-# re-editing this table.
+# from Cursor's — no per-vendor resolver or generated config file.
 #
 # Order: claude first (the fallback default tops the picker), the rest
 # alphabetical. The GUI picker and `skills_parent_dirs()` follow this order.
@@ -165,16 +164,6 @@ AGENTS: tuple[AgentSpec, ...] = (
             parent_dir=skill.standard_skills_parent_dir(), overwrite=True
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
-    ),
-    AgentSpec(
-        name="gemini",
-        display="Gemini CLI",
-        launch="gemini",
-        supported=False,
-        install_url="https://github.com/google-gemini/gemini-cli",
-        detect_bin="gemini",
-        skill_state=_unsupported("gemini"),
-        install_skill=_unsupported("gemini"),
     ),
     AgentSpec(
         name="opencode",

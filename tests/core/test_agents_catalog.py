@@ -2,15 +2,16 @@
 tasks).
 
 The catalog is the code-level source of truth for which agents litman can
-launch/onboard. These tests pin the six-agent shape and order (claude first,
-the rest alphabetical), the supported set (claude + agy + codex + cursor +
-opencode), generic (per-agent-branch-free) detection, the skill adapters'
-delegation to ``core.skill`` (claude → the Claude Code dir; cursor, codex,
-and opencode → the shared open-standard dir; agy → the Antigravity CLI
-app-data dir), the per-agent skills-dir resolvers, and the loud failure of
-the lone unsupported agent's placeholder adapter. Detection is driven
-entirely through a monkeypatched ``shutil.which`` — no real binary is
-probed.
+launch/onboard. These tests pin the five-agent shape and order (claude first,
+the rest alphabetical), that every catalog entry is supported (claude + agy +
+codex + cursor + opencode), generic (per-agent-branch-free) detection, the
+skill adapters' delegation to ``core.skill`` (claude → the Claude Code dir;
+cursor, codex, and opencode → the shared open-standard dir; agy → the
+Antigravity CLI app-data dir), the per-agent skills-dir resolvers, and the
+loud failure of the dormant ``supported=False`` placeholder machinery (no
+live catalog agent uses it today, so it is covered directly via
+``_unsupported`` + a synthetic spec). Detection is driven entirely through a
+monkeypatched ``shutil.which`` — no real binary is probed.
 """
 
 from __future__ import annotations
@@ -32,12 +33,12 @@ from litman.core.agents import (
 )
 
 
-def test_catalog_has_exactly_six_named_agents() -> None:
+def test_catalog_has_exactly_five_named_agents() -> None:
     """Claude first (the fallback default tops the picker), the rest
     alphabetical — the GUI picker renders catalog order verbatim."""
     names = [spec.name for spec in AGENTS]
-    assert names == ["claude", "agy", "codex", "cursor", "gemini", "opencode"]
-    assert len(set(names)) == 6
+    assert names == ["claude", "agy", "codex", "cursor", "opencode"]
+    assert len(set(names)) == 5
 
 
 def test_supported_set_is_the_five_standard_agents() -> None:
@@ -50,6 +51,8 @@ def test_supported_set_is_the_five_standard_agents() -> None:
         "cursor",
         "opencode",
     ]
+    # Every catalog entry is supported today — no greyed placeholder remains.
+    assert all(s.supported for s in AGENTS)
 
 
 def test_every_spec_carries_display_and_install_url() -> None:
@@ -160,15 +163,31 @@ def test_claude_skill_state_routes_to_aggregate_skill_state(
     assert get_agent("claude").skill_state() == "stale"
 
 
-@pytest.mark.parametrize("name", ["gemini"])
-def test_unsupported_agent_adapters_raise_not_implemented(name: str) -> None:
-    spec = get_agent(name)
-    assert spec.supported is False
-    assert spec.skills_dir is None
+def test_unsupported_placeholder_machinery_raises_not_implemented() -> None:
+    """The ``supported=False`` scaffold stays covered without a live catalog
+    agent (there is none today): the raw ``_unsupported`` adapter and a
+    synthetic placeholder spec both raise ``NotImplementedError``. Generic
+    code gates on ``supported`` and never calls these, so a mis-call must fail
+    loudly instead of silently misbehaving."""
     with pytest.raises(NotImplementedError):
-        spec.install_skill()
+        agents._unsupported("future")()
+
+    placeholder = AgentSpec(
+        name="future",
+        display="Future Agent",
+        launch="future",
+        supported=False,
+        install_url="https://example.invalid/future",
+        detect_bin="future",
+        skill_state=agents._unsupported("future"),
+        install_skill=agents._unsupported("future"),
+    )
+    assert placeholder.supported is False
+    assert placeholder.skills_dir is None
     with pytest.raises(NotImplementedError):
-        spec.skill_state()
+        placeholder.install_skill()
+    with pytest.raises(NotImplementedError):
+        placeholder.skill_state()
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +337,10 @@ def test_agent_skills_parent_dir_routes_by_catalog(
     assert agent_skills_parent_dir("agy") == antigravity
 
 
-@pytest.mark.parametrize("name", ["gemini", "nope"])
+@pytest.mark.parametrize("name", ["nope"])
 def test_agent_skills_parent_dir_rejects_non_supported(name: str) -> None:
+    # No known-but-unsupported catalog name remains; an unknown name still
+    # hits the same rejection path (spec: covering unknown-name is enough).
     with pytest.raises(ValueError, match="Supported agents"):
         agent_skills_parent_dir(name)
 
