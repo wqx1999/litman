@@ -585,13 +585,15 @@ def test_cli_install_skill_agent_and_parent_dir_conflict(
 def test_cli_install_skill_agent_unknown_name_lists_supported() -> None:
     result = CliRunner().invoke(cli, ["install-skill", "--agent", "nope"])
     assert result.exit_code != 0
-    # click.Choice error names the valid agents.
+    # click.Choice error names the valid agents (the full supported set).
     assert "claude" in result.output
     assert "agy" in result.output
+    assert "codex" in result.output
     assert "cursor" in result.output
+    assert "opencode" in result.output
 
 
-@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
+@pytest.mark.parametrize("name", ["gemini"])
 def test_cli_install_skill_agent_unsupported_placeholder_rejected(
     name: str,
 ) -> None:

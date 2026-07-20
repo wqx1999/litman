@@ -88,12 +88,12 @@ def test_agent_unknown_name_lists_catalog(vault: Path) -> None:
     assert "claude" in message  # the catalog names are listed
 
 
-@pytest.mark.parametrize("greyed", ["codex", "gemini", "opencode"])
+@pytest.mark.parametrize("greyed", ["gemini"])
 def test_agent_unsupported_name_is_rejected(
     vault: Path, monkeypatch: pytest.MonkeyPatch, greyed: str
 ) -> None:
-    """A greyed placeholder (supported=False) is rejected before the PATH probe
-    / exec — even if its binary happens to be installed."""
+    """The lone greyed placeholder (supported=False) is rejected before the
+    PATH probe / exec — even if its binary happens to be installed."""
     execd: list[object] = []
     monkeypatch.setattr(
         "litman.commands.agent.shutil.which", lambda name: f"/usr/bin/{name}"
@@ -104,7 +104,7 @@ def test_agent_unsupported_name_is_rejected(
     assert isinstance(result.exception, LitmanError)
     message = str(result.exception)
     assert f"'{greyed}' is not available yet" in message
-    assert "Supported agents: claude, agy, cursor" in message
+    assert "Supported agents: claude, agy, codex, cursor, opencode" in message
     assert execd == []  # never reached the exec path
 
 
@@ -191,7 +191,7 @@ def test_set_default_records_machine_preference() -> None:
 
 
 def test_set_default_rejects_unsupported_agent() -> None:
-    result = CliRunner().invoke(agent_cmd, ["--set-default", "codex"])
+    result = CliRunner().invoke(agent_cmd, ["--set-default", "gemini"])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
     assert "not a supported agent" in str(result.exception)

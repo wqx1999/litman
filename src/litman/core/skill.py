@@ -54,8 +54,9 @@ def default_skills_parent_dir() -> Path:
 
 def standard_skills_parent_dir() -> Path:
     """The skills dir of the Agent Skills open standard
-    (``~/.agents/skills``) — Cursor discovers it (verified on a real
-    install; vendor docs say Codex reads it too, re-verify when un-greying).
+    (``~/.agents/skills``) — Cursor, Codex, and OpenCode all discover it
+    (Cursor verified on a real install; Codex and OpenCode measured
+    activating skills from it by the litman-bench harness).
 
     Same call-time seam contract as :func:`default_skills_parent_dir`: a
     redirected ``$HOME`` is honored, and the test suite isolates itself from

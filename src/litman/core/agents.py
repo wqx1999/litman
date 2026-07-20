@@ -8,19 +8,19 @@ consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
-litman supports three agents today, each with its own skills directory:
-Claude Code (``~/.claude/skills``), Cursor (the Agent Skills open-standard
-directory ``~/.agents/skills``, which it discovers alongside a
-compatibility read of the Claude dir), and Antigravity CLI (``agy``, whose
+litman supports five agents today. Two have a skills directory of their
+own: Claude Code (``~/.claude/skills``) and Antigravity CLI (``agy``, whose
 only user-installable skills location is its own app-data directory
 ``~/.gemini/antigravity-cli/skills`` — it does not read the open-standard
-dir). The remaining three (Codex / Gemini CLI / OpenCode) exist here as
-``supported=False`` placeholders so the picker renders a stable, greyed-out
-roadmap and so the seam is already N-agent shaped; a later release fills in
-their real adapters. Their adapter callables raise
-:class:`NotImplementedError` — generic code never reaches them (every
-consumer gates on ``supported``), so a programming error that *does* call
-one fails loudly instead of silently misbehaving.
+dir). The other three — Cursor, Codex, and OpenCode — all discover skills
+from the Agent Skills open-standard directory ``~/.agents/skills`` and so
+share one adapter shape (Cursor additionally does a compatibility read of
+the Claude dir). Gemini CLI is the lone remaining ``supported=False``
+placeholder so the picker renders a stable, greyed-out roadmap and the seam
+stays N-agent shaped; a later release fills in its real adapter. Its adapter
+callables raise :class:`NotImplementedError` — generic code never reaches
+them (every consumer gates on ``supported``), so a programming error that
+*does* call one fails loudly instead of silently misbehaving.
 
 The per-agent skills locations are reached ONLY through the catalog adapters
 (they delegate to :mod:`litman.core.skill`); they must never leak into an
@@ -97,15 +97,15 @@ class AgentSpec:
 # (not a from-import) so a single patch on litman.core.skill.* intercepts
 # them — the test suite's skills-dir isolation depends on that.
 #
-# The placeholders below carry best-effort launch commands / install URLs so
-# their adapters can be implemented without re-editing this table; verify
-# each vendor's exact CLI + docs URL when un-greying one. Un-greying is also
-# NOT just flipping the flag: third-party docs say Codex wants an
-# ``openai.yaml`` next to SKILL.md in ``~/.agents/skills`` and OpenCode reads
-# the XDG path ``~/.config/opencode/skills`` — neither vendor-verified yet.
-# Gemini CLI is greyed because its consumer-subscription OAuth was
-# discontinued upstream and its open-standard discovery was never verified on
-# a real install (an API-key / enterprise adapter would be its own task).
+# Codex and OpenCode share the open-standard ``~/.agents/skills`` directory
+# with Cursor (the litman-bench harness measured both activating skills from
+# it and driving litman through them), so their adapters are copied verbatim
+# from Cursor's — no per-vendor resolver or generated config file. Gemini CLI
+# is greyed because its consumer-subscription OAuth was discontinued upstream
+# and its open-standard discovery was never verified on a real install (an
+# API-key / enterprise adapter would be its own task); its best-effort launch
+# command / install URL are kept so that adapter can be filled in without
+# re-editing this table.
 #
 # Order: claude first (the fallback default tops the picker), the rest
 # alphabetical. The GUI picker and `skills_parent_dirs()` follow this order.
@@ -140,11 +140,16 @@ AGENTS: tuple[AgentSpec, ...] = (
         name="codex",
         display="Codex",
         launch="codex",
-        supported=False,
+        supported=True,
         install_url="https://developers.openai.com/codex/cli/",
         detect_bin="codex",
-        skill_state=_unsupported("codex"),
-        install_skill=_unsupported("codex"),
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.standard_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),
     AgentSpec(
         name="cursor",
@@ -175,11 +180,16 @@ AGENTS: tuple[AgentSpec, ...] = (
         name="opencode",
         display="OpenCode",
         launch="opencode",
-        supported=False,
+        supported=True,
         install_url="https://opencode.ai/",
         detect_bin="opencode",
-        skill_state=_unsupported("opencode"),
-        install_skill=_unsupported("opencode"),
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.standard_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),
 )
 

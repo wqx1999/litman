@@ -375,10 +375,10 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 }
 
 /** One agent's onboarding view: display name, whether litman supports it today
- * (Claude Code, Cursor and Antigravity CLI — the rest are greyed roadmap
- * placeholders), whether its launch command is on PATH, its official install
- * page, and `skill_state` — the server's content-level verdict for THIS
- * agent's skill install ('absent' | 'stale' | 'current'; null for an
+ * (Claude Code, Antigravity CLI, Codex, Cursor and OpenCode — Gemini CLI is the
+ * lone greyed roadmap placeholder), whether its launch command is on PATH, its
+ * official install page, and `skill_state` — the server's content-level verdict
+ * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
  * unsupported placeholder, which is never probed). Agents sharing a skills
  * location legitimately share a state. Agent-agnostic by contract: no
  * per-agent skill path ever appears here. */

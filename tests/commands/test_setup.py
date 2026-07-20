@@ -448,7 +448,7 @@ def test_setup_skill_step_fresh_install_accepts_via_confirm(
     [Y/n] confirm, not a numbered picker. Pressing Enter accepts the Yes
     default -> installs the Claude Code skill WITHOUT --force and records the
     machine-level default agent (so `lit setup` clears the GUI red dot too).
-    Also proves the 'more agents coming' roadmap note is shown."""
+    Also proves the agent-management hint note is shown."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
     monkeypatch.setenv("SHELL", "/bin/bash")
@@ -473,7 +473,7 @@ def test_setup_skill_step_fresh_install_accepts_via_confirm(
     # install_skill_cmd invoked WITHOUT force, targeting the chosen agent.
     assert calls == [{"agent_name": "claude"}]
     assert recorded == ["claude"]  # machine-level default recorded
-    assert "coming" in result.output  # roadmap note for the placeholder agents
+    assert "More agents can be added" in result.output  # agent-management hint
 
 
 def test_setup_agent_choice_agy_records_default_before_install(

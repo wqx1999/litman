@@ -51,7 +51,7 @@ def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
     assert resp.json() == {
-        "agents": ["claude", "agy", "cursor"],
+        "agents": ["claude", "agy", "codex", "cursor", "opencode"],
         "default": "claude",
     }
 
@@ -113,13 +113,13 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
     }
 
 
-@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
+@pytest.mark.parametrize("name", ["gemini"])
 def test_launch_unsupported_agent_is_400(
     vault: Path, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """A greyed placeholder (supported=False) is rejected before any PATH probe
-    / copy-fallback — inert on the launch axis too. gemini is back in this
-    set (its consumer OAuth was discontinued upstream; un-greying needs a
+    """The lone greyed placeholder (supported=False) is rejected before any
+    PATH probe / copy-fallback — inert on the launch axis too. gemini stays
+    greyed (its consumer OAuth was discontinued upstream; un-greying needs a
     verified adapter)."""
     spawned: list[object] = []
     monkeypatch.setattr(
@@ -156,10 +156,10 @@ def test_status_returns_six_catalog_entries(vault: Path) -> None:
     assert supported == {
         "claude": True,
         "agy": True,
-        "codex": False,
+        "codex": True,
         "cursor": True,
         "gemini": False,
-        "opencode": False,
+        "opencode": True,
     }
     for e in body["agents"]:
         assert set(e) == {
@@ -205,10 +205,12 @@ def test_status_never_leaks_skill_paths(vault: Path) -> None:
 
 
 def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
-    """Per-agent skill_state reads each agent's own directory: installing
-    into any one of the three supported locations flips only that agent's
-    row, and a greyed placeholder always reads null. Drives the REAL
-    resolvers + copies (conftest isolates all three dirs at tmp paths)."""
+    """Per-agent skill_state reads each agent's own directory. cursor, codex,
+    and opencode share the open-standard ~/.agents/skills dir, so installing
+    there flips all three of their rows together; claude's and agy's own dirs
+    stay independent. The lone greyed placeholder (gemini) always reads null.
+    Drives the REAL resolvers + copies (conftest isolates all three dirs at
+    tmp paths)."""
     from litman.core import skill
 
     client = _client(vault)
@@ -222,13 +224,16 @@ def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
     assert before["claude"] == "absent"
     assert before["agy"] == "absent"
     assert before["cursor"] == "absent"
-    assert before["codex"] is None
-    assert before["gemini"] is None
-    assert before["opencode"] is None
+    assert before["codex"] == "absent"
+    assert before["opencode"] == "absent"
+    assert before["gemini"] is None  # the lone greyed placeholder
 
     skill.install_all_skills(parent_dir=skill.standard_skills_parent_dir())
     after_standard = states()
+    # The shared open-standard dir flips cursor, codex AND opencode together.
     assert after_standard["cursor"] == "current"
+    assert after_standard["codex"] == "current"
+    assert after_standard["opencode"] == "current"
     assert after_standard["claude"] == "absent"  # untouched
     assert after_standard["agy"] == "absent"  # untouched
 
@@ -239,15 +244,19 @@ def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
     )
     assert states()["agy"] == "current"
 
-    # Tamper the standard-dir copy: only cursor flips stale.
+    # Tamper the standard-dir copy: cursor, codex and opencode all flip stale
+    # together (shared dir); claude and agy are unaffected.
     tampered = (
         skill.standard_skills_parent_dir() / "lit-library" / "SKILL.md"
     )
     tampered.write_text("OUTDATED\n", encoding="utf-8")
     tampered_states = states()
     assert tampered_states["cursor"] == "stale"
+    assert tampered_states["codex"] == "stale"
+    assert tampered_states["opencode"] == "stale"
     assert tampered_states["claude"] == "current"
     assert tampered_states["agy"] == "current"
+    assert tampered_states["gemini"] is None
 
 
 def test_skill_install_agy_lands_in_antigravity_dir(vault: Path) -> None:
@@ -367,7 +376,7 @@ def test_skill_install_ignores_body_target_field(
     assert captured == {"overwrite": True, "kw": {}}
 
 
-@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
+@pytest.mark.parametrize("name", ["gemini"])
 def test_skill_install_unsupported_agent_is_400(
     vault: Path, name: str
 ) -> None:
@@ -388,7 +397,7 @@ def test_put_default_unknown_agent_is_400(vault: Path) -> None:
 
 
 def test_put_default_unsupported_agent_is_400(vault: Path) -> None:
-    resp = _client(vault).put("/api/agent/default", json={"agent": "codex"})
+    resp = _client(vault).put("/api/agent/default", json={"agent": "gemini"})
     assert resp.status_code == 400
 
 

@@ -64,7 +64,7 @@ def test_load_garbage_yaml_returns_none() -> None:
 
 def test_save_rejects_unsupported_agent() -> None:
     with pytest.raises(ValueError, match="not a supported agent"):
-        agent_prefs.save_default_agent("codex")  # in catalog but supported=False
+        agent_prefs.save_default_agent("gemini")  # in catalog but supported=False
 
 
 def test_save_rejects_unknown_agent() -> None:

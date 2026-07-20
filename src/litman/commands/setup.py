@@ -187,7 +187,7 @@ def _step_skill(
         "CLI works fully without it)."
     )
     console.print(
-        "[dim]More agents coming (Codex, OpenCode); manage agents anytime "
+        "[dim]More agents can be added; manage agents anytime "
         "in the GUI.[/]"
     )
     names = [spec.name for spec in agents.supported_agents()]
