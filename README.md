@@ -84,13 +84,15 @@ agent button does the same.
 Cursor, Gemini CLI, and OpenCode are next: they already appear in litman's agent
 picker, greyed out until the release that turns them on.
 
-Your agent works with whatever model you give it. We ran eight of them through 22
-everyday tasks:
+Your agent works with whatever model you give it. We ran a range of them across
+five agent CLIs through 22 everyday tasks:
 
-- **Recommended: an [Anthropic](https://www.anthropic.com) subscription.** Claude
-  Sonnet 4.6 and Haiku 4.5 both complete 97% of the tasks.
-- **Without one, [DeepSeek-V4](https://www.deepseek.com) scores highest of the
-  rest.**
+- **The cheapest capable tier already tops the chart.** Cursor's Composer 2.5 and
+  GLM 5.2, and opencode's [MiniMax-M3](https://www.minimax.io) and
+  [DeepSeek-V4](https://www.deepseek.com), all score 96–100% — a frontier model
+  never scores higher, so there is no need to pay for one.
+- **On Claude Code, use Sonnet, not Haiku.** Claude Sonnet 5 completes 96%; Haiku
+  4.5 is inconsistent and sometimes skips calling `lit` entirely.
 
 Every write is validated whatever the model, so a weaker one needs more turns but
 never corrupts the library. Method and per-model scores:
