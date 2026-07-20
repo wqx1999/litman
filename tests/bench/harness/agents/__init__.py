@@ -212,6 +212,7 @@ _MODEL_FAMILY: dict[str, str] = {
     #     `system/init`: claude reports the id VERBATIM, not resolved to a dated
     #     one (fixtures/agent-streams/claude-init-model.raw.jsonl pins this).
     "claude-sonnet-4-6": "claude-sonnet-4.6",
+    "claude-sonnet-5": "claude-sonnet-5",
     "claude-haiku-4-5-20251001": "claude-haiku-4.5",
     "claude-opus-4-8": "claude-opus-4.8",
     # --- cursor: requests an id, reports a display name ----------------------
@@ -244,25 +245,33 @@ _MODEL_FAMILY: dict[str, str] = {
     "Sonnet 4.6 200K Medium": "claude-sonnet-4.6",
     # Cursor's frontier models for the capability-ladder rounds. Same shape as the
     # grok rung: cursor requests the parameterized id (…-medium — one reasoning
-    # tier held constant across the sweep) and reports the listing's display name,
-    # so BOTH spellings must map to the family or _check_model_pinned fails a run
-    # that is in fact pinned. Served strings are the `cursor-agent --list-models`
-    # RHS (composer/grok precedent: the display name is what init echoes); each
-    # round's Phase 0 smoke confirms the exact string and corrects it here if it
-    # differs. The gpt-5.5 / gpt-5.6-{terra,luna,sol} families are shared with
-    # codex on purpose — same model, two scaffolds is the cross-harness control.
+    # tier held constant across the sweep) and reports a display name, so BOTH
+    # spellings must map to the family or _check_model_pinned fails a run that is
+    # in fact pinned. The served string is NOT the `cursor-agent models` listing
+    # RHS: the listing shows "GPT-5.5 1M" but a headless init event echoes
+    # "GPT-5.5 272K Medium" — the context window and reasoning tier cursor really
+    # serves, with a "No Thinking" marker on the non-thinking Claude ids. Every
+    # string below was captured from that model's init event, not the listing. The
+    # gpt-5.5 / gpt-5.6-{terra,luna,sol} families are shared with codex on purpose
+    # — same model, two scaffolds is the cross-harness control.
     "gpt-5.5-medium": "gpt-5.5",
-    "GPT-5.5 1M": "gpt-5.5",
+    "GPT-5.5 272K Medium": "gpt-5.5",
     "gpt-5.6-terra-medium": "gpt-5.6-terra",
-    "GPT-5.6 Terra 1M": "gpt-5.6-terra",
+    "GPT-5.6 Terra 272K Medium": "gpt-5.6-terra",
     "gpt-5.6-luna-medium": "gpt-5.6-luna",
-    "GPT-5.6 Luna 1M": "gpt-5.6-luna",
+    "GPT-5.6 Luna 272K Medium": "gpt-5.6-luna",
     "gpt-5.6-sol-medium": "gpt-5.6-sol",
-    "GPT-5.6 Sol 1M": "gpt-5.6-sol",
+    "GPT-5.6 Sol 272K Medium": "gpt-5.6-sol",
     "claude-sonnet-5-medium": "claude-sonnet-5",
-    "Sonnet 5 1M Medium": "claude-sonnet-5",
+    "Sonnet 5 300K Medium No Thinking": "claude-sonnet-5",
     "claude-opus-4-8-medium": "claude-opus-4.8",
-    "Opus 4.8 1M Medium": "claude-opus-4.8",
+    "Opus 4.8 300K Medium No Thinking": "claude-opus-4.8",
+    # GLM-5.2 via cursor exposes no -medium tier (only high/max); the ladder runs
+    # the high rung. Served string carries the tier word the listing drops.
+    "glm-5.2-high": "glm-5.2",
+    "GLM 5.2 High": "glm-5.2",
+    "glm-5.2-max": "glm-5.2",
+    "GLM 5.2 Max": "glm-5.2",
     # --- agy: requests a display name, reports nothing -----------------------
     "Claude Sonnet 4.6 (Thinking)": "claude-sonnet-4.6",
     # --- opencode: requests "<provider>/<model>", export echoes it verbatim ---
