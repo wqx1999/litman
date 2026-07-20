@@ -130,15 +130,23 @@ def _sync_ready_watcher(server, open_browser, stop_event, after_open=None):
 
 
 class _FakeProc:
-    """subprocess.Popen stand-in for the app window. ``wait()`` blocks like the
-    real thing — until the window "closes", which in these tests only happens
-    when the command's cleanup terminates it."""
+    """subprocess.Popen stand-in for the app window. ``poll()`` reports the
+    process as alive until the window "closes", which in these tests only
+    happens when the command's cleanup terminates it."""
 
     def __init__(self, argv) -> None:
         self.argv = argv
         self.returncode = None
         self.terminated = False
         self._closed = threading.Event()
+
+    def poll(self) -> int | None:
+        # The watcher polls (never waits): None while the window is open, the
+        # exit code once cleanup has terminated it.
+        if self._closed.is_set():
+            self.returncode = 0
+            return 0
+        return None
 
     def wait(self, timeout=None) -> int:
         assert self._closed.wait(timeout=5), "window never closed"
@@ -446,6 +454,64 @@ def _exited_proc() -> subprocess.Popen[bytes]:
     proc = subprocess.Popen([sys.executable, "-c", ""])
     proc.wait()
     return proc
+
+
+def _live_proc() -> subprocess.Popen[bytes]:
+    """A real process that stays alive — the Windows shape: Edge keeps the
+    browser process resident (Startup boost, single-instance-per-profile) long
+    after the app window is closed, so ``proc`` never exits even though every
+    page is gone. Callers must terminate it."""
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+
+def test_watcher_stops_on_page_close_even_if_the_process_never_exits() -> None:
+    # The Windows bug this whole rewrite is about: our spawned browser process
+    # stays resident forever, but the window is closed and its page's presence
+    # socket has dropped. The server must still stop — the last live page, not
+    # the process, is the signal. (The old code blocked on proc.wait() here and
+    # never reached the presence loop, so the server lingered.)
+    tracker = PresenceTracker()
+    tracker.connect()
+    proc, server = _live_proc(), _FakeServer()
+    try:
+        watcher = threading.Thread(
+            target=_stop_server_when_window_closes,
+            args=(proc, server, tracker),
+            kwargs={"first_connect_grace": 30.0, "linger": 0.2, "poll": 0.02},
+            daemon=True,
+        )
+        watcher.start()
+        time.sleep(0.3)  # the process is alive and a page holds the socket
+        assert server.should_exit is False
+        tracker.disconnect()  # the user closes the window; the socket drops
+        watcher.join(timeout=5)
+        assert not watcher.is_alive()
+        assert server.should_exit is True  # stopped despite the live process
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_watcher_waits_while_the_window_is_up_but_no_page_connected_yet() -> None:
+    # The other side of not-waiting-on-the-process: a window slow to paint its
+    # first page. The process is alive and no presence socket has opened, so the
+    # first-connect grace must NOT fire — that clock is only for a launch whose
+    # process is already gone. A live window past the grace stays served.
+    proc, server = _live_proc(), _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, PresenceTracker()),
+        kwargs={"first_connect_grace": 0.1, "linger": 0.1, "poll": 0.02},
+        daemon=True,
+    )
+    try:
+        watcher.start()
+        time.sleep(0.4)  # well past the grace, but the process is still alive
+        assert server.should_exit is False
+    finally:
+        proc.terminate()
+        proc.wait()
+        watcher.join(timeout=5)  # observes the exit, applies grace, exits clean
 
 
 def test_watcher_exits_after_grace_when_no_page_ever_connected() -> None:

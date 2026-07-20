@@ -20,11 +20,14 @@ entry that runs ``lit gui --window`` and exits without starting the server
 (shared with ``lit setup`` step 5, ADR-019).
 
 ``--window`` owns its browser: the app window is the application, so closing
-it stops the server, and Ctrl+C closes the window. The forward direction is
-an AND gate, not a process wait: Chromium hands windows across processes, so
-the spawned process exiting does not mean the window closed — the server
-stops only once that process is gone AND no page holds the ``/api/presence``
-WebSocket open (see :func:`_stop_server_when_window_closes`). Two more
+it stops the server, and Ctrl+C closes the window. The shutdown signal is the
+last live *page*, not the browser process: the SPA holds a ``/api/presence``
+WebSocket while it is loaded, and the server stops a short linger after that
+count reaches zero (see :func:`_stop_server_when_window_closes`). The spawned
+process is only a secondary hint — it can outlive the window (on Windows Edge
+keeps the browser resident after the window closes) or die before it (Chromium
+hands a fresh profile's first window to another process), so *waiting* on it
+would either wedge the server open forever or shut it down early. Two more
 things are load-bearing — the dedicated ``--user-data-dir`` (see
 :func:`browser_profile_dir`) and the desktop shortcut running the console-less
 ``litw`` twin (see :func:`_shortcut_executable`). A terminal-launched
@@ -250,21 +253,30 @@ def _stop_server_when_window_closes(
     linger: float = 5.0,
     poll: float = 0.25,
 ) -> None:
-    """Ask uvicorn to shut down once the window is gone — an AND gate.
+    """Ask uvicorn to shut down once the last live page is gone.
 
-    The spawned process exiting is necessary but not sufficient: Chromium
-    hands windows across processes (Edge restarts itself partway through a
-    fresh profile's first run), so ``proc.wait()`` returning can mean a
-    handoff, not a closed window. The page is the other witness — the SPA
+    The authoritative signal is the page, not the browser process: the SPA
     holds a WebSocket open to ``/api/presence`` for as long as it is loaded,
-    and ``presence`` counts those sockets. After the process exits, the
-    server stops only once the count is zero and has stayed zero for
-    ``linger`` seconds (an F5 reload drops and re-opens the socket inside
-    that window). If no page ever connected — the browser never came up —
-    ``first_connect_grace`` bounds the wait so a failed launch still leaves
-    no orphan. Consequence: the server now follows the *last live page*, not
-    the window process; an extra tab on the same server keeps it alive after
-    the window closes.
+    and ``presence`` counts those sockets. Two shutdown paths:
+
+    * **A page connected and then every page went away.** The window was
+      closed or navigated off; stop once the count has stayed zero for
+      ``linger`` seconds (an F5 reload drops and re-opens the socket inside
+      that window). This fires *regardless of the spawned process* — on
+      Windows, Edge (Startup boost, single-instance-per-profile) keeps our
+      ``msedge`` resident long after its window is gone, so waiting on the
+      process would wedge the gate open forever and leave the server running.
+
+    * **No page ever connected** — a launch that never produced a window.
+      ``first_connect_grace`` bounds the wait so a failed launch leaves no
+      orphan, but the clock only starts once the spawned process is *gone*:
+      a window merely slow to paint (process still alive) must not be shot
+      before its first page loads.
+
+    ``proc`` is *polled*, never waited on. An earlier version blocked on
+    ``proc.wait()`` before it ever read presence — which is exactly what let a
+    resident Windows browser keep the server alive after the window closed
+    (the wait never returned, so the presence loop never ran).
 
     The keyword defaults are the shipped values; tests inject shorter ones.
     Each round reads the tracker through a single ``snapshot()`` call — read
@@ -277,20 +289,26 @@ def _stop_server_when_window_closes(
     100 ms, so setting the flag from this thread is the supported way to stop
     it from outside the event loop.
     """
-    proc.wait()
-    exited_at = time.monotonic()
+    exited_at: float | None = None
     while True:
+        if exited_at is None and proc.poll() is not None:
+            exited_at = time.monotonic()
         count, ever_connected, last_zero = presence.snapshot()
         if count == 0:
             if ever_connected:
-                # last_zero is None ⇒ a connection is being established right
-                # now (torn snapshot) — treat it as not idle and keep polling.
-                # Without this guard, None in the subtraction is a TypeError,
-                # this daemon thread dies silently, and the server becomes an
-                # orphan that never exits.
+                # The window lived and now no page does — stop a linger later,
+                # even if our spawned browser is still resident (Windows keeps
+                # it around). last_zero is None only in a torn snapshot mid-
+                # connect; treat that as not-idle. Without the guard, None in
+                # the subtraction is a TypeError that kills this daemon thread
+                # silently and orphans the server.
                 if last_zero is not None and time.monotonic() - last_zero >= linger:
                     break
-            elif time.monotonic() - exited_at >= first_connect_grace:
+            elif exited_at is not None and (
+                time.monotonic() - exited_at >= first_connect_grace
+            ):
+                # No page ever connected and the window process is gone: a
+                # launch that never came up. Give up so it leaves no orphan.
                 break
         time.sleep(poll)
     server.should_exit = True

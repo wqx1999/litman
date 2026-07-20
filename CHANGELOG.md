@@ -9,16 +9,19 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
-- **The app window no longer takes the server down with it during Edge's
-  first-run restart.** `lit gui --window` stops the server when you close the
-  app window, which it read off the spawned browser process exiting. A brand-new
-  profile broke that: Edge restarts itself partway through its first run, the
-  process litman launched exits, and the server went down under a live window —
-  a blank app seconds after it opened. Shutdown now needs both signals — the
-  browser process is gone *and* no page still holds litman's window-open
-  connection — so it rides through the handoff. One consequence of following the
-  page rather than the process: a second tab you opened on the same server keeps
-  it alive after the app window closes.
+- **Closing the app window reliably stops the server — even when the browser
+  lingers.** `lit gui --window` stops the server when its last page closes,
+  which it now tracks through litman's own window-open connection rather than the
+  spawned browser process. Two things broke the old process-based approach. On
+  Windows, Edge keeps its process running in the background after the window is
+  gone (Startup boost, one process per profile), so litman waited forever on a
+  process that never exited — the server, and its "this library moved" banner,
+  could outlive the window for the whole session and pile up across launches. And
+  a brand-new profile made Edge restart itself partway through its first run,
+  handing the real window to a process litman never saw. Shutdown now follows the
+  last live page: close the window and the server stops a few seconds later,
+  whatever the browser process does. A second tab you opened on the same server
+  still keeps it alive after the app window closes.
 
 - **A moved library can be pointed at its new home — no forced rename.** When you
   move or rename your library folder, litman's registry still records the old
