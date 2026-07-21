@@ -7,6 +7,26 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ## 1.2.1 — unreleased
 
+### Added
+
+- **The desktop shortcut now shows a splash while it launches.** Started from
+  the Windows shortcut there is no console, and litman's startup messages only
+  go to `litw.log`, so a cold launch looked like nothing had happened until the
+  window finally appeared. A small floating app mark now shows the instant you
+  launch and vanishes the moment the page connects. It appears only on the
+  console-less window launch with a local display; remote and headless sessions
+  are unchanged — the server still prints its URL and SSH-tunnel line.
+
+### Changed
+
+- **The app starts noticeably faster.** `lit` used to import every command — and
+  the heavy libraries behind them (PDF parsing, HTTP, the server stack) — on
+  every invocation, including ones that never touch them; each command is now
+  imported only when it actually runs, taking hundreds of milliseconds off the
+  start of every `lit` command (most visibly on Windows). And `lit gui` no
+  longer waits a fixed one second before opening the browser — it opens the
+  moment the server is actually listening.
+
 ### Fixed
 
 - **Closing the app window reliably stops the server — even when the browser
