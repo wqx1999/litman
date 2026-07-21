@@ -23,6 +23,18 @@ behaviour, a minor release adds it, a major release breaks it.
   whatever the browser process does. A second tab you opened on the same server
   still keeps it alive after the app window closes.
 
+- **A window from a past session can no longer haunt the next launch.**
+  Force-closing litman (Task Manager, `taskkill`) made the browser record a
+  crash; the next launch of the app window then resurrected the dead session's
+  page next to the live one — a days-old view, loaded from the browser's cache
+  against a server that no longer existed, still wearing whatever banner was
+  true back then (typically the red "library is no longer at…" one). Two fixes:
+  the launcher now clears the app profile's session-restore state before every
+  window (there is never a session worth restoring — each launch brings its own
+  address), and the page itself is now served with `Cache-Control: no-cache`,
+  so the browser must check with the server instead of booting a stale copy on
+  its own authority.
+
 - **A moved library can be pointed at its new home — no forced rename.** When you
   move or rename your library folder, litman's registry still records the old
   path and there was no clean way to update it: the app's "Find it" opened a

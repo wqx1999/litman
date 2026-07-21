@@ -36,6 +36,7 @@ from litman.commands.gui import (
     _app_window_argv,
     _find_free_port,
     _open_when_ready,
+    _purge_stale_browser_session,
     _quiet_browser_profile,
     _spawn_ready_watcher,
     _stop_server_when_window_closes,
@@ -316,6 +317,9 @@ def test_gui_window_gives_the_browser_a_profile_of_its_own(
     assert "--no-default-browser-check" in argv
     assert "--disable-features=Translate" in argv
     assert "--disable-sync" in argv
+    # A force-killed browser marks the profile crashed; without this the next
+    # window opens under a "restore pages?" bubble for an emptied session.
+    assert "--hide-crash-restore-bubble" in argv
 
 
 def test_gui_window_marks_a_fresh_browser_profile_as_already_run(
@@ -352,6 +356,56 @@ def test_quiet_browser_profile_survives_an_unwritable_profile(tmp_path) -> None:
     _quiet_browser_profile(not_a_dir)  # must not raise
 
     assert not_a_dir.is_file()
+
+
+def test_gui_window_purges_the_stale_browser_session(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # A Task-Manager-killed browser is recorded as a crash, and the next
+    # launch resurrects the dead session's app window alongside the one we
+    # asked for — a days-old page against a server that no longer exists.
+    # Every launch brings its own URL, so there is never a session worth
+    # restoring: the launcher empties the restore state before spawning.
+    vault, _pid = vault_with_paper
+    default = browser_profile_dir() / "Default"
+    (default / "Sessions").mkdir(parents=True)
+    (default / "Sessions" / "Session_13342").write_bytes(b"SNSS")
+    (default / "Current Session").write_bytes(b"SNSS")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert not (default / "Sessions").exists()
+    assert not (default / "Current Session").exists()
+
+
+def test_purge_stale_browser_session_takes_only_the_restore_state(
+    tmp_path,
+) -> None:
+    # Only the session-restore state goes. Preferences stay untouched —
+    # seeding or wiping them from outside makes the browser announce
+    # tampering, the same line _quiet_browser_profile draws.
+    default = tmp_path / "Default"
+    (default / "Sessions").mkdir(parents=True)
+    (default / "Sessions" / "Session_1").write_bytes(b"SNSS")
+    for name in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+        (default / name).write_bytes(b"SNSS")
+    (default / "Preferences").write_text("{}", encoding="utf-8")
+
+    _purge_stale_browser_session(tmp_path)
+
+    assert not (default / "Sessions").exists()
+    for name in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+        assert not (default / name).exists()
+    assert (default / "Preferences").is_file()
+
+
+def test_purge_stale_browser_session_is_a_noop_on_a_fresh_profile(
+    tmp_path,
+) -> None:
+    _purge_stale_browser_session(tmp_path)  # no Default yet — must not raise
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_gui_window_ties_the_server_to_the_window(

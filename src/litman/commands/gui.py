@@ -196,6 +196,36 @@ def _quiet_browser_profile(profile: Path) -> None:
         (profile / _FIRST_RUN_SENTINEL).touch(exist_ok=True)
 
 
+# Chromium's session-restore state inside the profile's default sub-profile:
+# the modern SNSS directory plus the legacy file quartet older builds keep.
+_SESSION_RESTORE_DIR = "Sessions"
+_SESSION_RESTORE_FILES = ("Current Session", "Current Tabs", "Last Session", "Last Tabs")
+
+
+def _purge_stale_browser_session(profile: Path) -> None:
+    """Drop the profile's session-restore state before opening the window.
+
+    Every launch hands the browser its own fresh URL, so there is never a
+    previous session worth restoring — but Chromium doesn't know that. A
+    force-killed browser (Task Manager sweeps while hunting a stuck server)
+    is recorded as a crash, and the next launch resurrects the dead
+    session's app window alongside the one we asked for: a days-old page,
+    served from cache against a server that no longer exists, wearing
+    whatever banner was true back then. Deleting the SNSS state leaves the
+    browser nothing to resurrect.
+
+    Files only, not ``Preferences``: session state carries no settings, so
+    removing it stays inside the same line :func:`_quiet_browser_profile`
+    draws — seeding preferences from outside makes the browser announce
+    tampering. Best-effort: a profile we cannot clean still opens a window.
+    """
+    default = profile / "Default"
+    _rmtree(default / _SESSION_RESTORE_DIR, ignore_errors=True)
+    for name in _SESSION_RESTORE_FILES:
+        with contextlib.suppress(OSError):
+            (default / name).unlink(missing_ok=True)
+
+
 def _app_window_argv(url: str) -> list[str] | None:
     """argv for a Chromium-family ``--app=`` window, or None if none found.
 
@@ -217,6 +247,10 @@ def _app_window_argv(url: str) -> list[str] | None:
         "--no-default-browser-check",
         "--disable-features=Translate",
         "--disable-sync",
+        # A force-killed browser leaves the profile marked as crashed; without
+        # this the next window opens under a "restore pages?" bubble for a
+        # session _purge_stale_browser_session has already emptied.
+        "--hide-crash-restore-bubble",
     ]
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
@@ -811,6 +845,7 @@ def gui_cmd(
                 profile = browser_profile_dir()
                 profile.mkdir(parents=True, exist_ok=True)
                 _quiet_browser_profile(profile)
+                _purge_stale_browser_session(profile)
                 proc = subprocess.Popen(
                     app_argv,
                     stdout=subprocess.DEVNULL,

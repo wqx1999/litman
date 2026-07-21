@@ -35,6 +35,28 @@ from litman.server.routes_write import router as write_router
 # not exist until Phase 1, so the factory guards on its presence.
 _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
 
+
+class _RevalidatedStaticFiles(StaticFiles):
+    """Static files, minus heuristic caching of the mutable filenames.
+
+    Plain ``StaticFiles`` sends ``ETag``/``Last-Modified`` but no
+    ``Cache-Control``, which licenses the browser to reuse a cached copy
+    *without revalidating* for a stretch it picks itself (RFC 9111 heuristic
+    freshness — scaled off the file's age, so an installed wheel's shell can
+    be "fresh" for days). That is how a restored window can boot a stale SPA
+    build from disk cache and render last week's truth against today's
+    server. ``no-cache`` on every mutable name (``index.html``, icons) forces
+    the revalidation; the conditional GET still answers 304, so the cache
+    keeps doing its job. The content-hashed bundles under ``assets/`` keep
+    the default: a stale copy of an immutable name is byte-identical.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
+        response = await super().get_response(path, scope)
+        if not path.replace("\\", "/").startswith("assets/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
 # API endpoints that must stay reachable when the server has no usable vault —
 # either because none was ever created (welcome page) or because the one it was
 # serving vanished mid-session (see ``_guard_vault``). Both states are escaped
@@ -188,7 +210,11 @@ def create_app(vault: Path | None) -> FastAPI:
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.
-        app.mount("/", StaticFiles(directory=_WEBUI_ASSETS, html=True), name="webui")
+        app.mount(
+            "/",
+            _RevalidatedStaticFiles(directory=_WEBUI_ASSETS, html=True),
+            name="webui",
+        )
     else:
 
         @app.get("/", response_class=PlainTextResponse)

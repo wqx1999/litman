@@ -301,6 +301,29 @@ def test_root_route_serves_spa_or_placeholder(
         assert "not built" in resp.text
 
 
+def test_spa_shell_forbids_heuristic_caching(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Mutable names must revalidate; content-hashed bundles are left alone.
+
+    Without Cache-Control the browser may reuse a cached shell *without
+    asking* (heuristic freshness) — a restored window then boots a stale SPA
+    build against a current server and renders last week's truth.
+    """
+    from litman.server import _WEBUI_ASSETS
+
+    if not _WEBUI_ASSETS.is_dir():
+        pytest.skip("frontend not vendored in this tree")
+
+    vault, _ = vault_with_paper
+    client = _client(vault)
+    assert client.get("/").headers.get("cache-control") == "no-cache"
+    hashed = next((_WEBUI_ASSETS / "assets").iterdir())
+    resp = client.get(f"/assets/{hashed.name}")
+    assert resp.status_code == 200
+    assert "cache-control" not in resp.headers
+
+
 # ---------------------------------------------------------------------------
 # /api/search — notes/discussion typeahead scope
 # ---------------------------------------------------------------------------
