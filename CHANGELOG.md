@@ -31,6 +31,10 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Changed
 
+- The agent toolbar button and `~` now launch the configured default directly.
+  Right-click the same button or press `Ctrl+~` to manage agents and change the
+  default; agents that are not installed can no longer be launched or selected
+  as the default.
 - The GUI agent panel shows each supported agent's own install/update/ready
   state instead of repeating the default agent's state on every card.
 - `lit health-check` probes skill drift in the default agent's skills

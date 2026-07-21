@@ -544,6 +544,13 @@ export default function App() {
     (open: (() => void) | null) => setOpenAgent(() => open),
     [],
   )
+  // Secondary action on the same toolbar icon: Ctrl+~ opens management while
+  // plain ~ remains the fast path that launches the configured default.
+  const [manageAgents, setManageAgents] = useState<(() => void) | null>(null)
+  const registerAgentManage = useCallback(
+    (open: (() => void) | null) => setManageAgents(() => open),
+    [],
+  )
   // Same idiom for TopBar's vault manager, so the vault-gone banner's button and
   // the toolbar's vault icon open the one panel — the banner is a shortcut to an
   // existing door, not a second door.
@@ -1618,6 +1625,7 @@ export default function App() {
     moveSelection,
     openSelected,
     openAgent,
+    manageAgents,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -1751,6 +1759,7 @@ export default function App() {
         onObservabilityOpenChange={setObservabilityOpen}
         onAgentOpenChange={setAgentPanelOpen}
         onRegisterAgentOpen={registerAgentOpen}
+        onRegisterAgentManage={registerAgentManage}
         onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
       />

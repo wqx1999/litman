@@ -13,7 +13,6 @@ import { projectHealth } from '../projects'
 import {
   createProject,
   deleteProject,
-  fetchAgents,
   fetchAgentStatus,
   fetchHealth,
   installAgentSkill,
@@ -104,7 +103,7 @@ interface Props {
    * shortcut modal-guard suppresses global keys while one is up — mirrors
    * onProjectsOpenChange. Without it ⌥-write shortcuts fire behind the panel. */
   onObservabilityOpenChange: (open: boolean) => void
-  /** Same mirror for the agent panel (picker / copy box) — the modal-guard
+  /** Same mirror for the agent panel (management / copy box) — the modal-guard
    * red line applies to every TopBar overlay. */
   onAgentOpenChange: (open: boolean) => void
   /** Hand App a stable opener for the agent button so the global `` ` ``
@@ -112,6 +111,10 @@ interface Props {
    * onboarding panel when not) — mirrors Cockpit's onRegisterHandle. Called
    * with null on unmount. */
   onRegisterAgentOpen: (open: (() => void) | null) => void
+  /** Register the secondary action for the same agent button: open agent
+   * management without adding another toolbar icon. App binds it to Ctrl+~;
+   * the button itself exposes it through right-click. */
+  onRegisterAgentManage: (open: (() => void) | null) => void
   /** Same idiom for the vault manager: hand App a stable opener so the vault-gone
    * banner's button opens the SAME panel the toolbar's vault icon does. Called
    * with null on unmount. */
@@ -161,6 +164,7 @@ export default function TopBar({
   onObservabilityOpenChange,
   onAgentOpenChange,
   onRegisterAgentOpen,
+  onRegisterAgentManage,
   onRegisterVaultManagerOpen,
   trashMode,
 }: Props) {
@@ -203,10 +207,10 @@ export default function TopBar({
   }
   const closePanel = () => setPanel(null)
 
-  // Agent launcher: one configured agent → the button launches it directly;
-  // several → a picker panel. A launch that can't pop a terminal window on the
-  // server's machine (headless / remote) comes back as mode "copy" and the
-  // panel shows the `lit agent …` line to paste into the user's own terminal.
+  // Agent launcher: the primary action always launches the configured default;
+  // management is a distinct secondary action on the same icon (right-click /
+  // Ctrl+~). A launch that cannot pop a terminal window comes back as mode
+  // "copy" and the panel shows the `lit agent …` line to paste locally.
   const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
   // Machine-global onboarding status — the red-dot source. Fetched once when the
@@ -276,17 +280,17 @@ export default function TopBar({
 
   const openAgent = () => {
     if (agentBusy) return
-    // Not configured yet → onboarding, never a launch (there's nothing to run).
-    // needs_setup is the server's single source of truth for the red dot.
-    if (agentStatus?.needs_setup) {
-      setAgentUi({ kind: 'setup', status: agentStatus })
-      return
-    }
     setAgentBusy(true)
-    fetchAgents()
-      .then((info) => {
-        if (info.agents.length <= 1) return launchAgent().then(handleLaunch)
-        setAgentUi({ kind: 'picker', agents: info.agents, default: info.default })
+    // Re-read immediately before acting: installation/default state can change
+    // outside the browser. A ready default is one click; an invalid/missing one
+    // falls into management instead of attempting a command that cannot run.
+    refreshAgentStatus()
+      .then((status) => {
+        if (status.needs_setup) {
+          setAgentUi({ kind: 'setup', status })
+          return
+        }
+        return launchAgent().then(handleLaunch)
       })
       .catch((err) =>
         notify(err instanceof Error ? err.message : String(err), 'error'),
@@ -305,6 +309,24 @@ export default function TopBar({
     return () => onRegisterAgentOpen(null)
   }, [onRegisterAgentOpen])
 
+  const openAgentManager = () => {
+    if (agentBusy) return
+    setAgentBusy(true)
+    refreshAgentStatus()
+      .then((status) => setAgentUi({ kind: 'setup', status }))
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+      .finally(() => setAgentBusy(false))
+  }
+
+  const openAgentManagerRef = useRef(openAgentManager)
+  openAgentManagerRef.current = openAgentManager
+  useEffect(() => {
+    onRegisterAgentManage(() => openAgentManagerRef.current())
+    return () => onRegisterAgentManage(null)
+  }, [onRegisterAgentManage])
+
   const pickAgent = (name: string) => {
     if (agentBusy) return
     setAgentBusy(true)
@@ -317,32 +339,23 @@ export default function TopBar({
       .finally(() => setAgentBusy(false))
   }
 
-  // Re-pick the default agent from an already-configured state (the picker's
-  // "Change agent" link). Reuse the loaded status if present, else fetch.
-  const openSetup = () => {
-    if (agentBusy) return
-    if (agentStatus) {
-      setAgentUi({ kind: 'setup', status: agentStatus })
-      return
-    }
-    refreshAgentStatus()
-      .then((s) => setAgentUi({ kind: 'setup', status: s }))
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
-  }
-
-  // Setup panel: install the agent's skill, then adopt it as the default, then
-  // re-read status so the open panel + red dot both reflect the new state.
-  const installSkillFor = (name: string) => {
+  // Install/update a skill. Adopting the agent as default is explicit in the
+  // button label ("Install skill & use") and never happens as a side effect of
+  // merely updating a non-default agent's stale skill.
+  const installSkillFor = (name: string, makeDefault = false) => {
     if (agentBusy) return
     setAgentBusy(true)
     installAgentSkill(name)
-      .then(() => setDefaultAgent(name))
+      .then(() => (makeDefault ? setDefaultAgent(name) : undefined))
       .then(refreshAgentStatus)
       .then((s) => {
         setAgentUi({ kind: 'setup', status: s })
-        notify('Skill installed — your agent is ready', 'success')
+        notify(
+          makeDefault
+            ? `${name} is installed and is now your default agent`
+            : 'Agent skill installed or updated',
+          'success',
+        )
       })
       .catch((err) =>
         notify(err instanceof Error ? err.message : String(err), 'error'),
@@ -657,11 +670,15 @@ export default function TopBar({
       <button
         type="button"
         onClick={openAgent}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          openAgentManager()
+        }}
         disabled={agentBusy}
         title={
           agentStatus?.needs_setup
             ? 'Set up your AI agent'
-            : 'Launch your AI agent in the vault (lit agent) — press ~'
+            : 'Launch default agent — ~ · Right-click or Ctrl+~ to manage'
         }
         aria-label={agentStatus?.needs_setup ? 'Set up agent' : 'Launch agent'}
         className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"
@@ -682,7 +699,6 @@ export default function TopBar({
           onPick={pickAgent}
           onInstallSkill={installSkillFor}
           onChooseAgent={chooseAgent}
-          onOpenSetup={openSetup}
           onRecheck={recheckAgentStatus}
           onClose={() => setAgentUi(null)}
           notify={notify}
@@ -2329,15 +2345,13 @@ function ActivityLogPanel({
   )
 }
 
-/** The agent overlay's three shapes: the onboarding `setup` flow (pick + install
- * the agent's skill), the `picker` (which configured agent to launch), or the
- * `copy` box (when the server can't pop a terminal window, the `lit agent …`
- * line to paste into the user's own terminal). All three are one `AgentUi`, so
+/** The agent overlay's two shapes: the setup/management flow (install a skill,
+ * choose a default, or launch once), or the `copy` box when the server cannot
+ * pop a terminal window. Both are one `AgentUi`, so
  * the single `onAgentOpenChange(agentUi !== null)` effect keeps every variant
  * inside App's modal-guard (⌥ shortcuts can't punch through). */
 type AgentUi =
   | { kind: 'setup'; status: AgentStatus }
-  | { kind: 'picker'; agents: string[]; default: string }
   | { kind: 'copy'; agent: string; command: string }
 
 function AgentPanel({
@@ -2346,7 +2360,6 @@ function AgentPanel({
   onPick,
   onInstallSkill,
   onChooseAgent,
-  onOpenSetup,
   onRecheck,
   onClose,
   notify,
@@ -2354,9 +2367,8 @@ function AgentPanel({
   ui: AgentUi
   busy: boolean
   onPick: (name: string) => void
-  onInstallSkill: (name: string) => void
+  onInstallSkill: (name: string, makeDefault?: boolean) => void
   onChooseAgent: (name: string) => void
-  onOpenSetup: () => void
   onRecheck: () => void
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
@@ -2388,39 +2400,6 @@ function AgentPanel({
             onLaunch={onPick}
             onRecheck={onRecheck}
           />
-        ) : ui.kind === 'picker' ? (
-          <>
-            <h2 className="text-sm font-semibold text-stone-900">Launch agent</h2>
-            <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-              Starts the agent in the vault directory.
-            </p>
-            <div className="mt-3 overflow-hidden rounded-lg border border-stone-200">
-              {ui.agents.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onPick(name)}
-                  className="flex w-full items-center justify-between border-b border-stone-100 px-3 py-2 text-left text-sm text-stone-700 transition-colors last:border-b-0 hover:bg-stone-50 disabled:opacity-50"
-                >
-                  <span className="font-mono">{name}</span>
-                  {name === ui.default && (
-                    <span className="text-[10px] uppercase tracking-wide text-stone-400">
-                      default
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onOpenSetup}
-              className="mt-3 text-xs font-medium text-accent-600 transition-colors hover:text-accent-700 disabled:opacity-50"
-            >
-              Change agent…
-            </button>
-          </>
         ) : (
           <>
             <h2 className="text-sm font-semibold text-stone-900">
@@ -2479,17 +2458,19 @@ function AgentSetup({
 }: {
   status: AgentStatus
   busy: boolean
-  onInstallSkill: (name: string) => void
+  onInstallSkill: (name: string, makeDefault?: boolean) => void
   onChooseAgent: (name: string) => void
   onLaunch: (name: string) => void
   onRecheck: () => void
 }) {
   return (
     <>
-      <h2 className="text-sm font-semibold text-stone-900">Set up your agent</h2>
+      <h2 className="text-sm font-semibold text-stone-900">
+        {status.default ? 'Manage agents' : 'Set up your agent'}
+      </h2>
       <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-        litman writes to your library through an AI agent. Pick one, then install
-        its skill — the CLI keeps working without it.
+        Choose one installed agent as your default. The toolbar button and ~
+        launch it directly.
       </p>
       <div className="mt-3 flex flex-col gap-2">
         {status.agents.map((agent) =>
@@ -2502,7 +2483,7 @@ function AgentSetup({
                 <span className="text-sm font-medium text-stone-800">
                   {agent.display}
                 </span>
-                {!status.needs_setup && status.default === agent.name && (
+                {status.default === agent.name && (
                   <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
                     default
                   </span>
@@ -2524,10 +2505,16 @@ function AgentSetup({
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => onInstallSkill(agent.name)}
+                  onClick={() =>
+                    onInstallSkill(agent.name, status.default !== agent.name)
+                  }
                   className="mt-2 rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
                 >
-                  {busy ? 'Installing…' : 'Install skill'}
+                  {busy
+                    ? 'Installing…'
+                    : status.default === agent.name
+                      ? 'Install skill'
+                      : 'Install skill & use'}
                 </button>
               ) : agent.skill_state === 'stale' ? (
                 /* Installed but out of date with the running litman (server-
@@ -2561,15 +2548,25 @@ function AgentSetup({
                   <span className="text-xs font-medium text-emerald-600">
                     ✓ Ready
                   </span>
-                  {status.needs_setup ? (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onChooseAgent(agent.name)}
-                      className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
-                    >
-                      Use {agent.display}
-                    </button>
+                  {status.default !== agent.name ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onLaunch(agent.name)}
+                        className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
+                      >
+                        Launch once
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onChooseAgent(agent.name)}
+                        className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-60"
+                      >
+                        Set default
+                      </button>
+                    </div>
                   ) : (
                     <button
                       type="button"

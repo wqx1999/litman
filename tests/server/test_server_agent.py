@@ -25,7 +25,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi import Response
+from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
 from litman.core import agent_prefs, agents
@@ -74,6 +74,7 @@ def test_launch_ignores_body_command_field(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Malicious body: argv comes from the catalog; `command` is dead."""
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     spawned: list[tuple[list[str], Path]] = []
 
     def fake_spawn(argv: list[str], cwd: Path) -> bool:
@@ -97,6 +98,7 @@ def test_launch_ignores_body_command_field(
 def test_launch_bodyless_uses_default_agent(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c: True)
     resp = _client(vault).post("/api/agent/launch")
     assert resp.status_code == 200
@@ -109,6 +111,7 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
 ) -> None:
     """No terminal available → mode "copy" with the `lit agent` wrapper. Only a
     SUPPORTED agent (claude, the default) reaches the copy-fallback."""
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c: False)
     resp = _client(vault).post("/api/agent/launch", json={})
     assert resp.json() == {
@@ -123,6 +126,7 @@ def test_launch_windows_passes_resolved_absolute_command_to_terminal(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
     spawned: list[list[str]] = []
@@ -138,6 +142,28 @@ def test_launch_windows_passes_resolved_absolute_command_to_terminal(
     body = asyncio.run(routes_agent.launch_agent(request))  # type: ignore[arg-type]
     assert body["mode"] == "spawned"
     assert spawned == [[codex]]
+
+
+def test_launch_rejects_agent_that_is_not_installed(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: False)
+    spawned: list[object] = []
+    monkeypatch.setattr(
+        "litman.core.terminal.spawn_terminal",
+        lambda argv, cwd: spawned.append((argv, cwd)) or True,
+    )
+
+    async def body_agent_name(_request: object) -> str:
+        return "codex"
+
+    monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault=vault)))
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(routes_agent.launch_agent(request))  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 409
+    assert "not installed" in exc_info.value.detail
+    assert spawned == []
 
 
 def test_launch_unsupported_agent_is_400(
@@ -478,6 +504,21 @@ def test_put_default_unknown_agent_is_400(vault: Path) -> None:
 def test_put_default_missing_agent_is_400(vault: Path) -> None:
     resp = _client(vault).put("/api/agent/default", json={})
     assert resp.status_code == 400
+
+
+def test_put_default_rejects_agent_that_is_not_installed(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: False)
+    async def body_agent_name(_request: object) -> str:
+        return "codex"
+
+    monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(routes_agent.set_default_agent(object()))  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 409
+    assert "not installed" in exc_info.value.detail
+    assert agent_prefs.load_default_agent() is None
 
 
 def test_put_default_persists_and_status_reflects(

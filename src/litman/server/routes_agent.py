@@ -108,6 +108,14 @@ async def launch_agent(request: Request) -> dict[str, object]:
             status_code=400,
             detail=f"Agent '{agent_name}' is not available yet.",
         )
+    if not agents.detect(spec):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Agent '{agent_name}' is not installed or is not available "
+                "on PATH. Install it, then recheck."
+            ),
+        )
 
     # A CLI may have been installed while this long-running GUI server was
     # open. On Windows, merge the live registry PATH before launching so the
@@ -258,6 +266,15 @@ async def set_default_agent(request: Request) -> dict[str, object]:
         raise HTTPException(
             status_code=400,
             detail='Body must name an agent: {"agent": "<name>"}.',
+        )
+    spec = agents.get_agent(name)
+    if spec is not None and spec.supported and not agents.detect(spec):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Agent '{name}' cannot be the default because it is not "
+                "installed or is not available on PATH."
+            ),
         )
     try:
         agent_prefs.save_default_agent(name)
