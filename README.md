@@ -80,7 +80,7 @@ drives, not a model. `lit agent` starts yours in the library directory; the app'
 agent button does the same.
 
 [Claude Code](https://claude.ai/code), [Cursor](https://cursor.com/cli), and
-[Antigravity CLI](https://antigravity.google/docs/cli-install) are the
+[Antigravity CLI](https://antigravity.google/download#antigravity-cli) are the
 supported agents today. Codex, Gemini CLI and OpenCode are next: they already
 appear in litman's agent picker, greyed out until the release that turns them
 on.

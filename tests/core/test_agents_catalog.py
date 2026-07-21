@@ -61,6 +61,13 @@ def test_every_spec_carries_display_and_install_url() -> None:
         assert spec.install_url.startswith("http")
 
 
+def test_antigravity_install_url_targets_cli_download_section() -> None:
+    assert (
+        get_agent("agy").install_url
+        == "https://antigravity.google/download#antigravity-cli"
+    )
+
+
 def test_get_agent_returns_spec_or_none() -> None:
     assert get_agent("claude").name == "claude"
     assert get_agent("codex").name == "codex"
