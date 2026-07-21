@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -88,9 +87,9 @@ def agent_cmd(
     # Windows installers update the registry PATH, not already-running
     # processes. Refresh it so this command also works from a shell that was
     # open before the agent CLI was installed.
-    agents.refresh_windows_path()
     argv = shlex.split(spec.launch)
-    if shutil.which(argv[0]) is None:
+    resolved = agents.resolve_launch(spec)
+    if resolved is None:
         raise LitmanError(
             f"Agent command '{argv[0]}' not found on PATH — is it installed? "
             f"Get {spec.display}: {spec.install_url}"
@@ -98,6 +97,11 @@ def agent_cmd(
 
     if sys.platform == "win32":
         # No real exec on Windows: run as a child and pass its exit code on.
+        # The absolute path avoids relying on a stale parent-shell PATH and is
+        # also the concrete npm-generated ``.cmd`` shim when applicable.
+        argv[0] = resolved
+        if Path(resolved).suffix.casefold() in {".bat", ".cmd"}:
+            argv = ["cmd", "/c", *argv]
         result = subprocess.run(argv, cwd=vault)
         sys.exit(result.returncode)
 

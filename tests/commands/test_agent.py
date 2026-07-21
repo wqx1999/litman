@@ -107,9 +107,7 @@ def test_agent_unsupported_name_is_rejected(
     )
     monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     execd: list[object] = []
-    monkeypatch.setattr(
-        "litman.commands.agent.shutil.which", lambda name: f"/usr/bin/{name}"
-    )
+    monkeypatch.setattr(agents, "resolve_launch", lambda spec: f"/usr/bin/{spec.name}")
     monkeypatch.setattr(os, "execvp", lambda file, argv: execd.append((file, argv)))
     result = CliRunner().invoke(agent_cmd, ["future", "--library", str(vault)])
     assert result.exit_code != 0
@@ -123,7 +121,7 @@ def test_agent_unsupported_name_is_rejected(
 def test_agent_command_missing_from_path(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("litman.commands.agent.shutil.which", lambda _n: None)
+    monkeypatch.setattr(agents, "resolve_launch", lambda _spec: None)
     result = CliRunner().invoke(agent_cmd, ["--library", str(vault)])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
@@ -140,9 +138,7 @@ def exec_capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """Force the POSIX branch and capture chdir/execvp instead of running."""
     captured: dict[str, object] = {}
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(
-        "litman.commands.agent.shutil.which", lambda name: f"/usr/bin/{name}"
-    )
+    monkeypatch.setattr(agents, "resolve_launch", lambda spec: f"/usr/bin/{spec.name}")
     monkeypatch.setattr(os, "chdir", lambda p: captured.setdefault("cwd", Path(p)))
     monkeypatch.setattr(
         os, "execvp", lambda file, argv: captured.update(file=file, argv=argv)
@@ -174,7 +170,7 @@ def test_agent_windows_child_exit_code_passes_through(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
-        "litman.commands.agent.shutil.which", lambda name: f"C:\\bin\\{name}.exe"
+        agents, "resolve_launch", lambda spec: f"C:\\bin\\{spec.name}.exe"
     )
     calls: dict[str, object] = {}
 
@@ -186,8 +182,27 @@ def test_agent_windows_child_exit_code_passes_through(
     monkeypatch.setattr("litman.commands.agent.subprocess.run", fake_run)
     result = CliRunner().invoke(agent_cmd, ["--library", str(vault)])
     assert result.exit_code == 7
-    assert calls["argv"] == ["claude"]
+    assert calls["argv"] == [r"C:\bin\claude.exe"]
     assert Path(str(calls["cwd"])).resolve() == vault.resolve()
+
+
+def test_agent_windows_runs_npm_cmd_shim_through_cmd(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "litman.commands.agent.subprocess.run",
+        lambda argv, cwd: calls.append(argv) or SimpleNamespace(returncode=0),
+    )
+
+    result = CliRunner().invoke(
+        agent_cmd, ["codex", "--library", str(vault)]
+    )
+    assert result.exit_code == 0
+    assert calls == [["cmd", "/c", codex]]
 
 
 # ---------------------------------------------------------------------------

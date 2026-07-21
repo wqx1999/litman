@@ -55,6 +55,18 @@ def _popen_detached(spawn_argv: list[str], cwd: Path) -> None:
     )
 
 
+def _windows_terminal_argv(argv: list[str]) -> list[str]:
+    """Wrap Windows command-script shims so Terminal can execute them.
+
+    npm-installed CLIs commonly resolve to ``*.cmd``. Windows Terminal cannot
+    use a batch file as the tab's executable directly, so hand it to ``cmd``.
+    Native ``.exe`` commands remain direct.
+    """
+    if argv and Path(argv[0]).suffix.casefold() in {".bat", ".cmd"}:
+        return ["cmd", "/K", *argv]
+    return argv
+
+
 def spawn_terminal(argv: list[str], cwd: Path) -> bool:
     """Open a native terminal window running ``argv`` in ``cwd``.
 
@@ -81,7 +93,9 @@ def spawn_terminal(argv: list[str], cwd: Path) -> bool:
         if sys.platform == "win32":
             wt = shutil.which("wt")
             if wt:
-                _popen_detached([wt, "-d", str(cwd), *argv], cwd)
+                _popen_detached(
+                    [wt, "-d", str(cwd), *_windows_terminal_argv(argv)], cwd
+                )
             else:
                 # `start` opens a new console; /K keeps it open after exit.
                 _popen_detached(

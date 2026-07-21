@@ -261,6 +261,13 @@ def refresh_windows_path() -> None:
     os.environ["PATH"] = ";".join(entries)
 
 
+def resolve_launch(spec: AgentSpec) -> str | None:
+    """Resolve ``spec``'s launch executable against the live environment."""
+    refresh_windows_path()
+    argv = shlex.split(spec.launch)
+    return shutil.which(argv[0]) if argv else None
+
+
 def default_agent_name() -> str:
     """The catalog fallback default when the user has not chosen one."""
     return _DEFAULT_AGENT_NAME

@@ -36,6 +36,7 @@ apply and there is no drift-ledger pair to register.
 from __future__ import annotations
 
 import shlex
+import sys
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -117,6 +118,14 @@ async def launch_agent(request: Request) -> dict[str, object]:
     # at its home module — the invariant-#5 purge test drops litman.server*
     # from sys.modules, orphaning any name copied at import.
     argv = shlex.split(spec.launch)
+    if sys.platform == "win32" and argv:
+        # Pass the absolute executable/shim path. Windows Terminal is commonly
+        # a long-running broker with an environment older than this server's;
+        # asking that broker to resolve a bare "codex" can therefore fail even
+        # immediately after Recheck found codex on the refreshed PATH.
+        resolved = agents.resolve_launch(spec)
+        if resolved is not None:
+            argv[0] = resolved
     if argv and terminal.spawn_terminal(argv, request.app.state.vault):
         return {
             "ok": True,

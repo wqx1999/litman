@@ -15,9 +15,11 @@ absent (invariant #5). The autouse ``_isolate_registry`` fixture redirects
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,7 +31,7 @@ from fastapi.testclient import TestClient
 from litman.core import agent_prefs, agents
 from litman.core.library import create_vault
 from litman.core.skill import list_bundled_skills
-from litman.server import create_app
+from litman.server import create_app, routes_agent
 from litman.server.routes_agent import agent_status
 
 
@@ -115,6 +117,27 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
         "agent": "claude",
         "command": "lit agent",
     }
+
+
+def test_launch_windows_passes_resolved_absolute_command_to_terminal(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        "litman.core.terminal.spawn_terminal",
+        lambda argv, _cwd: spawned.append(argv) or True,
+    )
+    async def body_agent_name(_request: object) -> str:
+        return "codex"
+
+    monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault=vault)))
+    body = asyncio.run(routes_agent.launch_agent(request))  # type: ignore[arg-type]
+    assert body["mode"] == "spawned"
+    assert spawned == [[codex]]
 
 
 def test_launch_unsupported_agent_is_400(
