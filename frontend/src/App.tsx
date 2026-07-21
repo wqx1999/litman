@@ -346,6 +346,18 @@ export default function App() {
     } else if (isNetworkError(err)) {
       setDisconnected(true)
       setVaultGone(false)
+    } else if (err instanceof ApiError) {
+      // Any other HTTP status proves both facts these flags track: a response
+      // arrived (not disconnected), and the 410 guard — which runs before
+      // every /api route — let the request through (vault not gone). Without
+      // this arm, one sweep route failing persistently (a 500, a 409) froze
+      // whichever banner was up: the sweep kept rejecting, neither branch
+      // above matched, and the red "library is gone" banner outlived the
+      // relocate that had already healed the server. The failure itself still
+      // surfaces through its own channels (the list-failure line, the toasts);
+      // these flags only ever claim what the error can prove.
+      setVaultGone(false)
+      setDisconnected(false)
     }
   }, [])
   // The current list fetch failed — BrowsePanel renders an explicit failure
@@ -860,15 +872,23 @@ export default function App() {
           fetchVaults(),
         ])
       if (canDiff) {
-        appendLog(
-          diffResync(prev, {
-            papers: freshAll,
-            taxonomy: freshTax,
-            projects: freshProjects,
-            trash: freshTrash,
-            mtimes: freshMtimes,
-          }),
-        )
+        // The diff only feeds the activity log — a bug in it must degrade to
+        // "no log entries", never fail the sweep: rethrowing from here would
+        // skip the setters below (stale data) and leave the banner flags
+        // frozen at their pre-sweep truth.
+        try {
+          appendLog(
+            diffResync(prev, {
+              papers: freshAll,
+              taxonomy: freshTax,
+              projects: freshProjects,
+              trash: freshTrash,
+              mtimes: freshMtimes,
+            }),
+          )
+        } catch {
+          // degrade silently; the fresh data still lands
+        }
       }
       // Commit through the same setters the rest of the app uses (the mirror
       // effects advance the diff refs from here); docMtimesRef is ref-only.

@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -178,18 +178,31 @@ def create_app(vault: Path | None) -> FastAPI:
         The ghost directory that a pre-guard write left behind has no
         ``lit-config.yaml`` (``staged_write`` never writes one), so the sentinel
         also refuses to mistake such a carcass for a real vault.
+
+        Every ``/api/`` response leaves here stamped ``Cache-Control:
+        no-store`` — the 410 arm above is WHY. 410 sits on RFC 9111's list of
+        heuristically-cacheable status codes, and none of our JSON responses
+        carried cache headers, so Chromium would file a gone-state 410 away
+        and answer later ``/api/papers`` fetches from disk cache without
+        contacting the server at all. The banner it fed could then outlive
+        the relocate that healed the vault — and even outlive the server
+        itself: a later launch on the same port inherited the cached 410s and
+        opened straight onto a stale "library is gone" screen. API responses
+        describe live vault state; a cached copy of one is a lie by
+        definition, so no-store, not no-cache.
         """
         vault = request.app.state.vault
-        if request.url.path.startswith("/api/") and not _vaultless_allowed(
-            request.method, request.url.path
-        ):
+        is_api = request.url.path.startswith("/api/")
+        if is_api and not _vaultless_allowed(request.method, request.url.path):
             if vault is None:
-                return JSONResponse(
+                response: Response = JSONResponse(
                     status_code=409,
                     content={"detail": "No active vault yet — create or open one first."},
                 )
+                response.headers["Cache-Control"] = "no-store"
+                return response
             if not (vault / CONFIG_FILENAME).is_file():
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=410,
                     content={
                         "detail": (
@@ -199,7 +212,12 @@ def create_app(vault: Path | None) -> FastAPI:
                         "path": str(vault),
                     },
                 )
-        return await call_next(request)
+                response.headers["Cache-Control"] = "no-store"
+                return response
+        response = await call_next(request)
+        if is_api:
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     app.include_router(read_router)
     app.include_router(write_router)

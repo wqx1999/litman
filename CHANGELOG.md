@@ -35,6 +35,20 @@ behaviour, a minor release adds it, a major release breaks it.
   so the browser must check with the server instead of booting a stale copy on
   its own authority.
 
+- **The red "library is no longer at…" banner can no longer outlive the
+  problem it reported.** Browsers are allowed to cache a `410 Gone` answer, and
+  litman's API responses never said otherwise — so once a launch had caught the
+  library mid-move, the browser could keep replaying that stale "it's gone"
+  answer from its own cache: the banner survived the relocate that had already
+  healed the server, and even reappeared on later launches whose server was
+  perfectly healthy, until the cache happened to expire. Every `/api/` response
+  now carries `Cache-Control: no-store` — answers about the library's live
+  state are never reused from cache. The page is also more honest while
+  something else is wrong: a request failing for an unrelated reason used to
+  leave a stale banner frozen on screen, and a hiccup in the change-log diffing
+  could silently stop a refresh from landing; both now degrade gracefully
+  instead of pinning the old picture.
+
 - **A moved library can be pointed at its new home — no forced rename.** When you
   move or rename your library folder, litman's registry still records the old
   path and there was no clean way to update it: the app's "Find it" opened a

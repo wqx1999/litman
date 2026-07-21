@@ -806,3 +806,45 @@ def test_relocate_heal_failure_does_not_fail_the_relocate(
     resp = client.put("/api/vaults/lib/path", json={"path": str(moved)})
     assert resp.status_code == 200
     assert Path(find_by_name(load_registry(), "lib").path) == moved.resolve()
+
+
+# ===========================================================================
+# cache headers: no /api response may outlive the state it described
+# ===========================================================================
+
+
+def test_api_responses_are_never_cacheable(tmp_path: Path) -> None:
+    """410 sits on RFC 9111's heuristically-cacheable status list, and these
+    JSON responses carried no cache headers — so the browser filed a gone-state
+    410 away and answered later sweeps from disk cache without contacting the
+    server. The banner it fed then outlived the relocate that healed the vault,
+    and even the server itself: a later launch on the same port inherited the
+    cached 410s and opened straight onto a stale "library is gone" screen.
+    ``no-store`` on every ``/api/`` response (healthy ones included — each body
+    describes live vault state, so any cached copy is a lie) closes the class.
+    """
+    vault = create_vault(tmp_path, name="lib")
+    client = _client(vault)
+
+    healthy = client.get("/api/papers")
+    assert healthy.status_code == 200
+    assert healthy.headers.get("cache-control") == "no-store"
+
+    _move_away(vault, tmp_path / "moved")
+
+    gone = client.get("/api/papers")
+    assert gone.status_code == 410
+    assert gone.headers.get("cache-control") == "no-store"
+
+    # The whitelisted doors out of the gone state are just as live-state-bound.
+    doors = client.get("/api/vaults")
+    assert doors.status_code == 200
+    assert doors.headers.get("cache-control") == "no-store"
+
+
+def test_welcome_409_is_never_cacheable() -> None:
+    """Same contract for the no-vault-yet arm: a cached 409 would pin the
+    welcome page over a library the user has since created or opened."""
+    resp = TestClient(create_app(None)).get("/api/papers")
+    assert resp.status_code == 409
+    assert resp.headers.get("cache-control") == "no-store"
