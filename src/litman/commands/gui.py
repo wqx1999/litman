@@ -20,8 +20,15 @@ entry that runs ``lit gui --window`` and exits without starting the server
 (shared with ``lit setup`` step 5, ADR-019).
 
 ``--window`` owns its browser: the app window is the application, so closing
-it stops the server, and Ctrl+C closes the window. Two things make that work
-and both are load-bearing — the dedicated ``--user-data-dir`` (see
+it stops the server, and Ctrl+C closes the window. The shutdown signal is the
+last live *page*, not the browser process: the SPA holds a ``/api/presence``
+WebSocket while it is loaded, and the server stops a short linger after that
+count reaches zero (see :func:`_stop_server_when_window_closes`). The spawned
+process is only a secondary hint — it can outlive the window (on Windows Edge
+keeps the browser resident after the window closes) or die before it (Chromium
+hands a fresh profile's first window to another process), so *waiting* on it
+would either wedge the server open forever or shut it down early. Two more
+things are load-bearing — the dedicated ``--user-data-dir`` (see
 :func:`browser_profile_dir`) and the desktop shortcut running the console-less
 ``litw`` twin (see :func:`_shortcut_executable`). A terminal-launched
 ``lit gui`` (tab mode) keeps the plain Ctrl+C contract: what the terminal
@@ -38,7 +45,9 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -47,9 +56,11 @@ import click
 from platformdirs import user_cache_dir
 from rich.console import Console
 
+from litman.cli import _launched_without_console
 from litman.commands._options import library_option, vault_option
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
+from litman.core.presence import PresenceTracker
 from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
 from litman.exceptions import LibraryNotFoundError, LitmanError
 
@@ -57,6 +68,18 @@ console = Console()
 
 _DEFAULT_PORT = 8765
 _MAX_PORT = 65535
+
+# Readiness poll (Part A) — replaces the old flat 1s browser timer with "open
+# the instant the server is listening". Injectable via _open_when_ready's
+# keyword args; these module constants are the shipped defaults.
+READY_TIMEOUT = 10.0
+READY_POLL = 0.02
+
+# Splash close backstop (Part C, gui.py side, seconds). The _splash.py
+# subprocess carries its own independent millisecond self-destruct
+# (SPLASH_TIMEOUT_MS) — two constants across two modules by design: the splash
+# process must stay import-light and cannot import this module.
+SPLASH_TIMEOUT = 25.0
 
 
 def _find_free_port(start: int) -> int:
@@ -114,11 +137,12 @@ _BROWSER_PROFILE_DIRNAME = "browser-profile"
 def browser_profile_dir() -> Path:
     """Chromium ``--user-data-dir`` for the ``--window`` app window.
 
-    A dedicated profile is what makes the process we spawn *be* the window.
-    Launch a Chromium against the user's normal profile and it hands the URL to
-    the already-running browser and exits within a second, so its exit says
-    nothing about whether the window is still open — a server tied to that exit
-    would die the instant it started.
+    A dedicated profile gives us a browser instance of our own. Launched
+    against the user's normal profile, a Chromium hands the URL to the
+    already-running browser and exits at once — leaving no process for the
+    Ctrl+C path to terminate (a dead window shell would outlive the server on
+    screen), and dropping litman's app window into the middle of the user's
+    everyday browsing session.
 
     The cache dir, not the config dir the registry lives in: this holds tens of
     MB of Chromium's own state and must never ride along on a cloud-synced
@@ -154,12 +178,12 @@ _FIRST_RUN_SENTINEL = "First Run"
 def _quiet_browser_profile(profile: Path) -> None:
     """Mark a fresh app-window profile as one the browser has already run.
 
-    Two things follow from the sentinel, and the first is not cosmetic. Edge
-    restarts itself partway through a new profile's first run: the process we
-    spawned exits, :func:`_stop_server_when_window_closes` reads that as a
-    closed window, and the server dies between the page's HTML and its
-    scripts. The sentinel is also what keeps Edge from signing the profile
-    into the Windows account on sight.
+    Two things follow from the sentinel. It keeps Edge from signing the
+    profile into the Windows account on sight, and it suppresses Edge's
+    first-run self-restart — the spawned process handing the real window to
+    a process we never see. The presence gate in
+    :func:`_stop_server_when_window_closes` survives that handoff on its own
+    now, so the suppression is defense in depth, not the fix.
 
     The sentinel is all we write. Seeding Chromium's ``Preferences`` from
     outside makes the browser announce that its settings were changed
@@ -172,6 +196,68 @@ def _quiet_browser_profile(profile: Path) -> None:
         (profile / _FIRST_RUN_SENTINEL).touch(exist_ok=True)
 
 
+# Chromium's session-restore state inside the profile's default sub-profile:
+# the modern SNSS directory plus the legacy file quartet older builds keep.
+_SESSION_RESTORE_DIR = "Sessions"
+_SESSION_RESTORE_FILES = ("Current Session", "Current Tabs", "Last Session", "Last Tabs")
+
+# One-time migration for app profiles that saw a cacheable API 410 before API
+# responses acquired ``Cache-Control: no-store``.  The marker belongs at the
+# profile root (not inside Default/Cache, which the migration removes).
+_HTTP_CACHE_MIGRATION_MARKER = ".api-no-store-v1"
+
+
+def _purge_stale_browser_session(profile: Path) -> None:
+    """Drop the profile's session-restore state before opening the window.
+
+    Every launch hands the browser its own fresh URL, so there is never a
+    previous session worth restoring — but Chromium doesn't know that. A
+    force-killed browser (Task Manager sweeps while hunting a stuck server)
+    is recorded as a crash, and the next launch resurrects the dead
+    session's app window alongside the one we asked for: a days-old page,
+    served from cache against a server that no longer exists, wearing
+    whatever banner was true back then. Deleting the SNSS state leaves the
+    browser nothing to resurrect.
+
+    Files only, not ``Preferences``: session state carries no settings, so
+    removing it stays inside the same line :func:`_quiet_browser_profile`
+    draws — seeding preferences from outside makes the browser announce
+    tampering. Best-effort: a profile we cannot clean still opens a window.
+    """
+    default = profile / "Default"
+    _rmtree(default / _SESSION_RESTORE_DIR, ignore_errors=True)
+    for name in _SESSION_RESTORE_FILES:
+        with contextlib.suppress(OSError):
+            (default / name).unlink(missing_ok=True)
+
+
+def _migrate_legacy_http_cache(profile: Path) -> None:
+    """Drop the app profile's HTTP cache once after the no-store upgrade.
+
+    A response header cannot retroactively evict a 410 that an older release
+    already put in Chromium's disk cache.  Because ``--window`` deliberately
+    reuses both its profile and (normally) localhost:8765, that old response
+    remains an exact cache-key match after upgrading and can hide the healthy
+    server even after relocate rebound it successfully.
+
+    Only ``Default/Cache`` is removed: cookies, preferences, Local Storage and
+    every other profile facility survive.  The client now also sends fetches
+    with ``cache: no-store``; this migration is the bridge that ensures the new
+    SPA shell itself is not held behind a legacy cached response.  Best-effort
+    like the neighbouring session cleanup.  Write the marker only when the
+    cache is absent, so a Windows file lock gets retried next launch.
+    """
+    marker = profile / _HTTP_CACHE_MIGRATION_MARKER
+    if marker.is_file():
+        return
+    cache = profile / "Default" / "Cache"
+    _rmtree(cache, ignore_errors=True)
+    if cache.exists():
+        return
+    with contextlib.suppress(OSError):
+        marker.touch(exist_ok=True)
+
+
 def _app_window_argv(url: str) -> list[str] | None:
     """argv for a Chromium-family ``--app=`` window, or None if none found.
 
@@ -179,11 +265,12 @@ def _app_window_argv(url: str) -> list[str] | None:
     closest thing to a native app with zero new dependencies (ADR-019).
 
     ``--user-data-dir`` is not a preference: it forces a browser instance of
-    our own, which is the only reason ``proc.wait()`` can mean "the user closed
-    the window". The suppression flags exist because a never-before-used
-    profile otherwise greets the user with a first-run tab, a make-me-default
-    prompt and a translate bubble on top of their library. The profile's
-    ``Preferences`` file quiets the rest (see :func:`_quiet_browser_profile`).
+    our own — the process the Ctrl+C path can terminate without touching the
+    user's everyday browser session (see :func:`browser_profile_dir`). The
+    suppression flags exist because a never-before-used profile otherwise
+    greets the user with a first-run tab, a make-me-default prompt and a
+    translate bubble on top of their library. The profile's sentinel file
+    quiets the rest (see :func:`_quiet_browser_profile`).
     """
     flags = [
         f"--app={url}",
@@ -192,6 +279,10 @@ def _app_window_argv(url: str) -> list[str] | None:
         "--no-default-browser-check",
         "--disable-features=Translate",
         "--disable-sync",
+        # A force-killed browser leaves the profile marked as crashed; without
+        # this the next window opens under a "restore pages?" bubble for a
+        # session _purge_stale_browser_session has already emptied.
+        "--hide-crash-restore-bubble",
     ]
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
@@ -219,16 +310,170 @@ def _app_window_argv(url: str) -> list[str] | None:
     return None
 
 
-def _stop_server_when_window_closes(proc: subprocess.Popen[bytes], server: Any) -> None:
-    """Block until the app window exits, then ask uvicorn to shut down.
+def _stop_server_when_window_closes(
+    proc: subprocess.Popen[bytes],
+    server: Any,
+    presence: PresenceTracker,
+    *,
+    first_connect_grace: float = 15.0,
+    linger: float = 5.0,
+    poll: float = 0.25,
+) -> None:
+    """Ask uvicorn to shut down once the last live page is gone.
+
+    The authoritative signal is the page, not the browser process: the SPA
+    holds a WebSocket open to ``/api/presence`` for as long as it is loaded,
+    and ``presence`` counts those sockets. Two shutdown paths:
+
+    * **A page connected and then every page went away.** The window was
+      closed or navigated off; stop once the count has stayed zero for
+      ``linger`` seconds (an F5 reload drops and re-opens the socket inside
+      that window). This fires *regardless of the spawned process* — on
+      Windows, Edge (Startup boost, single-instance-per-profile) keeps our
+      ``msedge`` resident long after its window is gone, so waiting on the
+      process would wedge the gate open forever and leave the server running.
+
+    * **No page ever connected** — a launch that never produced a window.
+      ``first_connect_grace`` bounds the wait so a failed launch leaves no
+      orphan, but the clock only starts once the spawned process is *gone*:
+      a window merely slow to paint (process still alive) must not be shot
+      before its first page loads.
+
+    ``proc`` is *polled*, never waited on. An earlier version blocked on
+    ``proc.wait()`` before it ever read presence — which is exactly what let a
+    resident Windows browser keep the server alive after the window closed
+    (the wait never returned, so the presence loop never ran).
+
+    The keyword defaults are the shipped values; tests inject shorter ones.
+    Each round reads the tracker through a single ``snapshot()`` call — read
+    as separate properties, a connect landing between reads can show
+    ``ever_connected=True`` with ``last_zero=None`` torn across rounds
+    instead of confined to one (the None guard below absorbs it).
 
     ``server`` is a ``uvicorn.Server`` (untyped here to keep uvicorn out of the
     CLI import path, invariant #5). Its main loop polls ``should_exit`` every
     100 ms, so setting the flag from this thread is the supported way to stop
     it from outside the event loop.
     """
-    proc.wait()
+    exited_at: float | None = None
+    while True:
+        if exited_at is None and proc.poll() is not None:
+            exited_at = time.monotonic()
+        count, ever_connected, last_zero = presence.snapshot()
+        if count == 0:
+            if ever_connected:
+                # The window lived and now no page does — stop a linger later,
+                # even if our spawned browser is still resident (Windows keeps
+                # it around). last_zero is None only in a torn snapshot mid-
+                # connect; treat that as not-idle. Without the guard, None in
+                # the subtraction is a TypeError that kills this daemon thread
+                # silently and orphans the server.
+                if last_zero is not None and time.monotonic() - last_zero >= linger:
+                    break
+            elif exited_at is not None and (
+                time.monotonic() - exited_at >= first_connect_grace
+            ):
+                # No page ever connected and the window process is gone: a
+                # launch that never came up. Give up so it leaves no orphan.
+                break
+        time.sleep(poll)
     server.should_exit = True
+
+
+# ---------------------------------------------------------------------------
+# readiness poll (Part A) + splash hand-off (Part C)
+# ---------------------------------------------------------------------------
+
+
+def _open_when_ready(
+    server: Any,
+    open_browser: Callable[[], None],
+    stop_event: threading.Event,
+    *,
+    ready_timeout: float = READY_TIMEOUT,
+    ready_poll: float = READY_POLL,
+    after_open: Callable[[], None] | None = None,
+) -> None:
+    """Open the browser the instant the server is listening — no fixed guess.
+
+    Polls ``server.started`` (uvicorn sets it True once startup finished and
+    the socket is listening) every ``ready_poll`` seconds and opens the moment
+    it flips — typically 0.3-0.7s, versus the old flat 1s. ``ready_timeout`` is
+    the backstop: if startup wedges, open anyway (best effort — the shipped
+    "always try to open" behaviour) rather than hang forever.
+
+    ``stop_event`` is the abort. ``gui_cmd``'s ``finally`` sets it, so if
+    ``server.run()`` raised before it ever listened, this returns without
+    opening a browser onto a dead server. The re-check after the loop covers
+    the one-``ready_poll``-wide window where the event lands between the break
+    and the open. ``after_open`` runs once, right after the open, for the
+    splash hand-off (wait for the page to paint, then close the splash).
+    """
+    deadline = time.monotonic() + ready_timeout
+    while True:
+        if stop_event.is_set():
+            return
+        if getattr(server, "started", False):
+            break
+        if time.monotonic() >= deadline:
+            break
+        stop_event.wait(ready_poll)
+    if stop_event.is_set():
+        return
+    open_browser()
+    if after_open is not None:
+        after_open()
+
+
+def _spawn_ready_watcher(
+    server: Any,
+    open_browser: Callable[[], None],
+    stop_event: threading.Event,
+    after_open: Callable[[], None] | None = None,
+) -> threading.Thread:
+    """Start the readiness poller on its own daemon thread and return it.
+
+    A named seam so ``gui_cmd`` stays readable and the poll behaviour
+    (``_open_when_ready``) can be driven directly in tests.
+    """
+    thread = threading.Thread(
+        target=_open_when_ready,
+        args=(server, open_browser, stop_event),
+        kwargs={"after_open": after_open},
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _terminate_splash_when_visible(
+    splash_proc: subprocess.Popen[bytes],
+    presence: PresenceTracker,
+    stop_event: threading.Event,
+    *,
+    splash_timeout: float = SPLASH_TIMEOUT,
+    poll: float = READY_POLL,
+) -> None:
+    """Close the splash once a page has actually painted.
+
+    The smoothest hand-off holds the splash until the browser's first frame is
+    really up — signalled by the SPA opening its ``/api/presence`` socket
+    (``ever_connected``) — so the splash never blinks out before the window
+    blinks in. Backstops: ``splash_timeout`` (presence never arrives) and
+    ``stop_event`` (the server is shutting down). ``terminate`` is idempotent
+    and suppressed: other paths may have closed the splash already.
+    """
+    deadline = time.monotonic() + splash_timeout
+    while True:
+        if stop_event.is_set():
+            break
+        if presence.ever_connected:
+            break
+        if time.monotonic() >= deadline:
+            break
+        stop_event.wait(poll)
+    with contextlib.suppress(OSError):
+        splash_proc.terminate()
 
 
 # ---------------------------------------------------------------------------
@@ -516,12 +761,40 @@ def gui_cmd(
         )
         return
 
+    # Part C: launch the splash as early as possible — before importing uvicorn
+    # and building the app — so it paints while that heavy work runs. Only for a
+    # console-less --window launch that has a display: a terminal already gives
+    # feedback (its prints are visible), and a headless / ssh -L session must
+    # never spawn a window. Its own subprocess, never waited on; a missing
+    # tkinter or a failed Popen degrades to no splash and never blocks startup.
+    splash_proc: subprocess.Popen[bytes] | None = None
+    want_splash = (
+        window
+        and not no_browser
+        and display_available()
+        and _launched_without_console()
+    )
+    if want_splash:
+        with contextlib.suppress(Exception):
+            splash_proc = subprocess.Popen(
+                [sys.executable, "-m", "litman.commands._splash"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+
+    def _terminate_splash() -> None:
+        if splash_proc is not None:
+            with contextlib.suppress(OSError):
+                splash_proc.terminate()
+
     # fastapi + uvicorn are core dependencies, so this import normally always
     # succeeds; the guard only fires on a corrupted install, and points at a
     # reinstall rather than a (no-longer-existing) optional extra.
     try:
         import uvicorn
     except ImportError:
+        _terminate_splash()
         console.print(
             "[bold red]error:[/] the web UI needs fastapi + uvicorn, which are "
             "missing from this install."
@@ -566,12 +839,18 @@ def gui_cmd(
         f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"
     )
 
+    # Keep the app reference: the window watcher reads the presence tracker
+    # off app.state (created unconditionally by create_app).
+    app = create_app(vault)
     server = uvicorn.Server(
-        uvicorn.Config(create_app(vault), host="127.0.0.1", port=actual_port)
+        uvicorn.Config(app, host="127.0.0.1", port=actual_port)
     )
 
-    browser_timer: threading.Timer | None = None
-    # The app window we spawned, if we spawned one. Appended from the timer
+    # Signals the readiness poller to stand down: set in `finally` so a server
+    # that raised before it ever listened never gets a browser opened onto it.
+    stop_event = threading.Event()
+    ready_thread: threading.Thread | None = None
+    # The app window we spawned, if we spawned one. Appended from the readiness
     # thread, read in `finally` — a list because a plain name cannot be rebound
     # across that boundary.
     owned: list[subprocess.Popen[bytes]] = []
@@ -588,12 +867,18 @@ def gui_cmd(
 
         def _open() -> None:
             if app_argv is None:
+                # A plain tab (no Chromium found, or tab mode): no window
+                # process to watch, and no page paint will close the splash —
+                # so close it now (SF-5).
+                _terminate_splash()
                 webbrowser.open(url)
                 return
             try:
                 profile = browser_profile_dir()
                 profile.mkdir(parents=True, exist_ok=True)
                 _quiet_browser_profile(profile)
+                _purge_stale_browser_session(profile)
+                _migrate_legacy_http_cache(profile)
                 proc = subprocess.Popen(
                     app_argv,
                     stdout=subprocess.DEVNULL,
@@ -604,27 +889,47 @@ def gui_cmd(
                 # The browser vanished between the `which` probe and now. A tab
                 # is a worse window, but no window at all is worse still — and
                 # without a process to watch, the server keeps the Ctrl+C
-                # contract rather than exiting immediately.
+                # contract rather than exiting immediately. No window to paint,
+                # so close the splash now (SF-5).
+                _terminate_splash()
                 webbrowser.open(url)
                 return
             owned.append(proc)
             threading.Thread(
                 target=_stop_server_when_window_closes,
-                args=(proc, server),
+                args=(proc, server, app.state.presence),
                 daemon=True,
             ).start()
 
-        # The server comes up sub-second; 1s keeps the browser from racing it.
-        browser_timer = threading.Timer(1.0, _open)
-        browser_timer.daemon = True
-        browser_timer.start()
+        def _after_open() -> None:
+            # Splash hand-off: only a real app window has a page that will hold
+            # the presence socket, so wait for it to paint before closing the
+            # splash. The tab / default-browser fallbacks in _open already
+            # closed it (owned stays empty there); nothing to hold for.
+            if splash_proc is None:
+                return
+            if owned:
+                _terminate_splash_when_visible(
+                    splash_proc, app.state.presence, stop_event
+                )
+            else:
+                _terminate_splash()
+
+        ready_thread = _spawn_ready_watcher(
+            server, _open, stop_event, after_open=_after_open
+        )
 
     try:
         server.run()
     finally:
-        # No-op once fired; stops the open if server startup raised first.
-        if browser_timer is not None:
-            browser_timer.cancel()
+        # Tell the readiness poller to stand down and wait for it, so a server
+        # that raised before listening leaves no thread behind (and never opens
+        # a browser onto a dead server).
+        stop_event.set()
+        if ready_thread is not None:
+            ready_thread.join(timeout=READY_TIMEOUT + 1.0)
+        # Backstop: close the splash no matter which path brought us here.
+        _terminate_splash()
         # The other direction: the server stopped first (Ctrl+C, or a crash),
         # so close the window it was serving rather than leave a dead shell on
         # screen. Safe because the profile is ours alone — there are no other

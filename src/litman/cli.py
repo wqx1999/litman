@@ -3,7 +3,9 @@
 Defines the root Click group ``cli`` and the entry-point function ``main``
 referenced by ``[project.scripts]`` in ``pyproject.toml``.
 
-Subcommands are registered onto ``cli`` via ``cli.add_command`` below.
+Subcommands are resolved lazily by ``LitGroup`` from the static ``_LAZY``
+table (command name → ``module:attr``), each imported on first use so that
+``lit <cmd>`` pulls in only the modules that command needs.
 ``main`` wraps ``cli`` so that ``LitmanError`` subclasses become friendly
 single-line error messages with exit code 1; other exceptions propagate as
 normal Python tracebacks (they indicate bugs, not user errors).
@@ -11,54 +13,27 @@ normal Python tracebacks (they indicate bugs, not user errors).
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import click
 from rich.console import Console
 
 from litman import __version__
-from litman.commands.add import add_cmd
-from litman.commands.agent import agent_cmd
-from litman.commands.cite import cite_cmd
-from litman.commands.code import code_group
-from litman.commands.config import config_group
-from litman.commands.drop import drop_cmd
-from litman.commands.export import export_cmd
-from litman.commands.gui import gui_cmd
-from litman.commands.health import health_check_cmd
-from litman.commands.init import init_cmd
-from litman.commands.install_completion import install_completion_cmd
-from litman.commands.install_skill import install_skill_cmd
-from litman.commands.link import link_cmd, unlink_cmd
-from litman.commands.list import list_cmd
-from litman.commands.modify import modify_cmd
-from litman.commands.open import open_cmd
-from litman.commands.pdf_text import pdf_text_cmd
-from litman.commands.project import project_group
-from litman.commands.promote import promote_cmd
-from litman.commands.read import read_cmd
-from litman.commands.refresh import refresh_views_cmd
-from litman.commands.related import related_cmd
-from litman.commands.rename import rename_cmd
-from litman.commands.revisit import revisit_cmd
-from litman.commands.rm import rm_cmd
-from litman.commands.search import search_cmd
-from litman.commands.self_update import self_update_cmd
-from litman.commands.setup import setup_cmd
-from litman.commands.show import show_cmd
-from litman.commands.skim import skim_cmd
-from litman.commands.sync import sync_group
-from litman.commands.taxonomy import taxonomy_group
-from litman.commands.trash import trash_group
-from litman.commands.uninstall import uninstall_cmd
-from litman.commands.vault import vault_group
 from litman.exceptions import LitmanError
 
 console = Console()
+
+# Set by ``_ensure_std_streams`` (``main``'s first step) to record whether the
+# process started with no real stdio — the console-less Windows ``litw``
+# launcher, where CPython hands us ``sys.stdout is None``. A module-level
+# default so ``_launched_without_console`` is safe to call before ``main`` ever
+# runs (e.g. ``gui.py`` imported directly by a test).
+_LAUNCHED_HEADLESS = False
 
 
 def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
@@ -117,6 +92,82 @@ class LitGroup(click.Group):
     # - None: the user typed `lit` with no subcommand and is about to see
     #   the help message; don't ambush them with a registry prompt
     _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", None})
+
+    # Lazy command table: command name (kebab, as it appears in
+    # _COMMAND_SECTIONS) → "module:attr". Nothing here is imported until
+    # get_command resolves it, so `lit gui` pulls in only gui's import chain,
+    # not the pypdf / httpx / crossref / checks that `lit add` drags along —
+    # a saving that lands on every `lit` command. `help` and `hello` are
+    # decorator-registered below and deliberately absent (handled by super()).
+    _LAZY: ClassVar[dict[str, str]] = {
+        "setup": "litman.commands.setup:setup_cmd",
+        "init": "litman.commands.init:init_cmd",
+        "add": "litman.commands.add:add_cmd",
+        "list": "litman.commands.list:list_cmd",
+        "show": "litman.commands.show:show_cmd",
+        "cite": "litman.commands.cite:cite_cmd",
+        "search": "litman.commands.search:search_cmd",
+        "related": "litman.commands.related:related_cmd",
+        "open": "litman.commands.open:open_cmd",
+        "pdf-text": "litman.commands.pdf_text:pdf_text_cmd",
+        "refresh-views": "litman.commands.refresh:refresh_views_cmd",
+        "modify": "litman.commands.modify:modify_cmd",
+        "read": "litman.commands.read:read_cmd",
+        "revisit": "litman.commands.revisit:revisit_cmd",
+        "drop": "litman.commands.drop:drop_cmd",
+        "promote": "litman.commands.promote:promote_cmd",
+        "skim": "litman.commands.skim:skim_cmd",
+        "taxonomy": "litman.commands.taxonomy:taxonomy_group",
+        "project": "litman.commands.project:project_group",
+        "rename": "litman.commands.rename:rename_cmd",
+        "rm": "litman.commands.rm:rm_cmd",
+        "trash": "litman.commands.trash:trash_group",
+        "health-check": "litman.commands.health:health_check_cmd",
+        "code": "litman.commands.code:code_group",
+        "config": "litman.commands.config:config_group",
+        "install-skill": "litman.commands.install_skill:install_skill_cmd",
+        "install-completion": (
+            "litman.commands.install_completion:install_completion_cmd"
+        ),
+        "uninstall": "litman.commands.uninstall:uninstall_cmd",
+        "link": "litman.commands.link:link_cmd",
+        "unlink": "litman.commands.link:unlink_cmd",
+        "sync": "litman.commands.sync:sync_group",
+        "vault": "litman.commands.vault:vault_group",
+        "export": "litman.commands.export:export_cmd",
+        "gui": "litman.commands.gui:gui_cmd",
+        "agent": "litman.commands.agent:agent_cmd",
+        "self-update": "litman.commands.self_update:self_update_cmd",
+    }
+
+    def get_command(
+        self, ctx: click.Context, name: str
+    ) -> click.Command | None:
+        """Resolve a subcommand, importing its module only on first use.
+
+        Names in ``_LAZY`` are imported here (and cached by ``sys.modules`` on
+        the first hit); everything else — ``help`` / ``hello``, registered by
+        decorator below — falls through to Click's normal lookup. This is the
+        whole of the lazy load: `lit <cmd>` imports just that command's chain.
+        """
+        target = self._LAZY.get(name)
+        if target is not None:
+            module_name, _, attr = target.partition(":")
+            command: click.Command = getattr(
+                importlib.import_module(module_name), attr
+            )
+            return command
+        return super().get_command(ctx, name)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        """Every command name, without importing a single command module.
+
+        Union of the lazy table and Click's own registry: ``help`` / ``hello``
+        live only in the latter, so a bare ``sorted(_LAZY)`` would drop ``help``
+        from ``lit --help`` and from shell completion / did-you-mean. Names come
+        from the static table — resolving them is deferred to get_command.
+        """
+        return sorted(set(self._LAZY) | set(super().list_commands(ctx)))
 
     def invoke(self, ctx: click.Context) -> Any:
         # ``ctx.invoked_subcommand`` is only populated inside ``Group.invoke``
@@ -618,44 +669,6 @@ def cli() -> None:
     """
 
 
-cli.add_command(setup_cmd)
-cli.add_command(init_cmd)
-cli.add_command(add_cmd)
-cli.add_command(list_cmd)
-cli.add_command(show_cmd)
-cli.add_command(cite_cmd)
-cli.add_command(search_cmd)
-cli.add_command(related_cmd)
-cli.add_command(open_cmd)
-cli.add_command(pdf_text_cmd)
-cli.add_command(refresh_views_cmd)
-cli.add_command(modify_cmd)
-cli.add_command(read_cmd)
-cli.add_command(revisit_cmd)
-cli.add_command(drop_cmd)
-cli.add_command(promote_cmd)
-cli.add_command(skim_cmd)
-cli.add_command(taxonomy_group)
-cli.add_command(project_group)
-cli.add_command(rename_cmd)
-cli.add_command(rm_cmd)
-cli.add_command(trash_group)
-cli.add_command(health_check_cmd)
-cli.add_command(code_group)
-cli.add_command(config_group)
-cli.add_command(install_skill_cmd)
-cli.add_command(install_completion_cmd)
-cli.add_command(uninstall_cmd)
-cli.add_command(link_cmd)
-cli.add_command(unlink_cmd)
-cli.add_command(sync_group)
-cli.add_command(vault_group)
-cli.add_command(export_cmd)
-cli.add_command(gui_cmd)
-cli.add_command(agent_cmd)
-cli.add_command(self_update_cmd)
-
-
 @cli.command(hidden=True)
 def hello() -> None:
     """Sanity-check command. Confirms lit is installed and importable."""
@@ -740,6 +753,11 @@ def _ensure_std_streams() -> None:
     A no-op everywhere else, including piped/redirected POSIX runs, where both
     streams are real objects.
     """
+    global _LAUNCHED_HEADLESS
+    # Recorded before the early return: whether CPython handed this process no
+    # stdio (the console-less ``litw`` launcher). ``_launched_without_console``
+    # reads it to decide whether ``lit gui --window`` should show a splash.
+    _LAUNCHED_HEADLESS = sys.stdout is None or sys.stderr is None
     if sys.stdout is not None and sys.stderr is not None:
         return
 
@@ -764,6 +782,22 @@ def _ensure_std_streams() -> None:
         sys.stdout = stream
     if sys.stderr is None:
         sys.stderr = stream
+
+
+def _launched_without_console() -> bool:
+    """True when no console is watching — the splash's reason to exist.
+
+    Two launch shapes count. The Windows ``litw`` twin: CPython handed the
+    process ``sys.stdout is None`` at startup, recorded in
+    ``_LAUNCHED_HEADLESS`` by ``_ensure_std_streams``. And a POSIX
+    ``.desktop`` / ``.app`` launch: stdout is a real object but not a tty. A
+    terminal ``lit gui`` has a tty and returns False — the terminal already
+    shows the ``console.print`` feedback, so no splash there. ``gui.py`` reads
+    this to decide whether a ``--window`` launch should show a splash.
+    """
+    return _LAUNCHED_HEADLESS or not (
+        sys.__stdout__ is not None and sys.__stdout__.isatty()
+    )
 
 
 def main() -> None:

@@ -5,6 +5,7 @@ import type {
   HealthIssue,
   IndexPaper,
   ProjectEntry,
+  VaultEntry,
   VaultsPayload,
 } from '../types'
 import type { Candidate } from '../search'
@@ -65,6 +66,12 @@ interface Props {
   /** Unregister a vault (registry entry only — the directory on disk is kept).
    * App handles the toast + list refresh; errors are toasted, not thrown. */
   onUnregisterVault: (name: string) => Promise<void>
+  /** Re-point a moved vault at its new directory (`lit vault set-path`). The
+   * move-recovery door: the Locate action on a missing vault row calls this.
+   * Rejects with the backend's verbatim VaultRegistryError so the inline path
+   * input can show it; on success App resyncs (repoints the server + clears the
+   * 410 banner when the relocated vault is the served one). */
+  onRelocateVault: (name: string, path: string) => Promise<void>
   /** A vault switch is in flight — disables the selector to block re-entry. */
   switching: boolean
   /** Toast a message (surfaces the backend's raw error verbatim). */
@@ -140,6 +147,7 @@ export default function TopBar({
   onRegisterVault,
   onCreateVault,
   onUnregisterVault,
+  onRelocateVault,
   switching,
   notify,
   dark,
@@ -586,6 +594,7 @@ export default function TopBar({
           onRegisterVault={onRegisterVault}
           onCreateVault={onCreateVault}
           onUnregisterVault={onUnregisterVault}
+          onRelocateVault={onRelocateVault}
           onClose={() => setShowVaults(false)}
         />
       )}
@@ -1383,15 +1392,19 @@ function VaultManager({
   onRegisterVault,
   onCreateVault,
   onUnregisterVault,
+  onRelocateVault,
   onClose,
 }: {
   vaults: VaultsPayload | null
   onRegisterVault: (name: string, path: string, setActive: boolean) => Promise<void>
   onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   onUnregisterVault: (name: string) => Promise<void>
+  onRelocateVault: (name: string, path: string) => Promise<void>
   onClose: () => void
 }) {
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
+  // The missing vault whose new home the user is locating (Locate → path input).
+  const [pendingLocate, setPendingLocate] = useState<VaultEntry | null>(null)
   const [showRegister, setShowRegister] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -1408,7 +1421,12 @@ function VaultManager({
 
   const entries = vaults?.vaults ?? []
   const sorted = entries.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked = busy || pendingUnregister != null || showRegister || showCreate
+  const blocked =
+    busy ||
+    pendingUnregister != null ||
+    pendingLocate != null ||
+    showRegister ||
+    showCreate
 
   return createPortal(
     <div
@@ -1418,7 +1436,13 @@ function VaultManager({
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && !pendingUnregister && !showRegister && !showCreate)
+          if (
+            e.key === 'Escape' &&
+            !pendingUnregister &&
+            !pendingLocate &&
+            !showRegister &&
+            !showCreate
+          )
             onClose()
         }}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
@@ -1468,6 +1492,22 @@ function VaultManager({
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {!v.exists && (
+                  // A moved vault's only way home: point the registry at its new
+                  // folder. Rendered on missing rows only — including the served
+                  // one (v.active), whose Unregister stays disabled, so Locate is
+                  // that user's sole escape from the 410.
+                  <button
+                    type="button"
+                    aria-label={`Locate vault ${v.name}`}
+                    title={`Point “${v.name}” at its new folder`}
+                    disabled={blocked}
+                    onClick={() => setPendingLocate(v)}
+                    className="rounded-md border border-accent-300 bg-accent-50 px-2 py-0.5 text-[11px] font-medium text-accent-700 transition-colors hover:bg-accent-100 disabled:opacity-40"
+                  >
+                    Locate
+                  </button>
+                )}
                 <button
                   type="button"
                   aria-label={`Unregister vault ${v.name}`}
@@ -1521,6 +1561,14 @@ function VaultManager({
           busy={busy}
           onCancel={() => setPendingUnregister(null)}
           onConfirm={() => doUnregister(pendingUnregister)}
+        />
+      )}
+      {pendingLocate != null && (
+        <LocateVaultDialog
+          vault={pendingLocate}
+          onRelocateVault={onRelocateVault}
+          onCancel={() => setPendingLocate(null)}
+          onLocated={() => setPendingLocate(null)}
         />
       )}
       {showRegister && (
@@ -1611,6 +1659,128 @@ function UnregisterVaultConfirm({
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
             {busy ? 'Unregistering…' : 'Unregister'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Locate-a-moved-vault modal (vault-manager slice). For a vault whose folder
+ * moved on disk (row shows "missing"): the user pastes its new location and the
+ * `lit vault set-path` backend re-points the registry in place. When the vault
+ * is the active/served one the server repoints itself too, healing a live 410
+ * with no restart — no forced rename, no zombie entry. The new path must resolve
+ * server-side to an existing directory holding a lit-config.yaml, so a bad path
+ * surfaces the backend's verbatim VaultRegistryError INLINE and the dialog stays
+ * open for correction (mirrors RegisterVaultDialog / SetProjectPathDialog).
+ * Escape cancels; the backdrop stops click-through so dismissing keeps the
+ * manager open. */
+function LocateVaultDialog({
+  vault,
+  onRelocateVault,
+  onCancel,
+  onLocated,
+}: {
+  vault: VaultEntry
+  onRelocateVault: (name: string, path: string) => Promise<void>
+  onCancel: () => void
+  onLocated: () => void
+}) {
+  const [path, setPath] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const trimmed = path.trim()
+  const canSubmit = trimmed.length > 0 && !busy
+
+  async function submit() {
+    if (!canSubmit) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onRelocateVault(vault.name, trimmed)
+      onLocated()
+    } catch (err) {
+      // Verbatim backend message inline; keep the dialog open for correction.
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  const INPUT =
+    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'disabled:opacity-50'
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={
+        busy
+          ? undefined
+          : (e) => {
+              e.stopPropagation()
+              onCancel()
+            }
+      }
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          // Guarded like RegisterVaultDialog: this dialog is the error's only
+          // surface, so closing it mid-request would lose a late failure.
+          if (e.key === 'Escape' && !busy) onCancel()
+        }}
+        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">
+          Locate “{vault.name}”
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
+          This library moved from{' '}
+          <span className="font-mono text-[0.9em] text-rose-400 line-through">
+            {vault.path}
+          </span>
+          . Paste where it lives now — the vault folder itself, which must contain
+          a lit-config.yaml.
+        </p>
+        <label className="mt-4 flex flex-col gap-1">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            New vault path
+          </span>
+          <input
+            autoFocus
+            type="text"
+            value={path}
+            disabled={busy}
+            spellCheck={false}
+            placeholder="/work/you/literature_vault"
+            onChange={(e) => setPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && canSubmit) submit()
+            }}
+            className={`${INPUT} font-mono`}
+          />
+        </label>
+        {error && (
+          <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-[11px] leading-relaxed text-rose-600">
+            {error}
+          </p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {busy ? 'Locating…' : 'Locate'}
           </button>
         </div>
       </div>

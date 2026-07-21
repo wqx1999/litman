@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { createVault, putActiveVault } from '../api'
+import { createVault, putActiveVault, setVaultPath } from '../api'
 import type { VaultsPayload } from '../types'
 import logoUrl from '../assets/logo.svg'
 
@@ -38,6 +38,9 @@ export default function WelcomePage({
   const [name, setName] = useState('literature_vault')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The moved entry the user is locating (its new path is typed inline).
+  const [locating, setLocating] = useState<string | null>(null)
+  const [locatePath, setLocatePath] = useState('')
 
   const existing = vaults?.vaults ?? []
   const canCreate = parentDir.trim().length > 0 && !busy
@@ -61,6 +64,25 @@ export default function WelcomePage({
     setError(null)
     try {
       await putActiveVault(vaultName)
+      onEnter()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  // The moved-library recovery on the welcome page: point the registry at where
+  // the vault lives now (`lit vault set-path`). When the entry is the active one
+  // the server binds to the new path, so `onEnter` re-bootstraps and slides the
+  // GUI straight into the library — the relaunch-after-move dead end, fixed.
+  async function locate(vaultName: string) {
+    if (busy) return
+    const p = locatePath.trim()
+    if (!p) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setVaultPath(vaultName, p)
       onEnter()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -138,27 +160,89 @@ export default function WelcomePage({
               Or open an existing library
             </p>
             <ul className="mt-2 space-y-1.5">
-              {existing.map((v) => (
-                <li key={v.name}>
-                  <button
-                    onClick={() => open(v.name)}
-                    disabled={busy}
-                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white px-3 py-2 text-left transition-colors hover:bg-stone-50 disabled:opacity-50"
+              {existing.map((v) =>
+                v.exists ? (
+                  <li key={v.name}>
+                    <button
+                      onClick={() => open(v.name)}
+                      disabled={busy}
+                      className="flex w-full items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white px-3 py-2 text-left transition-colors hover:bg-stone-50 disabled:opacity-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-stone-800">
+                          {v.name}
+                        </span>
+                        <span className="block truncate font-mono text-[11px] text-stone-400">
+                          {v.path}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-xs font-medium text-accent-600">
+                        Open
+                      </span>
+                    </button>
+                  </li>
+                ) : (
+                  // Moved / missing: Open would 400 on the dead path. Offer Locate
+                  // instead — an inline path input into `setVaultPath`.
+                  <li
+                    key={v.name}
+                    className="rounded-lg border border-stone-200 bg-white px-3 py-2"
                   >
-                    <span className="min-w-0">
-                      <span className="block text-sm font-medium text-stone-800">
-                        {v.name}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium text-stone-800">
+                            {v.name}
+                          </span>
+                          <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700">
+                            moved
+                          </span>
+                        </span>
+                        <span className="block truncate font-mono text-[11px] text-rose-400 line-through">
+                          {v.path}
+                        </span>
                       </span>
-                      <span className="block truncate font-mono text-[11px] text-stone-400">
-                        {v.path}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs font-medium text-accent-600">
-                      Open
-                    </span>
-                  </button>
-                </li>
-              ))}
+                      {locating !== v.name && (
+                        <button
+                          onClick={() => {
+                            setLocating(v.name)
+                            setLocatePath('')
+                            setError(null)
+                          }}
+                          disabled={busy}
+                          className="shrink-0 text-xs font-medium text-accent-600 disabled:opacity-50"
+                        >
+                          Locate
+                        </button>
+                      )}
+                    </div>
+                    {locating === v.name && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          autoFocus
+                          type="text"
+                          value={locatePath}
+                          disabled={busy}
+                          spellCheck={false}
+                          placeholder="/new/path/to/literature_vault"
+                          onChange={(e) => setLocatePath(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') locate(v.name)
+                          }}
+                          className={`${INPUT} font-mono text-xs`}
+                        />
+                        <button
+                          onClick={() => locate(v.name)}
+                          disabled={busy || locatePath.trim().length === 0}
+                          className="shrink-0 rounded-md bg-accent-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-50"
+                        >
+                          {busy ? '…' : 'Locate'}
+                        </button>
+                      </div>
+                    )}
+                  </li>
+                ),
+              )}
             </ul>
           </div>
         )}

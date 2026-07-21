@@ -1,9 +1,12 @@
 """``lit vault`` command group (M8.2).
 
-Five subcommands wired thinly over ``litman.core.vault_registry``:
+Six subcommands wired thinly over ``litman.core.vault_registry``:
 
 - ``add NAME PATH`` — register an existing vault directory.
 - ``use NAME`` — switch the active vault (the discovery-chain fallback).
+- ``set-path NAME NEW_PATH`` — re-point a registered vault at its new
+  directory after the folder was moved on disk (active flag + provenance
+  unchanged).
 - ``list`` — show every registered vault in a Rich table.
 - ``info NAME`` — show one vault's details (path, paper count, size,
   provenance, active flag).
@@ -35,6 +38,7 @@ from litman.core.sync import humanize_bytes
 from litman.core.vault_registry import (
     VaultEntry,
     add_vault,
+    apply_vault_set_path,
     apply_vault_use,
     find_active,
     find_by_name,
@@ -249,6 +253,39 @@ def vault_use_cmd(name: str) -> None:
             f"[bold]Path:[/] {escape(entry.path)}\n\n"
             f"[dim]`lit list`, `lit show <id>`, etc. now resolve to this vault.[/]",
             title="lit vault use",
+            border_style="green",
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# lit vault set-path
+# ---------------------------------------------------------------------------
+
+
+@vault_group.command("set-path")
+@click.argument("name")
+@click.argument(
+    "new_path",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+)
+def vault_set_path_cmd(name: str, new_path: Path) -> None:
+    """Re-point registered vault NAME at NEW_PATH.
+
+    For when the vault directory was moved or renamed on disk and the registry's
+    stored path went stale. NEW_PATH must already be a litman vault (an existing
+    directory containing a lit-config.yaml). This does NOT move any files — move
+    the folder yourself first, then run this to point the registry at its new
+    home. The active flag and provenance are left unchanged.
+    """
+    entry = apply_vault_set_path(name, new_path)
+    active_str = "active" if entry.is_active else "not active"
+    console.print(
+        Panel.fit(
+            f"[bold green]Repointed:[/] {escape(name)} → {escape(entry.path)}\n"
+            f"[bold]Active:[/] {active_str}\n\n"
+            f"[dim]Active flag and provenance are unchanged.[/]",
+            title="lit vault set-path",
             border_style="green",
         )
     )

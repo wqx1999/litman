@@ -38,6 +38,87 @@ behaviour, a minor release adds it, a major release breaks it.
   other known directories). `lit uninstall` still sweeps every known skills
   directory.
 
+## 1.2.1 — 2026-07-21
+
+### Added
+
+- **The desktop shortcut now shows a splash while it launches.** Started from
+  the Windows shortcut there is no console, and litman's startup messages only
+  go to `litw.log`, so a cold launch looked like nothing had happened until the
+  window finally appeared. A small floating app mark now shows the instant you
+  launch and vanishes the moment the page connects. It appears only on the
+  console-less window launch with a local display; remote and headless sessions
+  are unchanged — the server still prints its URL and SSH-tunnel line.
+
+### Changed
+
+- **The app starts noticeably faster.** `lit` used to import every command — and
+  the heavy libraries behind them (PDF parsing, HTTP, the server stack) — on
+  every invocation, including ones that never touch them; each command is now
+  imported only when it actually runs, taking hundreds of milliseconds off the
+  start of every `lit` command (most visibly on Windows). And `lit gui` no
+  longer waits a fixed one second before opening the browser — it opens the
+  moment the server is actually listening.
+
+### Fixed
+
+- **Closing the app window reliably stops the server — even when the browser
+  lingers.** `lit gui --window` stops the server when its last page closes,
+  which it now tracks through litman's own window-open connection rather than the
+  spawned browser process. Two things broke the old process-based approach. On
+  Windows, Edge keeps its process running in the background after the window is
+  gone (Startup boost, one process per profile), so litman waited forever on a
+  process that never exited — the server, and its "this library moved" banner,
+  could outlive the window for the whole session and pile up across launches. And
+  a brand-new profile made Edge restart itself partway through its first run,
+  handing the real window to a process litman never saw. Shutdown now follows the
+  last live page: close the window and the server stops a few seconds later,
+  whatever the browser process does. A second tab you opened on the same server
+  still keeps it alive after the app window closes.
+
+- **A window from a past session can no longer haunt the next launch.**
+  Force-closing litman (Task Manager, `taskkill`) made the browser record a
+  crash; the next launch of the app window then resurrected the dead session's
+  page next to the live one — a days-old view, loaded from the browser's cache
+  against a server that no longer existed, still wearing whatever banner was
+  true back then (typically the red "library is no longer at…" one). Two fixes:
+  the launcher now clears the app profile's session-restore state before every
+  window (there is never a session worth restoring — each launch brings its own
+  address), and the page itself is now served with `Cache-Control: no-cache`,
+  so the browser must check with the server instead of booting a stale copy on
+  its own authority.
+
+- **The red "library is no longer at…" banner can no longer outlive the
+  problem it reported.** Browsers are allowed to cache a `410 Gone` answer, and
+  litman's API responses never said otherwise — so once a launch had caught the
+  library mid-move, the browser could keep replaying that stale "it's gone"
+  answer from its own cache: the banner survived the relocate that had already
+  healed the server, and even reappeared on later launches whose server was
+  perfectly healthy, until the cache happened to expire. Every `/api/` response
+  now carries `Cache-Control: no-store` — answers about the library's live
+  state are never reused from cache. The page is also more honest while
+  something else is wrong: a request failing for an unrelated reason used to
+  leave a stale banner frozen on screen, and a hiccup in the change-log diffing
+  could silently stop a refresh from landing; both now degrade gracefully
+  instead of pinning the old picture. Upgrades also heal app profiles that
+  cached a `410` before this fix: API requests explicitly bypass the browser
+  cache, and the shortcut launcher removes that profile's legacy HTTP cache
+  once while preserving its preferences and local state.
+
+- **A moved library can be pointed at its new home — no forced rename.** When you
+  move or rename your library folder, litman's registry still records the old
+  path and there was no clean way to update it: the app's "Find it" opened a
+  panel that could only register a *new* name, re-registering under the old name
+  was refused, and relaunching landed on a dead-end first-run page. Now `lit vault
+  set-path <name> <new-path>` repoints a registered library in place, and the app
+  grows a **Locate** action — on the library-moved banner and the first-run page —
+  that reconnects the open session with no restart and no rename. Relocating the
+  active library also rebuilds its projects' shortcuts, which the move had left
+  pointing at the old path. Locate now clears the banner even when the moved
+  library is the one the open window is showing but no longer the *active* one
+  (for instance after switching the active library from another terminal) —
+  that case previously left the banner stuck for the life of the window.
+
 ## 1.2.0 — 2026-07-15
 
 ### Added
