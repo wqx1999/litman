@@ -35,6 +35,7 @@ from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
     _find_free_port,
+    _migrate_legacy_http_cache,
     _open_when_ready,
     _purge_stale_browser_session,
     _quiet_browser_profile,
@@ -406,6 +407,49 @@ def test_purge_stale_browser_session_is_a_noop_on_a_fresh_profile(
     _purge_stale_browser_session(tmp_path)  # no Default yet — must not raise
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_migrate_legacy_http_cache_removes_only_cache_and_marks_done(
+    tmp_path,
+) -> None:
+    """An upgraded app profile loses the pre-no-store HTTP cache once only."""
+    default = tmp_path / "Default"
+    cache = default / "Cache" / "Cache_Data"
+    cache.mkdir(parents=True)
+    (cache / "cached-410").write_bytes(b"gone")
+    (default / "Preferences").write_text("{}", encoding="utf-8")
+    local_storage = default / "Local Storage"
+    local_storage.mkdir()
+    (local_storage / "state").write_bytes(b"keep")
+
+    _migrate_legacy_http_cache(tmp_path)
+
+    assert not (default / "Cache").exists()
+    assert (tmp_path / ".api-no-store-v1").is_file()
+    assert (default / "Preferences").is_file()
+    assert (local_storage / "state").read_bytes() == b"keep"
+
+    # The marker makes this a migration, not a cache wipe on every launch.
+    replacement = default / "Cache"
+    replacement.mkdir()
+    (replacement / "new-cache").write_bytes(b"healthy")
+    _migrate_legacy_http_cache(tmp_path)
+    assert (replacement / "new-cache").read_bytes() == b"healthy"
+
+
+def test_gui_window_migrates_legacy_http_cache_before_launch(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    vault, _pid = vault_with_paper
+    cache = browser_profile_dir() / "Default" / "Cache"
+    cache.mkdir(parents=True)
+    (cache / "cached-410").write_bytes(b"gone")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert not cache.exists()
+    assert (browser_profile_dir() / ".api-no-store-v1").is_file()
 
 
 def test_gui_window_ties_the_server_to_the_window(

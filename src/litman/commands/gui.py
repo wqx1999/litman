@@ -201,6 +201,11 @@ def _quiet_browser_profile(profile: Path) -> None:
 _SESSION_RESTORE_DIR = "Sessions"
 _SESSION_RESTORE_FILES = ("Current Session", "Current Tabs", "Last Session", "Last Tabs")
 
+# One-time migration for app profiles that saw a cacheable API 410 before API
+# responses acquired ``Cache-Control: no-store``.  The marker belongs at the
+# profile root (not inside Default/Cache, which the migration removes).
+_HTTP_CACHE_MIGRATION_MARKER = ".api-no-store-v1"
+
 
 def _purge_stale_browser_session(profile: Path) -> None:
     """Drop the profile's session-restore state before opening the window.
@@ -224,6 +229,33 @@ def _purge_stale_browser_session(profile: Path) -> None:
     for name in _SESSION_RESTORE_FILES:
         with contextlib.suppress(OSError):
             (default / name).unlink(missing_ok=True)
+
+
+def _migrate_legacy_http_cache(profile: Path) -> None:
+    """Drop the app profile's HTTP cache once after the no-store upgrade.
+
+    A response header cannot retroactively evict a 410 that an older release
+    already put in Chromium's disk cache.  Because ``--window`` deliberately
+    reuses both its profile and (normally) localhost:8765, that old response
+    remains an exact cache-key match after upgrading and can hide the healthy
+    server even after relocate rebound it successfully.
+
+    Only ``Default/Cache`` is removed: cookies, preferences, Local Storage and
+    every other profile facility survive.  The client now also sends fetches
+    with ``cache: no-store``; this migration is the bridge that ensures the new
+    SPA shell itself is not held behind a legacy cached response.  Best-effort
+    like the neighbouring session cleanup.  Write the marker only when the
+    cache is absent, so a Windows file lock gets retried next launch.
+    """
+    marker = profile / _HTTP_CACHE_MIGRATION_MARKER
+    if marker.is_file():
+        return
+    cache = profile / "Default" / "Cache"
+    _rmtree(cache, ignore_errors=True)
+    if cache.exists():
+        return
+    with contextlib.suppress(OSError):
+        marker.touch(exist_ok=True)
 
 
 def _app_window_argv(url: str) -> list[str] | None:
@@ -846,6 +878,7 @@ def gui_cmd(
                 profile.mkdir(parents=True, exist_ok=True)
                 _quiet_browser_profile(profile)
                 _purge_stale_browser_session(profile)
+                _migrate_legacy_http_cache(profile)
                 proc = subprocess.Popen(
                     app_argv,
                     stdout=subprocess.DEVNULL,

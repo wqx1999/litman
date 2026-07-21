@@ -33,8 +33,21 @@ export class ApiError extends Error {
   }
 }
 
+/** Fetch live API state without consulting Chromium's HTTP cache.
+ *
+ * The response-side `Cache-Control: no-store` contract prevents current
+ * servers from creating new cache entries, but it cannot evict a 410 cached by
+ * an older litman release.  The desktop app reuses one Chromium profile and
+ * usually one localhost port, so that legacy response otherwise has the exact
+ * same cache key after an upgrade.  Request-side `cache: 'no-store'` makes the
+ * first upgraded sweep go to the server and heal immediately after relocate.
+ */
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, { ...init, cache: 'no-store' })
+}
+
 async function getJSON<T>(url: string): Promise<T> {
-  const resp = await fetch(url)
+  const resp = await apiFetch(url)
   if (!resp.ok) {
     throw new ApiError(`${url} → ${resp.status} ${resp.statusText}`, resp.status)
   }
@@ -55,7 +68,7 @@ async function mutateJSON<T>(
   method: 'PUT' | 'POST' | 'DELETE',
   body?: unknown,
 ): Promise<T> {
-  const resp = await fetch(url, {
+  const resp = await apiFetch(url, {
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -123,7 +136,7 @@ export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer
-  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
     method: 'PUT',
     body: buffer,
     headers: { 'Content-Type': 'application/pdf' },
@@ -147,7 +160,7 @@ async function putMdText(
   doc: 'notes' | 'discussion',
   text: string,
 ): Promise<void> {
-  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
     method: 'PUT',
     body: JSON.stringify({ text }),
     headers: { 'Content-Type': 'application/json' },
@@ -166,7 +179,7 @@ export function putDiscussion(id: string, text: string): Promise<void> {
 }
 
 async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
-  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
   if (!resp.ok) {
     // The server describes damaged files (non-UTF-8 etc.) in `detail` —
@@ -642,7 +655,7 @@ async function fetchTrashMdText(
   entryName: string,
   doc: 'notes' | 'discussion',
 ): Promise<string | null> {
-  const resp = await fetch(`/api/trash/${encodeURIComponent(entryName)}/${doc}`)
+  const resp = await apiFetch(`/api/trash/${encodeURIComponent(entryName)}/${doc}`)
   if (resp.status === 404) return null
   if (!resp.ok) throw new Error(`trash/${doc} → ${resp.status}`)
   const body = (await resp.json()) as { text: string }

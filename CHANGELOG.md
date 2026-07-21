@@ -47,7 +47,10 @@ behaviour, a minor release adds it, a major release breaks it.
   something else is wrong: a request failing for an unrelated reason used to
   leave a stale banner frozen on screen, and a hiccup in the change-log diffing
   could silently stop a refresh from landing; both now degrade gracefully
-  instead of pinning the old picture.
+  instead of pinning the old picture. Upgrades also heal app profiles that
+  cached a `410` before this fix: API requests explicitly bypass the browser
+  cache, and the shortcut launcher removes that profile's legacy HTTP cache
+  once while preserving its preferences and local state.
 
 - **A moved library can be pointed at its new home — no forced rename.** When you
   move or rename your library folder, litman's registry still records the old
