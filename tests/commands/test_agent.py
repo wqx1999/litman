@@ -25,7 +25,7 @@ from click.testing import CliRunner
 
 import litman
 from litman.commands.agent import agent_cmd
-from litman.core import agent_prefs
+from litman.core import agent_prefs, agents
 from litman.core.library import create_vault
 from litman.exceptions import LitmanError
 
@@ -88,23 +88,35 @@ def test_agent_unknown_name_lists_catalog(vault: Path) -> None:
     assert "claude" in message  # the catalog names are listed
 
 
-@pytest.mark.parametrize("greyed", ["codex", "gemini", "opencode"])
 def test_agent_unsupported_name_is_rejected(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, greyed: str
+    vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A greyed placeholder (supported=False) is rejected before the PATH probe
-    / exec — even if its binary happens to be installed."""
+    """A ``supported=False`` placeholder is rejected with the distinct "not
+    available yet" message before the PATH probe / exec — even if its binary is
+    installed. No greyed agent ships today, so a synthetic one is injected to
+    exercise the dormant CLI gating branch (not a live catalog instance)."""
+    placeholder = agents.AgentSpec(
+        name="future",
+        display="Future Agent",
+        launch="future",
+        supported=False,
+        install_url="https://example.invalid/future",
+        detect_bin="future",
+        skill_state=agents._unsupported("future"),
+        install_skill=agents._unsupported("future"),
+    )
+    monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     execd: list[object] = []
     monkeypatch.setattr(
         "litman.commands.agent.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     monkeypatch.setattr(os, "execvp", lambda file, argv: execd.append((file, argv)))
-    result = CliRunner().invoke(agent_cmd, [greyed, "--library", str(vault)])
+    result = CliRunner().invoke(agent_cmd, ["future", "--library", str(vault)])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
     message = str(result.exception)
-    assert f"'{greyed}' is not available yet" in message
-    assert "Supported agents: claude, agy, cursor" in message
+    assert "'future' is not available yet" in message
+    assert "Supported agents: claude, agy, codex, cursor, opencode" in message
     assert execd == []  # never reached the exec path
 
 
@@ -190,17 +202,11 @@ def test_set_default_records_machine_preference() -> None:
     assert agent_prefs.load_default_agent() == "claude"
 
 
-def test_set_default_rejects_unsupported_agent() -> None:
-    result = CliRunner().invoke(agent_cmd, ["--set-default", "codex"])
-    assert result.exit_code != 0
-    assert isinstance(result.exception, LitmanError)
-    assert "not a supported agent" in str(result.exception)
-
-
 def test_set_default_rejects_unknown_agent() -> None:
     result = CliRunner().invoke(agent_cmd, ["--set-default", "nope"])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
+    assert "not a supported agent" in str(result.exception)
 
 
 def test_agent_launches_saved_default(

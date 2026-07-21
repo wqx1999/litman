@@ -51,7 +51,7 @@ def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
     assert resp.json() == {
-        "agents": ["claude", "agy", "cursor"],
+        "agents": ["claude", "agy", "codex", "cursor", "opencode"],
         "default": "claude",
     }
 
@@ -113,20 +113,31 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
     }
 
 
-@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
 def test_launch_unsupported_agent_is_400(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A greyed placeholder (supported=False) is rejected before any PATH probe
-    / copy-fallback — inert on the launch axis too. gemini is back in this
-    set (its consumer OAuth was discontinued upstream; un-greying needs a
-    verified adapter)."""
+    """A ``supported=False`` placeholder is rejected with the distinct "not
+    available yet" message before any PATH probe / copy-fallback — inert on the
+    launch axis. No greyed agent ships in the catalog today, so a synthetic one
+    is injected to exercise the dormant gating branch (not a live catalog
+    instance)."""
+    placeholder = agents.AgentSpec(
+        name="future",
+        display="Future Agent",
+        launch="future",
+        supported=False,
+        install_url="https://example.invalid/future",
+        detect_bin="future",
+        skill_state=agents._unsupported("future"),
+        install_skill=agents._unsupported("future"),
+    )
+    monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     spawned: list[object] = []
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
         lambda a, c: spawned.append((a, c)) or True,
     )
-    resp = _client(vault).post("/api/agent/launch", json={"agent": name})
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "future"})
     assert resp.status_code == 400
     assert "not available yet" in resp.json()["detail"]
     assert spawned == []  # never reached the spawn path
@@ -142,24 +153,22 @@ def test_launch_non_string_agent_is_400(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_status_returns_six_catalog_entries(vault: Path) -> None:
+def test_status_returns_five_catalog_entries(vault: Path) -> None:
     body = _status(_client(vault))
     assert [e["name"] for e in body["agents"]] == [
         "claude",
         "agy",
         "codex",
         "cursor",
-        "gemini",
         "opencode",
     ]
     supported = {e["name"]: e["supported"] for e in body["agents"]}
     assert supported == {
         "claude": True,
         "agy": True,
-        "codex": False,
+        "codex": True,
         "cursor": True,
-        "gemini": False,
-        "opencode": False,
+        "opencode": True,
     }
     for e in body["agents"]:
         assert set(e) == {
@@ -171,8 +180,9 @@ def test_status_returns_six_catalog_entries(vault: Path) -> None:
             "skill_state",
         }
         assert isinstance(e["detected"], bool)
-        # Per-agent skill verdict: probed for supported agents, null for
-        # the greyed placeholders (their adapters are never called).
+        # Per-agent skill verdict: every catalog agent is supported today, so
+        # each reads a real verdict. The null branch is the latent
+        # supported=False placeholder contract (no such entry ships now).
         if e["supported"]:
             assert e["skill_state"] in {"absent", "stale", "current"}
         else:
@@ -204,11 +214,38 @@ def test_status_never_leaks_skill_paths(vault: Path) -> None:
     assert "/skills" not in raw
 
 
+def test_status_greyed_placeholder_reads_null_skill_state(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``supported=False`` catalog entry reports ``skill_state: null`` — its
+    adapter is never probed. No such agent ships today, so a synthetic
+    placeholder is injected to exercise the dormant status branch (the
+    ``else None`` output the api.ts contract still advertises as ``| null``)."""
+    placeholder = agents.AgentSpec(
+        name="future",
+        display="Future Agent",
+        launch="future",
+        supported=False,
+        install_url="https://example.invalid/future",
+        detect_bin="future",
+        skill_state=agents._unsupported("future"),
+        install_skill=agents._unsupported("future"),
+    )
+    monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
+    entries = {e["name"]: e for e in _status(_client(vault))["agents"]}
+    assert entries["future"]["supported"] is False
+    assert entries["future"]["skill_state"] is None  # never probed
+    # a live supported entry still reports a concrete verdict
+    assert entries["claude"]["skill_state"] in {"absent", "stale", "current"}
+
+
 def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
-    """Per-agent skill_state reads each agent's own directory: installing
-    into any one of the three supported locations flips only that agent's
-    row, and a greyed placeholder always reads null. Drives the REAL
-    resolvers + copies (conftest isolates all three dirs at tmp paths)."""
+    """Per-agent skill_state reads each agent's own directory. cursor, codex,
+    and opencode share the open-standard ~/.agents/skills dir, so installing
+    there flips all three of their rows together; claude's and agy's own dirs
+    stay independent. Every catalog agent is supported now, so each row reads a
+    real verdict — no null placeholder remains. Drives the REAL resolvers +
+    copies (conftest isolates all three dirs at tmp paths)."""
     from litman.core import skill
 
     client = _client(vault)
@@ -222,13 +259,15 @@ def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
     assert before["claude"] == "absent"
     assert before["agy"] == "absent"
     assert before["cursor"] == "absent"
-    assert before["codex"] is None
-    assert before["gemini"] is None
-    assert before["opencode"] is None
+    assert before["codex"] == "absent"
+    assert before["opencode"] == "absent"
 
     skill.install_all_skills(parent_dir=skill.standard_skills_parent_dir())
     after_standard = states()
+    # The shared open-standard dir flips cursor, codex AND opencode together.
     assert after_standard["cursor"] == "current"
+    assert after_standard["codex"] == "current"
+    assert after_standard["opencode"] == "current"
     assert after_standard["claude"] == "absent"  # untouched
     assert after_standard["agy"] == "absent"  # untouched
 
@@ -239,13 +278,16 @@ def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
     )
     assert states()["agy"] == "current"
 
-    # Tamper the standard-dir copy: only cursor flips stale.
+    # Tamper the standard-dir copy: cursor, codex and opencode all flip stale
+    # together (shared dir); claude and agy are unaffected.
     tampered = (
         skill.standard_skills_parent_dir() / "lit-library" / "SKILL.md"
     )
     tampered.write_text("OUTDATED\n", encoding="utf-8")
     tampered_states = states()
     assert tampered_states["cursor"] == "stale"
+    assert tampered_states["codex"] == "stale"
+    assert tampered_states["opencode"] == "stale"
     assert tampered_states["claude"] == "current"
     assert tampered_states["agy"] == "current"
 
@@ -367,16 +409,6 @@ def test_skill_install_ignores_body_target_field(
     assert captured == {"overwrite": True, "kw": {}}
 
 
-@pytest.mark.parametrize("name", ["codex", "gemini", "opencode"])
-def test_skill_install_unsupported_agent_is_400(
-    vault: Path, name: str
-) -> None:
-    resp = _client(vault).post(
-        "/api/agent/skill/install", json={"agent": name}
-    )
-    assert resp.status_code == 400
-
-
 def test_skill_install_unknown_agent_is_400(vault: Path) -> None:
     resp = _client(vault).post("/api/agent/skill/install", json={"agent": "nope"})
     assert resp.status_code == 400
@@ -384,11 +416,6 @@ def test_skill_install_unknown_agent_is_400(vault: Path) -> None:
 
 def test_put_default_unknown_agent_is_400(vault: Path) -> None:
     resp = _client(vault).put("/api/agent/default", json={"agent": "nope"})
-    assert resp.status_code == 400
-
-
-def test_put_default_unsupported_agent_is_400(vault: Path) -> None:
-    resp = _client(vault).put("/api/agent/default", json={"agent": "codex"})
     assert resp.status_code == 400
 
 

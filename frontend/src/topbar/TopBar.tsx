@@ -2293,8 +2293,9 @@ function AgentPanel({
  * `supported` agent selectable with a state-driven action (get it → install
  * skill → update skill when stale → ready) read off its OWN row's
  * `skill_state` (agents install into different skill locations, so the
- * resolved default's top-level state says nothing about the other rows), the
- * rest greyed "coming soon" placeholders (roadmap signal + stable layout).
+ * resolved default's top-level state says nothing about the other rows); any
+ * `supported=false` agent renders greyed as a latent "coming soon" placeholder
+ * (none ship today — the branch stays for a future roadmap agent).
  * Everything is data-driven off the status payload — no agent name or skill
  * path is hardcoded here (the red-line agent-agnostic frontend).
  * Auto-themes via the inverted stone ramp + `.dark .bg-white`; no `dark:`. */
