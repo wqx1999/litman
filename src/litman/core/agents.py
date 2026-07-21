@@ -3,7 +3,8 @@ knows how to launch and onboard (task-agent-onboarding, ADR-020 / ADR-021).
 
 The catalog is a frozen table: one :class:`AgentSpec` per agent carrying its
 display name, launch command, official install URL, a detection binary, and
-two skill-adapter callables. Every per-agent difference lives in this data;
+adapters for skill state, skill installation, and native command approval.
+Every per-agent difference lives in this data;
 consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
@@ -43,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from litman.core import skill
+from litman.core import agent_permissions, skill
 from litman.core.skill import aggregate_skill_state, install_all_skills
 
 # Fallback default when the user has not chosen one (no per-vault override
@@ -74,8 +75,9 @@ class AgentSpec:
     """One agent's launch + onboarding metadata.
 
     Frozen: the catalog is a constant that consumers read, never mutate. The
-    two adapter callables encapsulate everything agent-specific about skill
-    detection / installation so callers stay agent-agnostic.
+    adapter callables encapsulate everything agent-specific about skill
+    detection, installation, and ``lit`` command approval so callers stay
+    agent-agnostic.
     """
 
     name: str
@@ -86,6 +88,7 @@ class AgentSpec:
     detect_bin: str
     skill_state: Callable[[], str]
     install_skill: Callable[[], Any]
+    install_lit_permission: Callable[[], agent_permissions.PermissionResult]
     # Where this agent discovers skills, resolved at call time (so a
     # redirected $HOME / test patch on litman.core.skill.* is honored).
     # Catalog-internal: consumers go through agent_skills_parent_dir() /
@@ -98,8 +101,9 @@ class AgentSpec:
 # ("absent" — nothing installed / "stale" — installed but out of date with
 # this litman / "current"), and install == copy every bundled skill in,
 # overwriting (install_all_skills; linked dev-checkout dirs are left
-# untouched). The adapter callables are the ONLY place the skills paths are
-# reachable. The skill.<resolver>() calls go through the module attribute
+# untouched). Command approval uses each agent's native permission store and
+# never enables a global bypass. The adapter callables are the ONLY place the
+# skills paths are reachable. The skill.<resolver>() calls go through the module attribute
 # (not a from-import) so a single patch on litman.core.skill.* intercepts
 # them — the test suite's skills-dir isolation depends on that.
 #
@@ -120,6 +124,9 @@ AGENTS: tuple[AgentSpec, ...] = (
         detect_bin="claude",
         skill_state=lambda: aggregate_skill_state(),
         install_skill=lambda: install_all_skills(overwrite=True),
+        install_lit_permission=(
+            lambda: agent_permissions.install_claude_lit_permission()
+        ),
         skills_dir=lambda: skill.default_skills_parent_dir(),
     ),
     AgentSpec(
@@ -134,6 +141,9 @@ AGENTS: tuple[AgentSpec, ...] = (
         ),
         install_skill=lambda: install_all_skills(
             parent_dir=skill.antigravity_skills_parent_dir(), overwrite=True
+        ),
+        install_lit_permission=(
+            lambda: agent_permissions.install_antigravity_lit_permission()
         ),
         skills_dir=lambda: skill.antigravity_skills_parent_dir(),
     ),
@@ -150,6 +160,9 @@ AGENTS: tuple[AgentSpec, ...] = (
         install_skill=lambda: install_all_skills(
             parent_dir=skill.standard_skills_parent_dir(), overwrite=True
         ),
+        install_lit_permission=(
+            lambda: agent_permissions.install_codex_lit_permission()
+        ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),
     AgentSpec(
@@ -165,6 +178,9 @@ AGENTS: tuple[AgentSpec, ...] = (
         install_skill=lambda: install_all_skills(
             parent_dir=skill.standard_skills_parent_dir(), overwrite=True
         ),
+        install_lit_permission=(
+            lambda: agent_permissions.install_cursor_lit_permission()
+        ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),
     AgentSpec(
@@ -179,6 +195,9 @@ AGENTS: tuple[AgentSpec, ...] = (
         ),
         install_skill=lambda: install_all_skills(
             parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        install_lit_permission=(
+            lambda: agent_permissions.install_opencode_lit_permission()
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
     ),

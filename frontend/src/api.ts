@@ -377,6 +377,7 @@ export interface AgentLaunchResult {
   mode: 'spawned' | 'copy'
   agent: string
   command: string
+  permission_warning: string | null
 }
 
 /** Launch a configured agent in a terminal at the vault. Sends the agent NAME
@@ -426,16 +427,27 @@ export function fetchAgentStatus(): Promise<AgentStatus> {
   return getJSON<AgentStatus>('/api/agent/status')
 }
 
-/** Install or refresh the named agent's skill through the server-side catalog
- * adapter (the install overwrites, so the same call is the "Update skill"
- * action when `skill_state` is 'stale').
+/** Install or refresh the named agent's skill and its narrowly scoped `lit`
+ * command approval through server-side catalog adapters (the skill install
+ * overwrites, so the same call is the "Update skill" action when
+ * `skill_state` is 'stale').
  * Sends the agent NAME only — the install target lives entirely server-side
  * (ADR-020); any path in the body is ignored. An absent name targets the
  * default agent. Throws the backend's verbatim message (400) for an unknown /
  * unsupported agent. */
 export function installAgentSkill(
   name?: string,
-): Promise<{ ok: boolean; agent: string; files: string[]; mode: string }> {
+): Promise<{
+  ok: boolean
+  agent: string
+  files: string[]
+  mode: string
+  permission: {
+    mode: string
+    rule: string
+    warning: string | null
+  }
+}> {
   return mutateJSON('/api/agent/skill/install', 'POST', name ? { agent: name } : {})
 }
 

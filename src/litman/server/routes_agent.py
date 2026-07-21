@@ -117,6 +117,11 @@ async def launch_agent(request: Request) -> dict[str, object]:
             ),
         )
 
+    # Skills may already be present through another agent's shared directory,
+    # while permissions are always agent-native. Heal this agent's own rule on
+    # launch so "Ready" plus "Set default" cannot leave it prompting forever.
+    permission = spec.install_lit_permission()
+
     # A CLI may have been installed while this long-running GUI server was
     # open. On Windows, merge the live registry PATH before launching so the
     # child terminal sees the same command that Recheck just detected.
@@ -140,12 +145,19 @@ async def launch_agent(request: Request) -> dict[str, object]:
             "mode": "spawned",
             "agent": agent_name,
             "command": spec.launch,
+            "permission_warning": permission["warning"],
         }
 
     # Copy fallback: hand back the `lit agent` wrapper (correct from any cwd),
     # not the raw command (which is only correct inside the vault).
     lit_line = "lit agent" if agent_name == default else f"lit agent {agent_name}"
-    return {"ok": True, "mode": "copy", "agent": agent_name, "command": lit_line}
+    return {
+        "ok": True,
+        "mode": "copy",
+        "agent": agent_name,
+        "command": lit_line,
+        "permission_warning": permission["warning"],
+    }
 
 
 @router.get("/agent/status")
@@ -225,9 +237,10 @@ def agent_status(response: Response) -> dict[str, object]:
 @router.post("/agent/skill/install")
 async def install_agent_skill(request: Request) -> dict[str, object]:
     """Install or refresh the named agent's skill (default: the resolved
-    default agent). The adapter installs with overwrite, so the same call
-    serves first-time onboarding and the "Update skill" action for a stale
-    install; files the user added next to the skill are never touched.
+    default agent), then install that agent's narrowly scoped native command
+    rule for ``lit``. The skill adapter installs with overwrite, so the same
+    call serves first-time onboarding and the "Update skill" action for a
+    stale install; files the user added next to the skill are never touched.
 
     Body JSON (optional): ``{"agent": "<name>"}`` — ONLY the name is read; the
     install target lives entirely in the catalog adapter (RED LINE). Unknown
@@ -245,13 +258,24 @@ async def install_agent_skill(request: Request) -> dict[str, object]:
     # shape WITHOUT the per-skill ``target`` Path (keeps ~/.claude/skills out
     # of the response contract).
     results = spec.install_skill()
+    permission = spec.install_lit_permission()
     files = [f for result in results for f in result.get("files", [])]
     mode = (
         "overwritten"
         if any(result.get("mode") == "overwritten" for result in results)
         else "created"
     )
-    return {"ok": True, "agent": name, "files": files, "mode": mode}
+    return {
+        "ok": True,
+        "agent": name,
+        "files": files,
+        "mode": mode,
+        "permission": {
+            "mode": permission["mode"],
+            "rule": permission["rule"],
+            "warning": permission["warning"],
+        },
+    }
 
 
 @router.put("/agent/default")

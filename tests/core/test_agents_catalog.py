@@ -133,6 +133,7 @@ def test_detect_uses_detect_bin_first_token_fallback(
         detect_bin="",
         skill_state=lambda: "absent",
         install_skill=lambda: [],
+        install_lit_permission=lambda: {},
     )
     assert detect(spec) is False
     assert probed == ["my-agent"]
@@ -206,6 +207,27 @@ def test_claude_skill_state_routes_to_aggregate_skill_state(
     assert get_agent("claude").skill_state() == "stale"
 
 
+@pytest.mark.parametrize(
+    ("name", "function_name"),
+    [
+        ("claude", "install_claude_lit_permission"),
+        ("agy", "install_antigravity_lit_permission"),
+        ("codex", "install_codex_lit_permission"),
+        ("cursor", "install_cursor_lit_permission"),
+        ("opencode", "install_opencode_lit_permission"),
+    ],
+)
+def test_permission_install_routes_through_catalog_adapter(
+    name: str, function_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = {"mode": "created", "rule": name, "warning": None}
+    monkeypatch.setattr(
+        f"litman.core.agent_permissions.{function_name}",
+        lambda: expected,
+    )
+    assert get_agent(name).install_lit_permission() == expected
+
+
 def test_unsupported_placeholder_machinery_raises_not_implemented() -> None:
     """The ``supported=False`` scaffold stays covered without a live catalog
     agent (there is none today): the raw ``_unsupported`` adapter and a
@@ -224,6 +246,7 @@ def test_unsupported_placeholder_machinery_raises_not_implemented() -> None:
         detect_bin="future",
         skill_state=agents._unsupported("future"),
         install_skill=agents._unsupported("future"),
+        install_lit_permission=agents._unsupported("future"),
     )
     assert placeholder.supported is False
     assert placeholder.skills_dir is None
@@ -231,6 +254,8 @@ def test_unsupported_placeholder_machinery_raises_not_implemented() -> None:
         placeholder.install_skill()
     with pytest.raises(NotImplementedError):
         placeholder.skill_state()
+    with pytest.raises(NotImplementedError):
+        placeholder.install_lit_permission()
 
 
 # ---------------------------------------------------------------------------

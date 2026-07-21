@@ -31,6 +31,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from litman.core import agent_prefs, agents
+from litman.core.agent_permissions import PermissionResult
 from litman.core.skill import (
     SkillInstallError,
     bundled_skill_root,
@@ -114,9 +115,11 @@ def install_skill_cmd(
     offers to refresh out-of-date copies found in the other agents'
     directories.
 
-    Running this command does NOT install the agent itself, configure
-    API keys, or modify any of the user's other skills. It only copies
-    files into the chosen directory.
+    Running this command does NOT install the agent itself, configure API
+    keys, or modify any of the user's other skills. For a catalog agent it
+    also adds that agent's narrow command rule allowing ``lit ...`` without
+    repeated approval; all other commands keep the agent's normal policy.
+    A manual --parent-dir has no associated agent, so it only copies files.
     """
     if agent_name is not None and parent_dir is not None:
         raise click.UsageError(
@@ -127,12 +130,13 @@ def install_skill_cmd(
     # agent AND sweeps the other known directories for stale copies below;
     # an explicit target is a precise instruction and never sweeps.
     bare_run = agent_name is None and parent_dir is None
+    resolved_agent: str | None = None
     if parent_dir is None:
-        resolved = agent_name or (
+        resolved_agent = agent_name or (
             agent_prefs.load_default_agent() or agents.default_agent_name()
         )
         try:
-            parent_dir = agents.agent_skills_parent_dir(resolved)
+            parent_dir = agents.agent_skills_parent_dir(resolved_agent)
         except ValueError as exc:
             # Only reachable for a bare run whose recorded default is not a
             # supported catalog agent (hand-edited preferences) — --agent is
@@ -170,15 +174,18 @@ def install_skill_cmd(
         if not force and state == "current":
             up_to_date.append(name)
             continue
-        if not force and state == "stale":
-            if not click.confirm(
+        if (
+            not force
+            and state == "stale"
+            and not click.confirm(
                 f"Skill '{name}' is out of date with this litman — "
                 "refresh it? (bundled files are overwritten; files you "
                 "added are kept)",
                 default=True,
-            ):
-                declined.append(name)
-                continue
+            )
+        ):
+            declined.append(name)
+            continue
         results.append(
             install_skill(
                 target=parent_dir / name,
@@ -223,6 +230,12 @@ def install_skill_cmd(
         elif pending:
             sweep_blocked = pending
 
+    permission: PermissionResult | None = None
+    if resolved_agent is not None:
+        spec = agents.get_agent(resolved_agent)
+        assert spec is not None and spec.supported
+        permission = spec.install_lit_permission()
+
     lines = []
     for r in results:
         lines.append(
@@ -261,6 +274,21 @@ def install_skill_cmd(
             f"{', '.join(escape(n) for n in names)} [dim]({copy_dir})[/] "
             f"— re-run with --force to refresh"
         )
+    if permission is not None:
+        permission_mode = str(permission["mode"])
+        permission_rule = escape(str(permission["rule"]))
+        if permission_mode == "skipped":
+            lines.append(
+                f"[yellow]lit command approval not installed:[/] "
+                f"{permission_rule}"
+            )
+        else:
+            lines.append(
+                f"[bold green]lit command approval {permission_mode}:[/] "
+                f"{permission_rule}"
+            )
+        if warning := permission.get("warning"):
+            lines.append(f"  [yellow]Warning:[/] {escape(str(warning))}")
     available = ", ".join(list_bundled_skills())
     lines.append("")
     lines.append(

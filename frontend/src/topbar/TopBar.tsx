@@ -270,9 +270,14 @@ export default function TopBar({
   }, [])
 
   const handleLaunch = (res: AgentLaunchResult) => {
+    if (res.permission_warning) {
+      notify(res.permission_warning, 'warning')
+    }
     if (res.mode === 'spawned') {
       setAgentUi(null)
-      notify(`Launched ${res.agent} in a terminal window`, 'success')
+      if (!res.permission_warning) {
+        notify(`Launched ${res.agent} in a terminal window`, 'success')
+      }
     } else {
       setAgentUi({ kind: 'copy', agent: res.agent, command: res.command })
     }
@@ -345,17 +350,25 @@ export default function TopBar({
   const installSkillFor = (name: string, makeDefault = false) => {
     if (agentBusy) return
     setAgentBusy(true)
+    let permissionWarning: string | null = null
     installAgentSkill(name)
-      .then(() => (makeDefault ? setDefaultAgent(name) : undefined))
+      .then((installed) => {
+        permissionWarning = installed.permission.warning
+        return makeDefault ? setDefaultAgent(name) : undefined
+      })
       .then(refreshAgentStatus)
       .then((s) => {
         setAgentUi({ kind: 'setup', status: s })
-        notify(
-          makeDefault
-            ? `${name} is installed and is now your default agent`
-            : 'Agent skill installed or updated',
-          'success',
-        )
+        if (permissionWarning) {
+          notify(permissionWarning, 'warning')
+        } else {
+          notify(
+            makeDefault
+              ? `${name} is installed and is now your default agent`
+              : 'Agent skill installed or updated',
+            'success',
+          )
+        }
       })
       .catch((err) =>
         notify(err instanceof Error ? err.message : String(err), 'error'),
@@ -2470,7 +2483,9 @@ function AgentSetup({
       </h2>
       <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
         Choose one installed agent as your default. The toolbar button and ~
-        launch it directly.
+        launch it directly. Installing a skill also allows that agent to run
+        lit commands without repeated approval; other commands keep their
+        normal permissions.
       </p>
       <div className="mt-3 flex flex-col gap-2">
         {status.agents.map((agent) =>

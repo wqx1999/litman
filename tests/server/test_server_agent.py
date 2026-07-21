@@ -91,6 +91,7 @@ def test_launch_ignores_body_command_field(
         "mode": "spawned",
         "agent": "claude",
         "command": "claude",
+        "permission_warning": None,
     }
     assert spawned == [(["claude"], vault)]
 
@@ -119,6 +120,7 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
         "mode": "copy",
         "agent": "claude",
         "command": "lit agent",
+        "permission_warning": None,
     }
 
 
@@ -183,6 +185,7 @@ def test_launch_unsupported_agent_is_400(
         detect_bin="future",
         skill_state=agents._unsupported("future"),
         install_skill=agents._unsupported("future"),
+        install_lit_permission=agents._unsupported("future"),
     )
     monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     spawned: list[object] = []
@@ -312,6 +315,7 @@ def test_status_greyed_placeholder_reads_null_skill_state(
         detect_bin="future",
         skill_state=agents._unsupported("future"),
         install_skill=agents._unsupported("future"),
+        install_lit_permission=agents._unsupported("future"),
     )
     monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     entries = {e["name"]: e for e in _status(_client(vault))["agents"]}
@@ -485,6 +489,11 @@ def test_skill_install_ignores_body_target_field(
         "agent": "claude",
         "files": ["SKILL.md"],
         "mode": "created",
+        "permission": {
+            "mode": "unchanged",
+            "rule": "test-isolated",
+            "warning": None,
+        },
     }
     # The installer got ONLY the server-side overwrite flag — nothing from the
     # body (target/command) reached it.

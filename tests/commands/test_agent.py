@@ -104,6 +104,7 @@ def test_agent_unsupported_name_is_rejected(
         detect_bin="future",
         skill_state=agents._unsupported("future"),
         install_skill=agents._unsupported("future"),
+        install_lit_permission=agents._unsupported("future"),
     )
     monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     execd: list[object] = []

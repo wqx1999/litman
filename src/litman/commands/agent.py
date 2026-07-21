@@ -95,6 +95,12 @@ def agent_cmd(
             f"Get {spec.display}: {spec.install_url}"
         )
 
+    # Skills can be shared across agents, but command approvals cannot. Make
+    # every launch through litman heal the selected agent's own narrow rule.
+    permission = spec.install_lit_permission()
+    if permission["warning"]:
+        click.echo(f"warning: {permission['warning']}", err=True)
+
     if sys.platform == "win32":
         # No real exec on Windows: run as a child and pass its exit code on.
         # The absolute path avoids relying on a stale parent-shell PATH and is

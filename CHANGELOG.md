@@ -9,16 +9,19 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Added
 
-- **Cursor and Antigravity CLI are supported agents.** Both are selectable in
-  the GUI agent picker and launchable with `lit agent cursor` / `lit agent
-  agy`. Cursor's skills install into the Agent Skills open-standard directory
-  `~/.agents/skills`; Antigravity CLI's install into its own
-  `~/.gemini/antigravity-cli/skills`. Claude Code keeps its own
-  `~/.claude/skills` location, unchanged. Codex, Gemini CLI and OpenCode are
-  listed as coming soon.
+- **Five AI agents are supported:** Claude Code, Antigravity CLI, Codex,
+  Cursor, and OpenCode. All are selectable in the GUI agent manager and
+  launchable with `lit agent <name>`. Codex, Cursor, and OpenCode share the
+  Agent Skills open-standard directory `~/.agents/skills`; Claude Code keeps
+  `~/.claude/skills`, and Antigravity CLI uses its own
+  `~/.gemini/antigravity-cli/skills` directory.
 - **`lit install-skill --agent <name>`** installs the skills into the named
   agent's directory. With no flags the command now follows your default agent;
   users who never changed the default get exactly the previous behaviour.
+- **Installed skills can run `lit` without repeated permission prompts.**
+  Skill onboarding merges a narrowly scoped `lit` command allow rule into the
+  selected agent's native permission store; it never enables a global bypass,
+  and malformed or conflicting user policy is left untouched and reported.
 - **Skill copies for your other agents stay fresh.** A bare
   `lit install-skill`, the setup wizard's skill step and `lit health-check
   --fix` also refresh out-of-date litman skills found in the other agents'

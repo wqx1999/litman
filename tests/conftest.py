@@ -238,3 +238,19 @@ def _isolate_skills_dir(
         "litman.core.skill.antigravity_skills_parent_dir",
         lambda: tmp_path / "antigravity-skills-parent",
     )
+    permission_result = {
+        "mode": "unchanged",
+        "rule": "test-isolated",
+        "warning": None,
+    }
+    for function_name in (
+        "install_claude_lit_permission",
+        "install_antigravity_lit_permission",
+        "install_codex_lit_permission",
+        "install_cursor_lit_permission",
+        "install_opencode_lit_permission",
+    ):
+        monkeypatch.setattr(
+            f"litman.core.agent_permissions.{function_name}",
+            lambda: permission_result.copy(),
+        )

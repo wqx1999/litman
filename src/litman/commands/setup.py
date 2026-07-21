@@ -199,7 +199,9 @@ def _step_skill(
         show_choices=True,
     )
     agent_prefs.save_default_agent(chosen)
-    display = agents.get_agent(chosen).display
+    spec = agents.get_agent(chosen)
+    assert spec is not None and spec.supported
+    display = spec.display
 
     # Re-run idempotency: probe content-level state first (skill_status,
     # against the chosen agent's directory) and expose --force as a prompt
@@ -224,12 +226,22 @@ def _step_skill(
     if already:
         if already >= bundled:
             if not stale:
+                permission = spec.install_lit_permission()
                 console.print(
                     f"[dim]Skills already installed and up to date "
                     f"({', '.join(sorted(already))}) — nothing to do. "
                     f"(lit install-skill --force re-copies them "
                     f"regardless.)[/]"
                 )
+                if permission["mode"] != "unchanged":
+                    console.print(
+                        f"[green]lit command approval "
+                        f"{permission['mode']}:[/] {permission['rule']}"
+                    )
+                if permission["warning"]:
+                    console.print(
+                        f"[yellow]Warning:[/] {permission['warning']}"
+                    )
                 skipped.append("skill (up to date)")
                 _sweep_other_agent_skills(chosen, did)
                 return
@@ -374,13 +386,15 @@ def _step_sync(
         )
         skipped.append("sync (no vault)")
         return
-    if load_config(vault).sync is not None:
-        if not click.confirm(
+    if (
+        load_config(vault).sync is not None
+        and not click.confirm(
             "Sync is already configured for the active vault. Reconfigure?",
             default=False,
-        ):
-            skipped.append("sync (already configured)")
-            return
+        )
+    ):
+        skipped.append("sync (already configured)")
+        return
     if click.confirm("Set up cloud sync now?", default=False):
         ctx.invoke(sync_setup_cmd)
         did.append("sync")

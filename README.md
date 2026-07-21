@@ -79,11 +79,13 @@ on an AI agent, which you install separately — litman ships the skills it
 drives, not a model. `lit agent` starts yours in the library directory; the app's
 agent button does the same.
 
-[Claude Code](https://claude.ai/code), [Cursor](https://cursor.com/cli), and
-[Antigravity CLI](https://antigravity.google/download#antigravity-cli) are the
-supported agents today. Codex, Gemini CLI and OpenCode are next: they already
-appear in litman's agent picker, greyed out until the release that turns them
-on.
+[Claude Code](https://claude.ai/code),
+[Antigravity CLI](https://antigravity.google/download#antigravity-cli),
+[Codex](https://developers.openai.com/codex/cli/),
+[Cursor](https://cursor.com/cli), and [OpenCode](https://opencode.ai/) are
+supported. Install a skill from the agent manager and litman also adds a
+narrow permission for that agent to run `lit`; it does not approve unrelated
+commands.
 
 Your agent works with whatever model you give it. We ran eight of them through 22
 everyday tasks:

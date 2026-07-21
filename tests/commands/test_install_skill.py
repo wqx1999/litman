@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,6 @@ from litman.core.skill import (
     list_bundled_skills,
     skill_status,
 )
-
 
 # ---------------------------------------------------------------------------
 # Bundled-resource discovery
@@ -548,6 +548,26 @@ def test_cli_install_skill_agent_cursor_writes_standard_dir() -> None:
         assert (standard / name / "SKILL.md").is_file()
     assert not skill.default_skills_parent_dir().exists()
     assert not skill.antigravity_skills_parent_dir().exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_cli_agent_install_also_adds_only_that_agents_lit_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "cursor"])
+
+    assert result.exit_code == 0, result.output
+    assert "lit command approval created" in result.output
+    config = json.loads(
+        (home / ".cursor" / "cli-config.json").read_text(encoding="utf-8")
+    )
+    assert config == {"permissions": {"allow": ["Shell(lit)"]}}
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ".codex" / "rules" / "litman.rules").exists()
 
 
 def test_cli_install_skill_agent_agy_writes_antigravity_dir() -> None:
