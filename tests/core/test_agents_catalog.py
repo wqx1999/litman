@@ -16,6 +16,8 @@ monkeypatched ``shutil.which`` — no real binary is probed.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -134,6 +136,40 @@ def test_detect_uses_detect_bin_first_token_fallback(
     )
     assert detect(spec) is False
     assert probed == ["my-agent"]
+
+
+def test_windows_recheck_reads_new_registry_path_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLI installed after the GUI started becomes detectable immediately.
+
+    Windows does not update a running server's environment when an installer
+    changes the user PATH. Recheck must merge the live registry value, and
+    repeated rechecks must not keep appending duplicate entries.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\Windows\System32;C:\old-bin")
+    monkeypatch.setattr(
+        agents,
+        "_windows_registry_path_values",
+        lambda: [r"C:\new-agent-bin;C:\OLD-BIN"],
+    )
+
+    seen_paths: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        seen_paths.append(os.environ["PATH"])
+        if name == "codex" and r"C:\new-agent-bin" in os.environ["PATH"]:
+            return r"C:\new-agent-bin\codex.exe"
+        return None
+
+    monkeypatch.setattr(agents.shutil, "which", fake_which)
+    assert detect(get_agent("codex")) is True
+    assert detect(get_agent("codex")) is True
+    assert seen_paths == [
+        r"C:\Windows\System32;C:\old-bin;C:\new-agent-bin",
+        r"C:\Windows\System32;C:\old-bin;C:\new-agent-bin",
+    ]
 
 
 # ---------------------------------------------------------------------------

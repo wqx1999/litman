@@ -34,8 +34,10 @@ agent-agnostic boundary is what keeps adding an agent cheap.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -196,6 +198,69 @@ def supported_agents() -> list[AgentSpec]:
     return [spec for spec in AGENTS if spec.supported]
 
 
+def _windows_registry_path_values() -> list[str]:
+    """Read the current machine + user PATH values from the Windows registry.
+
+    A running process keeps the environment it inherited at startup. CLI
+    installers update the registry, so a long-running ``lit gui`` process
+    otherwise cannot see an agent installed after the server started.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - defensive for non-CPython builds
+        return []
+
+    locations = (
+        (
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+        ),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    values: list[str] = []
+    for root, key_name in locations:
+        try:
+            with winreg.OpenKey(root, key_name) as key:
+                value, _kind = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if isinstance(value, str) and value:
+            values.append(value)
+    return values
+
+
+def refresh_windows_path() -> None:
+    """Merge live Windows registry PATH entries into this process's PATH.
+
+    This is intentionally a no-op off Windows. On Windows it is idempotent and
+    preserves process-only entries (for example an activated uv/venv bin dir)
+    while adding paths registered by installers since Litman started. Updating
+    ``os.environ`` also lets a subsequent Launch inherit the same live PATH.
+    """
+    if sys.platform != "win32":
+        return
+
+    entries: list[str] = []
+    seen: set[str] = set()
+    raw_values = [os.environ.get("PATH", ""), *_windows_registry_path_values()]
+    for raw_value in raw_values:
+        for raw_entry in os.path.expandvars(raw_value).split(";"):
+            entry = raw_entry.strip().strip('"')
+            if not entry:
+                continue
+            key = entry.rstrip("\\/").casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(entry)
+    os.environ["PATH"] = ";".join(entries)
+
+
 def default_agent_name() -> str:
     """The catalog fallback default when the user has not chosen one."""
     return _DEFAULT_AGENT_NAME
@@ -247,5 +312,6 @@ def detect(spec: AgentSpec) -> bool:
     Generic, data-driven — no per-agent branching. Probes ``detect_bin`` if
     set, otherwise the first token of the launch command.
     """
+    refresh_windows_path()
     probe = spec.detect_bin or shlex.split(spec.launch)[0]
     return shutil.which(probe) is not None

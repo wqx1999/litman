@@ -85,6 +85,10 @@ def agent_cmd(
             f"Agent '{agent_name}' is not available yet. "
             f"Supported agents: {supported}."
         )
+    # Windows installers update the registry PATH, not already-running
+    # processes. Refresh it so this command also works from a shell that was
+    # open before the agent CLI was installed.
+    agents.refresh_windows_path()
     argv = shlex.split(spec.launch)
     if shutil.which(argv[0]) is None:
         raise LitmanError(

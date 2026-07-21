@@ -15,18 +15,22 @@ absent (invariant #5). The autouse ``_isolate_registry`` fixture redirects
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("fastapi")
 
+from fastapi import Response
 from fastapi.testclient import TestClient
 
 from litman.core import agent_prefs, agents
 from litman.core.library import create_vault
 from litman.core.skill import list_bundled_skills
 from litman.server import create_app
+from litman.server.routes_agent import agent_status
 
 
 @pytest.fixture
@@ -201,6 +205,35 @@ def test_status_sets_no_store_cache_header(vault: Path) -> None:
     resp = _client(vault).get("/api/agent/status")
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "no-store"
+
+
+def test_status_recheck_detects_cli_added_to_live_windows_registry_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same running server sees a CLI installed between two status calls."""
+    registry_paths: list[str] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\Windows\System32")
+    monkeypatch.setattr(
+        agents, "_windows_registry_path_values", lambda: registry_paths.copy()
+    )
+    monkeypatch.setattr(
+        agents.shutil,
+        "which",
+        lambda name: (
+            rf"C:\new-agent-bin\{name}.exe"
+            if r"C:\new-agent-bin" in os.environ["PATH"]
+            else None
+        ),
+    )
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "absent")
+
+    before = agent_status(Response())
+    assert not any(entry["detected"] for entry in before["agents"])
+
+    registry_paths.append(r"C:\new-agent-bin")
+    after = agent_status(Response())
+    assert all(entry["detected"] for entry in after["agents"])
 
 
 def test_status_never_leaks_skill_paths(vault: Path) -> None:
