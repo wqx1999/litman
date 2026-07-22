@@ -1274,6 +1274,188 @@ def test_skill_drift_category_is_auto_fixable(vault: Path) -> None:
     assert "skill_drift" in AUTO_FIXABLE_CATEGORIES
 
 
+def _plant_standard_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Install the bundle into an open-standard dir stand-in (the cursor
+    location) and point the standard resolver at it."""
+    from litman.core.skill import install_all_skills
+
+    parent = tmp_path / "installed-standard-skills"
+    install_all_skills(parent_dir=parent)
+    monkeypatch.setattr(
+        "litman.core.skill.standard_skills_parent_dir", lambda: parent
+    )
+    return parent
+
+
+def _plant_antigravity_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Install the bundle into an Antigravity CLI dir stand-in (the agy
+    location) and point the antigravity resolver at it."""
+    from litman.core.skill import install_all_skills
+
+    parent = tmp_path / "installed-antigravity-skills"
+    install_all_skills(parent_dir=parent)
+    monkeypatch.setattr(
+        "litman.core.skill.antigravity_skills_parent_dir", lambda: parent
+    )
+    return parent
+
+
+def test_skill_drift_probes_only_default_agent_dir(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=claude (nothing recorded): a stale copy in the cursor
+    standard dir is NOT reported — non-default directories are not the
+    check's business (they surface in the GUI per-agent panel and the moment
+    that agent becomes the default)."""
+    standard = _plant_standard_skills(tmp_path, monkeypatch)
+    (standard / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    assert check_skill_drift(vault, []) == []
+
+
+def test_skill_drift_default_agy_detects_antigravity_dir(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=agy: the SAME stale antigravity-dir copy is now drift, the
+    message names the default agent, and a stale claude-dir copy is ignored
+    (default-dir semantics both ways). No literal path in the message —
+    issues flow into GET /api/health verbatim."""
+    from litman.core import agent_prefs
+
+    claude_parent = _plant_skills(tmp_path, monkeypatch)
+    antigravity = _plant_antigravity_skills(tmp_path, monkeypatch)
+    (antigravity / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    (claude_parent / "lit-reading" / "SKILL.md").write_text(
+        "ALSO OUTDATED\n", encoding="utf-8"
+    )
+    agent_prefs.save_default_agent("agy")  # registry dir is isolated
+
+    issues = check_skill_drift(vault, [])
+    assert len(issues) == 1  # the claude-dir staleness is not reported
+    issue = issues[0]
+    assert "lit-library" in issue.message
+    assert "agy" in issue.message
+    assert str(antigravity) not in issue.message
+    assert str(antigravity) not in (issue.hint or "")
+
+
+def test_skill_drift_default_agy_absent_is_not_drift(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=agy with nothing installed in the antigravity dir: absent is
+    a respected opt-out, even when the claude dir has (stale) skills."""
+    from litman.core import agent_prefs
+
+    parent = _plant_skills(tmp_path, monkeypatch)
+    (parent / "lit-library" / "SKILL.md").write_text(
+        "OUTDATED\n", encoding="utf-8"
+    )
+    agent_prefs.save_default_agent("agy")
+    assert check_skill_drift(vault, []) == []
+
+
+def test_apply_autofix_skill_drift_targets_default_agent_dir(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """审查 W3 regression + the cross-directory sweep: probe and --fix agree
+    on the default directory (default=agy → the antigravity dir comes
+    clean), and the fix ALSO refreshes the stale claude-dir copy via the
+    sweep — both counted under skill_drift."""
+    from litman.core import agent_prefs
+
+    claude_parent = _plant_skills(tmp_path, monkeypatch)
+    antigravity = _plant_antigravity_skills(tmp_path, monkeypatch)
+    stale_antigravity = antigravity / "lit-library" / "SKILL.md"
+    stale_antigravity.write_text("OUTDATED\n", encoding="utf-8")
+    stale_claude = claude_parent / "lit-library" / "SKILL.md"
+    stale_claude.write_text("CLAUDE-DIR OUTDATED\n", encoding="utf-8")
+    agent_prefs.save_default_agent("agy")
+
+    issues = check_skill_drift(vault, [])
+    counts = apply_autofix(vault, issues)
+    assert counts["skill_drift"] == 2
+    assert "OUTDATED" not in stale_antigravity.read_text(encoding="utf-8")
+    # The stale copy in the non-default claude dir was refreshed by the
+    # sweep — it may be the copy another agent actually reads.
+    text = stale_claude.read_text(encoding="utf-8")
+    assert "CLAUDE-DIR OUTDATED" not in text
+    assert "name: lit-library" in text
+    # Post-fix pass is clean for the default agent.
+    assert check_skill_drift(vault, []) == []
+
+
+def test_apply_autofix_sweep_runs_without_a_skill_drift_finding(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=claude with a clean claude dir: the check reports nothing,
+    yet --fix still refreshes a stale copy in the antigravity dir — the fix
+    is deliberately wider than the check (the check keeps its
+    default-dir-only probe to avoid nagging)."""
+    _plant_skills(tmp_path, monkeypatch)  # claude dir current
+    antigravity = _plant_antigravity_skills(tmp_path, monkeypatch)
+    stale_md = antigravity / "lit-reading" / "SKILL.md"
+    stale_md.write_text("OUTDATED\n", encoding="utf-8")
+
+    assert check_skill_drift(vault, []) == []  # nothing reported ...
+    counts = apply_autofix(vault, [])  # ... yet the sweep fixes it
+    assert counts["skill_drift"] == 1
+    text = stale_md.read_text(encoding="utf-8")
+    assert "OUTDATED" not in text
+    assert "name: lit-reading" in text
+
+
+def test_apply_autofix_sweep_leaves_absent_and_linked_alone(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep only refreshes stale copies: an absent dir is never
+    first-installed and a linked dir (dev checkout) is never written
+    through."""
+    from litman.core import skill
+
+    _plant_skills(tmp_path, monkeypatch)  # claude dir current
+    # antigravity dir: absent (conftest-isolated empty path).
+    # standard dir: one linked skill pointing at a divergent checkout.
+    real = tmp_path / "dev-checkout" / "lit-library"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("DEV COPY\n", encoding="utf-8")
+    standard = skill.standard_skills_parent_dir()
+    standard.mkdir(parents=True)
+    (standard / "lit-library").symlink_to(real)
+
+    counts = apply_autofix(vault, [])
+    assert "skill_drift" not in counts
+    assert not skill.antigravity_skills_parent_dir().exists()
+    assert (real / "SKILL.md").read_text(encoding="utf-8") == "DEV COPY\n"
+
+
+def test_health_check_cli_fix_sweeps_with_clean_report(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a clean vault + clean default dir + stale antigravity
+    copy → the report shows nothing, `--fix` still refreshes the copy and
+    says so, exit 0 both times."""
+    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")
+    _plant_skills(tmp_path, monkeypatch)  # claude dir current
+    antigravity = _plant_antigravity_skills(tmp_path, monkeypatch)
+    stale_md = antigravity / "lit-library" / "SKILL.md"
+    stale_md.write_text("OUTDATED\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "skill_drift" in result.output
+    assert "OUTDATED" not in stale_md.read_text(encoding="utf-8")
+
+
 def test_health_check_cli_stale_skill_warns_and_fix_refreshes(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -150,6 +150,22 @@ def test_win32_prefers_windows_terminal(
     assert argv == ["C:\\wt.exe", "-d", str(tmp_path), "claude"]
 
 
+def test_win32_terminal_runs_npm_cmd_shim_through_cmd(
+    monkeypatch: pytest.MonkeyPatch,
+    popen_calls: list[tuple[list[str], object]],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        "litman.core.terminal.shutil.which",
+        lambda name: "C:\\wt.exe" if name == "wt" else None,
+    )
+    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    assert spawn_terminal([codex], tmp_path) is True
+    argv, _cwd = popen_calls[0]
+    assert argv == ["C:\\wt.exe", "-d", str(tmp_path), "cmd", "/K", codex]
+
+
 def test_win32_falls_back_to_cmd_start(
     monkeypatch: pytest.MonkeyPatch,
     popen_calls: list[tuple[list[str], object]],

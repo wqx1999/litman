@@ -21,6 +21,13 @@ Design:
   derived from the litman source fingerprint; a second build with the same key
   is a cache hit (no-op). A litman change (schema drift) flips the key and forces
   a rebuild, so a seed can never go stale against the code under test.
+* A cache hit also verifies a ``.seed-digest`` content stamp
+  (:func:`seed_digest`), so a seed that was MUTATED after it was built is treated
+  as stale and rebuilt. The key alone cannot catch that — it answers "built from
+  today's litman?", not "still what we built?" — and seeds outlive runs, so a
+  poisoned one silently skews every later card on the node. The same stamp is the
+  baseline for :func:`assert_seed_intact`, the canary the batch runner fires at
+  each card boundary.
 
 All paths default to ``/tmp`` (never ``/work`` — EDQUOT). Seeds are cached under
 ``/tmp/litman-bench-seeds/<name>/``.
@@ -46,6 +53,17 @@ GOLDEN_DIR = FIXTURES_DIR / "golden"
 
 DEFAULT_CACHE_ROOT = Path("/tmp/litman-bench-seeds")
 SEED_KEY_FILE = ".seed-key"
+SEED_DIGEST_FILE = ".seed-digest"
+
+
+class SeedLeakError(RuntimeError):
+    """A run mutated the shared seed it was supposed to only ``cp`` from.
+
+    Seeds are cached across runs, so a mutation outlives the run that caused it:
+    every later card starting from that seed scores against a state nobody chose,
+    on this node, until someone happens to wipe ``/tmp``. Raising this aborts the
+    batch — see :func:`assert_seed_intact` for why that is the only honest move.
+    """
 
 # The `lit` CLI entry point, resolved in priority order: an explicit env override
 # (LITMAN_BENCH_LIT_BIN — pin a specific install for reproducibility) -> `lit`
@@ -98,6 +116,118 @@ def litman_fingerprint() -> str:
         pass
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
     return digest[:16]
+
+
+# ---------------------------------------------------------------------------
+# Seed integrity (the canary + the self-healing cache key)
+# ---------------------------------------------------------------------------
+
+
+def seed_digest(root: Path) -> str:
+    """Content digest of a whole seed root — the baseline the canary compares to.
+
+    Scope is the seed ROOT, not just its ``vault/``: ``projects/`` is where the
+    known leak lands, and ``.seed-key`` must not move while cards run either.
+    ``.seed-digest`` is the one exclusion, and it is not a choice — the stamp
+    cannot hold the hash of a tree that contains the stamp.
+
+    Three properties, each fixing a way a weaker digest goes blind:
+
+    * **Symlinks are read, never followed** (``os.readlink``). The leak we hunt
+      deletes and retargets the bridge symlinks themselves; following one reads a
+      deleted link as "target unchanged" and the canary sees nothing.
+    * **Files are hashed by content, not size.** Every equal-length edit — a
+      taxonomy rename, ``2026-05-01`` -> ``2026-06-15``, a status flip — is
+      exactly what a card does, and a size digest misses all of them. Measured on
+      the largest seed (18MB / 60 files): 7.2ms by size vs 79.7ms by content.
+      Both are noise beside one live agent round, so cost argues FOR content.
+    * **Type tag + NUL separators.** Without them ``("a", "12")`` and
+      ``("a1", "2")`` hash identically.
+
+    ``rglob`` does not descend INTO symlinked dirs (3.13 codified this as
+    ``recurse_symlinks=False``), which is what keeps a seed's bridge symlinks
+    from being walked as directories and a self-referential one from looping.
+    Worth knowing but not worth guarding: were it ever to change, every link's
+    subtree would be hashed twice via a second path — deterministic, so the
+    canary would get slower, not blind.
+    """
+    h = hashlib.sha256()
+    for f in sorted(root.rglob("*")):
+        rel = str(f.relative_to(root))
+        if rel == SEED_DIGEST_FILE:
+            continue
+        # is_symlink() FIRST: is_dir()/is_file() follow the link and would
+        # classify a symlink by its target (and raise on a dangling one).
+        if f.is_symlink():
+            h.update(b"L\0" + rel.encode() + b"\0" + os.readlink(f).encode() + b"\0")
+        elif f.is_dir():
+            h.update(b"D\0" + rel.encode() + b"\0")
+        else:
+            h.update(
+                b"F\0" + rel.encode() + b"\0" + hashlib.sha256(f.read_bytes()).digest()
+            )
+    return h.hexdigest()
+
+
+def _stamp_seed(seed_root: Path) -> str:
+    """Write ``.seed-digest`` for a freshly built seed; returns the digest.
+
+    MUST be called last, after ``.seed-key`` is on disk: the key is inside the
+    digest scope, so stamping first would bake in a digest that no later
+    verification can reproduce.
+    """
+    digest = seed_digest(seed_root)
+    (seed_root / SEED_DIGEST_FILE).write_text(digest + "\n", encoding="utf-8")
+    return digest
+
+
+def _stamp_matches(seed_root: Path) -> bool:
+    """True when the seed's ``.seed-digest`` still describes its content."""
+    stamp = seed_root / SEED_DIGEST_FILE
+    if not stamp.is_file():
+        return False
+    return stamp.read_text(encoding="utf-8").strip() == seed_digest(seed_root)
+
+
+def assert_seed_intact(seed_root: Path, *, culprit: str | None = None) -> None:
+    """Raise :class:`SeedLeakError` if a seed changed since it was stamped.
+
+    ``culprit`` names whoever just used the seed (a card id and round, say). The
+    digest can only report THAT the seed moved, never who moved it, and the
+    reader's first question is which card to go look at — so the caller, which
+    is the only one who knows, says so.
+
+    This is the alarm for the isolation :mod:`harness.runlit` promises in its own
+    docstring — "a failure never cascades". A card runs against a ``cp``, so the
+    shared seed must be byte-identical afterwards; when it is not, the card
+    reached out of its sandbox and every later card on that seed is measuring an
+    unknown state. Aborting is the point: a run whose ground truth moved under it
+    has no honest number, and a warning-and-carry-on would produce a report that
+    looks fine (red line 4 — never invent a number).
+
+    **No stamp, no alarm — deliberately.** Only :func:`build_seed` stamps, so an
+    unstamped root is a test's hand-made seed. Those legitimately keep their run
+    dirs *inside* the digested root (``test_batch.py``'s ``_fake_seed`` returns
+    ``tmp_path/"seed"`` while callers pass ``work_root=tmp_path/"work"``, both
+    under the same ``tmp_path``), so digesting one would flag every round as a
+    leak. This condition is load-bearing, not an oversight; do not drop it.
+    """
+    if not (seed_root / SEED_DIGEST_FILE).is_file():
+        return
+    want = (seed_root / SEED_DIGEST_FILE).read_text(encoding="utf-8").strip()
+    got = seed_digest(seed_root)
+    if got != want:
+        who = culprit or "the run that just used it"
+        raise SeedLeakError(
+            f"seed {seed_root} was MUTATED by {who} "
+            f"(stamped {want[:16]}..., now {got[:16]}...).\n"
+            "A run vault is a copy; nothing a card does may reach the seed. This "
+            "aborts the batch because the seed is cached across runs, so every "
+            "later card on it — in this run and in future ones on this node — "
+            "would score against a state nobody chose.\n"
+            "The seed self-heals on the next build_seed() call (the stamp no "
+            "longer matches, so it is rebuilt). Fix the leak before re-running."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +393,46 @@ SEED_SPECS: dict[str, SeedSpec] = {
         description=(
             "#4 PeptideBERT + #5 Multi-Peptide (same author group), joined by a "
             "symmetric `related` edge (C4 retrieval / G2 ripple precondition)."
+        ),
+    ),
+    # --- 2 papers, #4 read AND revisited (both dates FIXED) -----------------
+    # C2's precondition: #4 is finished (read-date + status) and was re-opened
+    # once, on a known past date. `last-revisited` is the ONLY field that is
+    # show-only across EVERY exit — not just the lookup commands, but `lit cite`
+    # and `lit export` too (measured; the card's notes carry the table). That is
+    # what lets C2 assert `ran: show` honestly. A superset of seed-2papers-peptide
+    # (same three steps, one `modify` appended) rather than an edit of it:
+    # A3/D1/F1/G1/C4/G2 all start from that seed and must not inherit a
+    # read/revisited #4.
+    "seed-2papers-peptide-revisited": SeedSpec(
+        name="seed-2papers-peptide-revisited",
+        steps=(
+            _INIT,
+            _add(4),
+            _add(5),
+            _relate(4, 5),
+            # All three values FIXED, never "today": the card asserts the exact
+            # date back, so a re-run tomorrow must score identically (same
+            # reasoning as seed-1paper-diffdock-read's read-date).
+            # `read-date` is not optional dressing: `last-revisited` without it
+            # is a semantically impossible state (you cannot re-read what you
+            # never read — `lit revisit`, the sugar for this `--set`, requires a
+            # finished paper), and a seed must not build a vault the product
+            # itself would never produce.
+            _modify(
+                4,
+                set_=(
+                    ("read-date", "2026-05-01"),
+                    ("status", "deep-read"),
+                    ("last-revisited", "2026-06-15"),
+                ),
+            ),
+        ),
+        description=(
+            "#4 PeptideBERT + #5 Multi-Peptide (related edge, as "
+            "seed-2papers-peptide), plus #4 read (read-date=2026-05-01, "
+            "status=deep-read) and revisited on 2026-06-15 — C2's show-only "
+            "precondition."
         ),
     ),
     # --- 5 papers + tagged + a project --------------------------------------
@@ -535,6 +705,15 @@ def build_seed(
             and (vault / "lit-config.yaml").is_file()
             and key_file.is_file()
             and key_file.read_text(encoding="utf-8").strip() == want_key
+            # INTEGRITY, not just identity. The three tests above only ask "was
+            # this seed built from today's litman?" — they never look at
+            # `projects/` and never verify content, so a seed poisoned by a run
+            # that escaped its sandbox kept its matching key and was waved
+            # through forever: the poison outlived every run on the node until a
+            # human wiped /tmp. A mismatch here means the seed is not what
+            # build_seed left, whatever the cause (a harness bug, a hand-run
+            # `lit` against the cache), and the rebuild below heals it.
+            and _stamp_matches(seed_root)
         ):
             return vault  # cache hit
 
@@ -554,6 +733,8 @@ def build_seed(
         # Drop the build scratch (staged PDFs already moved into the vault).
         shutil.rmtree(scratch, ignore_errors=True)
         key_file.write_text(want_key + "\n", encoding="utf-8")
+        # Stamp LAST — `.seed-key` is inside the digest scope (see _stamp_seed).
+        _stamp_seed(seed_root)
         return vault
     finally:
         GOLDEN_DIR = prev_golden

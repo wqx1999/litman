@@ -377,6 +377,7 @@ export interface AgentLaunchResult {
   mode: 'spawned' | 'copy'
   agent: string
   command: string
+  permission_warning: string | null
 }
 
 /** Launch a configured agent in a terminal at the vault. Sends the agent NAME
@@ -387,16 +388,23 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
   return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
 }
 
-/** One agent's onboarding view: display name, whether litman supports it today
- * (only Claude Code so far — the rest are greyed roadmap placeholders),
- * whether its launch command is on PATH, and its official install page. Agent-
- * agnostic by contract: no per-agent skill path ever appears here. */
+/** One agent's onboarding view: display name, beginner-facing brand, whether
+ * litman supports it today
+ * (Claude Code, Antigravity CLI, Codex, Cursor and OpenCode — all supported
+ * today), whether its launch command is on PATH, its
+ * official install page, and `skill_state` — the server's content-level verdict
+ * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
+ * unsupported placeholder, which is never probed). Agents sharing a skills
+ * location legitimately share a state. Agent-agnostic by contract: no
+ * per-agent skill path ever appears here. */
 export interface AgentStatusEntry {
   name: string
   display: string
+  brand: string
   supported: boolean
   detected: boolean
   install_url: string
+  skill_state: 'absent' | 'stale' | 'current' | null
 }
 
 /** The agent-onboarding status — the single data source for the TopBar red dot
@@ -405,7 +413,8 @@ export interface AgentStatusEntry {
  * reports the resolved default agent's skill; `skill_state` is the server's
  * content-level verdict for it — 'stale' means installed but out of date with
  * the running litman (the panel offers an update, and the server folds it into
- * `needs_setup` so the red dot surfaces it). `default` is null until chosen. */
+ * `needs_setup` so the red dot surfaces it). Per-agent verdicts live on each
+ * entry. `default` is null until chosen. */
 export interface AgentStatus {
   agents: AgentStatusEntry[]
   default: string | null
@@ -420,16 +429,27 @@ export function fetchAgentStatus(): Promise<AgentStatus> {
   return getJSON<AgentStatus>('/api/agent/status')
 }
 
-/** Install or refresh the named agent's skill through the server-side catalog
- * adapter (the install overwrites, so the same call is the "Update skill"
- * action when `skill_state` is 'stale').
+/** Install or refresh the named agent's skill and its narrowly scoped `lit`
+ * command approval through server-side catalog adapters (the skill install
+ * overwrites, so the same call is the "Update skill" action when
+ * `skill_state` is 'stale').
  * Sends the agent NAME only — the install target lives entirely server-side
  * (ADR-020); any path in the body is ignored. An absent name targets the
  * default agent. Throws the backend's verbatim message (400) for an unknown /
  * unsupported agent. */
 export function installAgentSkill(
   name?: string,
-): Promise<{ ok: boolean; agent: string; files: string[]; mode: string }> {
+): Promise<{
+  ok: boolean
+  agent: string
+  files: string[]
+  mode: string
+  permission: {
+    mode: string
+    rule: string
+    warning: string | null
+  }
+}> {
   return mutateJSON('/api/agent/skill/install', 'POST', name ? { agent: name } : {})
 }
 

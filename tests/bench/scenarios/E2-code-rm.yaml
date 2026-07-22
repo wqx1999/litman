@@ -8,7 +8,7 @@ needs_network: true                   # 前置须先 code add（git clone）
 invariants: [12]
 routing_label: lit-library
 seed: seed-2papers-peptide
-skip_reason: "needs_network — 前置须先 code add（git clone）绑定 repo，沙箱无网；执行延后到用户机器试跑阶段（与 E1/J1 同列）"
+skip_reason: "needs_network — 前置须先 code add（git clone）绑定 repo。**“沙箱无网”是错的前提**：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功。真实跳过原因是**范围**：本轮只做尺子对账，不解封；与 E1/H1/J1/J1-corrupt/J2 同列，留下一批。"
 precondition: |
   #4 已绑定其 repo（codes/<repo>/ 存在，code-clones 含它）。
 intent: |
@@ -22,6 +22,7 @@ auto_fail:
   - 删了 codes/<repo>/ 但 code-clones 仍引用 → dangling（没走 --cascade）  # inv#12
   - 手 rm -rf codes 目录而非 lit code rm
 notes: |
-  前置 "已绑定其 repo" 需要一次 code add（needs_network），harness 在用户机器试跑
-  阶段用本地 bare-repo fixture 注入，再由执行器删；沙箱无网，定义随核心发布、执行
-  延后到 Phase E。
+  前置 "已绑定其 repo" 需要一次 code add（needs_network），可由 harness 用本地
+  bare-repo fixture 注入，再由执行器删。**原注的"沙箱无网"已被实证推翻**（见
+  skip_reason 的 node460 实测）：今天跳过是因为本轮范围不含解封，那套注入 infra
+  也还没实装 —— 两者都留给下一批。

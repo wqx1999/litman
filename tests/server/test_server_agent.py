@@ -15,18 +15,24 @@ absent (invariant #5). The autouse ``_isolate_registry`` fixture redirects
 
 from __future__ import annotations
 
+import asyncio
+import os
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("fastapi")
 
+from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
 from litman.core import agent_prefs, agents
 from litman.core.library import create_vault
 from litman.core.skill import list_bundled_skills
-from litman.server import create_app
+from litman.server import create_app, routes_agent
+from litman.server.routes_agent import agent_status
 
 
 @pytest.fixture
@@ -50,7 +56,10 @@ def _status(client: TestClient) -> dict:
 def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
-    assert resp.json() == {"agents": ["claude"], "default": "claude"}
+    assert resp.json() == {
+        "agents": ["claude", "agy", "codex", "cursor", "opencode"],
+        "default": "claude",
+    }
 
 
 def test_launch_unknown_agent_is_400(vault: Path) -> None:
@@ -65,6 +74,7 @@ def test_launch_ignores_body_command_field(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Malicious body: argv comes from the catalog; `command` is dead."""
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     spawned: list[tuple[list[str], Path]] = []
 
     def fake_spawn(argv: list[str], cwd: Path) -> bool:
@@ -81,6 +91,7 @@ def test_launch_ignores_body_command_field(
         "mode": "spawned",
         "agent": "claude",
         "command": "claude",
+        "permission_warning": None,
     }
     assert spawned == [(["claude"], vault)]
 
@@ -88,6 +99,7 @@ def test_launch_ignores_body_command_field(
 def test_launch_bodyless_uses_default_agent(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c: True)
     resp = _client(vault).post("/api/agent/launch")
     assert resp.status_code == 200
@@ -100,6 +112,7 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
 ) -> None:
     """No terminal available → mode "copy" with the `lit agent` wrapper. Only a
     SUPPORTED agent (claude, the default) reaches the copy-fallback."""
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
     monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c: False)
     resp = _client(vault).post("/api/agent/launch", json={})
     assert resp.json() == {
@@ -107,20 +120,81 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
         "mode": "copy",
         "agent": "claude",
         "command": "lit agent",
+        "permission_warning": None,
     }
+
+
+def test_launch_windows_passes_resolved_absolute_command_to_terminal(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
+    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        "litman.core.terminal.spawn_terminal",
+        lambda argv, _cwd: spawned.append(argv) or True,
+    )
+    async def body_agent_name(_request: object) -> str:
+        return "codex"
+
+    monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault=vault)))
+    body = asyncio.run(routes_agent.launch_agent(request))  # type: ignore[arg-type]
+    assert body["mode"] == "spawned"
+    assert spawned == [[codex]]
+
+
+def test_launch_rejects_agent_that_is_not_installed(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: False)
+    spawned: list[object] = []
+    monkeypatch.setattr(
+        "litman.core.terminal.spawn_terminal",
+        lambda argv, cwd: spawned.append((argv, cwd)) or True,
+    )
+
+    async def body_agent_name(_request: object) -> str:
+        return "codex"
+
+    monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault=vault)))
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(routes_agent.launch_agent(request))  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 409
+    assert "not installed" in exc_info.value.detail
+    assert spawned == []
 
 
 def test_launch_unsupported_agent_is_400(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A greyed placeholder (supported=False) is rejected before any PATH probe
-    / copy-fallback — inert on the launch axis too."""
+    """A ``supported=False`` placeholder is rejected with the distinct "not
+    available yet" message before any PATH probe / copy-fallback — inert on the
+    launch axis. No greyed agent ships in the catalog today, so a synthetic one
+    is injected to exercise the dormant gating branch (not a live catalog
+    instance)."""
+    placeholder = agents.AgentSpec(
+        name="future",
+        display="Future Agent",
+        brand="Future Corp",
+        launch="future",
+        supported=False,
+        install_url="https://example.invalid/future",
+        detect_bin="future",
+        skill_state=agents._unsupported("future"),
+        install_skill=agents._unsupported("future"),
+        install_lit_permission=agents._unsupported("future"),
+    )
+    monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     spawned: list[object] = []
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
         lambda a, c: spawned.append((a, c)) or True,
     )
-    resp = _client(vault).post("/api/agent/launch", json={"agent": "codex"})
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "future"})
     assert resp.status_code == 400
     assert "not available yet" in resp.json()["detail"]
     assert spawned == []  # never reached the spawn path
@@ -140,22 +214,37 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
     body = _status(_client(vault))
     assert [e["name"] for e in body["agents"]] == [
         "claude",
+        "agy",
         "codex",
         "cursor",
-        "gemini",
         "opencode",
     ]
     supported = {e["name"]: e["supported"] for e in body["agents"]}
     assert supported == {
         "claude": True,
-        "codex": False,
-        "cursor": False,
-        "gemini": False,
-        "opencode": False,
+        "agy": True,
+        "codex": True,
+        "cursor": True,
+        "opencode": True,
     }
     for e in body["agents"]:
-        assert set(e) == {"name", "display", "supported", "detected", "install_url"}
+        assert set(e) == {
+            "name",
+            "display",
+            "brand",
+            "supported",
+            "detected",
+            "install_url",
+            "skill_state",
+        }
         assert isinstance(e["detected"], bool)
+        # Per-agent skill verdict: every catalog agent is supported today, so
+        # each reads a real verdict. The null branch is the latent
+        # supported=False placeholder contract (no such entry ships now).
+        if e["supported"]:
+            assert e["skill_state"] in {"absent", "stale", "current"}
+        else:
+            assert e["skill_state"] is None
     # top-level fields present
     assert "default" in body
     assert isinstance(body["skill_installed"], bool)
@@ -172,13 +261,145 @@ def test_status_sets_no_store_cache_header(vault: Path) -> None:
     assert resp.headers["cache-control"] == "no-store"
 
 
-def test_status_never_leaks_claude_skill_path(vault: Path) -> None:
-    """The ~/.claude/skills filesystem path must never appear in the status
-    contract (the install-url is docs.claude.com, which is fine — the red line
-    is the skills *directory*, not the substring "claude")."""
+def test_status_recheck_detects_cli_added_to_live_windows_registry_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same running server sees a CLI installed between two status calls."""
+    registry_paths: list[str] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PATH", r"C:\Windows\System32")
+    monkeypatch.setattr(
+        agents, "_windows_registry_path_values", lambda: registry_paths.copy()
+    )
+    monkeypatch.setattr(
+        agents.shutil,
+        "which",
+        lambda name: (
+            rf"C:\new-agent-bin\{name}.exe"
+            if r"C:\new-agent-bin" in os.environ["PATH"]
+            else None
+        ),
+    )
+    monkeypatch.setattr(agents, "aggregate_skill_state", lambda *a, **k: "absent")
+
+    before = agent_status(Response())
+    assert not any(entry["detected"] for entry in before["agents"])
+
+    registry_paths.append(r"C:\new-agent-bin")
+    after = agent_status(Response())
+    assert all(entry["detected"] for entry in after["agents"])
+
+
+def test_status_never_leaks_skill_paths(vault: Path) -> None:
+    """No skills filesystem path — neither ~/.claude/skills nor the shared
+    ~/.agents/skills — may appear anywhere in the status contract (the
+    install-url is docs.claude.com, which is fine — the red line is the
+    skills *directory*, not the substring "claude")."""
     raw = _client(vault).get("/api/agent/status").text
     assert ".claude/skills" not in raw
+    assert ".agents/skills" not in raw
     assert "/skills" not in raw
+
+
+def test_status_greyed_placeholder_reads_null_skill_state(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``supported=False`` catalog entry reports ``skill_state: null`` — its
+    adapter is never probed. No such agent ships today, so a synthetic
+    placeholder is injected to exercise the dormant status branch (the
+    ``else None`` output the api.ts contract still advertises as ``| null``)."""
+    placeholder = agents.AgentSpec(
+        name="future",
+        display="Future Agent",
+        brand="Future Corp",
+        launch="future",
+        supported=False,
+        install_url="https://example.invalid/future",
+        detect_bin="future",
+        skill_state=agents._unsupported("future"),
+        install_skill=agents._unsupported("future"),
+        install_lit_permission=agents._unsupported("future"),
+    )
+    monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
+    entries = {e["name"]: e for e in _status(_client(vault))["agents"]}
+    assert entries["future"]["supported"] is False
+    assert entries["future"]["skill_state"] is None  # never probed
+    # a live supported entry still reports a concrete verdict
+    assert entries["claude"]["skill_state"] in {"absent", "stale", "current"}
+
+
+def test_status_per_agent_skill_state_is_independent(vault: Path) -> None:
+    """Per-agent skill_state reads each agent's own directory. cursor, codex,
+    and opencode share the open-standard ~/.agents/skills dir, so installing
+    there flips all three of their rows together; claude's and agy's own dirs
+    stay independent. Every catalog agent is supported now, so each row reads a
+    real verdict — no null placeholder remains. Drives the REAL resolvers +
+    copies (conftest isolates all three dirs at tmp paths)."""
+    from litman.core import skill
+
+    client = _client(vault)
+
+    def states() -> dict[str, str | None]:
+        return {
+            e["name"]: e["skill_state"] for e in _status(client)["agents"]
+        }
+
+    before = states()
+    assert before["claude"] == "absent"
+    assert before["agy"] == "absent"
+    assert before["cursor"] == "absent"
+    assert before["codex"] == "absent"
+    assert before["opencode"] == "absent"
+
+    skill.install_all_skills(parent_dir=skill.standard_skills_parent_dir())
+    after_standard = states()
+    # The shared open-standard dir flips cursor, codex AND opencode together.
+    assert after_standard["cursor"] == "current"
+    assert after_standard["codex"] == "current"
+    assert after_standard["opencode"] == "current"
+    assert after_standard["claude"] == "absent"  # untouched
+    assert after_standard["agy"] == "absent"  # untouched
+
+    skill.install_all_skills(parent_dir=skill.default_skills_parent_dir())
+    assert states()["claude"] == "current"
+    skill.install_all_skills(
+        parent_dir=skill.antigravity_skills_parent_dir()
+    )
+    assert states()["agy"] == "current"
+
+    # Tamper the standard-dir copy: cursor, codex and opencode all flip stale
+    # together (shared dir); claude and agy are unaffected.
+    tampered = (
+        skill.standard_skills_parent_dir() / "lit-library" / "SKILL.md"
+    )
+    tampered.write_text("OUTDATED\n", encoding="utf-8")
+    tampered_states = states()
+    assert tampered_states["cursor"] == "stale"
+    assert tampered_states["codex"] == "stale"
+    assert tampered_states["opencode"] == "stale"
+    assert tampered_states["claude"] == "current"
+    assert tampered_states["agy"] == "current"
+
+
+def test_skill_install_agy_lands_in_antigravity_dir(vault: Path) -> None:
+    """POST /api/agent/skill/install {"agent": "agy"} really copies the
+    bundled skills into the Antigravity CLI dir (no adapter stubbed) and
+    the other two locations stay untouched."""
+    from litman.core import skill
+
+    client = _client(vault)
+    resp = client.post("/api/agent/skill/install", json={"agent": "agy"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["agent"] == "agy"
+    assert "SKILL.md" in body["files"]
+
+    antigravity = skill.antigravity_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (antigravity / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+    assert not skill.standard_skills_parent_dir().exists()
 
 
 # ---------------------------------------------------------------------------
@@ -271,15 +492,15 @@ def test_skill_install_ignores_body_target_field(
         "agent": "claude",
         "files": ["SKILL.md"],
         "mode": "created",
+        "permission": {
+            "mode": "unchanged",
+            "rule": "test-isolated",
+            "warning": None,
+        },
     }
     # The installer got ONLY the server-side overwrite flag — nothing from the
     # body (target/command) reached it.
     assert captured == {"overwrite": True, "kw": {}}
-
-
-def test_skill_install_unsupported_agent_is_400(vault: Path) -> None:
-    resp = _client(vault).post("/api/agent/skill/install", json={"agent": "codex"})
-    assert resp.status_code == 400
 
 
 def test_skill_install_unknown_agent_is_400(vault: Path) -> None:
@@ -292,14 +513,24 @@ def test_put_default_unknown_agent_is_400(vault: Path) -> None:
     assert resp.status_code == 400
 
 
-def test_put_default_unsupported_agent_is_400(vault: Path) -> None:
-    resp = _client(vault).put("/api/agent/default", json={"agent": "codex"})
-    assert resp.status_code == 400
-
-
 def test_put_default_missing_agent_is_400(vault: Path) -> None:
     resp = _client(vault).put("/api/agent/default", json={})
     assert resp.status_code == 400
+
+
+def test_put_default_rejects_agent_that_is_not_installed(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: False)
+    async def body_agent_name(_request: object) -> str:
+        return "codex"
+
+    monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(routes_agent.set_default_agent(object()))  # type: ignore[arg-type]
+    assert exc_info.value.status_code == 409
+    assert "not installed" in exc_info.value.detail
+    assert agent_prefs.load_default_agent() is None
 
 
 def test_put_default_persists_and_status_reflects(
@@ -379,4 +610,35 @@ def test_needs_setup_false_when_detected_and_skill_installed(
     body = _status(_client(vault))
     assert body["skill_installed"] is True
     assert body["skill_state"] == "current"
+    assert body["needs_setup"] is False
+
+
+def test_needs_setup_default_agy_follows_antigravity_dir(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=agy row of the needs_setup matrix: the top-level skill_state
+    follows the DEFAULT agent's directory (the Antigravity CLI dir), not
+    claude's — real resolvers + real copies, only `detect` stubbed."""
+    from litman.core import skill
+
+    monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: "agy")
+    monkeypatch.setattr(agents, "detect", lambda spec: True)
+    client = _client(vault)
+
+    body = _status(client)
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+    # Installing into the CLAUDE dir must not satisfy an agy default.
+    skill.install_all_skills(parent_dir=skill.default_skills_parent_dir())
+    body = _status(client)
+    assert body["skill_state"] == "absent"
+    assert body["needs_setup"] is True
+
+    skill.install_all_skills(
+        parent_dir=skill.antigravity_skills_parent_dir()
+    )
+    body = _status(client)
+    assert body["skill_state"] == "current"
+    assert body["skill_installed"] is True
     assert body["needs_setup"] is False

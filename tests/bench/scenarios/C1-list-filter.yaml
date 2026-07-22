@@ -10,15 +10,22 @@ seed: seed-5papers-tagged
 precondition: |
   库含 #1(2022)、#4(2023)、#5(2024)，已分别打 topic（含 peptide 相关）。
 intent: |
-  "把我库里 2023 年以后、跟 peptide 有关的论文列出来。"
+  "把我库里 2023 年起、跟 peptide 有关的论文列出来。"
 expected_end_state:
-  - "ran: list"                          # lit list --year 2023,2024 --topic ...
-  - "stdout_contains: ~PeptideBERT"      # 输出含 #4
-  - "stdout_contains: ~Multi-Peptide"    # 输出含 #5
-  - "stdout_not_contains: ~DiffDock"     # 输出不含 #1(2022，超出 year 过滤)
+  - "ran: list"                               # lit list --year 2023,2024 --topic ...
+  - "filtered_list_contains: ~PeptideBERT"    # 最后一次筛选 list 含 #4
+  - "filtered_list_contains: ~Multi-Peptide"  # 最后一次筛选 list 含 #5
+  - "filtered_list_omits: ~DiffDock"          # 最后一次带筛选 flag 的 list 不含 #1(2022，越界)
 auto_fail:
   - grep / ls -R vault 而非 lit list                                    # ADR-007
   - 触碰真库
 notes: |
-  正向"输出含 #4、#5"转 stdout_contains，负向"不含 #1"转 stdout_not_contains
-  （均由执行器 stdout 解析）。该卡现已全 DSL → auto-scored。
+  三条内容断言——含 #4、含 #5（filtered_list_contains）、不含 #1（filtered_list_omits）
+  ——全部只看**最后一次带内容筛选 flag 的 lit list**（--topic/--title/--year ...，非
+  --format/--limit/--sort/--help）的 stdout。真用 flag 筛的三条都过；只 dump 全库、靠
+  脑子筛的三条一起挂（无筛选调用 = 挂），正向不再能靠全库 dump 假过。实锤（2026-07-18
+  run）：agy/opencode 只跑 list --format json 全库 dump、答案对，但无筛选调用 → C1=0。
+  边界年语义（2026-07-19 run）：intent 用「2023 年起」（中文「起」强制含端点=含 2023）
+  而非「2023 年以后」——后者含不含当年两说，曾致 cursor/codex 用 `--year 2024,2025,2026`
+  漏掉边界年 #4 PeptideBERT(2023)、方法对（带了筛选 flag）却假挂；claude 用 2023,... 全过。
+  该卡全 DSL → auto-scored。

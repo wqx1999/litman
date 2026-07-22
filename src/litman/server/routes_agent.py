@@ -21,20 +21,22 @@ exclusively from the server-side catalog; any ``command`` / ``target`` /
 ``path`` field in a request body is ignored and never executed — the
 localhost-bound server must not become a remote-code-execution surface.
 
-RED LINE: the Claude-specific ``~/.claude/skills`` path stays inside the
-catalog's claude adapter — it never appears in a response or the status
-contract, so new agents can be added without changing this file's shape.
+RED LINE: the per-agent skills paths (the Claude Code dir, the open-standard
+dir, Antigravity CLI's app-data dir) stay inside the catalog adapters — they
+never appear in a response or the status contract, so new agents can be
+added without changing this file's shape.
 
-None of these endpoints write to the vault: the skill install writes
-``~/.claude/skills`` and the default write goes to the machine-level
-``preferences.yaml`` — neither is a TRUTH/DERIVED vault surface, so
-invariant #16 (the WebUI structured-write whitelist) does not apply and there
-is no drift-ledger pair to register.
+None of these endpoints write to the vault: the skill install writes the
+agent's skills directory under the user's home and the default write goes to
+the machine-level ``preferences.yaml`` — neither is a TRUTH/DERIVED vault
+surface, so invariant #16 (the WebUI structured-write whitelist) does not
+apply and there is no drift-ledger pair to register.
 """
 
 from __future__ import annotations
 
 import shlex
+import sys
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -106,23 +108,56 @@ async def launch_agent(request: Request) -> dict[str, object]:
             status_code=400,
             detail=f"Agent '{agent_name}' is not available yet.",
         )
+    if not agents.detect(spec):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Agent '{agent_name}' is not installed or is not available "
+                "on PATH. Install it, then recheck."
+            ),
+        )
+
+    # Skills may already be present through another agent's shared directory,
+    # while permissions are always agent-native. Heal this agent's own rule on
+    # launch so "Ready" plus "Set default" cannot leave it prompting forever.
+    permission = spec.install_lit_permission()
+
+    # A CLI may have been installed while this long-running GUI server was
+    # open. On Windows, merge the live registry PATH before launching so the
+    # child terminal sees the same command that Recheck just detected.
+    agents.refresh_windows_path()
 
     # Module-attribute access (not a from-import) so tests can stub the spawn
     # at its home module — the invariant-#5 purge test drops litman.server*
     # from sys.modules, orphaning any name copied at import.
     argv = shlex.split(spec.launch)
+    if sys.platform == "win32" and argv:
+        # Pass the absolute executable/shim path. Windows Terminal is commonly
+        # a long-running broker with an environment older than this server's;
+        # asking that broker to resolve a bare "codex" can therefore fail even
+        # immediately after Recheck found codex on the refreshed PATH.
+        resolved = agents.resolve_launch(spec)
+        if resolved is not None:
+            argv[0] = resolved
     if argv and terminal.spawn_terminal(argv, request.app.state.vault):
         return {
             "ok": True,
             "mode": "spawned",
             "agent": agent_name,
             "command": spec.launch,
+            "permission_warning": permission["warning"],
         }
 
     # Copy fallback: hand back the `lit agent` wrapper (correct from any cwd),
     # not the raw command (which is only correct inside the vault).
     lit_line = "lit agent" if agent_name == default else f"lit agent {agent_name}"
-    return {"ok": True, "mode": "copy", "agent": agent_name, "command": lit_line}
+    return {
+        "ok": True,
+        "mode": "copy",
+        "agent": agent_name,
+        "command": lit_line,
+        "permission_warning": permission["warning"],
+    }
 
 
 @router.get("/agent/status")
@@ -135,12 +170,17 @@ def agent_status(response: Response) -> dict[str, object]:
         needs_setup == NOT( default chosen AND supported AND detected AND
                             skill_installed AND skill up to date )
 
-    ``skill_state`` is the content-level verdict for the resolved default's
-    skill: ``"absent"`` (nothing installed), ``"stale"`` (installed but out of
-    date with the running litman — the panel offers an update, and it is part
-    of ``needs_setup`` so the red dot surfaces it), or ``"current"``.
-    ``skill_installed`` (== state != "absent") stays alongside for the panel's
-    install-vs-update branch.
+    Each catalog entry carries its own ``skill_state``: the content-level
+    verdict for THAT agent's skill install — ``"absent"`` (nothing
+    installed), ``"stale"`` (installed but out of date with the running
+    litman), ``"current"``, or ``null`` for a ``supported=False`` placeholder
+    (never probed). The panel's per-card install/update/ready branch reads
+    this per-row value; agents sharing a skills directory legitimately share
+    a state.
+
+    The top-level ``skill_state`` is the resolved default's verdict, kept for
+    the ``needs_setup`` formula and older consumers. ``skill_installed``
+    (== state != "absent") stays alongside for the same reason.
 
     ``Cache-Control: no-store`` is mandatory: ``detected`` (is the agent binary
     on PATH?) and ``skill_state`` are live machine state that flips the
@@ -154,23 +194,25 @@ def agent_status(response: Response) -> dict[str, object]:
         {
             "name": spec.name,
             "display": spec.display,
+            "brand": spec.brand,
             "supported": spec.supported,
             "detected": agents.detect(spec),
             "install_url": spec.install_url,
+            # Per-agent skill verdict; placeholders are never probed (their
+            # adapters loud-fail by design).
+            "skill_state": spec.skill_state() if spec.supported else None,
         }
         for spec in agents.AGENTS
     ]
 
     default = agent_prefs.load_default_agent()
 
-    # skill_state reports the *resolved* default's skill so the panel can
-    # show "Ready" vs "Install skill" vs "Update skill" even before the user
-    # has committed a default. Only a supported agent has a skill adapter to
-    # probe.
-    probe = agents.get_agent(default or agents.default_agent_name())
-    skill_state = (
-        probe.skill_state() if (probe and probe.supported) else "absent"
-    )
+    # The top-level skill_state reports the *resolved* default's skill so the
+    # red-dot formula works even before the user has committed a default.
+    # Reuse the per-entry probe results (an unknown or unsupported resolved
+    # name maps to None → "absent", same as before entries carried states).
+    states = {e["name"]: e["skill_state"] for e in entries}
+    skill_state = states.get(default or agents.default_agent_name()) or "absent"
     skill_installed = skill_state != "absent"
 
     default_spec = agents.get_agent(default) if default else None
@@ -196,9 +238,10 @@ def agent_status(response: Response) -> dict[str, object]:
 @router.post("/agent/skill/install")
 async def install_agent_skill(request: Request) -> dict[str, object]:
     """Install or refresh the named agent's skill (default: the resolved
-    default agent). The adapter installs with overwrite, so the same call
-    serves first-time onboarding and the "Update skill" action for a stale
-    install; files the user added next to the skill are never touched.
+    default agent), then install that agent's narrowly scoped native command
+    rule for ``lit``. The skill adapter installs with overwrite, so the same
+    call serves first-time onboarding and the "Update skill" action for a
+    stale install; files the user added next to the skill are never touched.
 
     Body JSON (optional): ``{"agent": "<name>"}`` — ONLY the name is read; the
     install target lives entirely in the catalog adapter (RED LINE). Unknown
@@ -216,13 +259,24 @@ async def install_agent_skill(request: Request) -> dict[str, object]:
     # shape WITHOUT the per-skill ``target`` Path (keeps ~/.claude/skills out
     # of the response contract).
     results = spec.install_skill()
+    permission = spec.install_lit_permission()
     files = [f for result in results for f in result.get("files", [])]
     mode = (
         "overwritten"
         if any(result.get("mode") == "overwritten" for result in results)
         else "created"
     )
-    return {"ok": True, "agent": name, "files": files, "mode": mode}
+    return {
+        "ok": True,
+        "agent": name,
+        "files": files,
+        "mode": mode,
+        "permission": {
+            "mode": permission["mode"],
+            "rule": permission["rule"],
+            "warning": permission["warning"],
+        },
+    }
 
 
 @router.put("/agent/default")
@@ -237,6 +291,15 @@ async def set_default_agent(request: Request) -> dict[str, object]:
         raise HTTPException(
             status_code=400,
             detail='Body must name an agent: {"agent": "<name>"}.',
+        )
+    spec = agents.get_agent(name)
+    if spec is not None and spec.supported and not agents.detect(spec):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Agent '{name}' cannot be the default because it is not "
+                "installed or is not available on PATH."
+            ),
         )
     try:
         agent_prefs.save_default_agent(name)

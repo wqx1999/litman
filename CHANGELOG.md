@@ -5,6 +5,60 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.0 — unreleased
+
+### Added
+
+- **Press `R` in the GUI to refresh the current library from disk.** It uses
+  the same resync as the toolbar refresh button; `Alt+R` still marks a paper as
+  read, and `Ctrl+R`/`Cmd+R` remains the browser's page reload.
+- **Five AI agents are supported:** Claude Code, Antigravity CLI, Codex,
+  Cursor, and OpenCode. All are selectable in the GUI agent manager and
+  launchable with `lit agent <name>`. Codex, Cursor, and OpenCode share the
+  Agent Skills open-standard directory `~/.agents/skills`; Claude Code keeps
+  `~/.claude/skills`, and Antigravity CLI uses its own
+  `~/.gemini/antigravity-cli/skills` directory.
+- **The GUI agent manager now shows familiar brands next to agent names.**
+  Labels such as “ChatGPT · OpenAI”, “Google”, and “Claude · Anthropic” help
+  newcomers recognize Codex, Antigravity CLI, and Claude Code.
+- **`lit install-skill --agent <name>`** installs the skills into the named
+  agent's directory. With no flags the command now follows your default agent;
+  users who never changed the default get exactly the previous behaviour.
+- **Installed skills can run `lit` without repeated permission prompts.**
+  Skill onboarding and launches through Litman merge or heal a narrowly scoped
+  `lit` command allow rule in the selected agent's native permission store.
+  This remains per-agent even when agents share one skill directory; Litman
+  never enables a global bypass. Malformed policy and conflicts that cannot be
+  normalized without changing unrelated permissions are left untouched and
+  reported; Antigravity's redundant catch-all ask rule is removed only in its
+  default request-review mode, which still asks for every other unlisted
+  command. Strict mode is preserved and reported because it intentionally
+  ignores terminal allow rules. Claude's `CLAUDE_CONFIG_DIR`, Cursor's
+  `CURSOR_CONFIG_DIR`/`XDG_CONFIG_HOME`, and OpenCode's `OPENCODE_CONFIG` are
+  honored so both the skill and permission rule reach the active profile.
+- **Skill copies for your other agents stay fresh.** A bare
+  `lit install-skill`, the setup wizard's skill step and `lit health-check
+  --fix` also refresh out-of-date litman skills found in the other agents'
+  directories — one `[Y/n]` per copy in interactive runs, automatic under
+  `--fix`; files you added next to a skill are always kept. Runs with an
+  explicit `--agent`/`--parent-dir` touch only what they name.
+- **`lit setup` asks which agent you use** (step 2) and records the answer as
+  the machine-level default before installing its skill — pressing Enter keeps
+  the previous Claude Code flow.
+
+### Changed
+
+- The agent toolbar button and `~` now launch the configured default directly.
+  Right-click the same button or press `Ctrl+~` to manage agents and change the
+  default; agents that are not installed can no longer be launched or selected
+  as the default.
+- The GUI agent panel shows each supported agent's own install/update/ready
+  state instead of repeating the default agent's state on every card.
+- `lit health-check` probes skill drift in the default agent's skills
+  directory (and `--fix` refreshes that directory, plus stale copies in the
+  other known directories). `lit uninstall` still sweeps every known skills
+  directory.
+
 ## 1.2.1 — 2026-07-21
 
 ### Added

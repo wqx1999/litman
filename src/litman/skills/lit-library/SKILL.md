@@ -117,7 +117,7 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
 
 1. **Read the PDF** — a *must-achieve* goal. Walk this ladder until one rung works:
 
-   1. **Claude Code `Read` tool** (default): `Read(pdf_path, pages="1-3")`. PDFs are natively handled via CC's multimodal pipeline.
+   1. **Your agent's file-read tool** (default; in Claude Code: `Read(pdf_path, pages="1-3")`): PDFs are natively handled when the agent's pipeline is multimodal.
    2. **PDF-related MCP tool** (for non-multimodal backends): scan your `available tools` for any whose description mentions PDF / document / extract.
    3. **`lit pdf-text` — deterministic fallback, no model / network / system tool**: `lit pdf-text <pdf> --pages 1-3` (omit `--pages` for the whole doc). litman ships pypdf as a hard dependency, so this works wherever `lit` runs — it does NOT need poppler / pdftoppm. Exit code 3 means "no extractable text layer" (scanned / image-only PDF): go back up to a multimodal reader or OCR, don't retry here.
    4. **Only if every rung above failed** (no multimodal read, no PDF MCP, and `lit pdf-text` returned no text): name the rung that failed and the exact gap, then **surface** OS-appropriate install commands for the user to run (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`) or suggest a vision-capable model. **Show these commands — never execute an install yourself.**

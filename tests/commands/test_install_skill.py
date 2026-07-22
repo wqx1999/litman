@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,6 @@ from litman.core.skill import (
     list_bundled_skills,
     skill_status,
 )
-
 
 # ---------------------------------------------------------------------------
 # Bundled-resource discovery
@@ -522,6 +522,313 @@ def test_cli_install_skill_help_mentions_options() -> None:
     result = runner.invoke(cli, ["install-skill", "--help"])
     assert result.exit_code == 0
     assert "--skill" in result.output
+    assert "--agent" in result.output
     assert "--parent-dir" in result.output
     assert "--force" in result.output
     assert "optional" in result.output.lower()
+    # No hardcoded skills path in the help — the default follows the
+    # default agent, resolved at run time.
+    assert ".claude/skills" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI: --agent + default-agent resolution (task-multi-agent-skills)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_install_skill_agent_cursor_writes_standard_dir() -> None:
+    """--agent cursor resolves the open-standard dir through the catalog
+    (all three resolvers isolated at tmp by the conftest fixture)."""
+    from litman.core import skill
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "cursor"])
+    assert result.exit_code == 0, result.output
+    standard = skill.standard_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (standard / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+    assert not skill.antigravity_skills_parent_dir().exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_cli_agent_install_also_adds_only_that_agents_lit_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "cursor"])
+
+    assert result.exit_code == 0, result.output
+    assert "lit command approval created" in result.output
+    config = json.loads(
+        (home / ".cursor" / "cli-config.json").read_text(encoding="utf-8")
+    )
+    assert config == {"permissions": {"allow": ["Shell(lit)"]}}
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ".codex" / "rules" / "litman.rules").exists()
+
+
+def test_cli_install_skill_agent_agy_writes_antigravity_dir() -> None:
+    """--agent agy resolves the Antigravity CLI app-data dir through the
+    catalog — NOT the open-standard dir, which agy does not read."""
+    from litman.core import skill
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "agy"])
+    assert result.exit_code == 0, result.output
+    antigravity = skill.antigravity_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (antigravity / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+    assert not skill.standard_skills_parent_dir().exists()
+
+
+def test_cli_install_skill_agent_and_parent_dir_conflict(
+    tmp_path: Path,
+) -> None:
+    result = CliRunner().invoke(
+        cli,
+        [
+            "install-skill",
+            "--agent",
+            "cursor",
+            "--parent-dir",
+            str(tmp_path / "skills"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert not (tmp_path / "skills").exists()
+
+
+def test_cli_install_skill_agent_unknown_name_lists_supported() -> None:
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "nope"])
+    assert result.exit_code != 0
+    # click.Choice error names the valid agents (the full supported set).
+    assert "claude" in result.output
+    assert "agy" in result.output
+    assert "codex" in result.output
+    assert "cursor" in result.output
+    assert "opencode" in result.output
+
+
+def test_cli_install_skill_bare_defaults_to_claude_dir() -> None:
+    """No flags, no recorded default → the resolved default is claude and
+    the skills land in the Claude Code dir (byte-for-byte the pre-1.3
+    behaviour)."""
+    from litman.core import skill
+
+    result = CliRunner().invoke(cli, ["install-skill"])
+    assert result.exit_code == 0, result.output
+    claude_dir = skill.default_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (claude_dir / name / "SKILL.md").is_file()
+    assert not skill.standard_skills_parent_dir().exists()
+    assert not skill.antigravity_skills_parent_dir().exists()
+
+
+def test_cli_install_skill_bare_follows_recorded_default() -> None:
+    """With the machine default set to agy, the bare command installs into
+    the Antigravity CLI dir — otherwise it would silently install to the
+    wrong place for that user."""
+    from litman.core import agent_prefs, skill
+
+    agent_prefs.save_default_agent("agy")  # registry dir is isolated
+    result = CliRunner().invoke(cli, ["install-skill"])
+    assert result.exit_code == 0, result.output
+    antigravity = skill.antigravity_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (antigravity / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+    assert not skill.standard_skills_parent_dir().exists()
+
+
+def test_cli_install_skill_explicit_parent_dir_still_wins(
+    tmp_path: Path,
+) -> None:
+    """--parent-dir stays the manual escape hatch: an explicit path is used
+    verbatim, whatever the recorded default agent."""
+    from litman.core import agent_prefs
+
+    agent_prefs.save_default_agent("agy")
+    parent = tmp_path / "elsewhere"
+    result = CliRunner().invoke(
+        cli, ["install-skill", "--parent-dir", str(parent)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (parent / "lit-library" / "SKILL.md").is_file()
+
+
+# ---------------------------------------------------------------------------
+# CLI: cross-directory refresh sweep (bare runs only)
+# ---------------------------------------------------------------------------
+
+
+def _tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "litman.commands.install_skill._stdin_is_tty", lambda: True
+    )
+
+
+def _plant_stale_standard_copy() -> Path:
+    """Install the bundle into the (conftest-isolated) open-standard dir and
+    tamper one file — the classic 'stale copy for another agent'. Returns
+    the tampered SKILL.md path."""
+    from litman.core import skill
+
+    standard = skill.standard_skills_parent_dir()
+    install_all_skills(parent_dir=standard)
+    stale_md = standard / "lit-library" / "SKILL.md"
+    stale_md.write_text("OLD OTHER-AGENT COPY\n", encoding="utf-8")
+    return stale_md
+
+
+def test_sweep_tty_enter_refreshes_other_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare interactive run: a stale copy in ANOTHER agent's dir gets its
+    own [Y/n] prompt whose default (plain Enter) refreshes it — a stale
+    shadow copy is one keypress from fresh."""
+    stale_md = _plant_stale_standard_copy()
+    _tty(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["install-skill"], input="\n")
+    assert result.exit_code == 0, result.output
+    assert "Also refreshed" in result.output
+    text = stale_md.read_text(encoding="utf-8")
+    assert "OLD OTHER-AGENT COPY" not in text
+    assert "name: lit-library" in text
+
+
+def test_sweep_tty_decline_leaves_other_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stale_md = _plant_stale_standard_copy()
+    _tty(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["install-skill"], input="n\n")
+    assert result.exit_code == 0, result.output
+    assert stale_md.read_text(encoding="utf-8") == "OLD OTHER-AGENT COPY\n"
+    assert "Skipped" in result.output
+
+
+def test_sweep_non_tty_reports_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-interactive without --force: the main install proceeds (its own
+    target is not stale) but the other dir's stale copy is only reported,
+    never overwritten silently — same contract as the main target's
+    non-TTY stale gate."""
+    stale_md = _plant_stale_standard_copy()
+
+    result = CliRunner().invoke(cli, ["install-skill"])
+    assert result.exit_code == 0, result.output
+    assert stale_md.read_text(encoding="utf-8") == "OLD OTHER-AGENT COPY\n"
+    assert "left untouched" in result.output
+    assert "--force" in result.output
+
+
+def test_sweep_force_refreshes_without_prompt() -> None:
+    stale_md = _plant_stale_standard_copy()
+
+    result = CliRunner().invoke(cli, ["install-skill", "--force"])
+    assert result.exit_code == 0, result.output
+    assert "Also refreshed" in result.output
+    assert "OLD OTHER-AGENT COPY" not in stale_md.read_text(encoding="utf-8")
+
+
+def test_sweep_skipped_with_explicit_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--agent is a precise instruction: no sweep, no prompt, the other
+    dir's stale copy stays (an unconsumed confirm would abort — input is
+    deliberately empty)."""
+    stale_md = _plant_stale_standard_copy()
+    _tty(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "claude"])
+    assert result.exit_code == 0, result.output
+    assert stale_md.read_text(encoding="utf-8") == "OLD OTHER-AGENT COPY\n"
+    assert "Also refreshed" not in result.output
+    assert "left untouched" not in result.output
+
+
+def test_sweep_skipped_with_explicit_parent_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale_md = _plant_stale_standard_copy()
+    _tty(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli, ["install-skill", "--parent-dir", str(tmp_path / "elsewhere")]
+    )
+    assert result.exit_code == 0, result.output
+    assert stale_md.read_text(encoding="utf-8") == "OLD OTHER-AGENT COPY\n"
+    assert "Also refreshed" not in result.output
+
+
+def test_sweep_never_first_installs_absent_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing installed elsewhere → the sweep neither prompts (empty input
+    would abort a confirm) nor creates the other directories: absent is a
+    respected opt-out."""
+    from litman.core import skill
+
+    _tty(monkeypatch)
+    result = CliRunner().invoke(cli, ["install-skill"], input="")
+    assert result.exit_code == 0, result.output
+    assert not skill.standard_skills_parent_dir().exists()
+    assert not skill.antigravity_skills_parent_dir().exists()
+
+
+def test_sweep_leaves_linked_copies_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A linked skill dir in another agent's location is dev-managed:
+    diverging is the point, the sweep neither prompts nor copies through
+    the link."""
+    from litman.core import skill
+
+    real = tmp_path / "checkout" / "lit-library"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("DEV COPY\n", encoding="utf-8")
+    standard = skill.standard_skills_parent_dir()
+    standard.mkdir(parents=True)
+    (standard / "lit-library").symlink_to(real)
+    _tty(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["install-skill"], input="")
+    assert result.exit_code == 0, result.output
+    assert (real / "SKILL.md").read_text(encoding="utf-8") == "DEV COPY\n"
+
+
+@pytest.mark.no_skills_isolation
+def test_sweep_closes_cursor_claude_shadowing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """default=cursor + a dirty ~/.claude copy — the copy Cursor actually
+    prefers over the open-standard dir — must be one Enter from fresh on a
+    bare install-skill run, or Cursor keeps executing the stale skill while
+    every status view shows green. Drives the REAL resolvers ($HOME
+    redirect only)."""
+    from litman.core import agent_prefs
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    install_all_skills(parent_dir=home / ".claude" / "skills")
+    claude_md = home / ".claude" / "skills" / "lit-library" / "SKILL.md"
+    claude_md.write_text("STALE SHADOWING COPY\n", encoding="utf-8")
+    install_all_skills(parent_dir=home / ".agents" / "skills")
+    agent_prefs.save_default_agent("cursor")  # registry dir is isolated
+    _tty(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["install-skill"], input="\n")
+    assert result.exit_code == 0, result.output
+    assert "up to date" in result.output  # the cursor dir itself was fine
+    assert "Also refreshed" in result.output
+    text = claude_md.read_text(encoding="utf-8")
+    assert "STALE SHADOWING COPY" not in text
+    assert "name: lit-library" in text
