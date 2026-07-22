@@ -68,6 +68,7 @@ const SECTIONS: Section[] = [
       { chords: [['L']], action: 'Toggle light / dark theme' },
       { chords: [['[']], action: 'Toggle the left panel' },
       { chords: [[']']], action: 'Toggle the right cockpit' },
+      { chords: [['R']], action: 'Refresh from disk' },
       { chords: [['?']], action: 'Toggle this cheat sheet' },
     ],
   },
@@ -77,8 +78,11 @@ const SECTIONS: Section[] = [
     // size, and the tilde is what the eye finds on the physical key. The
     // dispatcher accepts the key with or without Shift, so this label cannot
     // teach a press that does nothing.
-    note: 'The key left of "1", with or without Shift. Opens setup when no agent is configured.',
-    rows: [{ chords: [['~']], action: 'Launch your AI agent' }],
+    note: 'The key left of "1", with or without Shift. Plain launch opens setup when the default is not ready.',
+    rows: [
+      { chords: [['~']], action: 'Launch the default AI agent' },
+      { chords: [['Ctrl', '~']], action: 'Manage agents / change default' },
+    ],
   },
   {
     title: 'Papers list & search',

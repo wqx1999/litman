@@ -20,11 +20,14 @@ entry that runs ``lit gui --window`` and exits without starting the server
 (shared with ``lit setup`` step 5, ADR-019).
 
 ``--window`` owns its browser: the app window is the application, so closing
-it stops the server, and Ctrl+C closes the window. The forward direction is
-an AND gate, not a process wait: Chromium hands windows across processes, so
-the spawned process exiting does not mean the window closed — the server
-stops only once that process is gone AND no page holds the ``/api/presence``
-WebSocket open (see :func:`_stop_server_when_window_closes`). Two more
+it stops the server, and Ctrl+C closes the window. The shutdown signal is the
+last live *page*, not the browser process: the SPA holds a ``/api/presence``
+WebSocket while it is loaded, and the server stops a short linger after that
+count reaches zero (see :func:`_stop_server_when_window_closes`). The spawned
+process is only a secondary hint — it can outlive the window (on Windows Edge
+keeps the browser resident after the window closes) or die before it (Chromium
+hands a fresh profile's first window to another process), so *waiting* on it
+would either wedge the server open forever or shut it down early. Two more
 things are load-bearing — the dedicated ``--user-data-dir`` (see
 :func:`browser_profile_dir`) and the desktop shortcut running the console-less
 ``litw`` twin (see :func:`_shortcut_executable`). A terminal-launched
@@ -193,6 +196,68 @@ def _quiet_browser_profile(profile: Path) -> None:
         (profile / _FIRST_RUN_SENTINEL).touch(exist_ok=True)
 
 
+# Chromium's session-restore state inside the profile's default sub-profile:
+# the modern SNSS directory plus the legacy file quartet older builds keep.
+_SESSION_RESTORE_DIR = "Sessions"
+_SESSION_RESTORE_FILES = ("Current Session", "Current Tabs", "Last Session", "Last Tabs")
+
+# One-time migration for app profiles that saw a cacheable API 410 before API
+# responses acquired ``Cache-Control: no-store``.  The marker belongs at the
+# profile root (not inside Default/Cache, which the migration removes).
+_HTTP_CACHE_MIGRATION_MARKER = ".api-no-store-v1"
+
+
+def _purge_stale_browser_session(profile: Path) -> None:
+    """Drop the profile's session-restore state before opening the window.
+
+    Every launch hands the browser its own fresh URL, so there is never a
+    previous session worth restoring — but Chromium doesn't know that. A
+    force-killed browser (Task Manager sweeps while hunting a stuck server)
+    is recorded as a crash, and the next launch resurrects the dead
+    session's app window alongside the one we asked for: a days-old page,
+    served from cache against a server that no longer exists, wearing
+    whatever banner was true back then. Deleting the SNSS state leaves the
+    browser nothing to resurrect.
+
+    Files only, not ``Preferences``: session state carries no settings, so
+    removing it stays inside the same line :func:`_quiet_browser_profile`
+    draws — seeding preferences from outside makes the browser announce
+    tampering. Best-effort: a profile we cannot clean still opens a window.
+    """
+    default = profile / "Default"
+    _rmtree(default / _SESSION_RESTORE_DIR, ignore_errors=True)
+    for name in _SESSION_RESTORE_FILES:
+        with contextlib.suppress(OSError):
+            (default / name).unlink(missing_ok=True)
+
+
+def _migrate_legacy_http_cache(profile: Path) -> None:
+    """Drop the app profile's HTTP cache once after the no-store upgrade.
+
+    A response header cannot retroactively evict a 410 that an older release
+    already put in Chromium's disk cache.  Because ``--window`` deliberately
+    reuses both its profile and (normally) localhost:8765, that old response
+    remains an exact cache-key match after upgrading and can hide the healthy
+    server even after relocate rebound it successfully.
+
+    Only ``Default/Cache`` is removed: cookies, preferences, Local Storage and
+    every other profile facility survive.  The client now also sends fetches
+    with ``cache: no-store``; this migration is the bridge that ensures the new
+    SPA shell itself is not held behind a legacy cached response.  Best-effort
+    like the neighbouring session cleanup.  Write the marker only when the
+    cache is absent, so a Windows file lock gets retried next launch.
+    """
+    marker = profile / _HTTP_CACHE_MIGRATION_MARKER
+    if marker.is_file():
+        return
+    cache = profile / "Default" / "Cache"
+    _rmtree(cache, ignore_errors=True)
+    if cache.exists():
+        return
+    with contextlib.suppress(OSError):
+        marker.touch(exist_ok=True)
+
+
 def _app_window_argv(url: str) -> list[str] | None:
     """argv for a Chromium-family ``--app=`` window, or None if none found.
 
@@ -214,6 +279,10 @@ def _app_window_argv(url: str) -> list[str] | None:
         "--no-default-browser-check",
         "--disable-features=Translate",
         "--disable-sync",
+        # A force-killed browser leaves the profile marked as crashed; without
+        # this the next window opens under a "restore pages?" bubble for a
+        # session _purge_stale_browser_session has already emptied.
+        "--hide-crash-restore-bubble",
     ]
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
@@ -250,21 +319,30 @@ def _stop_server_when_window_closes(
     linger: float = 5.0,
     poll: float = 0.25,
 ) -> None:
-    """Ask uvicorn to shut down once the window is gone — an AND gate.
+    """Ask uvicorn to shut down once the last live page is gone.
 
-    The spawned process exiting is necessary but not sufficient: Chromium
-    hands windows across processes (Edge restarts itself partway through a
-    fresh profile's first run), so ``proc.wait()`` returning can mean a
-    handoff, not a closed window. The page is the other witness — the SPA
+    The authoritative signal is the page, not the browser process: the SPA
     holds a WebSocket open to ``/api/presence`` for as long as it is loaded,
-    and ``presence`` counts those sockets. After the process exits, the
-    server stops only once the count is zero and has stayed zero for
-    ``linger`` seconds (an F5 reload drops and re-opens the socket inside
-    that window). If no page ever connected — the browser never came up —
-    ``first_connect_grace`` bounds the wait so a failed launch still leaves
-    no orphan. Consequence: the server now follows the *last live page*, not
-    the window process; an extra tab on the same server keeps it alive after
-    the window closes.
+    and ``presence`` counts those sockets. Two shutdown paths:
+
+    * **A page connected and then every page went away.** The window was
+      closed or navigated off; stop once the count has stayed zero for
+      ``linger`` seconds (an F5 reload drops and re-opens the socket inside
+      that window). This fires *regardless of the spawned process* — on
+      Windows, Edge (Startup boost, single-instance-per-profile) keeps our
+      ``msedge`` resident long after its window is gone, so waiting on the
+      process would wedge the gate open forever and leave the server running.
+
+    * **No page ever connected** — a launch that never produced a window.
+      ``first_connect_grace`` bounds the wait so a failed launch leaves no
+      orphan, but the clock only starts once the spawned process is *gone*:
+      a window merely slow to paint (process still alive) must not be shot
+      before its first page loads.
+
+    ``proc`` is *polled*, never waited on. An earlier version blocked on
+    ``proc.wait()`` before it ever read presence — which is exactly what let a
+    resident Windows browser keep the server alive after the window closed
+    (the wait never returned, so the presence loop never ran).
 
     The keyword defaults are the shipped values; tests inject shorter ones.
     Each round reads the tracker through a single ``snapshot()`` call — read
@@ -277,20 +355,26 @@ def _stop_server_when_window_closes(
     100 ms, so setting the flag from this thread is the supported way to stop
     it from outside the event loop.
     """
-    proc.wait()
-    exited_at = time.monotonic()
+    exited_at: float | None = None
     while True:
+        if exited_at is None and proc.poll() is not None:
+            exited_at = time.monotonic()
         count, ever_connected, last_zero = presence.snapshot()
         if count == 0:
             if ever_connected:
-                # last_zero is None ⇒ a connection is being established right
-                # now (torn snapshot) — treat it as not idle and keep polling.
-                # Without this guard, None in the subtraction is a TypeError,
-                # this daemon thread dies silently, and the server becomes an
-                # orphan that never exits.
+                # The window lived and now no page does — stop a linger later,
+                # even if our spawned browser is still resident (Windows keeps
+                # it around). last_zero is None only in a torn snapshot mid-
+                # connect; treat that as not-idle. Without the guard, None in
+                # the subtraction is a TypeError that kills this daemon thread
+                # silently and orphans the server.
                 if last_zero is not None and time.monotonic() - last_zero >= linger:
                     break
-            elif time.monotonic() - exited_at >= first_connect_grace:
+            elif exited_at is not None and (
+                time.monotonic() - exited_at >= first_connect_grace
+            ):
+                # No page ever connected and the window process is gone: a
+                # launch that never came up. Give up so it leaves no orphan.
                 break
         time.sleep(poll)
     server.should_exit = True
@@ -793,6 +877,8 @@ def gui_cmd(
                 profile = browser_profile_dir()
                 profile.mkdir(parents=True, exist_ok=True)
                 _quiet_browser_profile(profile)
+                _purge_stale_browser_session(profile)
+                _migrate_legacy_http_cache(profile)
                 proc = subprocess.Popen(
                     app_argv,
                     stdout=subprocess.DEVNULL,

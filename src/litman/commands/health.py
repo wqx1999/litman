@@ -230,7 +230,11 @@ def health_check_cmd(
     issues = run_all_checks(vault, papers)
     _render_report(issues)
 
-    if do_fix and issues:
+    # --fix runs even with a clean report: the fixable set is wider than the
+    # report (the skill sweep refreshes stale copies in non-default agent
+    # directories the check deliberately does not probe). With nothing to
+    # do, _apply_fixes returns {} and this block is output-silent.
+    if do_fix:
         applied = _apply_fixes(vault, issues)
         if applied:
             console.print("\n[bold]Auto-fix:[/]")

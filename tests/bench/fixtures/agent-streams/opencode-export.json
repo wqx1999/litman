@@ -1,0 +1,31 @@
+{
+ "info": {
+  "id": "ses_08f4fc888ffeHbmGOCU4yHlEqo",
+  "slug": "<redacted-path>",
+  "projectID": "<redacted-path>",
+  "directory": "<redacted-path>",
+  "path": "<redacted-path>",
+  "title": "<redacted-path>",
+  "agent": "build",
+  "model": {
+   "id": "deepseek-v4-flash-free",
+   "providerID": "opencode",
+   "variant": "default"
+  },
+  "version": "1.18.2",
+  "summary": "<redacted-path>",
+  "cost": 0,
+  "tokens": {
+   "input": 0,
+   "output": 0,
+   "reasoning": 0,
+   "cache": {
+    "write": 0,
+    "read": 0
+   }
+  },
+  "permission": "<redacted-path>",
+  "time": "<redacted-path>"
+ },
+ "messages": []
+}

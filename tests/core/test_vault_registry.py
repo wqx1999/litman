@@ -19,6 +19,7 @@ from litman.core.vault_registry import (
     VaultEntry,
     VaultRegistry,
     add_vault,
+    apply_vault_set_path,
     ensure_name_registrable,
     find_active,
     find_by_name,
@@ -30,6 +31,7 @@ from litman.core.vault_registry import (
     resolve_vault_param,
     save_registry,
     set_active,
+    set_vault_path,
 )
 from litman.exceptions import LibraryNotFoundError, VaultRegistryError
 
@@ -325,6 +327,34 @@ def test_ensure_name_registrable_rejects_bad_shape() -> None:
         ensure_name_registrable(VaultRegistry(), "bad:name")
 
 
+def test_ensure_name_registrable_dead_entry_points_at_set_path(
+    vault_a: Path,
+) -> None:
+    """When the clashing entry's folder is gone, the duplicate error must point
+    the user at ``lit vault set-path`` (their name back via the right tool)
+    instead of a dead-end "already registered" — while still hard-blocking."""
+    import shutil
+
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    shutil.rmtree(vault_a)  # the folder moved / was deleted behind litman's back
+    with pytest.raises(VaultRegistryError) as exc:
+        ensure_name_registrable(reg, "main")
+    msg = str(exc.value)
+    assert "already registered" in msg  # still the hard block
+    assert "set-path main" in msg  # actionable hint at the relocate tool
+
+
+def test_ensure_name_registrable_live_entry_has_no_set_path_hint(
+    vault_a: Path,
+) -> None:
+    """A live same-name entry keeps the plain duplicate message — the set-path
+    hint fires ONLY when the folder is actually gone."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError) as exc:
+        ensure_name_registrable(reg, "main")
+    assert "set-path" not in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # add_vault
 # ---------------------------------------------------------------------------
@@ -482,6 +512,107 @@ def test_set_active_missing_name_raises(vault_a: Path) -> None:
     reg = add_vault(VaultRegistry(), "main", vault_a)
     with pytest.raises(VaultRegistryError, match="No vault named"):
         set_active(reg, "ghost")
+
+
+# ---------------------------------------------------------------------------
+# set_vault_path / apply_vault_set_path (the move-recovery relocate)
+# ---------------------------------------------------------------------------
+
+
+def test_set_vault_path_repoints_and_preserves_the_rest(
+    vault_a: Path, vault_b: Path
+) -> None:
+    """Only the path changes — is_active, provenance and health stamp survive."""
+    reg = add_vault(
+        VaultRegistry(),
+        "main",
+        vault_a,
+        imported_from="Zhang via USB drop",
+        imported_at="2026-05-12",
+        set_active=True,
+    )
+    reg = mark_health_checked(reg, "main", "2026-05-30T00:00:00+00:00")
+
+    out = set_vault_path(reg, "main", vault_b)
+    entry = find_by_name(out, "main")
+    assert Path(entry.path) == vault_b.resolve()
+    assert entry.is_active is True
+    assert entry.imported_from == "Zhang via USB drop"
+    assert entry.imported_at == "2026-05-12"
+    assert entry.last_health_check_at == "2026-05-30T00:00:00+00:00"
+
+
+def test_set_vault_path_stores_absolute_resolved_path(
+    vault_a: Path, vault_b: Path
+) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    out = set_vault_path(reg, "main", vault_b)
+    stored = Path(find_by_name(out, "main").path)
+    assert stored.is_absolute()
+    assert stored == vault_b.resolve()
+
+
+def test_set_vault_path_only_touches_the_named_entry(
+    vault_a: Path, vault_b: Path
+) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    reg = add_vault(reg, "second", vault_b)
+    # Point "second" at vault_a's dir (a real vault) — "main" must be untouched.
+    out = set_vault_path(reg, "second", vault_a)
+    assert Path(find_by_name(out, "main").path) == vault_a.resolve()
+    assert Path(find_by_name(out, "second").path) == vault_a.resolve()
+
+
+def test_set_vault_path_missing_name_raises(vault_a: Path) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError, match="No vault named"):
+        set_vault_path(reg, "ghost", vault_a)
+
+
+def test_set_vault_path_rejects_nonexistent_dir(
+    vault_a: Path, tmp_path: Path
+) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    nowhere = tmp_path / "does" / "not" / "exist"
+    with pytest.raises(VaultRegistryError, match="not an existing"):
+        set_vault_path(reg, "main", nowhere)
+
+
+def test_set_vault_path_rejects_dir_without_lit_config(
+    vault_a: Path, tmp_path: Path
+) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(VaultRegistryError, match="no lit-config.yaml"):
+        set_vault_path(reg, "main", plain)
+
+
+def test_set_vault_path_noop_same_path_revalidates(vault_a: Path) -> None:
+    """Re-pointing to the current path is allowed (still re-validates)."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    out = set_vault_path(reg, "main", vault_a)
+    assert Path(find_by_name(out, "main").path) == vault_a.resolve()
+
+
+def test_apply_vault_set_path_round_trips_through_load_save(
+    fake_home: Path, vault_a: Path, vault_b: Path
+) -> None:
+    """The shared backend loads, re-points, persists, and returns the entry —
+    the change survives a fresh load_registry()."""
+    save_registry(add_vault(load_registry(), "main", vault_a, set_active=True))
+
+    entry = apply_vault_set_path("main", vault_b)
+    assert Path(entry.path) == vault_b.resolve()
+    assert entry.is_active is True
+
+    reloaded = find_by_name(load_registry(), "main")
+    assert Path(reloaded.path) == vault_b.resolve()
+
+
+def test_apply_vault_set_path_missing_name_raises(fake_home: Path) -> None:
+    with pytest.raises(VaultRegistryError, match="No vault named"):
+        apply_vault_set_path("ghost", Path.cwd())
 
 
 # ---------------------------------------------------------------------------

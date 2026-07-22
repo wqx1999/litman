@@ -3,7 +3,11 @@
 Isolation: ``HOME`` is redirected to ``tmp_path`` (so ``Path.home()`` and the
 skill/completion paths land in a scratch dir) and ``LITMAN_REGISTRY_DIR``
 points the vaults.yaml registry into the same scratch dir. Nothing touches
-the developer's real ~/.claude, ~/.bashrc, or config dir.
+the developer's real ~/.claude, ~/.agents, ~/.bashrc, or config dir. The
+CLI-command tests carry ``no_skills_isolation``: the uninstall sweep resolves
+its directories through the real catalog resolvers, which the redirected
+``$HOME`` isolates — the conftest seam patch would point them somewhere the
+tests do not seed.
 """
 
 from __future__ import annotations
@@ -160,6 +164,7 @@ def _seed_artifacts(home: Path) -> Path:
     return reg
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_dry_run_changes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -177,6 +182,7 @@ def test_uninstall_dry_run_changes_nothing(
     assert reg.exists()
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_yes_removes_everything(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -194,6 +200,7 @@ def test_uninstall_yes_removes_everything(
     assert not reg.exists()
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_removes_the_app_window_browser_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -213,6 +220,7 @@ def test_uninstall_removes_the_app_window_browser_profile(
     assert not profile.exists()
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_dry_run_lists_but_keeps_the_browser_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -229,6 +237,7 @@ def test_uninstall_dry_run_lists_but_keeps_the_browser_profile(
     assert profile.exists()
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_decline_aborts_without_removing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -243,6 +252,7 @@ def test_uninstall_decline_aborts_without_removing(
     assert completion_installed("bash", tmp_path)
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_nothing_to_remove(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -254,6 +264,44 @@ def test_uninstall_nothing_to_remove(
     assert result.exit_code == 0
     assert "Nothing to remove" in result.output
     assert "pipx uninstall litman" in result.output
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_sweeps_all_skills_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skills installed for claude AND cursor AND agy: the plan groups by
+    all three directories, the sweep clears all three, user files survive —
+    uninstall is the full-sweep exception to the health-check's
+    default-dir-only probe."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    claude_dir = tmp_path / ".claude" / "skills"
+    standard_dir = tmp_path / ".agents" / "skills"
+    antigravity_dir = tmp_path / ".gemini" / "antigravity-cli" / "skills"
+    install_all_skills(parent_dir=claude_dir)
+    install_all_skills(parent_dir=standard_dir)
+    install_all_skills(parent_dir=antigravity_dir)
+    user_file = standard_dir / "lit-library" / "my-notes.md"
+    user_file.write_text("mine", encoding="utf-8")
+
+    plan = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+    assert plan.exit_code == 0, plan.output
+    # One "Agent skills (<dir>)" group per known directory; the literal
+    # paths may be line-wrapped by the panel, so count groups, not paths.
+    assert plan.output.count("Agent skills") == 3
+    assert plan.output.count("lit-library") == 3  # one per directory group
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert not (claude_dir / "lit-library").exists()
+    assert not (claude_dir / "lit-reading").exists()
+    assert not (standard_dir / "lit-reading").exists()
+    assert not (antigravity_dir / "lit-library").exists()
+    assert not (antigravity_dir / "lit-reading").exists()
+    # bundled files gone from the standard dir too; the user file survives
+    assert not (standard_dir / "lit-library" / "SKILL.md").exists()
+    assert user_file.read_text(encoding="utf-8") == "mine"
 
 
 def test_uninstall_registered_in_help(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -272,6 +320,7 @@ def test_uninstall_registered_in_help(tmp_path: Path, monkeypatch: pytest.Monkey
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_preserves_registered_vault(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -337,6 +386,7 @@ def test_uninstall_completion_survives_non_utf8_rc(tmp_path: Path) -> None:
     assert not completion_installed("bash", tmp_path)
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_cmd_dry_run_survives_non_utf8_rc(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -539,6 +589,7 @@ def test_remove_prefs_keeps_nonempty_config_dir(
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_yes_removes_shortcut_and_prefs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -561,6 +612,7 @@ def test_uninstall_yes_removes_shortcut_and_prefs(
     assert not reg.parent.exists()
 
 
+@pytest.mark.no_skills_isolation
 def test_uninstall_dry_run_lists_shortcut_and_prefs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

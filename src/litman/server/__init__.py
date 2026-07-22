@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -35,13 +35,35 @@ from litman.server.routes_write import router as write_router
 # not exist until Phase 1, so the factory guards on its presence.
 _WEBUI_ASSETS = Path(__file__).resolve().parent.parent / "assets" / "webui"
 
+
+class _RevalidatedStaticFiles(StaticFiles):
+    """Static files, minus heuristic caching of the mutable filenames.
+
+    Plain ``StaticFiles`` sends ``ETag``/``Last-Modified`` but no
+    ``Cache-Control``, which licenses the browser to reuse a cached copy
+    *without revalidating* for a stretch it picks itself (RFC 9111 heuristic
+    freshness — scaled off the file's age, so an installed wheel's shell can
+    be "fresh" for days). That is how a restored window can boot a stale SPA
+    build from disk cache and render last week's truth against today's
+    server. ``no-cache`` on every mutable name (``index.html``, icons) forces
+    the revalidation; the conditional GET still answers 304, so the cache
+    keeps doing its job. The content-hashed bundles under ``assets/`` keep
+    the default: a stale copy of an immutable name is byte-identical.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
+        response = await super().get_response(path, scope)
+        if not path.replace("\\", "/").startswith("assets/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
 # API endpoints that must stay reachable when the server has no usable vault —
 # either because none was ever created (welcome page) or because the one it was
 # serving vanished mid-session (see ``_guard_vault``). Both states are escaped
 # through the same doors: list the registry, register an existing directory,
-# create a new one, switch the active entry, drop a stale entry. Everything
-# else under ``/api/`` is refused — the SPA + its assets (served off ``/``)
-# always pass, so the page that offers those doors still loads.
+# create a new one, switch the active entry, re-point a moved one, drop a stale
+# entry. Everything else under ``/api/`` is refused — the SPA + its assets
+# (served off ``/``) always pass, so the page that offers those doors still loads.
 _VAULTLESS_ALLOWED = frozenset(
     {
         ("GET", "/api/vaults"),
@@ -63,10 +85,23 @@ def _vaultless_allowed(method: str, path: str) -> bool:
     dialog the gone-state banner opens — renders an Unregister button on every
     row. Without this, that button answered with the middleware's complaint
     about a *different* vault than the one clicked.
+
+    ``PUT /api/vaults/{name}/path`` (relocate) carries the name in the path too,
+    and it is the endpoint that HEALS the gone state — re-pointing the moved
+    entry and, when it is the active one, repointing the server in place. Left
+    off the whitelist it would be refused by the very 409/410 it exists to
+    clear. It ends in ``/path``, which keeps the exact-match ``PUT
+    /api/vaults/active`` out of this arm.
     """
     if (method, path) in _VAULTLESS_ALLOWED:
         return True
-    return method == "DELETE" and path.startswith("/api/vaults/")
+    if method == "DELETE" and path.startswith("/api/vaults/"):
+        return True
+    return (
+        method == "PUT"
+        and path.startswith("/api/vaults/")
+        and path.endswith("/path")
+    )
 
 
 @asynccontextmanager
@@ -143,18 +178,31 @@ def create_app(vault: Path | None) -> FastAPI:
         The ghost directory that a pre-guard write left behind has no
         ``lit-config.yaml`` (``staged_write`` never writes one), so the sentinel
         also refuses to mistake such a carcass for a real vault.
+
+        Every ``/api/`` response leaves here stamped ``Cache-Control:
+        no-store`` — the 410 arm above is WHY. 410 sits on RFC 9111's list of
+        heuristically-cacheable status codes, and none of our JSON responses
+        carried cache headers, so Chromium would file a gone-state 410 away
+        and answer later ``/api/papers`` fetches from disk cache without
+        contacting the server at all. The banner it fed could then outlive
+        the relocate that healed the vault — and even outlive the server
+        itself: a later launch on the same port inherited the cached 410s and
+        opened straight onto a stale "library is gone" screen. API responses
+        describe live vault state; a cached copy of one is a lie by
+        definition, so no-store, not no-cache.
         """
         vault = request.app.state.vault
-        if request.url.path.startswith("/api/") and not _vaultless_allowed(
-            request.method, request.url.path
-        ):
+        is_api = request.url.path.startswith("/api/")
+        if is_api and not _vaultless_allowed(request.method, request.url.path):
             if vault is None:
-                return JSONResponse(
+                response: Response = JSONResponse(
                     status_code=409,
                     content={"detail": "No active vault yet — create or open one first."},
                 )
+                response.headers["Cache-Control"] = "no-store"
+                return response
             if not (vault / CONFIG_FILENAME).is_file():
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=410,
                     content={
                         "detail": (
@@ -164,7 +212,12 @@ def create_app(vault: Path | None) -> FastAPI:
                         "path": str(vault),
                     },
                 )
-        return await call_next(request)
+                response.headers["Cache-Control"] = "no-store"
+                return response
+        response = await call_next(request)
+        if is_api:
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     app.include_router(read_router)
     app.include_router(write_router)
@@ -175,7 +228,11 @@ def create_app(vault: Path | None) -> FastAPI:
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.
-        app.mount("/", StaticFiles(directory=_WEBUI_ASSETS, html=True), name="webui")
+        app.mount(
+            "/",
+            _RevalidatedStaticFiles(directory=_WEBUI_ASSETS, html=True),
+            name="webui",
+        )
     else:
 
         @app.get("/", response_class=PlainTextResponse)

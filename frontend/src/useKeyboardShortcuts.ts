@@ -18,6 +18,9 @@ export interface ShortcutDeps {
   toggleDark: () => void
   toggleLeft: () => void
   toggleRight: () => void
+  /** Re-read the current vault from disk through the same path as the TopBar
+   * refresh button. */
+  refreshFromDisk: () => void
 
   // --- Tier 1: center tab switching (global, focus-guarded) ---------------
   /** Cycle the active center document tab. delta +1 = next, -1 = previous;
@@ -40,6 +43,9 @@ export interface ShortcutDeps {
    * TopBar registers its handle (the welcome page renders no TopBar), in which
    * case the key is inert. */
   openAgent: (() => void) | null
+  /** Open agent management without launching. Bound to Ctrl+Backquote; plain
+   * Backquote remains the one-key default-agent launch path. */
+  manageAgents: (() => void) | null
 
   // --- Cheat sheet (`?`) ---------------------------------------------------
   cheatSheetOpen: boolean
@@ -83,11 +89,9 @@ export function isEditingTarget(el: EventTarget | null): boolean {
  * let them propagate untouched — it neither handles nor preventDefaults them.
  * `e.code` is used for the letter (S/K) so a composed key can't slip past. */
 function isReservedModifierCombo(e: KeyboardEvent): boolean {
-  // EVERY Cmd/Ctrl combo is intentionally left to the browser / existing Tier-0
-  // listeners — PdfView's capture-phase ⌘S + bubble-phase ⌘-zoom (+/−/0) and
-  // the search box's ⌘K. This new bubble-phase dispatcher binds none of them, so
-  // bailing here guarantees it never shadows them; the app defines no Tier-1/2
-  // shortcut on a Cmd/Ctrl combo, so there is nothing to discriminate.
+  // Except Ctrl+Backquote (handled before this helper for agent management),
+  // Cmd/Ctrl combos belong to the browser / existing Tier-0 listeners:
+  // PdfView's ⌘S + ⌘-zoom and the search box's ⌘K.
   return e.metaKey || e.ctrlKey
 }
 
@@ -116,11 +120,13 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleDark,
     toggleLeft,
     toggleRight,
+    refreshFromDisk,
     activateAdjacentTab,
     activateTabByIndex,
     moveSelection,
     openSelected,
     openAgent,
+    manageAgents,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -133,16 +139,26 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Modal + focus guards apply to both plain launch and Ctrl+~ management.
+      // Handle the one app-owned Ctrl chord before the general reserved-combo
+      // return; all other Cmd/Ctrl combinations remain untouched.
+      if (anyModalOpen) return
+      const editing = isEditingTarget(e.target)
+      if (
+        !editing &&
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.code === 'Backquote'
+      ) {
+        e.preventDefault()
+        manageAgents?.()
+        return
+      }
+
       // Let the app's own Tier-0 Cmd/Ctrl listeners (or the browser) handle any
       // modifier combo — never handle or preventDefault it here.
       if (isReservedModifierCombo(e)) return
-
-      // Modal guard: while a blocking surface is up, suppress all global
-      // shortcuts. The open modal owns Esc/Enter/typing; we get out of the way
-      // entirely (do NOT preventDefault, do NOT handle — including Esc).
-      if (anyModalOpen) return
-
-      const editing = isEditingTarget(e.target)
 
       // --- `?` (Shift+/) — toggle the cheat sheet (focus-guarded) ----------
       // Matched on e.key (no stable letter code for '?'). Skipped while typing.
@@ -227,8 +243,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // the tilde, so the cheat sheet shows `~`; were Shift rejected, anyone
       // following that label would press Shift+` and get silence. Precedent:
       // `?` is itself Shift+/ and is handled the same way, above. Ctrl/Cmd are
-      // excluded at the top and Alt by the Tier-2 block, so only Shift can
-      // still be set here.
+      // Ctrl+Backquote is claimed above for management; Cmd is reserved and
+      // Alt is handled by the Tier-2 block, so only Shift can still be set here.
       //
       // Matched on e.code (physical position), so a layout printing another
       // glyph on that key still fires.
@@ -275,6 +291,10 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
         case 'KeyL':
           e.preventDefault()
           toggleDark()
+          return
+        case 'KeyR':
+          e.preventDefault()
+          refreshFromDisk()
           return
         case 'BracketLeft':
           e.preventDefault()
@@ -334,11 +354,13 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleDark,
     toggleLeft,
     toggleRight,
+    refreshFromDisk,
     activateAdjacentTab,
     activateTabByIndex,
     moveSelection,
     openSelected,
     openAgent,
+    manageAgents,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,

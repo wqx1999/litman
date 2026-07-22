@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -80,16 +79,35 @@ def agent_cmd(
     # Greyed catalog placeholders (supported=False) are inert on every axis —
     # reject launch before the PATH probe (data-driven, no per-agent branch).
     if not spec.supported:
-        raise LitmanError(f"Agent '{agent_name}' is not available yet.")
+        supported = ", ".join(s.name for s in agents.supported_agents())
+        raise LitmanError(
+            f"Agent '{agent_name}' is not available yet. "
+            f"Supported agents: {supported}."
+        )
+    # Windows installers update the registry PATH, not already-running
+    # processes. Refresh it so this command also works from a shell that was
+    # open before the agent CLI was installed.
     argv = shlex.split(spec.launch)
-    if shutil.which(argv[0]) is None:
+    resolved = agents.resolve_launch(spec)
+    if resolved is None:
         raise LitmanError(
             f"Agent command '{argv[0]}' not found on PATH — is it installed? "
             f"Get {spec.display}: {spec.install_url}"
         )
 
+    # Skills can be shared across agents, but command approvals cannot. Make
+    # every launch through litman heal the selected agent's own narrow rule.
+    permission = spec.install_lit_permission()
+    if permission["warning"]:
+        click.echo(f"warning: {permission['warning']}", err=True)
+
     if sys.platform == "win32":
         # No real exec on Windows: run as a child and pass its exit code on.
+        # The absolute path avoids relying on a stale parent-shell PATH and is
+        # also the concrete npm-generated ``.cmd`` shim when applicable.
+        argv[0] = resolved
+        if Path(resolved).suffix.casefold() in {".bat", ".cmd"}:
+            argv = ["cmd", "/c", *argv]
         result = subprocess.run(argv, cwd=vault)
         sys.exit(result.returncode)
 

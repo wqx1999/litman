@@ -352,11 +352,25 @@ def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
             "[A-Za-z0-9_][A-Za-z0-9._-]* (filesystem-safe, no leading "
             "hyphen, no ':' which is reserved for cross-vault wikilinks)."
         )
-    if any(v.name == name for v in reg.vaults):
-        raise VaultRegistryError(
+    existing = next((v for v in reg.vaults if v.name == name), None)
+    if existing is not None:
+        message = (
             f"Vault {name!r} is already registered. Run `lit vault list` "
             "to see existing vaults or pick a different name."
         )
+        # When the existing entry's folder is gone (moved / renamed / a share
+        # unmounted), the user is almost certainly trying to re-add the vault at
+        # its new home. Registration still hard-blocks — silently replacing a
+        # temporarily-unavailable entry would be a footgun — but the message now
+        # points at the tool that actually re-points the entry without a rename.
+        if not (Path(existing.path).expanduser() / "lit-config.yaml").is_file():
+            message += (
+                f"\nIts folder is no longer at {existing.path} — did it move? "
+                f"Re-point it in place with `lit vault set-path {name} "
+                f"<new-path>` (or `lit vault remove {name}` first to free the "
+                "name)."
+            )
+        raise VaultRegistryError(message)
     # Cross-platform safety (ADR-005): forbid names that case-fold to an
     # existing entry. Vault names appear in cross-vault wikilinks
     # ``[[<vault>:<id>]]`` and may end up as folder names in user-side
@@ -504,6 +518,74 @@ def apply_vault_use(name: str, *, require_path: bool = False) -> VaultEntry:
             "there. Not switching."
         )
     save_registry(set_active(reg, name))
+    return entry
+
+
+def set_vault_path(
+    reg: VaultRegistry, name: str, new_path: Path | str
+) -> VaultRegistry:
+    """Return a new registry with ``name``'s path re-pointed at ``new_path``.
+
+    The move-recovery mirror of :func:`set_active`, pure (the caller persists).
+    The registry stores each vault's absolute path; when the user moves or
+    renames the vault directory that path goes stale, and — unlike a moved
+    project (``lit project set-path``) — there was no first-class way to say
+    "the library moved, here is its new home". This is that operation.
+
+    ``new_path`` is validated exactly the way :func:`add_vault` validates a fresh
+    registration (the same two messages, adapted): it must resolve to an existing
+    directory holding a ``lit-config.yaml``, so a relocate can only ever leave
+    the registry pointing at a real vault. Re-pointing to the current path is
+    allowed and still re-validates. Only that entry's ``path`` changes —
+    ``is_active``, provenance and ``last_health_check_at`` are preserved.
+
+    Raises:
+        VaultRegistryError: ``name`` is not in the registry, or ``new_path`` is
+            not an existing directory, or that directory is not a litman vault.
+    """
+    if not any(v.name == name for v in reg.vaults):
+        raise VaultRegistryError(
+            f"No vault named {name!r} in the registry. Run `lit vault list` "
+            "to see what's registered."
+        )
+    abs_path = Path(new_path).expanduser().resolve()
+    if not abs_path.is_dir():
+        raise VaultRegistryError(
+            f"Cannot re-point {name!r}: {abs_path} is not an existing "
+            "directory. Did you mean a different path? Run `lit init` "
+            "if you need to create a new vault."
+        )
+    if not (abs_path / "lit-config.yaml").is_file():
+        raise VaultRegistryError(
+            f"Cannot re-point {name!r}: {abs_path} has no lit-config.yaml. "
+            "That directory is not a litman vault."
+        )
+    updated = [
+        v.model_copy(update={"path": str(abs_path)}) if v.name == name else v
+        for v in reg.vaults
+    ]
+    return VaultRegistry(vaults=updated)
+
+
+def apply_vault_set_path(name: str, new_path: Path | str) -> VaultEntry:
+    """Re-point vault ``name`` at ``new_path`` and persist — the shared backend
+    for ``lit vault set-path`` and the webUI ``PUT /api/vaults/{name}/path``.
+
+    Loads the registry, re-points the entry via :func:`set_vault_path` (which
+    validates the new path holds a real vault), saves, and returns the updated
+    entry. Centralising the load+set+save here keeps the CLI and the GUI on one
+    write path so they can never drift (invariant #16), exactly as
+    :func:`apply_vault_use` does for the switch.
+
+    Raises:
+        VaultRegistryError: ``name`` is not in the registry, or ``new_path`` is
+            not an existing directory, or that directory is not a litman vault.
+    """
+    reg = load_registry()
+    updated = set_vault_path(reg, name, new_path)
+    save_registry(updated)
+    entry = find_by_name(updated, name)
+    assert entry is not None  # set_vault_path already validated name presence
     return entry
 
 

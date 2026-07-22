@@ -1,7 +1,12 @@
 """Skill installation helpers for ``lit install-skill`` (M4.3 + M9.2).
 
-Copies every bundled Claude Code skill from the installed litman package
-into the user's skill directory (default ``~/.claude/skills/<name>/``).
+Copies every bundled agent skill from the installed litman package into a
+per-user skills directory: ``~/.claude/skills/<name>/`` for Claude Code,
+the Agent Skills open-standard directory ``~/.agents/skills/<name>/`` that
+Cursor discovers, or Antigravity CLI's own app-data directory
+``~/.gemini/antigravity-cli/skills/<name>/``. Which directory a caller
+targets is decided by the agent catalog (:mod:`litman.core.agents`); every
+helper here is directory-neutral and just takes ``parent_dir``.
 
 The skill files live inside the package at
 ``src/litman/skills/<skill-name>/`` and are reachable via
@@ -26,6 +31,8 @@ API split:
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable, Iterable
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -33,6 +40,7 @@ from typing import Any
 
 from litman.core.portable_link import is_portable_link
 from litman.exceptions import LitmanError
+
 
 def default_skills_parent_dir() -> Path:
     """The per-user skills dir Claude Code auto-discovers, at call time.
@@ -43,12 +51,42 @@ def default_skills_parent_dir() -> Path:
     instead, so a redirected ``$HOME`` is honored and the test suite can
     isolate itself from the developer's real skills dir by patching one seam.
     """
-    return Path.home() / ".claude" / "skills"
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    config_dir = (
+        Path(configured).expanduser()
+        if configured and configured.strip()
+        else Path.home() / ".claude"
+    )
+    return config_dir / "skills"
+
+
+def standard_skills_parent_dir() -> Path:
+    """The skills dir of the Agent Skills open standard
+    (``~/.agents/skills``) — Cursor, Codex, and OpenCode all discover it
+    (Cursor verified on a real install; Codex and OpenCode measured
+    activating skills from it by the litman-bench harness).
+
+    Same call-time seam contract as :func:`default_skills_parent_dir`: a
+    redirected ``$HOME`` is honored, and the test suite isolates itself from
+    the developer's real ``~/.agents/skills`` by patching this one function.
+    """
+    return Path.home() / ".agents" / "skills"
+
+
+def antigravity_skills_parent_dir() -> Path:
+    """Antigravity CLI's user-installable skills dir, at call time.
+
+    This is inside agy's own app-data tree — NOT the ``~/.agents``
+    open-standard dir, which agy does not read. Same call-time seam
+    contract as the other resolvers ($HOME redirect honored; the test
+    suite isolates by patching this one function).
+    """
+    return Path.home() / ".gemini" / "antigravity-cli" / "skills"
 
 
 # Default parent dir under which each skill gets its own subdir.
 # Claude Code auto-discovers user-level skills here. Import-time snapshot,
-# kept for CLI option defaults (help text shows a concrete path); runtime
+# kept as a pinned value for tests and back-compat imports; runtime
 # probes use :func:`default_skills_parent_dir`.
 DEFAULT_PARENT_DIR = default_skills_parent_dir()
 
@@ -140,8 +178,8 @@ def install_skill(
         target: Destination directory for the skill (e.g.
             ``~/.claude/skills/lit-reading``). Created with parents if
             missing. When ``None`` (the default), uses
-            ``DEFAULT_PARENT_DIR / name`` so a fresh install lands where
-            Claude Code auto-discovers it. Must not exist unless
+            ``default_skills_parent_dir() / name`` so a fresh install lands
+            where Claude Code auto-discovers it. Must not exist unless
             ``overwrite=True``.
         overwrite: When ``True``, an existing ``target`` is replaced
             file-by-file; files in ``target`` that are NOT part of the
@@ -307,7 +345,7 @@ def aggregate_skill_state(parent_dir: Path | None = None) -> str:
 
 def uninstall_skill(
     name: str,
-    parent_dir: Path = DEFAULT_PARENT_DIR,
+    parent_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Remove one bundled skill's files from ``parent_dir/name/``.
 
@@ -318,8 +356,9 @@ def uninstall_skill(
 
     Args:
         name: Bundled skill subdirectory name (e.g. ``"lit-library"``).
-        parent_dir: Directory that holds the skill's own subdir. Defaults
-            to ``~/.claude/skills/``.
+        parent_dir: Directory that holds the skill's own subdir. ``None``
+            (the default) resolves the call-time
+            :func:`default_skills_parent_dir`.
 
     Returns:
         A summary dict with keys ``name`` (str), ``target`` (Path),
@@ -329,6 +368,8 @@ def uninstall_skill(
         ``"absent"`` = nothing was there), ``leftover`` (list of filenames
         left behind).
     """
+    if parent_dir is None:
+        parent_dir = default_skills_parent_dir()
     target = parent_dir / name
     if is_portable_link(target):
         # A linked skill dir (symlink or Windows junction) points outside
@@ -384,7 +425,7 @@ def uninstall_skill(
 
 
 def install_all_skills(
-    parent_dir: Path = DEFAULT_PARENT_DIR,
+    parent_dir: Path | None = None,
     overwrite: bool = False,
 ) -> list[dict[str, Any]]:
     """Install every bundled skill into ``parent_dir/<name>/``.
@@ -396,13 +437,16 @@ def install_all_skills(
 
     Args:
         parent_dir: Directory under which each skill gets its own
-            subdirectory. Defaults to ``~/.claude/skills/``.
+            subdirectory. ``None`` (the default) resolves the call-time
+            :func:`default_skills_parent_dir`.
         overwrite: Forwarded to :func:`install_skill`.
 
     Returns:
         A list of the summary dicts returned by :func:`install_skill`,
         in the same order as :func:`list_bundled_skills`.
     """
+    if parent_dir is None:
+        parent_dir = default_skills_parent_dir()
     results: list[dict[str, Any]] = []
     for skill_name in list_bundled_skills():
         result = install_skill(
@@ -412,3 +456,65 @@ def install_all_skills(
         )
         results.append(result)
     return results
+
+
+def stale_skill_copies(
+    parent_dirs: Iterable[Path],
+) -> dict[Path, list[str]]:
+    """Which bundled skills have a *stale* installed copy, per directory.
+
+    The scan half of the cross-directory refresh sweep: given the OTHER
+    known skills directories (the caller excludes its main target), report
+    each directory's stale bundled-skill copies. Agents can read each
+    other's directories (Cursor prefers ``~/.claude/skills`` over the
+    open-standard dir), so a stale copy elsewhere may be the one actually
+    in effect. Only ``stale`` qualifies — ``absent`` is a respected opt-out
+    (a sweep never first-installs), ``linked`` is dev-managed, ``current``
+    needs nothing. Directories with nothing stale are omitted.
+    """
+    out: dict[Path, list[str]] = {}
+    for parent in parent_dirs:
+        stale = sorted(
+            name
+            for name, info in skill_status(parent_dir=parent).items()
+            if info["state"] == "stale"
+        )
+        if stale:
+            out[parent] = stale
+    return out
+
+
+def refresh_stale_copies(
+    parent_dirs: Iterable[Path],
+    confirm: Callable[[Path, str], bool] | None = None,
+) -> dict[Path, list[str]]:
+    """Refresh the stale bundled-skill copies under ``parent_dirs``.
+
+    The action half of the cross-directory refresh sweep: every copy
+    :func:`stale_skill_copies` reports is re-copied from the bundle
+    (same lossless ``overwrite=True`` semantics as :func:`install_skill`;
+    files the user added next to SKILL.md are kept). ``confirm(parent_dir,
+    name)`` gates each copy individually; ``None`` refreshes everything
+    (for callers holding blanket consent — ``--force`` or ``--fix``). A
+    copy whose refresh fails (e.g. unwritable dir) is skipped best-effort:
+    it stays stale and resurfaces on the next sweep.
+
+    Returns ``{parent_dir: [refreshed skill names]}``, directories with
+    nothing refreshed omitted — ready for human output (terminal printing
+    may show these paths; the no-paths red line covers only the API
+    contract and the frontend).
+    """
+    out: dict[Path, list[str]] = {}
+    for parent, names in stale_skill_copies(parent_dirs).items():
+        done: list[str] = []
+        for name in names:
+            if confirm is not None and not confirm(parent, name):
+                continue
+            try:
+                install_skill(target=parent / name, overwrite=True, name=name)
+            except (SkillInstallError, OSError):
+                continue
+            done.append(name)
+        if done:
+            out[parent] = done
+    return out

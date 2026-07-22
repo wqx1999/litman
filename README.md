@@ -2,12 +2,11 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero-dark.png"/>
-  <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero.png" width="52%" alt="litman — LITerature MANager"/>
+  <img src="https://raw.githubusercontent.com/wqx1999/litman/main/assets/logo-hero.png" width="52%" alt="litman"/>
 </picture>
 
-<p>LITerature MANager</p>
-
 <p>
+<a href="https://wqx1999.github.io/litman/"><img src="https://img.shields.io/badge/website-litman-D97757?logo=github&logoColor=white" alt="Website"/></a>
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
 <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
 <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
@@ -80,9 +79,13 @@ on an AI agent, which you install separately — litman ships the skills it
 drives, not a model. `lit agent` starts yours in the library directory; the app's
 agent button does the same.
 
-[Claude Code](https://claude.ai/code) is the supported agent today. Codex,
-Cursor, Gemini CLI, and OpenCode are next: they already appear in litman's agent
-picker, greyed out until the release that turns them on.
+[Claude Code](https://claude.ai/code),
+[Antigravity CLI](https://antigravity.google/download#antigravity-cli),
+[Codex](https://developers.openai.com/codex/cli/),
+[Cursor](https://cursor.com/cli), and [OpenCode](https://opencode.ai/) are
+supported. Install a skill from the agent manager and litman also adds a
+narrow permission for that agent to run `lit`; it does not approve unrelated
+commands.
 
 Your agent works with whatever model you give it. We ran a range of them across
 five agent CLIs through 22 everyday tasks:

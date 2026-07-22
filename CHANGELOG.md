@@ -5,20 +5,140 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
-## 1.2.1 — unreleased
+## 1.3.0 — unreleased
+
+### Added
+
+- **Press `R` in the GUI to refresh the current library from disk.** It uses
+  the same resync as the toolbar refresh button; `Alt+R` still marks a paper as
+  read, and `Ctrl+R`/`Cmd+R` remains the browser's page reload.
+- **Five AI agents are supported:** Claude Code, Antigravity CLI, Codex,
+  Cursor, and OpenCode. All are selectable in the GUI agent manager and
+  launchable with `lit agent <name>`. Codex, Cursor, and OpenCode share the
+  Agent Skills open-standard directory `~/.agents/skills`; Claude Code keeps
+  `~/.claude/skills`, and Antigravity CLI uses its own
+  `~/.gemini/antigravity-cli/skills` directory.
+- **The GUI agent manager now shows familiar brands next to agent names.**
+  Labels such as “ChatGPT · OpenAI”, “Google”, and “Claude · Anthropic” help
+  newcomers recognize Codex, Antigravity CLI, and Claude Code.
+- **`lit install-skill --agent <name>`** installs the skills into the named
+  agent's directory. With no flags the command now follows your default agent;
+  users who never changed the default get exactly the previous behaviour.
+- **Installed skills can run `lit` without repeated permission prompts.**
+  Skill onboarding and launches through Litman merge or heal a narrowly scoped
+  `lit` command allow rule in the selected agent's native permission store.
+  This remains per-agent even when agents share one skill directory; Litman
+  never enables a global bypass. Malformed policy and conflicts that cannot be
+  normalized without changing unrelated permissions are left untouched and
+  reported; Antigravity's redundant catch-all ask rule is removed only in its
+  default request-review mode, which still asks for every other unlisted
+  command. Strict mode is preserved and reported because it intentionally
+  ignores terminal allow rules. Claude's `CLAUDE_CONFIG_DIR`, Cursor's
+  `CURSOR_CONFIG_DIR`/`XDG_CONFIG_HOME`, and OpenCode's `OPENCODE_CONFIG` are
+  honored so both the skill and permission rule reach the active profile.
+- **Skill copies for your other agents stay fresh.** A bare
+  `lit install-skill`, the setup wizard's skill step and `lit health-check
+  --fix` also refresh out-of-date litman skills found in the other agents'
+  directories — one `[Y/n]` per copy in interactive runs, automatic under
+  `--fix`; files you added next to a skill are always kept. Runs with an
+  explicit `--agent`/`--parent-dir` touch only what they name.
+- **`lit setup` asks which agent you use** (step 2) and records the answer as
+  the machine-level default before installing its skill — pressing Enter keeps
+  the previous Claude Code flow.
+
+### Changed
+
+- The agent toolbar button and `~` now launch the configured default directly.
+  Right-click the same button or press `Ctrl+~` to manage agents and change the
+  default; agents that are not installed can no longer be launched or selected
+  as the default.
+- The GUI agent panel shows each supported agent's own install/update/ready
+  state instead of repeating the default agent's state on every card.
+- `lit health-check` probes skill drift in the default agent's skills
+  directory (and `--fix` refreshes that directory, plus stale copies in the
+  other known directories). `lit uninstall` still sweeps every known skills
+  directory.
+
+## 1.2.1 — 2026-07-21
+
+### Added
+
+- **The desktop shortcut now shows a splash while it launches.** Started from
+  the Windows shortcut there is no console, and litman's startup messages only
+  go to `litw.log`, so a cold launch looked like nothing had happened until the
+  window finally appeared. A small floating app mark now shows the instant you
+  launch and vanishes the moment the page connects. It appears only on the
+  console-less window launch with a local display; remote and headless sessions
+  are unchanged — the server still prints its URL and SSH-tunnel line.
+
+### Changed
+
+- **The app starts noticeably faster.** `lit` used to import every command — and
+  the heavy libraries behind them (PDF parsing, HTTP, the server stack) — on
+  every invocation, including ones that never touch them; each command is now
+  imported only when it actually runs, taking hundreds of milliseconds off the
+  start of every `lit` command (most visibly on Windows). And `lit gui` no
+  longer waits a fixed one second before opening the browser — it opens the
+  moment the server is actually listening.
 
 ### Fixed
 
-- **The app window no longer takes the server down with it during Edge's
-  first-run restart.** `lit gui --window` stops the server when you close the
-  app window, which it read off the spawned browser process exiting. A brand-new
-  profile broke that: Edge restarts itself partway through its first run, the
-  process litman launched exits, and the server went down under a live window —
-  a blank app seconds after it opened. Shutdown now needs both signals — the
-  browser process is gone *and* no page still holds litman's window-open
-  connection — so it rides through the handoff. One consequence of following the
-  page rather than the process: a second tab you opened on the same server keeps
-  it alive after the app window closes.
+- **Closing the app window reliably stops the server — even when the browser
+  lingers.** `lit gui --window` stops the server when its last page closes,
+  which it now tracks through litman's own window-open connection rather than the
+  spawned browser process. Two things broke the old process-based approach. On
+  Windows, Edge keeps its process running in the background after the window is
+  gone (Startup boost, one process per profile), so litman waited forever on a
+  process that never exited — the server, and its "this library moved" banner,
+  could outlive the window for the whole session and pile up across launches. And
+  a brand-new profile made Edge restart itself partway through its first run,
+  handing the real window to a process litman never saw. Shutdown now follows the
+  last live page: close the window and the server stops a few seconds later,
+  whatever the browser process does. A second tab you opened on the same server
+  still keeps it alive after the app window closes.
+
+- **A window from a past session can no longer haunt the next launch.**
+  Force-closing litman (Task Manager, `taskkill`) made the browser record a
+  crash; the next launch of the app window then resurrected the dead session's
+  page next to the live one — a days-old view, loaded from the browser's cache
+  against a server that no longer existed, still wearing whatever banner was
+  true back then (typically the red "library is no longer at…" one). Two fixes:
+  the launcher now clears the app profile's session-restore state before every
+  window (there is never a session worth restoring — each launch brings its own
+  address), and the page itself is now served with `Cache-Control: no-cache`,
+  so the browser must check with the server instead of booting a stale copy on
+  its own authority.
+
+- **The red "library is no longer at…" banner can no longer outlive the
+  problem it reported.** Browsers are allowed to cache a `410 Gone` answer, and
+  litman's API responses never said otherwise — so once a launch had caught the
+  library mid-move, the browser could keep replaying that stale "it's gone"
+  answer from its own cache: the banner survived the relocate that had already
+  healed the server, and even reappeared on later launches whose server was
+  perfectly healthy, until the cache happened to expire. Every `/api/` response
+  now carries `Cache-Control: no-store` — answers about the library's live
+  state are never reused from cache. The page is also more honest while
+  something else is wrong: a request failing for an unrelated reason used to
+  leave a stale banner frozen on screen, and a hiccup in the change-log diffing
+  could silently stop a refresh from landing; both now degrade gracefully
+  instead of pinning the old picture. Upgrades also heal app profiles that
+  cached a `410` before this fix: API requests explicitly bypass the browser
+  cache, and the shortcut launcher removes that profile's legacy HTTP cache
+  once while preserving its preferences and local state.
+
+- **A moved library can be pointed at its new home — no forced rename.** When you
+  move or rename your library folder, litman's registry still records the old
+  path and there was no clean way to update it: the app's "Find it" opened a
+  panel that could only register a *new* name, re-registering under the old name
+  was refused, and relaunching landed on a dead-end first-run page. Now `lit vault
+  set-path <name> <new-path>` repoints a registered library in place, and the app
+  grows a **Locate** action — on the library-moved banner and the first-run page —
+  that reconnects the open session with no restart and no rename. Relocating the
+  active library also rebuilds its projects' shortcuts, which the move had left
+  pointing at the old path. Locate now clears the banner even when the moved
+  library is the one the open window is showing but no longer the *active* one
+  (for instance after switching the active library from another terminal) —
+  that case previously left the banner stuck for the life of the window.
 
 ## 1.2.0 — 2026-07-15
 

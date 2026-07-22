@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from harness.batch import (
+    BatchAbortedError,
     BenchReport,
     CardScore,
     build_live_routing_run_fn,
@@ -171,7 +172,8 @@ def test_run_batch_pre_scored_tuple_handle() -> None:
 
 def test_report_to_dict_round_trips() -> None:
     report = BenchReport(
-        model="m",
+        agent="claude",
+        model_requested="m",
         rounds=2,
         trr_mean=0.5,
         trr_std=0.1,
@@ -245,7 +247,7 @@ def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) ->
     and returns a {vault,jsonl,cwd,run,_cleanup} handle (no live agent)."""
     captured: dict = {}
 
-    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         captured["card"] = card
         captured["run_vault"] = Path(run_vault)
         captured["fixtures_pdfs_dir"] = Path(fixtures_pdfs_dir)
@@ -282,8 +284,11 @@ def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) ->
     assert captured["fixtures_pdfs_dir"] == tmp_path / "pdfs"
     assert ensure_seed.seen == "seed-1paper-diffdock"  # type: ignore[attr-defined]
 
-    # (b) the handle shape the scorer consumes.
-    assert set(handle) == {"vault", "jsonl", "cwd", "run", "_cleanup"}
+    # (b) the handle shape the scorer consumes. `_seed_root` is reserved
+    # bookkeeping (stripped before score_fn) — it is where run_batch's seed
+    # canary looks, so the adapter must always hand it over.
+    assert set(handle) == {"vault", "jsonl", "cwd", "run", "_cleanup", "_seed_root"}
+    assert handle["_seed_root"] == (tmp_path / "seed").parent
     assert handle["vault"] == captured["run_vault"]
     assert handle["vault"].is_dir()  # the cp landed
     assert handle["cwd"] == handle["vault"].parent / "cwd"  # neutral_cwd convention
@@ -294,7 +299,7 @@ def test_build_live_run_card_fn_passes_model_and_auth_through(tmp_path: Path) ->
 def test_build_live_run_card_fn_cleanup_removes_run_dir(tmp_path: Path) -> None:
     """The handle's _cleanup removes the whole disposable run dir."""
 
-    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         return ExecutorResult()
 
     run_fn = build_live_run_card_fn(
@@ -316,7 +321,7 @@ def test_build_live_run_card_fn_defaults_anthropic_auth(tmp_path: Path) -> None:
     """Default (no base_url/auth_token) passes None through — Anthropic mode."""
     seen: dict = {}
 
-    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         seen["base_url"] = base_url
         seen["auth_token"] = auth_token
         return ExecutorResult()
@@ -599,7 +604,7 @@ def test_build_live_run_card_fn_cleans_up_when_run_card_impl_raises(tmp_path: Pa
 
     seen: dict = {}
 
-    def boom_run_card(card, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def boom_run_card(card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         # __enter__ already copied the seed; capture the run dir, then fail like a
         # real install_repo_skills RuntimeError / claude-bin FileNotFoundError.
         seen["run_dir"] = Path(run_vault).parent
@@ -640,6 +645,116 @@ def _routing_card() -> dict:
             {"utt": "引用这篇", "golden": "cite-retrieval"},
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# The seed canary — a card that escapes its sandbox must abort the batch
+# ---------------------------------------------------------------------------
+
+
+def _stamped_seed(tmp_path: Path) -> tuple[Path, Path]:
+    """A seed root stamped the way ``build_seed`` stamps it, + a work root.
+
+    Returns ``(seed_vault, work_root)``. The work root is a SIBLING of the seed
+    root, not a child: the canary digests the whole seed root, so run dirs inside
+    it would read as mutations. (``_fake_seed`` above has neither property — its
+    root is ``tmp_path`` itself, which contains ``work/`` — which is exactly why
+    the canary stays silent for it.)
+    """
+    from harness import seeds
+
+    seed_root = tmp_path / "seedroot"
+    vault = seed_root / "vault"
+    (vault / "papers").mkdir(parents=True)
+    (vault / "lit-config.yaml").write_text("schema: 1\n", encoding="utf-8")
+    seeds._stamp_seed(seed_root)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    return vault, work_root
+
+
+def test_a_card_that_poisons_the_seed_aborts_the_whole_batch(tmp_path: Path) -> None:
+    """A run that mutates the shared seed kills the batch — no report survives.
+
+    Driven END-TO-END through run_batch + the REAL build_live_run_card_fn, not
+    against the canary helper directly. That is the point of the test: the alarm
+    only works because of WHERE it is wired (the round loop, not
+    ``RunVault.__exit__``, whose exceptions ``_maybe_cleanup`` swallows by
+    contract). A test that only proved "the helper raises" would stay green with
+    the alarm wired somewhere it can never be heard, and the live path dead.
+
+    Note the round scores 1: a card can do everything right and still poison the
+    seed for its successors, so a passing score is no defence.
+    """
+    import pytest
+
+    from harness import seeds
+
+    seed_vault, work_root = _stamped_seed(tmp_path)
+
+    def poisoning_run_card(
+        card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token
+    ):
+        # What the real leak did: a `lit` call inside the run copy followed a
+        # baked-in absolute path back out and wrote to the shared seed.
+        (seed_vault / "papers" / "leaked.txt").write_text("poison", encoding="utf-8")
+        return ExecutorResult()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        run_card_impl=poisoning_run_card,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    report = None
+    with pytest.raises(seeds.SeedLeakError, match="MUTATED"):
+        report = run_batch(
+            [{"id": "D4-unlink", "seed": "seed-5papers-tagged", "expected_end_state": []}],
+            model="m",
+            rounds=1,
+            run_card_fn=run_fn,
+            score_fn=lambda card, **kw: (1, []),
+        )
+
+    assert report is None, "a run whose seed moved under it must not report a number"
+    # Cleanup still ran: aborting must not also leak the run dir.
+    assert list(work_root.iterdir()) == [], "run dir should still have been removed"
+
+
+def test_the_canary_stays_silent_when_the_seed_is_left_alone(tmp_path: Path) -> None:
+    """The counterpart: an honest card on a STAMPED seed reports normally.
+
+    Without this, a canary that fired unconditionally would pass the test above
+    while making every real run abort.
+    """
+    seed_vault, work_root = _stamped_seed(tmp_path)
+
+    def honest_run_card(
+        card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token
+    ):
+        # Writes only inside its own disposable copy, as a card should.
+        (Path(run_vault) / "papers" / "scratch.txt").write_text("ok", encoding="utf-8")
+        return ExecutorResult()
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        run_card_impl=honest_run_card,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    report = run_batch(
+        [{"id": "D4-unlink", "seed": "seed-5papers-tagged", "expected_end_state": []}],
+        model="m",
+        rounds=2,
+        run_card_fn=run_fn,
+        score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.trr_mean == 1.0
+    assert report.cards[0].rounds == [1, 1]
 
 
 def test_run_batch_routing_run_fn_none_leaves_ra_unscored() -> None:
@@ -755,7 +870,7 @@ def test_build_live_routing_run_fn_delegates_per_case(tmp_path: Path) -> None:
     observe_impl is a fake."""
     calls: list[str] = []
 
-    def fake_observe(utt, run_vault, *, fixtures_pdfs_dir, model, base_url, auth_token):
+    def fake_observe(utt, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
         calls.append(str(utt))
         # the run vault is a real cp of the seed (so the adapter exercised RunVault)
         assert Path(run_vault).is_dir()
@@ -783,3 +898,824 @@ def test_build_live_routing_run_fn_delegates_per_case(tmp_path: Path) -> None:
     observed = run_fn(card, model="some-model")
     assert calls == ["把这篇加到库里", "继续读"]
     assert observed == ["lit-library", None]
+
+
+def test_a_routing_probe_that_poisons_the_seed_aborts_too(tmp_path: Path) -> None:
+    """The routing path spawns live agents against a cached seed, so it carries
+    the same canary as the card loop — an asymmetry here would be a hole in the
+    same wall. Aborts on the FIRST poisoned case: the second must never run."""
+    import pytest
+
+    from harness import seeds
+
+    seed_vault, work_root = _stamped_seed(tmp_path)
+    calls: list[str] = []
+
+    def poisoning_observe(utt, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token):
+        calls.append(str(utt))
+        (seed_vault / "papers" / "leaked.txt").write_text("poison", encoding="utf-8")
+        return "lit-library"
+
+    run_fn = build_live_routing_run_fn(
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        observe_impl=poisoning_observe,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    with pytest.raises(seeds.SeedLeakError, match="routing probe"):
+        run_fn(
+            {
+                "id": "I",
+                "layer": "routing",
+                "in_scope_skills": ["lit-library"],
+                "cases": [{"utt": "第一句"}, {"utt": "第二句"}],
+            },
+            model="m",
+        )
+
+    assert calls == ["第一句"], "the batch must stop at the case that leaked"
+    assert list(work_root.iterdir()) == [], "aborting must not also leak the run dir"
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent reporting: (agent, model) as the unit, and honest absences
+# ---------------------------------------------------------------------------
+
+
+def _exec_card() -> dict:
+    return {"id": "X", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+
+
+def test_report_unit_is_agent_plus_model() -> None:
+    """The same weights served through three scaffolds are three data points."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    report = run_batch(
+        [_exec_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert report.agent == "cursor"
+    assert report.model_requested == "claude-sonnet-4-6"
+
+
+def test_agent_flags_record_how_the_run_was_authorized() -> None:
+    """Read from OUR adapter, never from the agent's stream: cursor reports
+    permissionMode "default" while --force is in effect, so a transcript cannot be
+    audited for this. A reader must see "this round ran with approval disabled"."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    for agent, expected in [
+        ("claude", ["--permission-mode", "bypassPermissions"]),
+        ("cursor", ["--force"]),
+        ("agy", ["--dangerously-skip-permissions"]),
+    ]:
+        report = run_batch(
+            [_exec_card()], agent=agent, model="m", rounds=1, run_card_fn=fake_run
+        )
+        assert report.agent_flags == expected
+        assert report_to_dict(report)["agent_flags"] == expected
+
+
+def test_model_served_is_harvested_from_the_runs() -> None:
+    def fake_run(card, *, round, model, **_):
+        return {
+            "vault": Path("/tmp/nope"),
+            "jsonl": [],
+            "run": ExecutorResult(model_served="Sonnet 4.6 200K Medium No Thinking"),
+        }
+
+    report = run_batch(
+        [_exec_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.model_served == "Sonnet 4.6 200K Medium No Thinking"
+    assert report.model_family == "claude-sonnet-4.6"  # explicit table, not a guess
+
+
+def test_agent_that_reports_no_model_says_so() -> None:
+    """agy: model_served is None. The family still resolves from what we REQUESTED
+    (so a controlled comparison can group it), and Phase 0 records that agy's model
+    went unverified — nothing here pretends the served model is known."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    report = run_batch(
+        [_exec_card()], agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert report.model_served is None
+    assert report.model_family == "claude-sonnet-4.6"
+
+
+def test_old_model_key_survives_as_an_alias() -> None:
+    """report.json parsers already on the user's disk must not start reading None."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    report = run_batch([_exec_card()], agent="cursor", model="claude-sonnet-4-6",
+                       rounds=1, run_card_fn=fake_run)
+    payload = report_to_dict(report)
+    assert payload["model"] == "claude-sonnet-4-6" == payload["model_requested"]
+
+
+# ---------------------------------------------------------------------------
+# The routing axis: "cannot measure" is not "missed every one"
+# ---------------------------------------------------------------------------
+
+
+def test_not_measurable_routing_is_excluded_from_ra_not_scored_as_zero() -> None:
+    """The most insidious pitfall in the design, at the aggregation layer.
+
+    An agent with no skill-activation signal must NOT get RA 0.0. The cards stay
+    tagged and counted; the RA section is an honest absence; and coverage says WHY
+    it is absent so a reader can tell this apart from a dry run."""
+    from harness.agents import NOT_MEASURABLE
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    def unmeasurable_routing(card, *, model):
+        return NOT_MEASURABLE
+
+    report = run_batch(
+        [_routing_card()], agent="agy", model="m", rounds=1,
+        run_card_fn=fake_run, routing_run_fn=unmeasurable_routing,
+    )
+
+    assert report.routing is None                       # NOT {"ra": 0.0, ...}
+    assert report.coverage["routing_ra"] == "not_measurable"
+    assert report.coverage["routing_not_measurable_cards"] == ["I-route"]
+    assert "agy" in report.coverage["routing_ra_reason"]
+    assert report.coverage["counts"]["routing"] == 1    # still counted
+    payload = report_to_dict(report)
+    assert payload["routing"] is None
+    assert payload["coverage"]["routing_ra"] == "not_measurable"
+
+
+def test_coverage_distinguishes_not_scored_from_not_measurable() -> None:
+    """Both leave report.routing None. They are completely different facts."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    dry = run_batch([_routing_card()], model="m", rounds=1, run_card_fn=fake_run)
+    assert dry.routing is None
+    assert dry.coverage["routing_ra"] == "not_scored"
+
+    def fake_routing_run(card, *, model):
+        return ["lit-library", "lit-library", "lit-reading", "lit-library"]
+
+    scored = run_batch(
+        [_routing_card()], model="m", rounds=1,
+        run_card_fn=fake_run, routing_run_fn=fake_routing_run,
+    )
+    assert scored.coverage["routing_ra"] == "scored"
+
+
+def test_score_routing_rejects_the_sentinel_loudly() -> None:
+    """Defence in depth. If the sentinel ever reaches the scorer it is NOT None, so
+    it would fall through to the miss branch and produce a confident RA of 0.0."""
+    import pytest
+
+    from harness.agents import NOT_MEASURABLE
+    from harness.routing import score_routing
+
+    with pytest.raises(ValueError, match="NOT_MEASURABLE"):
+        score_routing(
+            _routing_card(),
+            [NOT_MEASURABLE, NOT_MEASURABLE, NOT_MEASURABLE, NOT_MEASURABLE],
+            present_skills=["lit-library", "lit-reading"],
+        )
+
+
+def test_routing_adapter_short_circuits_without_spawning(tmp_path: Path) -> None:
+    """For an agent whose RA is unmeasurable the adapter returns the sentinel up
+    front: ~14 classification spawns per card would buy exactly nothing."""
+    from harness.agents import NOT_MEASURABLE
+
+    def explode(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError("must not probe an agent whose RA is unmeasurable")
+
+    run_fn = build_live_routing_run_fn(
+        seeds_dir=tmp_path / "seeds",
+        work_root=tmp_path / "work",
+        agent="agy",
+        observe_impl=explode,
+        ensure_seed_impl=explode,
+    )
+    assert run_fn(_routing_card(), model="m") is NOT_MEASURABLE
+
+
+# ---------------------------------------------------------------------------
+# Token accounting across agents with different counter support
+# ---------------------------------------------------------------------------
+
+
+def test_sum_usage_never_treats_a_missing_report_as_zero() -> None:
+    """A spawn that reported no usage (agy has no counters; a crashed run reported
+    none) must be DROPPED, not added as zeros — and it must not inflate `spawns`
+    either. "3 spawns, 0 tokens" is a claim we cannot make."""
+    from harness.batch import _sum_usage
+
+    real = {
+        "input_tokens": 10, "output_tokens": 20,
+        "cache_creation_input_tokens": 30, "cache_read_input_tokens": 40,
+    }
+    mixed = _sum_usage([real, {}, None, real])  # type: ignore[list-item]
+    assert mixed["input_tokens"] == 20
+    assert mixed["output_tokens"] == 40
+    assert mixed["spawns"] == 2  # the two unreported spawns are not counted
+
+
+def test_sum_usage_of_an_agent_with_no_counters_is_absent_not_zero() -> None:
+    from harness.batch import _sum_usage
+
+    assert _sum_usage([{}, None, {}]) == {}  # type: ignore[list-item]
+
+
+def test_tokens_section_is_none_for_an_agent_with_no_counters() -> None:
+    """agy's tokens must read None all the way to the report — never a 0 bucket."""
+
+    def fake_run(card, *, round, model, **_):
+        return {"vault": Path("/tmp/nope"), "jsonl": [], "run": ExecutorResult(usage={})}
+
+    report = run_batch(
+        [_exec_card()], agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=2,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.tokens is None
+    assert report_to_dict(report)["tokens"] is None
+    assert report.trr_mean == 1.0  # TRR is still scored: only tokens are unmeasurable
+
+
+def test_cursor_usage_reaches_the_report_normalized() -> None:
+    """End-to-end for the camelCase pitfall: the adapter normalizes at its edge, so
+    the batch's snake_case summing sees real numbers rather than a silent zero."""
+    from harness.agents.cursor import normalize_usage
+
+    raw = {"inputTokens": 4, "outputTokens": 86,
+           "cacheReadTokens": 19868, "cacheWriteTokens": 20024}
+
+    def fake_run(card, *, round, model, **_):
+        return {
+            "vault": Path("/tmp/nope"), "jsonl": [],
+            "run": ExecutorResult(usage=normalize_usage(raw)),
+        }
+
+    report = run_batch(
+        [_exec_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.tokens["total"]["input_tokens"] == 4
+    assert report.tokens["total"]["cache_read_input_tokens"] == 19868
+    assert report.tokens["total"]["spawns"] == 1
+
+
+def test_qualification_rides_into_the_report() -> None:
+    """Phase 0 is a deliverable, not just a gate: a reader must see what was
+    verified — and, for agy, what could not be."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    sheet = {"agent": "agy", "ok": True, "checks": [
+        {"name": "model_pinned", "status": "skip", "detail": "UNVERIFIED"},
+    ]}
+    report = run_batch(
+        [_exec_card()], agent="agy", model="m", rounds=1,
+        run_card_fn=fake_run, qualification=sheet,
+    )
+    assert report_to_dict(report)["qualification"] == sheet
+
+
+def test_family_is_not_invented_when_no_run_observed_a_model() -> None:
+    """Minor 8: only execution rounds harvest `model_served`, so a routing-only
+    run (or one whose spawns all died before reporting) leaves it None for an
+    agent that DOES report models. The family must stay None there — deriving it
+    from the request would dress the gap up as knowledge."""
+
+    def fake_run(card, *, round, model, **_):
+        return 1
+
+    routing_only = run_batch(
+        [_routing_card()], agent="cursor", model="claude-sonnet-4-6", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert routing_only.model_served is None
+    assert routing_only.model_family is None  # NOT "claude-sonnet-4.6"
+
+    # agy is the one agent for which the request IS the only source there is.
+    agy = run_batch(
+        [_routing_card()], agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=1,
+        run_card_fn=fake_run,
+    )
+    assert agy.model_served is None
+    assert agy.model_family == "claude-sonnet-4.6"
+
+
+# ---------------------------------------------------------------------------
+# Errors are errors, not zeros (the quota running out is not a wrong answer)
+# ---------------------------------------------------------------------------
+
+
+def _dead_run(*, exit_code: int = 1, timed_out: bool = False, model_served=None) -> dict:
+    """A run handle shaped exactly like a spawn that died: empty everything."""
+    return {
+        "vault": Path("/tmp/nope"),
+        "jsonl": [],
+        "run": ExecutorResult(
+            exit_code=exit_code, timed_out=timed_out, model_served=model_served
+        ),
+    }
+
+
+def _live_run(*, model_served=None, resolved_marker: str = "") -> dict:
+    """A run handle shaped like a spawn that completed normally."""
+    return {
+        "vault": Path("/tmp/nope"),
+        "jsonl": [],
+        "run": ExecutorResult(
+            exit_code=0, timed_out=False, model_served=model_served,
+            final_text=resolved_marker,
+        ),
+    }
+
+
+def test_errored_card_is_not_scored_zero() -> None:
+    """AC1. A dead spawn scores 0 through the checker (empty stdout satisfies no
+    assertion) — that 0 is the INSTRUMENT's, and reporting it as the model's is
+    the bug this exists to kill. The card must carry an error and vanish from the
+    TRR denominator instead."""
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1)
+
+    report = run_batch(
+        [_exec_card()], agent="claude", model="m", rounds=3,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+    )
+    (card,) = report.cards
+    assert card.error is not None
+    assert card.error["reason"] == "exit"
+    assert card.error["exit_code"] == 1
+    assert report.coverage["errored_cards"] == ["X"]
+    assert report.coverage["trr_denominator"] == 0  # NOT 1-with-a-zero-in-it
+    assert report_to_dict(report)["cards"][0]["error"] == card.error
+
+
+def test_timed_out_card_is_errored_too() -> None:
+    """AC1, the other death: the executor kills a hung spawn and flags timed_out
+    with exit_code -1. Both facts were already recorded and neither was read."""
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=-1, timed_out=True)
+
+    report = run_batch(
+        [_exec_card()], agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+    )
+    (card,) = report.cards
+    assert card.error["reason"] == "timeout"
+    assert card.error["timed_out"] is True
+    assert report.coverage["trr_denominator"] == 0
+
+
+def test_errored_card_stops_burning_rounds() -> None:
+    """D5: a card that died in round 0 does not get rounds 1 and 2 spent on it —
+    rounds are the unit of variance, so a 1-of-3 card is not comparable to a
+    3-of-3 one and there is nothing to salvage by continuing."""
+    calls: list[int] = []
+
+    def fake_run(card, *, round, model, **_):
+        calls.append(round)
+        return _dead_run(exit_code=1)
+
+    run_batch(
+        [_exec_card()], agent="claude", model="m", rounds=3,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+    )
+    assert calls == [0]  # not [0, 1, 2]
+
+
+def test_trr_denominator_excludes_errored_cards() -> None:
+    """AC2. Ten cards: five perfect, five dead. TRR is 1.0 over n=5.
+
+    Before this fix the answer here was 0.5 over n=10 — five real results and five
+    dead spawns averaged into one number, published under the model's name, with
+    nothing anywhere saying half the batch never ran. That number is the entire
+    reason this code exists."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(10)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _live_run() if int(card["id"][1:]) < 5 else _dead_run(exit_code=1)
+
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run,
+        score_fn=lambda card, **kw: (1, []),
+        max_consecutive_errors=0,  # the breaker is a separate concern; test TRR here
+    )
+    assert report.trr_mean == 1.0
+    assert report.coverage["trr_denominator"] == 5
+    assert report.coverage["errored_cards"] == ["C5", "C6", "C7", "C8", "C9"]
+
+
+def test_fake_int_handle_is_never_an_error() -> None:
+    """AC3. --dry-run's _fake_run_card returns a bare int. _error_of must read
+    "no run handle" as "no error", or the dry run — and every fake in this file —
+    would report the whole corpus as errored."""
+    from harness.batch import _error_of
+
+    assert _error_of(0) is None
+    assert _error_of(1) is None
+    assert _error_of((1, [])) is None
+    assert _error_of({"vault": "/tmp/v", "jsonl": []}) is None  # no "run" key
+    assert _error_of({"vault": "/tmp/v", "run": None}) is None  # run key, None value
+    assert _error_of(_live_run()) is None
+
+
+# ---------------------------------------------------------------------------
+# The other death: the agent does not stop, it serves a cheaper model
+# ---------------------------------------------------------------------------
+
+
+def test_model_change_mid_run_aborts() -> None:
+    """AC3b. The dangerous failure: nothing breaks, the cards keep scoring, and
+    card 4 onward is measured with a different ruler. Harvesting the model once
+    (the old behavior) reports the FIRST model with total confidence and never
+    looks again."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+    seen: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        seen.append(card["id"])
+        served = (
+            "claude-haiku-4-5-20251001" if int(card["id"][1:]) < 3 else "claude-haiku-3"
+        )
+        return _live_run(model_served=served)
+
+    with pytest.raises(BatchAbortedError) as ei:
+        run_batch(
+            cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        )
+    msg = str(ei.value)
+    assert "claude-haiku-4-5-20251001" in msg  # the baseline
+    assert "claude-haiku-3" in msg             # what it changed to
+    assert "C3" in msg                         # where it changed
+    assert ei.value.detail["reason"] == "model_changed"
+    # It STOPPED. C4 and C5 were never spawned — that is the requirement; the
+    # exception type is only how it is announced.
+    assert seen == ["C0", "C1", "C2", "C3"]
+
+
+def test_export_miss_is_unverified_not_a_change() -> None:
+    """AC1/AC2 (was ``test_model_going_silent_mid_run_aborts``, now reversed).
+
+    A LIVE spawn that ran and scored but whose served model could not be harvested
+    (opencode reads it from an after-the-fact ``opencode export`` that occasionally
+    misses on a large session) is a MEASUREMENT gap, not a change of ruler. A single
+    None cannot tell a genuine downgrade-to-something-modelless apart from the
+    harvest simply failing, so the batch does NOT abort: it runs to the last card,
+    the baseline (the first concrete reading) stands untouched, and each such round
+    is DISCLOSED in ``model_unverified_rounds``. The card answered correctly, so it
+    stays in the TRR denominator. 'Silence is not permission' survives — as
+    disclosure (the count lands in report.json), not as an abort."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(4)
+    ]
+    seen: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        seen.append(card["id"])
+        # Baseline harvested on C0/C1; C2/C3 are live + correct but export missed.
+        served = "claude-haiku-4-5-20251001" if int(card["id"][1:]) < 2 else None
+        return _live_run(model_served=served)
+
+    report = run_batch(
+        cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    # It ran to the END — no abort, every card spawned.
+    assert seen == ["C0", "C1", "C2", "C3"]
+    # The two live-but-unharvested rounds are disclosed, not acted on.
+    assert report.coverage["model_unverified_rounds"] == 2
+    # A None round neither updates the baseline nor aborts: the first concrete
+    # reading stands.
+    assert report.model_served == "claude-haiku-4-5-20251001"
+    # Every card answered correctly and every card counts — TRR over all 4.
+    assert report.coverage["trr_denominator"] == 4
+    assert report.trr_mean == 1.0
+    # And the disclosure lands in report.json (AC6, positive case > 0).
+    assert report_to_dict(report)["coverage"]["model_unverified_rounds"] == 2
+
+
+def test_all_rounds_verified_reports_zero_unverified() -> None:
+    """AC6 (reverse case). When every live round surfaces the same served model,
+    nothing is unverified: the count is 0, and it still lands in report.json — so
+    the field is a real measurement, not a flag that only ever appears when set."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(3)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _live_run(model_served="claude-haiku-4-5-20251001")
+
+    report = run_batch(
+        cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.coverage["model_unverified_rounds"] == 0
+    assert report_to_dict(report)["coverage"]["model_unverified_rounds"] == 0
+
+
+def test_dead_spawn_is_errored_not_reported_as_a_model_change() -> None:
+    """AC3c. THE central confusion this task exists to end.
+
+    A dead spawn emits no init event, so model_served is None — it looks exactly
+    like "the model changed from X to None". Check the error FIRST and it is a
+    spent quota (errored card, honest). Check the model first and the report says
+    the ruler changed, sending the reader to debug the wrong thing entirely.
+    Reversing the two checks in run_batch turns this test red."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(3)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        if card["id"] == "C0":
+            return _live_run(model_served="claude-haiku-4-5-20251001")
+        # Out of quota: the process dies. No init event ⇒ no model reported.
+        return _dead_run(exit_code=1, model_served=None)
+
+    report = run_batch(
+        cards, agent="claude", model="claude-haiku-4-5-20251001", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        max_consecutive_errors=0,
+    )
+    assert report.coverage["errored_cards"] == ["C1", "C2"]
+    assert report.model_served == "claude-haiku-4-5-20251001"
+    assert report.trr_mean == 1.0
+    assert report.coverage["trr_denominator"] == 1
+
+
+def test_agy_model_check_is_a_noop() -> None:
+    """AC3d. agy reports no model, ever. `None == None` every round proves
+    nothing, so the check must not run at all for it — reading those Nones as a
+    signal would either alarm on every card or, worse, look like verification."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(5)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _live_run(model_served=None)
+
+    report = run_batch(
+        cards, agent="agy", model="Claude Sonnet 4.6 (Thinking)", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+    )
+    assert report.coverage["trr_denominator"] == 5  # ran to the end, no alarm
+    assert report.model_served is None
+    # D2 boundary: the gate never runs for agy, so model_unverified_rounds is a
+    # flat 0 — agy's "we cannot check" is carried by model_identity, and the count
+    # must NOT be repurposed to imply agy served 5 unverified rounds.
+    assert report.coverage["model_unverified_rounds"] == 0
+    assert report.model_identity == "unverified"
+
+
+# ---------------------------------------------------------------------------
+# The breaker: N in a row means the quota is gone, not that the model got worse
+# ---------------------------------------------------------------------------
+
+
+def test_three_consecutive_errors_abort_the_batch() -> None:
+    """AC4. The requirement is that it STOPS — assert the call list, not the
+    exception type. An abort that still spawns card 4 has not saved anything."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+    seen: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        seen.append(card["id"])
+        return _dead_run(exit_code=1)
+
+    with pytest.raises(BatchAbortedError) as ei:
+        run_batch(
+            cards, agent="claude", model="m", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+            max_consecutive_errors=3,
+        )
+    assert seen == ["C0", "C1", "C2"]  # C3+ never spawned
+    assert ei.value.detail["reason"] == "consecutive_errors"
+    assert ei.value.detail["streak"] == ["C0", "C1", "C2"]
+    assert "C0" in str(ei.value)
+
+
+def test_an_abort_counts_only_the_cards_it_really_measured() -> None:
+    """An abort message's whole job is to tell the reader what their money bought.
+
+    ``len(card_scores)`` would count cards nothing was ever spawned for (skipped)
+    and cards that died (errored), so the model-change branch would print "the 3
+    card(s) already measured are valid" when only one of them was. It is prose, not
+    a metric in report.json, which is exactly why it is easy to leave wrong: no
+    assertion elsewhere would ever notice.
+    """
+    import pytest
+
+    cards = [
+        {"id": "C0", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+        {"id": "S1", "layer": "f", "skip_reason": "needs a pty"},
+        {"id": "E1", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+        {"id": "C2", "layer": "f", "expected_end_state": ["path_exists: papers"]},
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        if card["id"] == "E1":
+            return _dead_run(exit_code=1)
+        model_now = "MODEL-Y" if card["id"] == "C2" else "MODEL-X"
+        return _live_run(model_served=model_now)
+
+    with pytest.raises(BatchAbortedError) as ei:
+        run_batch(
+            cards, agent="claude", model="m", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        )
+
+    assert ei.value.detail["reason"] == "model_changed"
+    # C0 only: S1 was never spawned, E1 died, C2 is the card that flipped.
+    assert ei.value.completed == 1
+    assert "the 1 card(s) already measured are valid" in str(ei.value)
+
+
+def test_intermittent_errors_do_not_abort() -> None:
+    """AC4 second half. Flaky-error-then-success is the noise a bench averages
+    over; a CUMULATIVE counter would abort every long run eventually."""
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1) if int(card["id"][1:]) % 2 == 0 else _live_run()
+
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (1, []),
+        max_consecutive_errors=3,
+    )
+    assert report.coverage["errored_cards"] == ["C0", "C2", "C4"]
+    assert report.coverage["trr_denominator"] == 3
+    assert report.trr_mean == 1.0
+
+
+def test_breaker_can_be_disabled() -> None:
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(4)
+    ]
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1)
+
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+        max_consecutive_errors=0,
+    )
+    assert len(report.coverage["errored_cards"]) == 4
+
+
+def test_errored_cards_are_journaled_before_the_breaker_fires() -> None:
+    """The cards that triggered the abort must reach on_card_done: a resume
+    retries exactly the cards whose last journal record is an error (D7), so an
+    abort that dropped them would make the failures un-retryable."""
+    import pytest
+
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(6)
+    ]
+    done: list[str] = []
+
+    def fake_run(card, *, round, model, **_):
+        return _dead_run(exit_code=1)
+
+    with pytest.raises(BatchAbortedError):
+        run_batch(
+            cards, agent="claude", model="m", rounds=1,
+            run_card_fn=fake_run, score_fn=lambda card, **kw: (0, []),
+            on_card_done=lambda s: done.append(s.card_id),
+        )
+    assert done == ["C0", "C1", "C2"]
+
+
+def test_seed_canary_still_fires_on_an_errored_round(tmp_path: Path) -> None:
+    """A spawn can write through to the shared seed and THEN die. The corpse is no
+    alibi, so the canary must run for errored rounds too — and it must WIN over
+    the new error path: a poisoned corpus reported as a billing problem is the
+    louder alarm silenced by the quieter one.
+
+    End-to-end through the real build_live_run_card_fn for the reason the sibling
+    test above gives: what is under test is WHERE the alarm is wired.
+    """
+    import pytest
+
+    from harness import seeds
+
+    seed_vault, work_root = _stamped_seed(tmp_path)
+
+    def poisoning_dead_run(
+        card, run_vault, *, fixtures_pdfs_dir, agent, model, base_url, auth_token
+    ):
+        (seed_vault / "papers" / "leaked.txt").write_text("poison", encoding="utf-8")
+        return ExecutorResult(exit_code=1)  # ... and then the spawn dies
+
+    run_fn = build_live_run_card_fn(
+        fixtures_pdfs_dir=tmp_path / "pdfs",
+        seeds_dir=tmp_path / "seeds",
+        work_root=work_root,
+        run_card_impl=poisoning_dead_run,
+        ensure_seed_impl=lambda name: seed_vault,
+    )
+
+    with pytest.raises(seeds.SeedLeakError, match="MUTATED"):
+        run_batch(
+            [{"id": "D4-unlink", "seed": "seed-5papers-tagged", "expected_end_state": []}],
+            model="m",
+            rounds=1,
+            run_card_fn=run_fn,
+            score_fn=lambda card, **kw: (0, []),
+        )
+
+
+# ---------------------------------------------------------------------------
+# prior_scores: the invariant lives where it is enforced
+# ---------------------------------------------------------------------------
+
+
+def test_an_errored_prior_score_is_refused() -> None:
+    """Adopting an errored prior would put one card in errored_cards AND in the
+    TRR denominator — "did not run" and "scored 0.0" in the same report, from the
+    code written to make that impossible. The only caller filters correctly today;
+    that is a fact about a module one import away, which is how the seed leak
+    survived. So the loop checks."""
+    import pytest
+
+    prior = CardScore("X", "auto-scored", [], 0.0, error={"reason": "exit"})
+    with pytest.raises(ValueError, match="error"):
+        run_batch(
+            [_exec_card()], agent="claude", model="m", rounds=1,
+            run_card_fn=lambda card, **kw: 1, prior_scores=[prior],
+        )
+
+
+def test_a_routing_prior_score_is_refused() -> None:
+    """A routing card's RA trail is not in a CardScore, so restoring one would
+    shrink the RA denominator in silence."""
+    import pytest
+
+    prior = CardScore("I-route-batch-1", "routing", [], 0.0)
+    with pytest.raises(ValueError, match="routing"):
+        run_batch(
+            [_exec_card()], agent="claude", model="m", rounds=1,
+            run_card_fn=lambda card, **kw: 1, prior_scores=[prior],
+        )
+
+
+def test_a_good_prior_score_is_adopted_without_rerunning_it() -> None:
+    ran: list[str] = []
+    cards = [
+        {"id": f"C{i}", "layer": "f", "expected_end_state": ["path_exists: papers"]}
+        for i in range(2)
+    ]
+    report = run_batch(
+        cards, agent="claude", model="m", rounds=1,
+        run_card_fn=lambda card, **kw: ran.append(card["id"]) or 1,
+        score_fn=lambda card, **kw: (1, []),
+        prior_scores=[CardScore("C0", "auto-scored", [1], 1.0)],
+    )
+    assert ran == ["C1"]  # C0 was not re-run
+    assert report.coverage["trr_denominator"] == 2  # but it still counts
+    assert report.trr_mean == 1.0

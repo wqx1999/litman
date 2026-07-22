@@ -27,19 +27,28 @@ Four further verbs read state the vault YAML does not own:
 * ``count`` matches over INDEX.json papers (e.g. ``count: title~PeptideBERT == 1``
   proves the dedup did not create a duplicate, M34 §3.5: A3).
 
-Three evidence verbs score the agent's observable output:
+Four evidence verbs score the agent's observable output:
 
 * ``stdout_contains: ~substr`` greps the joined ``record["stdout"]`` of the
   jsonl (works from the jsonl alone — the executor widens its records to carry
   each lit call's captured stdout). When that misses and a ``run`` is threaded
   it falls back to the executor's ``stdout_blob`` (every captured result block),
   recovering output whose result block could not be paired to a call by id.
-* ``stdout_not_contains: ~substr`` is the negative of the above (e.g. C1: a
-  filtered ``lit list`` must NOT surface the out-of-range paper). It searches the
-  WIDEST evidence — jsonl stdout *and* ``stdout_blob`` when a ``run`` is threaded
-  — and passes only when the substring is absent from all of it. Widening the
-  search can only make a present substring easier to find, so it never yields a
-  false "absent" pass.
+* ``filtered_list_omits: ~substr`` is the SCOPE-NARROWED negative for "a filtered
+  ``lit list`` must NOT surface the out-of-range paper" (C1). Unlike a whole-session
+  negative, it reads ONLY the ``stdout`` of the LAST ``lit list`` call that carried
+  a content-filter flag (``--year`` / ``--topic`` / ... — not ``--format`` /
+  ``--limit`` / ``--sort`` / ``--help``), and never the ``stdout_blob``. So an agent
+  that dumps the full library while exploring and THEN filters correctly is not
+  punished for the exploratory dump; with no filtered ``lit list`` at all it FAILS
+  (the agent produced no file-side-filtered result to judge).
+* ``filtered_list_contains: ~substr`` is the SCOPE-NARROWED positive twin of
+  ``filtered_list_omits``: it passes when the ``stdout`` of the LAST ``lit list``
+  call carrying a content-filter flag CONTAINS ``substr``, reads ONLY that filtered
+  call's stdout (never the ``stdout_blob``), and with no filtered ``lit list`` at
+  all it FAILS. Pairing it with the omits verb makes every C1 content assertion
+  speak to the SAME filtered result, so an agent that dumps the whole library and
+  picks in its head cannot satisfy any of them off the exploratory dump.
 * ``answer_contains: ~substr`` greps ``run.final_text`` (the agent's natural
   language answer, e.g. C2 "year=2023"). Needs ``run`` threaded; when it is
   ``None`` the result is a *failed* assertion (``detail="no run threaded"``),
@@ -444,6 +453,27 @@ def _check_pdf_eq(vault: Path, arg: str, *, golden_dir: Path) -> AssertResult:
 
 
 def _check_health_clean(vault: Path) -> AssertResult:
+    """``health: clean`` — zero **error**-severity findings in the run vault.
+
+    Deliberately NOT the same bar as the CLI's exit code, and you need the gap
+    before reading any card that asserts this. ``lit health-check`` exits 1 when
+    ``any(i.severity != "info")`` — **errors AND warnings** gate it — so a vault
+    carrying only warnings is ``clean`` here and "not clean" there. 22 cards assert
+    this verb (the ruler-audit spec §6.1 carries the decision to leave the gap).
+
+    That gap is load-bearing today, which is the part to read before "aligning"
+    anything: **all 22 cards are sitting on 2 ``skill_drift`` warnings right now**,
+    and the error-only filter is the only reason they are green.
+    ``check_skill_drift`` is a MACHINE-level check — its ``vault`` / ``papers``
+    args are unused, it reports HOST state — and it resolves the installed skills
+    dir through **this process's** ``Path.home()``. This oracle runs in the HARNESS
+    process, so the claude adapter's HOME redirect (which only ever lands in the
+    agent's child env) does not touch it, and no per-agent isolation can.
+
+    So making the verb match the CLI would turn 22 cards red over the developer's
+    own installed skill copies, for a reason that has nothing to do with any
+    vault. Isolating the HARNESS's own home is the prerequisite for that work.
+    """
     issues = _health_issues(vault)
     errors = [i for i in issues if i.severity == "error"]
     ok = len(errors) == 0
@@ -597,7 +627,7 @@ def _check_count(vault: Path, arg: str) -> AssertResult:
 
 
 def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> AssertResult:
-    """``stdout_contains: ~substr`` — grep the agent's captured lit-call stdout.
+    """``stdout_contains: ~substr`` — grep the output the agent's TOOLS returned.
 
     Greps ``record["stdout"]`` of every jsonl record first (the executor widens
     its records to carry each lit call's captured stdout, paired by
@@ -610,6 +640,21 @@ def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> Asse
     ``tool_use_id`` (best-effort pairing), so the blob recovers the real output
     that lives in an unpaired result block. This can only make a TRUE match more
     findable; the blob holds only real agent output, never a fabricated pass.
+
+    **That fallback is NOT lit-specific — do not write a card as if it were.**
+    ``stdout_blob`` joins EVERY ``tool_result``: a ``cat``, a ``Read``, a ``grep``,
+    not only the lit calls the paragraph above describes. So this verb answers
+    "did this text reach the agent through some tool?", never "did the agent get it
+    out of litman". Measured (2026-07-17, C2-show r2): an agent that ran no ``lit``
+    at all and read ``metadata.yaml`` directly PASSED ``stdout_contains``; only its
+    card's companion ``ran:`` assertion failed it. A card that means "the value came
+    from litman" must pair this with ``ran:`` — this verb alone cannot carry it.
+
+    What it DOES guarantee, and why C2-show rests on it: it never reads
+    ``final_text``, so no rendering choice the model makes can affect the verdict.
+    That is exactly the property ``answer_contains`` lacks — measured on the same
+    card, a correct answer written "2026 年 6 月 15 日" scored 0 against an ISO
+    substring, with perfect tool choice.
     """
     sub = arg.strip().lstrip("~").strip()
     blob = "\n".join(str(r.get("stdout", "")) for r in jsonl)
@@ -624,25 +669,92 @@ def _check_stdout_contains(jsonl: list[dict], arg: str, run: Any = None) -> Asse
     )
 
 
-def _check_stdout_not_contains(jsonl: list[dict], arg: str, run: Any = None) -> AssertResult:
-    """``stdout_not_contains: ~substr`` — the negative of stdout_contains.
+# `lit list` flags that are NOT content filters (output format / paging / help).
+# Everything else shaped like `--flag` narrows the result set, so membership is
+# judged by EXCLUSION — a future filter flag is covered without editing this.
+_LIST_NON_FILTER_FLAGS = {"--format", "--limit", "--sort", "--help"}
 
-    Passes only when ``substr`` is absent from the WIDEST available evidence: the
-    joined jsonl ``record["stdout"]`` AND (when a ``run`` is threaded) the
-    executor's ``stdout_blob``. Searching the broadest space is the safe direction
-    for a negative assertion — a substring that is actually present is more likely
-    to be found and correctly fail, so this never yields a false "absent" pass.
+
+def _is_filtered_list(record: dict) -> bool:
+    """True iff this jsonl record is a ``lit list`` call carrying >=1 content-filter flag.
+
+    ``argv`` is the subcommand token list (no ``lit`` prefix), e.g.
+    ``['list','--topic','peptide','--format','json']``. A ``vault list ...`` call
+    has ``argv[0] == 'vault'`` and is correctly excluded. ``--format`` / ``--limit``
+    / ``--sort`` / ``--help`` are output / paging / help, not content filters; every
+    other ``--flag`` (``--year`` / ``--topic`` / ``--title`` / ``--status`` /
+    ``--author`` / ``--project`` / ``--unread`` ...) counts. Judging by exclusion
+    means a newly added filter flag is picked up with no edit here. The ``=value``
+    of a ``--flag=value`` token is stripped before the exclusion test, so the
+    equals form (``--format=json`` / ``--limit=50``) is classified identically to
+    the space form.
+    """
+    argv = record.get("argv") or []
+    if not argv or argv[0] != "list":
+        return False
+    return any(
+        a.startswith("--") and a.split("=", 1)[0] not in _LIST_NON_FILTER_FLAGS
+        for a in argv
+    )
+
+
+def _check_filtered_list_omits(jsonl: list[dict], arg: str) -> AssertResult:
+    """``filtered_list_omits: ~substr`` — scope-narrowed negative for C1.
+
+    Passes iff there is at least one ``lit list`` call carrying a content-filter
+    flag AND the stdout of the LAST such call omits ``substr``. With no filtered
+    ``lit list`` at all it FAILS — the agent produced no file-side-filtered result
+    to judge (dumping the whole library and picking in its head does not count).
+
+    Reads ONLY the jsonl ``argv`` + per-record ``stdout``; it deliberately never
+    touches the executor's ``stdout_blob``. Widening to the whole session is the
+    exact mistake this verb exists to avoid: an agent that dumps the full library
+    while exploring and THEN filters correctly must not be failed for the
+    out-of-range paper that appeared in the exploratory dump.
     """
     sub = arg.strip().lstrip("~").strip()
-    blob = "\n".join(str(r.get("stdout", "")) for r in jsonl)
-    present = _norm(sub) in _norm(blob)
-    if not present and run is not None:
-        from harness.executor import stdout_blob
-
-        present = _norm(sub) in _norm(stdout_blob(run))
+    filtered = [r for r in jsonl if _is_filtered_list(r)]
+    if not filtered:
+        return AssertResult(
+            "filtered_list_omits", arg, False,
+            "no filtered `lit list` call — agent produced no file-side-filtered result",
+        )
+    last_stdout = str(filtered[-1].get("stdout", ""))
+    present = _norm(sub) in _norm(last_stdout)
     return AssertResult(
-        "stdout_not_contains", arg, not present,
-        "" if not present else f"lit-call stdout unexpectedly contains {sub!r}",
+        "filtered_list_omits", arg, not present,
+        "" if not present else f"filtered list result unexpectedly contains {sub!r}",
+    )
+
+
+def _check_filtered_list_contains(jsonl: list[dict], arg: str) -> AssertResult:
+    """``filtered_list_contains: ~substr`` — scope-narrowed POSITIVE for C1.
+
+    Passes iff there is at least one ``lit list`` call carrying a content-filter
+    flag AND the stdout of the LAST such call CONTAINS ``substr``. With no filtered
+    ``lit list`` at all it FAILS — the agent produced no file-side-filtered result,
+    so it cannot be credited for surfacing the paper out of a full-library dump.
+
+    The positive twin of :func:`_check_filtered_list_omits`. Together they make C1
+    coherent: every content assertion speaks to the SAME last filtered list, so an
+    agent that dumps the whole library and picks in its head fails all of them
+    uniformly, and none can be satisfied off the exploratory dump. Reads ONLY the
+    jsonl ``argv`` + per-record ``stdout``; it deliberately never touches the
+    executor's ``stdout_blob`` (widening to the whole session is the exact mistake
+    the filtered_* pair exists to avoid).
+    """
+    sub = arg.strip().lstrip("~").strip()
+    filtered = [r for r in jsonl if _is_filtered_list(r)]
+    if not filtered:
+        return AssertResult(
+            "filtered_list_contains", arg, False,
+            "no filtered `lit list` call — agent produced no file-side-filtered result",
+        )
+    last_stdout = str(filtered[-1].get("stdout", ""))
+    present = _norm(sub) in _norm(last_stdout)
+    return AssertResult(
+        "filtered_list_contains", arg, present,
+        "" if present else f"filtered list result does not contain {sub!r}",
     )
 
 
@@ -680,7 +792,7 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
         "file_exists", "file_contains", "file_nonempty",
         "vault_file_contains", "vault_file_nonempty",
         "count",
-        "stdout_contains", "stdout_not_contains", "answer_contains",
+        "stdout_contains", "filtered_list_omits", "filtered_list_contains", "answer_contains",
     }
 )
 
@@ -751,8 +863,10 @@ def check_assertion(
         return _check_count(vault, arg)
     if verb == "stdout_contains":
         return _check_stdout_contains(jsonl, arg, run)
-    if verb == "stdout_not_contains":
-        return _check_stdout_not_contains(jsonl, arg, run)
+    if verb == "filtered_list_omits":
+        return _check_filtered_list_omits(jsonl, arg)
+    if verb == "filtered_list_contains":
+        return _check_filtered_list_contains(jsonl, arg)
     if verb == "answer_contains":
         return _check_answer_contains(run, arg)
 

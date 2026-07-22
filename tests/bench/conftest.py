@@ -12,6 +12,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 BENCH_DIR = Path(__file__).resolve().parent
 if str(BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(BENCH_DIR))
@@ -22,4 +24,45 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "slow: a slower deterministic test (multi-paper seed build)"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_credential_dirs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop any test resolving the developer's REAL credential dirs.
+
+    A test that fakes a home does it by pointing ``$HOME`` at a ``tmp_path``. That
+    is not sufficient on its own, and the gap is not theoretical — it was found
+    live: ``claude._real_config_dir()`` reads ``$CLAUDE_CONFIG_DIR`` **first** and
+    only falls back to ``~/.claude``, so with that documented, supported var
+    exported the fake home is ignored, ``seed_auth`` copies the developer's real
+    OAuth credential into ``tmp_path``, and the test still passes. A leak that
+    passes is the kind nobody finds. ``XDG_CONFIG_HOME`` is the same shape one
+    level over (cursor's auth path), so both are cleared for every test.
+
+    ``$HOME`` itself is deliberately NOT cleared here: ``Path.home()`` falls back
+    to the ``pwd`` database when it is unset, which resolves to the real home
+    anyway — an unset HOME would look isolated and not be. Faking a home stays the
+    individual test's job; this fixture only guarantees that when a test does fake
+    one, nothing silently overrides it.
+
+    The list is :data:`harness.agents.HOME_ESCAPING_CONFIG_VARS`, shared with
+    :func:`harness.agents.isolated_env` rather than repeated here: this fixture
+    protects the TEST process and ``isolated_env`` protects the AGENT's process,
+    but they are the same question — "which var names a real config dir absolutely"
+    — and two copies of one answer drift. Adding an agent means adding its var
+    THERE, and both sides move together.
+
+    ``CLAUDE_CODE_OAUTH_TOKEN`` is cleared too, but it is NOT in that tuple: it
+    does not name a config dir (it is a bearer token the harness deliberately
+    PASSES to claude, so ``isolated_env`` must keep it, not drop it). It is
+    cleared HERE for determinism only — exported in the maintainer's shell it
+    would silently switch every claude test onto the token path and skip
+    ``seed_auth``, turning the seed tests falsely green or red. A test that wants
+    the token path sets it explicitly after this runs.
+    """
+    from harness.agents import HOME_ESCAPING_CONFIG_VARS
+
+    for var in HOME_ESCAPING_CONFIG_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 

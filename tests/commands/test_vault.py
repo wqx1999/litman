@@ -269,6 +269,85 @@ def test_cli_vault_use_idempotent_on_already_active(
 
 
 # ---------------------------------------------------------------------------
+# lit vault set-path
+# ---------------------------------------------------------------------------
+
+
+def test_cli_vault_set_path_repoints_in_place(
+    fake_home: Path, vault_a: Path, vault_b: Path
+) -> None:
+    """Happy path: the registry follows the vault to its new home, and the
+    active flag is unchanged."""
+    runner = CliRunner()
+    runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    result = runner.invoke(cli, ["vault", "set-path", "main", str(vault_b)])
+    assert result.exit_code == 0, result.output
+    assert "Repointed" in result.output
+
+    entry = find_by_name(load_registry(), "main")
+    assert Path(entry.path) == vault_b.resolve()
+    assert entry.is_active is True  # first vault stays active across the move
+
+
+def test_cli_vault_set_path_missing_name_errors(
+    fake_home: Path, vault_a: Path
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["vault", "set-path", "ghost", str(vault_a)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    assert "No vault named" in str(result.exception)
+
+
+def test_cli_vault_set_path_nonexistent_path_errors(
+    fake_home: Path, vault_a: Path, tmp_path: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    nowhere = tmp_path / "does-not-exist"
+    result = runner.invoke(cli, ["vault", "set-path", "main", str(nowhere)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    assert "not an existing" in str(result.exception)
+
+
+def test_cli_vault_set_path_without_lit_config_errors(
+    fake_home: Path, vault_a: Path, tmp_path: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    result = runner.invoke(cli, ["vault", "set-path", "main", str(plain)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    assert "lit-config.yaml" in str(result.exception)
+
+
+def test_cli_vault_set_path_help() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["vault", "set-path", "--help"])
+    assert result.exit_code == 0
+    assert "NEW_PATH" in result.output
+
+
+def test_cli_vault_add_dead_name_points_at_set_path(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """AC5: re-adding a name whose folder is gone points at set-path, not a
+    dead-end 'already registered'."""
+    import shutil
+
+    runner = CliRunner()
+    runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    shutil.rmtree(vault_a)
+    result = runner.invoke(cli, ["vault", "add", "main", str(vault_a.parent)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    assert "set-path main" in str(result.exception)
+
+
+# ---------------------------------------------------------------------------
 # lit vault list
 # ---------------------------------------------------------------------------
 

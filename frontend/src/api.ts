@@ -33,8 +33,21 @@ export class ApiError extends Error {
   }
 }
 
+/** Fetch live API state without consulting Chromium's HTTP cache.
+ *
+ * The response-side `Cache-Control: no-store` contract prevents current
+ * servers from creating new cache entries, but it cannot evict a 410 cached by
+ * an older litman release.  The desktop app reuses one Chromium profile and
+ * usually one localhost port, so that legacy response otherwise has the exact
+ * same cache key after an upgrade.  Request-side `cache: 'no-store'` makes the
+ * first upgraded sweep go to the server and heal immediately after relocate.
+ */
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, { ...init, cache: 'no-store' })
+}
+
 async function getJSON<T>(url: string): Promise<T> {
-  const resp = await fetch(url)
+  const resp = await apiFetch(url)
   if (!resp.ok) {
     throw new ApiError(`${url} → ${resp.status} ${resp.statusText}`, resp.status)
   }
@@ -55,7 +68,7 @@ async function mutateJSON<T>(
   method: 'PUT' | 'POST' | 'DELETE',
   body?: unknown,
 ): Promise<T> {
-  const resp = await fetch(url, {
+  const resp = await apiFetch(url, {
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
@@ -123,7 +136,7 @@ export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer
-  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
     method: 'PUT',
     body: buffer,
     headers: { 'Content-Type': 'application/pdf' },
@@ -147,7 +160,7 @@ async function putMdText(
   doc: 'notes' | 'discussion',
   text: string,
 ): Promise<void> {
-  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
     method: 'PUT',
     body: JSON.stringify({ text }),
     headers: { 'Content-Type': 'application/json' },
@@ -166,7 +179,7 @@ export function putDiscussion(id: string, text: string): Promise<void> {
 }
 
 async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
-  const resp = await fetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
   if (!resp.ok) {
     // The server describes damaged files (non-UTF-8 etc.) in `detail` —
@@ -364,6 +377,7 @@ export interface AgentLaunchResult {
   mode: 'spawned' | 'copy'
   agent: string
   command: string
+  permission_warning: string | null
 }
 
 /** Launch a configured agent in a terminal at the vault. Sends the agent NAME
@@ -374,16 +388,23 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
   return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
 }
 
-/** One agent's onboarding view: display name, whether litman supports it today
- * (only Claude Code so far — the rest are greyed roadmap placeholders),
- * whether its launch command is on PATH, and its official install page. Agent-
- * agnostic by contract: no per-agent skill path ever appears here. */
+/** One agent's onboarding view: display name, beginner-facing brand, whether
+ * litman supports it today
+ * (Claude Code, Antigravity CLI, Codex, Cursor and OpenCode — all supported
+ * today), whether its launch command is on PATH, its
+ * official install page, and `skill_state` — the server's content-level verdict
+ * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
+ * unsupported placeholder, which is never probed). Agents sharing a skills
+ * location legitimately share a state. Agent-agnostic by contract: no
+ * per-agent skill path ever appears here. */
 export interface AgentStatusEntry {
   name: string
   display: string
+  brand: string
   supported: boolean
   detected: boolean
   install_url: string
+  skill_state: 'absent' | 'stale' | 'current' | null
 }
 
 /** The agent-onboarding status — the single data source for the TopBar red dot
@@ -392,7 +413,8 @@ export interface AgentStatusEntry {
  * reports the resolved default agent's skill; `skill_state` is the server's
  * content-level verdict for it — 'stale' means installed but out of date with
  * the running litman (the panel offers an update, and the server folds it into
- * `needs_setup` so the red dot surfaces it). `default` is null until chosen. */
+ * `needs_setup` so the red dot surfaces it). Per-agent verdicts live on each
+ * entry. `default` is null until chosen. */
 export interface AgentStatus {
   agents: AgentStatusEntry[]
   default: string | null
@@ -407,16 +429,27 @@ export function fetchAgentStatus(): Promise<AgentStatus> {
   return getJSON<AgentStatus>('/api/agent/status')
 }
 
-/** Install or refresh the named agent's skill through the server-side catalog
- * adapter (the install overwrites, so the same call is the "Update skill"
- * action when `skill_state` is 'stale').
+/** Install or refresh the named agent's skill and its narrowly scoped `lit`
+ * command approval through server-side catalog adapters (the skill install
+ * overwrites, so the same call is the "Update skill" action when
+ * `skill_state` is 'stale').
  * Sends the agent NAME only — the install target lives entirely server-side
  * (ADR-020); any path in the body is ignored. An absent name targets the
  * default agent. Throws the backend's verbatim message (400) for an unknown /
  * unsupported agent. */
 export function installAgentSkill(
   name?: string,
-): Promise<{ ok: boolean; agent: string; files: string[]; mode: string }> {
+): Promise<{
+  ok: boolean
+  agent: string
+  files: string[]
+  mode: string
+  permission: {
+    mode: string
+    rule: string
+    warning: string | null
+  }
+}> {
   return mutateJSON('/api/agent/skill/install', 'POST', name ? { agent: name } : {})
 }
 
@@ -473,6 +506,20 @@ export function registerVault(
  * an unknown name. */
 export function unregisterVault(name: string): Promise<{ ok: boolean }> {
   return mutateJSON(`/api/vaults/${encodeURIComponent(name)}`, 'DELETE')
+}
+
+/** Re-point a registered vault at its new directory through the `lit vault
+ * set-path` backend — the move-recovery door (symmetric with `setProjectPath`).
+ * For when the vault folder was moved/renamed on disk and the registry's stored
+ * path went stale. When the relocated vault is the active/served one the running
+ * server repoints in place, healing a live 410 with no restart. The path must
+ * already be a litman vault (an existing dir containing a lit-config.yaml); a bad
+ * path or unknown name surfaces the backend's verbatim VaultRegistryError (400). */
+export function setVaultPath(
+  name: string,
+  path: string,
+): Promise<{ ok: boolean; name: string; path: string; active: boolean }> {
+  return mutateJSON(`/api/vaults/${encodeURIComponent(name)}/path`, 'PUT', { path })
 }
 
 /** Link a paper to a registered project through the `lit link` backend
@@ -628,7 +675,7 @@ async function fetchTrashMdText(
   entryName: string,
   doc: 'notes' | 'discussion',
 ): Promise<string | null> {
-  const resp = await fetch(`/api/trash/${encodeURIComponent(entryName)}/${doc}`)
+  const resp = await apiFetch(`/api/trash/${encodeURIComponent(entryName)}/${doc}`)
   if (resp.status === 404) return null
   if (!resp.ok) throw new Error(`trash/${doc} → ${resp.status}`)
   const body = (await resp.json()) as { text: string }

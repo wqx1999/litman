@@ -35,7 +35,9 @@ from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
     _find_free_port,
+    _migrate_legacy_http_cache,
     _open_when_ready,
+    _purge_stale_browser_session,
     _quiet_browser_profile,
     _spawn_ready_watcher,
     _stop_server_when_window_closes,
@@ -130,15 +132,23 @@ def _sync_ready_watcher(server, open_browser, stop_event, after_open=None):
 
 
 class _FakeProc:
-    """subprocess.Popen stand-in for the app window. ``wait()`` blocks like the
-    real thing — until the window "closes", which in these tests only happens
-    when the command's cleanup terminates it."""
+    """subprocess.Popen stand-in for the app window. ``poll()`` reports the
+    process as alive until the window "closes", which in these tests only
+    happens when the command's cleanup terminates it."""
 
     def __init__(self, argv) -> None:
         self.argv = argv
         self.returncode = None
         self.terminated = False
         self._closed = threading.Event()
+
+    def poll(self) -> int | None:
+        # The watcher polls (never waits): None while the window is open, the
+        # exit code once cleanup has terminated it.
+        if self._closed.is_set():
+            self.returncode = 0
+            return 0
+        return None
 
     def wait(self, timeout=None) -> int:
         assert self._closed.wait(timeout=5), "window never closed"
@@ -308,6 +318,9 @@ def test_gui_window_gives_the_browser_a_profile_of_its_own(
     assert "--no-default-browser-check" in argv
     assert "--disable-features=Translate" in argv
     assert "--disable-sync" in argv
+    # A force-killed browser marks the profile crashed; without this the next
+    # window opens under a "restore pages?" bubble for an emptied session.
+    assert "--hide-crash-restore-bubble" in argv
 
 
 def test_gui_window_marks_a_fresh_browser_profile_as_already_run(
@@ -344,6 +357,99 @@ def test_quiet_browser_profile_survives_an_unwritable_profile(tmp_path) -> None:
     _quiet_browser_profile(not_a_dir)  # must not raise
 
     assert not_a_dir.is_file()
+
+
+def test_gui_window_purges_the_stale_browser_session(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # A Task-Manager-killed browser is recorded as a crash, and the next
+    # launch resurrects the dead session's app window alongside the one we
+    # asked for — a days-old page against a server that no longer exists.
+    # Every launch brings its own URL, so there is never a session worth
+    # restoring: the launcher empties the restore state before spawning.
+    vault, _pid = vault_with_paper
+    default = browser_profile_dir() / "Default"
+    (default / "Sessions").mkdir(parents=True)
+    (default / "Sessions" / "Session_13342").write_bytes(b"SNSS")
+    (default / "Current Session").write_bytes(b"SNSS")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert not (default / "Sessions").exists()
+    assert not (default / "Current Session").exists()
+
+
+def test_purge_stale_browser_session_takes_only_the_restore_state(
+    tmp_path,
+) -> None:
+    # Only the session-restore state goes. Preferences stay untouched —
+    # seeding or wiping them from outside makes the browser announce
+    # tampering, the same line _quiet_browser_profile draws.
+    default = tmp_path / "Default"
+    (default / "Sessions").mkdir(parents=True)
+    (default / "Sessions" / "Session_1").write_bytes(b"SNSS")
+    for name in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+        (default / name).write_bytes(b"SNSS")
+    (default / "Preferences").write_text("{}", encoding="utf-8")
+
+    _purge_stale_browser_session(tmp_path)
+
+    assert not (default / "Sessions").exists()
+    for name in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+        assert not (default / name).exists()
+    assert (default / "Preferences").is_file()
+
+
+def test_purge_stale_browser_session_is_a_noop_on_a_fresh_profile(
+    tmp_path,
+) -> None:
+    _purge_stale_browser_session(tmp_path)  # no Default yet — must not raise
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_migrate_legacy_http_cache_removes_only_cache_and_marks_done(
+    tmp_path,
+) -> None:
+    """An upgraded app profile loses the pre-no-store HTTP cache once only."""
+    default = tmp_path / "Default"
+    cache = default / "Cache" / "Cache_Data"
+    cache.mkdir(parents=True)
+    (cache / "cached-410").write_bytes(b"gone")
+    (default / "Preferences").write_text("{}", encoding="utf-8")
+    local_storage = default / "Local Storage"
+    local_storage.mkdir()
+    (local_storage / "state").write_bytes(b"keep")
+
+    _migrate_legacy_http_cache(tmp_path)
+
+    assert not (default / "Cache").exists()
+    assert (tmp_path / ".api-no-store-v1").is_file()
+    assert (default / "Preferences").is_file()
+    assert (local_storage / "state").read_bytes() == b"keep"
+
+    # The marker makes this a migration, not a cache wipe on every launch.
+    replacement = default / "Cache"
+    replacement.mkdir()
+    (replacement / "new-cache").write_bytes(b"healthy")
+    _migrate_legacy_http_cache(tmp_path)
+    assert (replacement / "new-cache").read_bytes() == b"healthy"
+
+
+def test_gui_window_migrates_legacy_http_cache_before_launch(
+    gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    vault, _pid = vault_with_paper
+    cache = browser_profile_dir() / "Default" / "Cache"
+    cache.mkdir(parents=True)
+    (cache / "cached-410").write_bytes(b"gone")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert not cache.exists()
+    assert (browser_profile_dir() / ".api-no-store-v1").is_file()
 
 
 def test_gui_window_ties_the_server_to_the_window(
@@ -446,6 +552,64 @@ def _exited_proc() -> subprocess.Popen[bytes]:
     proc = subprocess.Popen([sys.executable, "-c", ""])
     proc.wait()
     return proc
+
+
+def _live_proc() -> subprocess.Popen[bytes]:
+    """A real process that stays alive — the Windows shape: Edge keeps the
+    browser process resident (Startup boost, single-instance-per-profile) long
+    after the app window is closed, so ``proc`` never exits even though every
+    page is gone. Callers must terminate it."""
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+
+def test_watcher_stops_on_page_close_even_if_the_process_never_exits() -> None:
+    # The Windows bug this whole rewrite is about: our spawned browser process
+    # stays resident forever, but the window is closed and its page's presence
+    # socket has dropped. The server must still stop — the last live page, not
+    # the process, is the signal. (The old code blocked on proc.wait() here and
+    # never reached the presence loop, so the server lingered.)
+    tracker = PresenceTracker()
+    tracker.connect()
+    proc, server = _live_proc(), _FakeServer()
+    try:
+        watcher = threading.Thread(
+            target=_stop_server_when_window_closes,
+            args=(proc, server, tracker),
+            kwargs={"first_connect_grace": 30.0, "linger": 0.2, "poll": 0.02},
+            daemon=True,
+        )
+        watcher.start()
+        time.sleep(0.3)  # the process is alive and a page holds the socket
+        assert server.should_exit is False
+        tracker.disconnect()  # the user closes the window; the socket drops
+        watcher.join(timeout=5)
+        assert not watcher.is_alive()
+        assert server.should_exit is True  # stopped despite the live process
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_watcher_waits_while_the_window_is_up_but_no_page_connected_yet() -> None:
+    # The other side of not-waiting-on-the-process: a window slow to paint its
+    # first page. The process is alive and no presence socket has opened, so the
+    # first-connect grace must NOT fire — that clock is only for a launch whose
+    # process is already gone. A live window past the grace stays served.
+    proc, server = _live_proc(), _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, PresenceTracker()),
+        kwargs={"first_connect_grace": 0.1, "linger": 0.1, "poll": 0.02},
+        daemon=True,
+    )
+    try:
+        watcher.start()
+        time.sleep(0.4)  # well past the grace, but the process is still alive
+        assert server.should_exit is False
+    finally:
+        proc.terminate()
+        proc.wait()
+        watcher.join(timeout=5)  # observes the exit, applies grace, exits clean
 
 
 def test_watcher_exits_after_grace_when_no_page_ever_connected() -> None:

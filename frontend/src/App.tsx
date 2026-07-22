@@ -19,6 +19,7 @@ import {
   registerVault,
   removePaper,
   restorePaper,
+  setVaultPath,
   unregisterVault,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
@@ -328,9 +329,35 @@ export default function App() {
     if (isVaultGone(err)) {
       setVaultGone(true)
       setDisconnected(false)
+      // Refresh the vault list on its OWN request, decoupled from the read
+      // sweep that just 410'd. `GET /api/vaults` is whitelisted, so it answers
+      // even in the gone state with `exists:false` for the moved vault — but in
+      // doResync it shares one all-or-nothing `Promise.all` with `fetchPapers`,
+      // whose 410 rejects the whole batch and discards this payload. Without a
+      // committed `exists:false`, the manager's Locate button (gated on
+      // `!v.exists`) never renders and the user is stuck. Best-effort: a failure
+      // here just leaves the last-known list, which the next sweep repairs.
+      void fetchVaults()
+        .then((v) => {
+          setVaults(v)
+          setServed(v.served)
+        })
+        .catch(() => {})
     } else if (isNetworkError(err)) {
       setDisconnected(true)
       setVaultGone(false)
+    } else if (err instanceof ApiError) {
+      // Any other HTTP status proves both facts these flags track: a response
+      // arrived (not disconnected), and the 410 guard — which runs before
+      // every /api route — let the request through (vault not gone). Without
+      // this arm, one sweep route failing persistently (a 500, a 409) froze
+      // whichever banner was up: the sweep kept rejecting, neither branch
+      // above matched, and the red "library is gone" banner outlived the
+      // relocate that had already healed the server. The failure itself still
+      // surfaces through its own channels (the list-failure line, the toasts);
+      // these flags only ever claim what the error can prove.
+      setVaultGone(false)
+      setDisconnected(false)
     }
   }, [])
   // The current list fetch failed — BrowsePanel renders an explicit failure
@@ -515,6 +542,13 @@ export default function App() {
   const [openAgent, setOpenAgent] = useState<(() => void) | null>(null)
   const registerAgentOpen = useCallback(
     (open: (() => void) | null) => setOpenAgent(() => open),
+    [],
+  )
+  // Secondary action on the same toolbar icon: Ctrl+~ opens management while
+  // plain ~ remains the fast path that launches the configured default.
+  const [manageAgents, setManageAgents] = useState<(() => void) | null>(null)
+  const registerAgentManage = useCallback(
+    (open: (() => void) | null) => setManageAgents(() => open),
     [],
   )
   // Same idiom for TopBar's vault manager, so the vault-gone banner's button and
@@ -845,15 +879,23 @@ export default function App() {
           fetchVaults(),
         ])
       if (canDiff) {
-        appendLog(
-          diffResync(prev, {
-            papers: freshAll,
-            taxonomy: freshTax,
-            projects: freshProjects,
-            trash: freshTrash,
-            mtimes: freshMtimes,
-          }),
-        )
+        // The diff only feeds the activity log — a bug in it must degrade to
+        // "no log entries", never fail the sweep: rethrowing from here would
+        // skip the setters below (stale data) and leave the banner flags
+        // frozen at their pre-sweep truth.
+        try {
+          appendLog(
+            diffResync(prev, {
+              papers: freshAll,
+              taxonomy: freshTax,
+              projects: freshProjects,
+              trash: freshTrash,
+              mtimes: freshMtimes,
+            }),
+          )
+        } catch {
+          // degrade silently; the fresh data still lands
+        }
       }
       // Commit through the same setters the rest of the app uses (the mirror
       // effects advance the diff refs from here); docMtimesRef is ref-only.
@@ -1392,6 +1434,22 @@ export default function App() {
     [notify],
   )
 
+  // Re-point a moved vault at its new directory — the `lit vault set-path`
+  // backend, the move-recovery door the vault manager's Locate leads to (the 410
+  // banner's "Find it" opens that manager). When the relocated vault is the
+  // active/served one the server repoints itself in place, so a full resync
+  // re-pulls the library and clears the 410 banner in one step — no restart, no
+  // forced rename, no zombie entry. Rethrows so the inline Locate input can show
+  // the backend's verbatim 400 (bad path / unknown name).
+  const onRelocateVault = useCallback(
+    async (name: string, path: string) => {
+      await setVaultPath(name, path)
+      notify(`Re-pointed vault “${name}” to ${path}.`, 'success')
+      await doResync()
+    },
+    [notify, doResync],
+  )
+
   // --- Trash (recovery) view (Phase 4.9) -----------------------------------
   const openTrash = useCallback(() => {
     setTrashMode(true)
@@ -1562,11 +1620,13 @@ export default function App() {
     toggleDark,
     toggleLeft,
     toggleRight,
+    refreshFromDisk: manualResync,
     activateAdjacentTab,
     activateTabByIndex,
     moveSelection,
     openSelected,
     openAgent,
+    manageAgents,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
@@ -1686,6 +1746,7 @@ export default function App() {
         onRegisterVault={onRegisterVault}
         onCreateVault={onCreateVault}
         onUnregisterVault={onUnregisterVault}
+        onRelocateVault={onRelocateVault}
         switching={switchingVault}
         notify={notify}
         dark={dark}
@@ -1699,6 +1760,7 @@ export default function App() {
         onObservabilityOpenChange={setObservabilityOpen}
         onAgentOpenChange={setAgentPanelOpen}
         onRegisterAgentOpen={registerAgentOpen}
+        onRegisterAgentManage={registerAgentManage}
         onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
       />
