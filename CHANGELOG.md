@@ -5,7 +5,7 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
-## 1.3.0 — unreleased
+## 1.3.0 — 2026-07-22
 
 ### Added
 
