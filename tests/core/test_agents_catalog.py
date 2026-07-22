@@ -57,10 +57,18 @@ def test_supported_set_is_the_five_standard_agents() -> None:
     assert all(s.supported for s in AGENTS)
 
 
-def test_every_spec_carries_display_and_install_url() -> None:
+def test_every_spec_carries_display_brand_and_install_url() -> None:
     for spec in AGENTS:
         assert spec.display  # non-empty display name
+        assert spec.brand  # beginner-facing brand / maker label
         assert spec.install_url.startswith("http")
+
+
+def test_beginner_facing_brands_identify_the_major_agent_families() -> None:
+    brands = {spec.name: spec.brand for spec in AGENTS}
+    assert brands["claude"] == "Claude · Anthropic"
+    assert brands["agy"] == "Google"
+    assert brands["codex"] == "ChatGPT · OpenAI"
 
 
 def test_antigravity_install_url_targets_cli_download_section() -> None:
@@ -127,6 +135,7 @@ def test_detect_uses_detect_bin_first_token_fallback(
     spec = AgentSpec(
         name="x",
         display="X",
+        brand="Example",
         launch="my-agent --flag",
         supported=False,
         install_url="https://x/",
@@ -240,6 +249,7 @@ def test_unsupported_placeholder_machinery_raises_not_implemented() -> None:
     placeholder = AgentSpec(
         name="future",
         display="Future Agent",
+        brand="Future Corp",
         launch="future",
         supported=False,
         install_url="https://example.invalid/future",

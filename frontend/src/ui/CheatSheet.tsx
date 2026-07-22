@@ -68,6 +68,7 @@ const SECTIONS: Section[] = [
       { chords: [['L']], action: 'Toggle light / dark theme' },
       { chords: [['[']], action: 'Toggle the left panel' },
       { chords: [[']']], action: 'Toggle the right cockpit' },
+      { chords: [['R']], action: 'Refresh from disk' },
       { chords: [['?']], action: 'Toggle this cheat sheet' },
     ],
   },

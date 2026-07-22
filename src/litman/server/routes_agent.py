@@ -194,6 +194,7 @@ def agent_status(response: Response) -> dict[str, object]:
         {
             "name": spec.name,
             "display": spec.display,
+            "brand": spec.brand,
             "supported": spec.supported,
             "detected": agents.detect(spec),
             "install_url": spec.install_url,

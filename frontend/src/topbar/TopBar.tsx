@@ -630,7 +630,7 @@ export default function TopBar({
       <button
         type="button"
         onClick={onRefresh}
-        title="Refresh from disk — pull in changes made via the CLI"
+        title="Refresh from disk (R) — pull in changes made via the CLI"
         aria-label="Refresh from disk"
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
@@ -2494,10 +2494,15 @@ function AgentSetup({
               key={agent.name}
               className="rounded-lg border border-stone-200 bg-stone-50 p-3"
             >
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-stone-800">
-                  {agent.display}
-                </span>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-stone-800">
+                    {agent.display}
+                  </div>
+                  <div className="mt-0.5 text-[11px] leading-none text-stone-500">
+                    {agent.brand}
+                  </div>
+                </div>
                 {status.default === agent.name && (
                   <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
                     default
@@ -2600,9 +2605,14 @@ function AgentSetup({
               key={agent.name}
               className="flex items-center justify-between rounded-lg border border-stone-200 px-3 py-2.5 opacity-60"
             >
-              <span className="text-sm font-medium text-stone-400">
-                {agent.display}
-              </span>
+              <div>
+                <div className="text-sm font-medium text-stone-400">
+                  {agent.display}
+                </div>
+                <div className="mt-0.5 text-[11px] leading-none text-stone-400">
+                  {agent.brand}
+                </div>
+              </div>
               <span className="text-[10px] uppercase tracking-wide text-stone-400">
                 coming soon
               </span>

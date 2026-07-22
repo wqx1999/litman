@@ -388,7 +388,8 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
   return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
 }
 
-/** One agent's onboarding view: display name, whether litman supports it today
+/** One agent's onboarding view: display name, beginner-facing brand, whether
+ * litman supports it today
  * (Claude Code, Antigravity CLI, Codex, Cursor and OpenCode — all supported
  * today), whether its launch command is on PATH, its
  * official install page, and `skill_state` — the server's content-level verdict
@@ -399,6 +400,7 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 export interface AgentStatusEntry {
   name: string
   display: string
+  brand: string
   supported: boolean
   detected: boolean
   install_url: string

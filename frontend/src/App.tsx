@@ -1620,6 +1620,7 @@ export default function App() {
     toggleDark,
     toggleLeft,
     toggleRight,
+    refreshFromDisk: manualResync,
     activateAdjacentTab,
     activateTabByIndex,
     moveSelection,

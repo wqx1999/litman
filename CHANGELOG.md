@@ -9,12 +9,18 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Added
 
+- **Press `R` in the GUI to refresh the current library from disk.** It uses
+  the same resync as the toolbar refresh button; `Alt+R` still marks a paper as
+  read, and `Ctrl+R`/`Cmd+R` remains the browser's page reload.
 - **Five AI agents are supported:** Claude Code, Antigravity CLI, Codex,
   Cursor, and OpenCode. All are selectable in the GUI agent manager and
   launchable with `lit agent <name>`. Codex, Cursor, and OpenCode share the
   Agent Skills open-standard directory `~/.agents/skills`; Claude Code keeps
   `~/.claude/skills`, and Antigravity CLI uses its own
   `~/.gemini/antigravity-cli/skills` directory.
+- **The GUI agent manager now shows familiar brands next to agent names.**
+  Labels such as “ChatGPT · OpenAI”, “Google”, and “Claude · Anthropic” help
+  newcomers recognize Codex, Antigravity CLI, and Claude Code.
 - **`lit install-skill --agent <name>`** installs the skills into the named
   agent's directory. With no flags the command now follows your default agent;
   users who never changed the default get exactly the previous behaviour.

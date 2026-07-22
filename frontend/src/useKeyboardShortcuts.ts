@@ -18,6 +18,9 @@ export interface ShortcutDeps {
   toggleDark: () => void
   toggleLeft: () => void
   toggleRight: () => void
+  /** Re-read the current vault from disk through the same path as the TopBar
+   * refresh button. */
+  refreshFromDisk: () => void
 
   // --- Tier 1: center tab switching (global, focus-guarded) ---------------
   /** Cycle the active center document tab. delta +1 = next, -1 = previous;
@@ -117,6 +120,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleDark,
     toggleLeft,
     toggleRight,
+    refreshFromDisk,
     activateAdjacentTab,
     activateTabByIndex,
     moveSelection,
@@ -288,6 +292,10 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           e.preventDefault()
           toggleDark()
           return
+        case 'KeyR':
+          e.preventDefault()
+          refreshFromDisk()
+          return
         case 'BracketLeft':
           e.preventDefault()
           toggleLeft()
@@ -346,6 +354,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     toggleDark,
     toggleLeft,
     toggleRight,
+    refreshFromDisk,
     activateAdjacentTab,
     activateTabByIndex,
     moveSelection,

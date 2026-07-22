@@ -179,6 +179,7 @@ def test_launch_unsupported_agent_is_400(
     placeholder = agents.AgentSpec(
         name="future",
         display="Future Agent",
+        brand="Future Corp",
         launch="future",
         supported=False,
         install_url="https://example.invalid/future",
@@ -230,6 +231,7 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
         assert set(e) == {
             "name",
             "display",
+            "brand",
             "supported",
             "detected",
             "install_url",
@@ -309,6 +311,7 @@ def test_status_greyed_placeholder_reads_null_skill_state(
     placeholder = agents.AgentSpec(
         name="future",
         display="Future Agent",
+        brand="Future Corp",
         launch="future",
         supported=False,
         install_url="https://example.invalid/future",

@@ -2,8 +2,9 @@
 knows how to launch and onboard (task-agent-onboarding, ADR-020 / ADR-021).
 
 The catalog is a frozen table: one :class:`AgentSpec` per agent carrying its
-display name, launch command, official install URL, a detection binary, and
-adapters for skill state, skill installation, and native command approval.
+display name, beginner-facing brand, launch command, official install URL, a
+detection binary, and adapters for skill state, skill installation, and native
+command approval.
 Every per-agent difference lives in this data;
 consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
@@ -82,6 +83,7 @@ class AgentSpec:
 
     name: str
     display: str
+    brand: str
     launch: str
     supported: bool
     install_url: str
@@ -118,6 +120,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="claude",
         display="Claude Code",
+        brand="Claude · Anthropic",
         launch="claude",
         supported=True,
         install_url="https://docs.claude.com/en/docs/claude-code/overview",
@@ -132,6 +135,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="agy",
         display="Antigravity CLI",
+        brand="Google",
         launch="agy",
         supported=True,
         install_url="https://antigravity.google/download#antigravity-cli",
@@ -150,6 +154,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="codex",
         display="Codex",
+        brand="ChatGPT · OpenAI",
         launch="codex",
         supported=True,
         install_url="https://developers.openai.com/codex/cli/",
@@ -168,6 +173,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="cursor",
         display="Cursor",
+        brand="Cursor AI",
         launch="cursor-agent",
         supported=True,
         install_url="https://cursor.com/cli",
@@ -186,6 +192,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="opencode",
         display="OpenCode",
+        brand="Open-source AI agent",
         launch="opencode",
         supported=True,
         install_url="https://opencode.ai/",

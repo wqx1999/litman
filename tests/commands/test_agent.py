@@ -98,6 +98,7 @@ def test_agent_unsupported_name_is_rejected(
     placeholder = agents.AgentSpec(
         name="future",
         display="Future Agent",
+        brand="Future Corp",
         launch="future",
         supported=False,
         install_url="https://example.invalid/future",
