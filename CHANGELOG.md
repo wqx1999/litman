@@ -19,9 +19,11 @@ behaviour, a minor release adds it, a major release breaks it.
   agent's directory. With no flags the command now follows your default agent;
   users who never changed the default get exactly the previous behaviour.
 - **Installed skills can run `lit` without repeated permission prompts.**
-  Skill onboarding merges a narrowly scoped `lit` command allow rule into the
-  selected agent's native permission store; it never enables a global bypass,
-  and malformed or conflicting user policy is left untouched and reported.
+  Skill onboarding and launches through Litman merge or heal a narrowly scoped
+  `lit` command allow rule in the selected agent's native permission store.
+  This remains per-agent even when agents share one skill directory; Litman
+  never enables a global bypass, and malformed or conflicting user policy is
+  left untouched and reported.
 - **Skill copies for your other agents stay fresh.** A bare
   `lit install-skill`, the setup wizard's skill step and `lit health-check
   --fix` also refresh out-of-date litman skills found in the other agents'
