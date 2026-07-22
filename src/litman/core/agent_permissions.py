@@ -156,8 +156,17 @@ def _configured_rules(path: Path, list_name: str) -> list[str]:
     return [rule for rule in rules if isinstance(rule, str)] if isinstance(rules, list) else []
 
 
+def _claude_config_dir() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    return (
+        Path(configured).expanduser()
+        if configured and configured.strip()
+        else Path.home() / ".claude"
+    )
+
+
 def install_claude_lit_permission() -> PermissionResult:
-    path = Path.home() / ".claude" / "settings.json"
+    path = _claude_config_dir() / "settings.json"
     entries = ["Bash(lit *)"]
     if sys.platform == "win32":
         entries.append("PowerShell(lit *)")
@@ -172,9 +181,11 @@ def install_claude_lit_permission() -> PermissionResult:
     blockers = {
         "Bash",
         "Bash(*)",
+        "Bash(lit*)",
         "Bash(lit *)",
         "PowerShell",
         "PowerShell(*)",
+        "PowerShell(lit*)",
         "PowerShell(lit *)",
     }
     conflicts = sorted(
@@ -191,15 +202,51 @@ def install_claude_lit_permission() -> PermissionResult:
 
 def install_antigravity_lit_permission() -> PermissionResult:
     path = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
+    def update(data: dict[str, Any]) -> str | None:
+        warning = _append_allow_rules(
+            data, ("command(lit)",), config_path=path
+        )
+        if warning is not None:
+            return warning
+
+        # Antigravity resolves explicit lists as deny > ask > allow.  Older
+        # releases and some security presets persisted ``command(*)`` in the
+        # ask list, which makes every more-specific allow rule unreachable.
+        # Under request-review (the default), removing that redundant catch-all
+        # is behaviour-preserving for every other command: their configured
+        # fallback still asks. Do not remove it under proceed/always modes,
+        # where doing so could broaden unrelated access. Strict is also left
+        # intact because that mode intentionally ignores terminal allowlists.
+        permissions = data["permissions"]
+        assert isinstance(permissions, dict)
+        ask = permissions.get("ask")
+        tool_permission = data.get("toolPermission", "request-review")
+        if (
+            isinstance(ask, list)
+            and all(isinstance(entry, str) for entry in ask)
+            and "command(*)" in ask
+            and tool_permission == "request-review"
+        ):
+            permissions["ask"] = [
+                entry for entry in ask if entry != "command(*)"
+            ]
+        return None
+
     result = _merge_json_permissions(
         agent="agy",
         path=path,
         rule="command(lit)",
-        update=lambda data: _append_allow_rules(
-            data, ("command(lit)",), config_path=path
-        ),
+        update=update,
     )
     if result["warning"] is None and path.exists():
+        data, _ = _load_json_object(path)
+        if data and data.get("toolPermission") == "strict":
+            result["warning"] = (
+                "Antigravity strict mode ignores terminal allow rules; "
+                "switch Tool Permission to request-review if lit should run "
+                "without prompts."
+            )
         blockers = {"command(*)", "command(lit)"}
         conflicts = sorted(
             blockers
@@ -208,7 +255,7 @@ def install_antigravity_lit_permission() -> PermissionResult:
                 + _configured_rules(path, "deny")
             )
         )
-        if conflicts:
+        if conflicts and result["warning"] is None:
             result["warning"] = (
                 "Antigravity ask/deny rules take precedence over allow rules; "
                 f"review these entries in /permissions: {', '.join(conflicts)}"
@@ -216,8 +263,18 @@ def install_antigravity_lit_permission() -> PermissionResult:
     return result
 
 
+def _cursor_config_dir() -> Path:
+    configured = os.environ.get("CURSOR_CONFIG_DIR")
+    if configured and configured.strip():
+        return Path(configured).expanduser()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg and xdg.strip():
+        return Path(xdg).expanduser() / "cursor"
+    return Path.home() / ".cursor"
+
+
 def install_cursor_lit_permission() -> PermissionResult:
-    path = Path.home() / ".cursor" / "cli-config.json"
+    path = _cursor_config_dir() / "cli-config.json"
     result = _merge_json_permissions(
         agent="cursor",
         path=path,
@@ -227,12 +284,13 @@ def install_cursor_lit_permission() -> PermissionResult:
         ),
     )
     conflicts = sorted(
-        {"Shell(lit)"} & set(_configured_rules(path, "deny"))
+        {"Shell", "Shell(*)", "Shell(lit)", "Shell(lit*)"}
+        & set(_configured_rules(path, "deny"))
     )
     if result["warning"] is None and conflicts:
         result["warning"] = (
-            "Cursor deny rules take precedence over allow rules; remove "
-            "Shell(lit) from permissions.deny to stop lit prompts."
+            "Cursor deny rules take precedence over allow rules; review "
+            f"these entries in permissions.deny: {', '.join(conflicts)}"
         )
     return result
 
@@ -271,6 +329,10 @@ def install_codex_lit_permission() -> PermissionResult:
 
 
 def _opencode_path() -> tuple[Path, str | None]:
+    configured = os.environ.get("OPENCODE_CONFIG")
+    if configured:
+        return Path(configured).expanduser(), None
+
     root = Path.home() / ".config" / "opencode"
     jsonc = root / "opencode.jsonc"
     plain = root / "opencode.json"
@@ -337,4 +399,15 @@ def install_opencode_lit_permission() -> PermissionResult:
     )
     if path_warning and result["warning"] is None:
         result["warning"] = path_warning
+    inline = os.environ.get("OPENCODE_CONFIG_CONTENT")
+    if inline and result["warning"] is None:
+        try:
+            inline_data = json.loads(inline)
+        except json.JSONDecodeError:
+            inline_data = None
+        if not isinstance(inline_data, dict) or "permission" in inline_data:
+            result["warning"] = (
+                "OPENCODE_CONFIG_CONTENT is a higher-precedence runtime "
+                "configuration and may override litman's allow rule."
+            )
     return result

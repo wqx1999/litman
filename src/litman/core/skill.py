@@ -31,6 +31,7 @@ API split:
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
 from importlib.resources import files
 from importlib.resources.abc import Traversable
@@ -39,6 +40,7 @@ from typing import Any
 
 from litman.core.portable_link import is_portable_link
 from litman.exceptions import LitmanError
+
 
 def default_skills_parent_dir() -> Path:
     """The per-user skills dir Claude Code auto-discovers, at call time.
@@ -49,7 +51,13 @@ def default_skills_parent_dir() -> Path:
     instead, so a redirected ``$HOME`` is honored and the test suite can
     isolate itself from the developer's real skills dir by patching one seam.
     """
-    return Path.home() / ".claude" / "skills"
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    config_dir = (
+        Path(configured).expanduser()
+        if configured and configured.strip()
+        else Path.home() / ".claude"
+    )
+    return config_dir / "skills"
 
 
 def standard_skills_parent_dir() -> Path:

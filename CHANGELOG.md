@@ -22,8 +22,14 @@ behaviour, a minor release adds it, a major release breaks it.
   Skill onboarding and launches through Litman merge or heal a narrowly scoped
   `lit` command allow rule in the selected agent's native permission store.
   This remains per-agent even when agents share one skill directory; Litman
-  never enables a global bypass, and malformed or conflicting user policy is
-  left untouched and reported.
+  never enables a global bypass. Malformed policy and conflicts that cannot be
+  normalized without changing unrelated permissions are left untouched and
+  reported; Antigravity's redundant catch-all ask rule is removed only in its
+  default request-review mode, which still asks for every other unlisted
+  command. Strict mode is preserved and reported because it intentionally
+  ignores terminal allow rules. Claude's `CLAUDE_CONFIG_DIR`, Cursor's
+  `CURSOR_CONFIG_DIR`/`XDG_CONFIG_HOME`, and OpenCode's `OPENCODE_CONFIG` are
+  honored so both the skill and permission rule reach the active profile.
 - **Skill copies for your other agents stay fresh.** A bare
   `lit install-skill`, the setup wizard's skill step and `lit health-check
   --fix` also refresh out-of-date litman skills found in the other agents'

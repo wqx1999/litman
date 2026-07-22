@@ -452,6 +452,17 @@ def test_standard_skills_parent_dir_respects_home(
 
 
 @pytest.mark.no_skills_isolation
+def test_claude_skills_parent_dir_respects_explicit_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core.skill import default_skills_parent_dir
+
+    config_dir = tmp_path / "custom-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    assert default_skills_parent_dir() == config_dir / "skills"
+
+
+@pytest.mark.no_skills_isolation
 def test_antigravity_skills_parent_dir_respects_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

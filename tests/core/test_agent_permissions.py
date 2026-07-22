@@ -14,7 +14,12 @@ from litman.core import agent_permissions
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CURSOR_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("OPENCODE_CONFIG", raising=False)
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
     return tmp_path
 
 
@@ -53,7 +58,21 @@ def test_claude_adds_powershell_rule_on_windows(
 
 
 @pytest.mark.no_skills_isolation
-def test_antigravity_preserves_settings_and_reports_broad_ask_conflict(
+def test_claude_honours_explicit_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "custom-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+    result = agent_permissions.install_claude_lit_permission()
+
+    assert result["path"] == config_dir / "settings.json"
+    data = json.loads(result["path"].read_text(encoding="utf-8"))
+    assert data["permissions"]["allow"] == ["Bash(lit *)"]
+
+
+@pytest.mark.no_skills_isolation
+def test_antigravity_normalises_redundant_default_ask_catch_all(
     _home: Path,
 ) -> None:
     path = _home / ".gemini" / "antigravity-cli" / "settings.json"
@@ -73,7 +92,58 @@ def test_antigravity_preserves_settings_and_reports_broad_ask_conflict(
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["colorScheme"] == "terminal"
     assert data["permissions"]["allow"] == ["command(lit)"]
+    assert data["permissions"]["ask"] == []
+    assert result["warning"] is None
+
+
+@pytest.mark.no_skills_isolation
+def test_antigravity_keeps_broad_ask_when_removal_could_broaden_access(
+    _home: Path,
+) -> None:
+    path = _home / ".gemini" / "antigravity-cli" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "toolPermission": "always-proceed",
+                "permissions": {"ask": ["command(*)"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = agent_permissions.install_antigravity_lit_permission()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["permissions"]["ask"] == ["command(*)"]
+    assert data["permissions"]["allow"] == ["command(lit)"]
     assert "precedence" in result["warning"]
+
+
+@pytest.mark.no_skills_isolation
+def test_antigravity_keeps_strict_mode_and_reports_ignored_allowlist(
+    _home: Path,
+) -> None:
+    path = _home / ".gemini" / "antigravity-cli" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "toolPermission": "strict",
+                "permissions": {"ask": ["command(*)"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = agent_permissions.install_antigravity_lit_permission()
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["toolPermission"] == "strict"
+    assert data["permissions"]["ask"] == ["command(*)"]
+    assert data["permissions"]["allow"] == ["command(lit)"]
+    assert result["warning"] is not None
+    assert "strict mode" in result["warning"]
 
 
 @pytest.mark.no_skills_isolation
@@ -83,6 +153,37 @@ def test_cursor_installs_only_shell_lit_rule(_home: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert result["mode"] == "created"
     assert data == {"permissions": {"allow": ["Shell(lit)"]}}
+
+
+@pytest.mark.no_skills_isolation
+def test_cursor_reports_broad_shell_deny(_home: Path) -> None:
+    path = _home / ".cursor" / "cli-config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"permissions": {"deny": ["Shell(*)"]}}),
+        encoding="utf-8",
+    )
+
+    result = agent_permissions.install_cursor_lit_permission()
+
+    assert result["warning"] is not None
+    assert "Shell(*)" in result["warning"]
+
+
+@pytest.mark.no_skills_isolation
+def test_cursor_honours_explicit_and_xdg_config_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    xdg = tmp_path / "xdg"
+    explicit = tmp_path / "explicit"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+
+    via_xdg = agent_permissions.install_cursor_lit_permission()
+    assert via_xdg["path"] == xdg / "cursor" / "cli-config.json"
+
+    monkeypatch.setenv("CURSOR_CONFIG_DIR", str(explicit))
+    via_explicit = agent_permissions.install_cursor_lit_permission()
+    assert via_explicit["path"] == explicit / "cli-config.json"
 
 
 @pytest.mark.no_skills_isolation
@@ -136,6 +237,35 @@ def test_opencode_does_not_destroy_commented_jsonc(_home: Path) -> None:
     fallback = json.loads((root / "opencode.json").read_text(encoding="utf-8"))
     assert fallback["permission"]["bash"]["lit *"] == "allow"
     assert "non-strict JSONC" in result["warning"]
+
+
+@pytest.mark.no_skills_isolation
+def test_opencode_honours_explicit_config_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "custom" / "active-opencode.json"
+    monkeypatch.setenv("OPENCODE_CONFIG", str(path))
+
+    result = agent_permissions.install_opencode_lit_permission()
+
+    assert result["path"] == path
+    bash = json.loads(path.read_text(encoding="utf-8"))["permission"]["bash"]
+    assert bash == {"lit": "allow", "lit *": "allow"}
+
+
+@pytest.mark.no_skills_isolation
+def test_opencode_warns_for_higher_precedence_inline_permissions(
+    _home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT",
+        json.dumps({"permission": {"bash": "ask"}}),
+    )
+
+    result = agent_permissions.install_opencode_lit_permission()
+
+    assert result["warning"] is not None
+    assert "OPENCODE_CONFIG_CONTENT" in result["warning"]
 
 
 @pytest.mark.no_skills_isolation
