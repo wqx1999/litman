@@ -82,8 +82,8 @@ whatever you already pay for. **Start with Claude Code.**
 | [Claude Code](https://claude.ai/code) | Official subscription |
 | [Codex](https://developers.openai.com/codex/cli/) | Official subscription |
 | [Antigravity CLI](https://antigravity.google/download#antigravity-cli) | Official subscription |
-| [Cursor](https://cursor.com/cli) | [Composer 2.5](https://cursor.com) |
-| [OpenCode](https://opencode.ai/) | [MiniMax-M3](https://www.minimax.io) |
+| [Cursor](https://cursor.com/cli) | Composer 2.5 |
+| [OpenCode](https://opencode.ai/) | MiniMax-M3 |
 
 Every write is validated, so a weaker model just needs more turns — it never
 corrupts the library. Scores and method:
