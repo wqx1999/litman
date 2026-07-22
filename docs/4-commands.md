@@ -138,7 +138,7 @@ without them. Copies files only; does not install an agent or configure any
 keys.
 
 Skills go where the agent auto-discovers them: `~/.claude/skills` for Claude
-Code, the open-standard `~/.agents/skills` for Cursor, and
+Code, the open-standard `~/.agents/skills` for Cursor, Codex, and OpenCode, and
 `~/.gemini/antigravity-cli/skills` for Antigravity CLI. With no flags the
 command targets your default agent's directory; `--agent` targets another
 agent's.
@@ -160,7 +160,7 @@ lit install-skill --skill lit-reading
 | Flag | What it does |
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
-| `--agent <name>` | Install into this agent's skills directory (`claude`, `agy`, `cursor`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
+| `--agent <name>` | Install into this agent's skills directory (`claude`, `agy`, `codex`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
 | `--parent-dir <path>` | Install into this exact directory instead. Mutually exclusive with `--agent`. |
 | `--force` | Overwrite files inside an existing target without asking. Files not part of the bundled skill are left in place. |
 
@@ -808,13 +808,11 @@ lit agent --set-default claude  # record the machine-level default agent
 
 The default agent is machine-level, not per-vault: it is recorded in
 `preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
-agent panel, or `lit agent --set-default`. Claude Code, Cursor, and
-Antigravity CLI (`agy`) are the supported agents today; Codex, Gemini CLI and
-OpenCode sit in the catalog greyed out, and turn on in a later release.
+agent panel, or `lit agent --set-default`. Claude Code, Antigravity CLI
+(`agy`), Codex, Cursor, and OpenCode are the supported agents.
 
-Three things fail with a one-line error: a NAME that is not in the catalog, a
-catalog agent that is not supported yet, and a supported agent whose command is
-missing from PATH. The Web UI's agent button launches the same default agent: on a machine
+Two things fail with a one-line error: a NAME that is not in the catalog, and an
+agent whose command is missing from PATH. The Web UI's agent button launches the same default agent: on a machine
 with a display it opens the agent in a new terminal window; when the server
 runs on a remote box (HPC) it shows the `lit agent` line to copy into your own
 terminal.

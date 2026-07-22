@@ -74,31 +74,19 @@ pipx install --force .
 
 ## The AI assistant
 
-Reading and annotating work on their own. The *just say what you want* layer runs
-on an AI agent, which you install separately — litman ships the skills it
-drives, not a model. `lit agent` starts yours in the library directory; the app's
-agent button does the same.
+Pick an agent to drive litman through its bundled skills; you bring the model — use
+whatever you already pay for. **Start with Claude Code.**
 
-[Claude Code](https://claude.ai/code),
-[Antigravity CLI](https://antigravity.google/download#antigravity-cli),
-[Codex](https://developers.openai.com/codex/cli/),
-[Cursor](https://cursor.com/cli), and [OpenCode](https://opencode.ai/) are
-supported. Install a skill from the agent manager and litman also adds a
-narrow permission for that agent to run `lit`; it does not approve unrelated
-commands.
+| Agent CLI | Recommended model |
+|:---|:---|
+| [Claude Code](https://claude.ai/code) | Official subscription |
+| [Codex](https://developers.openai.com/codex/cli/) | Official subscription |
+| [Antigravity CLI](https://antigravity.google/download#antigravity-cli) | Official subscription |
+| [Cursor](https://cursor.com/cli) | [Composer 2.5](https://cursor.com) |
+| [OpenCode](https://opencode.ai/) | [MiniMax-M3](https://www.minimax.io) |
 
-Your agent works with whatever model you give it. We ran a range of them across
-five agent CLIs through 22 everyday tasks:
-
-- **The cheapest capable tier already tops the chart.** Cursor's Composer 2.5 and
-  GLM 5.2, and opencode's [MiniMax-M3](https://www.minimax.io) and
-  [DeepSeek-V4](https://www.deepseek.com), all score 96–100% — a frontier model
-  never scores higher, so there is no need to pay for one.
-- **On Claude Code, use Sonnet, not Haiku.** Claude Sonnet 5 completes 96%; Haiku
-  4.5 is inconsistent and sometimes skips calling `lit` entirely.
-
-Every write is validated whatever the model, so a weaker one needs more turns but
-never corrupts the library. Method and per-model scores:
+Every write is validated, so a weaker model just needs more turns — it never
+corrupts the library. Scores and method:
 [agent model benchmark](docs/6-agent-benchmark.md).
 
 ## Update and uninstall

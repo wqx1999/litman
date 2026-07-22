@@ -1,7 +1,7 @@
 # litman
 
-litman keeps every paper you read on your own computer, and lets an AI assistant
-do the filing. You curate the library by hand; each paper lives in one folder of
+**lit**(erature) **man**(ager) keeps every paper you read on your own computer, and
+lets an AI assistant do the filing. You curate the library by hand; each paper lives in one folder of
 plain files — the PDF, structured metadata, and your notes. Day to day you work in the **Web UI** (`lit gui`), a
 browser app for reading, annotating, and everyday curation; for anything beyond
 that, ask your **AI agent** in plain language and it runs the right command
@@ -64,7 +64,7 @@ specific reference.
 | [3-concepts.md](3-concepts.md) | The field-by-field reference for `metadata.yaml`, `repo-meta.yaml`, `TAXONOMY.md`, `lit-config.yaml`, `INDEX.json`, and the vault registry, plus a glossary of the terms the other pages use | You need to know exactly what a field means or which values it accepts |
 | [4-commands.md](4-commands.md) | Every `lit` subcommand, the shapes you call it in, and all of its flags, grouped as `lit --help` groups them | You need the full options for a command, or a command the tutorial skips |
 | [5-tutorial.md](5-tutorial.md) | One real paper taken through a complete everyday workflow, shown three ways — in the Web UI, as agent requests, and as `lit` commands | **You are getting started — begin here** |
-| [6-agent-benchmark.md](6-agent-benchmark.md) | How well eight models drive litman's agent layer, and how that was measured | You are choosing which model to run your agent on |
+| [6-agent-benchmark.md](6-agent-benchmark.md) | How well different models and agents drive litman, and how that was measured | You are choosing which agent and model to run |
 
 Installation is the first step of the [tutorial](5-tutorial.md). For any single
 command, `lit <cmd> --help` is always the most current authority.

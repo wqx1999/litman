@@ -7,6 +7,10 @@ models drive it across five agent CLIs, and how the numbers were produced.
 
 ## Which model to use
 
+- **When your agent helps you read a paper, use a model that can see images.**
+  Figures, schemes, and spectra are images; a text-only model cannot read them and
+  can only guess at what they show. The scored tasks are all text, so the table
+  does not rank this — it is a separate capability the reading workflow needs.
 - **The cheapest capable tier already tops the chart — you do not need a frontier
   model.** Cursor's [Composer 2.5](https://cursor.com) and GLM 5.2, and opencode's
   [MiniMax-M3](https://www.minimax.io), all complete 100% of the tasks;
@@ -30,24 +34,24 @@ install and drive litman with, so that combination is what we measure.
 
 | Agent CLI | Model | Task completion (TRR) | Routing (RA) |
 |:---|:---|---:|---:|
-| Claude Code | [Claude Sonnet 5](https://www.anthropic.com) | 96% | 93% |
-| Claude Code | [Claude Haiku 4.5](https://www.anthropic.com) | 76% \* | 50% |
-| Codex | [GPT-5.4-mini](https://openai.com) | 94% | 93% |
+| Claude Code | Claude Sonnet 5 | 96% | 93% |
+| Claude Code | Claude Haiku 4.5 | 76% \* | 50% |
+| Codex | GPT-5.4-mini | 94% | 93% |
 | Codex | GPT-5.5 | 88% | 93% |
 | Codex | GPT-5.6 (luna) | 83% | 93% |
 | Codex | GPT-5.6 (sol) | 82% | 93% |
 | Codex | GPT-5.6 (terra) | 77% | 93% |
-| Cursor | [Composer 2.5](https://cursor.com) | 100% | 100% |
-| Cursor | [GLM 5.2](https://z.ai/model-api) | 100% | 64% |
-| Cursor | [Grok 4.5](https://x.ai) | 96% | 100% |
-| Antigravity | [Gemini 3.1 Pro (High)](https://deepmind.google/models/gemini/) | 97% | N/M |
+| Cursor | Composer 2.5 | 100% | 100% |
+| Cursor | GLM 5.2 | 100% | 64% |
+| Cursor | Grok 4.5 | 96% | 100% |
+| Antigravity | Gemini 3.1 Pro (High) | 97% | N/M |
 | Antigravity | Gemini 3.1 Pro (Low) | 92% | N/M |
 | Antigravity | Gemini 3.5 Flash | 88% | N/M |
-| opencode | [MiniMax-M3](https://www.minimax.io) | 100% | 100% |
-| opencode | [DeepSeek-V4 Pro](https://www.deepseek.com) | 97% | 100% |
+| opencode | MiniMax-M3 | 100% | 100% |
+| opencode | DeepSeek-V4 Pro | 97% | 100% |
 | opencode | DeepSeek-V4 Flash | 96% | 100% |
-| opencode | [Kimi K2.6](https://www.moonshot.ai) | 94% | 86% |
-| opencode | [Qwen3.7-Max](https://chat.qwen.ai) | 89% | 100% |
+| opencode | Kimi K2.6 | 94% | 86% |
+| opencode | Qwen3.7-Max | 89% | 100% |
 
 TRR is the mean over the 22 auto-scored tasks across 3 rounds. Network-dependent
 and multi-turn scenarios (code cloning, cloud sync, a multi-turn recovery case)
@@ -84,7 +88,7 @@ Five agent CLIs — [Claude Code](https://claude.ai/code),
 [opencode](https://opencode.ai), and [Antigravity](https://antigravity.google) —
 each drove litman through the bundled skills over the suite's **22 auto-scored
 everyday-workflow tasks** (add, read, tag, modify, link, export, taxonomy edits,
-health checks, ...), 3 rounds each, on **litman 1.2.0** (July 2026).
+health checks, ...), 3 rounds each, on **litman 1.3.0** (July 2026).
 
 Every task is a **single-turn prompt in a clean context**: a fresh agent gets one
 natural-language instruction and must complete it in that one turn, with no prior

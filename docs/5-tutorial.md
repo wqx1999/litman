@@ -20,8 +20,8 @@ public repository so the code-binding step works for real. A second paper,
 have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
-> **Tested with** litman 1.2.0 on Unix (Linux and macOS), July 2026, with Claude
-> Sonnet 4.6 driving the agent path in Claude Code. The command output shown
+> **Tested with** litman 1.3.0 on Unix (Linux and macOS), July 2026, with Claude
+> Sonnet 5 driving the agent path in Claude Code. The command output shown
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.
 
@@ -30,7 +30,7 @@ every step.
 litman is a human–machine tool, so most steps below can be done more than one
 way. Reach for whichever fits the moment:
 
-- 🖥️ **Web UI** — the browser app you open with `lit gui`: a classification tree,
+- 🖥️ **Web UI** — the browser app you open with the litman icon or `lit gui`: a classification tree,
   a tabbed PDF reader, and a context panel. This is the human's home for reading,
   annotating, and everyday curation — where you spend most of a reading day.
 - 🤖 **Agent** — what you say to your AI agent. `lit agent` starts it in the

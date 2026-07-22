@@ -51,8 +51,9 @@ down to the bottom (what keeps the library honest).
 You reach the library three ways, and all three go through the same validated
 core.
 
-**The Web UI is the everyday front door.** Running `lit gui` opens a three-pane
-browser interface — a classification tree on the left, a tabbed PDF reader in the
+**The Web UI is the everyday front door.** Double-click the litman icon (or run
+`lit gui`) and a three-pane browser interface opens — a classification tree on the
+left, a tabbed PDF reader in the
 middle, a context panel on the right — for the things you do most: browsing,
 reading, annotating, taking notes, and the everyday curation around them — status
 and tags, delete and restore, projects, the taxonomy. What the UI exposes is a
