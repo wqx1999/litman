@@ -28,7 +28,10 @@ if (Test-Cmd uv) {
     $env:Path = "$ToolBin;$env:Path"
 }
 
-$toolList = uv tool list 2>$null
+# uv prints "No tools installed" to stderr; under ErrorActionPreference=Stop,
+# Windows PowerShell 5.1 turns redirected native stderr into a terminating
+# error, so hand the redirect to cmd.exe instead of PowerShell.
+$toolList = cmd /c "uv tool list 2>nul"
 if ($toolList -match '(?m)^litman') {
     Write-Host "Upgrading litman..."
     uv tool upgrade litman
