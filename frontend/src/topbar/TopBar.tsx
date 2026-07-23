@@ -213,7 +213,8 @@ export default function TopBar({
   // Agent launcher: the primary action always launches the configured default;
   // management is a distinct secondary action on the same icon (right-click /
   // Ctrl+~). A launch that cannot pop a terminal window comes back as mode
-  // "copy" and the panel shows the `lit agent …` line to paste locally.
+  // "copy" and the panel shows the `lit agent …` line to run in a terminal on
+  // the server (which on a remote/headless box is not the browser's machine).
   const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
   // Machine-global onboarding status — the red-dot source. Fetched once when the
@@ -2433,11 +2434,12 @@ function AgentPanel({
         ) : (
           <>
             <h2 className="text-sm font-semibold text-stone-900">
-              Run in your local terminal
+              Run it in a terminal
             </h2>
             <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-              No terminal window can be opened from here. Paste this where you
-              normally run {ui.agent}:
+              litman couldn't open a terminal window from here. Open one on the
+              machine running litman — if you're connected to a remote server,
+              that's the server, not this computer — then start {ui.agent} with:
             </p>
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
               <code className="min-w-0 flex-1 truncate font-mono text-sm text-stone-800">
