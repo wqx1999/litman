@@ -5,6 +5,21 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.1 — unreleased
+
+### Added
+
+- **Every path field in the GUI now has a “Browse…” button.** Click familiar
+  places (Desktop, Documents, Home), step through folders, and pick one —
+  instead of typing an absolute path — when creating or relocating a library,
+  linking or relocating a project, or registering an existing library. Folders
+  that are already litman libraries show a ✓ badge. Pasting a path and pressing
+  Enter still works exactly as before.
+- **New libraries default to your Desktop.** The create-library screens show
+  where the library will appear — for example “🖥 Desktop / literature_vault” —
+  and fall back to Documents, then your home folder, on machines without a
+  Desktop.
+
 ## 1.3.0 — 2026-07-22
 
 ### Added

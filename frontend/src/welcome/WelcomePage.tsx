@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { createVault, putActiveVault, setVaultPath } from '../api'
+import { createVault, listDir, putActiveVault, setVaultPath } from '../api'
+import type { FsAnchor } from '../api'
 import type { VaultsPayload } from '../types'
+import PathField, { describeLocation } from '../ui/PathField'
 import logoUrl from '../assets/logo.svg'
 
 /** Full-screen first-run page shown when the server started with no vault to
@@ -41,9 +43,34 @@ export default function WelcomePage({
   // The moved entry the user is locating (its new path is typed inline).
   const [locating, setLocating] = useState<string | null>(null)
   const [locatePath, setLocatePath] = useState('')
+  // Default the location to the server's suggested start (Desktop → Documents →
+  // Home) so the first library lands somewhere the user can see; the anchors let
+  // the card name it ("🖥 Desktop"). Graceful fallback: on failure the '~'
+  // default stands — first-run boot must never break on this read.
+  const [anchors, setAnchors] = useState<FsAnchor[]>([])
+  useEffect(() => {
+    let cancelled = false
+    listDir()
+      .then((l) => {
+        if (!cancelled) {
+          // Only replace the untouched '~' placeholder — never clobber a path
+          // the user pasted while this async read was still in flight (red
+          // line #1: don't disturb the expert flow).
+          setParentDir((prev) => (prev === '~' ? l.path : prev))
+          setAnchors(l.anchors)
+        }
+      })
+      .catch(() => {
+        /* keep the '~' default */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const existing = vaults?.vaults ?? []
   const canCreate = parentDir.trim().length > 0 && !busy
+  const loc = describeLocation(parentDir, anchors)
 
   async function create() {
     if (!canCreate) return
@@ -104,18 +131,25 @@ export default function WelcomePage({
         </div>
 
         <div className="mt-6 space-y-4">
+          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-4">
+            <div className="flex items-center gap-2.5 text-base font-medium text-stone-800">
+              <span className="text-2xl leading-none">{loc.emoji}</span>
+              <span className="min-w-0 truncate">
+                {loc.label} <span className="text-stone-400">/</span>{' '}
+                {name.trim() || 'literature_vault'}
+              </span>
+            </div>
+          </div>
           <label className="block">
             <span className="text-xs font-medium text-stone-600">Location</span>
-            <input
-              type="text"
+            <PathField
+              mode="parent-dir"
               value={parentDir}
+              onChange={setParentDir}
               disabled={busy}
-              spellCheck={false}
-              onChange={(e) => setParentDir(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') create()
-              }}
-              className={`${INPUT} mt-1`}
+              placeholder="/work/you"
+              onEnter={create}
+              className="mt-1"
             />
           </label>
           <label className="block">
@@ -218,18 +252,15 @@ export default function WelcomePage({
                     </div>
                     {locating === v.name && (
                       <div className="mt-2 flex items-center gap-2">
-                        <input
-                          autoFocus
-                          type="text"
+                        <PathField
+                          mode="vault-dir"
                           value={locatePath}
+                          onChange={setLocatePath}
                           disabled={busy}
-                          spellCheck={false}
+                          autoFocus
                           placeholder="/new/path/to/literature_vault"
-                          onChange={(e) => setLocatePath(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') locate(v.name)
-                          }}
-                          className={`${INPUT} font-mono text-xs`}
+                          onEnter={() => locate(v.name)}
+                          className="flex-1"
                         />
                         <button
                           onClick={() => locate(v.name)}

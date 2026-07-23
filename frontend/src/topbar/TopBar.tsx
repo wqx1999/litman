@@ -17,14 +17,16 @@ import {
   fetchHealth,
   installAgentSkill,
   launchAgent,
+  listDir,
   renameProject,
   setDefaultAgent,
   setProjectPath,
 } from '../api'
-import type { AgentLaunchResult, AgentStatus } from '../api'
+import type { AgentLaunchResult, AgentStatus, FsAnchor } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
+import PathField, { describeLocation } from '../ui/PathField'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -1213,11 +1215,6 @@ function SetProjectPathDialog({
   const trimmed = path.trim()
   const canSubmit = trimmed.length > 0 && !busy
 
-  const INPUT =
-    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
-    'disabled:opacity-50'
-
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1248,18 +1245,17 @@ function SetProjectPathDialog({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
             Absolute path
           </span>
-          <input
-            autoFocus
-            type="text"
+          <PathField
+            mode="existing-dir"
             value={path}
+            onChange={setPath}
             disabled={busy}
+            autoFocus
+            selectOnFocus
             placeholder="/work/you/Project/pepforge"
-            onChange={(e) => setPath(e.target.value)}
-            onFocus={(e) => e.target.select()}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
+            onEnter={() => {
+              if (canSubmit) onConfirm(trimmed)
             }}
-            className={`${INPUT} font-mono`}
           />
           <span className="text-[11px] text-stone-400">
             the folder itself, must already exist
@@ -1368,16 +1364,13 @@ function NewProjectDialog({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
               Absolute path
             </span>
-            <input
-              type="text"
+            <PathField
+              mode="existing-dir"
               value={path}
+              onChange={setPath}
               disabled={busy}
               placeholder="/work/you/Project/pepforge"
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') submit()
-              }}
-              className={`${INPUT} font-mono`}
+              onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
               the folder itself, must exist
@@ -1736,11 +1729,6 @@ function LocateVaultDialog({
     }
   }
 
-  const INPUT =
-    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
-    'disabled:opacity-50'
-
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1777,18 +1765,16 @@ function LocateVaultDialog({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
             New vault path
           </span>
-          <input
-            autoFocus
-            type="text"
+          <PathField
+            mode="vault-dir"
             value={path}
+            onChange={setPath}
             disabled={busy}
-            spellCheck={false}
+            autoFocus
             placeholder="/work/you/literature_vault"
-            onChange={(e) => setPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && canSubmit) submit()
+            onEnter={() => {
+              if (canSubmit) submit()
             }}
-            className={`${INPUT} font-mono`}
           />
         </label>
         {error && (
@@ -1909,16 +1895,13 @@ function RegisterVaultDialog({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
               Vault path
             </span>
-            <input
-              type="text"
+            <PathField
+              mode="vault-dir"
               value={path}
+              onChange={setPath}
               disabled={busy}
               placeholder="/work/you/literature_vault"
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') submit()
-              }}
-              className={`${INPUT} font-mono`}
+              onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
               the vault folder itself, must exist + contain lit-config.yaml
@@ -1989,6 +1972,30 @@ function CreateVaultDialog({
   const [setActive, setSetActive] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Default the parent dir to the server's suggested start (Desktop → Documents
+  // → Home), so a new library lands somewhere the user can actually see. The
+  // anchors let the card name it ("🖥 Desktop"). Graceful fallback: on failure
+  // the '~' default stands — never block the dialog on this read.
+  const [anchors, setAnchors] = useState<FsAnchor[]>([])
+  useEffect(() => {
+    let cancelled = false
+    listDir()
+      .then((l) => {
+        if (!cancelled) {
+          // Only replace the untouched '~' placeholder — never clobber a path
+          // the user pasted while this async read was still in flight (red
+          // line #1: don't disturb the expert flow).
+          setParentDir((prev) => (prev === '~' ? l.path : prev))
+          setAnchors(l.anchors)
+        }
+      })
+      .catch(() => {
+        /* keep the '~' default so the dialog always works */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const canSubmit = parentDir.trim().length > 0 && name.trim().length > 0 && !busy
 
@@ -2008,6 +2015,7 @@ function CreateVaultDialog({
   }
 
   const joined = `${parentDir.trim().replace(/\/+$/, '')}/${name.trim() || '<name>'}`
+  const loc = describeLocation(parentDir, anchors)
 
   const INPUT =
     'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
@@ -2040,18 +2048,26 @@ function CreateVaultDialog({
           exist; the vault folder itself must not.
         </p>
         <div className="mt-4 flex flex-col gap-3">
+          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-stone-800">
+              <span className="text-lg leading-none">{loc.emoji}</span>
+              <span className="min-w-0 truncate">
+                {loc.label} <span className="text-stone-400">/</span>{' '}
+                {name.trim() || 'literature_vault'}
+              </span>
+            </div>
+          </div>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
               Location
             </span>
-            <input
-              type="text"
+            <PathField
+              mode="parent-dir"
               value={parentDir}
+              onChange={setParentDir}
               disabled={busy}
-              spellCheck={false}
               placeholder="/work/you"
-              onChange={(e) => setParentDir(e.target.value)}
-              className={`${INPUT} font-mono`}
+              onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
               the folder to create the vault in

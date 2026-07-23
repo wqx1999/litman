@@ -86,6 +86,25 @@ async function mutateJSON<T>(
   return (await resp.json()) as T
 }
 
+/** A GET that surfaces the server's `detail` on failure (getJSON keeps only the
+ * status line). The directory picker shows a bad-path 400's human message —
+ * "No such folder: /x/y" — inline in its address bar, so the status line alone
+ * is not enough. Parses the FastAPI error body's `detail` like `mutateJSON`. */
+async function getJSONDetailed<T>(url: string): Promise<T> {
+  const resp = await apiFetch(url)
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    throw new ApiError(detail, resp.status)
+  }
+  return (await resp.json()) as T
+}
+
 /** All papers (INDEX projection), or a recency-ordered smart-list when `view`. */
 export function fetchPapers(view?: SmartListView): Promise<IndexPaper[]> {
   const qs = view ? `?view=${encodeURIComponent(view)}` : ''
@@ -635,6 +654,50 @@ export function renameTaxonomyValue(
     old,
     new: next,
   })
+}
+
+// --- Filesystem directory picker (read-only) — backs the path fields' Browse --
+
+/** One subdirectory row from GET /api/fs/list. `is_vault` is true when the
+ * folder holds a lit-config.yaml (drives the picker's ✓ library badge). */
+export interface FsEntry {
+  name: string
+  path: string
+  is_vault: boolean
+}
+
+/** A standard one-click location (Home / Desktop / Documents / Downloads) — only
+ * the ones that exist on the server are returned. */
+export interface FsAnchor {
+  label: string
+  path: string
+}
+
+/** GET /api/fs/list payload: the listed folder (`path`, expanded + resolved),
+ * whether that folder is ITSELF a library (`is_vault` — the `vault-dir` mode
+ * gate; read this rather than a remembered clicked entry), its `parent` (null at
+ * the filesystem root), the subdirectory `entries`, the existing `anchors`, and
+ * `denied` (true = reachable but its children could not be read). */
+export interface FsListing {
+  path: string
+  is_vault: boolean
+  parent: string | null
+  entries: FsEntry[]
+  anchors: FsAnchor[]
+  denied: boolean
+}
+
+/** List one server-side folder's subdirectories for the directory picker (pure
+ * read). An omitted `path` lands on the server's suggested start (Desktop →
+ * Documents → Home); `showHidden` also lists dot-prefixed directories. A bad
+ * `path` throws an ApiError carrying the backend's human `detail` (via
+ * getJSONDetailed) so the picker can show it inline. */
+export function listDir(path?: string, showHidden = false): Promise<FsListing> {
+  const qs = new URLSearchParams()
+  if (path) qs.set('path', path)
+  if (showHidden) qs.set('show_hidden', '1')
+  const s = qs.toString()
+  return getJSONDetailed<FsListing>(`/api/fs/list${s ? `?${s}` : ''}`)
 }
 
 // --- Trash (recoverable-delete bin) — read-only library + restore (Phase 4.9) -
