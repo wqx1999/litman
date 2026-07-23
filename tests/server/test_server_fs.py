@@ -1,10 +1,11 @@
-"""Directory-picker endpoint tests — task-path-browser A1–A8.
+"""Directory-picker endpoint tests — task-path-browser A1–A8 + mkdir M1–M7.
 
 Real filesystem (``tmp_path``), real FastAPI ``TestClient`` — nothing here
 mocks the filesystem; only ``Path.home()`` is monkeypatched (A3/A4) so anchors
 and the suggested start are pinned to a temp home. Every test drives
 ``create_app(None)`` — a server with no active vault — which also proves the
-endpoint stays reachable without a vault (A8 makes that the explicit assertion).
+endpoints stay reachable without a vault (A8 / M7 make that an explicit
+assertion for ``fs/list`` / ``fs/mkdir`` respectively).
 
 Guarded with ``importorskip`` so the suite still collects without fastapi
 (invariant #5).
@@ -235,3 +236,183 @@ def test_a8_reachable_without_active_vault(tmp_path: Path) -> None:
     assert resp.status_code not in (409, 410)
     names = [e["name"] for e in resp.json()["entries"]]
     assert "sub" in names
+
+
+# ===========================================================================
+# POST /api/fs/mkdir — create ONE subfolder (task-picker-create-folder M1–M7)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# M1 — create succeeds: folder exists on disk, response is its (empty) listing
+# ---------------------------------------------------------------------------
+def test_m1_mkdir_creates(tmp_path: Path) -> None:
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": str(tmp_path), "name": "new_folder"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    target = tmp_path / "new_folder"
+    assert target.is_dir()  # actually on disk
+    assert Path(body["path"]).resolve() == target.resolve()
+    assert body["is_vault"] is False
+    assert body["denied"] is False
+    assert body["entries"] == []  # freshly created → empty
+    # A fresh navigation shape: parent points back at the folder we created in.
+    assert Path(body["parent"]).resolve() == tmp_path.resolve()
+
+
+# ---------------------------------------------------------------------------
+# M2 — parent does not exist → 400, and nothing is created
+# ---------------------------------------------------------------------------
+def test_m2_parent_missing_400(tmp_path: Path) -> None:
+    missing = tmp_path / "nope"
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": str(missing), "name": "x"}
+    )
+    assert resp.status_code == 400
+    assert not missing.exists()  # parent was NOT conjured up
+    assert not (missing / "x").exists()  # and no child under it
+
+
+# ---------------------------------------------------------------------------
+# M3 — traversal / separators rejected → 400, and NOTHING is created
+#      (RED LINE reverse test: ../evil must not escape, a/b must not nest)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b", "..", "."])
+def test_m3_traversal_rejected(tmp_path: Path, bad: str) -> None:
+    base = tmp_path / "base"
+    base.mkdir()
+
+    resp = _client().post("/api/fs/mkdir", json={"parent": str(base), "name": bad})
+    assert resp.status_code == 400
+
+    # Nothing anywhere: not inside base, not the sibling escape, not an
+    # intermediate segment of a multi-level name.
+    assert list(base.iterdir()) == []
+    assert not (tmp_path / "evil").exists()  # ../evil did NOT reach the parent
+    assert not (base / "a").exists()  # a/b did NOT create an intermediate "a"
+
+
+# ---------------------------------------------------------------------------
+# M4 — an existing directory of that name is idempotent: 200 + its listing
+# ---------------------------------------------------------------------------
+def test_m4_existing_dir_idempotent(tmp_path: Path) -> None:
+    existing = tmp_path / "already"
+    existing.mkdir()
+    (existing / "child").mkdir()  # content proves we return the REAL listing
+
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": str(tmp_path), "name": "already"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert Path(body["path"]).resolve() == existing.resolve()
+    names = [e["name"] for e in body["entries"]]
+    assert names == ["child"]  # the pre-existing folder was entered, not wiped
+
+
+# ---------------------------------------------------------------------------
+# M5 — a FILE of that name already exists → 400 (not clobbered)
+# ---------------------------------------------------------------------------
+def test_m5_file_name_conflict_400(tmp_path: Path) -> None:
+    clash = tmp_path / "taken"
+    clash.write_text("i am a file")
+
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": str(tmp_path), "name": "taken"}
+    )
+    assert resp.status_code == 400
+    assert "already exists" in resp.json()["detail"].lower()
+    assert clash.is_file()  # left untouched
+    assert clash.read_text() == "i am a file"
+
+
+# ---------------------------------------------------------------------------
+# M6 — no write permission on parent → friendly error status, never a 500
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permission bits; chmod 000 would not deny",
+)
+def test_m6_permission_denied_not_500(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        resp = _client().post(
+            "/api/fs/mkdir", json={"parent": str(locked), "name": "sub"}
+        )
+        assert resp.status_code != 500  # the core red line: no unhandled crash
+        assert resp.status_code == 403  # PermissionError → friendly 403
+    finally:
+        locked.chmod(0o755)  # let tmp_path teardown clean up
+
+
+# ---------------------------------------------------------------------------
+# M7 — reachable with NO active vault (proves the _VAULTLESS_ALLOWED wiring)
+# ---------------------------------------------------------------------------
+def test_m7_reachable_without_active_vault(tmp_path: Path) -> None:
+    # create_app(None) 409s every vault-dependent route; mkdir is whitelisted,
+    # so it must actually create — not answer 409/410.
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": str(tmp_path), "name": "made"}
+    )
+    assert resp.status_code == 200
+    assert resp.status_code not in (409, 410)
+    assert (tmp_path / "made").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# M8 — a locked ANCESTOR (not the parent itself) → friendly status, never 500.
+#      M6 locks the parent, but the `parent.exists()` / `parent.is_dir()` probes
+#      used to run OUTSIDE the try, so an ancestor with no execute bit made
+#      stat() raise PermissionError → an unhandled 500.
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory permission bits; chmod 000 would not deny",
+)
+def test_m8_locked_ancestor_not_500(tmp_path: Path) -> None:
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    child = locked / "child"
+    child.mkdir()  # the parent we post; stat()ing it needs +x on `locked`
+    locked.chmod(0o000)
+    try:
+        resp = _client().post(
+            "/api/fs/mkdir", json={"parent": str(child), "name": "sub"}
+        )
+        assert resp.status_code != 500  # red line: no unhandled crash
+        assert resp.status_code == 403  # PermissionError probing the parent → 403
+    finally:
+        locked.chmod(0o755)  # let tmp_path teardown clean up
+
+
+# ---------------------------------------------------------------------------
+# M9 — control chars / NUL in name → 400, never 500, and nothing is created.
+#      A NUL made mkdir() raise ValueError (not OSError), which the OSError-only
+#      except let escape as a 500; a bare newline/tab is a legal POSIX filename
+#      that must still be refused (it is illegal on Windows and never intended).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad_name", ["a\x00b", "a\nb", "a\tb"])
+def test_m9_control_char_name_400(tmp_path: Path, bad_name: str) -> None:
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": str(tmp_path), "name": bad_name}
+    )
+    assert resp.status_code != 500
+    assert resp.status_code == 400
+    assert list(tmp_path.iterdir()) == []  # nothing conjured up
+
+
+# ---------------------------------------------------------------------------
+# M9b — a NUL in the PARENT path → 400, never 500 (parent.resolve() raises
+#       ValueError, which the OSError-only except used to miss).
+# ---------------------------------------------------------------------------
+def test_m9b_nul_in_parent_400(tmp_path: Path) -> None:
+    resp = _client().post(
+        "/api/fs/mkdir", json={"parent": f"{tmp_path}/a\x00b", "name": "sub"}
+    )
+    assert resp.status_code != 500
+    assert resp.status_code == 400

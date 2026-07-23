@@ -652,43 +652,17 @@ def _suggested_start() -> Path:
     return home
 
 
-@router.get("/fs/list")
-def get_fs_list(
-    path: str | None = Query(default=None),
-    show_hidden: int = Query(default=0),
-) -> dict[str, Any]:
-    """List the subdirectories of one server-side folder, for the path picker.
+def _directory_listing(target: Path, show_hidden: bool = False) -> dict[str, Any]:
+    """Assemble the picker payload for an ALREADY-resolved directory.
 
-    ``path`` — absolute directory to list; ``~`` is expanded. Omitted / empty
-    lands on the suggested start (Desktop → Documents → Home). A bad ``path``
-    (does not exist, or is not a directory) is a 400 whose human-readable
-    ``detail`` the picker shows inline — never a silent empty 200.
-
-    ``show_hidden`` — ``1`` also lists dot-prefixed directories; the default
-    ``0`` hides them.
-
-    Returns the listed ``path`` (expanded + resolved), whether that folder is
-    itself a library (``is_vault``), its ``parent`` (``null`` at the filesystem
-    root), the subdirectory ``entries`` (name-sorted, case-insensitive; each
-    flagged ``is_vault`` when it holds a ``lit-config.yaml``), the existing
-    ``anchors``, and ``denied`` — ``true`` when the folder can be reached but
-    its children cannot be read (``PermissionError``), which degrades to an
-    empty listing instead of a 500.
+    The ``{path, is_vault, parent, entries, anchors, denied}`` half of the picker
+    response, factored out of :func:`get_fs_list` so ``POST /api/fs/mkdir`` can
+    return the freshly created (or entered) folder in the exact same shape — the
+    frontend then treats that response as one more navigation (invariant #16
+    spirit: the two fs endpoints share one listing path, not two copies).
+    ``target`` must already be a resolved, existing directory; each caller does
+    the path resolution / validation appropriate to its own input.
     """
-    candidate = Path(path).expanduser() if path else _suggested_start()
-    try:
-        target = candidate.resolve()
-    except OSError as exc:
-        # resolve() can raise on a broken symlink chain / lookup loop — a path
-        # that cannot even be resolved is bad input, not a server crash.
-        raise HTTPException(
-            status_code=400, detail=f"Cannot open folder: {path}"
-        ) from exc
-    if not target.exists():
-        raise HTTPException(status_code=400, detail=f"No such folder: {path}")
-    if not target.is_dir():
-        raise HTTPException(status_code=400, detail=f"Not a folder: {path}")
-
     entries: list[dict[str, Any]] = []
     denied = False
     try:
@@ -739,3 +713,154 @@ def get_fs_list(
         "anchors": _fs_anchors(),
         "denied": denied,
     }
+
+
+@router.get("/fs/list")
+def get_fs_list(
+    path: str | None = Query(default=None),
+    show_hidden: int = Query(default=0),
+) -> dict[str, Any]:
+    """List the subdirectories of one server-side folder, for the path picker.
+
+    ``path`` — absolute directory to list; ``~`` is expanded. Omitted / empty
+    lands on the suggested start (Desktop → Documents → Home). A bad ``path``
+    (does not exist, or is not a directory) is a 400 whose human-readable
+    ``detail`` the picker shows inline — never a silent empty 200.
+
+    ``show_hidden`` — ``1`` also lists dot-prefixed directories; the default
+    ``0`` hides them.
+
+    Returns the listed ``path`` (expanded + resolved), whether that folder is
+    itself a library (``is_vault``), its ``parent`` (``null`` at the filesystem
+    root), the subdirectory ``entries`` (name-sorted, case-insensitive; each
+    flagged ``is_vault`` when it holds a ``lit-config.yaml``), the existing
+    ``anchors``, and ``denied`` — ``true`` when the folder can be reached but
+    its children cannot be read (``PermissionError``), which degrades to an
+    empty listing instead of a 500.
+    """
+    candidate = Path(path).expanduser() if path else _suggested_start()
+    try:
+        target = candidate.resolve()
+    except OSError as exc:
+        # resolve() can raise on a broken symlink chain / lookup loop — a path
+        # that cannot even be resolved is bad input, not a server crash.
+        raise HTTPException(
+            status_code=400, detail=f"Cannot open folder: {path}"
+        ) from exc
+    if not target.exists():
+        raise HTTPException(status_code=400, detail=f"No such folder: {path}")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a folder: {path}")
+    return _directory_listing(target, show_hidden=bool(show_hidden))
+
+
+@router.post("/fs/mkdir")
+async def post_fs_mkdir(request: Request) -> dict[str, Any]:
+    """Create ONE subfolder under an existing directory, for the path picker.
+
+    Body JSON ``{"parent": "<absolute dir>", "name": "<single folder name>"}``.
+    The GUI's first write-to-disk endpoint: the picker's "＋ New folder" button
+    (existing-dir / parent-dir modes only) posts here, and the welcome-page
+    library flow uses it to create a parent folder before ``lit init`` — so it is
+    whitelisted in the no-vault middleware guard.
+
+    RED LINE — only ONE level, and only here: ``parent`` must ALREADY exist and be
+    a directory (``mkdir()`` without ``parents=True``), and ``name`` is rejected
+    if it contains ``/`` / ``\\`` / ``..`` or is ``.`` / ``..`` (a single component
+    only — no traversal, no multi-level create). Nothing else on the server writes
+    to disk on a browse.
+
+    Behaviour:
+
+    * ``parent`` missing / not a directory → 400.
+    * bad ``name`` → 400, and nothing is created.
+    * ``target`` already a directory → 200, its listing (idempotent: equivalent to
+      navigating into an existing folder — wangq 2026-07-23).
+    * ``target`` already a *file* → 400.
+    * otherwise ``target.mkdir()``; a ``PermissionError`` degrades to 403 and any
+      other ``OSError`` to 400 (mirrors ``fs/list``'s ``denied`` style — never 500).
+
+    Returns the SAME ``{path, is_vault, parent, entries, anchors, denied}`` shape
+    as ``GET /api/fs/list`` (computed on ``target``), so the frontend consumes it
+    as one navigation and lands inside the new folder.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    parent_raw = payload.get("parent")
+    if not isinstance(parent_raw, str) or not parent_raw.strip():
+        raise HTTPException(status_code=400, detail="parent must be a non-empty string.")
+    name_raw = payload.get("name")
+    if not isinstance(name_raw, str):
+        raise HTTPException(status_code=400, detail="name must be a string.")
+    name = name_raw.strip()
+
+    # 1. Parent must already exist and be a directory — never a multi-level mkdir.
+    #    Every probe (resolve/exists/is_dir) can raise inside a locked ANCESTOR
+    #    (PermissionError → 403) or on a malformed path with an embedded NUL
+    #    (ValueError → 400); a broken symlink chain / lookup loop is OSError → 400.
+    #    None of them may escape as a 500.
+    parent = Path(parent_raw).expanduser()
+    try:
+        parent = parent.resolve()
+        parent_exists = parent.exists()
+        parent_is_dir = parent.is_dir()
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403, detail=f"Permission denied opening: {parent_raw}"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Cannot open folder: {parent_raw}"
+        ) from exc
+    if not parent_exists:
+        raise HTTPException(
+            status_code=400, detail=f"Parent folder does not exist: {parent}"
+        )
+    if not parent_is_dir:
+        raise HTTPException(status_code=400, detail=f"Parent is not a folder: {parent}")
+
+    # 2. Name: exactly one path component (RED LINE — no separators, no traversal,
+    #    no control chars / NUL — a NUL would make mkdir() raise ValueError → 500).
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name can't be empty.")
+    if name in (".", ".."):
+        raise HTTPException(status_code=400, detail="Folder name can't be '.' or '..'.")
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(
+            status_code=400, detail="Folder name can't contain path separators."
+        )
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in name):
+        raise HTTPException(
+            status_code=400, detail="Folder name can't contain control characters."
+        )
+
+    # 3-6. Create (or idempotently enter) exactly one level under parent. Every
+    # filesystem probe here can raise PermissionError inside a locked parent
+    # (M6) — that degrades to 403, and any other OSError (e.g. a mid-request race
+    # that removes parent) to 400. Never a 500.
+    target = parent / name
+    try:
+        already_dir = target.is_dir()
+        if not already_dir and target.exists():
+            raise HTTPException(
+                status_code=400, detail="A file with that name already exists."
+            )
+        if not already_dir:
+            target.mkdir()  # single level; parent verified above (no parents=True)
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied creating a folder in {parent}.",
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Couldn't create the folder: {getattr(exc, 'strerror', None) or exc}.",
+        ) from exc
+
+    return _directory_listing(target)
