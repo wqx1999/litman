@@ -15,6 +15,13 @@ behaviour, a minor release adds it, a major release breaks it.
   linking or relocating a project, or registering an existing library. Folders
   that are already litman libraries show a ✓ badge. Pasting a path and pressing
   Enter still works exactly as before.
+- **Make a new folder while browsing.** The Browse window has a “＋ New folder”
+  button, so you can create a folder for a new library or project without
+  leaving litman for your file manager.
+- **Click through the path in the Browse window.** The address bar shows the
+  current path as clickable segments (Home › Desktop › research) — click any one
+  to jump straight to that folder. Click the bar to type or paste a path as
+  before.
 - **New libraries default to your Desktop.** The create-library screens show
   where the library will appear — for example “🖥 Desktop / literature_vault” —
   and fall back to Documents, then your home folder, on machines without a

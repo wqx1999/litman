@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import { createVault, listDir, putActiveVault, setVaultPath } from '../api'
 import type { FsAnchor } from '../api'
 import type { VaultsPayload } from '../types'
+import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
+import { joinPath } from '../ui/path'
 import logoUrl from '../assets/logo.svg'
 
 /** Full-screen first-run page shown when the server started with no vault to
@@ -20,13 +22,6 @@ const INPUT =
   'w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm ' +
   'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
   'disabled:opacity-50'
-
-function joinPath(parent: string, name: string): string {
-  const p = parent.trim().replace(/\/+$/, '')
-  const n = name.trim() || 'literature_vault'
-  if (!p) return n
-  return `${p}/${n}`
-}
 
 export default function WelcomePage({
   vaults,
@@ -45,7 +40,7 @@ export default function WelcomePage({
   const [locatePath, setLocatePath] = useState('')
   // Default the location to the server's suggested start (Desktop → Documents →
   // Home) so the first library lands somewhere the user can see; the anchors let
-  // the card name it ("🖥 Desktop"). Graceful fallback: on failure the '~'
+  // the card name it ("Desktop"). Graceful fallback: on failure the '~'
   // default stands — first-run boot must never break on this read.
   const [anchors, setAnchors] = useState<FsAnchor[]>([])
   useEffect(() => {
@@ -133,7 +128,7 @@ export default function WelcomePage({
         <div className="mt-6 space-y-4">
           <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-4">
             <div className="flex items-center gap-2.5 text-base font-medium text-stone-800">
-              <span className="text-2xl leading-none">{loc.emoji}</span>
+              {anchorIcon(loc.kind, 'h-6 w-6 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
                 {name.trim() || 'literature_vault'}
@@ -169,7 +164,7 @@ export default function WelcomePage({
           <p className="truncate text-xs text-stone-400">
             Creates{' '}
             <span className="font-mono text-stone-500">
-              {joinPath(parentDir, name)}
+              {joinPath(parentDir, name.trim() || 'literature_vault')}
             </span>
           </p>
         </div>

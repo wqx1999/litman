@@ -1,8 +1,9 @@
 import { useState } from 'react'
 
 import type { FsAnchor } from '../api'
-import DirectoryPicker, { ANCHOR_EMOJI } from './DirectoryPicker'
+import DirectoryPicker from './DirectoryPicker'
 import type { PickerMode } from './DirectoryPicker'
+import { basename } from './path'
 
 /** The shared path-input class, lifted from the dialogs so all seven fields
  * match. No `dark:` variants — the app auto-adapts via the inverted `stone`
@@ -87,18 +88,18 @@ export default function PathField({
   )
 }
 
-/** A friendly name + emoji for a parent directory, for the create-vault cards
- * (#6/#7, spec §5): a known anchor reads as "🖥 Desktop", any other folder as
- * "📁 <basename>". `anchors` come from the mount-time `listDir()`. */
+/** A friendly name + icon-kind for a parent directory, for the create-vault
+ * cards (#6/#7, spec §5): a known anchor reads as its place name ("Desktop"),
+ * any other folder as its basename. `kind` selects the matching line icon via
+ * `anchorIcon`. `anchors` come from the mount-time `listDir()`. */
 export interface LocationLabel {
-  emoji: string
+  kind: string
   label: string
 }
 
 export function describeLocation(parentDir: string, anchors: FsAnchor[]): LocationLabel {
-  const clean = parentDir.trim().replace(/\/+$/, '')
+  const clean = parentDir.trim().replace(/[\\/]+$/, '')
   const hit = anchors.find((a) => a.path === clean)
-  if (hit) return { emoji: ANCHOR_EMOJI[hit.label] ?? '📁', label: hit.label }
-  const base = clean.split('/').pop() || clean || '~'
-  return { emoji: '📁', label: base }
+  if (hit) return { kind: hit.label, label: hit.label }
+  return { kind: 'folder', label: basename(clean) || clean || '~' }
 }

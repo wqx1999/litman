@@ -700,6 +700,16 @@ export function listDir(path?: string, showHidden = false): Promise<FsListing> {
   return getJSONDetailed<FsListing>(`/api/fs/list${s ? `?${s}` : ''}`)
 }
 
+/** Create a single subfolder `name` under `parent` (POST /api/fs/mkdir), and get
+ * back the new folder as an FsListing (same shape as `listDir`) so the picker can
+ * treat it as one navigation and land inside it. Idempotent server-side: an
+ * existing folder of that name is entered, not re-created. Throws an ApiError
+ * carrying the backend's human `detail` (via mutateJSON) — a bad name, a missing
+ * parent, a same-name file, or no permission — which the picker shows inline. */
+export function mkdir(parent: string, name: string): Promise<FsListing> {
+  return mutateJSON<FsListing>('/api/fs/mkdir', 'POST', { parent, name })
+}
+
 // --- Trash (recoverable-delete bin) — read-only library + restore (Phase 4.9) -
 
 /** The /api/trash projection (snake_case server keys → camelCase). */

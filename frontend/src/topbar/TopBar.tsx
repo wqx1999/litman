@@ -26,7 +26,9 @@ import type { AgentLaunchResult, AgentStatus, FsAnchor } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
+import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
+import { joinPath } from '../ui/path'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -1968,13 +1970,13 @@ function CreateVaultDialog({
   onCreated: (setActive: boolean) => void
 }) {
   const [parentDir, setParentDir] = useState('~')
-  const [name, setName] = useState('')
+  const [name, setName] = useState('literature_vault')
   const [setActive, setSetActive] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Default the parent dir to the server's suggested start (Desktop → Documents
   // → Home), so a new library lands somewhere the user can actually see. The
-  // anchors let the card name it ("🖥 Desktop"). Graceful fallback: on failure
+  // anchors let the card name it ("Desktop"). Graceful fallback: on failure
   // the '~' default stands — never block the dialog on this read.
   const [anchors, setAnchors] = useState<FsAnchor[]>([])
   useEffect(() => {
@@ -1997,7 +1999,10 @@ function CreateVaultDialog({
     }
   }, [])
 
-  const canSubmit = parentDir.trim().length > 0 && name.trim().length > 0 && !busy
+  // Name defaults to 'literature_vault' and an empty name is no longer a
+  // blocker: an emptied field falls back server-side (createVault omits it), so
+  // only the Location is required — matching the welcome page.
+  const canSubmit = parentDir.trim().length > 0 && !busy
 
   async function submit() {
     if (!canSubmit) return
@@ -2014,7 +2019,7 @@ function CreateVaultDialog({
     }
   }
 
-  const joined = `${parentDir.trim().replace(/\/+$/, '')}/${name.trim() || '<name>'}`
+  const joined = joinPath(parentDir, name.trim() || '<name>')
   const loc = describeLocation(parentDir, anchors)
 
   const INPUT =
@@ -2050,7 +2055,7 @@ function CreateVaultDialog({
         <div className="mt-4 flex flex-col gap-3">
           <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
             <div className="flex items-center gap-2 text-sm font-medium text-stone-800">
-              <span className="text-lg leading-none">{loc.emoji}</span>
+              {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
                 {name.trim() || 'literature_vault'}
