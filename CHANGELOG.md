@@ -23,9 +23,20 @@ behaviour, a minor release adds it, a major release breaks it.
   to jump straight to that folder. Click the bar to type or paste a path as
   before.
 - **New libraries default to your Desktop.** The create-library screens show
-  where the library will appear — for example “🖥 Desktop / literature_vault” —
+  where the library will appear — for example “Desktop / literature_vault” —
   and fall back to Documents, then your home folder, on machines without a
   Desktop.
+- **Forget a library that has moved or been deleted.** The first-run screen’s
+  “open an existing library” list now offers **Forget** next to a moved entry,
+  beside Locate — clearing a stale entry whose folder is gone. The folder on
+  disk is never touched.
+
+### Fixed
+
+- **Paths and commands use a proper monospace font on Windows and Linux.** They
+  previously fell back to a serif face (Courier New) on machines without the
+  macOS system fonts; the stack now includes Cascadia, Consolas and Liberation
+  Mono.
 
 ## 1.3.0 — 2026-07-22
 

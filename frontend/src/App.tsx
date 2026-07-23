@@ -1643,7 +1643,13 @@ export default function App() {
   // (All hooks above run unconditionally — this branch only gates rendering.)
   if (served === undefined) return null // pre-bootstrap; sub-100ms on localhost
   if (served === null) {
-    return <WelcomePage vaults={vaults} onEnter={() => void bootstrap()} />
+    return (
+      <WelcomePage
+        vaults={vaults}
+        onEnter={() => void bootstrap()}
+        onRefresh={() => fetchVaults().then(setVaults).catch(() => {})}
+      />
+    )
   }
 
   return (

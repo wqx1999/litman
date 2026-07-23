@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react'
 
-import { createVault, listDir, putActiveVault, setVaultPath } from '../api'
+import {
+  createVault,
+  listDir,
+  putActiveVault,
+  setVaultPath,
+  unregisterVault,
+} from '../api'
 import type { FsAnchor } from '../api'
 import type { VaultsPayload } from '../types'
 import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
-import { joinPath } from '../ui/path'
 import logoUrl from '../assets/logo.svg'
 
 /** Full-screen first-run page shown when the server started with no vault to
@@ -26,10 +31,13 @@ const INPUT =
 export default function WelcomePage({
   vaults,
   onEnter,
+  onRefresh,
 }: {
   vaults: VaultsPayload | null
   /** Called after a successful create or open — the parent re-fetches vaults. */
   onEnter: () => void
+  /** Re-fetch the vault list without leaving this page (after a Forget). */
+  onRefresh: () => Promise<void>
 }) {
   const [parentDir, setParentDir] = useState('~')
   const [name, setName] = useState('literature_vault')
@@ -38,6 +46,8 @@ export default function WelcomePage({
   // The moved entry the user is locating (its new path is typed inline).
   const [locating, setLocating] = useState<string | null>(null)
   const [locatePath, setLocatePath] = useState('')
+  // The moved entry the user is dropping from the registry (inline confirm).
+  const [forgetting, setForgetting] = useState<string | null>(null)
   // Default the location to the server's suggested start (Desktop → Documents →
   // Home) so the first library lands somewhere the user can see; the anchors let
   // the card name it ("Desktop"). Graceful fallback: on failure the '~'
@@ -112,6 +122,24 @@ export default function WelcomePage({
     }
   }
 
+  // Drop a moved/lost entry from the registry (`lit vault remove`): the folder on
+  // disk is never touched, so this only clears the dead pointer. Stays on this
+  // page — onRefresh re-pulls the list with the entry gone.
+  async function forget(vaultName: string) {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await unregisterVault(vaultName)
+      setForgetting(null)
+      await onRefresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-stone-100 px-4 py-10 text-stone-800 antialiased">
       <div className="w-full max-w-md animate-grow-in rounded-2xl bg-white p-8 shadow-xl ring-1 ring-stone-200">
@@ -126,9 +154,9 @@ export default function WelcomePage({
         </div>
 
         <div className="mt-6 space-y-4">
-          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-4">
-            <div className="flex items-center gap-2.5 text-base font-medium text-stone-800">
-              {anchorIcon(loc.kind, 'h-6 w-6 shrink-0 text-stone-500')}
+          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-stone-800">
+              {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
                 {name.trim() || 'literature_vault'}
@@ -161,12 +189,6 @@ export default function WelcomePage({
               className={`${INPUT} mt-1`}
             />
           </label>
-          <p className="truncate text-xs text-stone-400">
-            Creates{' '}
-            <span className="font-mono text-stone-500">
-              {joinPath(parentDir, name.trim() || 'literature_vault')}
-            </span>
-          </p>
         </div>
 
         {error && (
@@ -212,7 +234,8 @@ export default function WelcomePage({
                   </li>
                 ) : (
                   // Moved / missing: Open would 400 on the dead path. Offer Locate
-                  // instead — an inline path input into `setVaultPath`.
+                  // (re-point via `setVaultPath`) or Forget (drop the dead registry
+                  // entry via `unregisterVault`), both inline — never delete on disk.
                   <li
                     key={v.name}
                     className="rounded-lg border border-stone-200 bg-white px-3 py-2"
@@ -231,18 +254,32 @@ export default function WelcomePage({
                           {v.path}
                         </span>
                       </span>
-                      {locating !== v.name && (
-                        <button
-                          onClick={() => {
-                            setLocating(v.name)
-                            setLocatePath('')
-                            setError(null)
-                          }}
-                          disabled={busy}
-                          className="shrink-0 text-xs font-medium text-accent-600 disabled:opacity-50"
-                        >
-                          Locate
-                        </button>
+                      {locating !== v.name && forgetting !== v.name && (
+                        <span className="flex shrink-0 items-center gap-3">
+                          <button
+                            onClick={() => {
+                              setLocating(v.name)
+                              setLocatePath('')
+                              setForgetting(null)
+                              setError(null)
+                            }}
+                            disabled={busy}
+                            className="text-xs font-medium text-accent-600 disabled:opacity-50"
+                          >
+                            Locate
+                          </button>
+                          <button
+                            onClick={() => {
+                              setForgetting(v.name)
+                              setLocating(null)
+                              setError(null)
+                            }}
+                            disabled={busy}
+                            className="text-xs font-medium text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
+                          >
+                            Forget
+                          </button>
+                        </span>
                       )}
                     </div>
                     {locating === v.name && (
@@ -264,6 +301,29 @@ export default function WelcomePage({
                         >
                           {busy ? '…' : 'Locate'}
                         </button>
+                      </div>
+                    )}
+                    {forgetting === v.name && (
+                      <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-rose-50 px-2.5 py-1.5 ring-1 ring-rose-100">
+                        <span className="min-w-0 text-[11px] leading-snug text-rose-700">
+                          Remove from the list? Nothing on disk is deleted.
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            onClick={() => setForgetting(null)}
+                            disabled={busy}
+                            className="rounded px-2 py-1 text-[11px] font-medium text-stone-600 transition-colors hover:bg-white disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => forget(v.name)}
+                            disabled={busy}
+                            className="rounded-md bg-rose-500 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-50"
+                          >
+                            {busy ? '…' : 'Remove'}
+                          </button>
+                        </span>
                       </div>
                     )}
                   </li>

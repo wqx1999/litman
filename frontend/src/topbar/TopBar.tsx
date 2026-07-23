@@ -28,7 +28,6 @@ import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
 import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
-import { joinPath } from '../ui/path'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -1955,8 +1954,9 @@ function RegisterVaultDialog({
  * two dialogs instead of one: Register takes the vault folder ITSELF (it must
  * already hold a lit-config.yaml), while Create takes the PARENT and makes the
  * folder under it. Getting that backwards is the easy mistake, so the field is
- * labelled "Location", the name is a separate field, and the joined path is
- * echoed back under both — the same three-part shape the welcome page uses.
+ * labelled "Location", the name is a separate field, and the composed
+ * "place / name" is previewed in the card above — the same shape the welcome
+ * page uses.
  *
  * One name, not two: the folder created on disk and the registry entry share it.
  * (`lit init --register-as` splits them; the GUI does not need to.) */
@@ -2019,7 +2019,6 @@ function CreateVaultDialog({
     }
   }
 
-  const joined = joinPath(parentDir, name.trim() || '<name>')
   const loc = describeLocation(parentDir, anchors)
 
   const INPUT =
@@ -2096,9 +2095,6 @@ function CreateVaultDialog({
               className={INPUT}
             />
           </label>
-          <p className="truncate text-[11px] text-stone-400">
-            Creates <span className="font-mono text-stone-500">{joined}</span>
-          </p>
           <label className="flex items-center gap-2 text-xs text-stone-600">
             <input
               type="checkbox"

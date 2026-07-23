@@ -1,9 +1,9 @@
 // Separator-aware path-string helpers (spec §3.4). The backend returns paths as
 // `str(Path)`, so a Windows path arrives with backslashes ("C:\\Users\\you") and
-// a POSIX path with slashes ("/home/you"). Rendering or joining such a path must
-// use ITS OWN separator — hard-coding "/" is what made a Windows create-library
-// echo read "C:\\Users\\you\\Desktop/literature_vault" (mixed, looks broken).
-// One tiny module, used by the create-vault echoes AND the picker breadcrumbs.
+// a POSIX path with slashes ("/home/you"). Rendering or splitting such a path must
+// use ITS OWN separator — hard-coding "/" mislabels a Windows path (wrong
+// basename, or a breadcrumb trail split on the wrong character). Used by the
+// picker breadcrumbs and the create-vault card's location label.
 
 /** The separator a path uses: '\\' for a Windows-looking path (it contains a
  * backslash, or starts with a "C:" drive letter), else '/'. */
@@ -11,18 +11,6 @@ export function pathSep(path: string): '\\' | '/' {
   if (path.includes('\\')) return '\\'
   if (/^[A-Za-z]:/.test(path)) return '\\'
   return '/'
-}
-
-/** Join a parent directory and a single child name using the parent's own
- * separator, trimming trailing separators of either kind off the parent first.
- * Replaces the hard-coded "/" joins in the create-library echoes; the caller
- * supplies its own placeholder for an empty name (e.g. 'literature_vault'). */
-export function joinPath(parent: string, name: string): string {
-  const sep = pathSep(parent)
-  const p = parent.trim().replace(/[\\/]+$/, '')
-  const n = name.trim()
-  if (!p) return n
-  return `${p}${sep}${n}`
 }
 
 /** The last segment of a path, using the path's own separator — so a Windows
