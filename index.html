@@ -128,6 +128,17 @@
     font-size: 12px; font-weight: 590; letter-spacing: .12em;
     text-transform: uppercase; color: var(--blue);
   }
+  /* quiet one-liner under a lede or the install pills */
+  .note {
+    margin: 12px 0 0;
+    color: var(--ink-3);
+    font-size: 13.5px; line-height: 1.5;
+    max-width: 42em;
+    text-wrap: pretty;
+  }
+  .note b { font-weight: 600; color: var(--ink-2); }
+  .head .note, .close .note { margin-left: auto; margin-right: auto; }
+  .head .note { margin-top: 10px; max-width: none; }
 
   /* ── scroll-progress hairline ───────────────────────────────────────────── */
   .progress {
@@ -332,6 +343,12 @@
   .head { text-align: center; max-width: 44rem; margin: 0 auto clamp(20px, 3vh, 36px); }
   .head h2 { margin-bottom: 0; }
   .head .lede { margin: 16px auto 0; }
+  /* short windows: claw back the height the agent line costs */
+  @media (max-height: 700px) {
+    #agent .head { margin-bottom: 8px; }
+    #agent .head .lede { margin-top: 12px; }
+    #agent .head .note { margin-top: 6px; font-size: 12.5px; }
+  }
 
   /* generic reveal — replayable: the transition lives on the base element, so
      it animates both when .in is added (enter) and removed (leave). */
@@ -790,7 +807,7 @@
 
     <p class="lede">
       Every paper stays as a plain file on your own disk — and the AI agent
-      you already use files, finds and links them for you.
+      you already use does the filing, finding and linking.
     </p>
 
     <div class="install">
@@ -805,11 +822,11 @@
         </div>
       </div>
       <div class="os-row">
-        <span class="os">Windows</span>
+        <span class="os">Windows &middot; PowerShell</span>
         <div class="cmd">
           <span class="sigil">&gt;</span>
           <code id="i1w">irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex</code>
-          <button class="copy" data-copy="#i1w" aria-label="Copy the Windows install command">
+          <button class="copy" data-copy="#i1w" aria-label="Copy the Windows PowerShell install command">
             <span class="a">Copy</span><span class="b">Copied</span>
           </button>
         </div>
@@ -879,6 +896,10 @@
       <p class="lede">
         Ask the AI agent you already use, in plain words. It runs the commands —
         filing, finding and linking papers for you.
+      </p>
+      <p class="note">
+        Works with <b>Claude Code</b> · <b>Codex</b> · <b>Antigravity</b> ·
+        <b>Cursor</b> · <b>OpenCode</b> — use the model you already pay for.
       </p>
     </div>
 
@@ -1039,11 +1060,11 @@
             </div>
           </div>
           <div class="os-row">
-            <span class="os">Windows</span>
+            <span class="os">Windows &middot; PowerShell</span>
             <div class="cmd">
               <span class="sigil">&gt;</span>
               <code id="i2w">irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex</code>
-              <button class="copy" data-copy="#i2w" aria-label="Copy the Windows install command">
+              <button class="copy" data-copy="#i2w" aria-label="Copy the Windows PowerShell install command">
                 <span class="a">Copy</span><span class="b">Copied</span>
               </button>
             </div>
