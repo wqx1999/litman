@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -600,4 +601,141 @@ def get_vaults(request: Request) -> dict[str, Any]:
             }
             for v in reg.vaults
         ],
+    }
+
+
+# ===========================================================================
+# Filesystem directory picker (vault-independent) — backs the GUI's "Browse…".
+# ===========================================================================
+#
+# Pure, read-only enumeration of server-side directories so the frontend path
+# fields can offer "Browse…" instead of forcing users to type an absolute path
+# (task-path-browser). It lists ONLY subdirectories — never files, never file
+# contents — and never writes. It does not read the vault or re-implement any
+# vault logic (invariant #16): ``is_vault`` is a single stat probing whether a
+# child holds a ``lit-config.yaml``, nothing more. The server is bound to
+# 127.0.0.1 and runs as the user who already owns these files, so no path
+# sandbox is imposed — a single-user local tool must be able to browse its own
+# disk (spec §2 security note).
+
+
+def _fs_anchors() -> list[dict[str, str]]:
+    """Standard one-click locations for the directory picker.
+
+    Home is always present; Desktop / Documents / Downloads are listed only
+    when they exist as directories (a headless HPC account often has none of
+    the three — the picker then shows just Home).
+    """
+    home = Path.home()
+    anchors = [{"label": "Home", "path": str(home)}]
+    for label in ("Desktop", "Documents", "Downloads"):
+        candidate = home / label
+        if candidate.is_dir():
+            anchors.append({"label": label, "path": str(candidate)})
+    return anchors
+
+
+def _suggested_start() -> Path:
+    """Where the picker lands with no ``path``: first existing of
+    Desktop → Documents → Home.
+
+    Shared by ``GET /api/fs/list`` (empty ``path``) and the create-vault
+    default parent dir (spec §5, consumed by the frontend's empty ``listDir()``
+    call): put new libraries somewhere the user can actually see them. Home
+    always exists, so this always returns a real directory.
+    """
+    home = Path.home()
+    for name in ("Desktop", "Documents"):
+        candidate = home / name
+        if candidate.is_dir():
+            return candidate
+    return home
+
+
+@router.get("/fs/list")
+def get_fs_list(
+    path: str | None = Query(default=None),
+    show_hidden: int = Query(default=0),
+) -> dict[str, Any]:
+    """List the subdirectories of one server-side folder, for the path picker.
+
+    ``path`` — absolute directory to list; ``~`` is expanded. Omitted / empty
+    lands on the suggested start (Desktop → Documents → Home). A bad ``path``
+    (does not exist, or is not a directory) is a 400 whose human-readable
+    ``detail`` the picker shows inline — never a silent empty 200.
+
+    ``show_hidden`` — ``1`` also lists dot-prefixed directories; the default
+    ``0`` hides them.
+
+    Returns the listed ``path`` (expanded + resolved), whether that folder is
+    itself a library (``is_vault``), its ``parent`` (``null`` at the filesystem
+    root), the subdirectory ``entries`` (name-sorted, case-insensitive; each
+    flagged ``is_vault`` when it holds a ``lit-config.yaml``), the existing
+    ``anchors``, and ``denied`` — ``true`` when the folder can be reached but
+    its children cannot be read (``PermissionError``), which degrades to an
+    empty listing instead of a 500.
+    """
+    candidate = Path(path).expanduser() if path else _suggested_start()
+    try:
+        target = candidate.resolve()
+    except OSError as exc:
+        # resolve() can raise on a broken symlink chain / lookup loop — a path
+        # that cannot even be resolved is bad input, not a server crash.
+        raise HTTPException(
+            status_code=400, detail=f"Cannot open folder: {path}"
+        ) from exc
+    if not target.exists():
+        raise HTTPException(status_code=400, detail=f"No such folder: {path}")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a folder: {path}")
+
+    entries: list[dict[str, Any]] = []
+    denied = False
+    try:
+        with os.scandir(target) as scan:
+            for entry in scan:
+                try:
+                    name = entry.name
+                    if not show_hidden and name.startswith("."):
+                        continue
+                    if not entry.is_dir():  # follows symlinks; files skipped
+                        continue
+                    child = Path(entry.path)
+                    entries.append(
+                        {
+                            "name": name,
+                            "path": str(child),
+                            "is_vault": (child / CONFIG_FILENAME).is_file(),
+                        }
+                    )
+                except OSError:
+                    # One unstattable entry (dead symlink, races) is skipped,
+                    # never fatal to the whole listing.
+                    continue
+    except PermissionError:
+        # The directory can be stat'd but not read: degrade to an empty,
+        # flagged listing so the picker says "can't open this" instead of 500.
+        denied = True
+
+    entries.sort(key=lambda e: e["name"].lower())
+
+    # Whether the folder being listed is *itself* a litman library. Gates the
+    # picker's ``vault-dir`` mode: the frontend reads this rather than
+    # remembering the clicked entry's flag, so it stays correct when the user
+    # lands here via an anchor chip or an address-bar paste instead. Guarded:
+    # on an unreadable folder (the ``denied`` case) the sentinel stat itself
+    # raises PermissionError — that must degrade to ``false``, not a 500.
+    try:
+        is_vault = (target / CONFIG_FILENAME).is_file()
+    except OSError:
+        is_vault = False
+
+    parent = target.parent
+    return {
+        "path": str(target),
+        "is_vault": is_vault,
+        "parent": str(parent) if parent != target else None,
+        "entries": entries,
+        "anchors": _fs_anchors(),
+        "denied": denied,
     }

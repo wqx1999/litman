@@ -61,9 +61,10 @@ class _RevalidatedStaticFiles(StaticFiles):
 # either because none was ever created (welcome page) or because the one it was
 # serving vanished mid-session (see ``_guard_vault``). Both states are escaped
 # through the same doors: list the registry, register an existing directory,
-# create a new one, switch the active entry, re-point a moved one, drop a stale
-# entry. Everything else under ``/api/`` is refused — the SPA + its assets
-# (served off ``/``) always pass, so the page that offers those doors still loads.
+# create a new one, browse the host's folders to fill those path fields, switch
+# the active entry, re-point a moved one, drop a stale entry. Everything else
+# under ``/api/`` is refused — the SPA + its assets (served off ``/``) always
+# pass, so the page that offers those doors still loads.
 _VAULTLESS_ALLOWED = frozenset(
     {
         ("GET", "/api/vaults"),
@@ -71,6 +72,9 @@ _VAULTLESS_ALLOWED = frozenset(
         ("POST", "/api/vaults/create"),
         ("PUT", "/api/vaults/active"),
         ("GET", "/api/version"),
+        # The directory picker (task-path-browser): the welcome page has no
+        # vault yet and browses the host's folders to create the first one.
+        ("GET", "/api/fs/list"),
     }
 )
 
