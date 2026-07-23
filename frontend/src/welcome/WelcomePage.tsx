@@ -295,6 +295,16 @@ export default function WelcomePage({
                           className="flex-1"
                         />
                         <button
+                          onClick={() => {
+                            setLocating(null)
+                            setLocatePath('')
+                          }}
+                          disabled={busy}
+                          className="shrink-0 rounded-md px-3 py-2 text-xs font-medium text-stone-500 transition-colors hover:bg-stone-100 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
                           onClick={() => locate(v.name)}
                           disabled={busy || locatePath.trim().length === 0}
                           className="shrink-0 rounded-md bg-accent-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-50"
