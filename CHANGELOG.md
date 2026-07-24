@@ -33,6 +33,9 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ### Fixed
 
+- **Scanned PDFs no longer open as a blank white page.** Black-and-white scanned
+  papers — the common fax/CCITT-encoded kind — were rendering as an empty page in
+  the reader while text PDFs opened fine. They now display correctly.
 - **Paths and commands use a proper monospace font on Windows and Linux.** They
   previously fell back to a serif face (Courier New) on machines without the
   macOS system fonts; the stack now includes Cascadia, Consolas and Liberation
