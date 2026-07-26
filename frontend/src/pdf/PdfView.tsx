@@ -778,7 +778,15 @@ export default function PdfView({
     eventBus.on('annotationeditorparamschanged', onParamsChanged)
 
     let cancelled = false
-    const loadingTask = pdfjsLib.getDocument({ url: pdfSrc ?? pdfUrl(paperId) })
+    const loadingTask = pdfjsLib.getDocument({
+      url: pdfSrc ?? pdfUrl(paperId),
+      // Scanned (image-only) PDFs decode their JBIG2 / CCITT-fax / JPEG2000
+      // images in a WebAssembly module pdf.js fetches from this directory;
+      // build.sh vendors pdf.js's wasm/ folder to the served root. Without it a
+      // scanned page fetches <null>/jbig2.wasm, the image decodes to nothing,
+      // and the page paints blank ("Dependent image isn't ready yet").
+      wasmUrl: new URL('wasm/', document.baseURI).href,
+    })
     loadingTask.promise
       .then((doc) => {
         if (cancelled) {

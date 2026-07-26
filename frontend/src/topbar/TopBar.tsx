@@ -17,14 +17,17 @@ import {
   fetchHealth,
   installAgentSkill,
   launchAgent,
+  listDir,
   renameProject,
   setDefaultAgent,
   setProjectPath,
 } from '../api'
-import type { AgentLaunchResult, AgentStatus } from '../api'
+import type { AgentLaunchResult, AgentStatus, FsAnchor } from '../api'
 import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
+import { anchorIcon } from '../ui/icons'
+import PathField, { describeLocation } from '../ui/PathField'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -210,7 +213,8 @@ export default function TopBar({
   // Agent launcher: the primary action always launches the configured default;
   // management is a distinct secondary action on the same icon (right-click /
   // Ctrl+~). A launch that cannot pop a terminal window comes back as mode
-  // "copy" and the panel shows the `lit agent …` line to paste locally.
+  // "copy" and the panel shows the `lit agent …` line to run in a terminal on
+  // the server (which on a remote/headless box is not the browser's machine).
   const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
   // Machine-global onboarding status — the red-dot source. Fetched once when the
@@ -1213,11 +1217,6 @@ function SetProjectPathDialog({
   const trimmed = path.trim()
   const canSubmit = trimmed.length > 0 && !busy
 
-  const INPUT =
-    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
-    'disabled:opacity-50'
-
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1248,18 +1247,17 @@ function SetProjectPathDialog({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
             Absolute path
           </span>
-          <input
-            autoFocus
-            type="text"
+          <PathField
+            mode="existing-dir"
             value={path}
+            onChange={setPath}
             disabled={busy}
+            autoFocus
+            selectOnFocus
             placeholder="/work/you/Project/pepforge"
-            onChange={(e) => setPath(e.target.value)}
-            onFocus={(e) => e.target.select()}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
+            onEnter={() => {
+              if (canSubmit) onConfirm(trimmed)
             }}
-            className={`${INPUT} font-mono`}
           />
           <span className="text-[11px] text-stone-400">
             the folder itself, must already exist
@@ -1368,16 +1366,13 @@ function NewProjectDialog({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
               Absolute path
             </span>
-            <input
-              type="text"
+            <PathField
+              mode="existing-dir"
               value={path}
+              onChange={setPath}
               disabled={busy}
               placeholder="/work/you/Project/pepforge"
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') submit()
-              }}
-              className={`${INPUT} font-mono`}
+              onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
               the folder itself, must exist
@@ -1736,11 +1731,6 @@ function LocateVaultDialog({
     }
   }
 
-  const INPUT =
-    'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
-    'disabled:opacity-50'
-
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1777,18 +1767,16 @@ function LocateVaultDialog({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
             New vault path
           </span>
-          <input
-            autoFocus
-            type="text"
+          <PathField
+            mode="vault-dir"
             value={path}
+            onChange={setPath}
             disabled={busy}
-            spellCheck={false}
+            autoFocus
             placeholder="/work/you/literature_vault"
-            onChange={(e) => setPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && canSubmit) submit()
+            onEnter={() => {
+              if (canSubmit) submit()
             }}
-            className={`${INPUT} font-mono`}
           />
         </label>
         {error && (
@@ -1909,16 +1897,13 @@ function RegisterVaultDialog({
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
               Vault path
             </span>
-            <input
-              type="text"
+            <PathField
+              mode="vault-dir"
               value={path}
+              onChange={setPath}
               disabled={busy}
               placeholder="/work/you/literature_vault"
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') submit()
-              }}
-              className={`${INPUT} font-mono`}
+              onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
               the vault folder itself, must exist + contain lit-config.yaml
@@ -1970,8 +1955,9 @@ function RegisterVaultDialog({
  * two dialogs instead of one: Register takes the vault folder ITSELF (it must
  * already hold a lit-config.yaml), while Create takes the PARENT and makes the
  * folder under it. Getting that backwards is the easy mistake, so the field is
- * labelled "Location", the name is a separate field, and the joined path is
- * echoed back under both — the same three-part shape the welcome page uses.
+ * labelled "Location", the name is a separate field, and the composed
+ * "place / name" is previewed in the card above — the same shape the welcome
+ * page uses.
  *
  * One name, not two: the folder created on disk and the registry entry share it.
  * (`lit init --register-as` splits them; the GUI does not need to.) */
@@ -1985,12 +1971,39 @@ function CreateVaultDialog({
   onCreated: (setActive: boolean) => void
 }) {
   const [parentDir, setParentDir] = useState('~')
-  const [name, setName] = useState('')
+  const [name, setName] = useState('literature_vault')
   const [setActive, setSetActive] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Default the parent dir to the server's suggested start (Desktop → Documents
+  // → Home), so a new library lands somewhere the user can actually see. The
+  // anchors let the card name it ("Desktop"). Graceful fallback: on failure
+  // the '~' default stands — never block the dialog on this read.
+  const [anchors, setAnchors] = useState<FsAnchor[]>([])
+  useEffect(() => {
+    let cancelled = false
+    listDir()
+      .then((l) => {
+        if (!cancelled) {
+          // Only replace the untouched '~' placeholder — never clobber a path
+          // the user pasted while this async read was still in flight (red
+          // line #1: don't disturb the expert flow).
+          setParentDir((prev) => (prev === '~' ? l.path : prev))
+          setAnchors(l.anchors)
+        }
+      })
+      .catch(() => {
+        /* keep the '~' default so the dialog always works */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  const canSubmit = parentDir.trim().length > 0 && name.trim().length > 0 && !busy
+  // Name defaults to 'literature_vault' and an empty name is no longer a
+  // blocker: an emptied field falls back server-side (createVault omits it), so
+  // only the Location is required — matching the welcome page.
+  const canSubmit = parentDir.trim().length > 0 && !busy
 
   async function submit() {
     if (!canSubmit) return
@@ -2007,7 +2020,7 @@ function CreateVaultDialog({
     }
   }
 
-  const joined = `${parentDir.trim().replace(/\/+$/, '')}/${name.trim() || '<name>'}`
+  const loc = describeLocation(parentDir, anchors)
 
   const INPUT =
     'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
@@ -2040,18 +2053,26 @@ function CreateVaultDialog({
           exist; the vault folder itself must not.
         </p>
         <div className="mt-4 flex flex-col gap-3">
+          <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-stone-800">
+              {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
+              <span className="min-w-0 truncate">
+                {loc.label} <span className="text-stone-400">/</span>{' '}
+                {name.trim() || 'literature_vault'}
+              </span>
+            </div>
+          </div>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
               Location
             </span>
-            <input
-              type="text"
+            <PathField
+              mode="parent-dir"
               value={parentDir}
+              onChange={setParentDir}
               disabled={busy}
-              spellCheck={false}
               placeholder="/work/you"
-              onChange={(e) => setParentDir(e.target.value)}
-              className={`${INPUT} font-mono`}
+              onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
               the folder to create the vault in
@@ -2075,9 +2096,6 @@ function CreateVaultDialog({
               className={INPUT}
             />
           </label>
-          <p className="truncate text-[11px] text-stone-400">
-            Creates <span className="font-mono text-stone-500">{joined}</span>
-          </p>
           <label className="flex items-center gap-2 text-xs text-stone-600">
             <input
               type="checkbox"
@@ -2416,11 +2434,12 @@ function AgentPanel({
         ) : (
           <>
             <h2 className="text-sm font-semibold text-stone-900">
-              Run in your local terminal
+              Run it in a terminal
             </h2>
             <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-              No terminal window can be opened from here. Paste this where you
-              normally run {ui.agent}:
+              litman couldn't open a terminal window from here. Open one on the
+              machine running litman — if you're connected to a remote server,
+              that's the server, not this computer — then start {ui.agent} with:
             </p>
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
               <code className="min-w-0 flex-1 truncate font-mono text-sm text-stone-800">

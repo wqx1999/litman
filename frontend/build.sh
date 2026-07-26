@@ -45,5 +45,21 @@ if [ ! -f "$INDEX" ]; then
   exit 1
 fi
 
+# pdf.js decodes JBIG2 / JPEG2000 / CCITT-fax images (the encodings scanned PDFs
+# use) in WebAssembly. The reader passes `wasmUrl` pointing at /wasm/ (see
+# PdfView.tsx), so those .wasm modules and their JS fallbacks must sit at the
+# served root. vite doesn't touch node_modules assets, so copy pdf.js's wasm/
+# folder into the build product; the StaticFiles mount serves it (correct
+# application/wasm MIME). Without this, scanned image-only PDFs render blank.
+# Runs AFTER the build — vite's emptyOutDir wipes ASSET_DIR each time.
+WASM_SRC="$FRONTEND_DIR/node_modules/pdfjs-dist/wasm"
+if [ ! -d "$WASM_SRC" ]; then
+  echo "[build.sh] ERROR: pdfjs-dist/wasm not found at $WASM_SRC" >&2
+  exit 1
+fi
+rm -rf "$ASSET_DIR/wasm"
+cp -r "$WASM_SRC" "$ASSET_DIR/wasm"
+echo "[build.sh] vendored pdf.js wasm/ ($(ls "$ASSET_DIR/wasm" | wc -l | tr -d ' ') files)"
+
 SIZE="$(du -sh "$ASSET_DIR" | cut -f1)"
 echo "[build.sh] OK: $ASSET_DIR ($SIZE total)"

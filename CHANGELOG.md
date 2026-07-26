@@ -5,6 +5,49 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.1 — unreleased
+
+### Added
+
+- **Every path field in the GUI now has a “Browse…” button.** Click familiar
+  places (Desktop, Documents, Home), step through folders, and pick one —
+  instead of typing an absolute path — when creating or relocating a library,
+  linking or relocating a project, or registering an existing library. Folders
+  that are already litman libraries show a ✓ badge. Pasting a path and pressing
+  Enter still works exactly as before.
+- **Make a new folder while browsing.** The Browse window has a “＋ New folder”
+  button, so you can create a folder for a new library or project without
+  leaving litman for your file manager.
+- **Click through the path in the Browse window.** The address bar shows the
+  current path as clickable segments (Home › Desktop › research) — click any one
+  to jump straight to that folder. Click the bar to type or paste a path as
+  before.
+- **New libraries default to your Desktop.** The create-library screens show
+  where the library will appear — for example “Desktop / literature_vault” —
+  and fall back to Documents, then your home folder, on machines without a
+  Desktop.
+- **Forget a library that has moved or been deleted.** The first-run screen’s
+  “open an existing library” list now offers **Forget** next to a moved entry,
+  beside Locate — clearing a stale entry whose folder is gone. The folder on
+  disk is never touched.
+
+### Fixed
+
+- **Scanned PDFs no longer open as a blank white page.** Black-and-white scanned
+  papers — the common fax/CCITT-encoded kind — were rendering as an empty page in
+  the reader while text PDFs opened fine. They now display correctly.
+- **Paths and commands use a proper monospace font on Windows and Linux.** They
+  previously fell back to a serif face (Courier New) on machines without the
+  macOS system fonts; the stack now includes Cascadia, Consolas and Liberation
+  Mono.
+- **The agent “run it in a terminal” prompt now names the right machine.** When
+  litman is served from a remote or headless server, the GUI agent button can't
+  open a terminal window, so it shows the `lit agent` command to run by hand —
+  now worded to run it on the server, not on the computer showing the browser.
+- **Locate can be backed out of.** On the first-run screen, opening **Locate**
+  on a moved library left no way to close the path input short of submitting a
+  path or clicking another entry. A **Cancel** button now sits beside it.
+
 ## 1.3.0 — 2026-07-22
 
 ### Added

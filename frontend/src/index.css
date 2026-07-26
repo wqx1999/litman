@@ -39,7 +39,8 @@
      The native look wants the system faces, not a bundled webfont. */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Helvetica Neue", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono",
+    Consolas, "Liberation Mono", monospace;
 
   /* Motion language — one fluid easing shared by every transition (panels,
      disclosures, dropdowns, tabs) so nothing feels one-off or rigid. Reused via

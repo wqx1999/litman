@@ -14,10 +14,9 @@ import { createPortal } from 'react-dom'
  * ProjectManager). */
 
 /** One keycap chip — a single physical key. Rendered in the app's system sans,
- * NOT a monospace face: the mono stack fell back to a sharp serif on some
- * browsers and read as out of place against the native UI. Multi-char labels
- * (Esc / Alt / Shift / Ctrl) widen via padding; single chars keep a min width so
- * they stay roughly square. */
+ * NOT a monospace face: a mono keycap reads as out of place against the native
+ * UI. Multi-char labels (Esc / Alt / Shift / Ctrl) widen via padding; single
+ * chars keep a min width so they stay roughly square. */
 function Key({ children }: { children: string }) {
   return (
     <kbd className="inline-flex min-w-[1.5rem] items-center justify-center whitespace-nowrap rounded-md border border-stone-300 bg-stone-50 px-1.5 py-0.5 text-[11px] font-medium text-stone-700 shadow-sm">
