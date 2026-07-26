@@ -23,12 +23,13 @@ $env:UV_PYTHON_INSTALL_MIRROR = "https://get.litman.dev/gh/astral-sh/python-buil
 # receipt, so `lit self-update` (uv tool upgrade litman) keeps using it too.
 $env:UV_DEFAULT_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 
-# The uv binary itself needs no mirror: uv's installer already tries Astral's
-# own CDN (releases.astral.sh, Cloudflare-fronted) before github.com. Uncomment
-# the next line only if that CDN turns out to be unreachable — it routes the uv
-# download through get.litman.dev instead, at the cost of losing the
-# CDN-then-GitHub fallback, since this variable replaces the whole list.
-# $env:UV_INSTALLER_GITHUB_BASE_URL = "https://get.litman.dev/gh"
+# The uv binary needs the proxy too. The installer script itself downloads fine
+# from mainland China, but both hosts it then pulls the binary from are reset at
+# the TLS layer there: releases.astral.sh, Astral's own CDN, and github.com, its
+# fallback. This variable replaces that whole list; losing the fallback costs
+# nothing when neither entry is reachable anyway. It is read by the child
+# PowerShell that runs uv's installer, which inherits this process environment.
+$env:UV_INSTALLER_GITHUB_BASE_URL = "https://get.litman.dev/gh"
 # -----------------------------------------------------------------------------
 
 # uv places tool executables here by default.

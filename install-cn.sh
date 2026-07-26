@@ -26,13 +26,13 @@ export UV_PYTHON_INSTALL_MIRROR
 UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 export UV_DEFAULT_INDEX
 
-# The uv binary itself needs no mirror: uv's installer already tries Astral's
-# own CDN (releases.astral.sh, Cloudflare-fronted) before github.com. Uncomment
-# the next two lines only if that CDN turns out to be unreachable — it routes
-# the uv download through get.litman.dev instead, at the cost of losing the
-# CDN-then-GitHub fallback, since this variable replaces the whole list.
-# UV_INSTALLER_GITHUB_BASE_URL="https://get.litman.dev/gh"
-# export UV_INSTALLER_GITHUB_BASE_URL
+# The uv binary needs the proxy too. The installer script (UV_INSTALLER_URL
+# below) downloads fine from mainland China, but both hosts it then pulls the
+# binary from are reset at the TLS layer there: releases.astral.sh, Astral's own
+# CDN, and github.com, its fallback. This variable replaces that whole list;
+# losing the fallback costs nothing when neither entry is reachable anyway.
+UV_INSTALLER_GITHUB_BASE_URL="https://get.litman.dev/gh"
+export UV_INSTALLER_GITHUB_BASE_URL
 # -----------------------------------------------------------------------------
 
 UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
