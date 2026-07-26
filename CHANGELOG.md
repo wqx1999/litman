@@ -44,6 +44,9 @@ behaviour, a minor release adds it, a major release breaks it.
   litman is served from a remote or headless server, the GUI agent button can't
   open a terminal window, so it shows the `lit agent` command to run by hand —
   now worded to run it on the server, not on the computer showing the browser.
+- **Locate can be backed out of.** On the first-run screen, opening **Locate**
+  on a moved library left no way to close the path input short of submitting a
+  path or clicking another entry. A **Cancel** button now sits beside it.
 
 ## 1.3.0 — 2026-07-22
 
