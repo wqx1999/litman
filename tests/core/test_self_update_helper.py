@@ -67,17 +67,26 @@ def test_bat_script_contains_the_contract(tmp_path: Path) -> None:
     assert s.startswith("@echo off")
     assert 'tasklist /FI "PID eq 4242"' in s
     assert "geq 60" in s
-    assert "uv tool upgrade litman" in s
+    # Every token is quoted unconditionally: a profile path can carry cmd
+    # metacharacters without a space (`C:\Users\A&B`), and an unquoted `&`
+    # splits the line in two.
+    assert '"uv" "tool" "upgrade" "litman"' in s
     assert "timeout waiting for litman to exit" in s
     assert "upgrade command failed" in s
     assert 'findstr /C:":8765 "' in s
-    assert '"/opt/py env/bin/lit" gui --window' in s
+    assert '"/opt/py env/bin/lit" "gui" "--window"' in s
     assert 'del "%~f0"' in s  # batch self-delete idiom, last statement
     # Sleeping MUST use the ping idiom: in the detached console-less cmd this
     # script runs in (stdin on NUL), timeout.exe exits instantly with "Input
     # redirection is not supported" and the wait loop races the server exit.
     assert "ping -n 2 127.0.0.1" in s
     assert "timeout /t" not in s
+    # Failure capture rides the `||` connector on the upgrade line itself —
+    # never a later ERRORLEVEL read, which anything in between could clobber
+    # (what plain `set` does to ERRORLEVEL is not reliably documented).
+    assert '|| set "FAILED=1"' in s
+    assert "if errorlevel 1 set FAILED" not in s
+    assert s.index('set "FAILED="') < s.index('"upgrade" "litman"')
 
 
 def test_bat_script_moves_stubs_aside_and_settles_them(tmp_path: Path) -> None:
@@ -95,7 +104,7 @@ def test_bat_script_moves_stubs_aside_and_settles_them(tmp_path: Path) -> None:
     # The settle block sits between the upgrade and the failure branch, so it
     # runs on success AND failure — deleting only on success would brick the
     # install on the installer's "nothing to upgrade" fast path.
-    assert s.index("upgrade litman") < s.index(f'del "{lit}.old"')
+    assert s.index('"upgrade" "litman"') < s.index(f'del "{lit}.old"')
     assert s.index(f'del "{lit}.old"') < s.index("if defined FAILED")
 
 

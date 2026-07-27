@@ -106,10 +106,12 @@ def _quote_sh(argv: list[str]) -> str:
 
 
 def _quote_win(argv: list[str]) -> str:
-    # cmd.exe quoting: wrap anything with a space in double quotes. The argv
-    # only ever carries installer names and our own executable paths — no user
-    # input — so this stays simple on purpose.
-    return " ".join(f'"{a}"' if " " in a else a for a in argv)
+    # cmd.exe quoting: every token double-quoted, unconditionally. A profile
+    # path can carry cmd metacharacters without a space (`C:\Users\A&B`), and
+    # an unquoted `&` splits the line in two; the child's own argv parsing
+    # strips the quotes again. A literal `%` still expands inside a batch
+    # script, quoted or not — known corner, left undefended.
+    return " ".join(f'"{a}"' for a in argv)
 
 
 def _build_sh(
@@ -178,6 +180,11 @@ def _build_bat(
     # re-created by the upgrade → drop the .old; not re-created (failure, or
     # the installer's "nothing to upgrade" fast path that skips entrypoints)
     # → rename it back, so a launcher never disappears.
+    #
+    # The upgrade's failure is captured on its own line via `||`, never with a
+    # later `if errorlevel 1`: nothing may sit between an external command and
+    # an ERRORLEVEL read, and what plain `set` does to ERRORLEVEL when it
+    # clears an undefined variable is not reliably documented.
     aside = "".join(
         f'if exist "{s}" move /y "{s}" "{s}.old" >nul 2>&1\n' for s in stubs
     )
@@ -206,9 +213,8 @@ ping -n 2 127.0.0.1 >nul
 goto wait
 :gone
 echo [helper] server gone, upgrading >> "%LOG%"
-{aside}{upgrade} >> "%LOG%" 2>&1
 set "FAILED="
-if errorlevel 1 set FAILED=1
+{aside}{upgrade} >> "%LOG%" 2>&1 || set "FAILED=1"
 {settle}if defined FAILED (
   echo [helper] upgrade command failed >> "%LOG%"
   echo upgrade command failed; see self-update.log > "{fail_flag}"
