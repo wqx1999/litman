@@ -153,3 +153,18 @@ def test_update_nudge_skipped_for_help(
     result = CliRunner().invoke(cli, ["help"])
     assert result.exit_code == 0, result.output
     assert _TIP not in result.output
+
+
+def test_update_nudge_fires_on_hello(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit hello` answers "is litman installed and healthy?" — a newer
+    release belongs in that answer, so hello is NOT in the nudge skip set
+    (task-hello-update-nudge; it stays exempt from the drift prompt)."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+
+    result = CliRunner().invoke(cli, ["hello"])
+    assert result.exit_code == 0, result.output
+    assert "litman 9.9.9 is available (you have 1.1.0)" in result.stderr

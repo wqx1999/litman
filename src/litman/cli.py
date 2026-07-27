@@ -93,6 +93,12 @@ class LitGroup(click.Group):
     #   the help message; don't ambush them with a registry prompt
     _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", None})
 
+    # The post-dispatch nudges (staleness / update tip) are passive stderr
+    # one-liners, so they get a NARROWER skip: `hello` answers "is litman
+    # installed and healthy?" and "a newer litman exists" belongs in that
+    # answer — it stays exempt only from the interactive drift prompt above.
+    _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", None})
+
     # Lazy command table: command name (kebab, as it appears in
     # _COMMAND_SECTIONS) → "module:attr". Nothing here is imported until
     # get_command resolves it, so `lit gui` pulls in only gui's import chain,
@@ -189,12 +195,12 @@ class LitGroup(click.Group):
             self._run_drift_hook()
         result = super().invoke(ctx)
         # Post-dispatch staleness nudge (M30 Phase 5), dual to the pre-dispatch
-        # drift hook. Fires on the normal return path; same skip gate as the
-        # drift hook (bare `lit` / `lit --help` / `lit help` / `lit hello` do
-        # not nudge). A command that raises SystemExit (Click's normal exit
-        # path, e.g. `health-check` exit 1) bypasses this — accepted limitation;
-        # the nudge is a passive reminder, not a guarantee on every exit path.
-        if cmd_name not in self._DRIFT_SKIP:
+        # drift hook but with its own narrower gate (bare `lit` / `lit --help`
+        # / `lit help` do not nudge; `hello` does — see _NUDGE_SKIP). A command
+        # that raises SystemExit (Click's normal exit path, e.g.
+        # `health-check` exit 1) bypasses this — accepted limitation; the
+        # nudge is a passive reminder, not a guarantee on every exit path.
+        if cmd_name not in self._NUDGE_SKIP:
             self._emit_staleness_nudge()
             self._emit_update_nudge()
         return result
