@@ -65,11 +65,15 @@ def build_helper_script(
     fail_flag: Path,
     wait_timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
     windows: bool | None = None,
+    stub_paths: list[Path] | None = None,
 ) -> str:
     """Render the platform helper script as text.
 
     ``windows`` defaults to the running platform; tests pass it explicitly to
-    render both variants anywhere.
+    render both variants anywhere. ``stub_paths`` are the launcher stubs the
+    Windows script moves aside before upgrading (see
+    :mod:`litman.core.launcher_stubs`); POSIX callers pass none — overwriting
+    a running file is fine there.
     """
     if windows is None:
         windows = sys.platform == "win32"
@@ -82,6 +86,7 @@ def build_helper_script(
             log=str(log),
             fail_flag=str(fail_flag),
             timeout=wait_timeout_s,
+            stubs=[str(p) for p in (stub_paths or [])],
         )
     return _build_sh(
         pid=pid,
@@ -126,14 +131,17 @@ while kill -0 {pid} 2>/dev/null; do
   sleep 1
 done
 echo "[helper] server gone, upgrading" >> "$LOG"
+FAILED=0
 if {upgrade} >> "$LOG" 2>&1; then
   echo "[helper] upgrade ok" >> "$LOG"
 else
   echo "[helper] upgrade command failed" >> "$LOG"
   echo "upgrade command failed; see self-update.log" > "{fail_flag}"
-  rm -f "$0"
-  exit 1
+  FAILED=1
 fi
+# Relaunch even after a failed upgrade: the previous version still runs, and
+# the restarted GUI surfaces the failure flag immediately — a window that
+# never comes back tells the user nothing.
 if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:{port}/"; then
   echo "[helper] litman already running again, not relaunching" >> "$LOG"
 else
@@ -141,15 +149,45 @@ else
   {relaunch} >> "$LOG" 2>&1 &
 fi
 rm -f "$0"
-exit 0
+exit $FAILED
 """
 
 
 def _build_bat(
-    *, pid: int, port: int, upgrade: str, relaunch: str, log: str, fail_flag: str, timeout: int
+    *,
+    pid: int,
+    port: int,
+    upgrade: str,
+    relaunch: str,
+    log: str,
+    fail_flag: str,
+    timeout: int,
+    stubs: list[str],
 ) -> str:
     # NB: batch reads itself line by line, so self-deletion must be the very
     # last statement on every exit path (the `del ... & exit` idiom).
+    #
+    # Sleeping uses the `ping -n 2` idiom, NOT `timeout /t`: this script runs
+    # in a detached console-less cmd with stdin on NUL, where timeout.exe dies
+    # instantly with "Input redirection is not supported" — the wait loop
+    # would spin through its iterations in seconds and race the server's exit.
+    #
+    # The stubs are moved aside before the upgrade (a running exe can be
+    # renamed but never overwritten — another litman instance would otherwise
+    # make the entrypoint copy fail) and settled afterwards on BOTH outcomes:
+    # re-created by the upgrade → drop the .old; not re-created (failure, or
+    # the installer's "nothing to upgrade" fast path that skips entrypoints)
+    # → rename it back, so a launcher never disappears.
+    aside = "".join(
+        f'if exist "{s}" move /y "{s}" "{s}.old" >nul 2>&1\n' for s in stubs
+    )
+    settle = "".join(
+        f'if exist "{s}.old" (\n'
+        f'  if exist "{s}" (del "{s}.old" >nul 2>&1) '
+        f'else (move /y "{s}.old" "{s}" >nul 2>&1)\n'
+        f")\n"
+        for s in stubs
+    )
     return f"""@echo off
 rem litman self-update helper (auto-generated; deletes itself on exit).
 set "LOG={log}"
@@ -164,17 +202,21 @@ if %i% geq {timeout} (
   echo timeout waiting for litman to exit > "{fail_flag}"
   goto cleanup
 )
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 goto wait
 :gone
 echo [helper] server gone, upgrading >> "%LOG%"
-{upgrade} >> "%LOG%" 2>&1
-if errorlevel 1 (
+{aside}{upgrade} >> "%LOG%" 2>&1
+set "FAILED="
+if errorlevel 1 set FAILED=1
+{settle}if defined FAILED (
   echo [helper] upgrade command failed >> "%LOG%"
   echo upgrade command failed; see self-update.log > "{fail_flag}"
-  goto cleanup
+) else (
+  echo [helper] upgrade ok >> "%LOG%"
 )
-echo [helper] upgrade ok >> "%LOG%"
+rem Relaunch even after a failed upgrade: the previous version still runs,
+rem and the restarted GUI surfaces the failure flag immediately.
 netstat -ano | findstr /C:":{port} " >nul 2>&1
 if not errorlevel 1 (
   echo [helper] litman already running again, not relaunching >> "%LOG%"
@@ -194,6 +236,7 @@ def write_and_spawn_helper(
     upgrade_cmd: list[str],
     relaunch_cmd: list[str],
     wait_timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
+    stub_paths: list[Path] | None = None,
 ) -> Path:
     """Write the helper script to the system temp dir and spawn it detached.
 
@@ -212,6 +255,7 @@ def write_and_spawn_helper(
         fail_flag=fail_flag_path(),
         wait_timeout_s=wait_timeout_s,
         windows=windows,
+        stub_paths=stub_paths,
     )
     fd, name = tempfile.mkstemp(prefix="litman-self-update-", suffix=suffix)
     path = Path(name)

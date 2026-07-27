@@ -17,6 +17,7 @@ is the human hint the SPA shows verbatim.
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 import time
 
@@ -55,7 +56,7 @@ def start_self_update(request: Request) -> dict[str, object]:
         _detect_installer,
         _is_editable_install,
     )
-    from litman.core import self_update_helper
+    from litman.core import launcher_stubs, self_update_helper
 
     if _is_editable_install():
         raise HTTPException(status_code=409, detail=_EDITABLE_DETAIL)
@@ -68,11 +69,22 @@ def start_self_update(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=409, detail=_NO_SESSION_DETAIL)
     port = int(getattr(request.app.state, "self_update_port", 0))
 
+    # The helper runs in a detached process whose PATH is whatever the server
+    # inherited (an Explorer double-click on Windows may lack the tool bin
+    # dir), so pin the installer binary to its absolute path while we can
+    # still resolve it. The stub paths let the Windows script move the
+    # launchers aside before upgrading — see litman.core.launcher_stubs.
+    upgrade_cmd = list(_UPGRADE_CMDS[installer])
+    resolved = shutil.which(upgrade_cmd[0])
+    if resolved:
+        upgrade_cmd[0] = resolved
+
     script = self_update_helper.write_and_spawn_helper(
         pid=os.getpid(),
         port=port,
-        upgrade_cmd=_UPGRADE_CMDS[installer],
+        upgrade_cmd=upgrade_cmd,
         relaunch_cmd=list(relaunch),
+        stub_paths=launcher_stubs.installed_stubs(),
     )
 
     # Bow out AFTER the response is flushed. The window watcher's presence

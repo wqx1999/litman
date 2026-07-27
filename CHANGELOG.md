@@ -31,6 +31,20 @@ behaviour, a minor release adds it, a major release breaks it.
 - **The update reminder no longer skips the first start.** After a release,
   the GUI used to need one extra restart before the reminder could appear; it
   now shows up on the first start, within a few seconds.
+- **`lit self-update` works on Windows.** It used to fail every time with
+  "the process cannot access the file" — Windows will not overwrite the
+  running `lit.exe` — and a failed run could delete `litw.exe`, breaking the
+  desktop shortcut. The launchers are now moved aside for the upgrade and
+  always put back, missing launchers are restored automatically at the next
+  `lit gui`, and `lit gui --make-shortcut` says so out loud if it ever has to
+  fall back to the console launcher. The install scripts got the same guard
+  for the re-run-to-upgrade path.
+- **One-click update hardening on Windows.** The updater's wait step could
+  misfire in its console-less context, and a failed upgrade used to leave the
+  window closed with no explanation — litman now reopens on the previous
+  version and shows what went wrong.
+- **`lit hello` now mentions available updates**, like every other command;
+  it keeps skipping the interactive registry prompts.
 
 ## 1.3.1 — 2026-07-26
 

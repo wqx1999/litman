@@ -88,6 +88,11 @@ def test_happy_path_spawns_helper_and_schedules_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("litman.commands.self_update._detect_installer", lambda: "uv")
+    # The helper runs detached with an inherited (possibly bare) PATH, so the
+    # endpoint must pin the installer binary to its absolute location.
+    monkeypatch.setattr(
+        "litman.server.routes_update.shutil.which", lambda _: "/abs/bin/uv"
+    )
     spawns: list[dict[str, Any]] = []
 
     def fake_spawn(**kwargs: Any) -> Path:
@@ -113,10 +118,12 @@ def test_happy_path_spawns_helper_and_schedules_exit(
     assert body["installer"] == "uv"
 
     [spawn] = spawns
-    assert spawn["upgrade_cmd"] == ["uv", "tool", "upgrade", "litman"]
+    assert spawn["upgrade_cmd"] == ["/abs/bin/uv", "tool", "upgrade", "litman"]
     assert spawn["relaunch_cmd"] == ["lit", "gui", "--window"]
     assert spawn["port"] == 8765
     assert spawn["pid"]  # the server's own pid
+    # POSIX has no launcher stubs to move aside (only Windows locks them).
+    assert spawn["stub_paths"] == []
 
     _wait_until(lambda: fake_server.should_exit)
 

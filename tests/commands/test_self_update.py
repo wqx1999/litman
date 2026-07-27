@@ -180,3 +180,70 @@ def test_confirm_abort_skips_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
     result = CliRunner().invoke(cli, ["self-update"], input="n\n")
     assert result.exit_code != 0  # click abort
     assert ran == []
+
+
+# ---------------------------------------------------------------------------
+# Windows stub guard (task-win-update-hardening)
+# ---------------------------------------------------------------------------
+
+
+def _wire_stub_spies(
+    monkeypatch: pytest.MonkeyPatch, events: list[str]
+) -> None:
+    """Pretend win32 and spy the launcher-stub calls in dispatch order."""
+    monkeypatch.setattr(su.sys, "platform", "win32")
+    monkeypatch.setattr(
+        su.launcher_stubs, "installed_stubs", lambda: ["lit.exe", "litw.exe"]
+    )
+    monkeypatch.setattr(
+        su.launcher_stubs,
+        "rename_aside",
+        lambda stubs: events.append("aside") or [("orig", "old")],
+    )
+    monkeypatch.setattr(
+        su.launcher_stubs,
+        "restore_or_clean",
+        lambda renamed: events.append(f"settle({len(renamed)})"),
+    )
+    monkeypatch.setattr(
+        su.launcher_stubs,
+        "repair_default",
+        lambda: events.append("repair") or [],
+    )
+
+
+def test_windows_moves_stubs_aside_then_settles_then_repairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """win32 happy path: rename BEFORE the upgrade subprocess, settle after it
+    (both stubs handed back), repair after success — in that order."""
+    ran = _wire_dispatch(monkeypatch, manager="uv")
+    events: list[str] = []
+    _wire_stub_spies(monkeypatch, events)
+
+    def _run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        ran.append(cmd)
+        events.append("upgrade")
+        return _completed()
+
+    monkeypatch.setattr(su.subprocess, "run", _run)
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    assert events == ["aside", "upgrade", "settle(1)", "repair"]
+
+
+def test_windows_settles_stubs_even_when_the_upgrade_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settle MUST run on the failure path too (finally), or a failed
+    upgrade leaves the launchers parked as .old files — no `lit` at all."""
+    _wire_dispatch(monkeypatch, manager="uv", upgrade_rc=3)
+    events: list[str] = []
+    _wire_stub_spies(monkeypatch, events)
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SelfUpdateError)
+    assert "settle(1)" in events
+    assert "repair" not in events  # repair is a success-path step

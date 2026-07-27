@@ -58,7 +58,30 @@ if (Test-Cmd uv) {
 $toolList = cmd /c "uv tool list 2>nul"
 if ($toolList -match '(?m)^litman') {
     Write-Host "Upgrading litman..."
+    # A running litman keeps lit.exe/litw.exe locked and the upgrade would die
+    # copying them back (Windows never overwrites a running exe — but it does
+    # allow renaming one). Move the launchers aside, then settle afterwards:
+    # re-created by the upgrade -> drop the .old; not re-created (failure, or
+    # uv's "Nothing to upgrade" fast path that skips entrypoints) -> rename it
+    # back, so a launcher never disappears.
+    $moved = @()
+    foreach ($name in @("lit.exe", "litw.exe")) {
+        $stub = Join-Path $ToolBin $name
+        if (Test-Path $stub) {
+            try {
+                Move-Item -Force $stub "$stub.old" -ErrorAction Stop
+                $moved += $stub
+            } catch {}
+        }
+    }
     uv tool upgrade litman
+    foreach ($stub in $moved) {
+        if (Test-Path $stub) {
+            Remove-Item "$stub.old" -Force -ErrorAction SilentlyContinue
+        } else {
+            Move-Item -Force "$stub.old" $stub -ErrorAction SilentlyContinue
+        }
+    }
 } else {
     Write-Host "Installing litman..."
     uv tool install litman

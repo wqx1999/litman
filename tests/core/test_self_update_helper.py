@@ -23,7 +23,14 @@ import pytest
 from litman.core import self_update_helper as helper
 
 
-def _build(tmp_path: Path, *, windows: bool, timeout: int = 60, port: int = 8765) -> str:
+def _build(
+    tmp_path: Path,
+    *,
+    windows: bool,
+    timeout: int = 60,
+    port: int = 8765,
+    stub_paths: list[Path] | None = None,
+) -> str:
     return helper.build_helper_script(
         pid=4242,
         port=port,
@@ -33,6 +40,7 @@ def _build(tmp_path: Path, *, windows: bool, timeout: int = 60, port: int = 8765
         fail_flag=tmp_path / "self-update-failed",
         wait_timeout_s=timeout,
         windows=windows,
+        stub_paths=stub_paths,
     )
 
 
@@ -49,7 +57,9 @@ def test_sh_script_contains_the_contract(tmp_path: Path) -> None:
     assert "upgrade command failed" in s  # flag on failed upgrade
     assert "http://127.0.0.1:8765/" in s  # relaunch race guard probes the port
     assert "'/opt/py env/bin/lit' gui --window" in s  # path with space is quoted
-    assert s.count('rm -f "$0"') == 3  # self-deletes on every exit path
+    # Self-deletes on every exit path: timeout bail-out + the single shared
+    # tail (a failed upgrade continues into the relaunch attempt).
+    assert s.count('rm -f "$0"') == 2
 
 
 def test_bat_script_contains_the_contract(tmp_path: Path) -> None:
@@ -63,6 +73,39 @@ def test_bat_script_contains_the_contract(tmp_path: Path) -> None:
     assert 'findstr /C:":8765 "' in s
     assert '"/opt/py env/bin/lit" gui --window' in s
     assert 'del "%~f0"' in s  # batch self-delete idiom, last statement
+    # Sleeping MUST use the ping idiom: in the detached console-less cmd this
+    # script runs in (stdin on NUL), timeout.exe exits instantly with "Input
+    # redirection is not supported" and the wait loop races the server exit.
+    assert "ping -n 2 127.0.0.1" in s
+    assert "timeout /t" not in s
+
+
+def test_bat_script_moves_stubs_aside_and_settles_them(tmp_path: Path) -> None:
+    """Each stub: renamed aside pre-upgrade; post-upgrade the .old is dropped
+    when the stub came back, renamed back when it did not (both outcomes)."""
+    lit = r"C:\Users\W X\.local\bin\lit.exe"
+    litw = r"C:\Users\W X\.local\bin\litw.exe"
+    s = _build(tmp_path, windows=True, stub_paths=[Path(lit), Path(litw)])
+    for stub in (lit, litw):
+        assert f'if exist "{stub}" move /y "{stub}" "{stub}.old"' in s
+        assert (
+            f'if exist "{stub}" (del "{stub}.old" >nul 2>&1) '
+            f'else (move /y "{stub}.old" "{stub}" >nul 2>&1)'
+        ) in s
+    # The settle block sits between the upgrade and the failure branch, so it
+    # runs on success AND failure — deleting only on success would brick the
+    # install on the installer's "nothing to upgrade" fast path.
+    assert s.index("upgrade litman") < s.index(f'del "{lit}.old"')
+    assert s.index(f'del "{lit}.old"') < s.index("if defined FAILED")
+
+
+def test_bat_failure_path_still_reaches_the_relaunch(tmp_path: Path) -> None:
+    """No `goto cleanup` inside the failure branch: a failed upgrade writes
+    the flag and then falls through to the port guard + relaunch, so the old
+    version comes back and surfaces the failure toast."""
+    s = _build(tmp_path, windows=True)
+    failure = s.index("upgrade command failed; see self-update.log")
+    assert "goto cleanup" not in s[failure : s.index("netstat")]
 
 
 def test_timeout_is_parameterised(tmp_path: Path) -> None:
@@ -145,7 +188,9 @@ def test_sh_script_times_out_without_touching_anything(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="drives the POSIX sh script")
-def test_sh_script_flags_a_failed_upgrade_and_skips_relaunch(tmp_path: Path) -> None:
+def test_sh_script_flags_a_failed_upgrade_and_still_relaunches(tmp_path: Path) -> None:
+    """Failed upgrade → flag written AND the old version is relaunched, so the
+    restarted GUI surfaces the failure immediately instead of just vanishing."""
     log = tmp_path / "self-update.log"
     flag = tmp_path / "self-update-failed"
     relaunched = tmp_path / "relaunched"
@@ -167,7 +212,7 @@ def test_sh_script_flags_a_failed_upgrade_and_skips_relaunch(tmp_path: Path) -> 
     proc = subprocess.run(["sh", str(script)], capture_output=True, timeout=30)
     assert proc.returncode == 1
     assert flag.read_text(encoding="utf-8").startswith("upgrade command failed")
-    assert not relaunched.exists()  # no relaunch onto a failed upgrade
+    _wait_for(relaunched)  # relaunch still happens (backgrounded)
     assert not script.exists()
 
 

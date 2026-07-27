@@ -25,12 +25,14 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
 
 from litman import __version__
-from litman.core import update_check
+from litman.core import launcher_stubs, update_check
 from litman.exceptions import SelfUpdateError
 
 console = Console()
@@ -148,18 +150,34 @@ def self_update_cmd(yes: bool) -> None:
 
     cmd = _UPGRADE_CMDS[installer]
     console.print(f"[dim]$ {' '.join(cmd)}[/]")
+
+    # Windows: this very command runs from the launcher stub the upgrade must
+    # replace, and Windows refuses to overwrite a running exe (os error 32) —
+    # but it does allow renaming one. Move the stubs aside first and settle
+    # them afterwards on every path (restore_or_clean re-instates any stub the
+    # installer did not re-create, so a failed upgrade — or uv's "Nothing to
+    # upgrade" fast path, which skips entrypoints — never loses a launcher).
+    renamed: list[tuple[Path, Path]] = []
+    if sys.platform == "win32":
+        renamed = launcher_stubs.rename_aside(launcher_stubs.installed_stubs())
     try:
-        proc = subprocess.run(cmd, timeout=_UPGRADE_TIMEOUT_S)
-    except subprocess.TimeoutExpired as e:
-        raise SelfUpdateError(
-            f"`{' '.join(cmd)}` timed out after {_UPGRADE_TIMEOUT_S:.0f}s."
-        ) from e
-    except (FileNotFoundError, OSError) as e:
-        raise SelfUpdateError(f"`{' '.join(cmd)}` failed to run: {e}") from e
+        try:
+            proc = subprocess.run(cmd, timeout=_UPGRADE_TIMEOUT_S)
+        except subprocess.TimeoutExpired as e:
+            raise SelfUpdateError(
+                f"`{' '.join(cmd)}` timed out after {_UPGRADE_TIMEOUT_S:.0f}s."
+            ) from e
+        except (FileNotFoundError, OSError) as e:
+            raise SelfUpdateError(f"`{' '.join(cmd)}` failed to run: {e}") from e
+    finally:
+        launcher_stubs.restore_or_clean(renamed)
     if proc.returncode != 0:
         raise SelfUpdateError(
             f"`{' '.join(cmd)}` exited with code {proc.returncode}."
         )
+
+    for name in launcher_stubs.repair_default():
+        console.print(f"[dim]restored missing launcher {name}[/]")
 
     updated = _installed_version()
     if updated:
