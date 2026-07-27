@@ -359,9 +359,15 @@ def test_a_project_write_never_reaches_the_shared_seed(tmp_path: Path) -> None:
 
         # (a) it really did the work — in THIS copy.
         assert [p.name for p in bridge.iterdir() if p.is_symlink()] == []
-        # (b) the copy is consistent afterwards (no dangling bridge).
+        # (b) the copy is consistent afterwards (no dangling bridge). A fully
+        # clean vault exits 0 with "All checks passed" and prints no counter
+        # line at all; environment-dependent warnings exit 1 but still report
+        # "errors: 0". Either way zero errors — a dangling bridge is an error
+        # and fails both arms.
         health = rv.run("health-check", log=False)
-        assert "errors: 0" in health.stdout, health.stdout
+        assert (
+            health.exit_code == 0 or "errors: 0" in health.stdout
+        ), health.stdout
 
     # (c) and the shared seed never moved.
     assert seeds.seed_digest(seed_root) == before
