@@ -5,6 +5,15 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.2 — unreleased
+
+### Fixed
+
+- **Links now open in a new window.** Clicking a hyperlink inside a paper's
+  PDF — or an external link in notes / discussion — used to navigate the
+  litman window itself away from the app. External links now open a separate
+  window; wikilinks and in-PDF outline jumps behave exactly as before.
+
 ## 1.3.1 — 2026-07-26
 
 ### Added

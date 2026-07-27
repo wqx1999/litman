@@ -87,6 +87,20 @@ function wikilinksToAnchors(src: string): string {
 // neutralizing scripts / event handlers / javascript: URLs in authored md.
 const PURIFY_CONFIG = { ADD_ATTR: ['data-paper'] }
 
+// External links leave for a NEW window so a click in notes can never navigate
+// the app window away (the SPA is the application). Wikilink anchors
+// (data-paper, href="#") stay in-app via the delegated click handler below.
+// Registered once at module scope; the hook runs after attribute sanitization,
+// so the attributes it adds survive (DOMPurify's own documented recipe).
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName !== 'A' || node.hasAttribute('data-paper')) return
+  const href = node.getAttribute('href') ?? ''
+  if (/^https?:\/\//i.test(href)) {
+    node.setAttribute('target', '_blank')
+    node.setAttribute('rel', 'noopener noreferrer')
+  }
+})
+
 function renderMarkdown(src: string): string {
   const raw = marked.parse(wikilinksToAnchors(src)) as string
   return DOMPurify.sanitize(raw, PURIFY_CONFIG)
