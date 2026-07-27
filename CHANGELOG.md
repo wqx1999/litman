@@ -7,12 +7,22 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ## 1.3.2 — unreleased
 
+### Changed
+
+- **The update reminder is now a labelled chip.** When a new release is out, a
+  small chip with the new version number appears next to the logo, instead of
+  a bare blue dot. Click it to see the version you are on and a copyable
+  `lit self-update` command.
+
 ### Fixed
 
 - **Links now open in a new window.** Clicking a hyperlink inside a paper's
   PDF — or an external link in notes / discussion — used to navigate the
   litman window itself away from the app. External links now open a separate
   window; wikilinks and in-PDF outline jumps behave exactly as before.
+- **The update reminder no longer skips the first start.** After a release,
+  the GUI used to need one extra restart before the reminder could appear; it
+  now shows up on the first start, within a few seconds.
 
 ## 1.3.1 — 2026-07-26
 

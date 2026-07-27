@@ -32,8 +32,11 @@ import PathField, { describeLocation } from '../ui/PathField'
 interface Props {
   vaults: VaultsPayload | null
   /** The newer litman version available on PyPI (null = up to date / unknown).
-   * From the read-only /api/version cache; drives the update dot on the logo. */
+   * From the read-only /api/version cache; drives the update chip by the logo. */
   updateAvailable?: string | null
+  /** The running litman version, from the same /api/version read — the update
+   * chip's popover shows "You have X". */
+  currentVersion?: string | null
   /** Registered projects backing the global Projects manager (P4). */
   projects: ProjectEntry[]
   /** Full INDEX projection — backs the delete-project confirm's "N papers" count. */
@@ -138,6 +141,7 @@ interface Props {
 export default function TopBar({
   vaults,
   updateAvailable,
+  currentVersion,
   projects,
   allPapers,
   search,
@@ -173,6 +177,9 @@ export default function TopBar({
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
   const [showVaults, setShowVaults] = useState(false)
+  // Update chip popover + transient "Copied" feedback for its command line.
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const [updateCopied, setUpdateCopied] = useState(false)
   // Hand the opener up to App (the vault-gone banner drives it). `setShowVaults`
   // is stable, so unlike the agent opener this needs no ref to stay identity-safe.
   useEffect(() => {
@@ -514,25 +521,67 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <div
-        className="relative shrink-0"
-        title={
-          updateAvailable
-            ? `litman ${updateAvailable} available — run \`lit self-update\``
-            : 'litman'
-        }
-      >
+      <div className="relative shrink-0" title="litman">
         <LitmanMark className="h-6 w-6 select-none text-stone-800" />
-        {updateAvailable && (
-          <span
-            aria-label={`Update available: litman ${updateAvailable}`}
-            className="pointer-events-none absolute -right-1 -top-1 h-2.5 w-2.5"
-          >
-            <span className="absolute inset-0 rounded-full bg-accent-500 animate-update-halo" />
-            <span className="absolute inset-0 rounded-full bg-accent-500 ring-2 ring-stone-50" />
-          </span>
-        )}
       </div>
+
+      {/* Update chip: a labelled pill, not a bare dot — a 10px dot next to the
+          logo reads as part of the artwork; text can't be mistaken for it. */}
+      {updateAvailable && (
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setUpdateOpen((v) => !v)}
+            title={`litman ${updateAvailable} is available`}
+            aria-label={`Update available: litman ${updateAvailable}`}
+            className="flex items-center gap-0.5 rounded-full bg-accent-500/10 px-2 py-0.5 text-[11px] font-semibold text-accent-600 transition duration-200 ease-fluid hover:bg-accent-500/20"
+          >
+            <span aria-hidden="true">↑</span>
+            {updateAvailable}
+          </button>
+          {updateOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setUpdateOpen(false)}
+              />
+              <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-stone-200 bg-stone-50 p-3 shadow-lg shadow-stone-900/10">
+                <div className="text-sm font-medium text-stone-800">
+                  litman {updateAvailable} is available
+                </div>
+                {currentVersion && (
+                  <div className="mt-0.5 text-xs text-stone-500">
+                    You have {currentVersion}.
+                  </div>
+                )}
+                <div className="mt-2 flex items-center gap-2">
+                  <code className="flex-1 rounded-lg bg-stone-200/60 px-2 py-1 font-mono text-xs text-stone-700">
+                    lit self-update
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText('lit self-update').then(
+                        () => {
+                          setUpdateCopied(true)
+                          setTimeout(() => setUpdateCopied(false), 1500)
+                        },
+                        () => {},
+                      )
+                    }}
+                    className="rounded-lg px-2 py-1 text-xs font-medium text-accent-600 transition duration-200 ease-fluid hover:bg-stone-200/70"
+                  >
+                    {updateCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <div className="mt-1.5 text-xs text-stone-500">
+                  Run it in a terminal, then restart litman.
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {!trashMode && (
       <>
