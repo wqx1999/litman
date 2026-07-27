@@ -94,10 +94,13 @@ class LitGroup(click.Group):
     _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", None})
 
     # The post-dispatch nudges (staleness / update tip) are passive stderr
-    # one-liners, so they get a NARROWER skip: `hello` answers "is litman
+    # one-liners, so they get their own skip set: `hello` answers "is litman
     # installed and healthy?" and "a newer litman exists" belongs in that
     # answer — it stays exempt only from the interactive drift prompt above.
-    _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", None})
+    # `self-update` skips for the opposite reason: the running process still
+    # carries the pre-upgrade version, so right after a successful upgrade the
+    # tip would advertise the very release it just installed.
+    _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", "self-update", None})
 
     # Lazy command table: command name (kebab, as it appears in
     # _COMMAND_SECTIONS) → "module:attr". Nothing here is imported until

@@ -168,3 +168,24 @@ def test_update_nudge_fires_on_hello(
     result = CliRunner().invoke(cli, ["hello"])
     assert result.exit_code == 0, result.output
     assert "litman 9.9.9 is available (you have 1.1.0)" in result.stderr
+
+
+def test_update_nudge_skipped_for_self_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit self-update` is in the skip set: the running process still carries
+    the pre-upgrade version, so right after a successful upgrade the tip would
+    advertise the very release it just installed."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+    # The editable-install branch: prints the manual hint and exits 0 without
+    # ever shelling out — the lightest way to drive the command to completion.
+    monkeypatch.setattr(
+        "litman.commands.self_update._is_editable_install", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    assert _TIP not in result.stdout
+    assert _TIP not in result.stderr
