@@ -845,6 +845,27 @@ def gui_cmd(
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=actual_port)
     )
+    # One-click update (POST /api/self-update) needs three things only this
+    # command knows: the uvicorn server (to schedule its own exit), the port
+    # (the helper's relaunch race guard probes it), and how to bring THIS kind
+    # of session back — the app window again for --window, otherwise the same
+    # port so an open tab / SSH tunnel finds the new server where the old one
+    # was.
+    app.state.uvicorn_server = server
+    app.state.self_update_port = actual_port
+    try:
+        if window:
+            relaunch = [_shortcut_executable(), "gui", "--window"]
+        else:
+            relaunch = [_resolve_lit_executable(), "gui", "--port", str(actual_port)]
+            if no_browser:
+                relaunch.append("--no-browser")
+        app.state.self_update_relaunch = relaunch
+    except LitmanError:
+        # No resolvable `lit` executable (stripped PATH, unusual embedding):
+        # leave the relaunch recipe unset — one-click update then refuses with
+        # its manual hint instead of arming a restart that cannot work.
+        pass
 
     # Signals the readiness poller to stand down: set in `finally` so a server
     # that raised before it ever listened never gets a browser opened onto it.

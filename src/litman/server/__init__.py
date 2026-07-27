@@ -29,6 +29,7 @@ from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
 from litman.server.routes_structured import router as structured_router
 from litman.server.routes_trash import router as trash_router
+from litman.server.routes_update import router as update_router
 from litman.server.routes_write import router as write_router
 
 # The vendored SPA build lands here once `frontend/build.sh` has run; it does
@@ -133,6 +134,22 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             pass
 
+    # A failed one-click update leaves a flag beside the registry (written by
+    # the detached helper — see core/self_update_helper.py). Consume it here so
+    # the failure is surfaced exactly once, through GET /api/version, on the
+    # first server run after the mishap. Local disk, so read inline.
+    try:
+        from litman.core.self_update_helper import fail_flag_path
+
+        flag = fail_flag_path()
+        if flag.exists():
+            app.state.self_update_failed = (
+                flag.read_text(encoding="utf-8").strip() or "self-update failed"
+            )
+            flag.unlink()
+    except Exception:
+        pass
+
     threading.Thread(target=_refresh, daemon=True).start()
     yield
 
@@ -233,6 +250,7 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(trash_router)
     app.include_router(agent_router)
     app.include_router(presence_router)
+    app.include_router(update_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.

@@ -344,10 +344,21 @@ export function fetchVaults(): Promise<VaultsPayload> {
 export interface VersionInfo {
   current: string
   latest: string | null
+  /** Message a failed one-click update left behind (surfaced once per server
+   * run), else null. */
+  selfUpdateFailed?: string | null
 }
 
 export function fetchVersion(): Promise<VersionInfo> {
   return getJSON<VersionInfo>('/api/version')
+}
+
+/** Kick off the one-click update: the server spawns a detached helper and
+ * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
+ * (ApiError with the human hint as its message) when litman cannot update
+ * itself — a development install, or one owned by neither uv nor pipx. */
+export function postSelfUpdate(): Promise<{ status: string; installer: string }> {
+  return mutateJSON<{ status: string; installer: string }>('/api/self-update', 'POST')
 }
 
 /** What this host can do. Cheap enough to call on page load — unlike

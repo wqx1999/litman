@@ -7,6 +7,14 @@ behaviour, a minor release adds it, a major release breaks it.
 
 ## 1.3.2 — unreleased
 
+### Added
+
+- **Update from inside litman.** The update chip now has an “Update &
+  restart” button: litman closes itself, upgrades, and reopens — no terminal
+  needed. If the update cannot run (for example litman was not installed via
+  uv or pipx), the chip explains why and shows the manual command instead;
+  if it fails, litman reopens on the old version and says so.
+
 ### Changed
 
 - **The update reminder is now a labelled chip.** When a new release is out, a

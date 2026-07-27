@@ -11,6 +11,7 @@ import type {
 import type { Candidate } from '../search'
 import { projectHealth } from '../projects'
 import {
+  ApiError,
   createProject,
   deleteProject,
   fetchAgentStatus,
@@ -18,6 +19,7 @@ import {
   installAgentSkill,
   launchAgent,
   listDir,
+  postSelfUpdate,
   renameProject,
   setDefaultAgent,
   setProjectPath,
@@ -180,6 +182,33 @@ export default function TopBar({
   // Update chip popover + transient "Copied" feedback for its command line.
   const [updateOpen, setUpdateOpen] = useState(false)
   const [updateCopied, setUpdateCopied] = useState(false)
+  // One-click update lifecycle: 'busy' while POST /api/self-update is in
+  // flight, 'closing' once accepted (full-screen overlay; the server is going
+  // down and the helper takes over). A 409 lands in updateRefused — the hint
+  // replaces the button and the manual command stays as the fallback.
+  const [updatePhase, setUpdatePhase] = useState<null | 'busy' | 'closing'>(null)
+  const [updateRefused, setUpdateRefused] = useState<string | null>(null)
+
+  const startSelfUpdate = () => {
+    if (updatePhase) return
+    setUpdatePhase('busy')
+    postSelfUpdate()
+      .then(() => {
+        setUpdatePhase('closing')
+        // Give the overlay a beat to paint, then try to close the app window
+        // (best-effort: a plain browser tab may refuse — the overlay text
+        // covers that). The helper relaunches the GUI once the upgrade lands.
+        setTimeout(() => window.close(), 800)
+      })
+      .catch((err) => {
+        setUpdatePhase(null)
+        setUpdateRefused(
+          err instanceof ApiError
+            ? err.message
+            : 'Could not start the update — run `lit self-update` in a terminal.',
+        )
+      })
+  }
   // Hand the opener up to App (the vault-gone banner drives it). `setShowVaults`
   // is stable, so unlike the agent opener this needs no ref to stay identity-safe.
   useEffect(() => {
@@ -554,7 +583,22 @@ export default function TopBar({
                     You have {currentVersion}.
                   </div>
                 )}
-                <div className="mt-2 flex items-center gap-2">
+                {updateRefused ? (
+                  <div className="mt-2 text-xs text-amber-700">{updateRefused}</div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startSelfUpdate}
+                    disabled={updatePhase !== null}
+                    className="mt-2 w-full rounded-lg bg-accent-500 px-3 py-1.5 text-sm font-medium text-white transition duration-200 ease-fluid hover:bg-accent-600 disabled:opacity-60"
+                  >
+                    {updatePhase ? 'Starting…' : 'Update & restart'}
+                  </button>
+                )}
+                <div className="mt-2 text-xs text-stone-500">
+                  Or run it in a terminal:
+                </div>
+                <div className="mt-1 flex items-center gap-2">
                   <code className="flex-1 rounded-lg bg-stone-200/60 px-2 py-1 font-mono text-xs text-stone-700">
                     lit self-update
                   </code>
@@ -574,12 +618,25 @@ export default function TopBar({
                     {updateCopied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
-                <div className="mt-1.5 text-xs text-stone-500">
-                  Run it in a terminal, then restart litman.
-                </div>
               </div>
             </>
           )}
+          {updatePhase === 'closing' &&
+            createPortal(
+              <div className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-50/95 backdrop-blur-sm">
+                <div className="max-w-sm px-6 text-center">
+                  <div className="text-base font-medium text-stone-800">
+                    Updating litman…
+                  </div>
+                  <div className="mt-2 text-sm text-stone-500">
+                    This window will close, and litman reopens by itself when
+                    the update finishes. If the window stays open, you can
+                    close it yourself.
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            )}
         </div>
       )}
 

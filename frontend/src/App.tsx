@@ -644,6 +644,17 @@ export default function App() {
       .then((v) => {
         setVersionCurrent(v.current)
         setUpdateLatest(v.latest)
+        // A failed one-click update left a note behind (the server surfaces
+        // it once per run) — tell the user the app is still on the old
+        // version and hand them the manual path.
+        if (v.selfUpdateFailed) {
+          notify(
+            `Automatic update failed (${v.selfUpdateFailed}). ` +
+              'You are still on the previous version — run `lit self-update` in a terminal.',
+            'error',
+            { sticky: true },
+          )
+        }
         if (v.latest) return
         versionRetry = setTimeout(() => {
           fetchVersion()
@@ -695,7 +706,7 @@ export default function App() {
         classifyFetchError(err)
       })
     return () => clearTimeout(versionRetry)
-  }, [served, loadTrash, classifyFetchError])
+  }, [served, loadTrash, classifyFetchError, notify])
 
   useEffect(() => {
     if (!served) return
