@@ -179,13 +179,12 @@ export default function TopBar({
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
   const [showVaults, setShowVaults] = useState(false)
-  // Update chip popover + transient "Copied" feedback for its command line.
   const [updateOpen, setUpdateOpen] = useState(false)
-  const [updateCopied, setUpdateCopied] = useState(false)
   // One-click update lifecycle: 'busy' while POST /api/self-update is in
   // flight, 'closing' once accepted (full-screen overlay; the server is going
-  // down and the helper takes over). A 409 lands in updateRefused — the hint
-  // replaces the button and the manual command stays as the fallback.
+  // down and the helper takes over). A 409 lands in updateRefused, whose text
+  // replaces the button and carries its own manual instructions — the popover
+  // offers one action, never a button and a command to choose between.
   const [updatePhase, setUpdatePhase] = useState<null | 'busy' | 'closing'>(null)
   const [updateRefused, setUpdateRefused] = useState<string | null>(null)
 
@@ -595,29 +594,6 @@ export default function TopBar({
                     {updatePhase ? 'Starting…' : 'Update & restart'}
                   </button>
                 )}
-                <div className="mt-2 text-xs text-stone-500">
-                  Or run it in a terminal:
-                </div>
-                <div className="mt-1 flex items-center gap-2">
-                  <code className="flex-1 rounded-lg bg-stone-200/60 px-2 py-1 font-mono text-xs text-stone-700">
-                    lit self-update
-                  </code>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard?.writeText('lit self-update').then(
-                        () => {
-                          setUpdateCopied(true)
-                          setTimeout(() => setUpdateCopied(false), 1500)
-                        },
-                        () => {},
-                      )
-                    }}
-                    className="rounded-lg px-2 py-1 text-xs font-medium text-accent-600 transition duration-200 ease-fluid hover:bg-stone-200/70"
-                  >
-                    {updateCopied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
               </div>
             </>
           )}

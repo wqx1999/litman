@@ -19,8 +19,8 @@ behaviour, a minor release adds it, a major release breaks it.
 
 - **The update reminder is now a labelled chip.** When a new release is out, a
   small chip with the new version number appears next to the logo, instead of
-  a bare blue dot. Click it to see the version you are on and a copyable
-  `lit self-update` command.
+  a bare blue dot. Click it to see the version you are on and update from
+  there.
 
 ### Fixed
 
