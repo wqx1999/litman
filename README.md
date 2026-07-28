@@ -31,13 +31,13 @@ does it.
 **macOS / Linux:**
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
+curl -LsSf https://get.litman.dev/install.sh | sh
 ```
 
 **Windows** (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://get.litman.dev/install.ps1 | iex"
 ```
 
 Double-click the **litman** icon the installer creates — desktop on Windows,

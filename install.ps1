@@ -1,7 +1,7 @@
 # litman installer (Windows) — installs uv (if missing), then litman as a uv tool.
 #
 # Usage:
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://get.litman.dev/install.ps1 | iex"
 #
 # Idempotent: re-running upgrades an existing install. No admin rights —
 # everything lands under your user profile (uv's default tool location), and uv
