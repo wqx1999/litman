@@ -170,6 +170,44 @@ def test_update_nudge_fires_on_hello(
     assert "litman 9.9.9 is available (you have 1.1.0)" in result.stderr
 
 
+def test_hello_reports_every_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit hello` ignores the once-a-day cap: it is the command you run to ask
+    whether litman is OK, so it has to answer even about a release an earlier
+    command already mentioned. It also must not spend the cap itself — the
+    ordinary passive tip still has its one shot afterwards."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+
+    first = CliRunner().invoke(cli, ["hello"])
+    second = CliRunner().invoke(cli, ["hello"])
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert _TIP in first.stderr
+    assert _TIP in second.stderr  # would be silent under the 24h cap
+
+    after = CliRunner().invoke(cli, ["list"])
+    assert after.exit_code == 0, after.output
+    assert _TIP in after.stderr  # hello never stamped last_nudged_at
+
+
+def test_ordinary_command_still_capped_after_hello(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The uncapped path is hello's alone — `lit list` keeps nudging once."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+
+    CliRunner().invoke(cli, ["hello"])
+    first = CliRunner().invoke(cli, ["list"])
+    second = CliRunner().invoke(cli, ["list"])
+    assert _TIP in first.stderr
+    assert _TIP not in second.stderr
+
+
 def test_update_nudge_skipped_for_self_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

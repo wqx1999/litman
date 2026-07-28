@@ -43,8 +43,10 @@ behaviour, a minor release adds it, a major release breaks it.
   misfire in its console-less context, and a failed upgrade used to leave the
   window closed with no explanation — litman now reopens on the previous
   version and shows what went wrong.
-- **`lit hello` now mentions available updates**, like every other command;
-  it keeps skipping the interactive registry prompts.
+- **`lit hello` now mentions available updates**, and says so every time you
+  ask — other commands mention a new release once a day, so that the tip does
+  not trail every command in a working session, but `lit hello` is how you
+  check on purpose. It keeps skipping the interactive registry prompts.
 
 ## 1.3.1 — 2026-07-26
 

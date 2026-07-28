@@ -102,6 +102,13 @@ class LitGroup(click.Group):
     # tip would advertise the very release it just installed.
     _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", "self-update", None})
 
+    # Commands that report an available update every single time, ignoring the
+    # once-a-day cap that keeps the tip from trailing every command in a
+    # working session. `hello` is the "is my litman OK?" question, so it has to
+    # answer truthfully whenever it is asked — a cap would make it stay silent
+    # about a release the user already dismissed once and now wants to find.
+    _NUDGE_UNCAPPED: frozenset[str | None] = frozenset({"hello"})
+
     # Lazy command table: command name (kebab, as it appears in
     # _COMMAND_SECTIONS) → "module:attr". Nothing here is imported until
     # get_command resolves it, so `lit gui` pulls in only gui's import chain,
@@ -205,7 +212,7 @@ class LitGroup(click.Group):
         # nudge is a passive reminder, not a guarantee on every exit path.
         if cmd_name not in self._NUDGE_SKIP:
             self._emit_staleness_nudge()
-            self._emit_update_nudge()
+            self._emit_update_nudge(uncapped=cmd_name in self._NUDGE_UNCAPPED)
         return result
 
     def resolve_command(
@@ -597,7 +604,7 @@ class LitGroup(click.Group):
             pass
 
     @staticmethod
-    def _emit_update_nudge() -> None:
+    def _emit_update_nudge(*, uncapped: bool = False) -> None:
         """Post-dispatch PyPI update nudge (task-self-update D2).
 
         A passive one-liner on stderr when a newer litman is on PyPI. Sibling of
@@ -612,6 +619,10 @@ class LitGroup(click.Group):
         nudge reads the freshened cache. Frequency is capped at once per 24h via
         ``last_nudged_at`` in the cache. Wrapped so any failure degrades to a
         silent skip and never crashes the user's command.
+
+        ``uncapped`` (see ``_NUDGE_UNCAPPED``) reports through a pure read
+        instead: no cap to obey and no timestamp written, so asking again keeps
+        working and the daily budget of the ordinary passive tip is left alone.
         """
         try:
             from litman.commands._drift import _default_tty_probe
@@ -620,7 +631,11 @@ class LitGroup(click.Group):
             if not _default_tty_probe() or update_check.opt_out():
                 return
             update_check.refresh_cache_if_stale()
-            due = update_check.consume_nudge()
+            due = (
+                update_check.available_update()
+                if uncapped
+                else update_check.consume_nudge()
+            )
             if due is None:
                 return
             current, latest = due
