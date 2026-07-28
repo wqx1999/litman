@@ -46,7 +46,10 @@ behaviour, a minor release adds it, a major release breaks it.
 - **`lit hello` now mentions available updates**, and says so every time you
   ask — other commands mention a new release once a day, so that the tip does
   not trail every command in a working session, but `lit hello` is how you
-  check on purpose. It keeps skipping the interactive registry prompts.
+  check on purpose. It is also the one command that reports this to a coding
+  agent, which runs `lit hello` to check on litman: if you only ever reach
+  litman through an agent, the agent can now pass a new release on to you.
+  `lit hello` keeps skipping the interactive registry prompts.
 
 ## 1.3.1 — 2026-07-26
 

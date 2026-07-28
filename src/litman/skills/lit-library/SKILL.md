@@ -78,6 +78,8 @@ lit list --format json | head -1            # confirms the vault is reachable
 
 If `lit` is missing: tell the user to install it — `curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh` (or `uv tool install litman` / `pipx install litman`). Do NOT try to install it yourself.
 
+If `lit hello` says a newer litman is available: pass that on to the user and get on with the task. Do NOT upgrade litman yourself — that would replace the tool mid-session.
+
 ## When to use lit-library vs other skills
 
 | User intent | Skill |

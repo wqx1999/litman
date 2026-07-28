@@ -104,9 +104,11 @@ class LitGroup(click.Group):
 
     # Commands that report an available update every single time, ignoring the
     # once-a-day cap that keeps the tip from trailing every command in a
-    # working session. `hello` is the "is my litman OK?" question, so it has to
-    # answer truthfully whenever it is asked — a cap would make it stay silent
-    # about a release the user already dismissed once and now wants to find.
+    # working session, and ignoring the TTY gate the other commands sit behind.
+    # `hello` is the "is my litman OK?" question — a cap would make it stay
+    # silent about a release the user dismissed once and now wants to find, and
+    # the TTY gate would hide it from the agent that runs `lit hello` on the
+    # behalf of a user who never types a lit command at all.
     _NUDGE_UNCAPPED: frozenset[str | None] = frozenset({"hello"})
 
     # Lazy command table: command name (kebab, as it appears in
@@ -623,14 +625,24 @@ class LitGroup(click.Group):
         ``uncapped`` (see ``_NUDGE_UNCAPPED``) reports through a pure read
         instead: no cap to obey and no timestamp written, so asking again keeps
         working and the daily budget of the ordinary passive tip is left alone.
+        It also answers on a non-TTY, the one deliberate hole in the gate above:
+        an agent runs ``lit hello`` to see whether litman is there, and a user
+        who only ever meets litman through an agent has no other way to hear
+        that a release exists. The zero-network half of the red line still
+        holds — off a TTY this reads the cache the GUI and the user's own
+        commands keep fresh, and never reaches for the network itself.
         """
         try:
             from litman.commands._drift import _default_tty_probe
             from litman.core import update_check
 
-            if not _default_tty_probe() or update_check.opt_out():
+            if update_check.opt_out():
                 return
-            update_check.refresh_cache_if_stale()
+            tty = _default_tty_probe()
+            if not tty and not uncapped:
+                return
+            if tty:
+                update_check.refresh_cache_if_stale()
             due = (
                 update_check.available_update()
                 if uncapped
@@ -639,9 +651,18 @@ class LitGroup(click.Group):
             if due is None:
                 return
             current, latest = due
+            # Off a TTY the only reader is an agent, and "run 'lit self-update'"
+            # is an instruction it would happily carry out — swapping litman
+            # underneath its own session, possibly mid-write, possibly while the
+            # GUI holds the tool venv open. Point it at the user instead.
+            action = (
+                "run 'lit self-update'"
+                if tty
+                else "tell the user; do not upgrade litman yourself"
+            )
             Console(stderr=True).print(
                 f"[dim]tip: litman {latest} is available (you have {current}) "
-                "— run 'lit self-update'[/dim]"
+                f"— {action}[/dim]"
             )
         except Exception:
             pass

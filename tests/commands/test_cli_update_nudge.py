@@ -208,6 +208,42 @@ def test_ordinary_command_still_capped_after_hello(
     assert _TIP not in second.stderr
 
 
+def test_hello_reports_to_an_agent_without_touching_the_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off a TTY `lit hello` still reports — an agent runs it on behalf of a
+    user who may never type a lit command — but from the cache alone, and
+    worded so the agent relays instead of upgrading litman under itself."""
+    _seed_active_vault(tmp_path)
+    calls = _mock_fetch(monkeypatch, "9.9.9")
+    update_check._write_cache(
+        {"checked_at": update_check._utcnow().isoformat(), "latest": "9.9.9"}
+    )
+
+    result = CliRunner().invoke(cli, ["hello"])  # default runner: not a TTY
+    assert result.exit_code == 0, result.output
+    # Rich hard-wraps to the console width, so compare on normalised spacing.
+    said = " ".join(result.stderr.split())
+    assert "litman 9.9.9 is available (you have 1.1.0)" in said
+    assert "do not upgrade litman yourself" in said
+    assert "run 'lit self-update'" not in said
+    assert calls == []  # zero network off a TTY, red line intact
+
+
+def test_hello_silent_off_tty_without_a_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cache and no TTY → hello says nothing and still makes no request:
+    the agent path reads what the GUI / the user's own commands left behind."""
+    _seed_active_vault(tmp_path)
+    calls = _mock_fetch(monkeypatch, "9.9.9")
+
+    result = CliRunner().invoke(cli, ["hello"])
+    assert result.exit_code == 0, result.output
+    assert _TIP not in result.stderr
+    assert calls == []
+
+
 def test_update_nudge_skipped_for_self_update(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
