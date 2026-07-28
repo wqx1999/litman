@@ -15,6 +15,10 @@ behaviour, a minor release adds it, a major release breaks it.
   uv or pipx), the chip explains why instead. If the upgrade itself fails,
   litman comes back on the version you were already on and tells you what
   went wrong, rather than leaving you with a window that never returns.
+- **litman installs from mainland China.** The install command is the same one
+  everywhere, and it now works from inside China without a VPN: uv, the Python
+  runtime and litman itself all arrive from sources that are reachable there,
+  and a first install takes about a minute.
 
 ### Changed
 

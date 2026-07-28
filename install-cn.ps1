@@ -11,25 +11,44 @@
 $ErrorActionPreference = "Stop"
 
 # --- mainland-China download sources -----------------------------------------
-# Managed Python (python-build-standalone) is the one uv download that still
-# comes from github.com, and github.com answers it with a redirect to
-# release-assets.githubusercontent.com, which is blocked. get.litman.dev is a
-# Cloudflare Worker that follows that redirect server-side and streams the
-# bytes back, so nothing here ever hits a blocked host.
-$env:UV_PYTHON_INSTALL_MIRROR = "https://get.litman.dev/gh/astral-sh/python-build-standalone/releases/download"
+# Three things get downloaded: the uv binary, the Python runtime uv manages, and
+# the litman wheel. From mainland China the upstream hosts for the first two are
+# blocked outright — github.com redirects release assets to
+# release-assets.githubusercontent.com, and Astral's own CDN is reset at the TLS
+# layer — so each is pointed somewhere reachable.
+#
+# University mirrors serve both, from inside the country, roughly a hundred
+# times faster than anything that crosses the border. They are not ours, though:
+# they carry a self-chosen subset of GitHub releases and prune it as they like.
+# So when a mirror does not answer, the download falls back to get.litman.dev, a
+# Cloudflare Worker that follows GitHub's redirect server-side. Mirrors make it
+# fast; the Worker makes it certain.
+$NjuPython = "https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone"
+$UstcUv    = "https://mirrors.ustc.edu.cn/github-release/astral-sh/uv/LatestRelease"
+$Worker    = "https://get.litman.dev"
+
+# A mirror counts as usable if it answers a HEAD within five seconds. The probe
+# asks for a directory rather than a file: mirrors prune old releases, and
+# pinning a filename would read a routine prune as an outage.
+function Test-Mirror($url) {
+    try {
+        $null = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 5 -UseBasicParsing
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+if (Test-Mirror "$NjuPython/") {
+    $env:UV_PYTHON_INSTALL_MIRROR = $NjuPython
+} else {
+    $env:UV_PYTHON_INSTALL_MIRROR = "$Worker/gh/astral-sh/python-build-standalone/releases/download"
+}
 
 # The litman wheel comes from the Tsinghua TUNA PyPI mirror — full automatic
 # sync of upstream PyPI, hosted inside China. uv records this index in the tool
 # receipt, so `lit self-update` (uv tool upgrade litman) keeps using it too.
 $env:UV_DEFAULT_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
-
-# The uv binary needs the proxy too. The installer script itself downloads fine
-# from mainland China, but both hosts it then pulls the binary from are reset at
-# the TLS layer there: releases.astral.sh, Astral's own CDN, and github.com, its
-# fallback. This variable replaces that whole list; losing the fallback costs
-# nothing when neither entry is reachable anyway. It is read by the child
-# PowerShell that runs uv's installer, which inherits this process environment.
-$env:UV_INSTALLER_GITHUB_BASE_URL = "https://get.litman.dev/gh"
 # -----------------------------------------------------------------------------
 
 # uv places tool executables here by default.
@@ -39,17 +58,48 @@ function Test-Cmd($name) {
     $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
 }
 
+# Each branch takes its installer from the same place as the binary it fetches.
+# Unlike the POSIX installer, this one does no checksum verification at all, so
+# a crossed pair does not fail loudly — it quietly installs whatever version the
+# other side happens to carry while recording the version its script was pinned
+# to. Keeping the pairs together avoids that mislabelling.
+#
+# Each branch also clears the other's variable: UV_DOWNLOAD_URL outranks
+# UV_INSTALLER_GITHUB_BASE_URL, so leaving both set silently ignores the second.
+# The child PowerShell that runs uv's installer inherits this process
+# environment, which is how either variable reaches it.
+function Install-UvFromMirror {
+    Remove-Item Env:UV_INSTALLER_GITHUB_BASE_URL -ErrorAction SilentlyContinue
+    $env:UV_DOWNLOAD_URL = $UstcUv
+    powershell -ExecutionPolicy ByPass -c "irm $UstcUv/uv-installer.ps1 | iex"
+}
+
+function Install-UvFromWorker {
+    Remove-Item Env:UV_DOWNLOAD_URL -ErrorAction SilentlyContinue
+    $env:UV_INSTALLER_GITHUB_BASE_URL = "$Worker/gh"
+    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+}
+
 $installedUv = $false
 
 if (Test-Cmd uv) {
     Write-Host "uv already installed - skipping."
 } else {
-    Write-Host "Installing uv (astral.sh)..."
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-    $installedUv = $true
+    Write-Host "Installing uv..."
+    if (Test-Mirror "$UstcUv/uv-installer.ps1") {
+        # Tolerate failure here: the check below decides whether it worked.
+        try { Install-UvFromMirror } catch { }
+    }
     # uv's bin dir is not on PATH until the shell is reopened; prepend it so the
     # rest of THIS script run can call uv and, later, lit.
     $env:Path = "$ToolBin;$env:Path"
+    # Ask the filesystem rather than an exit code. A nested `irm | iex` does not
+    # reliably surface failure as a nonzero exit, so only the presence of uv
+    # proves anything.
+    if (-not (Test-Cmd uv) -and -not (Test-Path (Join-Path $ToolBin "uv.exe"))) {
+        Install-UvFromWorker
+    }
+    $installedUv = $true
 }
 
 # uv prints "No tools installed" to stderr; under ErrorActionPreference=Stop,
