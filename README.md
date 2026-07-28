@@ -94,11 +94,16 @@ corrupts the library. Scores and method:
 <details>
 <summary>Update litman</summary>
 
-`lit self-update` upgrades litman through whichever tool installed it, uv or pipx.
-It prints `current → latest` and asks once.
+When a new release is out, a chip with its version number appears next to the
+logo in the Web UI. Click it and choose **Update & restart**: litman closes,
+upgrades, and reopens by itself.
 
-litman also asks PyPI for the newest version number once a day, and prints a line
-when yours is older. `LITMAN_NO_UPDATE_CHECK=1` switches that off —
+From a terminal, `lit self-update` does the same through whichever tool
+installed litman, uv or pipx. It prints `current → latest` and asks once.
+
+litman asks PyPI for the newest version number once a day, and mentions it when
+yours is older; `lit hello` tells you every time you ask.
+`LITMAN_NO_UPDATE_CHECK=1` switches all of it off —
 [what it checks](docs/4-commands.md#lit-self-update).
 
 </details>

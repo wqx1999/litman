@@ -12,8 +12,9 @@ behaviour, a minor release adds it, a major release breaks it.
 - **Update from inside litman.** The update chip now has an “Update &
   restart” button: litman closes itself, upgrades, and reopens — no terminal
   needed. If the update cannot run (for example litman was not installed via
-  uv or pipx), the chip explains why and shows the manual command instead;
-  if it fails, litman reopens on the old version and says so.
+  uv or pipx), the chip explains why instead. If the upgrade itself fails,
+  litman comes back on the version you were already on and tells you what
+  went wrong, rather than leaving you with a window that never returns.
 
 ### Changed
 
@@ -39,10 +40,10 @@ behaviour, a minor release adds it, a major release breaks it.
   `lit gui`, and `lit gui --make-shortcut` says so out loud if it ever has to
   fall back to the console launcher. The install scripts got the same guard
   for the re-run-to-upgrade path.
-- **One-click update hardening on Windows.** The updater's wait step could
-  misfire in its console-less context, and a failed upgrade used to leave the
-  window closed with no explanation — litman now reopens on the previous
-  version and shows what went wrong.
+- **The documented Windows config directory was wrong.** The docs and
+  `lit vault --help` pointed at `%APPDATA%\litman\`; the registry, and
+  everything beside it, actually lives in `%LOCALAPPDATA%\litman\litman\`.
+  Nothing moved — only the description was wrong.
 - **`lit hello` now mentions available updates**, and says so every time you
   ask — other commands mention a new release once a day, so that the tip does
   not trail every command in a working session, but `lit hello` is how you
