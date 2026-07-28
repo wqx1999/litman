@@ -46,8 +46,8 @@ several vaults.
 **Registry location.** The registry lives at `$LITMAN_REGISTRY_DIR/vaults.yaml`
 when that variable is set (use it to put the registry in a cloud-synced
 directory), otherwise the platform config dir: `~/.config/litman/` on
-Linux / WSL, `~/Library/Application Support/litman/` on macOS, `%APPDATA%\litman\`
-on Windows.
+Linux / WSL, `~/Library/Application Support/litman/` on macOS,
+`%LOCALAPPDATA%\litman\litman\` on Windows.
 
 ---
 

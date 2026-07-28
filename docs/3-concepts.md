@@ -491,7 +491,7 @@ Location, highest precedence first:
    (point it at a cloud-synced directory for cross-machine backup).
 2. Otherwise the platform config directory: `~/.config/litman/vaults.yaml` on
    Linux, `~/Library/Application Support/litman/vaults.yaml` on macOS,
-   `%APPDATA%\litman\vaults.yaml` on Windows.
+   `%LOCALAPPDATA%\litman\litman\vaults.yaml` on Windows.
 
 The file holds a `vaults:` list. Each entry has these fields:
 
