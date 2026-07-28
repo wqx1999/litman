@@ -73,7 +73,10 @@ def test_bat_script_contains_the_contract(tmp_path: Path) -> None:
     assert '"uv" "tool" "upgrade" "litman"' in s
     assert "timeout waiting for litman to exit" in s
     assert "upgrade command failed" in s
-    assert 'findstr /C:":8765 "' in s
+    # The race guard must look at LISTENING sockets only: the port alone also
+    # matches the TIME_WAIT remnants of the window we just closed, which would
+    # skip the relaunch every time.
+    assert 'findstr /C:":8765 " | findstr /C:"LISTENING"' in s
     assert '"/opt/py env/bin/lit" "gui" "--window"' in s
     assert 'del "%~f0"' in s  # batch self-delete idiom, last statement
     # Sleeping MUST use the ping idiom: in the detached console-less cmd this

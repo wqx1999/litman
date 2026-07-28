@@ -185,6 +185,14 @@ def _build_bat(
     # later `if errorlevel 1`: nothing may sit between an external command and
     # an ERRORLEVEL read, and what plain `set` does to ERRORLEVEL when it
     # clears an undefined variable is not reliably documented.
+    #
+    # The relaunch guard filters netstat down to LISTENING lines. Matching the
+    # port alone also hits the TIME_WAIT remnants of the connections the window
+    # we just closed had open (Windows holds those ~120s, far longer than the
+    # upgrade takes), so the guard would read "already running" every single
+    # time and never relaunch. A locale that translated the state word would
+    # only cost us the guard, which fails toward relaunching — the direction
+    # that leaves the user with a window rather than without one.
     aside = "".join(
         f'if exist "{s}" move /y "{s}" "{s}.old" >nul 2>&1\n' for s in stubs
     )
@@ -223,7 +231,7 @@ set "FAILED="
 )
 rem Relaunch even after a failed upgrade: the previous version still runs,
 rem and the restarted GUI surfaces the failure flag immediately.
-netstat -ano | findstr /C:":{port} " >nul 2>&1
+netstat -ano | findstr /C:":{port} " | findstr /C:"LISTENING" >nul 2>&1
 if not errorlevel 1 (
   echo [helper] litman already running again, not relaunching >> "%LOG%"
   goto cleanup
