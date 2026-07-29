@@ -120,6 +120,38 @@ def test_bat_failure_path_still_reaches_the_relaunch(tmp_path: Path) -> None:
     assert "goto cleanup" not in s[failure : s.index("netstat")]
 
 
+def test_bat_settles_before_touching_the_stubs(tmp_path: Path) -> None:
+    """The pid waited on is litman's python; its launcher stub is a separate
+    parent process that dies a moment later still holding the file the move
+    renames. There must be a beat between 'pid gone' and the first move."""
+    lit = r"C:\bin\lit.exe"
+    s = _build(tmp_path, windows=True, stub_paths=[Path(lit)])
+    gone = s.index(":gone")
+    move = s.index(f'move /y "{lit}"')
+    assert "ping -n 3 127.0.0.1" in s[gone:move]
+
+
+def test_scripts_without_a_relaunch_omit_the_whole_block(tmp_path: Path) -> None:
+    """`lit self-update` asks for no relaunch. The section must disappear, not
+    render empty: a bare `start ""` opens a stray console window, and the port
+    guard would `goto cleanup` on a port nobody owns."""
+    for windows in (True, False):
+        s = helper.build_helper_script(
+            pid=4242,
+            upgrade_cmd=["uv", "tool", "upgrade", "litman"],
+            log=tmp_path / "self-update.log",
+            fail_flag=tmp_path / "self-update-failed",
+            windows=windows,
+        )
+        assert "relaunch" not in s
+        assert "netstat" not in s
+        assert 'start ""' not in s
+        assert "curl" not in s
+        # Everything before it still stands.
+        assert "upgrade command failed" in s
+        assert ("del \"%~f0\"" if windows else 'rm -f "$0"') in s
+
+
 def test_timeout_is_parameterised(tmp_path: Path) -> None:
     assert "-ge 7" in _build(tmp_path, windows=False, timeout=7)
     assert "geq 7" in _build(tmp_path, windows=True, timeout=7)

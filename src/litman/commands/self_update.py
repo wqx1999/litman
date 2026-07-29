@@ -18,21 +18,33 @@ The probe order and their guards:
 
 Every probe subprocess is timeout-wrapped so a wedged tool can never hang the
 command.
+
+The upgrade itself runs differently per platform, and the split is not
+cosmetic. POSIX upgrades in place, synchronously, with the installer's output
+on the terminal. **Windows cannot**: the command runs from the very launcher
+stub the upgrade has to replace, and Windows locks a running executable
+outright — it cannot be overwritten and (uv's trampoline holding its own image
+without share-delete) cannot even be renamed aside, so ``uv tool upgrade``
+dies with os error 32 no matter what this process does first. So Windows hands
+the upgrade to the same detached helper the webUI's one-click update uses
+(:mod:`litman.core.self_update_helper`): it waits for this process to vanish
+and upgrades with nothing locked. The command therefore returns *before* the
+upgrade happens, and says so.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import click
 from rich.console import Console
 
 from litman import __version__
-from litman.core import launcher_stubs, update_check
+from litman.core import launcher_stubs, self_update_helper, update_check
 from litman.exceptions import SelfUpdateError
 
 console = Console()
@@ -106,6 +118,27 @@ def _detect_installer() -> str | None:
     return None
 
 
+def _spawn_detached_upgrade(cmd: list[str]) -> None:
+    """Windows: hand ``cmd`` to the detached helper and let this process die.
+
+    Pins the installer to its absolute path first — the helper inherits
+    whatever PATH this shell had, and resolving it here while we still can
+    costs nothing.
+    """
+    upgrade_cmd = list(cmd)
+    resolved = shutil.which(upgrade_cmd[0])
+    if resolved:
+        upgrade_cmd[0] = resolved
+    try:
+        self_update_helper.write_and_spawn_helper(
+            pid=os.getpid(),
+            upgrade_cmd=upgrade_cmd,
+            stub_paths=launcher_stubs.installed_stubs(),
+        )
+    except OSError as e:
+        raise SelfUpdateError(f"could not start the upgrade helper: {e}") from e
+
+
 def _installed_version() -> str | None:
     """Fresh version of the just-upgraded ``lit`` on PATH (for post-verify)."""
     proc = _run_capture(["lit", "--version"], timeout=_PROBE_TIMEOUT_S)
@@ -135,6 +168,11 @@ def self_update_cmd(yes: bool) -> None:
         console.print(_EDITABLE_HINT)
         return
 
+    # Heal a launcher an earlier half-failed upgrade lost, before deciding
+    # anything else (win32 only; a silent no-op everywhere else).
+    for name in launcher_stubs.repair_default():
+        console.print(f"[dim]restored missing launcher {name}[/]")
+
     installer = _detect_installer()
     if installer is None:
         if shutil.which("uv") is None and shutil.which("pipx") is None:
@@ -151,33 +189,29 @@ def self_update_cmd(yes: bool) -> None:
     cmd = _UPGRADE_CMDS[installer]
     console.print(f"[dim]$ {' '.join(cmd)}[/]")
 
-    # Windows: this very command runs from the launcher stub the upgrade must
-    # replace, and Windows refuses to overwrite a running exe (os error 32) —
-    # but it does allow renaming one. Move the stubs aside first and settle
-    # them afterwards on every path (restore_or_clean re-instates any stub the
-    # installer did not re-create, so a failed upgrade — or uv's "Nothing to
-    # upgrade" fast path, which skips entrypoints — never loses a launcher).
-    renamed: list[tuple[Path, Path]] = []
+    # Windows runs the upgrade after this process is gone — see module docstring.
     if sys.platform == "win32":
-        renamed = launcher_stubs.rename_aside(launcher_stubs.installed_stubs())
+        _spawn_detached_upgrade(cmd)
+        console.print(
+            "Windows locks litman's launcher while it runs, so the upgrade "
+            "starts the moment this command exits.\n"
+            "Give it a few seconds, then check with [bold]lit --version[/].\n"
+            f"[dim]log: {self_update_helper.log_path()}[/]"
+        )
+        return
+
     try:
-        try:
-            proc = subprocess.run(cmd, timeout=_UPGRADE_TIMEOUT_S)
-        except subprocess.TimeoutExpired as e:
-            raise SelfUpdateError(
-                f"`{' '.join(cmd)}` timed out after {_UPGRADE_TIMEOUT_S:.0f}s."
-            ) from e
-        except (FileNotFoundError, OSError) as e:
-            raise SelfUpdateError(f"`{' '.join(cmd)}` failed to run: {e}") from e
-    finally:
-        launcher_stubs.restore_or_clean(renamed)
+        proc = subprocess.run(cmd, timeout=_UPGRADE_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        raise SelfUpdateError(
+            f"`{' '.join(cmd)}` timed out after {_UPGRADE_TIMEOUT_S:.0f}s."
+        ) from e
+    except (FileNotFoundError, OSError) as e:
+        raise SelfUpdateError(f"`{' '.join(cmd)}` failed to run: {e}") from e
     if proc.returncode != 0:
         raise SelfUpdateError(
             f"`{' '.join(cmd)}` exited with code {proc.returncode}."
         )
-
-    for name in launcher_stubs.repair_default():
-        console.print(f"[dim]restored missing launcher {name}[/]")
 
     updated = _installed_version()
     if updated:

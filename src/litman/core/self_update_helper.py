@@ -1,16 +1,24 @@
-"""Detached helper that upgrades litman after the server exits.
+"""Detached helper that upgrades litman after litman exits.
 
-The GUI's one-click update cannot upgrade in place: the running server holds
-the tool venv open (Windows locks the loaded binaries outright, and lazy
-imports elsewhere would mix old and new code in one process). So the endpoint
-writes a tiny platform shell script, spawns it fully detached, and lets the
-server exit; the helper waits for the PID to vanish, runs the installer's
-upgrade command, and relaunches the GUI. The industry-standard updater shape
-(a separate process swaps the app while it is down), scaled to a shell script.
+litman cannot upgrade itself in place: the running process holds the tool venv
+open (Windows locks the loaded binaries outright — including its own launcher
+stub, which cannot even be renamed out of the way — and lazy imports elsewhere
+would mix old and new code in one process). So the caller writes a tiny
+platform shell script, spawns it fully detached, and exits; the helper waits
+for the PID to vanish, runs the installer's upgrade command, and optionally
+relaunches. The industry-standard updater shape (a separate process swaps the
+app while it is down), scaled to a shell script.
+
+Two callers, one script. The webUI's one-click update passes a
+``relaunch_cmd`` so the window comes back by itself; ``lit self-update`` on
+Windows passes none — a terminal command that respawns a terminal would be a
+surprise, and the shell prompt is already back. With no relaunch command the
+port guard and the relaunch line are omitted entirely rather than rendered
+empty (``start ""`` alone opens a stray console window).
 
 Guard rails (task-one-click-update, all four):
 
-* **Hard timeout** — the helper waits for the server PID for at most
+* **Hard timeout** — the helper waits for litman's PID for at most
   ``wait_timeout_s``; on timeout it gives up, touches the failure flag, and
   removes itself without changing anything.
 * **Failure visibility** — everything appends to ``self-update.log`` beside
@@ -18,7 +26,8 @@ Guard rails (task-one-click-update, all four):
   the next server start surfaces once through ``GET /api/version``.
 * **Relaunch race guard** — before relaunching, the helper probes the old
   port; if something already listens there (the user beat it to a restart),
-  it skips the relaunch instead of stacking a second instance.
+  it skips the relaunch instead of stacking a second instance. Moot for the
+  terminal caller, which asks for no relaunch.
 * **Script hygiene** — the script is written to the system temp dir, deletes
   itself on every exit path, interpolates no user input, and quotes every
   path it embeds.
@@ -58,9 +67,9 @@ def fail_flag_path() -> Path:
 def build_helper_script(
     *,
     pid: int,
-    port: int,
+    port: int = 0,
     upgrade_cmd: list[str],
-    relaunch_cmd: list[str],
+    relaunch_cmd: list[str] | None = None,
     log: Path,
     fail_flag: Path,
     wait_timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
@@ -73,8 +82,11 @@ def build_helper_script(
     render both variants anywhere. ``stub_paths`` are the launcher stubs the
     Windows script moves aside before upgrading (see
     :mod:`litman.core.launcher_stubs`); POSIX callers pass none — overwriting
-    a running file is fine there.
+    a running file is fine there. ``relaunch_cmd`` empty (the terminal caller)
+    drops the relaunch section, and with it ``port``, which only ever fed the
+    relaunch race guard.
     """
+    relaunch_cmd = list(relaunch_cmd or [])
     if windows is None:
         windows = sys.platform == "win32"
     if windows:
@@ -117,22 +129,37 @@ def _quote_win(argv: list[str]) -> str:
 def _build_sh(
     *, pid: int, port: int, upgrade: str, relaunch: str, log: str, fail_flag: str, timeout: int
 ) -> str:
+    # Relaunch even after a failed upgrade: the previous version still runs, and
+    # the restarted GUI surfaces the failure flag immediately — a window that
+    # never comes back tells the user nothing. Omitted wholesale when the caller
+    # asked for no relaunch.
+    relaunch_block = (
+        f"""if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:{port}/"; then
+  echo "[helper] litman already running again, not relaunching" >> "$LOG"
+else
+  echo "[helper] relaunching" >> "$LOG"
+  {relaunch} >> "$LOG" 2>&1 &
+fi
+"""
+        if relaunch
+        else ""
+    )
     return f"""#!/bin/sh
 # litman self-update helper (auto-generated; deletes itself on exit).
 LOG="{log}"
-echo "[helper] started, waiting for server pid {pid}" >> "$LOG"
+echo "[helper] started, waiting for litman pid {pid}" >> "$LOG"
 i=0
 while kill -0 {pid} 2>/dev/null; do
   i=$((i+1))
   if [ "$i" -ge {timeout} ]; then
-    echo "[helper] gave up: server still running after {timeout}s" >> "$LOG"
+    echo "[helper] gave up: litman still running after {timeout}s" >> "$LOG"
     echo "timeout waiting for litman to exit" > "{fail_flag}"
     rm -f "$0"
     exit 1
   fi
   sleep 1
 done
-echo "[helper] server gone, upgrading" >> "$LOG"
+echo "[helper] litman gone, upgrading" >> "$LOG"
 FAILED=0
 if {upgrade} >> "$LOG" 2>&1; then
   echo "[helper] upgrade ok" >> "$LOG"
@@ -141,16 +168,7 @@ else
   echo "upgrade command failed; see self-update.log" > "{fail_flag}"
   FAILED=1
 fi
-# Relaunch even after a failed upgrade: the previous version still runs, and
-# the restarted GUI surfaces the failure flag immediately — a window that
-# never comes back tells the user nothing.
-if command -v curl >/dev/null 2>&1 && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:{port}/"; then
-  echo "[helper] litman already running again, not relaunching" >> "$LOG"
-else
-  echo "[helper] relaunching" >> "$LOG"
-  {relaunch} >> "$LOG" 2>&1 &
-fi
-rm -f "$0"
+{relaunch_block}rm -f "$0"
 exit $FAILED
 """
 
@@ -174,9 +192,11 @@ def _build_bat(
     # instantly with "Input redirection is not supported" — the wait loop
     # would spin through its iterations in seconds and race the server's exit.
     #
-    # The stubs are moved aside before the upgrade (a running exe can be
-    # renamed but never overwritten — another litman instance would otherwise
-    # make the entrypoint copy fail) and settled afterwards on BOTH outcomes:
+    # The stubs are moved aside before the upgrade — not to defeat the lock on
+    # a running launcher (nothing can: not even a rename succeeds while it
+    # executes, which is why this script exists at all), but because a SECOND
+    # litman instance may be up, and because the installer copies onto a path
+    # that is cleaner empty. They are settled afterwards on BOTH outcomes:
     # re-created by the upgrade → drop the .old; not re-created (failure, or
     # the installer's "nothing to upgrade" fast path that skips entrypoints)
     # → rename it back, so a launcher never disappears.
@@ -196,6 +216,20 @@ def _build_bat(
     aside = "".join(
         f'if exist "{s}" move /y "{s}" "{s}.old" >nul 2>&1\n' for s in stubs
     )
+    relaunch_block = (
+        f"""rem Relaunch even after a failed upgrade: the previous version still runs,
+rem and the restarted GUI surfaces the failure flag immediately.
+netstat -ano | findstr /C:":{port} " | findstr /C:"LISTENING" >nul 2>&1
+if not errorlevel 1 (
+  echo [helper] litman already running again, not relaunching >> "%LOG%"
+  goto cleanup
+)
+echo [helper] relaunching >> "%LOG%"
+start "" {relaunch}
+"""
+        if relaunch
+        else ""
+    )
     settle = "".join(
         f'if exist "{s}.old" (\n'
         f'  if exist "{s}" (del "{s}.old" >nul 2>&1) '
@@ -206,21 +240,26 @@ def _build_bat(
     return f"""@echo off
 rem litman self-update helper (auto-generated; deletes itself on exit).
 set "LOG={log}"
-echo [helper] started, waiting for server pid {pid} >> "%LOG%"
+echo [helper] started, waiting for litman pid {pid} >> "%LOG%"
 set /a i=0
 :wait
 tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
 if errorlevel 1 goto gone
 set /a i+=1
 if %i% geq {timeout} (
-  echo [helper] gave up: server still running after {timeout}s >> "%LOG%"
+  echo [helper] gave up: litman still running after {timeout}s >> "%LOG%"
   echo timeout waiting for litman to exit > "{fail_flag}"
   goto cleanup
 )
 ping -n 2 127.0.0.1 >nul
 goto wait
 :gone
-echo [helper] server gone, upgrading >> "%LOG%"
+rem The pid waited on is litman's python. Its launcher stub is a SEPARATE
+rem parent process (uv's trampoline) that exits a moment later while still
+rem holding the very file the move below renames — one extra beat before
+rem touching anything.
+ping -n 3 127.0.0.1 >nul
+echo [helper] litman gone, upgrading >> "%LOG%"
 set "FAILED="
 {aside}{upgrade} >> "%LOG%" 2>&1 || set "FAILED=1"
 {settle}if defined FAILED (
@@ -229,16 +268,7 @@ set "FAILED="
 ) else (
   echo [helper] upgrade ok >> "%LOG%"
 )
-rem Relaunch even after a failed upgrade: the previous version still runs,
-rem and the restarted GUI surfaces the failure flag immediately.
-netstat -ano | findstr /C:":{port} " | findstr /C:"LISTENING" >nul 2>&1
-if not errorlevel 1 (
-  echo [helper] litman already running again, not relaunching >> "%LOG%"
-  goto cleanup
-)
-echo [helper] relaunching >> "%LOG%"
-start "" {relaunch}
-:cleanup
+{relaunch_block}:cleanup
 del "%~f0" & exit /b 0
 """
 
@@ -246,15 +276,15 @@ del "%~f0" & exit /b 0
 def write_and_spawn_helper(
     *,
     pid: int,
-    port: int,
+    port: int = 0,
     upgrade_cmd: list[str],
-    relaunch_cmd: list[str],
+    relaunch_cmd: list[str] | None = None,
     wait_timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
     stub_paths: list[Path] | None = None,
 ) -> Path:
     """Write the helper script to the system temp dir and spawn it detached.
 
-    Returns the script path. The spawned process must survive this server's
+    Returns the script path. The spawned process must survive litman's own
     exit: ``start_new_session`` on POSIX, a detached console-less ``cmd`` on
     Windows. Never blocks on the child.
     """

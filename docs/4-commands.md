@@ -828,6 +828,10 @@ Three installs it will not upgrade: an editable (development) checkout, a plain
 hand instead. It never runs `pip install --upgrade` into the interpreter it is
 running in.
 
+On Windows the upgrade starts the moment the command exits, so the prompt comes
+back before it has finished — give it a few seconds and check `lit --version`.
+The command prints the path of the log it writes.
+
 The Web UI does the same job without a terminal: when a new release is out, a
 chip with its version number appears next to the logo, and **Update & restart**
 closes litman, upgrades it, and reopens it. The same three installs are refused

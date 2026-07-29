@@ -37,13 +37,15 @@ behaviour, a minor release adds it, a major release breaks it.
   the GUI used to need one extra restart before the reminder could appear; it
   now shows up on the first start, within a few seconds.
 - **`lit self-update` works on Windows.** It used to fail every time with
-  "the process cannot access the file" — Windows will not overwrite the
-  running `lit.exe` — and a failed run could delete `litw.exe`, breaking the
-  desktop shortcut. The launchers are now moved aside for the upgrade and
-  always put back, missing launchers are restored automatically at the next
-  `lit gui`, and `lit gui --make-shortcut` says so out loud if it ever has to
-  fall back to the console launcher. The install scripts got the same guard
-  for the re-run-to-upgrade path.
+  "the process cannot access the file" — Windows will not let litman replace
+  its own `lit.exe` while it is running — and a failed run could delete
+  `litw.exe`, breaking the desktop shortcut. The upgrade now starts the moment
+  the command exits, the way the in-app update already worked; the command says
+  so and prints where to check. A launcher lost to an earlier failed upgrade is
+  restored automatically at the next `lit gui` or `lit self-update`, and
+  `lit gui --make-shortcut` says so out loud if it ever has to fall back to the
+  console launcher. The install scripts got the same guard for the
+  re-run-to-upgrade path.
 - **The documented Windows config directory was wrong.** The docs and
   `lit vault --help` pointed at `%APPDATA%\litman\`; the registry, and
   everything beside it, actually lives in `%LOCALAPPDATA%\litman\litman\`.

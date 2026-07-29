@@ -5,29 +5,34 @@ directory on PATH — ``lit.exe`` plus its console-less gui-scripts twin
 ``litw.exe``. Each stub embeds the absolute path of the tool venv's python, so
 a stub is version-agnostic: any copy of it launches whatever the venv holds.
 
-Two Windows facts drive everything here:
+The rule that shapes both self-update paths: **while litman runs, its own stub
+cannot be replaced, overwritten, or even renamed.** Windows refusing to
+overwrite a running image is the familiar half; the other half is that a uv
+trampoline keeps its own image open without share-delete, so renaming it fails
+with ERROR_SHARING_VIOLATION too. Measured, not assumed: an in-process
+"move the stubs aside first" guard renamed the idle ``litw.exe`` and silently
+skipped the running ``lit.exe``, and ``uv tool upgrade`` then died copying the
+new stub over the trampoline executing it (os error 32) exactly as before.
 
-* A running executable cannot be deleted or overwritten — but it CAN be
-  renamed. ``uv tool upgrade`` run from ``lit`` itself therefore always died
-  copying the new ``lit.exe`` over the very trampoline that was executing it
-  (os error 32). Moving the stubs aside first (``rename_aside``) clears the
-  destination; ``restore_or_clean`` afterwards either drops the ``.old`` copy
-  (the upgrade re-created the stub) or renames it back (it did not — e.g. uv's
-  "Nothing to upgrade" fast path never reinstalls entrypoints, and a bare
-  delete there would leave NO stub at all).
+Nothing here can therefore work around a live process. Both ``lit self-update``
+and the webUI's one-click update hand the upgrade to the detached helper (see
+:mod:`litman.core.self_update_helper`), which moves the stubs aside only once
+litman is gone. What is left in this module runs on a *quiet* install:
+
 * A half-failed upgrade can leave the venv current but a bin stub missing
   (uv does not re-lay entrypoints once its receipt says up-to-date). The venv
   ``Scripts`` dir still holds a good copy, so ``repair_missing_stubs`` heals
   offline with a plain file copy — no network, no version change.
+* ``cleanup_leftover_old`` drops a ``.old`` the helper could not remove
+  (its own running image is deletable only once that process is gone).
 
 Everything is best-effort: callers sit on user-facing command paths, so no
-function here raises on OSError; a stub that cannot be moved simply keeps
+function here raises on OSError; a stub that cannot be healed simply keeps
 today's behavior.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -60,47 +65,6 @@ def installed_stubs() -> list[Path]:
     if bin_dir is None:
         return []
     return [bin_dir / name for name in STUB_NAMES if (bin_dir / name).exists()]
-
-
-def rename_aside(stubs: list[Path]) -> list[tuple[Path, Path]]:
-    """Move each stub to ``<stub>.old`` so an upgrade can lay a fresh copy.
-
-    Returns the ``(original, old)`` pairs actually moved; a stub that cannot
-    be moved is skipped (the upgrade then behaves as it does today).
-    """
-    renamed: list[tuple[Path, Path]] = []
-    for stub in stubs:
-        old = stub.with_name(stub.name + OLD_SUFFIX)
-        try:
-            if old.exists():
-                old.unlink()
-        except OSError:
-            pass  # a locked leftover; os.replace below may still overwrite it
-        try:
-            os.replace(stub, old)
-        except OSError:
-            continue
-        renamed.append((stub, old))
-    return renamed
-
-
-def restore_or_clean(renamed: list[tuple[Path, Path]]) -> None:
-    """After the upgrade ran — success OR failure — settle each moved stub.
-
-    The upgrade re-created the stub → drop the ``.old`` copy. It did not
-    (failed upgrade, or uv's "Nothing to upgrade" fast path, which never
-    reinstalls entrypoints) → rename the ``.old`` back so the launcher never
-    disappears. Deleting unconditionally on success would brick the install
-    in that fast-path case, so this MUST run on both outcomes.
-    """
-    for stub, old in renamed:
-        try:
-            if stub.exists():
-                old.unlink(missing_ok=True)
-            else:
-                os.replace(old, stub)
-        except OSError:
-            continue
 
 
 def repair_missing_stubs(bin_dir: Path, source_dir: Path) -> list[str]:

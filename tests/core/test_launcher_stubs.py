@@ -1,13 +1,11 @@
 """Tests for the Windows launcher-stub primitives (task-win-update-hardening).
 
 The functions are pure path operations, so they run identically on POSIX with
-plain files standing in for the exes. The invariants under test are the two
-that killed a real install:
+plain files standing in for the exes. What is left here only ever runs on a
+*quiet* install — nothing in this module can move a launcher out from under a
+live litman, which is why both self-update paths upgrade from a detached
+helper (see :mod:`litman.core.self_update_helper`). The invariant under test:
 
-* ``restore_or_clean`` must settle stubs on BOTH outcomes — an upgrade that
-  never re-created the stub (failure, or uv's "Nothing to upgrade" fast path)
-  gets its original renamed back; deleting the ``.old`` unconditionally would
-  leave no launcher at all.
 * ``repair_missing_stubs`` heals a stub the installer lost (uv#11930 leaves
   the venv current but never re-lays entrypoints) by a plain offline copy.
 """
@@ -26,46 +24,20 @@ def _mk(p: Path, content: str = "exe") -> Path:
     return p
 
 
-# ------------------------------------------------------------ rename / settle
+# ----------------------------------------------------------- no in-place trick
 
 
-def test_rename_aside_moves_and_reports(tmp_path: Path) -> None:
-    lit = _mk(tmp_path / "lit.exe")
-    litw = _mk(tmp_path / "litw.exe")
-    renamed = stubs.rename_aside([lit, litw])
-    assert [(o.name, old.name) for o, old in renamed] == [
-        ("lit.exe", "lit.exe.old"),
-        ("litw.exe", "litw.exe.old"),
-    ]
-    assert not lit.exists() and not litw.exists()
-    assert lit.with_name("lit.exe.old").exists()
+def test_no_in_process_rename_helpers_survive() -> None:
+    """The 'move the running stub aside' guard is gone for good.
 
-
-def test_rename_aside_overwrites_a_stale_old(tmp_path: Path) -> None:
-    lit = _mk(tmp_path / "lit.exe", "new")
-    _mk(tmp_path / "lit.exe.old", "stale leftover")
-    renamed = stubs.rename_aside([lit])
-    assert len(renamed) == 1
-    assert (tmp_path / "lit.exe.old").read_text(encoding="utf-8") == "new"
-
-
-def test_settle_drops_old_when_upgrade_recreated_the_stub(tmp_path: Path) -> None:
-    lit = _mk(tmp_path / "lit.exe", "v1")
-    renamed = stubs.rename_aside([lit])
-    _mk(lit, "v2")  # the upgrade laid a fresh stub
-    stubs.restore_or_clean(renamed)
-    assert lit.read_text(encoding="utf-8") == "v2"
-    assert not lit.with_name("lit.exe.old").exists()
-
-
-def test_settle_restores_old_when_upgrade_did_not_recreate(tmp_path: Path) -> None:
-    """The brick guard: 'Nothing to upgrade' skips entrypoints — the moved
-    stub MUST come back or the install loses its only launcher."""
-    lit = _mk(tmp_path / "lit.exe", "v1")
-    renamed = stubs.rename_aside([lit])
-    stubs.restore_or_clean(renamed)  # upgrade wrote nothing
-    assert lit.read_text(encoding="utf-8") == "v1"
-    assert not lit.with_name("lit.exe.old").exists()
+    Measured on Windows 11 / uv 0.11: the idle ``litw.exe`` moved, the running
+    ``lit.exe`` raised ERROR_SHARING_VIOLATION, the failure was swallowed, and
+    ``uv tool upgrade`` died with os error 32 exactly as it had before.
+    Re-introducing either name would resurrect a guard that cannot work — the
+    upgrade must run from the detached helper.
+    """
+    assert not hasattr(stubs, "rename_aside")
+    assert not hasattr(stubs, "restore_or_clean")
 
 
 # --------------------------------------------------------------------- repair
