@@ -18,7 +18,7 @@ behaviour, a minor release adds it, a major release breaks it.
 - **litman installs from mainland China.** The install command is the same one
   everywhere, and it now works from inside China without a VPN: uv, the Python
   runtime and litman itself all arrive from sources that are reachable there,
-  and a first install takes about a minute.
+  and a first install takes seconds.
 
 ### Changed
 
