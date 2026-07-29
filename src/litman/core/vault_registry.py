@@ -20,7 +20,8 @@ Registry location resolution (precedence, highest first):
 2. ``platformdirs.user_config_dir("litman") / vaults.yaml``. On Linux
    that's ``~/.config/litman/vaults.yaml`` (XDG); on macOS
    ``~/Library/Application Support/litman/vaults.yaml``; on Windows
-   ``%APPDATA%\\litman\\vaults.yaml``.
+   ``%LOCALAPPDATA%\\litman\\litman\\vaults.yaml`` (platformdirs repeats the
+   name because litman passes no separate vendor).
 
 Design choices baked in:
 
@@ -72,7 +73,7 @@ REGISTRY_ENV_VAR = "LITMAN_REGISTRY_DIR"
 
 # Application name fed to platformdirs. Resolves to ``~/.config/litman``
 # on Linux, ``~/Library/Application Support/litman`` on macOS, and
-# ``%APPDATA%\litman`` on Windows.
+# ``%LOCALAPPDATA%\litman\litman`` on Windows.
 REGISTRY_APP_NAME = "litman"
 
 REGISTRY_FILENAME = "vaults.yaml"
@@ -102,7 +103,7 @@ def registry_path() -> Path:
        directory for backup or cross-machine sync.
     2. Otherwise, ``platformdirs.user_config_dir("litman") / vaults.yaml``
        — XDG on Linux, ``~/Library/Application Support`` on macOS,
-       ``%APPDATA%`` on Windows.
+       ``%LOCALAPPDATA%`` on Windows.
     """
     override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
     if override:

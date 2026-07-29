@@ -1,7 +1,7 @@
 # litman installer (Windows) — installs uv (if missing), then litman as a uv tool.
 #
 # Usage:
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://get.litman.dev/install.ps1 | iex"
 #
 # Idempotent: re-running upgrades an existing install. No admin rights —
 # everything lands under your user profile (uv's default tool location), and uv
@@ -34,7 +34,31 @@ if (Test-Cmd uv) {
 $toolList = cmd /c "uv tool list 2>nul"
 if ($toolList -match '(?m)^litman') {
     Write-Host "Upgrading litman..."
+    # Clear the launcher paths so uv's entrypoint copy lands on empty names,
+    # then settle afterwards: re-created by the upgrade -> drop the .old; not
+    # re-created (failure, or uv's "Nothing to upgrade" fast path that skips
+    # entrypoints) -> rename it back, so a launcher never disappears.
+    # This cannot rescue an upgrade run while litman is open: Windows refuses
+    # even to RENAME a live exe, so the move is skipped and uv dies copying the
+    # new stub over the running one. Close litman first.
+    $moved = @()
+    foreach ($name in @("lit.exe", "litw.exe")) {
+        $stub = Join-Path $ToolBin $name
+        if (Test-Path $stub) {
+            try {
+                Move-Item -Force $stub "$stub.old" -ErrorAction Stop
+                $moved += $stub
+            } catch {}
+        }
+    }
     uv tool upgrade litman
+    foreach ($stub in $moved) {
+        if (Test-Path $stub) {
+            Remove-Item "$stub.old" -Force -ErrorAction SilentlyContinue
+        } else {
+            Move-Item -Force "$stub.old" $stub -ErrorAction SilentlyContinue
+        }
+    }
 } else {
     Write-Host "Installing litman..."
     uv tool install litman

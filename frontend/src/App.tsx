@@ -262,9 +262,12 @@ export default function App() {
   // normal three-column view). Gates the mount seed + list load so a no-vault
   // server never fires a storm of 409s behind the welcome page.
   const [served, setServed] = useState<string | null | undefined>(undefined)
-  // The newer litman version on PyPI (null = up to date / unknown). Read once on
-  // mount from the server's update-check cache; drives the TopBar update dot.
+  // The newer litman version on PyPI (null = up to date / unknown). Read on
+  // mount from the server's update-check cache; drives the TopBar update chip.
   const [updateLatest, setUpdateLatest] = useState<string | null>(null)
+  // The server's own version, from the same /api/version read — the chip's
+  // popover shows "You have X".
+  const [versionCurrent, setVersionCurrent] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -630,10 +633,35 @@ export default function App() {
     // bootstrapping, `null` = welcome page (no vault to seed from).
     if (!served) return
     fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
-    // Update-check badge: pure cache read, best-effort (a failure just leaves
-    // the dot off — this is a passive reminder, never blocking).
+    // Update-check chip: pure cache read, best-effort (a failure just leaves
+    // the chip off — this is a passive reminder, never blocking). A null
+    // `latest` on the FIRST read can also mean the server's background cache
+    // refresh (its network fetch is bounded at 2s) hasn't landed yet — without
+    // a retry the chip would always be one app start late. One re-read at 3s
+    // is strictly after that refresh has finished or given up.
+    let versionRetry: ReturnType<typeof setTimeout> | undefined
     fetchVersion()
-      .then((v) => setUpdateLatest(v.latest))
+      .then((v) => {
+        setVersionCurrent(v.current)
+        setUpdateLatest(v.latest)
+        // A failed one-click update left a note behind (the server surfaces
+        // it once per run) — tell the user the app is still on the old
+        // version and hand them the manual path.
+        if (v.selfUpdateFailed) {
+          notify(
+            `Automatic update failed (${v.selfUpdateFailed}). ` +
+              'You are still on the previous version — run `lit self-update` in a terminal.',
+            'error',
+            { sticky: true },
+          )
+        }
+        if (v.latest) return
+        versionRetry = setTimeout(() => {
+          fetchVersion()
+            .then((again) => setUpdateLatest(again.latest))
+            .catch(() => {})
+        }, 3000)
+      })
       .catch(() => {})
     // Link-capability advisory: cheap (one cached probe server-side) so it
     // can run on load, unlike the Tier-2 health panel. Best-effort — a failure
@@ -677,7 +705,8 @@ export default function App() {
         // library the vault-gone one.
         classifyFetchError(err)
       })
-  }, [served, loadTrash, classifyFetchError])
+    return () => clearTimeout(versionRetry)
+  }, [served, loadTrash, classifyFetchError, notify])
 
   useEffect(() => {
     if (!served) return
@@ -1737,6 +1766,7 @@ export default function App() {
       <TopBar
         vaults={vaults}
         updateAvailable={updateLatest}
+        currentVersion={versionCurrent}
         projects={projects}
         allPapers={allPapers}
         search={search}

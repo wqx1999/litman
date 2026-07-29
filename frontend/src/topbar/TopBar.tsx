@@ -11,6 +11,7 @@ import type {
 import type { Candidate } from '../search'
 import { projectHealth } from '../projects'
 import {
+  ApiError,
   createProject,
   deleteProject,
   fetchAgentStatus,
@@ -18,6 +19,7 @@ import {
   installAgentSkill,
   launchAgent,
   listDir,
+  postSelfUpdate,
   renameProject,
   setDefaultAgent,
   setProjectPath,
@@ -32,8 +34,11 @@ import PathField, { describeLocation } from '../ui/PathField'
 interface Props {
   vaults: VaultsPayload | null
   /** The newer litman version available on PyPI (null = up to date / unknown).
-   * From the read-only /api/version cache; drives the update dot on the logo. */
+   * From the read-only /api/version cache; drives the update chip by the logo. */
   updateAvailable?: string | null
+  /** The running litman version, from the same /api/version read — the update
+   * chip's popover shows "You have X". */
+  currentVersion?: string | null
   /** Registered projects backing the global Projects manager (P4). */
   projects: ProjectEntry[]
   /** Full INDEX projection — backs the delete-project confirm's "N papers" count. */
@@ -138,6 +143,7 @@ interface Props {
 export default function TopBar({
   vaults,
   updateAvailable,
+  currentVersion,
   projects,
   allPapers,
   search,
@@ -173,6 +179,35 @@ export default function TopBar({
 }: Props) {
   const [showProjects, setShowProjects] = useState(false)
   const [showVaults, setShowVaults] = useState(false)
+  const [updateOpen, setUpdateOpen] = useState(false)
+  // One-click update lifecycle: 'busy' while POST /api/self-update is in
+  // flight, 'closing' once accepted (full-screen overlay; the server is going
+  // down and the helper takes over). A 409 lands in updateRefused, whose text
+  // replaces the button and carries its own manual instructions — the popover
+  // offers one action, never a button and a command to choose between.
+  const [updatePhase, setUpdatePhase] = useState<null | 'busy' | 'closing'>(null)
+  const [updateRefused, setUpdateRefused] = useState<string | null>(null)
+
+  const startSelfUpdate = () => {
+    if (updatePhase) return
+    setUpdatePhase('busy')
+    postSelfUpdate()
+      .then(() => {
+        setUpdatePhase('closing')
+        // Give the overlay a beat to paint, then try to close the app window
+        // (best-effort: a plain browser tab may refuse — the overlay text
+        // covers that). The helper relaunches the GUI once the upgrade lands.
+        setTimeout(() => window.close(), 800)
+      })
+      .catch((err) => {
+        setUpdatePhase(null)
+        setUpdateRefused(
+          err instanceof ApiError
+            ? err.message
+            : 'Could not start the update — run `lit self-update` in a terminal.',
+        )
+      })
+  }
   // Hand the opener up to App (the vault-gone banner drives it). `setShowVaults`
   // is stable, so unlike the agent opener this needs no ref to stay identity-safe.
   useEffect(() => {
@@ -514,25 +549,72 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <div
-        className="relative shrink-0"
-        title={
-          updateAvailable
-            ? `litman ${updateAvailable} available — run \`lit self-update\``
-            : 'litman'
-        }
-      >
+      <div className="relative shrink-0" title="litman">
         <LitmanMark className="h-6 w-6 select-none text-stone-800" />
-        {updateAvailable && (
-          <span
-            aria-label={`Update available: litman ${updateAvailable}`}
-            className="pointer-events-none absolute -right-1 -top-1 h-2.5 w-2.5"
-          >
-            <span className="absolute inset-0 rounded-full bg-accent-500 animate-update-halo" />
-            <span className="absolute inset-0 rounded-full bg-accent-500 ring-2 ring-stone-50" />
-          </span>
-        )}
       </div>
+
+      {/* Update chip: a labelled pill, not a bare dot — a 10px dot next to the
+          logo reads as part of the artwork; text can't be mistaken for it. */}
+      {updateAvailable && (
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setUpdateOpen((v) => !v)}
+            title={`litman ${updateAvailable} is available`}
+            aria-label={`Update available: litman ${updateAvailable}`}
+            className="flex items-center gap-0.5 rounded-full bg-accent-500/10 px-2 py-0.5 text-[11px] font-semibold text-accent-600 transition duration-200 ease-fluid hover:bg-accent-500/20"
+          >
+            <span aria-hidden="true">↑</span>
+            {updateAvailable}
+          </button>
+          {updateOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setUpdateOpen(false)}
+              />
+              <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-stone-200 bg-stone-50 p-3 shadow-lg shadow-stone-900/10">
+                <div className="text-sm font-medium text-stone-800">
+                  litman {updateAvailable} is available
+                </div>
+                {currentVersion && (
+                  <div className="mt-0.5 text-xs text-stone-500">
+                    You have {currentVersion}.
+                  </div>
+                )}
+                {updateRefused ? (
+                  <div className="mt-2 text-xs text-amber-700">{updateRefused}</div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startSelfUpdate}
+                    disabled={updatePhase !== null}
+                    className="mt-2 w-full rounded-lg bg-accent-500 px-3 py-1.5 text-sm font-medium text-white transition duration-200 ease-fluid hover:bg-accent-600 disabled:opacity-60"
+                  >
+                    {updatePhase ? 'Starting…' : 'Update & restart'}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+          {updatePhase === 'closing' &&
+            createPortal(
+              <div className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-50/95 backdrop-blur-sm">
+                <div className="max-w-sm px-6 text-center">
+                  <div className="text-base font-medium text-stone-800">
+                    Updating litman…
+                  </div>
+                  <div className="mt-2 text-sm text-stone-500">
+                    This window will close, and litman reopens by itself when
+                    the update finishes. If the window stays open, you can
+                    close it yourself.
+                  </div>
+                </div>
+              </div>,
+              document.body,
+            )}
+        </div>
+      )}
 
       {!trashMode && (
       <>

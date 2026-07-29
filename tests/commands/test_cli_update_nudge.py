@@ -153,3 +153,113 @@ def test_update_nudge_skipped_for_help(
     result = CliRunner().invoke(cli, ["help"])
     assert result.exit_code == 0, result.output
     assert _TIP not in result.output
+
+
+def test_update_nudge_fires_on_hello(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit hello` answers "is litman installed and healthy?" — a newer
+    release belongs in that answer, so hello is NOT in the nudge skip set
+    (task-hello-update-nudge; it stays exempt from the drift prompt)."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+
+    result = CliRunner().invoke(cli, ["hello"])
+    assert result.exit_code == 0, result.output
+    assert "litman 9.9.9 is available (you have 1.1.0)" in result.stderr
+
+
+def test_hello_reports_every_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit hello` ignores the once-a-day cap: it is the command you run to ask
+    whether litman is OK, so it has to answer even about a release an earlier
+    command already mentioned. It also must not spend the cap itself — the
+    ordinary passive tip still has its one shot afterwards."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+
+    first = CliRunner().invoke(cli, ["hello"])
+    second = CliRunner().invoke(cli, ["hello"])
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert _TIP in first.stderr
+    assert _TIP in second.stderr  # would be silent under the 24h cap
+
+    after = CliRunner().invoke(cli, ["list"])
+    assert after.exit_code == 0, after.output
+    assert _TIP in after.stderr  # hello never stamped last_nudged_at
+
+
+def test_ordinary_command_still_capped_after_hello(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The uncapped path is hello's alone — `lit list` keeps nudging once."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+
+    CliRunner().invoke(cli, ["hello"])
+    first = CliRunner().invoke(cli, ["list"])
+    second = CliRunner().invoke(cli, ["list"])
+    assert _TIP in first.stderr
+    assert _TIP not in second.stderr
+
+
+def test_hello_reports_to_an_agent_without_touching_the_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off a TTY `lit hello` still reports — an agent runs it on behalf of a
+    user who may never type a lit command — but from the cache alone, and
+    worded so the agent relays instead of upgrading litman under itself."""
+    _seed_active_vault(tmp_path)
+    calls = _mock_fetch(monkeypatch, "9.9.9")
+    update_check._write_cache(
+        {"checked_at": update_check._utcnow().isoformat(), "latest": "9.9.9"}
+    )
+
+    result = CliRunner().invoke(cli, ["hello"])  # default runner: not a TTY
+    assert result.exit_code == 0, result.output
+    # Rich hard-wraps to the console width, so compare on normalised spacing.
+    said = " ".join(result.stderr.split())
+    assert "litman 9.9.9 is available (you have 1.1.0)" in said
+    assert "do not upgrade litman yourself" in said
+    assert "run 'lit self-update'" not in said
+    assert calls == []  # zero network off a TTY, red line intact
+
+
+def test_hello_silent_off_tty_without_a_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cache and no TTY → hello says nothing and still makes no request:
+    the agent path reads what the GUI / the user's own commands left behind."""
+    _seed_active_vault(tmp_path)
+    calls = _mock_fetch(monkeypatch, "9.9.9")
+
+    result = CliRunner().invoke(cli, ["hello"])
+    assert result.exit_code == 0, result.output
+    assert _TIP not in result.stderr
+    assert calls == []
+
+
+def test_update_nudge_skipped_for_self_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit self-update` is in the skip set: the running process still carries
+    the pre-upgrade version, so right after a successful upgrade the tip would
+    advertise the very release it just installed."""
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+    # The editable-install branch: prints the manual hint and exits 0 without
+    # ever shelling out — the lightest way to drive the command to completion.
+    monkeypatch.setattr(
+        "litman.commands.self_update._is_editable_install", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    assert _TIP not in result.stdout
+    assert _TIP not in result.stderr

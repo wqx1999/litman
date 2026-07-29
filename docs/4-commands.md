@@ -46,8 +46,8 @@ several vaults.
 **Registry location.** The registry lives at `$LITMAN_REGISTRY_DIR/vaults.yaml`
 when that variable is set (use it to put the registry in a cloud-synced
 directory), otherwise the platform config dir: `~/.config/litman/` on
-Linux / WSL, `~/Library/Application Support/litman/` on macOS, `%APPDATA%\litman\`
-on Windows.
+Linux / WSL, `~/Library/Application Support/litman/` on macOS,
+`%LOCALAPPDATA%\litman\litman\` on Windows.
 
 ---
 
@@ -828,6 +828,15 @@ Three installs it will not upgrade: an editable (development) checkout, a plain
 hand instead. It never runs `pip install --upgrade` into the interpreter it is
 running in.
 
+On Windows the upgrade starts the moment the command exits, so the prompt comes
+back before it has finished — give it a few seconds and check `lit --version`.
+The command prints the path of the log it writes.
+
+The Web UI does the same job without a terminal: when a new release is out, a
+chip with its version number appears next to the logo, and **Update & restart**
+closes litman, upgrades it, and reopens it. The same three installs are refused
+there, with the reason shown in the chip.
+
 ```
 lit self-update
 lit self-update --yes
@@ -841,6 +850,11 @@ lit self-update --yes
 version number and print a line when yours is older. The answer is cached for
 24 hours at `<registry dir>/update-check.json`, the request times out after two
 seconds, and a failure — offline, slow, malformed — is swallowed silently.
+
+That line appears once a day, so it cannot trail every command in a working
+session. `lit hello` is the exception: it reports a newer release every time
+you run it, and it is the one command that reports it to a coding agent as
+well — so an agent working on your library can pass a new release on to you.
 
 Set `LITMAN_NO_UPDATE_CHECK=1` to switch it off, cache and all. litman sends no
 telemetry: the request asks PyPI for a version number and says nothing about

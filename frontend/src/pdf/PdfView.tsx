@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import * as pdfjsLib from 'pdfjs-dist'
 import { AnnotationEditorType, AnnotationEditorParamsType } from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { EventBus, PDFLinkService, PDFViewer } from 'pdfjs-dist/web/pdf_viewer.mjs'
+import { EventBus, LinkTarget, PDFLinkService, PDFViewer } from 'pdfjs-dist/web/pdf_viewer.mjs'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 // pdf_viewer ships the text / annotation / annotation-editor layer CSS; import
 // it so vite bundles the rules the viewer's DOM relies on.
@@ -571,7 +571,14 @@ export default function PdfView({
 
     const eventBus = new EventBus()
     eventBusRef.current = eventBus
-    const linkService = new PDFLinkService({ eventBus })
+    // BLANK: external links open a fresh window/tab instead of navigating the
+    // SPA away (the app window IS the application — losing it kills the UI).
+    // Internal destinations (outline / in-document anchors) are unaffected.
+    // externalLinkRel already defaults to noopener noreferrer nofollow.
+    const linkService = new PDFLinkService({
+      eventBus,
+      externalLinkTarget: LinkTarget.BLANK,
+    })
     // Supplies pdf.js's comment contract; its presence switches FreeText off the
     // legacy "render my text as a hover popup" path. We capture notes inline, so
     // its dialog is never invoked (openDialog returns undefined).

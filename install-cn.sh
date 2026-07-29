@@ -12,12 +12,32 @@
 set -eu
 
 # --- mainland-China download sources -----------------------------------------
-# Managed Python (python-build-standalone) is the one uv download that still
-# comes from github.com, and github.com answers it with a redirect to
-# release-assets.githubusercontent.com, which is blocked. get.litman.dev is a
-# Cloudflare Worker that follows that redirect server-side and streams the
-# bytes back, so nothing here ever hits a blocked host.
-UV_PYTHON_INSTALL_MIRROR="https://get.litman.dev/gh/astral-sh/python-build-standalone/releases/download"
+# Three things get downloaded: the uv binary, the Python runtime uv manages, and
+# the litman wheel. From mainland China the upstream hosts for the first two are
+# blocked outright — github.com redirects release assets to
+# release-assets.githubusercontent.com, and Astral's own CDN is reset at the TLS
+# layer — so each is pointed somewhere reachable.
+#
+# University mirrors serve both, from inside the country, roughly a hundred
+# times faster than anything that crosses the border. They are not ours, though:
+# they carry a self-chosen subset of GitHub releases and prune it as they like.
+# So when a mirror does not answer, the download falls back to get.litman.dev, a
+# Cloudflare Worker that follows GitHub's redirect server-side. Mirrors make it
+# fast; the Worker makes it certain.
+NJU_PYTHON="https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone"
+USTC_UV="https://mirrors.ustc.edu.cn/github-release/astral-sh/uv/LatestRelease"
+WORKER="https://get.litman.dev"
+
+# A mirror counts as usable if it answers a HEAD within five seconds. The probe
+# asks for a directory rather than a file: mirrors prune old releases, and
+# pinning a filename would read a routine prune as an outage.
+mirror_alive() { curl -fsI -m 5 -o /dev/null "$1" 2>/dev/null; }
+
+if mirror_alive "$NJU_PYTHON/"; then
+    UV_PYTHON_INSTALL_MIRROR="$NJU_PYTHON"
+else
+    UV_PYTHON_INSTALL_MIRROR="$WORKER/gh/astral-sh/python-build-standalone/releases/download"
+fi
 export UV_PYTHON_INSTALL_MIRROR
 
 # The litman wheel comes from the Tsinghua TUNA PyPI mirror — full automatic
@@ -25,34 +45,55 @@ export UV_PYTHON_INSTALL_MIRROR
 # receipt, so `lit self-update` (uv tool upgrade litman) keeps using it too.
 UV_DEFAULT_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
 export UV_DEFAULT_INDEX
-
-# The uv binary needs the proxy too. The installer script (UV_INSTALLER_URL
-# below) downloads fine from mainland China, but both hosts it then pulls the
-# binary from are reset at the TLS layer there: releases.astral.sh, Astral's own
-# CDN, and github.com, its fallback. This variable replaces that whole list;
-# losing the fallback costs nothing when neither entry is reachable anyway.
-UV_INSTALLER_GITHUB_BASE_URL="https://get.litman.dev/gh"
-export UV_INSTALLER_GITHUB_BASE_URL
 # -----------------------------------------------------------------------------
 
-UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
 # uv places tool executables here by default (honours XDG_BIN_HOME).
 TOOL_BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 
 info() { printf '%s\n' "$*"; }
+
+# uv's installer verifies a sha256 pinned per release inside the script itself,
+# so the script and the binary it fetches have to come from the same place: an
+# upstream script pointed at a mirror that lags a release fails the checksum and
+# installs nothing. Each branch below is therefore self-consistent, and clears
+# the other branch's variable — UV_DOWNLOAD_URL outranks
+# UV_INSTALLER_GITHUB_BASE_URL, so leaving both set produces exactly the broken
+# combination.
+install_uv_from_mirror() {
+    unset UV_INSTALLER_GITHUB_BASE_URL
+    UV_DOWNLOAD_URL="$USTC_UV"
+    export UV_DOWNLOAD_URL
+    curl -LsSf "$USTC_UV/uv-installer.sh" | sh
+}
+
+install_uv_from_worker() {
+    unset UV_DOWNLOAD_URL
+    UV_INSTALLER_GITHUB_BASE_URL="$WORKER/gh"
+    export UV_INSTALLER_GITHUB_BASE_URL
+    curl -LsSf "https://astral.sh/uv/install.sh" | sh
+}
 
 installed_uv=0
 
 if command -v uv >/dev/null 2>&1; then
     info "uv already installed — skipping."
 else
-    info "Installing uv (astral.sh)…"
-    curl -LsSf "$UV_INSTALLER_URL" | sh
-    installed_uv=1
+    info "Installing uv…"
+    if mirror_alive "$USTC_UV/uv-installer.sh"; then
+        # Tolerate failure here: the check below decides whether it worked.
+        install_uv_from_mirror || true
+    fi
     # uv's bin dir is not on PATH until the shell is reopened; prepend it so the
     # rest of THIS script run can call uv and, later, lit.
     PATH="$TOOL_BIN:$PATH"
     export PATH
+    # Ask the filesystem rather than an exit code. A piped installer reports the
+    # status of `sh`, which happily succeeds on empty input when the download
+    # failed, so only the presence of uv proves anything.
+    if ! command -v uv >/dev/null 2>&1; then
+        install_uv_from_worker
+    fi
+    installed_uv=1
 fi
 
 if uv tool list 2>/dev/null | grep -q '^litman'; then

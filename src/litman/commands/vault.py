@@ -67,9 +67,9 @@ def vault_group() -> None:
       1. $LITMAN_REGISTRY_DIR/vaults.yaml when that env var is set — use
          it to redirect the registry into a cloud-synced directory.
       2. Otherwise the platform-default config dir:
-           ~/.config/litman/                    on Linux
-           ~/Library/Application Support/litman/ on macOS
-           %APPDATA%\\litman\\                    on Windows
+           ~/.config/litman/                     on Linux
+           ~/Library/Application Support/litman/  on macOS
+           %LOCALAPPDATA%\\litman\\litman\\          on Windows
 
     At any moment exactly one vault is active: the vault every other
     lit command resolves to by default (after the explicit

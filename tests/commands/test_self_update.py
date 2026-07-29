@@ -180,3 +180,102 @@ def test_confirm_abort_skips_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
     result = CliRunner().invoke(cli, ["self-update"], input="n\n")
     assert result.exit_code != 0  # click abort
     assert ran == []
+
+
+# ---------------------------------------------------------------------------
+# Windows: the upgrade is handed to the detached helper
+# ---------------------------------------------------------------------------
+#
+# Windows locks the launcher stub this very command runs from — it can neither
+# be overwritten nor renamed aside, so an in-process `uv tool upgrade` always
+# dies with os error 32. The whole point of the win32 branch is that the
+# upgrade subprocess NEVER runs here; it runs after this process is gone.
+
+
+def _wire_windows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Pretend win32 and capture what gets handed to the detached helper."""
+    monkeypatch.setattr(su.sys, "platform", "win32")
+    monkeypatch.setattr(
+        su.launcher_stubs, "installed_stubs", lambda: ["lit.exe", "litw.exe"]
+    )
+    monkeypatch.setattr(su.launcher_stubs, "repair_default", lambda: [])
+
+    spawned: list[dict[str, object]] = []
+
+    def _spawn(**kwargs: object) -> object:
+        spawned.append(kwargs)
+        return "/tmp/helper.bat"
+
+    monkeypatch.setattr(su.self_update_helper, "write_and_spawn_helper", _spawn)
+    return spawned
+
+
+def test_windows_hands_the_upgrade_to_the_detached_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran = _wire_dispatch(monkeypatch, manager="uv")
+    spawned = _wire_windows(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    # The upgrade did NOT run in this process — that is the entire fix.
+    assert ["uv", "tool", "upgrade", "litman"] not in ran
+    [call] = spawned
+    assert call["upgrade_cmd"] == ["/usr/bin/uv", "tool", "upgrade", "litman"]
+    assert call["stub_paths"] == ["lit.exe", "litw.exe"]
+    assert call["pid"] == su.os.getpid()
+    # No relaunch: a terminal command that respawns a terminal is a surprise.
+    assert not call.get("relaunch_cmd")
+    assert "lit --version" in result.output
+
+
+def test_windows_helper_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A helper that cannot be spawned must fail loudly, not pretend success —
+    the user would otherwise wait forever for an upgrade nobody started."""
+    _wire_dispatch(monkeypatch, manager="uv")
+    monkeypatch.setattr(su.sys, "platform", "win32")
+    monkeypatch.setattr(su.launcher_stubs, "installed_stubs", lambda: [])
+    monkeypatch.setattr(su.launcher_stubs, "repair_default", lambda: [])
+
+    def _boom(**kwargs: object) -> object:
+        raise OSError("no temp dir")
+
+    monkeypatch.setattr(su.self_update_helper, "write_and_spawn_helper", _boom)
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SelfUpdateError)
+    assert "upgrade helper" in str(result.exception)
+
+
+def test_posix_upgrades_in_process_without_the_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The detour is Windows-only: POSIX keeps the synchronous upgrade, whose
+    live installer output is the better experience."""
+    ran = _wire_dispatch(monkeypatch, manager="uv")
+    monkeypatch.setattr(su.sys, "platform", "linux")
+    spawned: list[object] = []
+    monkeypatch.setattr(
+        su.self_update_helper,
+        "write_and_spawn_helper",
+        lambda **kw: spawned.append(kw),
+    )
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    assert ["uv", "tool", "upgrade", "litman"] in ran
+    assert spawned == []
+
+
+def test_missing_launcher_is_healed_before_upgrading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A previous half-failed upgrade can leave the venv current but a stub
+    gone; heal it on the way in, and say so."""
+    _wire_dispatch(monkeypatch, manager="uv")
+    monkeypatch.setattr(su.launcher_stubs, "repair_default", lambda: ["litw.exe"])
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    assert "restored missing launcher litw.exe" in result.output

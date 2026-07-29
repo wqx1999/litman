@@ -87,14 +87,14 @@ Command-line only — you install the tool before any agent or Web UI can use it
 One line installs litman and everything it needs, and puts `lit` on your PATH:
 
 ```console
-$ curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
+$ curl -LsSf https://get.litman.dev/install.sh | sh
 $ lit --version          # confirms lit is installed and on your PATH
 ```
 
 On Windows, run the PowerShell one-liner instead:
 
 ```console
-> powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/wqx1999/litman/main/install.ps1 | iex"
+> powershell -ExecutionPolicy ByPass -c "irm https://get.litman.dev/install.ps1 | iex"
 ```
 
 Prefer [pipx](https://pipx.pypa.io/)? `pipx install litman` works too (then run

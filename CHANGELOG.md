@@ -5,6 +5,59 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.2 — unreleased
+
+### Added
+
+- **Update from inside litman.** The update chip now has an “Update &
+  restart” button: litman closes itself, upgrades, and reopens — no terminal
+  needed. If the update cannot run (for example litman was not installed via
+  uv or pipx), the chip explains why instead. If the upgrade itself fails,
+  litman comes back on the version you were already on and tells you what
+  went wrong, rather than leaving you with a window that never returns.
+- **litman installs from mainland China.** The install command is the same one
+  everywhere, and it now works from inside China without a VPN: uv, the Python
+  runtime and litman itself all arrive from sources that are reachable there,
+  and a first install takes seconds.
+
+### Changed
+
+- **The update reminder is now a labelled chip.** When a new release is out, a
+  small chip with the new version number appears next to the logo, instead of
+  a bare blue dot. Click it to see the version you are on and update from
+  there.
+
+### Fixed
+
+- **Links now open in a new window.** Clicking a hyperlink inside a paper's
+  PDF — or an external link in notes / discussion — used to navigate the
+  litman window itself away from the app. External links now open a separate
+  window; wikilinks and in-PDF outline jumps behave exactly as before.
+- **The update reminder no longer skips the first start.** After a release,
+  the GUI used to need one extra restart before the reminder could appear; it
+  now shows up on the first start, within a few seconds.
+- **`lit self-update` works on Windows.** It used to fail every time with
+  "the process cannot access the file" — Windows will not let litman replace
+  its own `lit.exe` while it is running — and a failed run could delete
+  `litw.exe`, breaking the desktop shortcut. The upgrade now starts the moment
+  the command exits, the way the in-app update already worked; the command says
+  so and prints where to check. A launcher lost to an earlier failed upgrade is
+  restored automatically at the next `lit gui` or `lit self-update`, and
+  `lit gui --make-shortcut` says so out loud if it ever has to fall back to the
+  console launcher. The install scripts got the same guard for the
+  re-run-to-upgrade path.
+- **The documented Windows config directory was wrong.** The docs and
+  `lit vault --help` pointed at `%APPDATA%\litman\`; the registry, and
+  everything beside it, actually lives in `%LOCALAPPDATA%\litman\litman\`.
+  Nothing moved — only the description was wrong.
+- **`lit hello` now mentions available updates**, and says so every time you
+  ask — other commands mention a new release once a day, so that the tip does
+  not trail every command in a working session, but `lit hello` is how you
+  check on purpose. It is also the one command that reports this to a coding
+  agent, which runs `lit hello` to check on litman: if you only ever reach
+  litman through an agent, the agent can now pass a new release on to you.
+  `lit hello` keeps skipping the interactive registry prompts.
+
 ## 1.3.1 — 2026-07-26
 
 ### Added

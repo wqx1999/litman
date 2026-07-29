@@ -2,7 +2,7 @@
 # litman installer — installs uv (if missing), then litman as a uv tool.
 #
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/wqx1999/litman/main/install.sh | sh
+#   curl -LsSf https://get.litman.dev/install.sh | sh
 #
 # Idempotent: re-running upgrades an existing install and exits 0. No sudo —
 # everything lands under $HOME (uv's default tool location), and uv fetches its

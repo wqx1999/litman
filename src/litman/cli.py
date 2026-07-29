@@ -93,6 +93,24 @@ class LitGroup(click.Group):
     #   the help message; don't ambush them with a registry prompt
     _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", None})
 
+    # The post-dispatch nudges (staleness / update tip) are passive stderr
+    # one-liners, so they get their own skip set: `hello` answers "is litman
+    # installed and healthy?" and "a newer litman exists" belongs in that
+    # answer — it stays exempt only from the interactive drift prompt above.
+    # `self-update` skips for the opposite reason: the running process still
+    # carries the pre-upgrade version, so right after a successful upgrade the
+    # tip would advertise the very release it just installed.
+    _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", "self-update", None})
+
+    # Commands that report an available update every single time, ignoring the
+    # once-a-day cap that keeps the tip from trailing every command in a
+    # working session, and ignoring the TTY gate the other commands sit behind.
+    # `hello` is the "is my litman OK?" question — a cap would make it stay
+    # silent about a release the user dismissed once and now wants to find, and
+    # the TTY gate would hide it from the agent that runs `lit hello` on the
+    # behalf of a user who never types a lit command at all.
+    _NUDGE_UNCAPPED: frozenset[str | None] = frozenset({"hello"})
+
     # Lazy command table: command name (kebab, as it appears in
     # _COMMAND_SECTIONS) → "module:attr". Nothing here is imported until
     # get_command resolves it, so `lit gui` pulls in only gui's import chain,
@@ -189,14 +207,14 @@ class LitGroup(click.Group):
             self._run_drift_hook()
         result = super().invoke(ctx)
         # Post-dispatch staleness nudge (M30 Phase 5), dual to the pre-dispatch
-        # drift hook. Fires on the normal return path; same skip gate as the
-        # drift hook (bare `lit` / `lit --help` / `lit help` / `lit hello` do
-        # not nudge). A command that raises SystemExit (Click's normal exit
-        # path, e.g. `health-check` exit 1) bypasses this — accepted limitation;
-        # the nudge is a passive reminder, not a guarantee on every exit path.
-        if cmd_name not in self._DRIFT_SKIP:
+        # drift hook but with its own narrower gate (bare `lit` / `lit --help`
+        # / `lit help` do not nudge; `hello` does — see _NUDGE_SKIP). A command
+        # that raises SystemExit (Click's normal exit path, e.g.
+        # `health-check` exit 1) bypasses this — accepted limitation; the
+        # nudge is a passive reminder, not a guarantee on every exit path.
+        if cmd_name not in self._NUDGE_SKIP:
             self._emit_staleness_nudge()
-            self._emit_update_nudge()
+            self._emit_update_nudge(uncapped=cmd_name in self._NUDGE_UNCAPPED)
         return result
 
     def resolve_command(
@@ -588,7 +606,7 @@ class LitGroup(click.Group):
             pass
 
     @staticmethod
-    def _emit_update_nudge() -> None:
+    def _emit_update_nudge(*, uncapped: bool = False) -> None:
         """Post-dispatch PyPI update nudge (task-self-update D2).
 
         A passive one-liner on stderr when a newer litman is on PyPI. Sibling of
@@ -603,21 +621,48 @@ class LitGroup(click.Group):
         nudge reads the freshened cache. Frequency is capped at once per 24h via
         ``last_nudged_at`` in the cache. Wrapped so any failure degrades to a
         silent skip and never crashes the user's command.
+
+        ``uncapped`` (see ``_NUDGE_UNCAPPED``) reports through a pure read
+        instead: no cap to obey and no timestamp written, so asking again keeps
+        working and the daily budget of the ordinary passive tip is left alone.
+        It also answers on a non-TTY, the one deliberate hole in the gate above:
+        an agent runs ``lit hello`` to see whether litman is there, and a user
+        who only ever meets litman through an agent has no other way to hear
+        that a release exists. The zero-network half of the red line still
+        holds — off a TTY this reads the cache the GUI and the user's own
+        commands keep fresh, and never reaches for the network itself.
         """
         try:
             from litman.commands._drift import _default_tty_probe
             from litman.core import update_check
 
-            if not _default_tty_probe() or update_check.opt_out():
+            if update_check.opt_out():
                 return
-            update_check.refresh_cache_if_stale()
-            due = update_check.consume_nudge()
+            tty = _default_tty_probe()
+            if not tty and not uncapped:
+                return
+            if tty:
+                update_check.refresh_cache_if_stale()
+            due = (
+                update_check.available_update()
+                if uncapped
+                else update_check.consume_nudge()
+            )
             if due is None:
                 return
             current, latest = due
+            # Off a TTY the only reader is an agent, and "run 'lit self-update'"
+            # is an instruction it would happily carry out — swapping litman
+            # underneath its own session, possibly mid-write, possibly while the
+            # GUI holds the tool venv open. Point it at the user instead.
+            action = (
+                "run 'lit self-update'"
+                if tty
+                else "tell the user; do not upgrade litman yourself"
+            )
             Console(stderr=True).print(
                 f"[dim]tip: litman {latest} is available (you have {current}) "
-                "— run 'lit self-update'[/dim]"
+                f"— {action}[/dim]"
             )
         except Exception:
             pass

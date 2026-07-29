@@ -529,6 +529,49 @@ def _shortcut_executable() -> str:
     return lit
 
 
+def _repair_launcher_stubs() -> None:
+    """Best-effort launcher self-heal at GUI start (win32 only).
+
+    Cleans ``*.exe.old`` leftovers a previous upgrade could not delete and
+    copies any missing ``lit.exe``/``litw.exe`` back from the tool venv's own
+    scripts dir. Never raises: a repair failure just keeps today's behavior.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        from litman.core import launcher_stubs
+
+        for name in launcher_stubs.repair_default():
+            console.print(f"[dim]restored missing launcher {name}[/]")
+    except Exception:
+        pass
+
+
+def _warn_console_shortcut() -> None:
+    """Say so out loud when the shortcut had to target the console ``lit.exe``.
+
+    The silent fallback in :func:`_shortcut_executable` is fine for installs
+    that never had ``litw.exe``, but after an upgrade accident it hides real
+    breakage: the shortcut pops a console window whose closing kills the GUI.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        exe = _shortcut_executable()
+    except LitmanError:
+        return
+    if exe.lower().endswith("litw.exe"):
+        return
+    console.print(
+        "[yellow]warning:[/] litw.exe (the console-less launcher) is missing, "
+        "so this shortcut opens a console window — closing that window closes "
+        "litman too.\n"
+        "Repair: [bold]uv tool install --force litman[/] (or "
+        "[bold]pipx reinstall litman[/]), then re-run "
+        "[bold]lit gui --make-shortcut[/]."
+    )
+
+
 def _windows_desktop_dir() -> Path:
     """The folder the shell actually shows as Desktop.
 
@@ -753,12 +796,19 @@ def gui_cmd(
             "--no-browser and --window are mutually exclusive."
         )
 
+    # A half-failed `uv tool upgrade` can leave a launcher stub missing from
+    # the bin dir while the venv still holds a good copy (uv never re-lays
+    # entrypoints once its receipt says up to date) — heal that before doing
+    # anything that resolves or embeds those launchers.
+    _repair_launcher_stubs()
+
     if make_shortcut:
         target, existed = create_shortcut()
         console.print(
             f"[green]{'updated' if existed else 'created'}[/] desktop "
             f"shortcut: [bold]{target}[/]"
         )
+        _warn_console_shortcut()
         return
 
     # Part C: launch the splash as early as possible — before importing uvicorn
@@ -845,6 +895,27 @@ def gui_cmd(
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=actual_port)
     )
+    # One-click update (POST /api/self-update) needs three things only this
+    # command knows: the uvicorn server (to schedule its own exit), the port
+    # (the helper's relaunch race guard probes it), and how to bring THIS kind
+    # of session back — the app window again for --window, otherwise the same
+    # port so an open tab / SSH tunnel finds the new server where the old one
+    # was.
+    app.state.uvicorn_server = server
+    app.state.self_update_port = actual_port
+    try:
+        if window:
+            relaunch = [_shortcut_executable(), "gui", "--window"]
+        else:
+            relaunch = [_resolve_lit_executable(), "gui", "--port", str(actual_port)]
+            if no_browser:
+                relaunch.append("--no-browser")
+        app.state.self_update_relaunch = relaunch
+    except LitmanError:
+        # No resolvable `lit` executable (stripped PATH, unusual embedding):
+        # leave the relaunch recipe unset — one-click update then refuses with
+        # its manual hint instead of arming a restart that cannot work.
+        pass
 
     # Signals the readiness poller to stand down: set in `finally` so a server
     # that raised before it ever listened never gets a browser opened onto it.

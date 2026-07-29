@@ -1468,3 +1468,69 @@ def test_splash_terminated_in_finally(
     assert result.exit_code == 0, result.output
     assert len(splash_gui.splashes) == 1
     assert splash_gui.splashes[0].terminated  # closed by the finally backstop
+
+
+# ---------------------------------------------------------------------------
+# launcher self-heal + console-shortcut warning (task-win-update-hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_launcher_stubs_reports_what_it_restored(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    from litman.core import launcher_stubs
+
+    monkeypatch.setattr(launcher_stubs, "repair_default", lambda: ["litw.exe"])
+    gui._repair_launcher_stubs()
+    assert "restored missing launcher litw.exe" in capsys.readouterr().out
+
+
+def test_repair_launcher_stubs_never_raises(monkeypatch) -> None:
+    """Best-effort: a repair blow-up must not take `lit gui` down with it."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    from litman.core import launcher_stubs
+
+    def _boom() -> list[str]:
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(launcher_stubs, "repair_default", _boom)
+    gui._repair_launcher_stubs()  # no exception
+
+
+def test_repair_launcher_stubs_noop_off_windows(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    from litman.core import launcher_stubs
+
+    def _boom() -> list[str]:
+        raise AssertionError("must not be called off win32")
+
+    monkeypatch.setattr(launcher_stubs, "repair_default", _boom)
+    gui._repair_launcher_stubs()
+    assert capsys.readouterr().out == ""
+
+
+def test_warn_console_shortcut_speaks_up_on_lit_fallback(
+    monkeypatch, capsys
+) -> None:
+    """litw.exe missing → the shortcut targets console lit.exe; that fallback
+    must be loud (a console shortcut dies with its console window)."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        gui, "_shortcut_executable", lambda: r"C:\bin\lit.exe"
+    )
+    gui._warn_console_shortcut()
+    out = capsys.readouterr().out
+    assert "litw.exe" in out
+    assert "console window" in out
+
+
+def test_warn_console_shortcut_silent_when_litw_is_used(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        gui, "_shortcut_executable", lambda: r"C:\bin\litw.exe"
+    )
+    gui._warn_console_shortcut()
+    assert capsys.readouterr().out == ""
