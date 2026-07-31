@@ -181,8 +181,9 @@ Unknown keys are rejected. Topics/methods/data are **NOT** in this schema — cl
 ### When `lit add --from-llm-json` errors
 
 - **`DuplicateDOIError` / "DOI 'x' already registered"** → see Duplicate-add path above.
-- **"Metadata from LLM JSON has no year"** → re-read the PDF for a year, ask the user, or pass `--id 2024_Family_Keyword` explicitly.
+- **"Metadata from LLM JSON has no year"** → re-read the PDF (page 1, header/footer, DOI landing page), ask the user, or pass `--id <year>_<Family>_<Keyword>` explicitly. 🔴 **Never substitute the download year, the file's date, or the current year.** The year is baked into the id and into every exported citation; a guessed one passes every later check and is only findable by hand, years on.
 - **"field 'title': String should have at least 1 character"** → re-extract.
+- **"reads as a placeholder rather than …"** (on `title` or `authors`) → the field holds a filler like `Unknown` / `N/A` / `untitled`. Re-extract it from page 1. 🔴 **Never fill a placeholder to get the add through** — `authors[0]` becomes part of the id, so it is permanent short of `lit rename`. For a work with no personal author (patent, editorial, standards document) name the **issuing body** — the patent assignee, the journal, the organisation. For a genuinely unattributed work write `Anonymous`: that is a claim about the document, whereas `Unknown` only says the metadata was never read.
 
 ### Title / id rollback (when the confirm gate fails)
 

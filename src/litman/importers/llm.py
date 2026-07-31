@@ -58,9 +58,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from litman.core.dedup import canonicalize_doi
+from litman.core.placeholders import is_placeholder
 from litman.exceptions import ImporterError
 
 
@@ -135,6 +136,45 @@ class LLMCandidateMeta(BaseModel):
         ),
     )
 
+    # Filler values on the two identity fields are refused here rather than
+    # written and regretted later. Both feed the paper id, so "Unknown" does
+    # not stay a metadata blemish — it becomes the folder name, the citation
+    # key, and the label in every list, and only `lit rename` can take it back.
+    # Blank-after-strip is caught too: min_length applies to the list, not to
+    # the strings inside it, so `["   "]` used to reach id derivation and fail
+    # there with a message about family names.
+
+    @field_validator("title")
+    @classmethod
+    def _title_is_real(cls, value: str) -> str:
+        if is_placeholder(value):
+            raise ValueError(
+                f"title is {value.strip()!r}, which reads as a placeholder "
+                "rather than the paper's actual title. Take it from page 1 of "
+                "the PDF. If the file cannot be read, stop and ask the user — "
+                "do not fill one in."
+            )
+        return value
+
+    @field_validator("authors")
+    @classmethod
+    def _authors_are_real(cls, value: list[str]) -> list[str]:
+        for position, name in enumerate(value):
+            if is_placeholder(name):
+                raise ValueError(
+                    f"authors[{position}] is {name.strip()!r}, which reads as "
+                    "a placeholder rather than a real name. The first author's "
+                    "family name becomes part of the paper id, so this would "
+                    "be permanent. Take the names from page 1 of the PDF. If "
+                    "the work carries no personal author — a patent, an "
+                    "editorial, a standards document — name the issuing body "
+                    "instead (the patent assignee, the journal, the "
+                    "organisation). If it is genuinely unattributed, write "
+                    "'Anonymous', which says that about the document; "
+                    "'Unknown' only says the metadata was never read."
+                )
+        return value
+
 
 def _normalize_meta(meta: LLMCandidateMeta) -> dict[str, Any]:
     """Project a validated ``LLMCandidateMeta`` onto ``parse_crossref``'s shape.
@@ -202,9 +242,12 @@ def parse_llm_json_text(
     except ValidationError as e:
         first = e.errors()[0]
         loc = ".".join(str(p) for p in first["loc"]) or "<root>"
+        # pydantic prefixes anything a custom validator raises with
+        # "Value error, ". The validators here carry user-facing guidance, so
+        # strip the machinery and let the sentence start where it should.
+        detail = first["msg"].removeprefix("Value error, ")
         raise ImporterError(
-            f"Invalid LLM metadata JSON at {source}: "
-            f"field {loc!r}: {first['msg']}"
+            f"Invalid LLM metadata JSON at {source}: field {loc!r}: {detail}"
         ) from e
 
     return _normalize_meta(meta)

@@ -394,9 +394,22 @@ def add_cmd(
         family = _first_author_family(parsed.get("authors", []))
     else:
         if parsed["year"] is None:
+            # The schema lets `year` be null while id derivation requires it,
+            # so this is where an agent that honestly reported "I could not
+            # find the year" gets stopped — and the shortest way past used to
+            # be to put a number in. A download year passes every check
+            # downstream and surfaces years later as a wrong date in an
+            # exported citation, so say outright that guessing is not the fix.
             raise IDError(
-                f"Metadata from {source_label} has no year; "
-                "pass --id explicitly."
+                f"Metadata from {source_label} has no year, and the year is "
+                "part of the paper id.\n"
+                "Do NOT substitute the download year, the file's date, or the "
+                "current year: a wrong year passes every later check and ends "
+                "up in exported citations.\n"
+                "Find the publication year on page 1, in the PDF's header / "
+                "footer, or on the DOI landing page. If the work has no "
+                "publication year at all, pass --id "
+                "<year>_<Family>_<Keyword> with the year you can defend."
             )
         family_raw = _first_author_family(parsed["authors"])
         if not family_raw:

@@ -17,6 +17,7 @@ from litman.core.checks import (
     all_fixed_enums,
     check_config_readable,
     check_duplicate_doi,
+    check_placeholder_metadata,
     check_schema,
     check_taxonomy_drift,
     fixed_enum_allows_none,
@@ -353,3 +354,91 @@ def test_all_fixed_enums_shape_and_order() -> None:
     # Values agree with the private table via the per-field accessor.
     for field, values in enums.items():
         assert set(values) == set(fixed_enum_values(field))
+
+
+# ---------------------------------------------------------------------------
+# task-metadata-quality C: filler identity fields already sitting in a vault.
+#
+# check_schema asks only "non-empty", and "Unknown" is non-empty — so these
+# papers pass every other probe while carrying a filler into the id, the browse
+# list and every exported citation.
+# ---------------------------------------------------------------------------
+
+
+def test_placeholder_author_reported(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Unknown_Amatoxins",
+        title="Chemistry of the amatoxins",
+        authors=["Unknown"],
+    )
+    issues = check_placeholder_metadata(vault, [paper])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "placeholder_metadata"
+    assert issue.severity == "warning"
+    assert issue.paper_id == "2024_Unknown_Amatoxins"
+    assert "Unknown" in issue.message
+    # The user is the only one who knows the real name, so the finding is only
+    # worth reporting if it carries the commands that fix it.
+    assert "lit modify" in (issue.hint or "")
+    assert "lit rename" in (issue.hint or "")
+
+
+def test_placeholder_title_reported(vault: Path) -> None:
+    paper = _minimal_paper(title="Untitled", authors=["Wieland, Theodor"])
+    issues = check_placeholder_metadata(vault, [paper])
+    assert len(issues) == 1
+    assert "title" in issues[0].message
+    assert "lit modify" in (issues[0].hint or "")
+
+
+def test_clean_paper_reports_nothing(vault: Path) -> None:
+    paper = _minimal_paper(
+        title="Chemistry of the amatoxins",
+        authors=["Wieland, Theodor", "Faulstich, Heinz"],
+    )
+    assert check_placeholder_metadata(vault, [paper]) == []
+
+
+def test_anonymous_and_institutional_authors_report_nothing(vault: Path) -> None:
+    """The values `lit add`'s rejection message tells users to write."""
+    for authors in (["Anonymous"], ["Bayer AG"], ["Unknown, Robert"]):
+        paper = _minimal_paper(title="A patent", authors=authors)
+        assert check_placeholder_metadata(vault, [paper]) == [], authors
+
+
+def test_every_placeholder_author_reported_separately(vault: Path) -> None:
+    paper = _minimal_paper(
+        title="Untitled", authors=["Unknown", "N/A", "Wieland, Theodor"]
+    )
+    issues = check_placeholder_metadata(vault, [paper])
+    assert len(issues) == 3  # one title + two authors
+
+
+def test_missing_fields_do_not_crash_the_check(vault: Path) -> None:
+    """A paper mid-repair may have no title / a non-list authors field."""
+    assert check_placeholder_metadata(vault, [_minimal_paper()]) == []
+    assert check_placeholder_metadata(
+        vault, [_minimal_paper(title=None, authors="Wieland, Theodor")]
+    ) == []
+
+
+def test_placeholder_check_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — an unwired check helps nobody.
+
+    Asserted in both directions: a filler paper must surface through
+    ``run_all_checks``, and a clean one must not. The positive half is what
+    fails if the CheckSpec is ever dropped from the registry; the negative
+    half is what fails if the check starts crying wolf.
+    """
+    dirty = _minimal_paper(id="2024_Unknown_X", title="X", authors=["Unknown"])
+    assert any(
+        i.category == "placeholder_metadata"
+        for i in run_all_checks(vault, [dirty])
+    ), "check_placeholder_metadata is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(title="X", authors=["Wieland, Theodor"])
+    assert not any(
+        i.category == "placeholder_metadata"
+        for i in run_all_checks(vault, [clean])
+    )

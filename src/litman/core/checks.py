@@ -60,6 +60,7 @@ from litman.core.notes import (
     heal_discussion_scaffold,
     parse_wikilink_target,
 )
+from litman.core.placeholders import is_placeholder
 from litman.core.portable_link import (
     is_portable_link,
     links_supported,
@@ -399,6 +400,60 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                     ),
                 )
             )
+    return out
+
+
+def check_placeholder_metadata(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Identity fields holding a filler value instead of real content.
+
+    ``check_schema`` above asks only whether the required fields are non-empty,
+    and ``"Unknown"`` is non-empty — so a paper imported with filler metadata
+    passes every probe while its id, its row in the browse list, and its
+    exported citation all carry the filler. ``lit add`` refuses these at the
+    ingest boundary now (``importers/llm.py``), which leaves the papers added
+    before that guard existed; this is how they surface instead of waiting to
+    be spotted by eye.
+
+    Warning, not error: the vault is internally consistent, the metadata is
+    just wrong about the world. Nothing here can be auto-fixed — only the user
+    knows the real author — so the hint carries the two commands that do it.
+    """
+    out: list[Issue] = []
+    for p in papers:
+        pid = p.get("id") or "(unknown)"
+        title = p.get("title")
+        if isinstance(title, str) and is_placeholder(title):
+            out.append(
+                Issue(
+                    category="placeholder_metadata",
+                    severity="warning",
+                    paper_id=pid,
+                    message=f"title is a placeholder: {title.strip()!r}",
+                    hint=f'set the real one with `lit modify {pid} --set title="…"`',
+                )
+            )
+        authors = p.get("authors")
+        if isinstance(authors, list):
+            for name in authors:
+                if isinstance(name, str) and is_placeholder(name):
+                    out.append(
+                        Issue(
+                            category="placeholder_metadata",
+                            severity="warning",
+                            paper_id=pid,
+                            message=(
+                                f"authors holds a placeholder: {name.strip()!r}"
+                            ),
+                            hint=(
+                                f"`lit modify {pid} --rm-tag authors={name} "
+                                f'--add-tag "authors=Family, Given"`, then '
+                                f"`lit rename {pid} <new-id>` if the id "
+                                "carries it too"
+                            ),
+                        )
+                    )
     return out
 
 
@@ -2757,6 +2812,16 @@ def check_code_clone_integrity(
 #       diagnostics, surface only → klass=validity, correction=report.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
+    # Same shape as schema (metadata read, nothing derived to regenerate), but
+    # about content rather than structure: only the user knows the real author,
+    # so it reports and never fixes.
+    CheckSpec(
+        "placeholder_metadata",
+        check_placeholder_metadata,
+        "full",
+        "validity",
+        "report",
+    ),
     CheckSpec("duplicate_doi", check_duplicate_doi, "full", "validity", "report"),
     CheckSpec(
         "paper_dir_validity", check_paper_dir_validity, "full", "validity", "report"

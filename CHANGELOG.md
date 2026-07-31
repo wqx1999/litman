@@ -2,8 +2,10 @@
 
 Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/project/litman/).
 
-Versions follow [semantic versioning](https://semver.org/): a patch release fixes
-behaviour, a minor release adds it, a major release breaks it.
+Versions follow [semantic versioning](https://semver.org/): a major release
+breaks something you relied on, a minor release opens a new way of working with
+litman, and a patch release is everything else — fixes, new controls, and
+conveniences.
 
 ## 1.3.3 — unreleased
 
@@ -15,6 +17,35 @@ behaviour, a minor release adds it, a major release breaks it.
   itself. Pin from the row (the pin icon, or `P` on the selected paper), and
   unpin to send a paper back to its usual place. Pins survive closing and
   reopening litman, and each library keeps its own.
+- **`lit health-check` reports papers whose author or title is a placeholder.**
+  Papers imported with a filler value — `Unknown`, `N/A`, `untitled` — used to
+  pass every check, because the field was technically filled in. They are now
+  listed by name, each with the `lit modify` and `lit rename` commands that
+  correct them.
+- **Patents export as patents.** A paper with `venue-type: patent` now becomes
+  a `@patent` entry instead of a bare `@misc`, and a `patent-number` field is
+  rendered as the entry's number.
+
+### Changed
+
+- **A paper can no longer be imported with placeholder author or title.**
+  `lit add --from-llm-json` refuses values like `Unknown`, `N/A` or `untitled`
+  and explains what to write instead. **This will interrupt an agent that used
+  to fill those in** — which is the point: the first author's family name
+  becomes part of the paper id, so a filler was permanent short of renaming the
+  paper. When a work has no personal author, name the issuing body — the patent
+  assignee, the journal, the organisation. When it is genuinely unattributed,
+  write `Anonymous`. Metadata fetched by DOI is unaffected, and `lit modify`
+  still lets you write anything you like into your own library.
+
+### Fixed
+
+- **The "no year" error no longer reads as an invitation to guess one.** When
+  imported metadata carried no publication year, the message asked for an id
+  and left the rest open, and the quickest way past it was to put the download
+  year in — which then passed every later check and surfaced only as a wrong
+  date in an exported citation. It now says outright that the year must not be
+  guessed, and where to find the real one.
 
 ## 1.3.2 — 2026-07-29
 
