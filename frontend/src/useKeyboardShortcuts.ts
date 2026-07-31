@@ -35,6 +35,8 @@ export interface ShortcutDeps {
   moveSelection: (delta: 1 | -1) => void
   /** Open the selected paper's PDF tab (Enter). No-op without a selection. */
   openSelected: () => void
+  /** Toggle the selected paper's pin (P). App owns the no-selection toast. */
+  togglePinSelected: () => void
 
   // --- Tier 1: agent launch (global, focus-guarded) -----------------------
   /** Open the AI agent: launch it in a terminal, or raise the onboarding panel
@@ -125,6 +127,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     activateTabByIndex,
     moveSelection,
     openSelected,
+    togglePinSelected,
     openAgent,
     manageAgents,
     cheatSheetOpen,
@@ -284,6 +287,10 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           e.preventDefault()
           moveSelection(-1)
           return
+        case 'KeyP':
+          e.preventDefault()
+          togglePinSelected()
+          return
         case 'KeyF':
           e.preventDefault()
           toggleFocus()
@@ -359,6 +366,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     activateTabByIndex,
     moveSelection,
     openSelected,
+    togglePinSelected,
     openAgent,
     manageAgents,
     cheatSheetOpen,

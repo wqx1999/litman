@@ -5,6 +5,17 @@ Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/pr
 Versions follow [semantic versioning](https://semver.org/): a patch release fixes
 behaviour, a minor release adds it, a major release breaks it.
 
+## 1.3.3 — unreleased
+
+### Added
+
+- **Pin papers to the top of the list.** Papers you are actively working with
+  can be pinned: they gather in a "Pinned" group at the top of the browse
+  panel and stay there, instead of drifting as the reading list re-ranks
+  itself. Pin from the row (the pin icon, or `P` on the selected paper), and
+  unpin to send a paper back to its usual place. Pins survive closing and
+  reopening litman, and each library keeps its own.
+
 ## 1.3.2 — 2026-07-29
 
 ### Added

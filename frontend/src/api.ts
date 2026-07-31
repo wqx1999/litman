@@ -242,6 +242,32 @@ export function fetchFixedEnums(): Promise<FixedEnums> {
   return getJSON<FixedEnums>('/api/fixed-enums')
 }
 
+/** The active vault's pinned paper ids, oldest pin first (server-pruned of
+ * papers that no longer exist). List order IS render order: the client shows
+ * the server's list verbatim and never splices locally, so every mutation
+ * below returns the full post-write list to swap in. */
+export function fetchPins(): Promise<{ pins: string[] }> {
+  return getJSON<{ pins: string[] }>('/api/pins')
+}
+
+export function pinPaper(id: string): Promise<{ pins: string[] }> {
+  return mutateJSON<{ pins: string[] }>(
+    `/api/pins/${encodeURIComponent(id)}`,
+    'PUT',
+  )
+}
+
+export function unpinPaper(id: string): Promise<{ pins: string[] }> {
+  return mutateJSON<{ pins: string[] }>(
+    `/api/pins/${encodeURIComponent(id)}`,
+    'DELETE',
+  )
+}
+
+export function clearPins(): Promise<{ pins: string[] }> {
+  return mutateJSON<{ pins: string[] }>('/api/pins', 'DELETE')
+}
+
 /** The body of a structured metadata write (one transaction). All optional;
  * `set` carries scalar fields (status/priority/type), the tag maps carry
  * topics/methods/data add/remove. */

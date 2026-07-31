@@ -89,6 +89,7 @@ const SECTIONS: Section[] = [
     rows: [
       { chords: [['J']], action: 'Next paper' },
       { chords: [['K']], action: 'Previous paper' },
+      { chords: [['P']], action: 'Pin / unpin the selected paper' },
       { chords: [['Enter']], action: 'Open the selected paper' },
       { chords: [['/']], action: 'Focus search' },
     ],

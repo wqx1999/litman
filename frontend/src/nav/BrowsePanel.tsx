@@ -35,6 +35,18 @@ interface Props {
   scoped: IndexPaper[]
   /** Papers to render in the list (all filters applied in App). */
   visible: IndexPaper[]
+  /** The pinned papers present in `visible`, in PIN order (oldest first) —
+   * App derives this from the same `visible` (a pin is a sort override, not a
+   * membership override: it never bypasses filters/search). Rendered as the
+   * Pinned group above the list; the main list renders `visible` minus these. */
+  pinnedRows: IndexPaper[]
+  /** How many pins the current view/filters/search exclude — drives the
+   * "hidden by the current view" hint so a pin never silently vanishes. */
+  pinnedHiddenCount: number
+  /** Toggle one paper's pin (row pin icon / expanded-card pin / bare key P). */
+  onTogglePin: (id: string) => void
+  /** Unpin everything in this vault (the Pinned group's Clear all). */
+  onClearPins: () => void
   /** True vault-empty (full INDEX fetched, zero papers) — renders the
    * getting-started card instead of the plain no-match empty state. */
   vaultEmpty: boolean
@@ -153,6 +165,10 @@ function orderedEntries(
 export default function BrowsePanel({
   scoped,
   visible,
+  pinnedRows,
+  pinnedHiddenCount,
+  onTogglePin,
+  onClearPins,
   vaultEmpty,
   loadFailed,
   loading,
@@ -242,6 +258,176 @@ export default function BrowsePanel({
     0,
     LIST_MODES.findIndex(([m]) => m === listMode),
   )
+
+  // The main list = `visible` minus the pinned block (a paper renders exactly
+  // once). `pinnedRows` is already the visible subset, so its ids are the
+  // complete exclusion set.
+  const pinnedIdSet = useMemo(
+    () => new Set(pinnedRows.map((p) => p.id)),
+    [pinnedRows],
+  )
+  const restRows = useMemo(
+    () =>
+      pinnedIdSet.size === 0
+        ? visible
+        : visible.filter((p) => !pinnedIdSet.has(p.id)),
+    [visible, pinnedIdSet],
+  )
+
+  /** One paper row + its expanding detail card. Shared by the Pinned group and
+   * the main list — `pinned` only changes the pin control's state/labels.
+   *
+   * Layout constraint: the row line is a flex CONTAINER holding the select
+   * button and the pin button as siblings. The pin must NOT nest inside the
+   * row's select button — browsers silently unwrap button-in-button, which
+   * would turn a pin click into a select. The pin column is always mounted
+   * (opacity toggles) so its reveal never shifts the year. */
+  const renderRow = (p: IndexPaper, pinned: boolean) => {
+    const selected = p.id === selectedId
+    // Dropped papers are shown (in `all`) but muted + tagged, so they read as
+    // low-priority records rather than active entries.
+    const isDropped = p.status === 'dropped'
+    return (
+      <div
+        key={p.id}
+        data-selected={selected || undefined}
+        className={`group/row mx-2 my-0.5 overflow-hidden rounded-xl ring-1 transition-[background-color,box-shadow] duration-300 ease-fluid ${
+          selected
+            ? 'bg-accent-50 shadow-[0_1px_8px_rgba(0,122,255,0.10)] ring-accent-200/70'
+            : 'ring-transparent hover:bg-stone-200/50'
+        }`}
+      >
+        <div className={`flex items-center ${isDropped ? 'opacity-55' : ''}`}>
+          <button
+            onClick={() => onSelect(p.id)}
+            title={p.title ?? p.id}
+            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2.5 text-left"
+          >
+            <span
+              className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(
+                p.status,
+              )}`}
+              title={p.status ?? 'unknown'}
+            />
+            <span
+              className={`truncate font-mono text-xs transition-colors ${
+                selected ? 'font-medium text-accent-800' : 'text-stone-700'
+              }`}
+            >
+              {p.id}
+            </span>
+            {isDropped && (
+              <span
+                className="shrink-0 rounded bg-stone-200 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-stone-500 dark:bg-stone-700 dark:text-stone-300"
+                title="Dropped — evaluated and set aside (kept as a record)"
+              >
+                dropped
+              </span>
+            )}
+            {p.year != null && (
+              <span
+                className={`ml-auto shrink-0 text-xs ${
+                  selected ? 'text-accent-500/80' : 'text-stone-400'
+                }`}
+              >
+                {p.year}
+              </span>
+            )}
+          </button>
+          {/* Pin toggle — hover-revealed while unpinned, always shown while
+              pinned. A sibling of the select button (see the docstring), in a
+              constant-width slot so appearing never nudges the year. */}
+          <button
+            onClick={() => onTogglePin(p.id)}
+            title={
+              pinned
+                ? 'Unpin (send back to its place in the list)'
+                : 'Pin to the top of the list'
+            }
+            aria-label={pinned ? `Unpin ${p.id}` : `Pin ${p.id}`}
+            className={`mr-1 grid h-6 w-6 shrink-0 place-items-center rounded-md transition-[opacity,color] ${
+              pinned
+                ? 'text-accent-600 hover:text-stone-500'
+                : 'text-stone-400 opacity-0 hover:text-accent-600 focus-visible:opacity-100 group-hover/row:opacity-100'
+            }`}
+          >
+            <IconPin filled={pinned} />
+          </button>
+        </div>
+        {/* Dynamic-Island-style fluid reveal: the detail grows out of the
+            row via an animatable 0fr→1fr grid track (no height guessing)
+            plus a gentle settle. Always mounted so open AND close animate;
+            inert (pointer-events-none) while collapsed. */}
+        <div
+          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-fluid ${
+            selected
+              ? 'grid-rows-[1fr] opacity-100'
+              : 'pointer-events-none grid-rows-[0fr] opacity-0'
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div
+              className={`px-2.5 pb-2.5 transition-transform duration-300 ease-fluid ${
+                selected ? 'translate-y-0' : '-translate-y-1'
+              }`}
+            >
+              <div className="mb-2 text-sm text-stone-800">
+                {p.title || p.id}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => onOpenPdf(p.id)}
+                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                >
+                  📄 PDF
+                </button>
+                <button
+                  onClick={() => onOpenDoc(p.id, 'notes')}
+                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                >
+                  📝 notes
+                </button>
+                <button
+                  onClick={() => onOpenDoc(p.id, 'discussion')}
+                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                >
+                  💬 discussion
+                </button>
+                {/* Pin + remove — set apart at the row's right edge (ml-auto on
+                    the first) so neither reads as another "open" pill. The pin
+                    mirrors the row-line toggle for the expanded state; remove
+                    keeps its rose-on-hover destructive styling. */}
+                <button
+                  onClick={() => onTogglePin(p.id)}
+                  title={
+                    pinned
+                      ? 'Unpin (send back to its place in the list)'
+                      : 'Pin to the top of the list'
+                  }
+                  aria-label={pinned ? `Unpin ${p.id}` : `Pin ${p.id}`}
+                  className={`ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-lg ring-1 ring-transparent transition-colors ${
+                    pinned
+                      ? 'text-accent-600 hover:bg-stone-100 hover:text-stone-500'
+                      : 'text-stone-400 hover:bg-accent-50 hover:text-accent-600 hover:ring-accent-200'
+                  }`}
+                >
+                  <IconPin filled={pinned} />
+                </button>
+                <button
+                  onClick={() => onRemovePaper(p.id)}
+                  title="Remove paper from library (move to trash)"
+                  aria-label="Remove paper from library"
+                  className="grid h-6 w-6 shrink-0 place-items-center rounded-lg text-stone-400 ring-1 ring-transparent transition-colors hover:bg-rose-50 hover:text-rose-500 hover:ring-rose-200"
+                >
+                  <IconTrash />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -507,6 +693,41 @@ export default function BrowsePanel({
               Couldn't reach the server — papers can't load.
             </div>
           )}
+          {/* Pinned group (task-gui-pin): user-anchored rows above the ranked
+           * list, macOS Mail style. Rendered whenever pins exist — even with
+           * zero VISIBLE pinned rows, the header + hidden-count hint must show
+           * so a filtered-out pin never reads as a lost pin (D1). Its own
+           * max-h + scroll so a pile of pins can't crowd out the list. */}
+          {!loading &&
+            !loadFailed &&
+            !vaultEmpty &&
+            (pinnedRows.length > 0 || pinnedHiddenCount > 0) && (
+              <div className="mb-1 border-b border-stone-200 pb-1">
+                <div className="flex items-center justify-between pl-4 pr-3 pt-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-400">
+                    📌 Pinned{pinnedRows.length > 0 && ` · ${pinnedRows.length}`}
+                  </span>
+                  <button
+                    onClick={onClearPins}
+                    title="Unpin all pinned papers"
+                    className="px-1 py-0.5 text-[11px] text-stone-500 underline decoration-stone-400 transition-colors hover:text-stone-800"
+                  >
+                    Clear all
+                  </button>
+                </div>
+                {pinnedHiddenCount > 0 && (
+                  <div className="pb-0.5 pl-4 pr-3 text-[11px] text-stone-400">
+                    {pinnedHiddenCount === 1
+                      ? '1 pin is'
+                      : `${pinnedHiddenCount} pins are`}{' '}
+                    hidden by the current view
+                  </div>
+                )}
+                <div className="max-h-56 overflow-y-auto">
+                  {pinnedRows.map((p) => renderRow(p, true))}
+                </div>
+              </div>
+            )}
           {!loading && !loadFailed && visible.length === 0 && !vaultEmpty && (
             <div className="p-3 text-sm text-stone-400">No papers match.</div>
           )}
@@ -525,118 +746,7 @@ export default function BrowsePanel({
               </div>
             </div>
           )}
-          {visible.map((p) => {
-            const selected = p.id === selectedId
-            // Dropped papers are shown (in `all`) but muted + tagged, so they
-            // read as low-priority records rather than active entries.
-            const isDropped = p.status === 'dropped'
-            return (
-              <div
-                key={p.id}
-                data-selected={selected || undefined}
-                className={`mx-2 my-0.5 overflow-hidden rounded-xl ring-1 transition-[background-color,box-shadow] duration-300 ease-fluid ${
-                  selected
-                    ? 'bg-accent-50 shadow-[0_1px_8px_rgba(0,122,255,0.10)] ring-accent-200/70'
-                    : 'ring-transparent hover:bg-stone-200/50'
-                }`}
-              >
-                <button
-                  onClick={() => onSelect(p.id)}
-                  title={p.title ?? p.id}
-                  className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left ${
-                    isDropped ? 'opacity-55' : ''
-                  }`}
-                >
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(
-                      p.status,
-                    )}`}
-                    title={p.status ?? 'unknown'}
-                  />
-                  <span
-                    className={`truncate font-mono text-xs transition-colors ${
-                      selected ? 'font-medium text-accent-800' : 'text-stone-700'
-                    }`}
-                  >
-                    {p.id}
-                  </span>
-                  {isDropped && (
-                    <span
-                      className="shrink-0 rounded bg-stone-200 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-stone-500 dark:bg-stone-700 dark:text-stone-300"
-                      title="Dropped — evaluated and set aside (kept as a record)"
-                    >
-                      dropped
-                    </span>
-                  )}
-                  {p.year != null && (
-                    <span
-                      className={`ml-auto shrink-0 text-xs ${
-                        selected ? 'text-accent-500/80' : 'text-stone-400'
-                      }`}
-                    >
-                      {p.year}
-                    </span>
-                  )}
-                </button>
-                {/* Dynamic-Island-style fluid reveal: the detail grows out of the
-                    row via an animatable 0fr→1fr grid track (no height guessing)
-                    plus a gentle settle. Always mounted so open AND close animate;
-                    inert (pointer-events-none) while collapsed. */}
-                <div
-                  className={`grid transition-[grid-template-rows,opacity] duration-300 ease-fluid ${
-                    selected
-                      ? 'grid-rows-[1fr] opacity-100'
-                      : 'pointer-events-none grid-rows-[0fr] opacity-0'
-                  }`}
-                >
-                  <div className="overflow-hidden">
-                    <div
-                      className={`px-2.5 pb-2.5 transition-transform duration-300 ease-fluid ${
-                        selected ? 'translate-y-0' : '-translate-y-1'
-                      }`}
-                    >
-                      <div className="mb-2 text-sm text-stone-800">
-                        {p.title || p.id}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => onOpenPdf(p.id)}
-                          className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
-                        >
-                          📄 PDF
-                        </button>
-                        <button
-                          onClick={() => onOpenDoc(p.id, 'notes')}
-                          className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
-                        >
-                          📝 notes
-                        </button>
-                        <button
-                          onClick={() => onOpenDoc(p.id, 'discussion')}
-                          className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
-                        >
-                          💬 discussion
-                        </button>
-                        {/* Remove from library — set apart at the row's right edge
-                            (ml-auto) and rose-on-hover so it never reads as another
-                            "open" pill. Only present on the expanded (selected) card,
-                            so it is not a stray destructive button in the list. The
-                            default-No confirm in App is the mis-click guard. */}
-                        <button
-                          onClick={() => onRemovePaper(p.id)}
-                          title="Remove paper from library (move to trash)"
-                          aria-label="Remove paper from library"
-                          className="ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-lg text-stone-400 ring-1 ring-transparent transition-colors hover:bg-rose-50 hover:text-rose-500 hover:ring-rose-200"
-                        >
-                          <IconTrash />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )
-          })}
+          {restRows.map((p) => renderRow(p, false))}
         </div>
 
         {/* Trash entry — divided footer (macOS Mail/Notes convention). Enters the
@@ -656,6 +766,27 @@ export default function BrowsePanel({
         </div>
       </div>
     </div>
+  )
+}
+
+/** Pushpin — the pin/unpin toggle (row line + expanded card). Same 24-unit
+ * outline family as IconTrash; `filled` floods the head so a pinned row reads
+ * at a glance without relying on color alone. */
+function IconPin({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden
+    >
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
+    </svg>
   )
 }
 
