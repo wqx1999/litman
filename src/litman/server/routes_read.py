@@ -184,6 +184,25 @@ def get_version(request: Request) -> dict[str, str | None]:
     }
 
 
+@router.get("/whatsnew")
+def get_whatsnew() -> dict[str, Any]:
+    """Release highlights for the RUNNING version — the GUI's post-update popup.
+
+    PURE READ (invariant #16): the bullets ship inside the installed package
+    (``litman/data/whatsnew.md``), so this never touches the network and works
+    with no vault served. ``bullets`` is empty when the running version has no
+    section recorded — the popup then simply stays closed.
+    """
+    from litman import __version__
+    from litman.core.whatsnew import CHANGELOG_URL, bullets_for
+
+    return {
+        "version": __version__,
+        "bullets": bullets_for(__version__),
+        "changelogUrl": CHANGELOG_URL,
+    }
+
+
 @router.get("/capabilities")
 def get_capabilities(request: Request) -> dict[str, Any]:
     """What this host can do — currently just: which folder-link mechanism works.

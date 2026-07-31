@@ -54,6 +54,12 @@ export interface ShortcutDeps {
   toggleCheatSheet: () => void
   closeCheatSheet: () => void
 
+  // --- "What's new" card ---------------------------------------------------
+  // Same non-blocking-overlay treatment as the cheat sheet: this dispatcher
+  // owns its Esc (the in-card handler only covers focus inside the card).
+  whatsNewOpen: boolean
+  closeWhatsNew: () => void
+
   // --- Tier 1: PDF tools (only when a PDF tab is active) -------------------
   /** True when the active center tab is a PDF tab. PDF-tool keys only fire then. */
   pdfActive: boolean
@@ -133,6 +139,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
+    whatsNewOpen,
+    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,
@@ -178,6 +186,11 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // field via Esc should still drop a tool / close the sheet, matching the
       // PDF Cursor key (`V`/`Esc`).
       if (e.key === 'Escape') {
+        if (whatsNewOpen) {
+          e.preventDefault()
+          closeWhatsNew()
+          return
+        }
         if (cheatSheetOpen) {
           e.preventDefault()
           closeCheatSheet()
@@ -372,6 +385,8 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
+    whatsNewOpen,
+    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,

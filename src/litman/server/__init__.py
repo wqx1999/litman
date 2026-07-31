@@ -75,6 +75,9 @@ _VAULTLESS_ALLOWED = frozenset(
         ("POST", "/api/vaults/create"),
         ("PUT", "/api/vaults/active"),
         ("GET", "/api/version"),
+        # Same nature as /api/version: a pure read of the installed package
+        # (the what's-new digest), meaningful with or without a vault.
+        ("GET", "/api/whatsnew"),
         # The directory picker (task-path-browser): the welcome page has no
         # vault yet and browses the host's folders to create the first one —
         # ``fs/mkdir`` lets that flow make a fresh parent folder without leaving

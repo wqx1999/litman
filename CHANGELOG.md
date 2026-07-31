@@ -11,6 +11,13 @@ conveniences.
 
 ### Added
 
+- **litman now tells you what changed after an update.** The first time the
+  app opens on a new version, a short "What's new" card lists the handful of
+  changes you will actually notice, with a link to this changelog for the
+  rest; click the litman mark in the top-left corner to read it again later.
+  The card's text ships inside the package, so it needs no network and a
+  fresh install never sees it — there is no previous version to tell it
+  about.
 - **Pin papers to the top of the list.** Papers you are actively working with
   can be pinned: they gather in a "Pinned" group at the top of the browse
   panel and stay there, instead of drifting as the reading list re-ranks

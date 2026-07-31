@@ -385,6 +385,20 @@ export function fetchVersion(): Promise<VersionInfo> {
   return getJSON<VersionInfo>('/api/version')
 }
 
+/** Release highlights for the RUNNING version — the post-update "What's new"
+ * popup. PURE READ: the bullets ship inside the installed package, so this
+ * never touches the network. `bullets` is empty when the running version has
+ * no section recorded. */
+export interface WhatsNewInfo {
+  version: string
+  bullets: string[]
+  changelogUrl: string
+}
+
+export function fetchWhatsNew(): Promise<WhatsNewInfo> {
+  return getJSON<WhatsNewInfo>('/api/whatsnew')
+}
+
 /** Kick off the one-click update: the server spawns a detached helper and
  * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
  * (ApiError with the human hint as its message) when litman cannot update

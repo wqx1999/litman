@@ -102,9 +102,10 @@ include = ["litman*"]
     "assets/icons/*",
 ]
 # Bundle the journal abbreviation table (CC0, used by `lit cite` / the webUI
-# cite endpoint). Without this the wheel drops the CSV (no Python sources in
-# the dir) and `litman.core.cite` can't resolve it via importlib.resources.
-"litman.data" = ["*.csv"]
+# cite endpoint) and the what's-new highlights (`GET /api/whatsnew`). Without
+# this the wheel drops both (no Python sources in the dir) and
+# importlib.resources can't resolve them.
+"litman.data" = ["*.csv", "*.md"]
 
 [tool.ruff]
 line-length = 100

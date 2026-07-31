@@ -99,6 +99,9 @@ interface Props {
    * the otherwise hidden `?` convention — without it the shortcuts are
    * undiscoverable (you can't learn `?` opens them if nothing points at it). */
   onShowShortcuts: () => void
+  /** Reopen the "What's new" card (post-update highlights) on demand — the
+   * litman mark doubles as its entry point, macOS about-box style. */
+  onShowWhatsNew?: () => void
   /** Session activity log (newest last) that the log panel renders newest-first.
    * App owns the buffer so every `notify` auto-records (observability slice). */
   activityLog: ActivityLogEntry[]
@@ -167,6 +170,7 @@ export default function TopBar({
   onProjectsOpenChange,
   onVaultManagerOpenChange,
   onShowShortcuts,
+  onShowWhatsNew,
   activityLog,
   logUnread,
   onLogOpened,
@@ -549,9 +553,17 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <div className="relative shrink-0" title="litman">
+      {/* The litman mark doubles as the "What's new" entry point — the same
+          card that pops once after an update, reopenable at will. */}
+      <button
+        type="button"
+        className="relative shrink-0 rounded-md transition duration-200 ease-fluid hover:opacity-70"
+        title="litman — what's new in this version"
+        aria-label="What's new in this version"
+        onClick={onShowWhatsNew}
+      >
         <LitmanMark className="h-6 w-6 select-none text-stone-800" />
-      </div>
+      </button>
 
       {/* Update chip: a labelled pill, not a bare dot — a 10px dot next to the
           logo reads as part of the artwork; text can't be mistaken for it. */}

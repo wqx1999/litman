@@ -15,6 +15,8 @@ import {
   fetchSearch,
   fetchVaults,
   fetchVersion,
+  fetchWhatsNew,
+  type WhatsNewInfo,
   pinPaper,
   putActiveVault,
   putDiscussion,
@@ -31,6 +33,7 @@ import type { MdDraft } from './md/MdView'
 import type { CockpitHandle } from './cockpit/Cockpit'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 import CheatSheet from './ui/CheatSheet'
+import WhatsNew from './ui/WhatsNew'
 import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
@@ -66,6 +69,12 @@ const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 // this is a per-person "yes, I know" — nothing about the library changed, and a
 // second machine reading the same vault deserves to be told once too.
 const LINK_NOTICE_DISMISSED = 'litman.linkNoticeDismissed'
+
+// Last version whose "What's new" card this browser was shown. Written only
+// when the card is CLOSED (an abandoned reload shows it again — better twice
+// than never), and seeded silently after the welcome wizard: a fresh install
+// has no previous version to diff against, so nothing pops.
+const WHATSNEW_SEEN = 'litman.whatsNewSeen'
 
 // Single-value fields filter on `p[f]` (string | null); array fields filter on
 // `p[f]` (string[]). Status is filtered in the `visible` pipeline like the rest
@@ -272,6 +281,13 @@ export default function App() {
   // The server's own version, from the same /api/version read — the chip's
   // popover shows "You have X".
   const [versionCurrent, setVersionCurrent] = useState<string | null>(null)
+  // Open "What's new" card (null = closed). Auto-opens once after an update
+  // (WHATSNEW_SEEN ≠ running version); the TopBar logo reopens it on demand.
+  const [whatsNew, setWhatsNew] = useState<WhatsNewInfo | null>(null)
+  // True once this session has rendered the welcome page — the marker of a
+  // fresh install (or a relocated vault), where the what's-new card would
+  // describe a "previous version" the person never had.
+  const sawWelcomeRef = useRef(false)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -663,6 +679,23 @@ export default function App() {
             'error',
             { sticky: true },
           )
+        }
+        // Post-update "What's new": pop once when the running version is not
+        // the one this browser last saw the card for. A fresh install that
+        // just walked the welcome wizard is seeded silently instead — there is
+        // no previous version to tell it about. Best-effort like the rest of
+        // this handler; the card only opens when there are bullets to show.
+        const seen = localStorage.getItem(WHATSNEW_SEEN)
+        if (seen !== v.current) {
+          if (seen === null && sawWelcomeRef.current) {
+            localStorage.setItem(WHATSNEW_SEEN, v.current)
+          } else {
+            fetchWhatsNew()
+              .then((w) => {
+                if (w.bullets.length > 0) setWhatsNew(w)
+              })
+              .catch(() => {})
+          }
         }
         if (v.latest) return
         versionRetry = setTimeout(() => {
@@ -1616,6 +1649,21 @@ export default function App() {
   const toggleRight = useCallback(() => setCockpitCollapsed((c) => !c), [])
   const toggleCheatSheet = useCallback(() => setCheatSheetOpen((o) => !o), [])
   const closeCheatSheet = useCallback(() => setCheatSheetOpen(false), [])
+  // Manual reopen from the TopBar logo — same card, fetched fresh (cheap, pure
+  // local read server-side). Shown even with no bullets recorded: the manual
+  // path should at least hand over the changelog link, unlike the auto-popup.
+  const showWhatsNew = useCallback(() => {
+    fetchWhatsNew()
+      .then(setWhatsNew)
+      .catch(() => {})
+  }, [])
+  // Closing is what marks the version as seen — see WHATSNEW_SEEN.
+  const closeWhatsNew = useCallback(() => {
+    setWhatsNew((w) => {
+      if (w) localStorage.setItem(WHATSNEW_SEEN, w.version)
+      return null
+    })
+  }, [])
 
   // PDF-tool keys (V/H/T/D/Esc) only act when the active center tab is a PDF
   // tab; the handle is resolved live from the ref Map (see getPdfHandle's note).
@@ -1752,6 +1800,8 @@ export default function App() {
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
+    whatsNewOpen: whatsNew !== null,
+    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,
@@ -1765,6 +1815,7 @@ export default function App() {
   // (All hooks above run unconditionally — this branch only gates rendering.)
   if (served === undefined) return null // pre-bootstrap; sub-100ms on localhost
   if (served === null) {
+    sawWelcomeRef.current = true // fresh install — see WHATSNEW_SEEN seeding
     return (
       <WelcomePage
         vaults={vaults}
@@ -1883,6 +1934,7 @@ export default function App() {
         onProjectsOpenChange={setProjectsOpen}
         onVaultManagerOpenChange={setVaultManagerOpen}
         onShowShortcuts={toggleCheatSheet}
+        onShowWhatsNew={showWhatsNew}
         activityLog={activityLog}
         logUnread={logUnread}
         onLogOpened={markLogRead}
@@ -1999,6 +2051,7 @@ export default function App() {
         />
       )}
       {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
+      {whatsNew && <WhatsNew info={whatsNew} onClose={closeWhatsNew} />}
       {toast && (
         <Toast
           message={toast.message}
