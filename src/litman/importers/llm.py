@@ -158,21 +158,34 @@ class LLMCandidateMeta(BaseModel):
 
     @field_validator("authors")
     @classmethod
-    def _authors_are_real(cls, value: list[str]) -> list[str]:
-        for position, name in enumerate(value):
-            if is_placeholder(name):
-                raise ValueError(
-                    f"authors[{position}] is {name.strip()!r}, which reads as "
-                    "a placeholder rather than a real name. The first author's "
-                    "family name becomes part of the paper id, so this would "
-                    "be permanent. Take the names from page 1 of the PDF. If "
-                    "the work carries no personal author — a patent, an "
-                    "editorial, a standards document — name the issuing body "
-                    "instead (the patent assignee, the journal, the "
-                    "organisation). If it is genuinely unattributed, write "
-                    "'Anonymous', which says that about the document; "
-                    "'Unknown' only says the metadata was never read."
-                )
+    def _first_author_is_real(cls, value: list[str]) -> list[str]:
+        """Refuse a filler in the one position that reaches the paper id.
+
+        The scope is the FIRST position only, deliberately. ``derive_id``
+        takes the first author's family name, so a placeholder there is baked
+        into the folder name, into every wikilink pointing at the paper and
+        into the citation key — undoable short of ``lit rename`` and its
+        backlink cascade. A placeholder further down the list costs an
+        exported citation, which one ``lit modify --rm-tag`` repairs in place,
+        so refusing the whole import over it would strand papers whose author
+        block was merely partly legible: a scanned two-column header, a name
+        in a script the extractor could not transliterate. Those come in —
+        ``lit add`` warns about them on the way, and
+        ``check_placeholder_metadata`` lists them vault-wide afterwards.
+        """
+        if value and is_placeholder(value[0]):
+            raise ValueError(
+                f"the first author is {value[0].strip()!r}, which reads as a "
+                "placeholder rather than a real name. The first author's "
+                "family name becomes part of the paper id, so this one would "
+                "be permanent. Take it from page 1 of the PDF. If the work "
+                "carries no personal author — a patent, an editorial, a "
+                "standards document — name the issuing body instead (the "
+                "patent assignee, the journal, the organisation). If it is "
+                "genuinely unattributed, write 'Anonymous', which says that "
+                "about the document; 'Unknown' only says the metadata was "
+                "never read."
+            )
         return value
 
 

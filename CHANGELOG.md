@@ -20,22 +20,25 @@ conveniences.
 - **`lit health-check` reports papers whose author or title is a placeholder.**
   Papers imported with a filler value — `Unknown`, `N/A`, `untitled` — used to
   pass every check, because the field was technically filled in. They are now
-  listed by name, each with the `lit modify` and `lit rename` commands that
-  correct them.
+  listed by name, each with the `lit modify` command that writes the real value
+  — and, when the filler reached the paper's id as well, the `lit rename` that
+  clears it from there.
 - **Patents export as patents.** A paper with `venue-type: patent` now becomes
   a `@patent` entry instead of a bare `@misc`, and a `patent-number` field is
   rendered as the entry's number.
 
 ### Changed
 
-- **A paper can no longer be imported with placeholder author or title.**
-  `lit add --from-llm-json` refuses values like `Unknown`, `N/A` or `untitled`
-  and explains what to write instead. **This will interrupt an agent that used
-  to fill those in** — which is the point: the first author's family name
-  becomes part of the paper id, so a filler was permanent short of renaming the
-  paper. When a work has no personal author, name the issuing body — the patent
-  assignee, the journal, the organisation. When it is genuinely unattributed,
-  write `Anonymous`. Metadata fetched by DOI is unaffected, and `lit modify`
+- **A paper can no longer be imported with a placeholder title or first
+  author.** `lit add --from-llm-json` refuses values like `Unknown`, `N/A` or
+  `untitled` in the two places that become part of the paper id, and explains
+  what to write instead. **This will interrupt an agent that used to fill those
+  in** — which is the point: an id is permanent short of renaming the paper and
+  every reference to it. When a work has no personal author, name the issuing
+  body — the patent assignee, the journal, the organisation. When it is
+  genuinely unattributed, write `Anonymous`. A filler further down the author
+  list still comes in, since it never reaches the id; the import warns and says
+  how to correct it. Metadata fetched by DOI is unaffected, and `lit modify`
   still lets you write anything you like into your own library.
 
 ### Fixed

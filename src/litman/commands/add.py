@@ -49,6 +49,7 @@ from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.placeholders import is_placeholder
 from litman.core.views import load_index_papers, view_fields_snapshot
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
@@ -646,3 +647,23 @@ def add_cmd(
             border_style="green",
         )
     )
+
+    # A filler after the first author does not reach the paper id, so the
+    # importer lets it through rather than strand a paper whose author block
+    # was only partly legible (see LLMCandidateMeta._first_author_is_real).
+    # It does reach every exported citation, though, so name it now, while
+    # the PDF that holds the real name is still the thing in front of the
+    # reader — `lit health-check` repeats it later, but by then the paper is
+    # one of hundreds. Printed after the panel so it is the last thing on
+    # screen for a human and the last block an agent parses.
+    for position, name in enumerate(parsed.get("authors") or []):
+        if isinstance(name, str) and is_placeholder(name):
+            console.print(
+                f"[yellow]Warning:[/] author {position + 1} of "
+                f"{len(parsed['authors'])} is "
+                f"{escape(repr(name.strip()))} — a filler, not a real name. "
+                "The paper id is unaffected, but the entry exports with it. "
+                f"Fix it with `lit modify {escape(paper_id)} --rm-tag "
+                f"authors={escape(name.strip())} "
+                '--add-tag "authors=Family, Given"`.'
+            )
