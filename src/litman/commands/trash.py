@@ -36,7 +36,6 @@ from litman.core.code import (
 from litman.core.config import load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
-from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.trash import (
@@ -280,8 +279,14 @@ def trash_restore_cmd(
     # funnel (M30 Phase 4): the two are recomputed together. project_refs=False:
     # restore_from_trash already rebuilt the restored paper's project symlinks +
     # REFERENCES.md (result.projects_rebuilt) — behavior unchanged.
-    fresh_papers = list_papers(vault)
-    reconcile_derived(vault, papers=fresh_papers, project_refs=False)
+    # task-write-perf: reuse the list the staged INDEX.json was rendered from
+    # and add just the reappearing paper's view links ({} → snapshot).
+    reconcile_derived(
+        vault,
+        papers=result.surviving_papers,
+        project_refs=False,
+        views_delta=[(result.paper_id, {}, result.restored_view_fields)],
+    )
 
     console.print(
         f"[bold green]✓ Restored[/] {escape(entry.paper_id)} "

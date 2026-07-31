@@ -31,6 +31,13 @@ classifiers = [
 dependencies = [
     "click>=8.1,<9",
     "ruamel.yaml>=0.18",
+    # C-accelerated YAML scanner/parser. ruamel.yaml 0.19+ no longer pulls it
+    # in itself (moved to an extra), so every plain `pip install litman` was
+    # parsing metadata.yaml in pure Python — measured 4.35 ms vs 1.29 ms per
+    # file on a 4000-paper vault. Wheels cover CPython 3.9-3.14 on all three
+    # platforms; the markers keep non-CPython / future-Python installs working
+    # (ruamel falls back to the pure parser when the lib is absent).
+    "ruamel.yaml.clib>=0.2.12; platform_python_implementation == 'CPython' and python_version < '3.15'",
     "httpx>=0.27",
     "pypdf>=4.0",
     "pydantic>=2.5",

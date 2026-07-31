@@ -41,7 +41,10 @@ from litman.core.dedup import find_paper_by_doi
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-from litman.core.project_refs import write_references_md
+from litman.core.project_refs import (
+    load_project_member_metas,
+    write_references_md,
+)
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import (
@@ -673,26 +676,36 @@ def _apply_modify(
     # member's title/authors/year, and the per-project relevance-<project>
     # annotation (review F15) — so edits to those fields must refresh refs
     # too. Both refs paths need FULL metadata (relevance-* is not in the
-    # INDEX projection), which makes them the only two cases below that
-    # still pay a vault scan.
+    # INDEX projection) — but only for the affected projects' MEMBERS, so
+    # the refs_fields_changed case upgrades just those entries off the
+    # projection base (task-write-perf) and only projects_changed (which
+    # rebuilds every registered project via reconcile) still pays a scan.
     refs_fields_changed = any(
         key in {"priority", "title", "authors", "year"}
         or key.startswith("relevance-")
         for key, _, _ in diffs
     )
     member_projects = metadata.get("projects") or []
-    needs_full_metadata = projects_changed or (
-        refs_fields_changed and bool(member_projects)
-    )
 
     # Splice base: the verified INDEX projections when they suffice (the
     # common tag/status/date edit — no scan at all), else ONE list_papers
     # scan (down from two). load_index_papers returning None (missing /
     # stale / older-schema INDEX) falls back to the scan, and the render
     # below regenerates a fresh INDEX from it either way.
-    base_papers = None if needs_full_metadata else load_index_papers(vault)
+    base_papers = None if projects_changed else load_index_papers(vault)
     if base_papers is None:
         base_papers = list_papers(vault)
+    elif refs_fields_changed and member_projects:
+        # The surgical REFERENCES refresh below re-renders this paper's own
+        # projects from all_papers — upgrade those projects' members (and
+        # only them) to full metadata on top of the projection base.
+        member_metas = load_project_member_metas(
+            vault, [str(p) for p in member_projects]
+        )
+        member_ids = {str(m.get("id")) for m in member_metas}
+        base_papers = [
+            p for p in base_papers if str(p.get("id")) not in member_ids
+        ] + member_metas
     all_papers = [p for p in base_papers if p.get("id") not in changed_ids]
     # ruamel YAML's CommentedMap is dict-compatible for our consumers.
     all_papers.append(dict(metadata))
@@ -725,7 +738,8 @@ def _apply_modify(
     # rebuilt too — otherwise `--add-tag projects=X` writes member TRUTH while
     # the project dir stays stale. Gate on the projects diff so an unrelated
     # modify on a non-member paper does not pay the rebuild-all cost.
-    # (all_papers is full metadata in that branch — needs_full_metadata.)
+    # (all_papers is full metadata in that branch — projects_changed forces
+    # the full scan above.)
     reconcile_derived(
         vault,
         papers=all_papers,
@@ -739,9 +753,10 @@ def _apply_modify(
     # itself did not change (the projects_changed path above already rebuilt
     # every project, including one the paper just left). Only the affected
     # paper's own projects are regenerated, reusing the in-memory paper list —
-    # full metadata by construction (this condition implies
-    # needs_full_metadata). Best-effort like rebuild_all_project_refs: a
-    # project whose dir is missing on this machine is silently skipped.
+    # its member entries carry full metadata by construction (this condition
+    # is exactly the member-upgrade branch above). Best-effort like
+    # rebuild_all_project_refs: a project whose dir is missing on this
+    # machine is silently skipped.
     if not projects_changed and refs_fields_changed and member_projects:
         registry = load_config(vault).projects
         for proj in member_projects:

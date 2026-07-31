@@ -42,6 +42,17 @@ conveniences.
 
 ### Changed
 
+- **Deleting, restoring, re-tagging and project-linking papers is now fast in
+  large libraries.** These operations used to re-read every paper's metadata
+  from disk — several times each — so in a 4,000-paper library one click in
+  the GUI could stall for seconds. They now reuse the library's index and
+  update only what actually changed, making their cost independent of library
+  size; the same atomic write path and the same on-disk results as before,
+  just without the re-reading. Editing a paper's title or authors in the GUI
+  got the same treatment when the paper belongs to a project.
+- **YAML parsing is C-accelerated.** litman now installs `ruamel.yaml.clib`,
+  which recent versions of the YAML library stopped bundling — full-library
+  operations such as `lit health-check` read metadata roughly 3–4× faster.
 - **A paper can no longer be imported with a placeholder title or first
   author.** `lit add --from-llm-json` refuses values like `Unknown`, `N/A` or
   `untitled` in the two places that become part of the paper id, and explains

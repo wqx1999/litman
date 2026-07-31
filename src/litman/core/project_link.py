@@ -43,6 +43,7 @@ from litman.core.portable_link import (
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
     REFERENCES_FILENAME,
+    load_project_member_metas,
     write_references_md,
 )
 from litman.core.taxonomy import (
@@ -50,7 +51,11 @@ from litman.core.taxonomy import (
     parse_taxonomy,
     update_user_dict_section,
 )
-from litman.core.views import render_index
+from litman.core.views import (
+    papers_for_index,
+    render_index,
+    view_fields_snapshot,
+)
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
 
@@ -362,6 +367,9 @@ def link_paper_to_project(
         )
 
     metadata = read_metadata_or_raise(paper_meta_path)
+    # Before-state half of the views delta, taken ahead of the mutations
+    # below (task-write-perf).
+    old_view_fields = view_fields_snapshot(metadata)
     projects_list = list(metadata.get("projects") or [])
     added_to_projects = project not in projects_list
     if added_to_projects:
@@ -387,12 +395,12 @@ def link_paper_to_project(
     if metadata_changed:
         metadata["updated-at"] = now_iso()
         rel_meta = f"papers/{paper_id}/metadata.yaml"
-        # Splice the modified metadata into a fresh full paper list to
-        # render INDEX.json without depending on disk state.
-        all_papers = [
-            p for p in list_papers(vault) if p.get("id") != paper_id
-        ]
-        all_papers.append(dict(metadata))
+        # Splice the modified metadata into the paper list to render
+        # INDEX.json without depending on disk state — verified INDEX
+        # projections when fresh, one scan otherwise (task-write-perf).
+        all_papers = papers_for_index(
+            vault, drop_ids={paper_id}, add_metas=(metadata,)
+        )
         index_json = render_index(all_papers, now_iso())
         with staged_write(vault, op_id=f"link-{paper_id}-{project}") as stage:
             stage.write_text(rel_meta, _dump_yaml_to_string(metadata))
@@ -403,9 +411,17 @@ def link_paper_to_project(
         # project-side litman_reflib). project_refs=False — link does its own
         # symlinks + REFERENCES.md below. Local import avoids any core->commands
         # import-cycle at module load (correctors pulls commands._drift).
+        # task-write-perf: only this paper's view buckets change.
         from litman.core.correctors import reconcile_derived
 
-        reconcile_derived(vault, papers=all_papers, project_refs=False)
+        reconcile_derived(
+            vault,
+            papers=all_papers,
+            project_refs=False,
+            views_delta=[
+                (paper_id, old_view_fields, view_fields_snapshot(metadata))
+            ],
+        )
 
     # 6) Symlinks. Created (or refreshed) regardless of metadata change so
     #    that a partial earlier state (e.g. yaml updated by hand without
@@ -486,6 +502,9 @@ def unlink_paper_from_project(
         )
 
     metadata = read_metadata_or_raise(paper_meta_path)
+    # Before-state half of the views delta, taken ahead of the mutations
+    # below (task-write-perf).
+    old_view_fields = view_fields_snapshot(metadata)
     projects_list = list(metadata.get("projects") or [])
     was_in_projects = project in projects_list
     if was_in_projects:
@@ -506,10 +525,11 @@ def unlink_paper_from_project(
     if metadata_changed:
         metadata["updated-at"] = now_iso()
         rel_meta = f"papers/{paper_id}/metadata.yaml"
-        all_papers = [
-            p for p in list_papers(vault) if p.get("id") != paper_id
-        ]
-        all_papers.append(dict(metadata))
+        # Verified INDEX projections when fresh, one scan otherwise
+        # (task-write-perf).
+        all_papers = papers_for_index(
+            vault, drop_ids={paper_id}, add_metas=(metadata,)
+        )
         index_json = render_index(all_papers, now_iso())
         with staged_write(vault, op_id=f"unlink-{paper_id}-{project}") as stage:
             stage.write_text(rel_meta, _dump_yaml_to_string(metadata))
@@ -519,16 +539,30 @@ def unlink_paper_from_project(
         # only the INDEX entry + project-side litman_reflib. project_refs=False
         # — unlink does its own symlink teardown + REFERENCES.md below. Local
         # import avoids a core->commands import-cycle at module load.
+        # task-write-perf: only this paper's view buckets change.
         from litman.core.correctors import reconcile_derived
 
-        reconcile_derived(vault, papers=all_papers, project_refs=False)
+        reconcile_derived(
+            vault,
+            papers=all_papers,
+            project_refs=False,
+            views_delta=[
+                (paper_id, old_view_fields, view_fields_snapshot(metadata))
+            ],
+        )
 
     # 6) Paper symlink
     paper_link_path = project_dir / LITERATURE_SUBDIR / paper_id
     paper_link_removed = remove_link_if_present(paper_link_path)
 
     # 7) Code symlinks — keep when another linked paper still uses the repo.
-    fresh_papers = list_papers(vault)
+    # Member-scoped load: the predicate below filters to this project's
+    # members and reads code-clones (not projected), so O(project) full
+    # metas replace the historical full scan (task-write-perf). The staged
+    # INDEX above already reflects the membership change.
+    fresh_papers = load_project_member_metas(
+        vault, [project], exclude_ids={paper_id}
+    )
     code_links_removed = []
     code_links_kept = []
     for repo_name in code_clones:

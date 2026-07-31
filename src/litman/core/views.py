@@ -324,6 +324,46 @@ def load_index_papers(
     return papers
 
 
+def papers_for_index(
+    vault: Path,
+    *,
+    drop_ids: frozenset[str] | set[str] = frozenset(),
+    add_metas: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    pending_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Paper list for re-rendering INDEX.json / the views delta funnel.
+
+    The write-side counterpart of :func:`load_index_papers`: verified INDEX
+    projections when fresh, else ONE ``list_papers`` scan — the same
+    splice-don't-rescan pattern ``_apply_modify`` established
+    (commands/modify.py). ``drop_ids`` entries are removed and ``add_metas``
+    dicts appended, so a write command hands its in-memory diff straight to
+    ``render_index`` / ``reconcile_derived(papers=...)`` without re-reading
+    4000 unchanged metadata.yaml files.
+
+    The result may therefore MIX projection dicts with full-metadata dicts —
+    fine for INDEX rendering and views (every view/INDEX field is in the
+    projection), NOT fine for REFERENCES.md (``relevance-<project>`` is
+    metadata-only; use ``project_refs.load_project_member_metas``).
+
+    ``pending_ids`` is forwarded to the id-set freshness probe — pass ids
+    whose paper directory is already on disk but intentionally absent from
+    the on-disk INDEX (a mid-restore paper), exactly like ``lit add``.
+    """
+    base = load_index_papers(vault, pending_ids=pending_ids)
+    if base is None:
+        # Lazy import mirroring correctors.reconcile_derived: document pulls
+        # the heavier ruamel-typ machinery views itself never needs.
+        from litman.core.document import list_papers
+
+        base = list_papers(vault)
+    if drop_ids:
+        base = [p for p in base if str(p.get("id")) not in drop_ids]
+    for meta in add_metas:
+        base.append(dict(meta))
+    return base
+
+
 def rewrite_index_dropping_ids(vault: Path, dead_ids: set[str]) -> int:
     """Remove ``dead_ids`` from the existing ``INDEX.json`` without reading metadata.
 

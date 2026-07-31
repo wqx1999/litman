@@ -30,8 +30,11 @@ from pathlib import Path
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
-from litman.core.document import list_papers
-from litman.core.views import render_index
+from litman.core.views import (
+    papers_for_index,
+    render_index,
+    view_fields_snapshot,
+)
 from litman.exceptions import TaxonomyError
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
@@ -328,14 +331,25 @@ def remove_taxonomy_value(
     if value not in current:
         raise TaxonomyError(f"{value!r} is not registered in {dict_name}.")
 
-    papers = list_papers(vault)
+    # Verified INDEX projections when fresh (topics/methods/data are all
+    # projected), one scan otherwise; the SAME list is reused for the
+    # membership check, the ripple and the reconcile below, and the touched
+    # papers' before/after view snapshots feed the incremental views delta
+    # (task-write-perf).
+    papers = papers_for_index(vault)
     referencing = find_referencing_papers(papers, dict_name, value)
 
     new_body = [v for v in current if v != value]
     new_text = update_user_dict_section(text, dict_name, new_body)
 
+    by_id = {str(p.get("id")): p for p in papers}
+    before = {
+        pid: view_fields_snapshot(by_id[pid])
+        for pid in referencing
+        if pid in by_id
+    }
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
-        vault, USER_DICT_TO_METADATA_FIELD[dict_name], value
+        vault, USER_DICT_TO_METADATA_FIELD[dict_name], value, papers=papers
     )
     fresh_index = render_index(all_papers, now_iso())
 
@@ -350,7 +364,19 @@ def remove_taxonomy_value(
         # INDEX + views recomputed together. The staged INDEX.json above is the
         # crash-safety layer. project_refs=False keeps behavior identical
         # (taxonomy commands govern topics/methods/data, never project refs).
-        reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+        # task-write-perf: reuse the rippled list; views update only the
+        # touched papers' buckets (a ripple-skipped corrupt member yields an
+        # identical before/after snapshot — a harmless no-op delta).
+        reconcile_derived(
+            vault,
+            papers=all_papers,
+            project_refs=False,
+            views_delta=[
+                (pid, before[pid], view_fields_snapshot(by_id[pid]))
+                for pid in referencing
+                if pid in by_id
+            ],
+        )
 
     return n_changed, referencing
 
@@ -404,15 +430,23 @@ def rename_taxonomy_value(
             f"Use `lit taxonomy merge {dict_name} {old} --into {new}` to fold them."
         )
 
-    papers = list_papers(vault)
+    # Same INDEX-first + snapshot pattern as remove_taxonomy_value above
+    # (task-write-perf).
+    papers = papers_for_index(vault)
     referencing = find_referencing_papers(papers, dict_name, old)
 
     new_body = [new if v == old else v for v in current]
     new_text = update_user_dict_section(text, dict_name, new_body)
 
+    by_id = {str(p.get("id")): p for p in papers}
+    before = {
+        pid: view_fields_snapshot(by_id[pid])
+        for pid in referencing
+        if pid in by_id
+    }
     field = USER_DICT_TO_METADATA_FIELD[dict_name]
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, field, {old: new}
+        vault, field, {old: new}, papers=papers
     )
     fresh_index = render_index(all_papers, now_iso())
 
@@ -427,6 +461,16 @@ def rename_taxonomy_value(
         # INDEX + views recomputed together. The staged INDEX.json above is the
         # crash-safety layer. project_refs=False keeps behavior identical
         # (taxonomy commands govern topics/methods/data, never project refs).
-        reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+        # task-write-perf: reuse the rippled list + per-touched-paper delta.
+        reconcile_derived(
+            vault,
+            papers=all_papers,
+            project_refs=False,
+            views_delta=[
+                (pid, before[pid], view_fields_snapshot(by_id[pid]))
+                for pid in referencing
+                if pid in by_id
+            ],
+        )
 
     return n_changed, referencing

@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse
 
 from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
-from litman.core.document import list_papers, read_metadata_or_raise
+from litman.core.document import read_metadata_or_raise
 from litman.core.trash import (
     TrashEntry,
     list_trash,
@@ -207,8 +207,15 @@ def post_trash_restore(request: Request, entry_name: str) -> dict[str, object]:
 
     # Same shared funnel the CLI uses (M30 Phase 4): INDEX + views together.
     # project_refs=False — restore_from_trash already rebuilt the restored
-    # paper's project symlinks + REFERENCES.md.
-    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+    # paper's project symlinks + REFERENCES.md. task-write-perf: reuse the
+    # list the staged INDEX.json was rendered from and add just the
+    # reappearing paper's view links ({} → snapshot).
+    reconcile_derived(
+        vault,
+        papers=result.surviving_papers,
+        project_refs=False,
+        views_delta=[(result.paper_id, {}, result.restored_view_fields)],
+    )
 
     return {
         "paper_id": result.paper_id,
