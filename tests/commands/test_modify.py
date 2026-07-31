@@ -1444,3 +1444,188 @@ def test_the_plural_itself_is_still_refused_not_warned(
     )
     assert result.exit_code != 0
     assert "would clobber" in str(result.exception)
+
+
+# ---------------------------------------------------------------------------
+# --set-author: ordered wholesale rewrite (task-gui-metadata-edit A)
+#
+# The op add/rm cannot express: --add-tag appends, and _apply_modify runs adds
+# before removes inside one atomic write, so correcting any author but the
+# last one used to move them to the end of the list — and authors[0] is what
+# derive_id and every citation style take.
+# ---------------------------------------------------------------------------
+
+
+def _set_authors(vault: Path, paper_id: str, *names: str) -> Any:
+    args = ["modify", paper_id, "--library", str(vault)]
+    for name in names:
+        args += ["--set-author", name]
+    return CliRunner().invoke(cli, args)
+
+
+def test_set_author_round_trip_preserves_order(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = _set_authors(
+        vault, paper_id, "Foo, Alice", "Bar, Bob", "Baz, Carol"
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == [
+        "Foo, Alice", "Bar, Bob", "Baz, Carol",
+    ]
+
+    # Reorder: same names, different sequence — the very edit add/rm cannot
+    # express. Nothing is lost, only moved.
+    result = _set_authors(
+        vault, paper_id, "Baz, Carol", "Foo, Alice", "Bar, Bob"
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == [
+        "Baz, Carol", "Foo, Alice", "Bar, Bob",
+    ]
+
+
+def test_set_author_corrects_a_middle_name_in_place(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """AC-5: the fix stays where the author was; add/rm would move it last."""
+    vault, paper_id = vault_with_paper
+    assert _set_authors(
+        vault, paper_id, "Unknown", "Bar, Bob", "Baz, Carol"
+    ).exit_code == 0
+
+    result = _set_authors(
+        vault, paper_id, "Zanotti, Giuseppe", "Bar, Bob", "Baz, Carol"
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == [
+        "Zanotti, Giuseppe", "Bar, Bob", "Baz, Carol",
+    ]
+
+
+def test_set_author_reorder_is_unreachable_via_add_rm(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The reverse verification for AC-5: the old composition really does
+    scramble the order (add runs before rm, add appends). If this test ever
+    fails, add/rm learned ordering and _apply_set_list lost its reason to
+    exist — re-justify or remove it."""
+    vault, paper_id = vault_with_paper
+    assert _set_authors(
+        vault, paper_id, "Unknown", "Bar, Bob", "Baz, Carol"
+    ).exit_code == 0
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--add-tag", "authors=Zanotti, Giuseppe",
+            "--rm-tag", "authors=Unknown",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == [
+        "Bar, Bob", "Baz, Carol", "Zanotti, Giuseppe",
+    ], "add/rm composition now preserves position; is _apply_set_list needed?"
+
+
+def test_set_author_empty_entry_rejected_and_file_untouched(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    meta_file = vault / "papers" / paper_id / "metadata.yaml"
+    before = meta_file.read_bytes()
+
+    result = _set_authors(vault, paper_id, "Foo, Alice", "   ")
+    assert result.exit_code != 0
+    assert "empty" in str(result.exception)
+    assert meta_file.read_bytes() == before
+
+
+def test_set_author_duplicate_rejected_and_file_untouched(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    meta_file = vault / "papers" / paper_id / "metadata.yaml"
+    before = meta_file.read_bytes()
+
+    result = _set_authors(vault, paper_id, "Foo, Alice", "Foo, Alice")
+    assert result.exit_code != 0
+    assert "twice" in str(result.exception)
+    assert meta_file.read_bytes() == before
+
+
+def test_set_author_combined_with_set_scalar_one_bump(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """AC-3: reorder + scalar edit ride one request, one updated-at bump."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set-author", "Bar, Bob",
+            "--set-author", "Foo, Alice",
+            "--set", "journal=Real J.",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    meta = _read_meta(vault, paper_id)
+    assert meta["authors"] == ["Bar, Bob", "Foo, Alice"]
+    assert meta["journal"] == "Real J."
+
+
+def test_set_author_same_order_is_a_noop(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Re-submitting the current list must not bump updated-at (the GUI
+    save button sends the whole list whether or not the user touched it)."""
+    vault, paper_id = vault_with_paper
+    meta_before = _read_meta(vault, paper_id)
+
+    result = _set_authors(vault, paper_id, "Foo, Alice")
+    assert result.exit_code == 0, result.output
+    assert (
+        _read_meta(vault, paper_id)["updated-at"] == meta_before["updated-at"]
+    )
+
+
+def test_set_author_placeholder_is_not_refused(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Red line 4: the ingest guard must not leak into the edit surface.
+    A user rewriting their own library may write anything, including the
+    values `lit add` refuses — health-check reports, modify never blocks."""
+    vault, paper_id = vault_with_paper
+    result = _set_authors(vault, paper_id, "Unknown")
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == ["Unknown"]
+
+
+def test_set_list_scope_is_authors_only(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """AC-4 at the primitive level: sets, taxonomy dicts and relation fields
+    must not be rewritable wholesale."""
+    from litman.commands.modify import _apply_set_list
+
+    for field in ("topics", "projects", "related", "extended-by"):
+        with pytest.raises(ModifyError, match="ordered list"):
+            _apply_set_list({}, field, ["x"])
+
+
+def test_set_author_updates_index(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """INDEX.json is the GUI's read model; the rewrite must reach it in the
+    same transaction, not wait for a refresh."""
+    vault, paper_id = vault_with_paper
+    result = _set_authors(vault, paper_id, "Bar, Bob", "Foo, Alice")
+    assert result.exit_code == 0, result.output
+    (indexed,) = [
+        p for p in _read_index(vault)["papers"] if p["id"] == paper_id
+    ]
+    assert indexed["authors"] == ["Bar, Bob", "Foo, Alice"]

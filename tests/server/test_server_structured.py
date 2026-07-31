@@ -258,6 +258,108 @@ def test_put_metadata_empty_body_400(vault_with_paper: tuple[Path, str]) -> None
     assert resp.status_code == 400
 
 
+# ---------------------------------------------------------------------------
+# PUT /metadata — setList (ordered author rewrite, task-gui-metadata-edit)
+# ---------------------------------------------------------------------------
+
+
+def test_put_metadata_setlist_reorders_authors_and_reprojects_index(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The A4 assertion for the ordered rewrite: TRUTH and DERIVED both hold
+    the new order after one request."""
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+    resp = client.put(
+        f"/api/paper/{paper_id}/metadata",
+        json={"setList": {"authors": ["Bar, Bob", "Foo, Alice"]}},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": True}
+    assert _meta(vault, paper_id)["authors"] == ["Bar, Bob", "Foo, Alice"]
+    assert _index_paper(vault, paper_id)["authors"] == ["Bar, Bob", "Foo, Alice"]
+
+
+def test_put_metadata_setlist_same_order_is_noop(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The GUI save button sends the whole list whether or not it was touched;
+    an untouched list must not bump updated-at (recency_key would move the
+    paper to the top of the browse list for a no-edit)."""
+    vault, paper_id = vault_with_paper
+    before = _meta(vault, paper_id)["updated-at"]
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata",
+        json={"setList": {"authors": ["Foo, Alice"]}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["changed"] is False
+    assert _meta(vault, paper_id)["updated-at"] == before
+
+
+def test_put_metadata_setlist_combined_with_set_one_transaction(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata",
+        json={
+            "set": {"journal": "Real J."},
+            "setList": {"authors": ["Bar, Bob", "Foo, Alice"]},
+        },
+    )
+    assert resp.status_code == 200
+    meta = _meta(vault, paper_id)
+    assert meta["authors"] == ["Bar, Bob", "Foo, Alice"]
+    assert meta["journal"] == "Real J."
+
+
+def test_put_metadata_setlist_whitelist_rejects_other_fields_400(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """AC-7: the endpoint must not become a generic list-overwrite channel.
+    Server-side whitelist, not frontend restraint."""
+    vault, paper_id = vault_with_paper
+    for field in ("topics", "projects", "related", "extended-by"):
+        resp = _client(vault).put(
+            f"/api/paper/{paper_id}/metadata",
+            json={"setList": {field: ["x"]}},
+        )
+        assert resp.status_code == 400, field
+        assert "setList" in resp.json()["detail"]
+    # Nothing written by any of the rejected calls.
+    assert _meta(vault, paper_id)["topics"] == []
+
+
+def test_put_metadata_setlist_invalid_shape_400(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+    for bad in (
+        {"setList": "authors"},
+        {"setList": {"authors": "Foo, Alice"}},
+        {"setList": {"authors": [1, 2]}},
+    ):
+        resp = client.put(f"/api/paper/{paper_id}/metadata", json=bad)
+        assert resp.status_code == 400, bad
+
+
+def test_put_metadata_setlist_backend_rejection_leaves_paper_intact(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A duplicate entry is refused by _apply_set_list (400, raw message),
+    and the paper is untouched — the GUI shows the message, nothing saved."""
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata",
+        json={"setList": {"authors": ["Foo, Alice", "Foo, Alice"]}},
+    )
+    assert resp.status_code == 400
+    assert "twice" in resp.json()["detail"]
+    assert _meta(vault, paper_id)["authors"] == ["Foo, Alice"]
+
+
 def test_put_metadata_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
     vault, _ = vault_with_paper
     resp = _client(vault).put(

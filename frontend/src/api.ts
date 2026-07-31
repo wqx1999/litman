@@ -269,12 +269,18 @@ export function clearPins(): Promise<{ pins: string[] }> {
 }
 
 /** The body of a structured metadata write (one transaction). All optional;
- * `set` carries scalar fields (status/priority/type), the tag maps carry
- * topics/methods/data add/remove. */
+ * `set` carries scalar fields (status/priority/type, and the edit dialog's
+ * title/year/journal/...), the tag maps carry topics/methods/data add/remove. */
 export interface MetadataWrite {
   set?: Record<string, string | null>
   addTag?: Record<string, string[]>
   rmTag?: Record<string, string[]>
+  /** Ordered wholesale rewrite of a sequence field. Server-whitelisted to
+   * `authors` — the one list field whose order carries meaning (authors[0]
+   * drives the id and every citation), and the one edit addTag/rmTag cannot
+   * express: add appends, and adds run before removes, so correcting any
+   * name but the last would move it to the end. */
+  setList?: Record<string, string[]>
 }
 
 /** Apply a structured metadata change through the `lit modify` backend

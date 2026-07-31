@@ -446,9 +446,16 @@ def check_placeholder_metadata(
                             message=(
                                 f"authors holds a placeholder: {name.strip()!r}"
                             ),
+                            # --set-author, not --rm-tag/--add-tag: add-tag
+                            # appends, so that recipe moves the corrected
+                            # name to the END of the list — for a first-
+                            # author filler (the common legacy case) it
+                            # would silently install the wrong first author.
                             hint=(
-                                f"`lit modify {pid} --rm-tag authors={name} "
-                                f'--add-tag "authors=Family, Given"`, then '
+                                f"`lit modify {pid} "
+                                '--set-author "Family, Given" ...` '
+                                "(one flag per author, the whole list in "
+                                "order), then "
                                 f"`lit rename {pid} <new-id>` if the id "
                                 "carries it too"
                             ),

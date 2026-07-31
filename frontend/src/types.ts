@@ -38,6 +38,15 @@ export interface PaperMeta extends IndexPaper {
   journal?: string | null
   'arxiv-id'?: string | null
   github?: string | null
+  /** Bibliographic scalars the metadata edit dialog exposes. metadata.yaml is
+   * schemaless (invariant #7), so any of these may simply be absent —
+   * get_paper passes them through untouched when present. */
+  volume?: string | number | null
+  issue?: string | number | null
+  pages?: string | null
+  publisher?: string | null
+  'venue-type'?: string | null
+  booktitle?: string | null
   'created-at'?: string | null
   'last-revisited'?: string | null
   related?: string[]

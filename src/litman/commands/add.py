@@ -663,7 +663,10 @@ def add_cmd(
                 f"{len(parsed['authors'])} is "
                 f"{escape(repr(name.strip()))} — a filler, not a real name. "
                 "The paper id is unaffected, but the entry exports with it. "
-                f"Fix it with `lit modify {escape(paper_id)} --rm-tag "
-                f"authors={escape(name.strip())} "
-                '--add-tag "authors=Family, Given"`.'
+                # --set-author, not --rm-tag/--add-tag: add-tag appends, so
+                # that recipe would move the corrected name to the end of the
+                # list when the filler is not the last author.
+                f"Fix it with `lit modify {escape(paper_id)} "
+                '--set-author "Family, Given" ...` '
+                "(one flag per author, the whole list in order)."
             )

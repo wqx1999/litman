@@ -26,6 +26,19 @@ conveniences.
 - **Patents export as patents.** A paper with `venue-type: patent` now becomes
   a `@patent` entry instead of a bare `@misc`, and a `patent-number` field is
   rendered as the entry's number.
+- **Edit metadata in the GUI.** The selected paper's panel has an Edit button:
+  title, year, journal, DOI, volume/issue/pages, publisher, venue type, book
+  title — and the author list, where authors can be renamed, added, removed
+  and reordered (drag the handle, or the ↑/↓ buttons). One Save writes
+  everything in a single transaction through the same validated path the CLI
+  uses; if something is rejected — a DOI another paper already carries, a
+  non-numeric year — the dialog shows the reason and keeps your input. The
+  paper id is not editable here: changing it is a rename that updates every
+  reference, which remains `lit rename`'s job.
+- **`lit modify --set-author` rewrites the author list in order.** Repeat the
+  flag once per author; the order the flags appear in is the order stored.
+  This is the way to reorder authors or correct a name in place —
+  `--add-tag` appends to the end of the list, so it cannot express either.
 
 ### Changed
 
