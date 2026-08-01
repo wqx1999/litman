@@ -5,6 +5,10 @@ rename`` / ``lit rm`` flow can leave behind: schema gaps, dangling references,
 half-finished renames, stale staging dirs, etc. See :mod:`litman.core.checks`
 for the per-check semantics.
 
+Each category lists its first few findings and folds the rest into a count;
+``--all`` prints every one. See ``_CATEGORY_PREVIEW`` for why the cap is a
+display decision and never a check-layer one.
+
 The CLI is read-only by default. ``--fix`` auto-regenerates every derived
 (klass-A) artifact — lossless recompute from TRUTH — plus the legacy
 validity auto-fixes (stale staging dirs + orphan trash sidecars). klass-B
@@ -60,6 +64,20 @@ def _fixable_categories() -> frozenset[str]:
     """
     return _KLASS_A_CATEGORIES | AUTO_FIXABLE_CATEGORIES
 
+# Issues listed per category before the rest fold into a count. A vault that
+# predates a guard can hold hundreds of one kind — the `placeholder_metadata`
+# / `placeholder_id` pair on a library imported before either existed is the
+# case that forced this — and printing every one buries the other categories
+# under a screen of identical yellow. Folding is a display decision only: the
+# checks still report everything, the per-category count and the summary are
+# still exact, and `--all` prints the lot. Suppressing at the *check* layer
+# instead would mean the vault has problems litman deliberately never
+# mentions, which is the opposite of what a health check is for.
+#
+# Five, matching `lit rename`'s back-reference list — the same "enough to see
+# the pattern, not enough to scroll" judgment, and no second number to explain.
+_CATEGORY_PREVIEW = 5
+
 # Severity ordering for sort within a category and visual styling.
 _SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2}
 _SEVERITY_STYLE = {
@@ -72,6 +90,9 @@ _SEVERITY_STYLE = {
 # get a header here too — fall back to the raw category name otherwise.
 _CATEGORY_HEADERS: dict[str, str] = {
     "schema": "Schema (required fields + fixed enums)",
+    "placeholder_metadata": "Filler metadata (title / authors hold a placeholder)",
+    "placeholder_id": "Filler inside a paper id (folder name, wikilink, cite key)",
+    "weak_id_keyword": "Uninformative id keyword (and a title that cannot fix it)",
     "paper_dir_validity": (
         "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
     ),
@@ -115,7 +136,7 @@ def _render_issue_line(issue: Issue, max_msg_width: int = 100) -> str:
     return line
 
 
-def _render_report(issues: list[Issue]) -> None:
+def _render_report(issues: list[Issue], show_all: bool = False) -> None:
     if not issues:
         return
     grouped = group_by_category(issues)
@@ -140,8 +161,19 @@ def _render_report(issues: list[Issue]) -> None:
                 i.paper_id or "",
             ),
         )
-        for issue in items_sorted:
-            console.print(_render_issue_line(issue))
+        shown = items_sorted if show_all else items_sorted[:_CATEGORY_PREVIEW]
+        for issue in shown:
+            # soft_wrap: several hints are a complete `lit rename <old> <new>`
+            # meant to be copied straight out of the terminal, and rich's own
+            # wrapping puts a hard newline inside the command at 80 columns.
+            # Letting the terminal wrap instead keeps the copied text one line.
+            console.print(_render_issue_line(issue), soft_wrap=True)
+        hidden = n - len(shown)
+        if hidden:
+            console.print(
+                f"  [dim]… and {hidden} more in this category. "
+                f"`lit health-check --all` lists every one.[/]"
+            )
 
 
 def _summarize(issues: list[Issue], n_papers: int) -> None:
@@ -186,10 +218,22 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
         "(it needs a per-case decision; --fix never picks a side)."
     ),
 )
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help=(
+        f"List every finding. Without it each category shows its first "
+        f"{_CATEGORY_PREVIEW} and folds the rest into a count — pass this "
+        "when working through a category paper by paper, or when an agent "
+        "needs the full list to act on."
+    ),
+)
 @library_option
 @vault_option
 def health_check_cmd(
-    do_fix: bool, library: Path | None, vault_name: str | None
+    do_fix: bool, show_all: bool, library: Path | None, vault_name: str | None
 ) -> None:
     """Run vault-wide consistency checks.
 
@@ -228,7 +272,7 @@ def health_check_cmd(
         )
 
     issues = run_all_checks(vault, papers)
-    _render_report(issues)
+    _render_report(issues, show_all=show_all)
 
     # --fix runs even with a clean report: the fixable set is wider than the
     # report (the skill sweep refreshes stale copies in non-default agent

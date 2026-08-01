@@ -52,7 +52,7 @@ from litman.commands.add import (
     _PDF_MAGIC,
     _PDF_SNIFF_BYTES,
     _apply_add,
-    _first_author_family,
+    first_author_family,
     _looks_like_pdf,
 )
 from litman.core.dedup import auto_suffix_id, canonicalize_doi, find_paper_by_doi
@@ -250,7 +250,7 @@ def get_ingest_preview(
     proposed_id: str | None = None
     id_error: str | None = None
     id_suggestion: str | None = None
-    family = _first_author_family(parsed.get("authors") or [])
+    family = first_author_family(parsed.get("authors") or [])
     try:
         if parsed.get("year") is None:
             raise IDError(
@@ -426,7 +426,7 @@ async def post_ingest_derive_id(request: Request) -> dict[str, Any]:
     authors = payload.get("authors")
     title = title.strip() if isinstance(title, str) else ""
     family = (
-        _first_author_family([a for a in authors if isinstance(a, str)])
+        first_author_family([a for a in authors if isinstance(a, str)])
         if isinstance(authors, list)
         else ""
     )

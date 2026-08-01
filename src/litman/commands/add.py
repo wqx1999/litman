@@ -45,7 +45,12 @@ from litman.core.dedup import (
     find_paper_by_doi,
     suggest_alternative_ids,
 )
-from litman.core.id import derive_id, find_case_fold_collision, is_valid_id
+from litman.core.id import (
+    derive_id,
+    find_case_fold_collision,
+    first_author_family,
+    is_valid_id,
+)
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
@@ -145,13 +150,6 @@ def _build_metadata(
         "extended-by": [],
         "code-clones": [],
     }
-
-
-def _first_author_family(authors: list[str]) -> str:
-    """Extract the family name from the first 'Family, Given' author string."""
-    if not authors:
-        return ""
-    return authors[0].split(",", 1)[0].strip()
 
 
 def _refuse_doi_duplicate(doi: str, existing_id: str, meta: dict[str, Any]) -> None:
@@ -314,7 +312,7 @@ def _apply_add(
         # single-segment folder name here.
         paper_id = id_override
         year = parsed.get("year")
-        family = _first_author_family(parsed.get("authors", []))
+        family = first_author_family(parsed.get("authors", []))
     else:
         if parsed["year"] is None:
             # The schema lets `year` be null while id derivation requires it,
@@ -334,7 +332,7 @@ def _apply_add(
                 "publication year at all, pass --id "
                 "<year>_<Family>_<Keyword> with the year you can defend."
             )
-        family_raw = _first_author_family(parsed["authors"])
+        family_raw = first_author_family(parsed["authors"])
         if not family_raw:
             raise IDError(
                 f"Metadata from {source_label} has no first-author "

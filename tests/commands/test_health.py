@@ -18,6 +18,7 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.commands.health import _CATEGORY_PREVIEW
 from litman.core import viewer as viewer_mod
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
@@ -2440,3 +2441,79 @@ def test_vault_can_link_but_project_drive_cannot(
     assert refs == []
     # ...while the vault's views are still fully checked and still clean.
     assert check_views_vs_metadata(vault, list_papers(vault)) == []
+
+
+# --- report folding ---------------------------------------------------------
+
+
+def _plant_placeholder_ids(vault: Path, n: int) -> None:
+    """`n` papers whose ids carry a filler — the legacy-library shape.
+
+    Metadata deliberately clean: these report through `placeholder_id` only,
+    so the folding assertions below count one category, not two.
+    """
+    for i in range(n):
+        _write_paper(
+            vault,
+            f"2024_Unknown_Untitled-{i}",
+            title=f"Deep learning for protein design {i}",
+            authors=["Zhang, San"],
+            doi=f"10.0/legacy-{i}",
+        )
+
+
+def test_report_folds_a_flooded_category(vault: Path) -> None:
+    """A vault imported before the guard existed must not print 12 screens.
+
+    The count in the header and the summary stay exact — only the listing is
+    capped, and the tail line says so and names the way to see the rest.
+    """
+    _plant_placeholder_ids(vault, 12)
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.exit_code == 1
+    assert result.output.count("id carries a placeholder") == _CATEGORY_PREVIEW
+    assert "… and 7 more in this category" in result.output
+    assert "lit health-check --all" in result.output
+    # Folding is a display decision: nothing was dropped from the tally.
+    assert "(12 issues)" in result.output
+
+
+def test_all_prints_every_finding(vault: Path) -> None:
+    _plant_placeholder_ids(vault, 12)
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--all", "--library", str(vault)]
+    )
+    assert result.output.count("id carries a placeholder") == 12
+    assert "more in this category" not in result.output
+
+
+def test_a_category_at_the_cap_grows_no_tail(vault: Path) -> None:
+    """Off-by-one guard: exactly `_CATEGORY_PREVIEW` findings fold nothing."""
+    _plant_placeholder_ids(vault, _CATEGORY_PREVIEW)
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.output.count("id carries a placeholder") == _CATEGORY_PREVIEW
+    assert "more in this category" not in result.output
+
+
+def test_folding_is_per_category_not_per_report(vault: Path) -> None:
+    """Each category keeps its own preview — one flood must not hide another."""
+    _plant_placeholder_ids(vault, 8)
+    for i in range(8):
+        _write_paper(
+            vault,
+            f"2024_Filler_Metadata-{i}",
+            title="Untitled",
+            authors=["Zhang, San"],
+            doi=f"10.0/filler-{i}",
+        )
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert result.output.count("id carries a placeholder") == _CATEGORY_PREVIEW
+    assert result.output.count("title is a placeholder") == _CATEGORY_PREVIEW
+    # Both planted categories hold 8, so both fold exactly 3 — counting that
+    # phrase rather than every tail line keeps the assertion about these two
+    # and not about whatever else an unregenerated fixture vault reports.
+    assert result.output.count("… and 3 more in this category") == 2

@@ -21,9 +21,10 @@ conveniences.
   a DOI you typed is kept even though CrossRef could not resolve it. The paper
   id is shown before anything is written and can be typed yourself — which is
   what lets in a paper whose title is written in a script the id cannot
-  carry. The drop is a copy:
-  your original file stays where it is. This is the same import the CLI runs,
-  so a dragged-in paper is indistinguishable from `lit add`.
+  carry. The drop is a copy, and the dialog says so: your original file stays
+  where it is, unlike `lit add`, which moves the PDF it imports. This is
+  otherwise the same import the CLI runs, so a dragged-in paper is
+  indistinguishable from one added there.
 - **litman now tells you what changed after an update.** The first time the
   app opens on a new version, a short "What's new" card lists the handful of
   changes you will actually notice, with a link to this changelog for the
@@ -48,6 +49,20 @@ conveniences.
   listed with the `lit rename` that replaces it. Only papers whose title
   cannot produce a better keyword are reported, so an id you chose yourself is
   left alone.
+- **`lit health-check` reports placeholders left inside a paper id.** A paper
+  imported as `2024_Unknown_Untitled` keeps that name after you correct its
+  author and title — the id is the folder name, the target of every `[[link]]`
+  in your notes, and the cite key in exported BibTeX, and only `lit rename`
+  changes it. It is now listed on its own, so correcting the fields no longer
+  makes the last mention of the bad id disappear along with them. Once the
+  fields are right the report hands you the complete rename, both ids filled
+  in; when the title is in a script that cannot produce a keyword, it fills in
+  everything it can and leaves that one blank for you.
+- **`lit health-check --all`.** Each category now lists its first few findings
+  and folds the rest into a count — a library imported before a guard existed
+  can hold hundreds of one kind, and printing every one buries everything
+  else. The counts stay exact; `--all` prints the full list, which is what to
+  use when working through a category paper by paper.
 - **Patents export as patents.** A paper with `venue-type: patent` now becomes
   a `@patent` entry instead of a bare `@misc`, and a `patent-number` field is
   rendered as the entry's number.

@@ -17,6 +17,7 @@ from litman.core.checks import (
     all_fixed_enums,
     check_config_readable,
     check_duplicate_doi,
+    check_placeholder_id,
     check_placeholder_metadata,
     check_weak_id_keyword,
     check_schema,
@@ -442,6 +443,162 @@ def test_placeholder_check_runs_in_the_full_health_check(vault: Path) -> None:
     assert not any(
         i.category == "placeholder_metadata"
         for i in run_all_checks(vault, [clean])
+    )
+
+
+# ---------------------------------------------------------------------------
+# placeholder_id: the filler that got baked into the handle
+# ---------------------------------------------------------------------------
+
+
+def test_placeholder_id_reported(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Untitled",
+        authors=["Unknown"],
+        year=2024,
+    )
+    issues = check_placeholder_id(vault, [paper])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "placeholder_id"
+    assert issue.severity == "warning"
+    assert issue.paper_id == "2024_Unknown_Untitled"
+    assert "'Unknown'" in issue.message
+    assert "'Untitled'" in issue.message
+
+
+def test_placeholder_id_survives_the_metadata_repair(vault: Path) -> None:
+    """The whole reason this check exists, asserted against its sibling.
+
+    `check_placeholder_metadata` reads the fields, so `lit modify` clears it —
+    and with it the only thing that ever mentioned the handle those fields
+    built. This one reads the id, so it is still there afterwards, and by then
+    it can name the exact rename.
+    """
+    repaired = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    assert check_placeholder_metadata(vault, [repaired]) == []
+
+    issues = check_placeholder_id(vault, [repaired])
+    assert len(issues) == 1
+    assert (
+        "lit rename 2024_Unknown_Untitled 2024_Zhang_Deep-learning-protein"
+        in (issues[0].hint or "")
+    )
+
+
+def test_placeholder_id_hint_blanks_only_what_it_cannot_know(vault: Path) -> None:
+    """A Chinese title yields no keyword, but the family name is right there."""
+    paper = _minimal_paper(
+        id="2018_Unknown_Untitled",
+        title="关于化合物的合成方法研究",
+        authors=["Zhang, Tianshun"],
+        year=2018,
+    )
+    issues = check_placeholder_id(vault, [paper])
+    assert len(issues) == 1
+    assert "2018_Zhang_<Keyword>" in (issues[0].hint or "")
+
+
+def test_placeholder_id_never_proposes_a_rename_to_itself(vault: Path) -> None:
+    """Metadata still holding the filler must not be offered back as the fix."""
+    paper = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Untitled",
+        authors=["Unknown"],
+        year=2024,
+    )
+    hint = check_placeholder_id(vault, [paper])[0].hint or ""
+    # The last token is `lit rename`'s second argument — the id being proposed.
+    # Matching on the whole hint would pass on the OLD id, which is in there too.
+    target = hint.split()[-1].strip("`")
+    assert target == "2024_<Family>_<Keyword>"
+
+
+def test_placeholder_id_keeps_the_half_that_is_honest(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Unknown_Deep-learning",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    issues = check_placeholder_id(vault, [paper])
+    assert len(issues) == 1
+    assert "'Unknown'" in issues[0].message
+    assert "'Deep-learning'" not in issues[0].message
+
+
+@pytest.mark.parametrize(
+    "paper_id",
+    [
+        "2024_Na_Deep-learning",  # 나 / 娜 — a real family name
+        "2024_Nil_Deep-learning",
+        "2024_Anonymous_Deep-learning",  # a claim about the document, not a filler
+        "2024_Zhang_Deep-learning",
+    ],
+)
+def test_placeholder_id_leaves_honest_ids_alone(vault: Path, paper_id: str) -> None:
+    """The false positive this check must never produce.
+
+    `Na` is the one that matters: flagging it would put a permanent warning on
+    exactly the authors the ASCII-id work exists to serve. The cost is that
+    `2024_NA_...` goes unreported here — `check_weak_id_keyword` covers a
+    segment that short whatever produced it.
+    """
+    paper = _minimal_paper(
+        id=paper_id,
+        title="Deep learning for protein design",
+        authors=["Someone, Real"],
+        year=2024,
+    )
+    assert check_placeholder_id(vault, [paper]) == []
+
+
+def test_placeholder_id_and_weak_keyword_do_not_both_fire(vault: Path) -> None:
+    """One paper, one `lit rename` — two warnings saying it would be noise."""
+    paper = _minimal_paper(
+        id="2024_Zhang_None", title="关于化合物的合成方法研究", year=2024
+    )
+    assert len(check_placeholder_id(vault, [paper])) == 1
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_placeholder_id_survives_ids_it_cannot_parse(vault: Path) -> None:
+    for paper in (
+        _minimal_paper(id="nosegments"),
+        _minimal_paper(id=None),
+        _minimal_paper(id="notayear_Unknown_Untitled"),
+        _minimal_paper(id="2024_Unknown_Untitled", authors="not a list"),
+        _minimal_paper(id="2024_Unknown_Untitled", year="not an int"),
+    ):
+        check_placeholder_id(vault, [paper])  # must not raise
+
+
+def test_placeholder_id_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — asserted in both directions."""
+    dirty = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    assert any(
+        i.category == "placeholder_id" for i in run_all_checks(vault, [dirty])
+    ), "check_placeholder_id is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(
+        id="2024_Zhang_Deep-learning-protein",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    assert not any(
+        i.category == "placeholder_id" for i in run_all_checks(vault, [clean])
     )
 
 

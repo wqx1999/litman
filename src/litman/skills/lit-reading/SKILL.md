@@ -356,7 +356,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit project list [--format json]` | canonical source for the registered project set AND each project's path | 1 (read) |
 | `lit trash list [--format json]` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
 | `lit taxonomy list [<dict>] [--format json]` | the registered vocabulary (all four dicts, or one) — the Phase 2 session load | 1 (read) |
-| `lit health-check [--fix]` | translate the report + propose per-finding remedies (B12); `--fix` = bulk derived-artifact repair, run only on the user's nod | 1 (read); `--fix` 2 |
+| `lit health-check [--fix] [--all]` | translate the report + propose per-finding remedies (B12); categories fold past the first few findings, `--all` prints every one; `--fix` = bulk derived-artifact repair, run only on the user's nod. Bulk filler-metadata / filler-id repair is lit-library [K] | 1 (read); `--fix` 2 |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit modify --set priority=` / `lit modify --set type=` | the priority / type verdicts — fixed-enum evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit open <id>` | suggest by default; run only on explicit request (B14) | — |

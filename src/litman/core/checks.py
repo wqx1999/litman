@@ -53,14 +53,21 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.dedup import normalize_doi
-from litman.core.id import derive_keyword, is_valid_id, is_weak_keyword, suggest_id
+from litman.core.id import (
+    derive_keyword,
+    family_segment,
+    first_author_family,
+    is_valid_id,
+    is_weak_keyword,
+    suggest_id,
+)
 from litman.core.notes import (
     enumerate_markdown_files,
     has_discussion_reminder,
     heal_discussion_scaffold,
     parse_wikilink_target,
 )
-from litman.core.placeholders import is_placeholder
+from litman.core.placeholders import is_placeholder, is_placeholder_id_segment
 from litman.core.portable_link import (
     is_portable_link,
     links_supported,
@@ -464,6 +471,115 @@ def check_placeholder_metadata(
     return out
 
 
+def _rename_target(paper: dict[str, Any], parts: list[str]) -> tuple[str, bool]:
+    """The id ``paper`` should be renamed to, and whether it is fully computed.
+
+    Built from the metadata as it stands *now*, which is the point: by the time
+    this runs the user may already have repaired the fields that produced the
+    bad id, and then the correct new handle is derivable with no PDF to reopen.
+    Falls back to a template that keeps whichever segment is honest —
+    ``2024_Unknown_Deep-learning`` proposes ``2024_<Family>_Deep-learning``, not
+    a blank id — so what is left to decide is only ever the broken half.
+    """
+    year = paper.get("year")
+    title = paper.get("title")
+    authors = paper.get("authors")
+    family = (
+        first_author_family([a for a in authors if isinstance(a, str)])
+        if isinstance(authors, list)
+        else ""
+    )
+    computed = suggest_id(
+        year if isinstance(year, int) else None,
+        family,
+        title if isinstance(title, str) else "",
+    )
+    # A computed id that still carries a filler means the metadata has not been
+    # repaired yet — offering it would propose renaming `2024_Unknown_Untitled`
+    # to itself.
+    if computed is not None:
+        segments = computed.split("_", 2)
+        if len(segments) == 3 and not any(
+            is_placeholder_id_segment(s) for s in segments[1:]
+        ):
+            return computed, True
+
+    # Only the segments that are actually unknowable become blanks. A Chinese
+    # title cannot yield a keyword, but the first author's family name is
+    # sitting right there in the metadata — leaving `<Family>` for the user to
+    # retype would be the hint charging rent on what it already knows.
+    if is_placeholder_id_segment(parts[1]):
+        candidate = family_segment(family)
+        # The metadata may still hold the very filler that built the id, in
+        # which case proposing it back is proposing a rename to itself.
+        family_part = (
+            candidate
+            if candidate and not is_placeholder_id_segment(candidate)
+            else "<Family>"
+        )
+    else:
+        family_part = parts[1]
+    keyword_part = "<Keyword>" if is_placeholder_id_segment(parts[2]) else parts[2]
+    return f"{parts[0]}_{family_part}_{keyword_part}", False
+
+
+def check_placeholder_id(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
+    """Paper ids whose family or keyword segment is a filler word.
+
+    ``check_placeholder_metadata`` above reports the *fields* — and its hint
+    already ends with "then ``lit rename`` if the id carries it too". But that
+    sentence is only visible while the warning is: repair the author with
+    ``lit modify`` and the finding disappears, while ``papers/2024_Unknown_
+    Untitled/`` keeps its name, keeps being the ``[[wiki-link]]`` target, and
+    keeps being the cite key every ``lit export`` writes into a .bib. Fixing
+    the easy half silently removed the only pointer to the hard half.
+
+    So this check reads the id and nothing else. It needs no corroboration
+    from the metadata — unlike ``check_weak_id_keyword``, which pairs a short
+    keyword with an underivable title precisely because a short keyword may
+    have been chosen on purpose. Nobody chooses ``Unknown``, so there is no
+    deliberate case to protect and no AND to add, and the finding stays put
+    until ``lit rename`` actually changes the handle.
+
+    Warning, not error: nothing is broken or inconsistent — the vault works
+    perfectly with an ugly handle, and a user may rationally leave one alone
+    on a paper they will never cite. The hint carries the whole command,
+    computed from the current metadata (see :func:`_rename_target`).
+    """
+    out: list[Issue] = []
+    for p in papers:
+        pid = p.get("id")
+        if not isinstance(pid, str):
+            continue
+        # `<year>_<Family>_<Keyword>`; maxsplit=2 so an underscore inside a
+        # hand-written keyword does not split the keyword.
+        parts = pid.split("_", 2)
+        if len(parts) < 3:
+            continue
+        bad = [s for s in parts[1:] if is_placeholder_id_segment(s)]
+        if not bad:
+            continue
+
+        target, computed = _rename_target(p, parts)
+        out.append(
+            Issue(
+                category="placeholder_id",
+                severity="warning",
+                paper_id=pid,
+                message=(
+                    "id carries a placeholder: "
+                    + ", ".join(repr(s) for s in bad)
+                ),
+                hint=(
+                    f"run `lit rename {pid} {target}`"
+                    if computed
+                    else f"fill in the blank, then `lit rename {pid} {target}`"
+                ),
+            )
+        )
+    return out
+
+
 def check_weak_id_keyword(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -502,6 +618,11 @@ def check_weak_id_keyword(
         # hand-written keyword instead of splitting the keyword on it.
         parts = pid.split("_", 2)
         if len(parts) < 3 or not is_weak_keyword(parts[2]):
+            continue
+        # `check_placeholder_id` owns the filler segments and says something
+        # sharper about them; two warnings carrying the same `lit rename` would
+        # only double the wall of yellow a legacy vault already produces.
+        if is_placeholder_id_segment(parts[2]):
             continue
         if derive_keyword(title) != "untitled":
             continue
@@ -2889,6 +3010,11 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "validity",
         "report",
     ),
+    # The id half of placeholder_metadata, registered next to it so a legacy
+    # vault reports both together. Never `regen`: renaming is a cascade over
+    # other papers' ref lists and notes, and which handle a paper should carry
+    # is a judgment call, so `--fix` must not pick one (ADR-015).
+    CheckSpec("placeholder_id", check_placeholder_id, "full", "validity", "report"),
     # Same tier/klass as placeholder_metadata and for the same reason: it reads
     # metadata, judges content rather than structure, and only the reader knows
     # the replacement — so it reports and never fixes.

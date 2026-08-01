@@ -312,8 +312,8 @@ def suggest_id(
     """
     if year is None or not isinstance(year, int):
         return None
-    family_slug = _slug(first_author_family)
-    if not family_slug:
+    family = family_segment(first_author_family)
+    if family is None:
         return None
     if not title or not title.strip():
         return None
@@ -322,8 +322,35 @@ def suggest_id(
     if keyword == "untitled" or is_weak_keyword(keyword):
         return None
 
-    family = family_slug[0].upper() + family_slug[1:]
     return f"{year}_{family}_{keyword}"
+
+
+def family_segment(first_author_family: str) -> str | None:
+    """The ``<Family>`` segment of an id, or ``None`` if nothing ASCII survives.
+
+    The middle third of an id, split out so the two callers that build one
+    without going through :func:`derive_id` — ``suggest_id`` and the health
+    check's rename hint — capitalise it the same way rather than each
+    reimplementing "slug, then upper the first character".
+    """
+    slug = _slug(first_author_family)
+    if not slug:
+        return None
+    return slug[0].upper() + slug[1:]
+
+
+def first_author_family(authors: list[str]) -> str:
+    """The family name out of the first ``"Family, Given"`` author string.
+
+    Lives here rather than beside its callers because it is the front half of
+    :func:`derive_id`'s contract: everything that needs to know which id a
+    piece of metadata *would* produce — the ingest paths, the GUI preview, the
+    health check's rename hint — has to slice the family name the same way, or
+    they disagree about the id while all claiming to derive it.
+    """
+    if not authors:
+        return ""
+    return authors[0].split(",", 1)[0].strip()
 
 
 def derive_keyword_alternatives(title: str, n: int = 3) -> list[str]:
