@@ -15,7 +15,10 @@ conveniences.
   off the first pages and shows you what it found — title, authors, year,
   journal — before anything is saved; correct or type the DOI yourself when
   the PDF has none, as scanned papers often do. A DOI already in your library
-  is refused with a link to the paper you already have. The drop is a copy:
+  is refused with a link to the paper you already have. When CrossRef has no
+  record for it — a patent, or a journal that registers its DOIs elsewhere —
+  fill in the title, year and authors yourself and it goes in the same way;
+  a DOI you typed is kept even though CrossRef could not resolve it. The drop is a copy:
   your original file stays where it is. This is the same import the CLI runs,
   so a dragged-in paper is indistinguishable from `lit add`.
 - **litman now tells you what changed after an update.** The first time the

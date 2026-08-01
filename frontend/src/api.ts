@@ -481,6 +481,36 @@ export function confirmIngest(
   })
 }
 
+/** What the hand-entry form submits when CrossRef cannot supply the record.
+ *
+ * Key names are the server schema's, hyphen included (`venue-type`), rather
+ * than a camelCase shape this file would then have to translate — the schema
+ * is the one `lit add --from-llm-json` validates, and a translation layer is
+ * exactly where the two would drift apart. */
+export interface IngestManualMeta {
+  title: string
+  authors: string[]
+  year: number | null
+  journal?: string | null
+  doi?: string | null
+  'venue-type'?: string | null
+}
+
+/** Ingest a stashed upload from typed-in metadata rather than a DOI.
+ *
+ * For the papers CrossRef does not have: a patent (no DOI at all) or a
+ * Chinese journal article whose DOI is real but registered with CNKI. Same
+ * endpoint, same `_apply_add` write path — only the metadata source differs. */
+export function confirmIngestManual(
+  handle: string,
+  metadata: IngestManualMeta,
+): Promise<IngestConfirmResult> {
+  return mutateJSON<IngestConfirmResult>('/api/ingest/confirm', 'POST', {
+    handle,
+    metadata,
+  })
+}
+
 /** Discard a stashed upload the user dismissed. Fire-and-forget by design:
  * a failed cleanup is not something to put in front of someone who just hit
  * Cancel, and the server sweeps leftovers on its own regardless. */

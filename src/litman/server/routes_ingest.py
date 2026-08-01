@@ -13,6 +13,14 @@ Three steps, one write path:
    ``lit add`` calls, so a GUI drop and a terminal add produce byte-identical
    vault state (invariant #16: the GUI opens no second write path).
 
+Step 2 is skippable. CrossRef does not have every paper — a patent has no DOI
+at all, and a Chinese journal article usually has a real one registered with
+CNKI rather than CrossRef, so "not found" is not "does not exist". Those go in
+through the same confirm endpoint carrying hand-entered ``metadata`` instead
+of a DOI, validated by the same schema ``lit add --from-llm-json`` uses
+(:func:`litman.importers.llm.validate_candidate_metadata`) and written by the
+same ``_apply_add``. A third input channel, still not a second write path.
+
 ``DELETE /api/ingest/{handle}`` discards a stash the user walked away from.
 
 The browser upload is inherently a COPY of the user's file, so ``lit add``'s
@@ -57,6 +65,7 @@ from litman.exceptions import (
     ImporterError,
 )
 from litman.importers.crossref import fetch_crossref, parse_crossref
+from litman.importers.llm import validate_candidate_metadata
 
 router = APIRouter(prefix="/api")
 
@@ -275,8 +284,17 @@ def get_ingest_preview(
     }
 
 
-def _ingest_confirmed(vault: Path, handle: str, doi: str) -> dict[str, Any]:
-    """Fetch CrossRef and run the stash through the shared backend (blocking)."""
+def _ingest_confirmed(
+    vault: Path,
+    handle: str,
+    doi: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the metadata and run the stash through the shared backend.
+
+    Blocking. Exactly one of ``doi`` (fetch CrossRef) or ``metadata`` (the
+    hand-entry form) arrives filled — the caller enforces that.
+    """
     tmp_path = vault / _UPLOAD_DIRNAME / f"{handle}.pdf"
     if not tmp_path.is_file():
         raise HTTPException(
@@ -293,17 +311,36 @@ def _ingest_confirmed(vault: Path, handle: str, doi: str) -> dict[str, Any]:
         )
 
     try:
-        parsed = parse_crossref(fetch_crossref(doi))
+        if metadata is not None:
+            # Same schema, same validators, same normalized shape as
+            # `lit add --from-llm-json`: hand-entered metadata is refused for
+            # a placeholder title or first author exactly where an agent's
+            # would be. The GUI opens no second set of rules, as it opens no
+            # second write path.
+            parsed = validate_candidate_metadata(
+                metadata, context="Cannot add this paper"
+            )
+        else:
+            parsed = parse_crossref(fetch_crossref(doi or ""))
     except ImporterError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # A hand-entered DOI is kept and deduped on exactly like a fetched one.
+    # It is often perfectly real — Chinese journals register with CNKI rather
+    # than CrossRef, so "CrossRef does not know it" is not "it does not
+    # exist" — and a paper with no DOI at all (a patent) simply dedups on
+    # nothing, which is what `lit add --from-llm-json` already does.
+    effective_doi = parsed.get("doi") or (doi or "")
+    source_label = (
+        f"DOI {doi!r}" if metadata is None else "the details you entered"
+    )
     try:
         result = _apply_add(
             vault,
             tmp_path,
             parsed,
-            doi_for_dedup=parsed.get("doi") or doi,
-            source_label=f"DOI {doi!r}",
+            doi_for_dedup=effective_doi,
+            source_label=source_label,
             id_override=None,
             resolve_collision=lambda pid, yr, fam: auto_suffix_id(vault, pid),
         )
@@ -322,11 +359,17 @@ def _ingest_confirmed(vault: Path, handle: str, doi: str) -> dict[str, Any]:
 async def post_ingest_confirm(request: Request) -> dict[str, Any]:
     """Ingest a stashed upload through the shared ``lit add`` backend.
 
-    Body: ``{"handle": <from /ingest/pdf>, "doi": <confirmed DOI>}``.
-    CrossRef is fetched again here (not trusted from the preview response) so
-    the written metadata can never drift from what the confirmed DOI resolves
-    to; the dedup precheck reruns inside ``_apply_add`` for the same reason.
-    Id collisions auto-suffix — the GUI shows the final id in the response.
+    Body: ``{"handle": <from /ingest/pdf>, "doi": <confirmed DOI>}`` — or,
+    when CrossRef cannot supply the record, ``{"handle": …, "metadata":
+    {title, authors, year, …}}`` in the schema ``lit add --from-llm-json``
+    takes. Exactly one of the two; sending both is a mistake worth naming
+    rather than resolving by precedence.
+
+    On the DOI path CrossRef is fetched again here (not trusted from the
+    preview response) so the written metadata can never drift from what the
+    confirmed DOI resolves to; the dedup precheck reruns inside ``_apply_add``
+    for the same reason. Id collisions auto-suffix — the GUI shows the final
+    id in the response.
     """
     try:
         payload = await request.json()
@@ -337,13 +380,37 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
 
     handle = payload.get("handle")
     doi_raw = payload.get("doi")
+    metadata = payload.get("metadata")
     if not isinstance(handle, str) or not _HANDLE_RE.match(handle):
         raise HTTPException(status_code=400, detail="Unknown upload handle.")
-    if not isinstance(doi_raw, str) or not doi_raw.strip():
-        raise HTTPException(status_code=400, detail="DOI is required.")
-    doi = canonicalize_doi(doi_raw.strip())
 
-    vault: Path = request.app.state.vault
+    has_doi = isinstance(doi_raw, str) and bool(doi_raw.strip())
+    if metadata is not None:
+        if not isinstance(metadata, dict):
+            raise HTTPException(
+                status_code=400, detail="'metadata' must be a JSON object."
+            )
+        if has_doi:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Send either 'doi' (look it up) or 'metadata' (enter it "
+                    "by hand), not both. A hand-entered DOI belongs inside "
+                    "'metadata'."
+                ),
+            )
+        vault: Path = request.app.state.vault
+        return await run_in_threadpool(
+            _ingest_confirmed, vault, handle, None, metadata
+        )
+
+    if not has_doi:
+        raise HTTPException(
+            status_code=400, detail="Either 'doi' or 'metadata' is required."
+        )
+    doi = canonicalize_doi(str(doi_raw).strip())
+
+    vault = request.app.state.vault
     # CrossRef (10 s timeout) + the vault write + the INDEX/views reconcile:
     # all blocking, none of it allowed to stall the rest of the GUI.
     return await run_in_threadpool(_ingest_confirmed, vault, handle, doi)

@@ -216,6 +216,48 @@ def _normalize_meta(meta: LLMCandidateMeta) -> dict[str, Any]:
     }
 
 
+def validate_candidate_metadata(
+    raw: dict[str, Any], *, context: str
+) -> dict[str, Any]:
+    """Validate a decoded metadata mapping and normalize it. Never fetches.
+
+    The schema half of this module, split out from the JSON-text half so a
+    caller that already holds a mapping — the webUI's hand-entry form, which
+    gets one from FastAPI's own body parse — validates against exactly the
+    rules ``lit add --from-llm-json`` does. That matters most for the two
+    identity fields: a placeholder first author is refused here, once, rather
+    than in each channel that could write one.
+
+    ``context`` prefixes the error so the message names where the bad value
+    came from ("Invalid LLM metadata JSON at foo.json", "Cannot add this
+    paper"); the field name and the guidance after it are the schema's own.
+
+    Args:
+        raw: Decoded mapping to validate.
+        context: Sentence-leading label for any error raised.
+
+    Returns:
+        Dict with the same shape ``parse_crossref`` produces.
+
+    Raises:
+        ImporterError: schema validation failure (missing required field,
+            unknown key, wrong type, empty title / authors, placeholder in
+            title or first author).
+    """
+    try:
+        meta = LLMCandidateMeta.model_validate(raw)
+    except ValidationError as e:
+        first = e.errors()[0]
+        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
+        # pydantic prefixes anything a custom validator raises with
+        # "Value error, ". The validators here carry user-facing guidance, so
+        # strip the machinery and let the sentence start where it should.
+        detail = first["msg"].removeprefix("Value error, ")
+        raise ImporterError(f"{context}: field {loc!r}: {detail}") from e
+
+    return _normalize_meta(meta)
+
+
 def parse_llm_json_text(
     raw_text: str, *, source: str = "<stdin>"
 ) -> dict[str, Any]:
@@ -250,20 +292,9 @@ def parse_llm_json_text(
             f"{source} must contain a JSON object at the top level, "
             f"got {type(raw).__name__}."
         )
-    try:
-        meta = LLMCandidateMeta.model_validate(raw)
-    except ValidationError as e:
-        first = e.errors()[0]
-        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
-        # pydantic prefixes anything a custom validator raises with
-        # "Value error, ". The validators here carry user-facing guidance, so
-        # strip the machinery and let the sentence start where it should.
-        detail = first["msg"].removeprefix("Value error, ")
-        raise ImporterError(
-            f"Invalid LLM metadata JSON at {source}: field {loc!r}: {detail}"
-        ) from e
-
-    return _normalize_meta(meta)
+    return validate_candidate_metadata(
+        raw, context=f"Invalid LLM metadata JSON at {source}"
+    )
 
 
 def parse_llm_json(json_path: Path) -> dict[str, Any]:

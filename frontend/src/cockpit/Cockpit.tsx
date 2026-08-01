@@ -40,6 +40,7 @@ import {
   unlinkProject,
 } from '../api'
 import type { MetadataWrite } from '../api'
+import AuthorRows from '../ui/AuthorRows'
 import {
   modalBackdropProps,
   useModalCardFocus,
@@ -891,19 +892,6 @@ function MetadataEditDialog({
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  // Index of the author row being dragged, or null. Reorder happens live on
-  // dragover (the sortable-list idiom), so drop needs no handler of its own.
-  const [dragIdx, setDragIdx] = useState<number | null>(null)
-
-  function moveAuthor(from: number, to: number) {
-    if (to < 0 || to >= authors.length) return
-    setAuthors((prev) => {
-      const next = [...prev]
-      const [row] = next.splice(from, 1)
-      next.splice(to, 0, row)
-      return next
-    })
-  }
 
   async function doSave() {
     // Diff against the original so untouched fields are not sent at all: a
@@ -986,81 +974,11 @@ function MetadataEditDialog({
           ))}
 
           <div className="col-span-2">
-            <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
-              Authors <span className="normal-case tracking-normal text-stone-400">— order matters: the first author names the paper</span>
-            </span>
-            <div className="space-y-1.5">
-              {authors.map((name, i) => (
-                <div
-                  key={i}
-                  onDragOver={(e) => {
-                    e.preventDefault()
-                    if (dragIdx === null || dragIdx === i) return
-                    moveAuthor(dragIdx, i)
-                    setDragIdx(i)
-                  }}
-                  className={`flex items-center gap-1.5 ${dragIdx === i ? 'opacity-60' : ''}`}
-                >
-                  <span
-                    draggable={!saving}
-                    onDragStart={() => setDragIdx(i)}
-                    onDragEnd={() => setDragIdx(null)}
-                    title="Drag to reorder"
-                    className="cursor-grab select-none px-0.5 text-stone-400 hover:text-stone-600 active:cursor-grabbing"
-                  >
-                    ⋮⋮
-                  </span>
-                  <input
-                    type="text"
-                    value={name}
-                    placeholder="Family, Given"
-                    onChange={(e) =>
-                      setAuthors((prev) =>
-                        prev.map((a, j) => (j === i ? e.target.value : a)),
-                      )
-                    }
-                    disabled={saving}
-                    className="min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
-                  />
-                  <button
-                    onClick={() => moveAuthor(i, i - 1)}
-                    disabled={saving || i === 0}
-                    title="Move up"
-                    aria-label={`Move author ${i + 1} up`}
-                    className="rounded px-1 text-xs text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-30"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    onClick={() => moveAuthor(i, i + 1)}
-                    disabled={saving || i === authors.length - 1}
-                    title="Move down"
-                    aria-label={`Move author ${i + 1} down`}
-                    className="rounded px-1 text-xs text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-30"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    onClick={() =>
-                      setAuthors((prev) => prev.filter((_, j) => j !== i))
-                    }
-                    disabled={saving}
-                    title="Remove this author"
-                    aria-label={`Remove author ${i + 1}`}
-                    className="rounded px-1 text-sm leading-none text-stone-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-30"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-            <button
-              onClick={() => setAuthors((prev) => [...prev, ''])}
+            <AuthorRows
+              authors={authors}
+              onChange={setAuthors}
               disabled={saving}
-              className="mt-1.5 text-xs font-medium text-accent-600 transition-colors hover:underline disabled:opacity-40"
-            >
-              + Add author
-            </button>
+            />
           </div>
         </div>
 

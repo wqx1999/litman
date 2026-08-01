@@ -2,27 +2,58 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   confirmIngest,
+  confirmIngestManual,
   fetchIngestPreview,
   type IngestPreview,
   type IngestUploadResult,
 } from '../api'
+import AuthorRows from './AuthorRows'
 import { modalBackdropProps } from './modalShell'
 
 /** Confirm dialog for the drag-in ingest: DOI (sniffed, editable) → CrossRef
- * preview → Add.
+ * preview → Add, with a hand-entry path for the papers CrossRef lacks.
  *
- * One flow, no forks: the DOI field is always there — pre-filled when the
- * sniff found one (looked up immediately), empty for scanned/DOI-less PDFs.
- * Editing the DOI invalidates the preview; Add only ever submits a DOI the
- * user has seen resolved. A DOI already in the vault shows a jump-to link and
- * keeps Add disabled (replacing is a CLI affair). Ids are shown, never edited
+ * The DOI field is always there — pre-filled when the sniff found one (looked
+ * up immediately), empty for scanned/DOI-less PDFs. Editing the DOI
+ * invalidates the preview; Add only ever submits a DOI the user has seen
+ * resolved. A DOI already in the vault shows a jump-to link and keeps Add
+ * disabled (replacing is a CLI affair). Ids are shown, never edited
  * (collisions auto-suffix server-side; renames belong to `lit rename`).
+ *
+ * The second path exists because "CrossRef does not have it" is a common,
+ * permanent state, not a failure to retry: a patent carries no DOI at all,
+ * and a Chinese journal article usually carries a real one registered with
+ * CNKI, which CrossRef will never resolve. Both used to be simply un-addable
+ * by dragging. The hand-entry form therefore offers itself whenever there is
+ * no confirmed record — including before any lookup, since a patent's owner
+ * has nothing to look up and would otherwise never see the way in.
+ *
+ * Six fields, not the eleven the metadata editor shows: the three that reach
+ * the paper id (title / year / first author) plus the three that cannot be
+ * inferred later (journal, DOI, venue type — the last is what makes a patent
+ * export as `@patent`). Everything else is one pencil click away once the
+ * paper is in, and a drag-and-drop dialog that scrolls is a worse trade.
  *
  * This is a BLOCKING modal (it owns a text input), so unlike the CheatSheet /
  * What's-new overlays it joins App's `anyModalOpen` — the global shortcut
  * dispatcher goes quiet and Esc is handled here, on the card itself. Initial
  * focus always lands inside the card (the DOI input), so the card-level
  * key handler is reachable from the first keystroke. */
+
+/** CrossRef's own vocabulary plus `patent`, which CrossRef has no type for.
+ * These are the values `lit export` maps to bibtex entry types
+ * (exporters/bibtex.py `_VENUE_TYPE_TO_ENTRY`); anything else exports as
+ * `@misc`, so the list is closed rather than free text. */
+const VENUE_TYPES = [
+  ['journal-article', 'Journal article'],
+  ['proceedings-article', 'Conference paper'],
+  ['preprint', 'Preprint'],
+  ['patent', 'Patent'],
+  ['book', 'Book'],
+  ['book-chapter', 'Book chapter'],
+  ['dissertation', 'Thesis'],
+  ['report', 'Report'],
+] as const
 export default function AddPaper({
   upload,
   fileName,
@@ -42,6 +73,17 @@ export default function AddPaper({
   const [busy, setBusy] = useState<'lookup' | 'add' | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Hand-entry state. `manual` opens the form; the fields below only ever
+  // reach the server through the metadata path, so nothing here can leak into
+  // a DOI-based add.
+  const [manual, setManual] = useState(false)
+  const [mTitle, setMTitle] = useState('')
+  const [mYear, setMYear] = useState('')
+  const [mJournal, setMJournal] = useState('')
+  const [mDoi, setMDoi] = useState('')
+  const [mVenue, setMVenue] = useState<string>('journal-article')
+  const [mAuthors, setMAuthors] = useState<string[]>([''])
+
   const lookup = useCallback((value: string) => {
     const trimmed = value.trim()
     if (!trimmed) return
@@ -54,6 +96,15 @@ export default function AddPaper({
       .finally(() => setBusy(null))
   }, [])
 
+  // Carry whatever the user already typed into the form rather than making
+  // them retype it. A DOI CrossRef could not resolve is usually still the
+  // paper's real DOI (CNKI-registered, say), so it belongs in the record.
+  const openManual = () => {
+    setMDoi(doi.trim())
+    setError(null)
+    setManual(true)
+  }
+
   // Focus ALWAYS lands in the DOI field — it is both the first thing to
   // correct and what makes the card's own Esc handler reachable (a key event
   // outside the card never reaches it, and this modal is excluded from the
@@ -64,17 +115,41 @@ export default function AddPaper({
     if (upload.doi) lookup(upload.doi)
   }, [upload, lookup])
 
+  // Only the three fields that reach the paper id are required, and only in
+  // the shape the id needs: a year the server can parse, a first author with
+  // something in it. Everything else the schema will judge on submit — the
+  // button's job is to stop a request that cannot possibly succeed, not to
+  // duplicate the validator.
+  const manualReady =
+    mTitle.trim() !== '' &&
+    /^\d{3,4}$/.test(mYear.trim()) &&
+    (mAuthors[0] ?? '').trim() !== ''
+
   const canAdd =
     busy === null &&
-    preview !== null &&
-    preview.inVault === null &&
-    preview.proposedId !== null
+    (manual
+      ? manualReady
+      : preview !== null &&
+        preview.inVault === null &&
+        preview.proposedId !== null)
 
   const add = () => {
-    if (!canAdd || preview === null) return
+    if (!canAdd) return
     setBusy('add')
     setError(null)
-    confirmIngest(upload.handle, preview.doi)
+    const request = manual
+      ? confirmIngestManual(upload.handle, {
+          title: mTitle.trim(),
+          // Blank rows are dropped here rather than in the editor, so a row
+          // someone is halfway through typing never vanishes under them.
+          authors: mAuthors.map((a) => a.trim()).filter(Boolean),
+          year: Number(mYear.trim()),
+          journal: mJournal.trim() || null,
+          doi: mDoi.trim() || null,
+          'venue-type': mVenue || null,
+        })
+      : confirmIngest(upload.handle, preview!.doi)
+    request
       .then((r) => onAdded(r.id))
       .catch((e) => {
         setError(e instanceof Error ? e.message : String(e))
@@ -121,7 +196,9 @@ export default function AddPaper({
           {fileName}
         </h2>
 
-        <div className="mt-3 flex items-center gap-2">
+        {/* Hidden in hand-entry mode: the DOI moved into the form, and two
+            DOI boxes on one card is a question nobody should have to answer. */}
+        <div className={`mt-3 flex items-center gap-2 ${manual ? 'hidden' : ''}`}>
           <input
             ref={inputRef}
             value={doi}
@@ -160,6 +237,120 @@ export default function AddPaper({
           <p className="mt-3 whitespace-pre-wrap text-xs leading-5 text-red-600">
             {error}
           </p>
+        )}
+
+        {/* Offered whenever there is no confirmed record — not only after a
+            failed lookup. A patent has no DOI to look up, so gating this on
+            an error would hide the only way in from the person who needs it
+            most. Hidden once a preview resolves: a paper CrossRef knows
+            should not tempt anyone into retyping it. */}
+        {!manual && preview === null && busy !== 'lookup' && (
+          <button
+            type="button"
+            onClick={openManual}
+            className="mt-3 text-xs font-medium text-accent-600 transition-colors hover:underline"
+          >
+            No DOI, or CrossRef doesn't have it? Enter the details yourself →
+          </button>
+        )}
+
+        {manual && (
+          <div className="mt-3 space-y-2.5 border-t border-stone-200 pt-3">
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setManual(false)}
+                disabled={busy === 'add'}
+                className="text-[11px] font-medium text-stone-400 transition-colors hover:text-accent-600 disabled:opacity-40"
+              >
+                ← Look up a DOI instead
+              </button>
+            </div>
+            <label className="block">
+              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                Title <span className="text-red-500">*</span>
+              </span>
+              <input
+                type="text"
+                autoFocus
+                value={mTitle}
+                onChange={(e) => setMTitle(e.target.value)}
+                disabled={busy === 'add'}
+                className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
+              />
+            </label>
+
+            <div className="grid grid-cols-3 gap-2.5">
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  Year <span className="text-red-500">*</span>
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={mYear}
+                  onChange={(e) => setMYear(e.target.value)}
+                  disabled={busy === 'add'}
+                  className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
+                />
+              </label>
+              <label className="col-span-2 block">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  Journal / venue
+                </span>
+                <input
+                  type="text"
+                  value={mJournal}
+                  onChange={(e) => setMJournal(e.target.value)}
+                  disabled={busy === 'add'}
+                  className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  DOI
+                </span>
+                <input
+                  type="text"
+                  value={mDoi}
+                  onChange={(e) => setMDoi(e.target.value)}
+                  spellCheck={false}
+                  placeholder="if it has one"
+                  disabled={busy === 'add'}
+                  className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 font-mono text-xs text-stone-800 placeholder:font-sans placeholder:text-stone-400 focus:border-accent-500 focus:outline-none disabled:opacity-50"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  Type
+                </span>
+                <select
+                  value={mVenue}
+                  onChange={(e) => setMVenue(e.target.value)}
+                  disabled={busy === 'add'}
+                  className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
+                >
+                  {VENUE_TYPES.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <AuthorRows
+              authors={mAuthors}
+              onChange={setMAuthors}
+              disabled={busy === 'add'}
+            />
+            <p className="text-[11px] leading-4 text-stone-400">
+              Volume, pages and the rest are editable once it's in.
+            </p>
+          </div>
         )}
 
         {preview && (

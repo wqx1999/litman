@@ -328,6 +328,135 @@ def test_confirm_unknown_handle_400(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/ingest/confirm with hand-entered metadata — the papers CrossRef
+# does not have (a patent, a CNKI-registered Chinese journal article)
+# ---------------------------------------------------------------------------
+
+_PATENT_META: dict[str, Any] = {
+    "title": "Method for continuous macrocyclisation of peptides",
+    "authors": ["Zhang, Wei", "Li, Hua"],
+    "year": 2021,
+    "journal": "China National Intellectual Property Administration",
+    "venue-type": "patent",
+}
+
+
+def _manual_confirm(
+    client: TestClient, meta: dict[str, Any]
+) -> Any:
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    return client.post(
+        "/api/ingest/confirm", json={"handle": handle, "metadata": meta}
+    )
+
+
+def test_manual_metadata_ingests_through_the_same_backend(
+    client: TestClient, vault: Path
+) -> None:
+    # No mock_crossref fixture on purpose: this path must not touch CrossRef
+    # at all, so a stray fetch would blow up on the real network call rather
+    # than pass quietly against a stub.
+    resp = _manual_confirm(client, _PATENT_META)
+    assert resp.status_code == 200, resp.text
+    paper_id = resp.json()["id"]
+    assert paper_id == "2021_Zhang_Method-continuous-macrocyclisation"
+
+    paper_dir = vault / "papers" / paper_id
+    assert (paper_dir / "paper.pdf").is_file()
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
+    assert meta["authors"] == ["Zhang, Wei", "Li, Hua"]
+    assert meta["venue-type"] == "patent"
+    assert not meta["doi"]
+
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert paper_id in {p["id"] for p in index["papers"]}
+    assert not any((vault / _UPLOAD_DIRNAME).iterdir())
+
+
+def test_manual_metadata_keeps_a_doi_crossref_never_resolved(
+    client: TestClient, vault: Path
+) -> None:
+    # The Chinese-journal case: the DOI is real, registered with CNKI rather
+    # than CrossRef. "Not found upstream" must not mean "thrown away" — the
+    # record keeps it, and the dedup precheck honours it like any other.
+    cnki_doi = "10.11949/j.issn.0438-1157.20171279"
+    resp = _manual_confirm(
+        client,
+        {
+            "title": "Bubbling-breath reactor for peptide synthesis",
+            "authors": ["Wang, Xiaoming"],
+            "year": 2017,
+            "journal": "CIESC Journal",
+            "doi": cnki_doi,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    paper_dir = vault / "papers" / resp.json()["id"]
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
+    assert meta["doi"] == cnki_doi
+
+    # …and a second drop of the same DOI is refused as a duplicate, which is
+    # only possible because the first one was actually written.
+    dup = _manual_confirm(
+        client,
+        {"title": "Same paper again", "authors": ["Wang, Xiaoming"], "year": 2017, "doi": cnki_doi},
+    )
+    assert dup.status_code == 409
+
+
+def test_manual_metadata_refuses_a_placeholder_first_author(
+    client: TestClient, vault: Path
+) -> None:
+    # The whole reason this path reuses `lit add --from-llm-json`'s schema:
+    # the first author's family name becomes the folder name, the citation
+    # key and every wikilink, so a filler there is permanent.
+    resp = _manual_confirm(
+        client, {**_PATENT_META, "authors": ["Unknown", "Li, Hua"]}
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "'authors'" in detail and "placeholder" in detail
+    # Refused means nothing was written — not a folder, not an INDEX entry.
+    assert not any((vault / "papers").iterdir())
+
+
+def test_manual_metadata_rejects_unknown_fields(client: TestClient) -> None:
+    # `extra="forbid"` on the schema: a field name the GUI invented (or a
+    # typo) must fail loudly rather than be dropped on the way to disk.
+    resp = _manual_confirm(client, {**_PATENT_META, "patentNumber": "CN123456"})
+    assert resp.status_code == 400
+    assert "patentNumber" in resp.json()["detail"]
+
+
+def test_confirm_refuses_both_doi_and_metadata(client: TestClient) -> None:
+    # Resolving this by precedence would silently pick one of two things the
+    # user asked for; naming it is the only honest answer.
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={"handle": handle, "doi": _DOI, "metadata": _PATENT_META},
+    )
+    assert resp.status_code == 400
+    assert "not both" in resp.json()["detail"]
+
+
+def test_confirm_refuses_neither_doi_nor_metadata(client: TestClient) -> None:
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post("/api/ingest/confirm", json={"handle": handle})
+    assert resp.status_code == 400
+    assert "required" in resp.json()["detail"]
+
+
+def test_manual_metadata_must_be_an_object(client: TestClient) -> None:
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={"handle": handle, "metadata": ["title", "authors"]},
+    )
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # DELETE /api/ingest/{handle} — dismissing the dialog
 # ---------------------------------------------------------------------------
 
