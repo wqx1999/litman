@@ -111,6 +111,20 @@ conveniences.
   year in — which then passed every later check and surfaced only as a wrong
   date in an exported citation. It now says outright that the year must not be
   guessed, and where to find the real one.
+- **Starting litman from its icon now finds the AI agents you have installed.**
+  On Linux and macOS an app started from a desktop shortcut or the Dock is
+  handed a shorter search path than a terminal window gets, and every agent
+  CLI lives outside it — so litman reported Claude Code, Codex, Cursor,
+  OpenCode and Antigravity as all missing at once, Recheck kept saying the
+  same, and the skills could not be installed. It now looks in the places
+  those tools actually install to, so double-clicking the icon and running
+  `lit gui` in a terminal see the same agents. Installing an agent while
+  litman is open still needs only Recheck, not a restart.
+- **Microsoft Edge on Linux is recognised as a window browser.** litman opens
+  its own window when it finds a Chrome-family browser, and Edge's Linux
+  package was only matched by chance. Installing Edge — or Chrome, or
+  Chromium — now reliably gets you a standalone window instead of a browser
+  tab. A browser installed under your home directory is found too.
 
 ## 1.3.2 — 2026-07-29
 
