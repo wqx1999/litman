@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { modalBackdropProps } from '../ui/modalShell'
 
 interface Props {
   /** Human label of the tab being closed (shown in the prompt body). */
@@ -47,7 +48,7 @@ export default function SaveDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={saving ? undefined : onCancel}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}

@@ -192,14 +192,23 @@ def get_whatsnew() -> dict[str, Any]:
     (``litman/data/whatsnew.md``), so this never touches the network and works
     with no vault served. ``bullets`` is empty when the running version has no
     section recorded — the popup then simply stays closed.
+
+    ``seen`` is the release this machine has already dismissed (``null`` if
+    none), read from the machine-level ``ui-state.json``. It rides along here
+    rather than in its own endpoint so the SPA decides "pop or not" from a
+    single request — and it lives server-side because ``localStorage`` is
+    partitioned per browser profile and per port, both of which the GUI
+    changes under the user (:mod:`litman.core.ui_state`).
     """
     from litman import __version__
+    from litman.core.ui_state import load_whatsnew_seen
     from litman.core.whatsnew import CHANGELOG_URL, bullets_for
 
     return {
         "version": __version__,
         "bullets": bullets_for(__version__),
         "changelogUrl": CHANGELOG_URL,
+        "seen": load_whatsnew_seen(),
     }
 
 

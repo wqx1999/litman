@@ -78,8 +78,12 @@ _VAULTLESS_ALLOWED = frozenset(
         ("PUT", "/api/vaults/active"),
         ("GET", "/api/version"),
         # Same nature as /api/version: a pure read of the installed package
-        # (the what's-new digest), meaningful with or without a vault.
+        # (the what's-new digest), meaningful with or without a vault. Its
+        # write half records a machine-level marker in ui-state.json and
+        # touches no vault either — the welcome page pops the card too, and a
+        # card that cannot be dismissed there would return every launch.
         ("GET", "/api/whatsnew"),
+        ("PUT", "/api/whatsnew/seen"),
         # The directory picker (task-path-browser): the welcome page has no
         # vault yet and browses the host's folders to create the first one —
         # ``fs/mkdir`` lets that flow make a fresh parent folder without leaving

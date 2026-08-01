@@ -1,3 +1,5 @@
+import { modalBackdropProps } from '../ui/modalShell'
+
 /** Confirm switching the active vault (3c-2).
  *
  * Switching is GLOBAL — it changes the registry's active vault, so subsequent
@@ -27,7 +29,7 @@ export default function SwitchVaultDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={switching ? undefined : onCancel}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}

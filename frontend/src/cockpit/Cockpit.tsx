@@ -40,6 +40,11 @@ import {
   unlinkProject,
 } from '../api'
 import type { MetadataWrite } from '../api'
+import {
+  modalBackdropProps,
+  nudgeOnBackdropClick,
+  useModalCardFocus,
+} from '../ui/modalShell'
 
 interface Props {
   paper: PaperMeta | null
@@ -538,6 +543,9 @@ function ManageDialog({
   onRename: (old: string, next: string) => Promise<void>
   onClose: () => void
 }) {
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening (see useModalCardFocus).
+  const cardFocus = useModalCardFocus()
   // The value awaiting delete confirmation, or being renamed (null = list view).
   const [pending, setPending] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -549,14 +557,15 @@ function ManageDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={blocked ? undefined : onClose}
+      {...modalBackdropProps}
     >
       <div
+        {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === 'Escape' && !pending && !renaming) onClose()
         }}
-        className="flex max-h-[70vh] w-[24rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="flex max-h-[70vh] w-[24rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Manage {field}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
@@ -650,7 +659,7 @@ function ManageDialog({
  * one keystroke. A blank or unchanged value, or one that collides with another
  * registered value (case-sensitive, matching the backend), disables Save — the
  * collision hint nudges toward delete/merge instead. Sits above the Manage
- * dialog (z-[60]); Escape cancels and the backdrop stops click-through so
+ * dialog (z-[60]); Escape cancels and the backdrop swallows clicks so
  * dismissing it keeps the Manage dialog open. */
 function RenameValueDialog({
   field,
@@ -677,14 +686,13 @@ function RenameValueDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
+      onClick={(e) => {
+        // Nested inside another dialog's backdrop; React portals bubble to
+        // the React parent, so stop it here or the outer card nudges too.
+        e.stopPropagation()
+        nudgeOnBackdropClick(e)
+      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -761,17 +769,13 @@ function DeleteValueConfirm({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              // Stop the click bubbling to the Manage dialog's backdrop (this
-              // confirm renders inside it) — otherwise dismissing the confirm
-              // would also tear down the whole Manage dialog in one click.
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
+      onClick={(e) => {
+        // Nested inside another dialog's backdrop; React portals bubble to
+        // the React parent, so stop it here or the outer card nudges too.
+        e.stopPropagation()
+        nudgeOnBackdropClick(e)
+      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -954,7 +958,7 @@ function MetadataEditDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={saving ? undefined : onClose}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -969,7 +973,7 @@ function MetadataEditDialog({
         </p>
 
         <div className="mt-3 grid min-h-0 grid-cols-2 gap-x-3 gap-y-2.5 overflow-y-auto pr-1">
-          {EDIT_SCALARS.map((f) => (
+          {EDIT_SCALARS.map((f, i) => (
             <label
               key={f.key}
               className={f.wide ? 'col-span-2 block' : 'block'}
@@ -979,6 +983,11 @@ function MetadataEditDialog({
               </span>
               <input
                 type="text"
+                // Focus the first field on open: it is where editing starts,
+                // and — now that a backdrop click no longer closes this dialog
+                // — it is also what puts focus inside the card, without which
+                // the Escape handler above never receives a key event.
+                autoFocus={i === 0}
                 value={scalars[f.key]}
                 onChange={(e) =>
                   setScalars((prev) => ({ ...prev, [f.key]: e.target.value }))
@@ -1116,7 +1125,7 @@ function UnreadConfirm({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={busy ? undefined : onCancel}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1178,7 +1187,7 @@ function DropConfirm({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={busy ? undefined : onCancel}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1739,13 +1748,39 @@ function WriteCockpit({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
             Metadata
           </span>
-          <button
-            onClick={onToggle}
-            title="Collapse metadata"
-            className="text-stone-500 transition-colors hover:text-stone-800"
-          >
-            ›
-          </button>
+          <div className="flex items-center gap-2.5">
+            {/* Edit lives on the section header, not among the Copy/Cite pills
+                below: as a fourth pill it wrapped to a line of its own on a
+                narrow panel and read as a button bolted on for one feature.
+                Here it is scoped to exactly what it edits — the dialog covers
+                title / year / journal / authors / doi, which IS this section
+                (the tags underneath edit in place and are none of its
+                business) — at the same visual weight as the collapse chevron.
+
+                Always visible, never hover-only: the reason this exists is to
+                let someone fix the `Unknown` rows health-check reports, and an
+                entry point you have to discover by hovering is one they will
+                not find. This header is a plain div, so a button nests here
+                fine (unlike the list row's dot). */}
+            {paper && (
+              <button
+                onClick={() => setEditingMeta(true)}
+                disabled={writing}
+                title="Edit title, year, journal, authors and other bibliographic fields"
+                aria-label="Edit metadata"
+                className="text-sm leading-none text-stone-400 transition-colors hover:text-accent-600 disabled:opacity-40"
+              >
+                ✎
+              </button>
+            )}
+            <button
+              onClick={onToggle}
+              title="Collapse metadata"
+              className="text-stone-500 transition-colors hover:text-stone-800"
+            >
+              ›
+            </button>
+          </div>
         </div>
 
         {loading && <div className="text-sm text-stone-500">Loading…</div>}
@@ -1790,14 +1825,6 @@ function WriteCockpit({
                   className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900"
                 >
                   <span className="text-stone-400">❝</span> Cite
-                </button>
-                <button
-                  onClick={() => setEditingMeta(true)}
-                  disabled={writing}
-                  title="Edit title, year, journal, authors and other bibliographic fields"
-                  className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
-                >
-                  <span className="text-stone-400">✎</span> Edit
                 </button>
                 {copied && (
                   <span className="text-[11px] font-medium text-emerald-600">

@@ -1,13 +1,15 @@
 import { createPortal } from 'react-dom'
+import { modalBackdropProps } from './modalShell'
 
 /** The keyboard-shortcut cheat sheet (Phase 4, `?` toggles it).
  *
  * A read-only overlay listing the three-tier scheme defined in task-web-gui.md
  * §2.3. Mirrors the macOS-style modal shell shared across the app (backdrop +
- * grow-in card); Esc, a click outside, and the Done button all close it (the
- * Esc handling lives in the global dispatcher, which closes the sheet first —
- * see useKeyboardShortcuts; the in-card Escape here is a belt-and-braces close
- * for when focus is inside the card). Pure presentation — no shortcut logic.
+ * grow-in card); Esc and the Done button close it, a click outside does not
+ * (ui/modalShell — the rule is app-wide). The Esc handling lives in the global
+ * dispatcher, which closes the sheet first — see useKeyboardShortcuts; the
+ * in-card Escape here is a belt-and-braces close for when focus is inside the
+ * card. Pure presentation — no shortcut logic.
  *
  * Portaled to document.body so its `fixed inset-0` resolves against the viewport
  * regardless of any backdrop-filter ancestor (same reasoning as Toast /
@@ -142,7 +144,7 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={onClose}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}

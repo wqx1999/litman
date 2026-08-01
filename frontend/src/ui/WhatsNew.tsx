@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom'
 import type { WhatsNewInfo } from '../api'
+import { modalBackdropProps } from './modalShell'
 
 /** The post-update "What's new" card.
  *
@@ -11,9 +12,10 @@ import type { WhatsNewInfo } from '../api'
  *
  * Mirrors the macOS-style modal shell shared across the app (CheatSheet:
  * backdrop + grow-in card, portaled to document.body so `fixed inset-0`
- * resolves against the viewport). Esc, a click outside, and Done all close;
- * closing is what marks the version as seen (App's onClose), so an abandoned
- * page reload shows the card again rather than losing it. */
+ * resolves against the viewport). Esc and Done close it; a click outside does
+ * not (ui/modalShell — the rule is app-wide). Closing is what marks the
+ * version as seen (App's onClose), so an abandoned page reload shows the card
+ * again rather than losing it. */
 export default function WhatsNew({
   info,
   onClose,
@@ -24,7 +26,7 @@ export default function WhatsNew({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={onClose}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}

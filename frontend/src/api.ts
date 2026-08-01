@@ -388,15 +388,30 @@ export function fetchVersion(): Promise<VersionInfo> {
 /** Release highlights for the RUNNING version — the post-update "What's new"
  * popup. PURE READ: the bullets ship inside the installed package, so this
  * never touches the network. `bullets` is empty when the running version has
- * no section recorded. */
+ * no section recorded.
+ *
+ * `seen` is the release this MACHINE last dismissed (null = none), and the
+ * reason the popup decision is not a localStorage read: that store is
+ * partitioned per origin (the port walks upward when 8765 is busy) and per
+ * browser profile — and the GUI has two, since `lit gui --window` runs under
+ * its own `--user-data-dir` while a terminal `lit gui` opens a tab in the
+ * everyday browser. Either switch lost the marker and the card came back. */
 export interface WhatsNewInfo {
   version: string
   bullets: string[]
   changelogUrl: string
+  seen: string | null
 }
 
 export function fetchWhatsNew(): Promise<WhatsNewInfo> {
   return getJSON<WhatsNewInfo>('/api/whatsnew')
+}
+
+/** Mark the running release's card as seen. Sends no version — the server
+ * records the one IT is running, so the client cannot silence a release it
+ * was never shown. Idempotent. */
+export function markWhatsNewSeen(): Promise<{ seen: string }> {
+  return mutateJSON<{ seen: string }>('/api/whatsnew/seen', 'PUT')
 }
 
 /** Drag-in ingest (three steps, one shared `lit add` write path server-side).

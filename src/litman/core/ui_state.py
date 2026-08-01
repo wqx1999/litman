@@ -25,9 +25,20 @@ resolved path otherwise) so switching vaults in the GUI never leaks one
 library's pins into another. List order IS pin order: append-on-pin, oldest
 first — the pinned block must never reorder under the user.
 
+``whatsNewSeen`` (which release's highlights this machine has dismissed) is a
+second tenant, and deliberately a TOP-LEVEL key rather than a per-vault one:
+"I have read the 1.3.3 notes" is a fact about the app, not about a library —
+switching vaults must not re-pop the card. It lives here rather than in the
+browser's ``localStorage`` because that is partitioned by origin AND by
+browser profile, and the GUI has two of each: the desktop shortcut runs
+``lit gui --window`` under its own ``--user-data-dir`` while a terminal
+``lit gui`` opens a tab in the user's everyday browser, and the port walks
+upward when one is busy. Either switch silently lost the marker and the card
+came back every launch.
+
 File shape (self-describing, so a future CLI reader needs no migration)::
 
-    {"pins": {"<vault-key>": ["<paper-id>", ...]}}
+    {"pins": {"<vault-key>": ["<paper-id>", ...]}, "whatsNewSeen": "<version>"}
 """
 
 from __future__ import annotations
@@ -48,6 +59,9 @@ UI_STATE_FILENAME = "ui-state.json"
 
 # Top-level key holding the per-vault pin lists.
 _PINS_KEY = "pins"
+
+# Top-level key holding the last release whose what's-new card was dismissed.
+_WHATSNEW_SEEN_KEY = "whatsNewSeen"
 
 
 def ui_state_path() -> Path:
@@ -106,6 +120,23 @@ def _load_state() -> dict[str, object]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _write_state(state: dict[str, object]) -> None:
+    """Persist the whole state dict atomically (tmp + ``Path.replace``).
+
+    Never a naive ``open(path, "w")`` — a crash mid-write or a Windows
+    read-only lock must not eat every vault's pins. Every writer here goes
+    read-modify-write through ``_load_state`` first so the file's other
+    tenants survive.
+    """
+    path = ui_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    tmp.replace(path)
+
+
 def load_pins(vault: Path) -> list[str]:
     """The pinned paper ids for ``vault``, oldest pin first.
 
@@ -125,11 +156,9 @@ def load_pins(vault: Path) -> list[str]:
 def save_pins(vault: Path, ids: list[str]) -> None:
     """Persist ``ids`` as ``vault``'s pin list (atomic, other vaults kept).
 
-    Read-modify-write of the whole file so other vaults' pin lists survive;
-    an empty ``ids`` removes the vault's key entirely (clearing your pins
-    should not leave husks behind). tmp + ``Path.replace``, never a naive
-    ``open(path, "w")`` — a crash mid-write or a Windows read-only lock must
-    not eat every vault's pins.
+    Read-modify-write of the whole file so other vaults' pin lists — and the
+    file's other tenants — survive; an empty ``ids`` removes the vault's key
+    entirely (clearing your pins should not leave husks behind).
     """
     state = _load_state()
     pins = state.get(_PINS_KEY)
@@ -141,20 +170,37 @@ def save_pins(vault: Path, ids: list[str]) -> None:
     else:
         pins.pop(key, None)
     state[_PINS_KEY] = pins
+    _write_state(state)
 
-    path = ui_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    tmp.replace(path)
+
+def load_whatsnew_seen() -> str | None:
+    """The release whose what's-new card was last dismissed on this machine.
+
+    ``None`` when nothing has been dismissed yet, and equally when the file is
+    missing / corrupt / holds a non-string — the caller treats every one of
+    those as "not seen", which costs at most one extra popup. Never raises.
+    """
+    seen = _load_state().get(_WHATSNEW_SEEN_KEY)
+    return seen if isinstance(seen, str) else None
+
+
+def save_whatsnew_seen(version: str) -> None:
+    """Record ``version`` as dismissed (atomic, other tenants kept).
+
+    Not per-vault: see the module docstring. Idempotent — writing the same
+    version twice is a no-op in effect, and the caller is the server recording
+    its OWN ``__version__``, never a value a client sent.
+    """
+    state = _load_state()
+    state[_WHATSNEW_SEEN_KEY] = version
+    _write_state(state)
 
 
 def remove_ui_state() -> dict[str, object]:
     """Delete ``ui-state.json``; counterpart of ``agent_prefs.remove_prefs``.
 
-    Used by ``lit uninstall`` so pin state does not outlive the install.
+    Used by ``lit uninstall`` so GUI state (pins, the what's-new marker) does
+    not outlive the install: it removes the whole file, tenants and all.
     Removes the containing config dir too if it becomes empty (this runs
     last in the uninstall sequence, so it gets the rmdir chance the earlier
     removers pass up while siblings still exist).

@@ -275,13 +275,12 @@ export default function BrowsePanel({
   )
 
   /** One paper row + its expanding detail card. Shared by the Pinned group and
-   * the main list — `pinned` only changes the pin control's state/labels.
+   * the main list — `pinned` only changes the status dot's ring and labels.
    *
-   * Layout constraint: the row line is a flex CONTAINER holding the select
-   * button and the pin button as siblings. The pin must NOT nest inside the
-   * row's select button — browsers silently unwrap button-in-button, which
-   * would turn a pin click into a select. The pin column is always mounted
-   * (opacity toggles) so its reveal never shifts the year. */
+   * Layout constraint: the row line is a flex CONTAINER holding the status dot
+   * and the select button as siblings. The dot must NOT nest inside the select
+   * button — browsers silently unwrap button-in-button, which would turn a pin
+   * click into a select. */
   const renderRow = (p: IndexPaper, pinned: boolean) => {
     const selected = p.id === selectedId
     // Dropped papers are shown (in `all`) but muted + tagged, so they read as
@@ -298,17 +297,47 @@ export default function BrowsePanel({
         }`}
       >
         <div className={`flex items-center ${isDropped ? 'opacity-55' : ''}`}>
+          {/* The status dot doubles as the pin toggle (Apple Mail's unread dot).
+              Two channels on one element, deliberately different ones: status
+              owns the HUE, pin owns a RING around it — a hollow-when-unpinned
+              dot would reduce four status colours to a hairline and restyle the
+              95% of rows that are not pinned.
+
+              The hit box stays small (24px around an 8px dot) ON PURPOSE. This
+              is a secondary action sitting flush against the row's primary one
+              and it has a keyboard path (`P`); a generous target here would buy
+              a few pixels of convenience at the cost of pinning papers you
+              meant to open. */}
+          <button
+            onClick={() => onTogglePin(p.id)}
+            title={
+              pinned
+                ? 'Unpin (send back to its place in the list)'
+                : 'Pin to the top of the list'
+            }
+            aria-label={pinned ? `Unpin ${p.id}` : `Pin ${p.id}`}
+            className="grid h-6 w-6 shrink-0 place-items-center pl-1"
+          >
+            {/* `outline` rather than `ring`: its offset gap is transparent, so
+                the halo reads correctly over all three row backgrounds (plain,
+                hovered, selected) with no colour to keep in sync. Width is
+                always 2px and only the COLOUR changes, which is what makes the
+                fade animatable. */}
+            <span
+              className={`h-2 w-2 rounded-full outline-2 outline-offset-2 transition-[outline-color,transform] duration-300 ease-fluid ${statusDotClass(
+                p.status,
+              )} ${
+                pinned
+                  ? 'outline-accent-500'
+                  : 'outline-transparent group-hover/row:scale-125 group-hover/row:outline-accent-200'
+              }`}
+            />
+          </button>
           <button
             onClick={() => onSelect(p.id)}
             title={p.title ?? p.id}
-            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2.5 text-left"
+            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-1 pr-2.5 text-left"
           >
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(
-                p.status,
-              )}`}
-              title={p.status ?? 'unknown'}
-            />
             <span
               className={`truncate font-mono text-xs transition-colors ${
                 selected ? 'font-medium text-accent-800' : 'text-stone-700'
@@ -333,25 +362,6 @@ export default function BrowsePanel({
                 {p.year}
               </span>
             )}
-          </button>
-          {/* Pin toggle — hover-revealed while unpinned, always shown while
-              pinned. A sibling of the select button (see the docstring), in a
-              constant-width slot so appearing never nudges the year. */}
-          <button
-            onClick={() => onTogglePin(p.id)}
-            title={
-              pinned
-                ? 'Unpin (send back to its place in the list)'
-                : 'Pin to the top of the list'
-            }
-            aria-label={pinned ? `Unpin ${p.id}` : `Pin ${p.id}`}
-            className={`mr-1 grid h-6 w-6 shrink-0 place-items-center rounded-md transition-[opacity,color] ${
-              pinned
-                ? 'text-accent-600 hover:text-stone-500'
-                : 'text-stone-400 opacity-0 hover:text-accent-600 focus-visible:opacity-100 group-hover/row:opacity-100'
-            }`}
-          >
-            <IconPin filled={pinned} />
           </button>
         </div>
         {/* Dynamic-Island-style fluid reveal: the detail grows out of the
@@ -393,31 +403,17 @@ export default function BrowsePanel({
                 >
                   💬 discussion
                 </button>
-                {/* Pin + remove — set apart at the row's right edge (ml-auto on
-                    the first) so neither reads as another "open" pill. The pin
-                    mirrors the row-line toggle for the expanded state; remove
-                    keeps its rose-on-hover destructive styling. */}
-                <button
-                  onClick={() => onTogglePin(p.id)}
-                  title={
-                    pinned
-                      ? 'Unpin (send back to its place in the list)'
-                      : 'Pin to the top of the list'
-                  }
-                  aria-label={pinned ? `Unpin ${p.id}` : `Pin ${p.id}`}
-                  className={`ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-lg ring-1 ring-transparent transition-colors ${
-                    pinned
-                      ? 'text-accent-600 hover:bg-stone-100 hover:text-stone-500'
-                      : 'text-stone-400 hover:bg-accent-50 hover:text-accent-600 hover:ring-accent-200'
-                  }`}
-                >
-                  <IconPin filled={pinned} />
-                </button>
+                {/* Remove from library — set apart at the row's right edge
+                    (ml-auto) and rose-on-hover so it never reads as another
+                    "open" pill. It is the ONLY icon out here on purpose: a
+                    second one beside it halves the distance between "pin" and
+                    "delete", and those two mis-clicks do not cost the same.
+                    Pinning lives on the status dot instead. */}
                 <button
                   onClick={() => onRemovePaper(p.id)}
                   title="Remove paper from library (move to trash)"
                   aria-label="Remove paper from library"
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-lg text-stone-400 ring-1 ring-transparent transition-colors hover:bg-rose-50 hover:text-rose-500 hover:ring-rose-200"
+                  className="ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-lg text-stone-400 ring-1 ring-transparent transition-colors hover:bg-rose-50 hover:text-rose-500 hover:ring-rose-200"
                 >
                   <IconTrash />
                 </button>
@@ -704,7 +700,12 @@ export default function BrowsePanel({
             (pinnedRows.length > 0 || pinnedHiddenCount > 0) && (
               <div className="mb-1 border-b border-stone-200 pb-1">
                 <div className="flex items-center justify-between pl-4 pr-3 pt-1">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-400">
+                  {/* One notch heavier than the FILTER-style section labels
+                      (which are 10px/stone-400): those name a control, this
+                      one explains why these rows jumped the ranking. It is the
+                      answer to "was it already at the top, or did I put it
+                      there?" — the per-row halo answers the rest. */}
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                     📌 Pinned{pinnedRows.length > 0 && ` · ${pinnedRows.length}`}
                   </span>
                   <button
@@ -766,27 +767,6 @@ export default function BrowsePanel({
         </div>
       </div>
     </div>
-  )
-}
-
-/** Pushpin — the pin/unpin toggle (row line + expanded card). Same 24-unit
- * outline family as IconTrash; `filled` floods the head so a pinned row reads
- * at a glance without relying on color alone. */
-function IconPin({ filled }: { filled: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill={filled ? 'currentColor' : 'none'}
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-3.5 w-3.5"
-      aria-hidden
-    >
-      <path d="M12 17v5" />
-      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
-    </svg>
   )
 }
 

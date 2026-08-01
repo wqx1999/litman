@@ -6,6 +6,10 @@ same env var the autouse ``_isolate_registry`` fixture sets, so these run
 against a tmp dir automatically), the []-on-missing/garbage contract of
 ``load_pins``, registry-name vs path keying, and ``remove_ui_state`` as the
 ``lit uninstall`` counterpart.
+
+Also the file's second tenant, ``whatsNewSeen`` (task-dogfood-fixes AC-7/AC-8):
+top-level rather than per-vault, and it must coexist with pins — the two are
+written by different code paths and neither may clobber the other.
 """
 
 from __future__ import annotations
@@ -140,6 +144,75 @@ def test_pins_survive_registry_repath(tmp_path: Path) -> None:
         )
     )
     assert ui_state.load_pins(new_home) == ["p1"]
+
+
+def test_whatsnew_seen_round_trip() -> None:
+    """AC-7: nothing seen → None; save → load returns it; re-save overwrites."""
+    assert ui_state.load_whatsnew_seen() is None
+    ui_state.save_whatsnew_seen("1.3.3")
+    assert ui_state.load_whatsnew_seen() == "1.3.3"
+    ui_state.save_whatsnew_seen("1.3.3")  # idempotent
+    assert ui_state.load_whatsnew_seen() == "1.3.3"
+    ui_state.save_whatsnew_seen("1.4.0")
+    assert ui_state.load_whatsnew_seen() == "1.4.0"
+
+
+def test_whatsnew_seen_is_top_level_not_per_vault(tmp_path: Path) -> None:
+    """AC-7: "I read the 1.3.3 notes" is a fact about the app, not a library —
+    it sits beside ``pins``, not inside it, so switching vaults never re-pops
+    the card."""
+    ui_state.save_whatsnew_seen("1.3.3")
+    raw = json.loads(ui_state.ui_state_path().read_text(encoding="utf-8"))
+    assert raw["whatsNewSeen"] == "1.3.3"
+    assert "whatsNewSeen" not in json.dumps(raw.get("pins", {}))
+    # A second vault's pins do not resurrect the card.
+    ui_state.save_pins(_vault(tmp_path, "other"), ["p1"])
+    assert ui_state.load_whatsnew_seen() == "1.3.3"
+
+
+def test_pins_and_whatsnew_seen_coexist(tmp_path: Path) -> None:
+    """AC-7: interleaved writes from the two tenants keep both values — the
+    read-modify-write in each saver is what makes this hold."""
+    vault = _vault(tmp_path)
+    ui_state.save_pins(vault, ["p1", "p2"])
+    ui_state.save_whatsnew_seen("1.3.3")
+    assert ui_state.load_pins(vault) == ["p1", "p2"]
+
+    ui_state.save_pins(vault, ["p1", "p2", "p3"])
+    assert ui_state.load_whatsnew_seen() == "1.3.3"
+    assert ui_state.load_pins(vault) == ["p1", "p2", "p3"]
+
+
+def test_whatsnew_seen_degrades_on_garbage(tmp_path: Path) -> None:
+    """AC-7: corrupt file / wrong type → None (card treated as unseen, worth
+    at most one extra popup), never an exception that kills the GUI."""
+    path = ui_state.ui_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for bad in (
+        "not json",
+        '["top", "level", "list"]',
+        json.dumps({"whatsNewSeen": 133}),
+        json.dumps({"whatsNewSeen": None}),
+    ):
+        path.write_text(bad, encoding="utf-8")
+        assert ui_state.load_whatsnew_seen() is None
+    # And a save over the garbage recovers the file rather than appending.
+    ui_state.save_whatsnew_seen("1.3.3")
+    assert ui_state.load_whatsnew_seen() == "1.3.3"
+
+
+def test_remove_ui_state_takes_whatsnew_seen_with_it(tmp_path: Path) -> None:
+    """AC-8: ``lit uninstall`` removes the whole file — pins AND the marker.
+
+    Asserted explicitly so a future "delete only the pins" refactor cannot
+    leave a stale marker behind that silences the card after a reinstall.
+    """
+    ui_state.save_pins(_vault(tmp_path), ["p1"])
+    ui_state.save_whatsnew_seen("1.3.3")
+
+    assert ui_state.remove_ui_state()["removed"] is True
+    assert ui_state.load_whatsnew_seen() is None
+    assert ui_state.load_pins(_vault(tmp_path)) == []
 
 
 def test_remove_ui_state_deletes_file_and_empty_dir() -> None:

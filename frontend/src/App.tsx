@@ -16,6 +16,7 @@ import {
   fetchVaults,
   fetchVersion,
   fetchWhatsNew,
+  markWhatsNewSeen,
   type WhatsNewInfo,
   type IngestUploadResult,
   uploadIngestPdf,
@@ -74,12 +75,6 @@ const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 // this is a per-person "yes, I know" — nothing about the library changed, and a
 // second machine reading the same vault deserves to be told once too.
 const LINK_NOTICE_DISMISSED = 'litman.linkNoticeDismissed'
-
-// Last version whose "What's new" card this browser was shown. Written only
-// when the card is CLOSED (an abandoned reload shows it again — better twice
-// than never), and seeded silently after the welcome wizard: a fresh install
-// has no previous version to diff against, so nothing pops.
-const WHATSNEW_SEEN = 'litman.whatsNewSeen'
 
 // Single-value fields filter on `p[f]` (string | null); array fields filter on
 // `p[f]` (string[]). Status is filtered in the `visible` pipeline like the rest
@@ -287,7 +282,8 @@ export default function App() {
   // popover shows "You have X".
   const [versionCurrent, setVersionCurrent] = useState<string | null>(null)
   // Open "What's new" card (null = closed). Auto-opens once after an update
-  // (WHATSNEW_SEEN ≠ running version); the TopBar logo reopens it on demand.
+  // (the server's recorded `seen` ≠ running version); the TopBar logo reopens
+  // it on demand.
   const [whatsNew, setWhatsNew] = useState<WhatsNewInfo | null>(null)
   // True once this session has rendered the welcome page — the marker of a
   // fresh install (or a relocated vault), where the what's-new card would
@@ -694,22 +690,24 @@ export default function App() {
           )
         }
         // Post-update "What's new": pop once when the running version is not
-        // the one this browser last saw the card for. A fresh install that
-        // just walked the welcome wizard is seeded silently instead — there is
-        // no previous version to tell it about. Best-effort like the rest of
-        // this handler; the card only opens when there are bullets to show.
-        const seen = localStorage.getItem(WHATSNEW_SEEN)
-        if (seen !== v.current) {
-          if (seen === null && sawWelcomeRef.current) {
-            localStorage.setItem(WHATSNEW_SEEN, v.current)
-          } else {
-            fetchWhatsNew()
-              .then((w) => {
-                if (w.bullets.length > 0) setWhatsNew(w)
-              })
-              .catch(() => {})
-          }
-        }
+        // the one this MACHINE last dismissed the card for. A fresh install
+        // that just walked the welcome wizard is seeded silently instead —
+        // there is no previous version to tell it about. Best-effort like the
+        // rest of this handler; the card only opens when there are bullets.
+        //
+        // Both halves of the comparison come from one response now, so the
+        // decision cannot be split across a version the client knows and a
+        // marker some other browser profile wrote.
+        fetchWhatsNew()
+          .then((w) => {
+            if (w.seen === w.version) return
+            if (w.seen === null && sawWelcomeRef.current) {
+              void markWhatsNewSeen().catch(() => {})
+              return
+            }
+            if (w.bullets.length > 0) setWhatsNew(w)
+          })
+          .catch(() => {})
         if (v.latest) return
         versionRetry = setTimeout(() => {
           fetchVersion()
@@ -1670,12 +1668,13 @@ export default function App() {
       .then(setWhatsNew)
       .catch(() => {})
   }, [])
-  // Closing is what marks the version as seen — see WHATSNEW_SEEN.
+  // Closing is what marks the version as seen. Optimistic: the card closes
+  // now and the PUT rides along silently — a failed write costs one extra
+  // popup next launch, while a card that refuses to close until the server
+  // answers is the failure nobody would forgive.
   const closeWhatsNew = useCallback(() => {
-    setWhatsNew((w) => {
-      if (w) localStorage.setItem(WHATSNEW_SEEN, w.version)
-      return null
-    })
+    setWhatsNew(null)
+    void markWhatsNewSeen().catch(() => {})
   }, [])
 
   // Drag-in ingest step 1: stash the dropped PDF server-side (the upload is a
@@ -1696,7 +1695,7 @@ export default function App() {
     },
     [notify],
   )
-  // Dismissing the dialog (Cancel / Esc / backdrop / jump-to-existing) throws
+  // Dismissing the dialog (Cancel / Esc / jump-to-existing) throws
   // the stashed upload away rather than leaving it for the sweeper.
   const dismissAdd = useCallback((handle: string) => {
     void discardIngest(handle)
@@ -1704,16 +1703,24 @@ export default function App() {
   }, [])
   // Step 3 landed: refresh the list so the new paper appears, and select it —
   // the cockpit opening on the fresh paper IS the success feedback.
+  //
+  // BOTH refreshes are required, same as the remove path (`confirmRemove`).
+  // `fetchPapers` alone only refills `allPapers` (the INDEX projection); the
+  // default `reading` view and `recent-read` render `papers`, a server-ordered
+  // smart list that lives in its own state and only `loadList` refills. With
+  // just the first call the paper landed on disk, got selected, and stayed
+  // invisible in the list until a page reload.
   const onPaperAdded = useCallback(
     (id: string) => {
       setAddUpload(null)
       notify(`Added ${id}`, 'success')
+      loadList(listMode)
       fetchPapers()
         .then(setAllPapers)
         .catch(() => {})
       selectPaper(id)
     },
-    [notify, selectPaper],
+    [notify, selectPaper, loadList, listMode],
   )
   // "Already in your library" jump: drop the stash, open that paper.
   const onOpenExistingFromAdd = useCallback(
@@ -1876,7 +1883,7 @@ export default function App() {
   // (All hooks above run unconditionally — this branch only gates rendering.)
   if (served === undefined) return null // pre-bootstrap; sub-100ms on localhost
   if (served === null) {
-    sawWelcomeRef.current = true // fresh install — see WHATSNEW_SEEN seeding
+    sawWelcomeRef.current = true // fresh install — see the what's-new seeding
     return (
       <WelcomePage
         vaults={vaults}

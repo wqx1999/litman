@@ -1,10 +1,11 @@
-"""Pin (pinned-paper) endpoints for the litman webUI (task-gui-pin).
+"""GUI-state write endpoints for the litman webUI: pins, what's-new dismissal.
 
-Pins are GUI working state, persisted in the machine-level ``ui-state.json``
-beside the vault registry (:mod:`litman.core.ui_state`) — NOT in the vault.
-Nothing here touches metadata / INDEX / TAXONOMY / views or any file under
-the vault root, so invariant #16's closed direct-write whitelist is not
-involved: this is the same class of write as the GUI's default-agent setting.
+This state is GUI working state, persisted in the machine-level
+``ui-state.json`` beside the vault registry (:mod:`litman.core.ui_state`) —
+NOT in the vault. Nothing here touches metadata / INDEX / TAXONOMY / views or
+any file under the vault root, so invariant #16's closed direct-write
+whitelist is not involved: this is the same class of write as the GUI's
+default-agent setting.
 
 Contract with the SPA:
 
@@ -17,6 +18,10 @@ Contract with the SPA:
 * GET prunes dangling pins (papers since removed by ``lit rm``) and writes
   the pruned list back — pruning only ever drops pin ENTRIES, never touches
   ``papers/``.
+
+The what's-new endpoint is the odd one out: it needs no vault (the welcome
+page can pop the card too) and it takes no body — the server records the
+version IT is running. See :func:`put_whatsnew_seen`.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 from litman.core.id import is_valid_id
-from litman.core.ui_state import load_pins, save_pins
+from litman.core.ui_state import load_pins, save_pins, save_whatsnew_seen
 
 router = APIRouter(prefix="/api")
 
@@ -96,3 +101,22 @@ def clear_pins(request: Request) -> dict[str, list[str]]:
     """Clear every pin for the active vault (the Pinned group's Clear all)."""
     save_pins(_vault(request), [])
     return {"pins": []}
+
+
+@router.put("/whatsnew/seen")
+def put_whatsnew_seen() -> dict[str, str]:
+    """Mark the RUNNING release's what's-new card as seen. Idempotent.
+
+    Takes no body on purpose: the version recorded is the server's own
+    ``__version__``, never one the client supplies. A client that sent the
+    wrong string — a stale bundle, a hand-rolled request — would silence the
+    card for a release the user never read, or re-pop it forever; making the
+    value unspeakable removes that whole class of bug.
+
+    Needs no vault (it is listed in the server's vaultless allowlist): the
+    welcome page has no library yet and must still be able to dismiss the card.
+    """
+    from litman import __version__
+
+    save_whatsnew_seen(__version__)
+    return {"seen": __version__}

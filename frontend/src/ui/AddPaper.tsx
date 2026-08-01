@@ -6,6 +6,7 @@ import {
   type IngestPreview,
   type IngestUploadResult,
 } from '../api'
+import { modalBackdropProps } from './modalShell'
 
 /** Confirm dialog for the drag-in ingest: DOI (sniffed, editable) → CrossRef
  * preview → Add.
@@ -84,7 +85,8 @@ export default function AddPaper({
   // Closing the dialog throws the stashed upload away (App fires the DELETE),
   // so it must not be reachable while the ingest is mid-flight: the server
   // would be copying the very file the dismissal deletes. Everything else —
-  // Esc, backdrop, Cancel — routes through here.
+  // Esc and Cancel — the only two exits — route through here. A click outside
+  // does NOT: it would delete the upload the person just waited for.
   const dismiss = () => {
     if (busy !== 'add') onClose()
   }
@@ -98,7 +100,7 @@ export default function AddPaper({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={dismiss}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
