@@ -18,6 +18,7 @@ from litman.core.checks import (
     check_config_readable,
     check_duplicate_doi,
     check_placeholder_metadata,
+    check_weak_id_keyword,
     check_schema,
     check_taxonomy_drift,
     fixed_enum_allows_none,
@@ -441,4 +442,93 @@ def test_placeholder_check_runs_in_the_full_health_check(vault: Path) -> None:
     assert not any(
         i.category == "placeholder_metadata"
         for i in run_all_checks(vault, [clean])
+    )
+
+
+# ---------------------------------------------------------------------------
+# weak_id_keyword: ids born before the ASCII gate in core/id.py
+# ---------------------------------------------------------------------------
+
+
+def test_weak_id_keyword_reported(vault: Path) -> None:
+    """`2018_Zhang_A` from `关于化合物A的合成方法` — the id the gate now prevents."""
+    paper = _minimal_paper(id="2018_Zhang_A", title="关于化合物A的合成方法")
+    issues = check_weak_id_keyword(vault, [paper])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "weak_id_keyword"
+    assert issue.severity == "warning"
+    assert issue.paper_id == "2018_Zhang_A"
+    assert "'A'" in issue.message
+    # `lit rename` is the only command that moves an id without stranding the
+    # wiki-links and project symlinks aimed at it.
+    assert "lit rename 2018_Zhang_A 2018_Zhang_<Keyword>" in (issue.hint or "")
+
+
+def test_weak_id_keyword_hint_names_a_concrete_id_when_one_exists(
+    vault: Path,
+) -> None:
+    """A title with a usable Latin fragment turns the hint into one keystroke."""
+    paper = _minimal_paper(
+        id="2018_Zhang_A", title="一种新型 PROTAC 分子的设计与合成"
+    )
+    issues = check_weak_id_keyword(vault, [paper])
+    assert len(issues) == 1
+    assert "lit rename 2018_Zhang_A 2018_Zhang_PROTAC" in (issues[0].hint or "")
+
+
+def test_a_deliberately_short_id_on_a_normal_title_is_not_reported(
+    vault: Path,
+) -> None:
+    """The reason the rule needs both conditions, not just the short keyword.
+
+    Nothing in the vault records whether an id was derived or supplied, so a
+    hand-chosen `--id 2020_Chen_ML` is indistinguishable from an accident by
+    shape alone. Its title still yields a keyword, which is what tells them
+    apart — a warning nobody can ever clear would be worse than a silent one.
+    """
+    paper = _minimal_paper(
+        id="2020_Chen_ML", title="Machine learning for protein design"
+    )
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_a_hand_written_id_for_a_chinese_title_is_not_reported(vault: Path) -> None:
+    """The exact escape hatch `lit add --id` offers must not be punished."""
+    paper = _minimal_paper(
+        id="2018_Zhang_Qipao-huxi", title="气泡呼吸行为在气液反应器中的研究"
+    )
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_ordinary_papers_are_not_reported(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Wieland_Chemistry-amatoxins", title="Chemistry of the amatoxins"
+    )
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_weak_id_check_survives_ids_and_titles_it_cannot_parse(vault: Path) -> None:
+    """A paper mid-repair must not crash the health check."""
+    for paper in (
+        _minimal_paper(id="nosegments", title="关于化合物A的合成方法"),
+        _minimal_paper(id="2018_Zhang_A", title=None),
+        _minimal_paper(id=None, title="关于化合物A的合成方法"),
+        _minimal_paper(id="notayear_Zhang_A", title="关于化合物A的合成方法"),
+    ):
+        check_weak_id_keyword(vault, [paper])  # must not raise
+
+
+def test_weak_id_check_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — asserted in both directions."""
+    dirty = _minimal_paper(id="2018_Zhang_A", title="关于化合物A的合成方法")
+    assert any(
+        i.category == "weak_id_keyword" for i in run_all_checks(vault, [dirty])
+    ), "check_weak_id_keyword is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(
+        id="2024_Wieland_Chemistry-amatoxins", title="Chemistry of the amatoxins"
+    )
+    assert not any(
+        i.category == "weak_id_keyword" for i in run_all_checks(vault, [clean])
     )

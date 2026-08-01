@@ -24,12 +24,25 @@ Two paths produce the keyword segment of the id, depending on the title shape.
    hyphen-joined with internal hyphens preserved, then truncated at a hyphen
    boundary to ``_KEYWORD_MAX_LEN``.
 
+Both paths sit behind the ``_MIN_ASCII_RATIO`` gate. Ids are ASCII by
+construction (ADR-005), and both paths tokenize on whitespace — so a script
+that does not use spaces arrives as one token and slugs down to whatever Latin
+fragment it happened to contain. ``关于化合物A的合成方法`` produced ``2018_Zhang_A``
+this way, silently, and a wrong id is permanent in a way a wrong field is not.
+Titles below the ratio are refused instead, and ``suggest_id`` offers the
+candidate an explicit ``--id`` can start from.
+
 Module API:
 
 - ``derive_keyword(title)``: pick the identifying keyword segment.
 - ``derive_keyword_alternatives(title, n)``: generate offset-shifted
   alternatives for the interactive id-collision fallback in ``lit add``.
 - ``derive_id(year, family, title)``: assemble the canonical id.
+- ``suggest_id(year, family, title)``: a candidate id for a title
+  ``derive_id`` refuses — what the CLI error and the GUI's Paper ID field
+  offer as a starting point.
+- ``is_weak_keyword(keyword)``: shared with the health check's rule for
+  keyword segments already sitting in a vault.
 - ``is_valid_id(id)``: filesystem-safety check used by ``lit add --id``
   override validation and by id-lookup helpers.
 
@@ -59,6 +72,18 @@ _KEYWORD_TOP_N = 3
 _KEYWORD_MAX_LEN = 40
 _KEYWORD_COLON_PREFIX_MAX = 12  # slug(prefix) length cutoff for colon special-case
 _KEYWORD_COLON_POST_MIN = 5     # min hyphen-stripped slug length for post-colon first word
+
+# Minimum share of a title's non-space characters that must survive slugging
+# for the derived keyword to be about the title rather than about whatever
+# Latin fragment happened to be embedded in it. English titles sit above 90%;
+# a Chinese title with a compound label in it ("关于化合物A的合成方法") sits at 9%
+# and a mixed one ("一种新型 PROTAC 分子的设计与合成") at 35%. Both are refused, on
+# purpose: "sometimes a Chinese title works" is harder to live with than
+# "a Chinese title always needs an id from you", and the id is permanent.
+_MIN_ASCII_RATIO = 0.5
+
+# A keyword segment this short or shorter identifies nothing.
+_WEAK_KEYWORD_MAX_LEN = 2
 
 # Valid paper id: starts with [A-Za-z0-9_-], then any of [A-Za-z0-9._-].
 # Disallows leading dot (no hidden files), spaces, slashes, ".." anywhere —
@@ -215,20 +240,90 @@ def _colon_special_case(title: str) -> str | None:
     return None
 
 
+def _ascii_ratio(title: str) -> float:
+    """Share of the title's non-space characters that survive slugging.
+
+    Whitespace is removed rather than counted so the measure does not depend
+    on whether the script uses spaces between words — Chinese does not, which
+    is the whole reason this measure exists.
+    """
+    dense = "".join(title.split())
+    if not dense:
+        return 0.0
+    return len(_slug(dense)) / len(dense)
+
+
+def _derive_keyword_unguarded(title: str) -> str:
+    """The two-path heuristic itself, with no judgement about the result."""
+    colon = _colon_special_case(title)
+    if colon is not None:
+        return colon
+    return _top_n_keyword(title)
+
+
+def is_weak_keyword(keyword: str) -> bool:
+    """True when a keyword segment is too short to identify anything.
+
+    ``2018_Zhang_A`` names a paper no better than ``2018_Zhang_`` does. Shared
+    with ``core/checks.py`` so the ingest guard and the health check agree on
+    what counts as a keyword that carries no information.
+    """
+    return len(keyword) <= _WEAK_KEYWORD_MAX_LEN
+
+
 def derive_keyword(title: str) -> str:
     """Pick a short, identifying keyword from a paper title.
 
     See module docstring for the two-path heuristic. Returns ``"untitled"``
-    if the title yields no usable token.
+    when the title yields no usable token, and — the ``_MIN_ASCII_RATIO``
+    gate — when it yields one only by accident.
+
+    The gate exists because tokenizing on whitespace makes a space-less script
+    one single token: ``关于化合物A的合成方法`` slugs down to ``A``, and an id of
+    ``2018_Zhang_A`` used to be born silently. Refusing is strictly better than
+    that. A wrong id is not a transient error — it is the folder name, the
+    ``[[wiki-link]]`` target and the project symlink, so only ``lit rename``
+    can undo it, and only if someone notices. The way past is an explicit id,
+    which both ``lit add --id`` and the GUI's Paper ID field offer alongside
+    ``suggest_id``'s candidate.
     """
     if not title or not title.strip():
         return "untitled"
+    if _ascii_ratio(title) < _MIN_ASCII_RATIO:
+        return "untitled"
 
-    colon = _colon_special_case(title)
-    if colon is not None:
-        return colon
+    return _derive_keyword_unguarded(title)
 
-    return _top_n_keyword(title)
+
+def suggest_id(
+    year: int | None, first_author_family: str, title: str
+) -> str | None:
+    """A ready-to-paste id for a title ``derive_id`` refuses, or ``None``.
+
+    Deliberately bypasses the ``_MIN_ASCII_RATIO`` gate: a title like
+    ``CRISPR-Cas9 基因编辑技术的研究进展`` is refused as a whole (43% Latin) while
+    still carrying a perfectly good keyword, and making the user retype
+    ``CRISPR-Cas9`` would be the gate charging rent. What it will not do is
+    hand back a keyword that ``is_weak_keyword`` rejects — suggesting
+    ``2018_Zhang_A`` is exactly the id the gate just refused to create.
+
+    Returns ``None`` when there is nothing worth offering, which the callers
+    render as an empty Paper ID field rather than a bad default.
+    """
+    if year is None or not isinstance(year, int):
+        return None
+    family_slug = _slug(first_author_family)
+    if not family_slug:
+        return None
+    if not title or not title.strip():
+        return None
+
+    keyword = _derive_keyword_unguarded(title)
+    if keyword == "untitled" or is_weak_keyword(keyword):
+        return None
+
+    family = family_slug[0].upper() + family_slug[1:]
+    return f"{year}_{family}_{keyword}"
 
 
 def derive_keyword_alternatives(title: str, n: int = 3) -> list[str]:
@@ -292,6 +387,43 @@ def derive_id(year: int | None, first_author_family: str, title: str) -> str:
 
     keyword = derive_keyword(title)
     if keyword == "untitled":
-        raise IDError(f"Cannot derive keyword from title: {title!r}.")
+        raise IDError(_no_keyword_message(year, family, title))
 
     return f"{year}_{family}_{keyword}"
+
+
+def _no_keyword_message(year: int, family: str, title: str) -> str:
+    """Explain a refused title and name the way past it.
+
+    Two different failures land here — a title with no usable token at all,
+    and one the ASCII gate refused — and they need different sentences: the
+    first is "there is nothing here", the second is "there is something here
+    but it cannot be a folder name". Both end on a command the reader can run,
+    because the caller is as often an agent working through a batch as it is
+    a person, and an error an agent cannot act on stalls the whole batch.
+    """
+    # First line stands alone: the GUI shows only this one, under a field the
+    # title is already visible in, so quoting the title back would be noise
+    # there while the CLI reader still needs it. The quote moves to line two.
+    lines = ["This title cannot produce a paper id."]
+    if _ascii_ratio(title) < _MIN_ASCII_RATIO:
+        lines.append(
+            f"The id is a folder name on Windows, macOS and Linux alike, so it "
+            f"has to be ASCII — and {title!r} is mostly not, which leaves no "
+            f"keyword that would actually name the paper."
+        )
+    else:
+        lines.append(f"Title: {title!r}")
+    suggestion = suggest_id(year, family, title)
+    if suggestion is not None:
+        lines.append(
+            f"Pass --id {suggestion} to keep the Latin part of the title, or "
+            f"--id {year}_{family}_<Keyword> with a keyword you pick."
+        )
+    else:
+        lines.append(
+            f"Pass --id {year}_{family}_<Keyword> with a keyword you pick — a "
+            "transliteration and the paper's English title both work, and "
+            "neither has to match the title you store."
+        )
+    return "\n".join(lines)

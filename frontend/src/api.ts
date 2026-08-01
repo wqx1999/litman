@@ -437,8 +437,34 @@ export interface IngestPreview {
   /** Null when the CrossRef record can't yield an id; see `idError`. */
   proposedId: string | null
   idError: string | null
+  /** A candidate to pre-fill the Paper ID field with when `proposedId` is
+   * null. Null means the server had nothing worth offering — an empty field
+   * is a better prompt than a bad default. */
+  idSuggestion: string | null
   /** Non-null = this DOI is already in the vault; Add must stay disabled. */
   inVault: { id: string; title: string } | null
+}
+
+/** The id a set of fields would produce, from `POST /api/ingest/derive-id`.
+ *
+ * The frontend asks rather than computes on purpose. A TypeScript copy of
+ * `derive_id` would be a second set of rules to keep in step with the Python
+ * one, and its failure mode is the nastiest available: the id shown in the
+ * form and the id actually written drift apart, and nobody finds out until
+ * afterwards. */
+export interface DeriveIdResult {
+  id: string | null
+  /** Why not — already reduced to one line, safe to show inline. */
+  error: string | null
+  suggestion: string | null
+}
+
+export function deriveIngestId(input: {
+  title: string
+  authors: string[]
+  year: number | null
+}): Promise<DeriveIdResult> {
+  return mutateJSON<DeriveIdResult>('/api/ingest/derive-id', 'POST', input)
 }
 
 export interface IngestConfirmResult {
@@ -471,13 +497,19 @@ export function fetchIngestPreview(doi: string): Promise<IngestPreview> {
   )
 }
 
+/** `paperId` overrides id derivation, the way `lit add --id` always has.
+ * Null (the usual case) lets the server derive and auto-suffix on collision;
+ * a value you supply is a claim about which paper this is, so the server
+ * treats a collision on it as an error rather than quietly suffixing. */
 export function confirmIngest(
   handle: string,
   doi: string,
+  paperId: string | null = null,
 ): Promise<IngestConfirmResult> {
   return mutateJSON<IngestConfirmResult>('/api/ingest/confirm', 'POST', {
     handle,
     doi,
+    ...(paperId ? { id: paperId } : {}),
   })
 }
 
@@ -504,10 +536,12 @@ export interface IngestManualMeta {
 export function confirmIngestManual(
   handle: string,
   metadata: IngestManualMeta,
+  paperId: string | null = null,
 ): Promise<IngestConfirmResult> {
   return mutateJSON<IngestConfirmResult>('/api/ingest/confirm', 'POST', {
     handle,
     metadata,
+    ...(paperId ? { id: paperId } : {}),
   })
 }
 

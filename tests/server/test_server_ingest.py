@@ -510,3 +510,211 @@ def test_ingest_routes_blocked_without_vault() -> None:
         == 409
     )
     assert client.delete(f"/api/ingest/{'0' * 32}").status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingest/derive-id — the Paper ID line the add form shows live
+#
+# It exists so the frontend never has to know how ids are made. A TypeScript
+# copy of derive_id would drift from the Python one, and the drift would only
+# show up as a preview that disagrees with what got written.
+# ---------------------------------------------------------------------------
+
+_CN_TITLE = "关于化合物A的合成方法"
+
+
+def _derive(client: TestClient, **fields: Any) -> Any:
+    return client.post("/api/ingest/derive-id", json=fields)
+
+
+def test_derive_id_returns_what_the_write_would_produce(client: TestClient) -> None:
+    resp = _derive(
+        client,
+        title="Method for continuous macrocyclisation of peptides",
+        authors=["Zhang, Wei"],
+        year=2021,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "id": "2021_Zhang_Method-continuous-macrocyclisation",
+        "error": None,
+        "suggestion": None,
+    }
+
+
+def test_derive_id_refuses_a_chinese_title_and_offers_nothing_bogus(
+    client: TestClient,
+) -> None:
+    """The `2018_Zhang_A` case: no id, and no suggestion either.
+
+    Offering `2018_Zhang_A` here would hand back precisely the id the gate in
+    core/id.py just refused to create.
+    """
+    body = _derive(client, title=_CN_TITLE, authors=["Zhang, Wei"], year=2018).json()
+    assert body["id"] is None
+    assert body["suggestion"] is None
+    # One line, and one that reads under a form field. The CLI's follow-up
+    # paragraphs quote the title back, which is noise beside the input the
+    # title is already sitting in.
+    assert body["error"] == "This title cannot produce a paper id."
+
+
+def test_derive_id_suggests_the_latin_fragment_when_there_is_one(
+    client: TestClient,
+) -> None:
+    body = _derive(
+        client,
+        title="一种新型 PROTAC 分子的设计与合成",
+        authors=["Zhang, Wei"],
+        year=2018,
+    ).json()
+    assert body["id"] is None
+    assert body["suggestion"] == "2018_Zhang_PROTAC"
+
+
+def test_derive_id_stays_quiet_while_the_form_is_still_being_filled(
+    client: TestClient,
+) -> None:
+    """Half-typed fields are not an error — the line renders empty, not red."""
+    for fields in (
+        {"title": "", "authors": ["Zhang, Wei"], "year": 2018},
+        {"title": "A title", "authors": [], "year": 2018},
+        {"title": "A title", "authors": ["Zhang, Wei"], "year": None},
+        {},
+    ):
+        body = _derive(client, **fields).json()
+        assert body == {"id": None, "error": None, "suggestion": None}, fields
+
+
+def test_derive_id_survives_junk_field_types(client: TestClient) -> None:
+    body = _derive(client, title=7, authors="Zhang, Wei", year="2018").json()
+    assert body == {"id": None, "error": None, "suggestion": None}
+
+
+def test_derive_id_rejects_a_non_object_body(client: TestClient) -> None:
+    assert client.post("/api/ingest/derive-id", json=["title"]).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# An explicit id on confirm — the only way a Chinese-titled paper gets in
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicit_id_lets_a_chinese_titled_paper_in(
+    client: TestClient, vault: Path
+) -> None:
+    """The whole point of the field: without it this paper has no way past.
+
+    Asserted against TRUTH and DERIVED both, so it is proof the id rode the
+    shared ``_apply_add`` and not some second write path (invariant #16).
+    """
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={
+            "handle": handle,
+            "id": "2018_Zhang_Huahewu-A",
+            "metadata": {
+                "title": _CN_TITLE,
+                "authors": ["Zhang, Wei"],
+                "year": 2018,
+                "journal": "化工学报",
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "2018_Zhang_Huahewu-A"
+
+    paper = vault / "papers" / "2018_Zhang_Huahewu-A"
+    assert (paper / "paper.pdf").is_file()
+    meta = _yaml.load((paper / "metadata.yaml").read_text(encoding="utf-8"))
+    assert meta["title"] == _CN_TITLE
+    assert meta["journal"] == "化工学报"
+
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert any(p["id"] == "2018_Zhang_Huahewu-A" for p in index["papers"])
+
+
+def test_the_same_paper_without_an_id_is_refused(
+    client: TestClient, vault: Path
+) -> None:
+    """The reverse half: proof the id is what unblocked the test above.
+
+    Without it this is a 422 and the vault stays empty — so the previous test
+    cannot be passing for some unrelated reason.
+    """
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={
+            "handle": handle,
+            "metadata": {
+                "title": _CN_TITLE,
+                "authors": ["Zhang, Wei"],
+                "year": 2018,
+            },
+        },
+    )
+    assert resp.status_code == 422
+    assert not any((vault / "papers").iterdir())
+
+
+def test_an_explicit_id_works_on_the_doi_path_too(
+    client: TestClient, vault: Path, mock_crossref: dict[str, Any]
+) -> None:
+    """A CrossRef record can fail id derivation just as a typed one can."""
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={"handle": handle, "doi": _DOI, "id": "2024_Chen_Chosen-by-hand"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "2024_Chen_Chosen-by-hand"
+    assert (vault / "papers" / "2024_Chen_Chosen-by-hand" / "paper.pdf").is_file()
+
+
+def test_a_typed_id_that_collides_is_an_error_not_a_silent_suffix(
+    client: TestClient, vault: Path, mock_crossref: dict[str, Any]
+) -> None:
+    """A derived id auto-suffixes; a typed one must not.
+
+    Typing an id is a claim about which paper this is. Saving it as `…-2`
+    would answer that claim by ignoring it.
+    """
+    first = _upload(client, _pdf_with_doi()).json()["handle"]
+    client.post(
+        "/api/ingest/confirm",
+        json={"handle": first, "doi": _DOI, "id": "2024_Chen_Taken"},
+    )
+    second = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={"handle": second, "doi": _DOI, "id": "2024_Chen_Taken"},
+    )
+    assert resp.status_code == 409
+    assert not (vault / "papers" / "2024_Chen_Taken-2").exists()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["../escape", "a/b", "a\\b", "..", ".hidden", "", "   ", 7, ["x"]],
+)
+def test_a_malformed_id_never_reaches_the_filesystem(
+    client: TestClient, vault: Path, bad: Any
+) -> None:
+    """The id becomes a directory name, so this gate is path traversal defence."""
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    resp = client.post(
+        "/api/ingest/confirm",
+        json={
+            "handle": handle,
+            "id": bad,
+            "metadata": {
+                "title": "A perfectly good title",
+                "authors": ["Zhang, Wei"],
+                "year": 2018,
+            },
+        },
+    )
+    assert resp.status_code == 400, bad
+    assert not any((vault / "papers").iterdir()), bad

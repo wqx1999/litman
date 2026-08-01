@@ -57,7 +57,7 @@ from litman.commands.add import (
 )
 from litman.core.dedup import auto_suffix_id, canonicalize_doi, find_paper_by_doi
 from litman.core.doi_sniff import sniff_dois
-from litman.core.id import derive_id
+from litman.core.id import derive_id, is_valid_id, suggest_id
 from litman.exceptions import (
     AddError,
     DuplicateDOIError,
@@ -249,19 +249,18 @@ def get_ingest_preview(
 
     proposed_id: str | None = None
     id_error: str | None = None
+    id_suggestion: str | None = None
+    family = _first_author_family(parsed.get("authors") or [])
     try:
-        family = _first_author_family(parsed.get("authors") or [])
         if parsed.get("year") is None:
             raise IDError(
                 "The CrossRef record has no publication year, which the "
-                "paper id needs. Add this one via the CLI/agent with an "
-                "explicit --id."
+                "paper id needs."
             )
         if not family:
             raise IDError(
                 "The CrossRef record has no first-author name, which the "
-                "paper id needs. Add this one via the CLI/agent with an "
-                "explicit --id."
+                "paper id needs."
             )
         primary = derive_id(parsed["year"], family, parsed["title"])
         proposed_id = (
@@ -270,7 +269,12 @@ def get_ingest_preview(
             else primary
         )
     except IDError as exc:
-        id_error = str(exc)
+        # First line only: the rest of the message talks the CLI reader through
+        # `--id`, and the GUI answers that with a field instead of a sentence.
+        id_error = str(exc).split("\n")[0]
+        id_suggestion = suggest_id(
+            parsed.get("year"), family, parsed.get("title") or ""
+        )
 
     return {
         "doi": parsed.get("doi") or doi,
@@ -280,6 +284,7 @@ def get_ingest_preview(
         "journal": parsed.get("journal") or "",
         "proposedId": proposed_id,
         "idError": id_error,
+        "idSuggestion": id_suggestion,
         "inVault": in_vault,
     }
 
@@ -289,11 +294,21 @@ def _ingest_confirmed(
     handle: str,
     doi: str | None,
     metadata: dict[str, Any] | None = None,
+    paper_id: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the metadata and run the stash through the shared backend.
 
     Blocking. Exactly one of ``doi`` (fetch CrossRef) or ``metadata`` (the
     hand-entry form) arrives filled — the caller enforces that.
+
+    ``paper_id`` is the Paper ID field, and it is what makes a title in a
+    space-less script addable at all: ``core.id`` refuses to invent a keyword
+    from one (see its ``_MIN_ASCII_RATIO`` gate), so without a way to supply
+    the id, every Chinese-titled paper would dead-end here. It maps onto the
+    ``--id`` that ``lit add`` has always had, and takes the same hard-error
+    treatment on collision rather than the auto-suffix a derived id gets: an
+    id you typed is a claim about which paper this is, so quietly saving it
+    as ``…-2`` would be the wrong kind of helpful.
     """
     tmp_path = vault / _UPLOAD_DIRNAME / f"{handle}.pdf"
     if not tmp_path.is_file():
@@ -341,7 +356,7 @@ def _ingest_confirmed(
             parsed,
             doi_for_dedup=effective_doi,
             source_label=source_label,
-            id_override=None,
+            id_override=paper_id,
             resolve_collision=lambda pid, yr, fam: auto_suffix_id(vault, pid),
         )
     except DuplicateDOIError as exc:
@@ -353,6 +368,85 @@ def _ingest_confirmed(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return {"id": result["paper_id"], "warnings": result["warnings"]}
+
+
+def _validated_paper_id(raw: Any) -> str | None:
+    """Shape-check a Paper ID from the wire; ``None`` means "derive it".
+
+    Mirrors the CLI's ``_validate_id_override``, which runs during argument
+    parsing so a malformed ``--id`` never reaches the vault. The same has to
+    happen here, and for a blunter reason than tidiness: the id becomes a
+    directory name, so a value with a slash or a ``..`` in it is a path
+    traversal wearing a metadata field's clothes. ``is_valid_id`` is the one
+    place that judgement lives.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(
+            status_code=400, detail="'id' must be a non-empty string."
+        )
+    paper_id = raw.strip()
+    if not is_valid_id(paper_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{paper_id!r} is not a usable paper id. Use letters, digits, "
+                "'.', '_' and '-' only — it becomes a folder name."
+            ),
+        )
+    return paper_id
+
+
+@router.post("/ingest/derive-id")
+async def post_ingest_derive_id(request: Request) -> dict[str, Any]:
+    """Preview the id a set of hand-entered fields would produce.
+
+    Body: ``{"title": …, "authors": [...], "year": …}``. Returns
+    ``{"id": <derived>, "error": null, "suggestion": null}`` or, when the
+    fields cannot name a paper, ``{"id": null, "error": <why>, "suggestion":
+    <a candidate or null>}``.
+
+    This endpoint exists so the form can show the id live without the frontend
+    knowing how ids are made. Reimplementing ``derive_id`` in TypeScript would
+    be a second set of rules to keep in step with the first, and the failure
+    mode is the worst kind: the preview and the write disagree, and the user
+    finds out afterwards. Same reason the GUI has never had its own write
+    path — one backend, one answer (invariant #16).
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    title = payload.get("title")
+    year = payload.get("year")
+    authors = payload.get("authors")
+    title = title.strip() if isinstance(title, str) else ""
+    family = (
+        _first_author_family([a for a in authors if isinstance(a, str)])
+        if isinstance(authors, list)
+        else ""
+    )
+    if not isinstance(year, int) or isinstance(year, bool):
+        year = None
+
+    if year is None or not family or not title:
+        # Not an error the user should see: they are still typing. The form
+        # renders an empty id line rather than "no year" the instant it loads.
+        return {"id": None, "error": None, "suggestion": None}
+
+    try:
+        return {"id": derive_id(year, family, title), "error": None,
+                "suggestion": None}
+    except IDError as exc:
+        return {
+            "id": None,
+            "error": str(exc).split("\n")[0],
+            "suggestion": suggest_id(year, family, title),
+        }
 
 
 @router.post("/ingest/confirm")
@@ -384,6 +478,8 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
     if not isinstance(handle, str) or not _HANDLE_RE.match(handle):
         raise HTTPException(status_code=400, detail="Unknown upload handle.")
 
+    paper_id = _validated_paper_id(payload.get("id"))
+
     has_doi = isinstance(doi_raw, str) and bool(doi_raw.strip())
     if metadata is not None:
         if not isinstance(metadata, dict):
@@ -401,7 +497,7 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
             )
         vault: Path = request.app.state.vault
         return await run_in_threadpool(
-            _ingest_confirmed, vault, handle, None, metadata
+            _ingest_confirmed, vault, handle, None, metadata, paper_id
         )
 
     if not has_doi:
@@ -413,7 +509,9 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
     vault = request.app.state.vault
     # CrossRef (10 s timeout) + the vault write + the INDEX/views reconcile:
     # all blocking, none of it allowed to stall the rest of the GUI.
-    return await run_in_threadpool(_ingest_confirmed, vault, handle, doi)
+    return await run_in_threadpool(
+        _ingest_confirmed, vault, handle, doi, None, paper_id
+    )
 
 
 @router.delete("/ingest/{handle}")

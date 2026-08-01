@@ -18,7 +18,10 @@ conveniences.
   is refused with a link to the paper you already have. When CrossRef has no
   record for it — a patent, or a journal that registers its DOIs elsewhere —
   fill in the title, year and authors yourself and it goes in the same way;
-  a DOI you typed is kept even though CrossRef could not resolve it. The drop is a copy:
+  a DOI you typed is kept even though CrossRef could not resolve it. The paper
+  id is shown before anything is written and can be typed yourself — which is
+  what lets in a paper whose title is written in a script the id cannot
+  carry. The drop is a copy:
   your original file stays where it is. This is the same import the CLI runs,
   so a dragged-in paper is indistinguishable from `lit add`.
 - **litman now tells you what changed after an update.** The first time the
@@ -40,6 +43,11 @@ conveniences.
   listed by name, each with the `lit modify` command that writes the real value
   — and, when the filler reached the paper's id as well, the `lit rename` that
   clears it from there.
+- **`lit health-check` reports papers whose id says nothing about them.** An id
+  like `2018_Zhang_A` — the keyword reduced to a single stray letter — is
+  listed with the `lit rename` that replaces it. Only papers whose title
+  cannot produce a better keyword are reported, so an id you chose yourself is
+  left alone.
 - **Patents export as patents.** A paper with `venue-type: patent` now becomes
   a `@patent` entry instead of a bare `@misc`, and a `patent-number` field is
   rendered as the entry's number.
@@ -84,6 +92,19 @@ conveniences.
 
 ### Fixed
 
+- **A title written in a script the id cannot carry no longer produces a
+  nonsense id.** Paper ids are ASCII, because they are folder names on
+  Windows, macOS and Linux alike — and litman picked the keyword by splitting
+  the title on spaces. A Chinese, Japanese or Korean title has none, so the
+  whole title arrived as one word and was reduced to whatever Latin characters
+  happened to sit inside it: `关于化合物A的合成方法` became `2018_Zhang_A`,
+  silently, and short of renaming the paper that id was permanent. Such a
+  title is now refused instead, and the message names the `--id` that gets
+  past it, offering a candidate whenever the title held a usable fragment.
+  Nothing about the stored metadata changed — titles, authors and journals in
+  any script are kept exactly as written, and only the id is ASCII. Write the
+  first author's family name in romanised form and the rest can stay in its
+  own script.
 - **The "no year" error no longer reads as an invitation to guess one.** When
   imported metadata carried no publication year, the message asked for an id
   and left the rest open, and the quickest way past it was to put the download

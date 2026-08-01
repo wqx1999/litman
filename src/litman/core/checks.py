@@ -53,7 +53,7 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.dedup import normalize_doi
-from litman.core.id import is_valid_id
+from litman.core.id import derive_keyword, is_valid_id, is_weak_keyword, suggest_id
 from litman.core.notes import (
     enumerate_markdown_files,
     has_discussion_reminder,
@@ -461,6 +461,66 @@ def check_placeholder_metadata(
                             ),
                         )
                     )
+    return out
+
+
+def check_weak_id_keyword(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Ids whose keyword segment identifies nothing, from a title that cannot fix it.
+
+    Before the ``_MIN_ASCII_RATIO`` gate in ``core/id.py``, a title in a
+    space-less script arrived at the tokenizer as one token and slugged down
+    to whatever Latin fragment it happened to contain: ``关于化合物A的合成方法``
+    became ``2018_Zhang_A``. The gate stops new ones; these are the papers
+    added before it existed, and nothing else in the vault would ever mention
+    them — the metadata is right, only the handle is nonsense.
+
+    Two conditions, and the second one is the point. A short keyword alone is
+    not evidence of anything: someone may have chosen ``--id 2020_Chen_ML``
+    deliberately, and the vault does not record whether an id was derived or
+    supplied. Requiring that the stored title *also* fails to yield a keyword
+    narrows this to the papers whose id could only have come from the old
+    accident. The cost is a known miss — edit such a paper's title into
+    something derivable and its bad id stops being reported — and that is the
+    right way round: a warning nobody can clear is worse than one that is
+    occasionally silent.
+
+    Warning, not error: the vault is entirely self-consistent. Nothing here is
+    auto-fixable either, because only the reader knows what the paper should be
+    called, so the hint carries a ready-to-run ``lit rename`` — the one command
+    that changes an id without stranding the ``[[wiki-link]]`` targets and
+    project symlinks pointing at it.
+    """
+    out: list[Issue] = []
+    for p in papers:
+        pid = p.get("id")
+        title = p.get("title")
+        if not isinstance(pid, str) or not isinstance(title, str):
+            continue
+        # `<year>_<Family>_<Keyword>`; maxsplit=2 keeps an underscore inside a
+        # hand-written keyword instead of splitting the keyword on it.
+        parts = pid.split("_", 2)
+        if len(parts) < 3 or not is_weak_keyword(parts[2]):
+            continue
+        if derive_keyword(title) != "untitled":
+            continue
+
+        year = int(parts[0]) if parts[0].isdigit() else None
+        better = suggest_id(year, parts[1], title)
+        target = better if better is not None else f"{parts[0]}_{parts[1]}_<Keyword>"
+        out.append(
+            Issue(
+                category="weak_id_keyword",
+                severity="warning",
+                paper_id=pid,
+                message=(
+                    f"id keyword {parts[2]!r} says nothing about the paper, "
+                    f"and its title cannot produce a better one: {title!r}"
+                ),
+                hint=f"pick a keyword and run `lit rename {pid} {target}`",
+            )
+        )
     return out
 
 
@@ -2828,6 +2888,12 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "full",
         "validity",
         "report",
+    ),
+    # Same tier/klass as placeholder_metadata and for the same reason: it reads
+    # metadata, judges content rather than structure, and only the reader knows
+    # the replacement — so it reports and never fixes.
+    CheckSpec(
+        "weak_id_keyword", check_weak_id_keyword, "full", "validity", "report"
     ),
     CheckSpec("duplicate_doi", check_duplicate_doi, "full", "validity", "report"),
     CheckSpec(
