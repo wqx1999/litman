@@ -13,7 +13,7 @@ import {
   PlusIcon,
 } from './icons'
 import { breadcrumbs } from './path'
-import { modalBackdropProps, nudgeOnBackdropClick } from './modalShell'
+import { modalBackdropProps } from './modalShell'
 
 /** What "Select this folder" is allowed to return:
  *  - `existing-dir` / `parent-dir` — any folder that exists (the name is typed
@@ -243,13 +243,6 @@ export default function DirectoryPicker({
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // stopPropagation regardless: React portals bubble to the React
-        // parent, so without it this click would reach the dialog underneath
-        // (which is itself a backdrop) and nudge THAT card instead.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}

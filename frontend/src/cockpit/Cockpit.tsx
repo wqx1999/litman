@@ -42,7 +42,6 @@ import {
 import type { MetadataWrite } from '../api'
 import {
   modalBackdropProps,
-  nudgeOnBackdropClick,
   useModalCardFocus,
 } from '../ui/modalShell'
 
@@ -687,12 +686,6 @@ function RenameValueDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -770,12 +763,6 @@ function DeleteValueConfirm({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}

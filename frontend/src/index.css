@@ -217,35 +217,6 @@ body {
   }
 }
 
-/* Click-outside-a-dialog feedback. No dialog in the app closes on a backdrop
-   click any more — a mis-aimed click used to throw away a half-typed edit — so
-   the click needs an answer other than silence, which reads as "the app froze".
-   The card wobbles the way a macOS sheet does and stays put.
-
-   Applied to the BACKDROP (`nudgeOnBackdropClick` in ui/modalShell.ts adds the
-   class and force-reflows to replay it); the rule targets its children so no
-   card needs a ref of its own. Unlayered, so it beats the `animate-grow-in`
-   utility the cards mount with — that entrance is long finished by then. */
-.modal-nudge > * {
-  animation: modal-nudge 0.24s var(--ease-fluid);
-}
-
-@keyframes modal-nudge {
-  0%,
-  100% {
-    transform: translateX(0);
-  }
-  22% {
-    transform: translateX(-5px);
-  }
-  48% {
-    transform: translateX(4px);
-  }
-  72% {
-    transform: translateX(-2px);
-  }
-}
-
 /* Halo for the update-available dot (see `--animate-update-halo`). Radiates the
    solid dot outward and fades it, then holds invisible so pulses feel spaced. */
 @keyframes update-halo {

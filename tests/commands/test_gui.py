@@ -717,6 +717,177 @@ def test_watcher_torn_snapshot_neither_breaks_nor_crashes() -> None:
     assert server.should_exit is True
 
 
+def test_watcher_gives_up_when_a_live_window_never_loads_a_page() -> None:
+    # The two Windows facts meet: Edge keeps our spawned process resident
+    # forever, and no page ever connects (the window came up on an error page,
+    # a stale cached response, anything). The first-connect grace waits on the
+    # process, so on its own it never fires — and the server outlives every
+    # window there is. The outer bound is what closes that.
+    proc, server = _live_proc(), _FakeServer()
+    try:
+        watcher = threading.Thread(
+            target=_stop_server_when_window_closes,
+            args=(proc, server, PresenceTracker()),
+            kwargs={
+                "first_connect_grace": 30.0,
+                "never_connected_timeout": 0.3,
+                "linger": 0.1,
+                "poll": 0.02,
+            },
+            daemon=True,
+        )
+        watcher.start()
+        watcher.join(timeout=5)
+        assert not watcher.is_alive()
+        assert server.should_exit is True
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_watcher_runs_with_no_process_to_poll() -> None:
+    # The --window fallback: no Chromium found, so the URL opened as a tab in
+    # the user's everyday browser and there is no process of ours to watch.
+    # The page is then the only signal — and it has to be enough, because a
+    # shortcut launch has no console to Ctrl+C from.
+    tracker = PresenceTracker()
+    tracker.connect()
+    server = _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(None, server, tracker),
+        kwargs={"first_connect_grace": 30.0, "linger": 0.1, "poll": 0.02},
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.25)
+    assert server.should_exit is False  # the tab is open; nothing to stop
+    tracker.disconnect()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+# ---------------------------------------------------------------------------
+# shutdown escalation — asking uvicorn to stop is not the same as stopping
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_stands_down_the_moment_the_server_returns() -> None:
+    # The normal path: server.run() returns in well under a second, gui_cmd's
+    # `finally` sets the event, and neither of the louder stages ever happens.
+    server, stopped = _FakeServer(), threading.Event()
+    killed: list[bool] = []
+    stopped.set()
+
+    gui._escalate_shutdown(
+        server,
+        stopped,
+        force_after=5.0,
+        hard_after=10.0,
+        hard_exit=lambda: killed.append(True),
+    )
+
+    assert not hasattr(server, "force_exit")
+    assert killed == []
+
+
+def test_escalate_forces_a_server_that_ignores_the_request() -> None:
+    # One connection uvicorn cannot finish draining. `force_exit` is its own
+    # escape hatch, normally reached only by a second Ctrl+C — which is
+    # precisely what a console-less litw.exe launch cannot send.
+    server, stopped = _FakeServer(), threading.Event()
+    killed: list[bool] = []
+
+    thread = threading.Thread(
+        target=gui._escalate_shutdown,
+        args=(server, stopped),
+        kwargs={
+            "force_after": 0.1,
+            "hard_after": 10.0,
+            "hard_exit": lambda: killed.append(True),
+        },
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.3)
+    assert server.force_exit is True  # insisted
+    assert killed == []  # but still waiting, not killing
+    stopped.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert killed == []
+
+
+def test_escalate_kills_a_server_that_ignores_force_too() -> None:
+    # The end of the line. A GUI process with no window and no console is
+    # unreachable by any means the user has, and on Windows it also blocks its
+    # own next `uv tool install --force` — so leaving is better than staying.
+    server, stopped = _FakeServer(), threading.Event()
+    killed: list[bool] = []
+
+    gui._escalate_shutdown(
+        server,
+        stopped,
+        force_after=0.05,
+        hard_after=0.1,
+        hard_exit=lambda: killed.append(True),
+    )
+
+    assert server.force_exit is True
+    assert killed == [True]
+
+
+def test_window_fallback_to_a_tab_still_watches_the_page(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # --window on a box with no Chrome/Edge/Chromium at all. It degrades to a
+    # tab, and used to degrade the shutdown contract with it: no process, so
+    # no watcher, so nothing could ever stop the server — and the launch this
+    # matters for (the desktop shortcut) has no Ctrl+C either.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    watched: list[object] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_app_window_argv", lambda url: None)
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, *a, **k: watched.append(proc),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)] and procs == []
+    assert watched == [None]  # the page gate ran, with nothing to poll
+
+
+def test_plain_tab_mode_keeps_the_ctrl_c_contract(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # The counterpart: a terminal `lit gui` (no --window) must NOT acquire a
+    # page-presence gate. What the terminal started, the terminal stops —
+    # closing one tab has never been a reason to take the server with it.
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    watched: list[object] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, *a, **k: watched.append(proc),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)]
+    assert watched == []
+
+
 # ---------------------------------------------------------------------------
 # the app window's own browser profile
 # ---------------------------------------------------------------------------

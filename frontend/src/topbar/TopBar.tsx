@@ -32,7 +32,6 @@ import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
 import {
   modalBackdropProps,
-  nudgeOnBackdropClick,
   useModalCardFocus,
 } from '../ui/modalShell'
 
@@ -1152,12 +1151,6 @@ function DeleteProjectConfirm({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1235,12 +1228,6 @@ function RenameProjectDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1322,12 +1309,6 @@ function SetProjectPathDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1428,12 +1409,6 @@ function NewProjectDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1746,12 +1721,6 @@ function UnregisterVaultConfirm({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1837,12 +1806,6 @@ function LocateVaultDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1954,12 +1917,6 @@ function RegisterVaultDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -2131,12 +2088,6 @@ function CreateVaultDialog({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
       {...modalBackdropProps}
-      onClick={(e) => {
-        // Nested inside another dialog's backdrop; React portals bubble to
-        // the React parent, so stop it here or the outer card nudges too.
-        e.stopPropagation()
-        nudgeOnBackdropClick(e)
-      }}
     >
       <div
         onClick={(e) => e.stopPropagation()}

@@ -23,7 +23,11 @@ entry that runs ``lit gui --window`` and exits without starting the server
 it stops the server, and Ctrl+C closes the window. The shutdown signal is the
 last live *page*, not the browser process: the SPA holds a ``/api/presence``
 WebSocket while it is loaded, and the server stops a short linger after that
-count reaches zero (see :func:`_stop_server_when_window_closes`). The spawned
+count reaches zero (see :func:`_stop_server_when_window_closes`). Asking is
+not the same as stopping, so a window launch also escalates a request uvicorn
+does not honour (see :func:`_escalate_shutdown`) — a GUI process has no
+console to Ctrl+C twice from, and on Windows one that outlives its window
+blocks its own next upgrade. The spawned
 process is only a secondary hint — it can outlive the window (on Windows Edge
 keeps the browser resident after the window closes) or die before it (Chromium
 hands a fresh profile's first window to another process), so *waiting* on it
@@ -311,11 +315,12 @@ def _app_window_argv(url: str) -> list[str] | None:
 
 
 def _stop_server_when_window_closes(
-    proc: subprocess.Popen[bytes],
+    proc: subprocess.Popen[bytes] | None,
     server: Any,
     presence: PresenceTracker,
     *,
     first_connect_grace: float = 15.0,
+    never_connected_timeout: float = 180.0,
     linger: float = 5.0,
     poll: float = 0.25,
 ) -> None:
@@ -337,12 +342,18 @@ def _stop_server_when_window_closes(
       ``first_connect_grace`` bounds the wait so a failed launch leaves no
       orphan, but the clock only starts once the spawned process is *gone*:
       a window merely slow to paint (process still alive) must not be shot
-      before its first page loads.
+      before its first page loads. ``never_connected_timeout`` is the outer
+      bound on that patience, because on Windows the process may never exit
+      at all (Edge stays resident) — without it, a window that comes up and
+      then fails to load a single page keeps the server alive forever, which
+      is the same orphan by a different route.
 
     ``proc`` is *polled*, never waited on. An earlier version blocked on
     ``proc.wait()`` before it ever read presence — which is exactly what let a
     resident Windows browser keep the server alive after the window closed
-    (the wait never returned, so the presence loop never ran).
+    (the wait never returned, so the presence loop never ran). ``None`` means
+    there is no process to poll (the fallback that opens a tab in the user's
+    everyday browser); the page is then the only signal there is.
 
     The keyword defaults are the shipped values; tests inject shorter ones.
     Each round reads the tracker through a single ``snapshot()`` call — read
@@ -355,9 +366,10 @@ def _stop_server_when_window_closes(
     100 ms, so setting the flag from this thread is the supported way to stop
     it from outside the event loop.
     """
+    started = time.monotonic()
     exited_at: float | None = None
     while True:
-        if exited_at is None and proc.poll() is not None:
+        if exited_at is None and proc is not None and proc.poll() is not None:
             exited_at = time.monotonic()
         count, ever_connected, last_zero = presence.snapshot()
         if count == 0:
@@ -376,8 +388,63 @@ def _stop_server_when_window_closes(
                 # No page ever connected and the window process is gone: a
                 # launch that never came up. Give up so it leaves no orphan.
                 break
+            elif time.monotonic() - started >= never_connected_timeout:
+                # Same verdict, reached without the process ever exiting: a
+                # browser that has been up for minutes without loading one
+                # page is not a window that is merely slow to paint.
+                break
         time.sleep(poll)
     server.should_exit = True
+
+
+# Shutdown escalation for a window launch, in seconds from the moment the
+# watcher asks the server to stop. Generous, because the normal path returns
+# in well under a second and these only ever fire on a wedge.
+FORCE_EXIT_AFTER = 10.0
+HARD_EXIT_AFTER = 25.0
+
+
+def _escalate_shutdown(
+    server: Any,
+    stopped: threading.Event,
+    *,
+    force_after: float = FORCE_EXIT_AFTER,
+    hard_after: float = HARD_EXIT_AFTER,
+    hard_exit: Callable[[], None] | None = None,
+) -> None:
+    """Make sure a requested shutdown actually ends this process.
+
+    ``should_exit`` is a *request*: uvicorn stops accepting, then waits — with
+    no timeout of its own — for every open connection and task to finish. Its
+    escape hatch, ``force_exit``, is normally reached only by a second Ctrl+C,
+    and the launch this whole file is built around (a desktop shortcut running
+    the console-less ``litw.exe``) has no console to send one from. One
+    connection that never closes therefore leaves a GUI process running with
+    no window, no console and nothing the user can reach it by — and because
+    Windows will not overwrite a running executable, the next
+    ``uv tool install --force`` then fails with a permission error on
+    ``litw.exe`` rather than upgrading.
+
+    So: ask, then insist, then leave. ``stopped`` is set by ``gui_cmd``'s
+    ``finally`` the instant ``server.run()`` returns, which is how every stage
+    normally ends.
+
+    The last stage is ``os._exit`` — deliberately the one exit no event loop
+    can hold up. It is safe here because every vault write has already
+    completed by the time it could fire: writes are atomic and per-request,
+    and this process buffers no state that a graceful teardown would flush.
+    Only a ``--window`` launch arms this. A terminal ``lit gui`` keeps the
+    plain Ctrl+C contract, where the second Ctrl+C is the user's own force.
+    """
+    if stopped.wait(force_after):
+        return
+    server.force_exit = True
+    if stopped.wait(max(0.0, hard_after - force_after)):
+        return
+    if hard_exit is not None:
+        hard_exit()
+    else:  # pragma: no cover - the shipped default kills the interpreter
+        os._exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +1003,31 @@ def gui_cmd(
         elif app_argv is not None:
             console.print("[dim]Close the window to stop the server (or Ctrl+C).[/]")
 
+        def _hard_exit() -> None:
+            # `finally` never runs after os._exit, so take the window down
+            # here rather than leave a shell on screen pointing at a server
+            # that is about to stop existing.
+            for spawned in owned:
+                with contextlib.suppress(OSError):
+                    spawned.terminate()
+            os._exit(0)
+
+        def _watch_window(proc: subprocess.Popen[bytes] | None) -> None:
+            """Stop the server when the last page goes, and see it through."""
+            _stop_server_when_window_closes(proc, server, app.state.presence)
+            # The server may already be down (Ctrl+C raced the window close),
+            # in which case there is nothing to escalate against — and arming
+            # the kill stage against a finished run is exactly the mistake
+            # worth being structural about.
+            if stop_event.is_set():
+                return
+            _escalate_shutdown(server, stop_event, hard_exit=_hard_exit)
+
+        def _start_watcher(proc: subprocess.Popen[bytes] | None) -> None:
+            threading.Thread(
+                target=_watch_window, args=(proc,), daemon=True
+            ).start()
+
         def _open() -> None:
             if app_argv is None:
                 # A plain tab (no Chromium found, or tab mode): no window
@@ -943,6 +1035,13 @@ def gui_cmd(
                 # so close it now (SF-5).
                 _terminate_splash()
                 webbrowser.open(url)
+                # `--window` still owes the user a way to stop the server, and
+                # the tab is the window here. Its launch may well have come
+                # from the desktop shortcut, where the console-less litw.exe
+                # leaves no Ctrl+C to fall back on — so watch the page even
+                # though there is no process to poll alongside it.
+                if window:
+                    _start_watcher(None)
                 return
             try:
                 profile = browser_profile_dir()
@@ -958,19 +1057,15 @@ def gui_cmd(
                 )
             except OSError:
                 # The browser vanished between the `which` probe and now. A tab
-                # is a worse window, but no window at all is worse still — and
-                # without a process to watch, the server keeps the Ctrl+C
-                # contract rather than exiting immediately. No window to paint,
-                # so close the splash now (SF-5).
+                # is a worse window, but no window at all is worse still. No
+                # window to paint, so close the splash now (SF-5); the page
+                # gate still applies, for the same reason as above.
                 _terminate_splash()
                 webbrowser.open(url)
+                _start_watcher(None)
                 return
             owned.append(proc)
-            threading.Thread(
-                target=_stop_server_when_window_closes,
-                args=(proc, server, app.state.presence),
-                daemon=True,
-            ).start()
+            _start_watcher(proc)
 
         def _after_open() -> None:
             # Splash hand-off: only a real app window has a page that will hold

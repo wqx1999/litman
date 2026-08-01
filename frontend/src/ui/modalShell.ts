@@ -11,47 +11,38 @@
  * a rule you can state in one sentence is one people can predict, and
  * "which dialogs close when I click away?" is not a game worth playing.
  *
+ * A backdrop click gets no feedback at all — no wobble, no flash. The dialog
+ * simply stays, which is the whole message. Anything louder than that reads
+ * as a reprimand, and the click it would be scolding is usually not even a
+ * click on purpose: releasing a text selection past the card's edge lands on
+ * the backdrop too, and being buzzed at for that says "you used this wrong"
+ * about a gesture that was fine.
+ *
  * The price of taking the click away is that every OTHER exit has to be real,
- * which is why both halves live in one file: `nudgeOnBackdropClick` removes
- * the mouse exit, `useModalCardFocus` makes sure the keyboard one works.
+ * which is why both halves live in one file: `modalBackdropProps` removes the
+ * mouse exit, `useModalCardFocus` makes sure the keyboard one works.
  */
 
 import { useEffect, useRef } from 'react'
 
-/** Wobble the dialog instead of closing it. Wire to the backdrop's `onClick`.
- *
- * Silence would read as a frozen app, so the card moves — the `.modal-nudge`
- * rule in index.css, which animates the backdrop's CHILDREN so adopting this
- * costs each dialog one attribute and no ref of its own. */
-export function nudgeOnBackdropClick(e: React.MouseEvent<HTMLElement>): void {
-  // Only a click on the backdrop ITSELF — clicks inside the card bubble up
-  // here with a different target and must be left entirely alone. (This is
-  // also what makes nested dialogs safe: the outer backdrop sees the inner
-  // one as the target and correctly does nothing.)
-  if (e.target !== e.currentTarget) return
-  const el = e.currentTarget
-  el.classList.remove('modal-nudge')
-  // Force a reflow so a second impatient click replays the animation instead
-  // of doing nothing (the class would otherwise never leave the element).
-  void el.offsetWidth
-  el.classList.add('modal-nudge')
-}
-
 /** Everything a dialog backdrop needs: `<div {...modalBackdropProps}>`.
  *
- * 🔴 The `onMouseDown` is not optional decoration. Pressing on the backdrop
- * blurs whatever was focused inside the card, and focus is what Escape rides
- * on — so without it, the exact gesture that used to close the dialog would
- * instead take away its LAST remaining exit, trapping a person in a dialog
- * with their half-typed edit. Caught by E2E, invisible to a mouse-only pass.
- * `preventDefault` on mousedown suppresses the focus change and nothing else;
- * the click event still fires, so the nudge still plays.
+ * 🔴 The `onMouseDown` is not optional decoration, and it is the only thing
+ * here. Pressing on the backdrop blurs whatever was focused inside the card,
+ * and focus is what Escape rides on — so without it, the exact gesture that
+ * used to close the dialog would instead take away its LAST remaining exit,
+ * trapping a person in a dialog with their half-typed edit. Caught by E2E,
+ * invisible to a mouse-only pass. `preventDefault` on mousedown suppresses
+ * the focus change and nothing else.
+ *
+ * The guard matters for nested dialogs: an inner backdrop's mousedown bubbles
+ * to the outer one, where the target is the inner backdrop rather than the
+ * outer's own element, so the outer correctly leaves it alone.
  */
 export const modalBackdropProps = {
   onMouseDown: (e: React.MouseEvent<HTMLElement>) => {
     if (e.target === e.currentTarget) e.preventDefault()
   },
-  onClick: nudgeOnBackdropClick,
 }
 
 /** Focus a dialog card on mount so its own `onKeyDown` can hear Escape.

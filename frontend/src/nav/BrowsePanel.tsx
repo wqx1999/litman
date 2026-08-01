@@ -128,15 +128,59 @@ const DIMENSIONS: readonly Dimension[] = [
 // Keyed on the authoritative status enum (core/checks.py
 // _FIXED_ENUM_VALUES["status"]); each value gets a macOS system-colour dot
 // (green / orange / teal / grey) defined as a `--color-status-*` theme token.
-const STATUS_DOT: Record<string, string> = {
-  'deep-read': 'bg-status-read',
-  skim: 'bg-status-skim',
-  inbox: 'bg-status-inbox',
-  dropped: 'bg-status-dropped',
+//
+// `halo` is the pin ring around that dot and `hover` is its preview, both in
+// the SAME hue as the dot they surround. A fixed accent ring said "pinned" in
+// a colour the dot itself never wears, so a green paper pinned turned blue at
+// the edge — two unrelated meanings stacked on one 8px light, and the eye
+// reads the outer one first. Same hue with a gap in it is one signal with an
+// emphasis. Whole class names, never built by concatenation: Tailwind
+// generates only what it can find as a literal in the source.
+interface StatusDot {
+  dot: string
+  halo: string
+  hover: string
+}
+
+const STATUS_DOT: Record<string, StatusDot> = {
+  'deep-read': {
+    dot: 'bg-status-read',
+    halo: 'outline-status-read',
+    hover: 'group-hover/row:outline-status-read/40',
+  },
+  skim: {
+    dot: 'bg-status-skim',
+    halo: 'outline-status-skim',
+    hover: 'group-hover/row:outline-status-skim/40',
+  },
+  inbox: {
+    dot: 'bg-status-inbox',
+    halo: 'outline-status-inbox',
+    hover: 'group-hover/row:outline-status-inbox/40',
+  },
+  dropped: {
+    dot: 'bg-status-dropped',
+    halo: 'outline-status-dropped',
+    hover: 'group-hover/row:outline-status-dropped/40',
+  },
+}
+
+// A paper with no status yet. Its halo is a step darker than its dot rather
+// than the same token: stone-300 ringing stone-300 on a white row is a shape
+// nobody can see, and this is the one case where the dot's own hue carries no
+// information worth protecting.
+const NO_STATUS: StatusDot = {
+  dot: 'bg-stone-300',
+  halo: 'outline-stone-400',
+  hover: 'group-hover/row:outline-stone-300',
+}
+
+function statusDot(status: string | null): StatusDot {
+  return (status && STATUS_DOT[status]) || NO_STATUS
 }
 
 function statusDotClass(status: string | null): string {
-  return (status && STATUS_DOT[status]) || 'bg-stone-300'
+  return statusDot(status).dot
 }
 
 /** Order a dimension's `Map<value, count>` for display: pinned `order` values
@@ -286,6 +330,7 @@ export default function BrowsePanel({
     // Dropped papers are shown (in `all`) but muted + tagged, so they read as
     // low-priority records rather than active entries.
     const isDropped = p.status === 'dropped'
+    const dot = statusDot(p.status)
     return (
       <div
         key={p.id}
@@ -322,14 +367,15 @@ export default function BrowsePanel({
                 the halo reads correctly over all three row backgrounds (plain,
                 hovered, selected) with no colour to keep in sync. Width is
                 always 2px and only the COLOUR changes, which is what makes the
-                fade animatable. */}
+                fade animatable. The colour is the paper's own status hue (see
+                STATUS_DOT) — hovering shows it at 40%, pinning takes it solid. */}
             <span
-              className={`h-2 w-2 rounded-full outline-2 outline-offset-2 transition-[outline-color,transform] duration-300 ease-fluid ${statusDotClass(
-                p.status,
-              )} ${
+              className={`h-2 w-2 rounded-full outline-2 outline-offset-2 transition-[outline-color,transform] duration-300 ease-fluid ${
+                dot.dot
+              } ${
                 pinned
-                  ? 'outline-accent-500'
-                  : 'outline-transparent group-hover/row:scale-125 group-hover/row:outline-accent-200'
+                  ? dot.halo
+                  : `outline-transparent group-hover/row:scale-125 ${dot.hover}`
               }`}
             />
           </button>
