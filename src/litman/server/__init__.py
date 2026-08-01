@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
 from litman.server.routes_agent import router as agent_router
+from litman.server.routes_ingest import router as ingest_router
 from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
 from litman.server.routes_structured import router as structured_router
@@ -256,6 +257,7 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(presence_router)
     app.include_router(update_router)
     app.include_router(ui_state_router)
+    app.include_router(ingest_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.

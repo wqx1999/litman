@@ -11,6 +11,13 @@ conveniences.
 
 ### Added
 
+- **Add a paper by dragging its PDF into the window.** litman reads the DOI
+  off the first pages and shows you what it found — title, authors, year,
+  journal — before anything is saved; correct or type the DOI yourself when
+  the PDF has none, as scanned papers often do. A DOI already in your library
+  is refused with a link to the paper you already have. The drop is a copy:
+  your original file stays where it is. This is the same import the CLI runs,
+  so a dragged-in paper is indistinguishable from `lit add`.
 - **litman now tells you what changed after an update.** The first time the
   app opens on a new version, a short "What's new" card lists the handful of
   changes you will actually notice, with a link to this changelog for the

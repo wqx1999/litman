@@ -17,6 +17,8 @@ import {
   fetchVersion,
   fetchWhatsNew,
   type WhatsNewInfo,
+  type IngestUploadResult,
+  uploadIngestPdf,
   pinPaper,
   putActiveVault,
   putDiscussion,
@@ -34,6 +36,8 @@ import type { CockpitHandle } from './cockpit/Cockpit'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 import CheatSheet from './ui/CheatSheet'
 import WhatsNew from './ui/WhatsNew'
+import DropZone from './ui/DropZone'
+import AddPaper from './ui/AddPaper'
 import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
@@ -288,6 +292,12 @@ export default function App() {
   // fresh install (or a relocated vault), where the what's-new card would
   // describe a "previous version" the person never had.
   const sawWelcomeRef = useRef(false)
+  // Drag-in ingest: non-null = a dropped PDF is stashed server-side and the
+  // Add-paper confirm dialog is up (a BLOCKING modal — counted in
+  // anyModalOpen). The dropped file's name rides along for the dialog header.
+  const [addUpload, setAddUpload] = useState<
+    (IngestUploadResult & { fileName: string }) | null
+  >(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -1665,6 +1675,41 @@ export default function App() {
     })
   }, [])
 
+  // Drag-in ingest step 1: stash the dropped PDF server-side (the upload is a
+  // copy — the user's file on disk is never touched) and open the confirm
+  // dialog with whatever DOI the sniff found.
+  const onPdfDropped = useCallback(
+    (file: File) => {
+      uploadIngestPdf(file)
+        .then((r) => setAddUpload({ ...r, fileName: file.name }))
+        .catch((e) =>
+          notify(e instanceof Error ? e.message : String(e), 'error'),
+        )
+    },
+    [notify],
+  )
+  // Step 3 landed: refresh the list so the new paper appears, and select it —
+  // the cockpit opening on the fresh paper IS the success feedback.
+  const onPaperAdded = useCallback(
+    (id: string) => {
+      setAddUpload(null)
+      notify(`Added ${id}`, 'success')
+      fetchPapers()
+        .then(setAllPapers)
+        .catch(() => {})
+      selectPaper(id)
+    },
+    [notify, selectPaper],
+  )
+  // "Already in your library" jump: close the dialog, open that paper.
+  const onOpenExistingFromAdd = useCallback(
+    (id: string) => {
+      setAddUpload(null)
+      selectPaper(id)
+    },
+    [selectPaper],
+  )
+
   // PDF-tool keys (V/H/T/D/Esc) only act when the active center tab is a PDF
   // tab; the handle is resolved live from the ref Map (see getPdfHandle's note).
   const activeTabKind = useMemo(
@@ -1744,6 +1789,8 @@ export default function App() {
     observabilityOpen ||
     vaultManagerOpen ||
     agentPanelOpen ||
+    // The Add-paper confirm dialog owns a text input + its own Esc.
+    addUpload !== null ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -2052,6 +2099,23 @@ export default function App() {
       )}
       {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
       {whatsNew && <WhatsNew info={whatsNew} onClose={closeWhatsNew} />}
+      {/* Drag-in ingest: the drop catcher is the ONLY GUI add entry (no
+          button by design). Parked while the confirm dialog is up so a
+          second drop can't orphan the first stash. */}
+      <DropZone
+        enabled={addUpload === null && !trashMode}
+        onPdf={onPdfDropped}
+        onReject={(m) => notify(m, 'info')}
+      />
+      {addUpload && (
+        <AddPaper
+          upload={addUpload}
+          fileName={addUpload.fileName}
+          onClose={() => setAddUpload(null)}
+          onAdded={onPaperAdded}
+          onOpenExisting={onOpenExistingFromAdd}
+        />
+      )}
       {toast && (
         <Toast
           message={toast.message}

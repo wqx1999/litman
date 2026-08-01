@@ -399,6 +399,73 @@ export function fetchWhatsNew(): Promise<WhatsNewInfo> {
   return getJSON<WhatsNewInfo>('/api/whatsnew')
 }
 
+/** Drag-in ingest (three steps, one shared `lit add` write path server-side).
+ *
+ * Step 1 stashes the dropped PDF (raw bytes, no multipart) and sniffs DOI
+ * candidates from its text layer. Step 2 previews what a DOI resolves to —
+ * the one explicit, user-initiated network call in the GUI (the server asks
+ * CrossRef). Step 3 ingests the stash through the exact `lit add` backend, so
+ * a GUI drop and a terminal add produce identical vault state. The browser
+ * upload is a copy — the user's original file is never touched. */
+export interface IngestUploadResult {
+  handle: string
+  doi: string | null
+  candidates: string[]
+}
+
+export interface IngestPreview {
+  doi: string
+  title: string
+  authors: string[]
+  year: number | null
+  journal: string
+  /** Null when the CrossRef record can't yield an id; see `idError`. */
+  proposedId: string | null
+  idError: string | null
+  /** Non-null = this DOI is already in the vault; Add must stay disabled. */
+  inVault: { id: string; title: string } | null
+}
+
+export interface IngestConfirmResult {
+  id: string
+  warnings: string[]
+}
+
+export async function uploadIngestPdf(file: File): Promise<IngestUploadResult> {
+  const resp = await apiFetch('/api/ingest/pdf', {
+    method: 'POST',
+    body: file,
+    headers: { 'Content-Type': 'application/pdf' },
+  })
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    throw new ApiError(detail, resp.status)
+  }
+  return (await resp.json()) as IngestUploadResult
+}
+
+export function fetchIngestPreview(doi: string): Promise<IngestPreview> {
+  return getJSONDetailed<IngestPreview>(
+    `/api/ingest/preview?doi=${encodeURIComponent(doi)}`,
+  )
+}
+
+export function confirmIngest(
+  handle: string,
+  doi: string,
+): Promise<IngestConfirmResult> {
+  return mutateJSON<IngestConfirmResult>('/api/ingest/confirm', 'POST', {
+    handle,
+    doi,
+  })
+}
+
 /** Kick off the one-click update: the server spawns a detached helper and
  * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
  * (ApiError with the human hint as its message) when litman cannot update

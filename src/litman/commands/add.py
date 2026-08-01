@@ -28,7 +28,7 @@ from __future__ import annotations
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 from rich.console import Console
@@ -254,6 +254,247 @@ def _validate_id_override(
     return value
 
 
+def _apply_add(
+    vault: Path,
+    pdf_path: Path,
+    parsed: dict[str, Any],
+    *,
+    doi_for_dedup: str,
+    source_label: str,
+    id_override: str | None,
+    resolve_collision: Callable[[str, int, str], str],
+) -> dict[str, Any]:
+    """Shared ``lit add`` backend: dedup → id → atomic create → derived → mv.
+
+    Both front doors call this one function — the CLI command below and the
+    webUI drag-in ingest endpoint (``server/routes_ingest.py``) — so a GUI
+    drop and a terminal ``lit add`` go through the identical validation,
+    atomic write and INDEX/views reconcile path (invariant #16: the GUI opens
+    no second write path). The caller owns everything interactive or
+    presentational: importer dispatch, the PDF magic check, collision
+    prompting (passed in as ``resolve_collision``), and printing.
+
+    Args:
+        vault: Resolved vault root.
+        pdf_path: The PDF to ingest. **mv semantics**: on success this file
+            is removed (a tolerated unlink failure → ``source_removed`` False).
+        parsed: Importer output (CrossRef / LLM JSON), already validated.
+        doi_for_dedup: Canonical DOI for the duplicate precheck; empty string
+            skips the precheck (LLM path with no DOI — the user accepted that
+            risk by choosing the LLM path).
+        source_label: Human label for error messages (``"DOI '10.…'"``).
+        id_override: Pre-shape-validated explicit id, or None to derive.
+        resolve_collision: ``(primary_id, year, family) -> chosen_id``,
+            called only when the DERIVED id's folder already exists. An
+            ``id_override`` collision is a hard error instead — if you named
+            the id explicitly you want the failure loud, not auto-suffixed.
+
+    Returns:
+        Dict with ``paper_id``, ``paper_dir``, ``metadata`` (the dict written
+        to metadata.yaml), ``source_removed``, and ``warnings`` — plain-text
+        post-commit best-effort failures (INDEX lag / source not removed)
+        that the caller must surface; the paper itself is committed either way.
+
+    Raises:
+        DuplicateDOIError: ``doi_for_dedup`` already registered in the vault.
+        IDError: metadata cannot yield an id (no year / no first author).
+        AddError: id collision on override, case-fold clash, or the resolver
+            gave up. Every raise happens before any vault write.
+    """
+    # Layer 1: DOI precheck. Refuse before id derivation — a true duplicate
+    # never gets to write anything.
+    if doi_for_dedup:
+        existing = find_paper_by_doi(vault, doi_for_dedup)
+        if existing is not None:
+            _refuse_doi_duplicate(doi_for_dedup, existing[0], existing[1])
+
+    if id_override:
+        # Already shape-validated by the caller (CLI: _validate_id_override
+        # runs during argument parsing, review F23), so it is a safe
+        # single-segment folder name here.
+        paper_id = id_override
+        year = parsed.get("year")
+        family = _first_author_family(parsed.get("authors", []))
+    else:
+        if parsed["year"] is None:
+            # The schema lets `year` be null while id derivation requires it,
+            # so this is where an agent that honestly reported "I could not
+            # find the year" gets stopped — and the shortest way past used to
+            # be to put a number in. A download year passes every check
+            # downstream and surfaces years later as a wrong date in an
+            # exported citation, so say outright that guessing is not the fix.
+            raise IDError(
+                f"Metadata from {source_label} has no year, and the year is "
+                "part of the paper id.\n"
+                "Do NOT substitute the download year, the file's date, or the "
+                "current year: a wrong year passes every later check and ends "
+                "up in exported citations.\n"
+                "Find the publication year on page 1, in the PDF's header / "
+                "footer, or on the DOI landing page. If the work has no "
+                "publication year at all, pass --id "
+                "<year>_<Family>_<Keyword> with the year you can defend."
+            )
+        family_raw = _first_author_family(parsed["authors"])
+        if not family_raw:
+            raise IDError(
+                f"Metadata from {source_label} has no first-author "
+                "family name; pass --id explicitly."
+            )
+        paper_id = derive_id(parsed["year"], family_raw, parsed["title"])
+        year = parsed["year"]
+        family = paper_id.split("_")[1]  # already-slugged & capitalized
+
+    # Layer 3: id collision resolution. The --id override gets the same
+    # treatment so batch scripts behave predictably; if you explicitly passed
+    # --id you almost certainly want the failure to be loud and immediate
+    # rather than silently auto-suffixing.
+    paper_dir = vault / "papers" / paper_id
+    if paper_dir.exists():
+        if id_override:
+            raise AddError(
+                f"Paper folder already exists: {paper_dir}. "
+                "Use a different --id or remove the existing folder first."
+            )
+        # Reaching here means the non-override path, where year is guarded
+        # non-None above; narrow int|None -> int for the resolver.
+        assert year is not None
+        paper_id = resolve_collision(paper_id, year, family)
+        paper_dir = vault / "papers" / paper_id
+
+    # Cross-platform safety (ADR-005): refuse ids that differ only in case
+    # from an existing paper. ``paper_dir.exists()`` above is case-sensitive
+    # on Linux, so an id like ``2023_pandi_X`` slips past when
+    # ``2023_Pandi_X/`` is on disk; moving the vault to Windows / default
+    # macOS then collapses the two and silently loses one paper.
+    papers_root = vault / "papers"
+    if papers_root.is_dir():
+        existing_ids = [
+            d.name for d in papers_root.iterdir() if d.is_dir()
+        ]
+        case_clash = find_case_fold_collision(existing_ids, paper_id)
+        if case_clash is not None:
+            raise AddError(
+                f"Paper id {paper_id!r} differs only in case from existing "
+                f"paper {case_clash!r}. Two ids that case-fold to the same "
+                "string collide on Windows / default macOS filesystems "
+                "(case-insensitive) and the vault loses data when moved "
+                "between OSes. Pass --id <substantially-different-name> "
+                "to pick a distinct id."
+            )
+
+    # Atomic creation: any failure rolls back the half-built folder.
+    # The source PDF is copied (not moved) inside the atomic block so that a
+    # mid-write failure leaves the original intact; the unlink runs after the
+    # block once the vault is known-consistent.
+    new_metadata = _build_metadata(parsed, paper_id)
+    try:
+        paper_dir.mkdir(parents=True)
+        with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
+            _yaml.dump(new_metadata, f)
+        (paper_dir / "notes.md").write_text(
+            f"# {parsed['title']}\n\n"
+            f"{WIKILINK_REMINDER}\n\n"
+            "(Personal notes go here.)\n",
+            encoding="utf-8",
+        )
+        # The discussion log starts empty but not absent: its header carries the
+        # append-format contract every writer reads before adding a section, and
+        # a paper folder whose file set never varies is one less special case in
+        # the Web UI, the skills, and health-check.
+        (paper_dir / "discussion.md").write_text(
+            discussion_scaffold(paper_id), encoding="utf-8"
+        )
+        shutil.copy2(pdf_path, paper_dir / "paper.pdf")
+        # Read-only lock the two new TRUTH files (M32). These are fresh
+        # creates (the dir did not pre-exist) so the writes above succeed; we
+        # only chmod after. notes.md is intentionally left writable. Inside the
+        # rollback try so a later failure still rmtree's the whole dir.
+        lock_truth_file(paper_dir / "metadata.yaml")
+        lock_truth_file(paper_dir / "paper.pdf")
+    except Exception:
+        if paper_dir.exists():
+            # locking.rmtree (not bare shutil): metadata.yaml / paper.pdf may
+            # already be chmod'd read-only above, which Windows os.unlink refuses
+            # — clear the bit via onexc so the half-built dir is fully removed.
+            rmtree(paper_dir, ignore_errors=True)
+        raise
+
+    warnings: list[str] = []
+
+    # Vault is consistent: the new paper dir is fully committed (the rollback
+    # try/except above either finished cleanly or rmtree'd a half-built dir).
+    # Reconcile the derived artifacts through the single shared funnel (M30
+    # Phase 4) so the paper is in INDEX.json + views/ immediately — `add`
+    # previously indexed NOTHING (a pre-existing lag bug: a freshly-added paper
+    # was absent from INDEX until the next write command or `lit refresh`).
+    # Placed OUTSIDE the rollback try: the paper is a valid, committed truth, so
+    # a derived-rebuild failure must NOT rmtree it — INDEX merely lags and is
+    # recoverable via `lit refresh` (same post-commit best-effort semantics as
+    # modify/rename). project_refs=False: a freshly-added paper has an empty
+    # `projects` list, so there are no project symlinks / REFERENCES.md to
+    # rebuild.
+    #
+    # The call is wrapped (review F25): a rebuild failure (e.g. an OSError
+    # writing views/ on a flaky mount) must not crash the ingest with a raw
+    # traceback after the paper is already committed, nor skip the source-PDF
+    # cleanup below — that would strand the source (mv semantics broken) AND
+    # leave INDEX lagging with no warning. Treat it as the same best-effort the
+    # comment already promised.
+    #
+    # Fast path: splice the just-written metadata onto the verified INDEX
+    # projections and move only the buckets this paper joins, so ingesting the
+    # 301st paper costs the same as the 2nd (before, every add re-read every
+    # metadata.yaml and relinked every bucket — a batch import paid that
+    # quadratically). ``pending_ids`` tells the freshness probe that this one
+    # id is expected on disk but not yet in INDEX; a stale INDEX for any other
+    # reason returns None and takes the wholesale rebuild, which self-heals.
+    try:
+        indexed = load_index_papers(vault, pending_ids={paper_id})
+        if indexed is None:
+            reconcile_derived(vault, project_refs=False)
+        else:
+            reconcile_derived(
+                vault,
+                papers=[*indexed, dict(new_metadata)],
+                project_refs=False,
+                views_delta=[
+                    (
+                        paper_id,
+                        view_fields_snapshot({}),
+                        view_fields_snapshot(new_metadata),
+                    )
+                ],
+            )
+    except Exception as exc:
+        warnings.append(
+            f"INDEX/views rebuild failed "
+            f"({exc.__class__.__name__}); the paper was ingested but is not "
+            "yet in INDEX.json. Run `lit refresh-views` to reconcile."
+        )
+
+    # Remove the source PDF (mv semantics). Tolerate failure: a successful
+    # ingest must not be reported as failure just because the source could not
+    # be removed (e.g. read-only source dir).
+    source_removed = True
+    try:
+        pdf_path.unlink()
+    except OSError as exc:
+        source_removed = False
+        warnings.append(
+            f"could not remove source PDF "
+            f"{str(pdf_path)!r} ({exc.__class__.__name__}); paper was still "
+            "ingested. Delete it manually if no longer needed."
+        )
+
+    return {
+        "paper_id": paper_id,
+        "paper_dir": paper_dir,
+        "metadata": new_metadata,
+        "source_removed": source_removed,
+        "warnings": warnings,
+    }
+
+
 @click.command("add")
 @click.argument(
     "pdf_path",
@@ -372,202 +613,33 @@ def add_cmd(
         parsed = parse_crossref(raw)
         doi_for_dedup = parsed.get("doi") or doi
 
-    # Layer 1: DOI precheck. Refuse before id derivation — a true duplicate
-    # never gets to write anything. Skipped only when no DOI is available
-    # (LLM path with doi=null); the user accepted that risk by choosing the
-    # LLM path with no DOI.
-    if doi_for_dedup:
-        existing = find_paper_by_doi(vault, doi_for_dedup)
-        if existing is not None:
-            _refuse_doi_duplicate(doi_for_dedup, existing[0], existing[1])
-
     source_label = (
         f"DOI {doi!r}" if doi is not None
         else "LLM JSON (stdin)" if from_stdin
         else f"LLM JSON {str(from_llm_json)!r}"
     )
 
-    if id_override:
-        # Already shape-validated by the _validate_id_override callback during
-        # parsing (review F23), so it is a safe single-segment folder name here.
-        paper_id = id_override
-        year = parsed.get("year")
-        family = _first_author_family(parsed.get("authors", []))
-    else:
-        if parsed["year"] is None:
-            # The schema lets `year` be null while id derivation requires it,
-            # so this is where an agent that honestly reported "I could not
-            # find the year" gets stopped — and the shortest way past used to
-            # be to put a number in. A download year passes every check
-            # downstream and surfaces years later as a wrong date in an
-            # exported citation, so say outright that guessing is not the fix.
-            raise IDError(
-                f"Metadata from {source_label} has no year, and the year is "
-                "part of the paper id.\n"
-                "Do NOT substitute the download year, the file's date, or the "
-                "current year: a wrong year passes every later check and ends "
-                "up in exported citations.\n"
-                "Find the publication year on page 1, in the PDF's header / "
-                "footer, or on the DOI landing page. If the work has no "
-                "publication year at all, pass --id "
-                "<year>_<Family>_<Keyword> with the year you can defend."
-            )
-        family_raw = _first_author_family(parsed["authors"])
-        if not family_raw:
-            raise IDError(
-                f"Metadata from {source_label} has no first-author "
-                "family name; pass --id explicitly."
-            )
-        paper_id = derive_id(parsed["year"], family_raw, parsed["title"])
-        year = parsed["year"]
-        family = paper_id.split("_")[1]  # already-slugged & capitalized
-
-    # Layer 3: id collision resolution. The --id override gets the same
-    # treatment so batch scripts behave predictably; if you explicitly passed
-    # --id you almost certainly want the failure to be loud and immediate
-    # rather than silently auto-suffixing.
-    paper_dir = vault / "papers" / paper_id
-    if paper_dir.exists():
-        if id_override:
-            raise AddError(
-                f"Paper folder already exists: {paper_dir}. "
-                "Use a different --id or remove the existing folder first."
-            )
-        # Reaching here means the non-override path, where year is guarded
-        # non-None above (371); narrow int|None -> int for _resolve_collision.
-        assert year is not None
-        paper_id = _resolve_collision(
-            vault,
-            paper_id,
-            year,
-            family,
-            parsed["title"],
-            auto_suffix,
-        )
-        paper_dir = vault / "papers" / paper_id
-
-    # Cross-platform safety (ADR-005): refuse ids that differ only in case
-    # from an existing paper. ``paper_dir.exists()`` above is case-sensitive
-    # on Linux, so an id like ``2023_pandi_X`` slips past when
-    # ``2023_Pandi_X/`` is on disk; moving the vault to Windows / default
-    # macOS then collapses the two and silently loses one paper.
-    papers_root = vault / "papers"
-    if papers_root.is_dir():
-        existing_ids = [
-            d.name for d in papers_root.iterdir() if d.is_dir()
-        ]
-        case_clash = find_case_fold_collision(existing_ids, paper_id)
-        if case_clash is not None:
-            raise AddError(
-                f"Paper id {paper_id!r} differs only in case from existing "
-                f"paper {case_clash!r}. Two ids that case-fold to the same "
-                "string collide on Windows / default macOS filesystems "
-                "(case-insensitive) and the vault loses data when moved "
-                "between OSes. Pass --id <substantially-different-name> "
-                "to pick a distinct id."
-            )
-
-    # Atomic creation: any failure rolls back the half-built folder.
-    # The source PDF is copied (not moved) inside the atomic block so that a
-    # mid-write failure leaves the original intact; the unlink runs after the
-    # block once the vault is known-consistent.
-    new_metadata = _build_metadata(parsed, paper_id)
-    try:
-        paper_dir.mkdir(parents=True)
-        with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
-            _yaml.dump(new_metadata, f)
-        (paper_dir / "notes.md").write_text(
-            f"# {parsed['title']}\n\n"
-            f"{WIKILINK_REMINDER}\n\n"
-            "(Personal notes go here.)\n",
-            encoding="utf-8",
-        )
-        # The discussion log starts empty but not absent: its header carries the
-        # append-format contract every writer reads before adding a section, and
-        # a paper folder whose file set never varies is one less special case in
-        # the Web UI, the skills, and health-check.
-        (paper_dir / "discussion.md").write_text(
-            discussion_scaffold(paper_id), encoding="utf-8"
-        )
-        shutil.copy2(pdf_path, paper_dir / "paper.pdf")
-        # Read-only lock the two new TRUTH files (M32). These are fresh
-        # creates (the dir did not pre-exist) so the writes above succeed; we
-        # only chmod after. notes.md is intentionally left writable. Inside the
-        # rollback try so a later failure still rmtree's the whole dir.
-        lock_truth_file(paper_dir / "metadata.yaml")
-        lock_truth_file(paper_dir / "paper.pdf")
-    except Exception:
-        if paper_dir.exists():
-            # locking.rmtree (not bare shutil): metadata.yaml / paper.pdf may
-            # already be chmod'd read-only above, which Windows os.unlink refuses
-            # — clear the bit via onexc so the half-built dir is fully removed.
-            rmtree(paper_dir, ignore_errors=True)
-        raise
-
-    # Vault is consistent: the new paper dir is fully committed (the rollback
-    # try/except above either finished cleanly or rmtree'd a half-built dir).
-    # Reconcile the derived artifacts through the single shared funnel (M30
-    # Phase 4) so the paper is in INDEX.json + views/ immediately — `add`
-    # previously indexed NOTHING (a pre-existing lag bug: a freshly-added paper
-    # was absent from INDEX until the next write command or `lit refresh`).
-    # Placed OUTSIDE the rollback try: the paper is a valid, committed truth, so
-    # a derived-rebuild failure must NOT rmtree it — INDEX merely lags and is
-    # recoverable via `lit refresh` (same post-commit best-effort semantics as
-    # modify/rename). project_refs=False: a freshly-added paper has an empty
-    # `projects` list, so there are no project symlinks / REFERENCES.md to
-    # rebuild.
-    #
-    # The call is wrapped (review F25): a rebuild failure (e.g. an OSError
-    # writing views/ on a flaky mount) must not crash `lit add` with a raw
-    # traceback after the paper is already committed, nor skip the source-PDF
-    # cleanup below — that would strand the source (mv semantics broken) AND
-    # leave INDEX lagging with no warning. Treat it as the same best-effort the
-    # comment already promised.
-    #
-    # Fast path: splice the just-written metadata onto the verified INDEX
-    # projections and move only the buckets this paper joins, so ingesting the
-    # 301st paper costs the same as the 2nd (before, every add re-read every
-    # metadata.yaml and relinked every bucket — a batch import paid that
-    # quadratically). ``pending_ids`` tells the freshness probe that this one
-    # id is expected on disk but not yet in INDEX; a stale INDEX for any other
-    # reason returns None and takes the wholesale rebuild, which self-heals.
-    try:
-        indexed = load_index_papers(vault, pending_ids={paper_id})
-        if indexed is None:
-            reconcile_derived(vault, project_refs=False)
-        else:
-            reconcile_derived(
-                vault,
-                papers=[*indexed, dict(new_metadata)],
-                project_refs=False,
-                views_delta=[
-                    (
-                        paper_id,
-                        view_fields_snapshot({}),
-                        view_fields_snapshot(new_metadata),
-                    )
-                ],
-            )
-    except Exception as exc:
-        console.print(
-            f"[yellow]Warning:[/] INDEX/views rebuild failed "
-            f"({exc.__class__.__name__}); the paper was ingested but is not "
-            "yet in INDEX.json. Run `lit refresh-views` to reconcile."
-        )
-
-    # Remove the source PDF (mv semantics). Tolerate failure: a successful
-    # ingest must not be reported as failure just because the source could not
-    # be removed (e.g. read-only source dir).
-    source_removed = True
-    try:
-        pdf_path.unlink()
-    except OSError as exc:
-        source_removed = False
-        console.print(
-            f"[yellow]Warning:[/] could not remove source PDF "
-            f"{str(pdf_path)!r} ({exc.__class__.__name__}); paper was still "
-            "ingested. Delete it manually if no longer needed."
-        )
+    # Everything from the DOI precheck to the mv-semantics unlink lives in
+    # the shared backend (also driven by the webUI ingest endpoint). The CLI
+    # contributes the interactive collision resolver; post-commit best-effort
+    # warnings come back as plain text and are printed here, before the panel,
+    # in the same order they used to appear.
+    result = _apply_add(
+        vault,
+        pdf_path,
+        parsed,
+        doi_for_dedup=doi_for_dedup,
+        source_label=source_label,
+        id_override=id_override,
+        resolve_collision=lambda pid, yr, fam: _resolve_collision(
+            vault, pid, yr, fam, parsed["title"], auto_suffix
+        ),
+    )
+    paper_id = result["paper_id"]
+    paper_dir = result["paper_dir"]
+    source_removed = result["source_removed"]
+    for msg in result["warnings"]:
+        console.print(f"[yellow]Warning:[/] {msg}")
 
     # Pure recall increment, AFTER the atomic block: the paper is already
     # safely on disk, so the scan can never roll it back. Double defense:

@@ -21,6 +21,7 @@ and release.sh refuses to publish without one.
 
 ## 1.3.3
 
+- Drag a PDF into the app to add it.
 - Pin papers to keep them at the top of the list.
 - Edit paper details and authors directly in the app.
 - Much faster deleting, restoring and tagging in large libraries.
