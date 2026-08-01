@@ -117,7 +117,10 @@ _CHROMIUM_CANDIDATES = (
     "google-chrome-stable",
     "chromium",
     "chromium-browser",
+    # Edge's Linux package installs microsoft-edge-stable and only sometimes
+    # leaves a microsoft-edge symlink beside it, so probe both.
     "microsoft-edge",
+    "microsoft-edge-stable",
     "msedge",
     "brave-browser",
 )
@@ -288,6 +291,14 @@ def _app_window_argv(url: str) -> list[str] | None:
         # session _purge_stale_browser_session has already emptied.
         "--hide-crash-restore-bubble",
     ]
+    # A shortcut-launched litman inherits the desktop session's PATH, which
+    # omits the per-user and Homebrew bin dirs (see refresh_path) — without
+    # this a browser installed there is as invisible as an agent CLI was.
+    # Imported here, not at module scope, to keep `lit gui`'s startup import
+    # graph unchanged.
+    from litman.core.agents import refresh_path
+
+    refresh_path()
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
         if exe:

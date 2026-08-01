@@ -14,6 +14,7 @@ import builtins
 import functools
 import importlib
 import io
+import os
 import re
 import shutil
 import socket
@@ -944,6 +945,33 @@ def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
     assert argv is not None
     assert argv[0] == str(binary)
     assert "open" not in argv
+
+
+def test_app_window_argv_reaches_a_browser_the_session_path_omits(
+    monkeypatch, tmp_path
+):
+    # A shortcut-launched litman inherits the desktop session's PATH, which has
+    # neither ~/.local/bin nor a Homebrew prefix. A browser installed there must
+    # still yield an app window rather than degrading to a plain tab.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    chromium = local_bin / "chromium"
+    chromium.touch()
+
+    def fake_which(name):
+        candidate = local_bin / name
+        on_path = str(local_bin) in os.environ["PATH"].split(":")
+        return str(candidate) if on_path and candidate.exists() else None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert argv[0] == str(chromium)
 
 
 # ---------------------------------------------------------------------------

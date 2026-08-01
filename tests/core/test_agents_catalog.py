@@ -182,6 +182,77 @@ def test_windows_recheck_reads_new_registry_path_and_is_idempotent(
     ]
 
 
+def test_desktop_launch_detects_agents_under_user_bin_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A shortcut-launched GUI detects a CLI the session PATH cannot see.
+
+    A .desktop launcher inherits the graphical session's environment, which
+    sources no shell rc — Ubuntu's Wayland session never reads ~/.profile, so
+    ~/.local/bin is absent and every agent disappears at once even though each
+    resolves fine in a terminal. Detection must probe those dirs anyway, and
+    repeated rechecks must not keep appending duplicate entries.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+
+    seen_paths: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        seen_paths.append(os.environ["PATH"])
+        if name == "claude" and str(local_bin) in os.environ["PATH"].split(":"):
+            return str(local_bin / "claude")
+        return None
+
+    monkeypatch.setattr(agents.shutil, "which", fake_which)
+    assert detect(get_agent("claude")) is True
+    assert detect(get_agent("claude")) is True
+    merged = f"/usr/local/bin:/usr/bin:{local_bin}"
+    assert seen_paths == [merged, merged]
+
+
+def test_probe_bin_dirs_are_read_live_not_cached(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Installing a CLI while the GUI runs needs a Recheck, not a restart."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(agents, "_POSIX_SYSTEM_BIN_DIRS", ())
+    assert agents._posix_probe_bin_dirs() == []
+
+    opencode_bin = tmp_path / ".opencode" / "bin"
+    opencode_bin.mkdir(parents=True)
+    assert agents._posix_probe_bin_dirs() == [str(opencode_bin)]
+
+
+def test_dock_launch_on_macos_reaches_the_homebrew_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Finder/Dock-launched litman detects a brew-installed agent.
+
+    macOS hands GUI apps launchd's PATH — /usr/bin:/bin:/usr/sbin:/sbin — which
+    contains neither Homebrew prefix, so `agy` under /opt/homebrew/bin is
+    invisible to a double-click while every terminal resolves it.
+    """
+    brew_bin = tmp_path / "opt" / "homebrew" / "bin"
+    brew_bin.mkdir(parents=True)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    monkeypatch.setattr(agents, "_POSIX_SYSTEM_BIN_DIRS", (str(brew_bin),))
+
+    def fake_which(name: str) -> str | None:
+        if name == "agy" and str(brew_bin) in os.environ["PATH"].split(":"):
+            return str(brew_bin / "agy")
+        return None
+
+    monkeypatch.setattr(agents.shutil, "which", fake_which)
+    assert detect(get_agent("agy")) is True
+
+
 # ---------------------------------------------------------------------------
 # Claude adapter delegates to core.skill; placeholders raise
 # ---------------------------------------------------------------------------
