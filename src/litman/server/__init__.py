@@ -26,6 +26,7 @@ from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
+from litman.server.routes_ingest import sweep_uploads
 from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
 from litman.server.routes_structured import router as structured_router
@@ -152,6 +153,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 flag.read_text(encoding="utf-8").strip() or "self-update failed"
             )
             flag.unlink()
+    except Exception:
+        pass
+
+    # Drag-in ingest leaves a stashed PDF under `.litman-upload/` between the
+    # drop and the confirm. Cancelling the dialog deletes its own stash, but a
+    # closed tab or a crash cannot — and at startup no page is loaded yet, so
+    # anything still sitting there is orphaned by definition. Clear it on the
+    # way up (short grace for a second `lit gui` mid-drag on the same vault)
+    # rather than leaving a 100 MB file for the user to find.
+    try:
+        from litman.server.routes_ingest import _STARTUP_TTL_SECONDS
+
+        if app.state.vault is not None:
+            sweep_uploads(app.state.vault, _STARTUP_TTL_SECONDS)
     except Exception:
         pass
 

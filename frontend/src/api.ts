@@ -466,6 +466,18 @@ export function confirmIngest(
   })
 }
 
+/** Discard a stashed upload the user dismissed. Fire-and-forget by design:
+ * a failed cleanup is not something to put in front of someone who just hit
+ * Cancel, and the server sweeps leftovers on its own regardless. */
+export function discardIngest(handle: string): Promise<void> {
+  return apiFetch(`/api/ingest/${encodeURIComponent(handle)}`, {
+    method: 'DELETE',
+  }).then(
+    () => undefined,
+    () => undefined,
+  )
+}
+
 /** Kick off the one-click update: the server spawns a detached helper and
  * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
  * (ApiError with the human hint as its message) when litman cannot update

@@ -13,9 +13,17 @@ Three steps, one write path:
    ``lit add`` calls, so a GUI drop and a terminal add produce byte-identical
    vault state (invariant #16: the GUI opens no second write path).
 
+``DELETE /api/ingest/{handle}`` discards a stash the user walked away from.
+
 The browser upload is inherently a COPY of the user's file, so ``lit add``'s
 mv semantics consume only our temp file — the user's original PDF is never
 touched, let alone removed.
+
+Every blocking step (writing the upload, parsing the PDF, the CrossRef call,
+the vault write) runs in a threadpool, never on the event loop: a slow or
+unreachable CrossRef would otherwise freeze *every* other request — the paper
+list, the PDF viewer — for the full 10 s HTTP timeout. Only the body read and
+the JSON parse stay async, because that is where the request actually is.
 
 None of these routes is in ``_VAULTLESS_ALLOWED``: ingesting needs a vault,
 and the welcome page doesn't mount the drop zone anyway.
@@ -30,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from starlette.concurrency import run_in_threadpool
 
 from litman.commands.add import (
     _PDF_MAGIC,
@@ -51,80 +60,110 @@ from litman.importers.crossref import fetch_crossref, parse_crossref
 
 router = APIRouter(prefix="/api")
 
-# Uploads land in a dot-directory at the vault root (sibling of `.trash`):
-# same filesystem as papers/, so the final ingest copy stays cheap and the
-# eventual unlink is a plain same-device operation.
-_UPLOAD_DIRNAME = ".upload-tmp"
+# Uploads land in a dot-directory at the vault root, named for the same
+# machine-local-transient family as ``.litman-staging`` (core/atomic.py): same
+# filesystem as papers/, so the final ingest copy stays cheap and the eventual
+# unlink is a plain same-device operation. Like ``.litman-staging`` it is on
+# the sync hard-exclude list (core/sync.py) — an abandoned upload is scratch,
+# never something to push to someone's cloud.
+_UPLOAD_DIRNAME = ".litman-upload"
 
 # Generous for article PDFs (a heavy scanned book chapter is ~50 MB); mainly
 # a guard against buffering something absurd into memory on a mis-drop.
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
-# Abandoned uploads (dialog dismissed, tab closed) are swept on the next
-# upload rather than by any background job.
+# A stash the user walked away from (tab closed, browser crashed) is swept on
+# the next upload and at server startup. The dialog's own Cancel deletes its
+# stash outright, so reaching this TTL means the page never got to say goodbye.
 _UPLOAD_TTL_SECONDS = 24 * 3600
+
+# At startup no page is loaded yet, so every stash on disk is orphaned by
+# definition and the 24 h wait is pointless — but a second `lit gui` on the
+# same vault could be mid-drag, so leave a minute's grace rather than none.
+_STARTUP_TTL_SECONDS = 60
 
 # Handles are server-minted uuid4 hex — anything else is refused before it
 # can reach the filesystem (no path traversal via a crafted handle).
 _HANDLE_RE = re.compile(r"^[0-9a-f]{32}$")
 
+_TOO_BIG = "PDF is larger than 100 MB — add it via the CLI instead."
+
 
 def _upload_dir(vault: Path) -> Path:
     d = vault / _UPLOAD_DIRNAME
-    d.mkdir(exist_ok=True)
+    try:
+        d.mkdir(exist_ok=True)
+    except OSError as exc:
+        # A read-only vault, a full disk, or a stray *file* sitting on the
+        # name: report it as a server-side problem in words, never as an
+        # unhandled traceback behind the dialog.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Could not create the upload staging folder "
+                f"{_UPLOAD_DIRNAME!r} in the vault ({exc.__class__.__name__}). "
+                "Add this paper via the CLI instead."
+            ),
+        ) from exc
     return d
 
 
-def _sweep_stale(tmp_dir: Path) -> None:
-    """Best-effort removal of uploads older than the TTL. Never raises."""
+def sweep_uploads(
+    vault: Path, ttl_seconds: float = _UPLOAD_TTL_SECONDS
+) -> int:
+    """Delete stashed uploads older than ``ttl_seconds``. Never raises.
+
+    Called on every upload and once at server startup (with the much shorter
+    startup TTL), so a stash orphaned by a closed tab or a crash cannot
+    outlive the next ``lit gui`` — there is nothing here for the user to
+    notice, let alone clean up by hand.
+
+    Returns the number of files removed (for tests / callers that log).
+    """
+    tmp_dir = vault / _UPLOAD_DIRNAME
     now = time.time()
+    removed = 0
     try:
         entries = list(tmp_dir.iterdir())
     except OSError:
-        return
+        return 0
     for p in entries:
         try:
-            if now - p.stat().st_mtime > _UPLOAD_TTL_SECONDS:
+            if now - p.stat().st_mtime > ttl_seconds:
                 p.unlink()
+                removed += 1
         except OSError:
             continue
+    return removed
 
 
-@router.post("/ingest/pdf")
-async def post_ingest_pdf(request: Request) -> dict[str, Any]:
-    """Stash a dropped PDF and sniff its DOI. Body = raw PDF bytes.
+async def _read_capped_body(request: Request) -> bytes:
+    """Read the request body, refusing anything over the cap.
 
-    Raw bytes rather than multipart on purpose: FastAPI's multipart parsing
-    needs the extra ``python-multipart`` dependency, and the browser can send
-    a File object as a fetch body directly — zero new dependencies.
+    Streamed rather than ``await request.body()``: a request without a
+    ``content-length`` (chunked) would otherwise be buffered whole in memory
+    *before* the size check could run, which is the one thing the cap exists
+    to prevent. The declared length is still honoured first — that refuses an
+    oversized upload without transferring it at all.
     """
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="PDF is larger than 100 MB — add it via the CLI instead.",
-        )
-    body = await request.body()
-    if len(body) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="PDF is larger than 100 MB — add it via the CLI instead.",
-        )
-    # Same magic-number rule as `lit add` (Content-Type is not trustworthy):
-    # a renamed .txt or an HTML error page saved as .pdf is refused before
-    # anything lands on disk.
-    if _PDF_MAGIC not in body[:_PDF_SNIFF_BYTES]:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "That file does not look like a PDF (missing the %PDF- "
-                "header). Drop the paper's PDF file."
-            ),
-        )
+        raise HTTPException(status_code=413, detail=_TOO_BIG)
 
-    vault: Path = request.app.state.vault
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=_TOO_BIG)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _stash_and_sniff(vault: Path, body: bytes) -> dict[str, Any]:
+    """Write the upload into its stash and sniff DOI candidates (blocking)."""
     tmp_dir = _upload_dir(vault)
-    _sweep_stale(tmp_dir)
+    sweep_uploads(vault)
 
     handle = uuid.uuid4().hex
     tmp_path = tmp_dir / f"{handle}.pdf"
@@ -138,6 +177,33 @@ async def post_ingest_pdf(request: Request) -> dict[str, Any]:
     }
 
 
+@router.post("/ingest/pdf")
+async def post_ingest_pdf(request: Request) -> dict[str, Any]:
+    """Stash a dropped PDF and sniff its DOI. Body = raw PDF bytes.
+
+    Raw bytes rather than multipart on purpose: FastAPI's multipart parsing
+    needs the extra ``python-multipart`` dependency, and the browser can send
+    a File object as a fetch body directly — zero new dependencies.
+    """
+    body = await _read_capped_body(request)
+    # Same magic-number rule as `lit add` (Content-Type is not trustworthy):
+    # a renamed .txt or an HTML error page saved as .pdf is refused before
+    # anything lands on disk.
+    if _PDF_MAGIC not in body[:_PDF_SNIFF_BYTES]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "That file does not look like a PDF (missing the %PDF- "
+                "header). Drop the paper's PDF file."
+            ),
+        )
+
+    vault: Path = request.app.state.vault
+    # Disk write + a full pypdf parse: 0.25 s median measured on real article
+    # PDFs, but a fat scanned one runs into seconds — off the event loop.
+    return await run_in_threadpool(_stash_and_sniff, vault, body)
+
+
 @router.get("/ingest/preview")
 def get_ingest_preview(
     request: Request, doi: str = Query(...)
@@ -149,6 +215,9 @@ def get_ingest_preview(
     ``proposedId`` may be null with ``idError`` explaining why (CrossRef
     record lacks a year or a first author); those rare papers go in via the
     CLI/agent path with an explicit ``--id``.
+
+    Declared ``def``, not ``async def``: FastAPI runs sync handlers in a
+    threadpool, so the CrossRef call here never blocks the event loop.
     """
     doi = canonicalize_doi(doi.strip())
     if not doi:
@@ -206,32 +275,8 @@ def get_ingest_preview(
     }
 
 
-@router.post("/ingest/confirm")
-async def post_ingest_confirm(request: Request) -> dict[str, Any]:
-    """Ingest a stashed upload through the shared ``lit add`` backend.
-
-    Body: ``{"handle": <from /ingest/pdf>, "doi": <confirmed DOI>}``.
-    CrossRef is fetched again here (not trusted from the preview response) so
-    the written metadata can never drift from what the confirmed DOI resolves
-    to; the dedup precheck reruns inside ``_apply_add`` for the same reason.
-    Id collisions auto-suffix — the GUI shows the final id in the response.
-    """
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
-
-    handle = payload.get("handle")
-    doi_raw = payload.get("doi")
-    if not isinstance(handle, str) or not _HANDLE_RE.match(handle):
-        raise HTTPException(status_code=400, detail="Unknown upload handle.")
-    if not isinstance(doi_raw, str) or not doi_raw.strip():
-        raise HTTPException(status_code=400, detail="DOI is required.")
-    doi = canonicalize_doi(doi_raw.strip())
-
-    vault: Path = request.app.state.vault
+def _ingest_confirmed(vault: Path, handle: str, doi: str) -> dict[str, Any]:
+    """Fetch CrossRef and run the stash through the shared backend (blocking)."""
     tmp_path = vault / _UPLOAD_DIRNAME / f"{handle}.pdf"
     if not tmp_path.is_file():
         raise HTTPException(
@@ -271,3 +316,57 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return {"id": result["paper_id"], "warnings": result["warnings"]}
+
+
+@router.post("/ingest/confirm")
+async def post_ingest_confirm(request: Request) -> dict[str, Any]:
+    """Ingest a stashed upload through the shared ``lit add`` backend.
+
+    Body: ``{"handle": <from /ingest/pdf>, "doi": <confirmed DOI>}``.
+    CrossRef is fetched again here (not trusted from the preview response) so
+    the written metadata can never drift from what the confirmed DOI resolves
+    to; the dedup precheck reruns inside ``_apply_add`` for the same reason.
+    Id collisions auto-suffix — the GUI shows the final id in the response.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object.")
+
+    handle = payload.get("handle")
+    doi_raw = payload.get("doi")
+    if not isinstance(handle, str) or not _HANDLE_RE.match(handle):
+        raise HTTPException(status_code=400, detail="Unknown upload handle.")
+    if not isinstance(doi_raw, str) or not doi_raw.strip():
+        raise HTTPException(status_code=400, detail="DOI is required.")
+    doi = canonicalize_doi(doi_raw.strip())
+
+    vault: Path = request.app.state.vault
+    # CrossRef (10 s timeout) + the vault write + the INDEX/views reconcile:
+    # all blocking, none of it allowed to stall the rest of the GUI.
+    return await run_in_threadpool(_ingest_confirmed, vault, handle, doi)
+
+
+@router.delete("/ingest/{handle}")
+def delete_ingest(request: Request, handle: str) -> dict[str, bool]:
+    """Discard a stashed upload the user dismissed.
+
+    Fired by the confirm dialog's Cancel / Esc / backdrop close, so a PDF the
+    user changed their mind about leaves nothing behind; the TTL sweep is only
+    for stashes whose page never got to say goodbye.
+
+    Idempotent: an already-consumed (successful add) or already-swept handle
+    answers ``discarded: false``, not an error — this is cleanup, and the
+    dialog must never show the user a failure for it.
+    """
+    if not _HANDLE_RE.match(handle):
+        raise HTTPException(status_code=400, detail="Unknown upload handle.")
+    vault: Path = request.app.state.vault
+    tmp_path = vault / _UPLOAD_DIRNAME / f"{handle}.pdf"
+    try:
+        tmp_path.unlink()
+    except OSError:
+        return {"discarded": False}
+    return {"discarded": True}

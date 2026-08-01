@@ -12,7 +12,9 @@ Guarded with ``importorskip`` so the suite still collects when the optional
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +135,61 @@ def test_upload_rejects_oversize(
     monkeypatch.setattr(ri, "_MAX_UPLOAD_BYTES", 16)
     resp = _upload(client, b"%PDF-1.4" + b"x" * 64)
     assert resp.status_code == 413
+
+
+def test_upload_rejects_oversize_without_content_length(
+    client: TestClient, vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap must hold for a chunked upload too.
+
+    Passing an iterator makes httpx stream the body with no ``content-length``,
+    so the declared-size check cannot fire — only the streaming byte count
+    stops it. Without that the whole body would be buffered into memory before
+    any check ran, which is precisely what the cap exists to prevent.
+    """
+    monkeypatch.setattr(ri, "_MAX_UPLOAD_BYTES", 16)
+    resp = client.post(
+        "/api/ingest/pdf",
+        content=iter([b"%PDF-1.4", b"x" * 64, b"y" * 64]),
+        headers={"Content-Type": "application/pdf"},
+    )
+    assert resp.status_code == 413
+    tmp_dir = vault / _UPLOAD_DIRNAME
+    assert not tmp_dir.is_dir() or not any(tmp_dir.iterdir())
+
+
+def test_sweep_removes_only_stale_uploads(client: TestClient, vault: Path) -> None:
+    """TTL sweep: an abandoned stash goes, a fresh one stays."""
+    fresh = _upload(client, _pdf_with_doi()).json()["handle"]
+    tmp_dir = vault / _UPLOAD_DIRNAME
+    stale = tmp_dir / f"{'a' * 32}.pdf"
+    stale.write_bytes(_pdf_with_doi())
+    old = time.time() - ri._UPLOAD_TTL_SECONDS - 60
+    os.utime(stale, (old, old))
+
+    assert ri.sweep_uploads(vault) == 1
+    assert not stale.exists()
+    assert (tmp_dir / f"{fresh}.pdf").is_file()
+
+
+def test_startup_sweep_clears_orphans(vault: Path) -> None:
+    """Entering the app's lifespan clears stashes left by a previous session.
+
+    At startup no page is loaded, so anything in the stash directory is
+    orphaned by definition — it must not survive into the new session (the
+    24 h TTL would keep a 100 MB file around for a day otherwise).
+    """
+    tmp_dir = vault / _UPLOAD_DIRNAME
+    tmp_dir.mkdir()
+    orphan = tmp_dir / f"{'b' * 32}.pdf"
+    orphan.write_bytes(_pdf_with_doi())
+    old = time.time() - ri._STARTUP_TTL_SECONDS - 30
+    os.utime(orphan, (old, old))
+
+    # `with TestClient(...)` is what actually runs the lifespan.
+    with TestClient(create_app(vault)):
+        pass
+    assert not orphan.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +328,41 @@ def test_confirm_unknown_handle_400(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# DELETE /api/ingest/{handle} — dismissing the dialog
+# ---------------------------------------------------------------------------
+
+
+def test_discard_removes_the_stash(client: TestClient, vault: Path) -> None:
+    handle = _upload(client, _pdf_with_doi()).json()["handle"]
+    assert (vault / _UPLOAD_DIRNAME / f"{handle}.pdf").is_file()
+
+    resp = client.delete(f"/api/ingest/{handle}")
+    assert resp.status_code == 200
+    assert resp.json() == {"discarded": True}
+    assert not any((vault / _UPLOAD_DIRNAME).iterdir())
+
+
+def test_discard_is_idempotent(client: TestClient) -> None:
+    """A handle already consumed / swept is not an error — this is cleanup."""
+    resp = client.delete(f"/api/ingest/{'c' * 32}")
+    assert resp.status_code == 200
+    assert resp.json() == {"discarded": False}
+
+
+def test_discard_rejects_malformed_handle(client: TestClient) -> None:
+    """Only server-minted uuid4 hex reaches the filesystem.
+
+    (A dot-segment traversal never even gets this far — the URL normalizes to
+    a different path and the router declines it — so what is worth asserting
+    here is the shape gate on everything that DOES route.)
+    """
+    assert client.delete("/api/ingest/nope").status_code == 400
+    assert client.delete("/api/ingest/paper.pdf").status_code == 400
+    assert client.delete(f"/api/ingest/{'z' * 32}").status_code == 400
+    assert client.delete(f"/api/ingest/{'a' * 31}").status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Vaultless gate
 # ---------------------------------------------------------------------------
 
@@ -288,3 +380,4 @@ def test_ingest_routes_blocked_without_vault() -> None:
         ).status_code
         == 409
     )
+    assert client.delete(f"/api/ingest/{'0' * 32}").status_code == 409

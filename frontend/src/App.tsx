@@ -19,6 +19,7 @@ import {
   type WhatsNewInfo,
   type IngestUploadResult,
   uploadIngestPdf,
+  discardIngest,
   pinPaper,
   putActiveVault,
   putDiscussion,
@@ -298,6 +299,8 @@ export default function App() {
   const [addUpload, setAddUpload] = useState<
     (IngestUploadResult & { fileName: string }) | null
   >(null)
+  // A dropped PDF is on its way up (upload + server-side DOI sniff).
+  const [uploading, setUploading] = useState(false)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -1678,16 +1681,27 @@ export default function App() {
   // Drag-in ingest step 1: stash the dropped PDF server-side (the upload is a
   // copy — the user's file on disk is never touched) and open the confirm
   // dialog with whatever DOI the sniff found.
+  // `uploading` drives the drop overlay's reading state and closes the zone
+  // to a second drop: the upload + DOI sniff is a beat of real work (a fat
+  // scanned PDF is seconds), and silence there reads as "the drop failed".
   const onPdfDropped = useCallback(
     (file: File) => {
+      setUploading(true)
       uploadIngestPdf(file)
         .then((r) => setAddUpload({ ...r, fileName: file.name }))
         .catch((e) =>
           notify(e instanceof Error ? e.message : String(e), 'error'),
         )
+        .finally(() => setUploading(false))
     },
     [notify],
   )
+  // Dismissing the dialog (Cancel / Esc / backdrop / jump-to-existing) throws
+  // the stashed upload away rather than leaving it for the sweeper.
+  const dismissAdd = useCallback((handle: string) => {
+    void discardIngest(handle)
+    setAddUpload(null)
+  }, [])
   // Step 3 landed: refresh the list so the new paper appears, and select it —
   // the cockpit opening on the fresh paper IS the success feedback.
   const onPaperAdded = useCallback(
@@ -1701,13 +1715,13 @@ export default function App() {
     },
     [notify, selectPaper],
   )
-  // "Already in your library" jump: close the dialog, open that paper.
+  // "Already in your library" jump: drop the stash, open that paper.
   const onOpenExistingFromAdd = useCallback(
-    (id: string) => {
-      setAddUpload(null)
+    (handle: string, id: string) => {
+      dismissAdd(handle)
       selectPaper(id)
     },
-    [selectPaper],
+    [dismissAdd, selectPaper],
   )
 
   // PDF-tool keys (V/H/T/D/Esc) only act when the active center tab is a PDF
@@ -2103,7 +2117,8 @@ export default function App() {
           button by design). Parked while the confirm dialog is up so a
           second drop can't orphan the first stash. */}
       <DropZone
-        enabled={addUpload === null && !trashMode}
+        accepting={addUpload === null && !uploading && !trashMode}
+        busy={uploading}
         onPdf={onPdfDropped}
         onReject={(m) => notify(m, 'info')}
       />
@@ -2111,9 +2126,9 @@ export default function App() {
         <AddPaper
           upload={addUpload}
           fileName={addUpload.fileName}
-          onClose={() => setAddUpload(null)}
+          onClose={() => dismissAdd(addUpload.handle)}
           onAdded={onPaperAdded}
-          onOpenExisting={onOpenExistingFromAdd}
+          onOpenExisting={(id) => onOpenExistingFromAdd(addUpload.handle, id)}
         />
       )}
       {toast && (

@@ -81,6 +81,14 @@ export default function AddPaper({
       })
   }
 
+  // Closing the dialog throws the stashed upload away (App fires the DELETE),
+  // so it must not be reachable while the ingest is mid-flight: the server
+  // would be copying the very file the dismissal deletes. Everything else —
+  // Esc, backdrop, Cancel — routes through here.
+  const dismiss = () => {
+    if (busy !== 'add') onClose()
+  }
+
   const authorLine = (authors: string[]): string => {
     if (authors.length === 0) return '(no authors)'
     if (authors.length <= 3) return authors.join(' · ')
@@ -90,12 +98,12 @@ export default function AddPaper({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={onClose}
+      onClick={dismiss}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
+          if (e.key === 'Escape') dismiss()
         }}
         role="dialog"
         aria-label="Add paper"
@@ -192,8 +200,9 @@ export default function AddPaper({
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-lg px-3 py-1.5 text-sm font-medium text-stone-500 transition duration-200 ease-fluid hover:bg-stone-100 hover:text-stone-700"
+            onClick={dismiss}
+            disabled={busy === 'add'}
+            className="rounded-lg px-3 py-1.5 text-sm font-medium text-stone-500 transition duration-200 ease-fluid hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40 disabled:hover:bg-transparent"
           >
             Cancel
           </button>
