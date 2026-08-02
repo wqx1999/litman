@@ -323,14 +323,9 @@ def _apply_add(
             # exported citation, so say outright that guessing is not the fix.
             raise IDError(
                 f"Metadata from {source_label} has no year, and the year is "
-                "part of the paper id.\n"
-                "Do NOT substitute the download year, the file's date, or the "
-                "current year: a wrong year passes every later check and ends "
-                "up in exported citations.\n"
-                "Find the publication year on page 1, in the PDF's header / "
-                "footer, or on the DOI landing page. If the work has no "
-                "publication year at all, pass --id "
-                "<year>_<Family>_<Keyword> with the year you can defend."
+                "part of the paper id. Take it from page 1 or the DOI landing "
+                "page — not the download year. If there is none at all, pass "
+                "--id <year>_<Family>_<Keyword>."
             )
         family_raw = first_author_family(parsed["authors"])
         if not family_raw:
@@ -373,11 +368,8 @@ def _apply_add(
         if case_clash is not None:
             raise AddError(
                 f"Paper id {paper_id!r} differs only in case from existing "
-                f"paper {case_clash!r}. Two ids that case-fold to the same "
-                "string collide on Windows / default macOS filesystems "
-                "(case-insensitive) and the vault loses data when moved "
-                "between OSes. Pass --id <substantially-different-name> "
-                "to pick a distinct id."
+                f"paper {case_clash!r} — the two collide on Windows and "
+                "macOS. Pass --id <different-name>."
             )
 
     # Atomic creation: any failure rolls back the half-built folder.

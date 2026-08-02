@@ -178,10 +178,8 @@ def rename_cmd(
     if case_clash is not None:
         raise RenameError(
             f"New id {new!r} differs only in case from existing paper "
-            f"{case_clash!r}. Two ids that case-fold to the same string "
-            "collide on Windows / default macOS filesystems (case-insensitive) "
-            "and the vault loses data when moved between OSes. Pick a "
-            "substantially different id."
+            f"{case_clash!r} — the two collide on Windows and macOS. "
+            "Pick a more distinct id."
         )
 
     now = now_iso()

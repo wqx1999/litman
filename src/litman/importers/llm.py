@@ -149,10 +149,8 @@ class LLMCandidateMeta(BaseModel):
     def _title_is_real(cls, value: str) -> str:
         if is_placeholder(value):
             raise ValueError(
-                f"title is {value.strip()!r}, which reads as a placeholder "
-                "rather than the paper's actual title. Take it from page 1 of "
-                "the PDF. If the file cannot be read, stop and ask the user — "
-                "do not fill one in."
+                f"title is {value.strip()!r}, a placeholder. Take it from "
+                "page 1; if the PDF will not open, ask rather than invent one."
             )
         return value
 
@@ -175,16 +173,9 @@ class LLMCandidateMeta(BaseModel):
         """
         if value and is_placeholder(value[0]):
             raise ValueError(
-                f"the first author is {value[0].strip()!r}, which reads as a "
-                "placeholder rather than a real name. The first author's "
-                "family name becomes part of the paper id, so this one would "
-                "be permanent. Take it from page 1 of the PDF. If the work "
-                "carries no personal author — a patent, an editorial, a "
-                "standards document — name the issuing body instead (the "
-                "patent assignee, the journal, the organisation). If it is "
-                "genuinely unattributed, write 'Anonymous', which says that "
-                "about the document; 'Unknown' only says the metadata was "
-                "never read."
+                f"the first author is {value[0].strip()!r}, a placeholder. "
+                "Take it from page 1; for a work with no personal author use "
+                "the issuing body, or 'Anonymous'."
             )
         return value
 
