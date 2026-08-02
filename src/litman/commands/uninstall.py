@@ -30,7 +30,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from litman.commands.gui import (
-    browser_profile_dir,
+    browser_profile_dirs,
     remove_browser_profile,
     remove_shortcut,
     shortcut_path,
@@ -110,8 +110,9 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     prefs_present = prefs.is_file()
     ui_state = ui_state_path()
     ui_state_present = ui_state.is_file()
-    profile = browser_profile_dir()
-    profile_present = profile.is_dir()
+    # Plural: a confined snap browser keeps its profile in its own
+    # writable area, so a machine can hold more than one.
+    profiles = browser_profile_dirs()
 
     plan_lines: list[str] = []
     for parent, names in skill_groups:
@@ -138,12 +139,12 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             "[bold]GUI state[/] [dim](pinned papers per library)[/]:"
         )
         plan_lines.append(f"  [red]•[/] {escape(str(ui_state))}")
-    if profile_present:
+    if profiles:
         plan_lines.append(
             "[bold]App-window browser profile[/] "
             "[dim](Chromium state for `lit gui --window`)[/]:"
         )
-        plan_lines.append(f"  [red]•[/] {escape(str(profile))}")
+        plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in profiles]
 
     if not plan_lines:
         console.print(
@@ -205,7 +206,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
         done.append("agent preferences")
     if ui_state_present and remove_ui_state()["removed"]:
         done.append("GUI state (pins)")
-    if profile_present and remove_browser_profile() is not None:
+    if profiles and remove_browser_profile():
         done.append("app-window browser profile")
 
     out = ["[bold green]Removed:[/]"]

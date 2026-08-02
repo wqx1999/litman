@@ -656,7 +656,10 @@ def test_watcher_opens_a_tab_when_the_window_dies_before_any_page() -> None:
         args=(_crashed_proc(), server, tracker),
         kwargs={
             "on_launch_failed": lambda: (calls.append(1), True)[1],
-            "first_connect_grace": 0.2,
+            # Long, so a fallback that fired on this clock would time the
+            # test out: a crash is judged on launch_failure_grace.
+            "first_connect_grace": 30.0,
+            "launch_failure_grace": 0.2,
             "linger": 0.2,
             "poll": 0.02,
         },
@@ -684,7 +687,10 @@ def test_watcher_gives_up_when_the_tab_fallback_also_fails() -> None:
         args=(_crashed_proc(), server, PresenceTracker()),
         kwargs={
             "on_launch_failed": lambda: False,
-            "first_connect_grace": 0.2,
+            # Long, so a fallback that fired on this clock would time the
+            # test out: a crash is judged on launch_failure_grace.
+            "first_connect_grace": 30.0,
+            "launch_failure_grace": 0.2,
             "linger": 0.1,
             "poll": 0.02,
         },
@@ -708,7 +714,10 @@ def test_watcher_offers_the_tab_fallback_once_and_then_gives_up() -> None:
         args=(_crashed_proc(), server, PresenceTracker()),
         kwargs={
             "on_launch_failed": lambda: (calls.append(1), True)[1],
-            "first_connect_grace": 0.2,
+            # Long, so a fallback that fired on this clock would time the
+            # test out: a crash is judged on launch_failure_grace.
+            "first_connect_grace": 30.0,
+            "launch_failure_grace": 0.2,
             "never_connected_timeout": 1.0,
             "linger": 0.1,
             "poll": 0.02,
@@ -736,6 +745,8 @@ def test_watcher_never_offers_the_tab_after_a_clean_exit() -> None:
         kwargs={
             "on_launch_failed": lambda: (calls.append(1), True)[1],
             "first_connect_grace": 0.2,
+            # Long, and never reached: a clean exit is not a crash.
+            "launch_failure_grace": 30.0,
             "linger": 0.1,
             "poll": 0.02,
         },
@@ -1092,7 +1103,7 @@ def test_browser_profile_dir_defaults_outside_the_config_dir(monkeypatch):
 
 
 def test_remove_browser_profile_is_a_noop_when_absent() -> None:
-    assert remove_browser_profile() is None
+    assert remove_browser_profile() == []
 
 
 def test_remove_browser_profile_deletes_it() -> None:
@@ -1100,8 +1111,126 @@ def test_remove_browser_profile_deletes_it() -> None:
     (profile / "Default").mkdir(parents=True)
     (profile / "Default" / "Preferences").write_text("{}", encoding="utf-8")
 
-    assert remove_browser_profile() == profile
+    assert remove_browser_profile() == [profile]
     assert not profile.exists()
+
+
+# ---------------------------------------------------------------------------
+# snap-confined browsers: the profile has to live where they can write
+# ---------------------------------------------------------------------------
+
+
+def _fake_snap(monkeypatch, tmp_path, name="chromium"):
+    """A machine with snap `name` installed, entirely inside tmp_path.
+
+    The per-user snap area follows $LITMAN_REGISTRY_DIR, which the autouse
+    isolation fixture already points at tmp_path — so nothing here can reach
+    a developer's real ~/snap, which matters because the uninstall sweep
+    deletes what it finds.
+    """
+    root = Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "snap"
+    (root / name / "common").mkdir(parents=True)
+    monkeypatch.setattr(gui, "_SNAP_BIN", tmp_path / "snapbin")
+    (tmp_path / "snapbin").mkdir()
+    monkeypatch.setattr(gui, "_SNAP_ROOT", tmp_path / "snaproot")
+    (tmp_path / "snaproot" / name).mkdir(parents=True)
+    return root
+
+
+def test_snap_sweep_cannot_reach_a_real_home(monkeypatch, tmp_path):
+    # Reverse check on a rule that *deletes* directories. The sweep root
+    # follows $LITMAN_REGISTRY_DIR, so neither this suite nor a sandboxed run
+    # can walk into a developer's actual ~/snap. Plant a decoy there and prove
+    # nothing so much as looks at it.
+    decoy = tmp_path / "real-home"
+    planted = decoy / "snap" / "chromium" / "common" / "litman-browser-profile"
+    planted.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: decoy))
+
+    assert gui._snap_user_root() != decoy / "snap"
+    assert gui.browser_profile_dirs() == []
+    assert remove_browser_profile() == []
+    assert planted.is_dir()
+
+
+def test_snap_sweep_uses_the_real_home_when_nothing_overrides_it(monkeypatch):
+    # And the seam's real default, which the test above can never exercise:
+    # unsandboxed, ~/snap is exactly where snapd puts these.
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    assert gui._snap_user_root() == Path.home() / "snap"
+
+
+def test_snap_name_reads_the_snap_from_a_wrapper_path(monkeypatch, tmp_path):
+    # /snap/bin/chromium resolves to snapd itself, so the name is all there is
+    # to go on — confirmed against the /snap/<name> directory the snap owns.
+    monkeypatch.setattr(gui, "_SNAP_BIN", tmp_path / "bin")
+    monkeypatch.setattr(gui, "_SNAP_ROOT", tmp_path / "root")
+    (tmp_path / "root" / "chromium").mkdir(parents=True)
+
+    assert gui._snap_name(tmp_path / "bin" / "chromium") == "chromium"
+    # Aliased as <snap>.<app>: the snap is the part before the dot.
+    assert gui._snap_name(tmp_path / "bin" / "chromium.foo") == "chromium"
+    # Not installed as a snap of that name — do not invent a path for it.
+    assert gui._snap_name(tmp_path / "bin" / "brave") is None
+    # An ordinary browser off PATH is not a snap at all.
+    assert gui._snap_name("/usr/bin/google-chrome") is None
+
+
+def test_browser_profile_dir_moves_out_of_the_hidden_cache_for_a_snap(
+    monkeypatch, tmp_path
+):
+    # The bug: snapd's `home` interface does not reach hidden directories, so
+    # the ~/.cache default made Ubuntu's snap Chromium abort on its
+    # SingletonLock rather than run a profile it could not lock. ~/snap/<snap>
+    # /common is the writable area it is granted.
+    root = _fake_snap(monkeypatch, tmp_path)
+    exe = tmp_path / "snapbin" / "chromium"
+
+    profile = browser_profile_dir(exe)
+
+    assert profile == root / "chromium" / "common" / "litman-browser-profile"
+    assert ".cache" not in str(profile)  # the hidden dir snapd will not grant
+
+
+def test_browser_profile_dir_is_unchanged_for_an_ordinary_browser(monkeypatch):
+    # The guard on the whole mechanism: only a snap gets moved. Windows,
+    # macOS and every deb/rpm Chromium keep the cache dir they have always had.
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    assert browser_profile_dir("/usr/bin/google-chrome") == browser_profile_dir()
+
+
+def test_app_window_argv_hands_a_snap_the_profile_it_can_write(monkeypatch, tmp_path):
+    # End to end through the real flag builder: the --user-data-dir on the
+    # command line is the moved one, and it is the browser we found that
+    # decides so.
+    root = _fake_snap(monkeypatch, tmp_path)
+    exe = tmp_path / "snapbin" / "chromium"
+    exe.write_text("")
+    monkeypatch.setattr(gui, "_find_chromium", lambda: str(exe))
+
+    argv = gui._app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None and argv[0] == str(exe)
+    want = root / "chromium" / "common" / "litman-browser-profile"
+    assert f"--user-data-dir={want}" in argv
+
+
+def test_uninstall_sweep_finds_the_snap_profile_too(monkeypatch, tmp_path):
+    # `lit uninstall` promises the profile does not outlive the install, and
+    # it must keep that promise for a profile it moved. The sweep goes by
+    # directory name, because by uninstall time the snap may be gone.
+    root = _fake_snap(monkeypatch, tmp_path)
+    snap_profile = root / "chromium" / "common" / "litman-browser-profile"
+    snap_profile.mkdir(parents=True)
+    default = browser_profile_dir()
+    default.mkdir(parents=True, exist_ok=True)
+    # A neighbour in the same snap that is emphatically not ours.
+    bystander = root / "chromium" / "common" / "chromium"
+    bystander.mkdir()
+
+    assert set(gui.browser_profile_dirs()) == {default, snap_profile}
+    assert set(remove_browser_profile()) == {default, snap_profile}
+    assert bystander.is_dir()  # untouched
 
 
 def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):

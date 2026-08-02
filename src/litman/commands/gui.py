@@ -139,10 +139,58 @@ def display_available() -> bool:
 
 
 _BROWSER_PROFILE_DIRNAME = "browser-profile"
+# Under ~/snap/<snap>/common/ the profile sits among that snap's own data, so
+# the name has to say whose it is — and it keeps the uninstall sweep from
+# matching anything but ours.
+_SNAP_PROFILE_DIRNAME = "litman-browser-profile"
+_SNAP_BIN = Path("/snap/bin")
+_SNAP_ROOT = Path("/snap")
 
 
-def browser_profile_dir() -> Path:
+def _snap_name(browser_exe: str | os.PathLike[str]) -> str | None:
+    """The snap a browser executable belongs to, or None if it is not one.
+
+    ``/snap/bin/chromium`` is snapd's wrapper — it resolves to ``snap``
+    itself, so the name is all there is to go on. Snap commands are named
+    ``<snap>`` or ``<snap>.<app>`` and every installed snap owns a real
+    ``/snap/<snap>`` directory, which is enough to derive the name and
+    confirm it in one step rather than guess.
+    """
+    path = Path(browser_exe)
+    if path.parent != _SNAP_BIN:
+        return None
+    snap = path.name.split(".", 1)[0]
+    return snap if (_SNAP_ROOT / snap).is_dir() else None
+
+
+def _snap_user_root() -> Path:
+    """Where snapd grants each snap its writable per-user area.
+
+    Follows ``$LITMAN_REGISTRY_DIR`` when set. That override is the project's
+    one "keep every litman-owned path inside this sandbox" seam — the test
+    suite's autouse isolation leans on it — and a sweep that *deletes*
+    directories must not be the single place that reaches past it into a real
+    home. The cost is that a real machine which sets the override hands a
+    confined browser an unwritable profile again, and gets the tab fallback
+    in :func:`_stop_server_when_window_closes` instead of a window.
+    """
+    override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
+    return (Path(override).expanduser() if override else Path.home()) / "snap"
+
+
+def browser_profile_dir(browser_exe: str | os.PathLike[str] | None = None) -> Path:
     """Chromium ``--user-data-dir`` for the ``--window`` app window.
+
+    ``browser_exe`` is the browser this profile is for. It matters for
+    exactly one case: a snap-packaged browser is confined out of hidden
+    directories under ``$HOME``, and the cache dir below is one
+    (``~/.cache/...``). Handed it, Ubuntu's snap Chromium cannot create its
+    ``SingletonLock`` and *aborts* rather than run a profile it cannot lock —
+    so a machine that installed a browser ended up with no window at all,
+    where a machine with none at least got a tab. ``~/snap/<snap>/common`` is
+    the writable area snapd grants that snap, so that is where its profile
+    goes. Omitting the argument gives the default location, which is what
+    ``lit uninstall`` and the tests want.
 
     A dedicated profile gives us a browser instance of our own. Launched
     against the user's normal profile, a Chromium hands the URL to the
@@ -157,25 +205,43 @@ def browser_profile_dir() -> Path:
     suite's ``_isolate_registry`` fixture keeps it out of a developer's real
     home for free.
     """
+    snap = _snap_name(browser_exe) if browser_exe is not None else None
+    if snap is not None:
+        return _snap_user_root() / snap / "common" / _SNAP_PROFILE_DIRNAME
     override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
     if override:
         return Path(override).expanduser() / _BROWSER_PROFILE_DIRNAME
     return Path(user_cache_dir(REGISTRY_APP_NAME)) / _BROWSER_PROFILE_DIRNAME
 
 
-def remove_browser_profile() -> Path | None:
-    """Delete the app-window browser profile. Returns the path, or None.
+def browser_profile_dirs() -> list[Path]:
+    """Every app-window browser profile that exists on this machine.
 
-    Counterpart to :func:`browser_profile_dir`, used by ``lit uninstall`` so
-    the profile does not outlive the install. Returns None when there was
-    nothing to remove, or when something still holds it open (a running
-    browser on Windows) and the directory survived.
+    The default location, plus a per-snap copy for each confined browser
+    :func:`browser_profile_dir` had to route elsewhere. A machine that has
+    run both an ordinary and a snap Chromium holds two, and ``lit uninstall``
+    owes the user both — so the sweep is by directory name, not by asking
+    which browsers are installed now (by uninstall time one may not be).
     """
-    target = browser_profile_dir()
-    if not target.is_dir():
-        return None
-    _rmtree(target, ignore_errors=True)
-    return None if target.is_dir() else target
+    found = [browser_profile_dir()]
+    found += sorted(_snap_user_root().glob(f"*/common/{_SNAP_PROFILE_DIRNAME}"))
+    return [p for p in found if p.is_dir()]
+
+
+def remove_browser_profile() -> list[Path]:
+    """Delete every app-window browser profile. Returns the ones now gone.
+
+    Counterpart to :func:`browser_profile_dirs`, used by ``lit uninstall`` so
+    the profile does not outlive the install. A directory missing from the
+    result is one something still holds open (a running browser on Windows)
+    and which survived the attempt.
+    """
+    removed = []
+    for target in browser_profile_dirs():
+        _rmtree(target, ignore_errors=True)
+        if not target.is_dir():
+            removed.append(target)
+    return removed
 
 
 # Chromium treats the presence of this file in the user-data-dir as proof that
@@ -278,10 +344,19 @@ def _app_window_argv(url: str) -> list[str] | None:
     greets the user with a first-run tab, a make-me-default prompt and a
     translate bubble on top of their library. The profile's sentinel file
     quiets the rest (see :func:`_quiet_browser_profile`).
+
+    The browser is found before the flags are built, because which browser it
+    is decides where its profile can live (:func:`browser_profile_dir`).
     """
-    flags = [
+    exe = _find_chromium()
+    return None if exe is None else [exe, *_app_window_flags(url, exe)]
+
+
+def _app_window_flags(url: str, browser_exe: str) -> list[str]:
+    """The ``--app=`` flag set for ``browser_exe``. See :func:`_app_window_argv`."""
+    return [
         f"--app={url}",
-        f"--user-data-dir={browser_profile_dir()}",
+        f"--user-data-dir={browser_profile_dir(browser_exe)}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate",
@@ -291,6 +366,10 @@ def _app_window_argv(url: str) -> list[str] | None:
         # session _purge_stale_browser_session has already emptied.
         "--hide-crash-restore-bubble",
     ]
+
+
+def _find_chromium() -> str | None:
+    """Path to a Chromium-family browser, or None if this box has none."""
     # A shortcut-launched litman inherits the desktop session's PATH, which
     # omits the per-user and Homebrew bin dirs (see refresh_path) — without
     # this a browser installed there is as invisible as an agent CLI was.
@@ -302,7 +381,7 @@ def _app_window_argv(url: str) -> list[str] | None:
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
         if exe:
-            return [exe, *flags]
+            return exe
     if sys.platform == "darwin":
         # Chrome/Edge on macOS are .app bundles, not on PATH. Run the binary
         # inside the bundle rather than `open -na`: `open` asks Launch Services
@@ -311,7 +390,7 @@ def _app_window_argv(url: str) -> list[str] | None:
             for root in (Path("/Applications"), Path.home() / "Applications"):
                 binary = root / f"{app}.app" / "Contents" / "MacOS" / app
                 if binary.exists():
-                    return [str(binary), *flags]
+                    return str(binary)
     if sys.platform == "win32":
         # Edge ships with Win10+ but is not always on PATH.
         for env in ("ProgramFiles(x86)", "ProgramFiles"):
@@ -321,7 +400,7 @@ def _app_window_argv(url: str) -> list[str] | None:
                     Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
                 )
                 if exe_path.exists():
-                    return [str(exe_path), *flags]
+                    return str(exe_path)
     return None
 
 
@@ -332,6 +411,7 @@ def _stop_server_when_window_closes(
     *,
     on_launch_failed: Callable[[], bool] | None = None,
     first_connect_grace: float = 15.0,
+    launch_failure_grace: float = 1.5,
     never_connected_timeout: float = 180.0,
     linger: float = 5.0,
     poll: float = 0.25,
@@ -380,6 +460,13 @@ def _stop_server_when_window_closes(
     continues against the page alone; False (or no callback) keeps the
     original verdict.
 
+    A crash is also judged on its own, much shorter clock. The 15 seconds of
+    ``first_connect_grace`` are patience for a hand-off — an invisible window
+    that still has a page to load — and a process that aborted has no page
+    coming. Spending them anyway is 15 seconds of a desktop shortcut that
+    looks like it did nothing, which is how this bug was reported in the
+    first place.
+
     The keyword defaults are the shipped values; tests inject shorter ones.
     Each round reads the tracker through a single ``snapshot()`` call — read
     as separate properties, a connect landing between reads can show
@@ -396,6 +483,9 @@ def _stop_server_when_window_closes(
     while True:
         if exited_at is None and proc is not None and proc.poll() is not None:
             exited_at = time.monotonic()
+        # A non-zero exit is a failed launch rather than a hand-off, and gets
+        # neither the patience nor the second-chance rules of one.
+        crashed = proc is not None and proc.returncode not in (0, None)
         count, ever_connected, last_zero = presence.snapshot()
         if count == 0:
             if ever_connected:
@@ -408,7 +498,8 @@ def _stop_server_when_window_closes(
                 if last_zero is not None and time.monotonic() - last_zero >= linger:
                     break
             elif exited_at is not None and (
-                time.monotonic() - exited_at >= first_connect_grace
+                time.monotonic() - exited_at
+                >= (launch_failure_grace if crashed else first_connect_grace)
             ):
                 # No page ever connected and the window process is gone: a
                 # launch that never came up. One fallback first, and only on
@@ -421,10 +512,7 @@ def _stop_server_when_window_closes(
                 # shut the window before its page painted, and a tab opening
                 # on top of those is the surprise, not the rescue.
                 took_over = (
-                    on_launch_failed is not None
-                    and proc is not None
-                    and proc.returncode not in (0, None)
-                    and on_launch_failed()
+                    crashed and on_launch_failed is not None and on_launch_failed()
                 )
                 if not took_over:
                     break  # give up, so a failed launch leaves no orphan
@@ -1116,7 +1204,10 @@ def gui_cmd(
                     _start_watcher(None)
                 return
             try:
-                profile = browser_profile_dir()
+                # The same directory _app_window_flags put on the command
+                # line: argv[0] is the browser, and for a confined one that
+                # is what decides where its profile is allowed to live.
+                profile = browser_profile_dir(app_argv[0])
                 profile.mkdir(parents=True, exist_ok=True)
                 _quiet_browser_profile(profile)
                 _purge_stale_browser_session(profile)
