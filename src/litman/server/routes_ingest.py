@@ -57,7 +57,7 @@ from litman.commands.add import (
 )
 from litman.core.dedup import auto_suffix_id, canonicalize_doi, find_paper_by_doi
 from litman.core.doi_sniff import sniff_dois
-from litman.core.id import derive_id, is_valid_id, suggest_id
+from litman.core.id import derive_id, id_segments, is_valid_id, suggest_id
 from litman.exceptions import (
     AddError,
     DuplicateDOIError,
@@ -285,6 +285,9 @@ def get_ingest_preview(
         "proposedId": proposed_id,
         "idError": id_error,
         "idSuggestion": id_suggestion,
+        "idSegments": _segments_payload(
+            parsed.get("year"), family, parsed.get("title") or ""
+        ),
         "inVault": in_vault,
     }
 
@@ -370,6 +373,28 @@ def _ingest_confirmed(
     return {"id": result["paper_id"], "warnings": result["warnings"]}
 
 
+def _segments_payload(
+    year: Any, family: str, title: str
+) -> dict[str, Any]:
+    """``id_segments`` as JSON, for the form's three-part Paper ID field.
+
+    Sent on both ingest paths and in every state, including "still typing":
+    the field fills its boxes in as the fields above it are answered, which is
+    what tells someone which third of the id is actually theirs to write.
+    """
+    segments = id_segments(
+        year if isinstance(year, int) and not isinstance(year, bool) else None,
+        family,
+        title,
+    )
+    return {
+        "year": segments.year,
+        "family": segments.family,
+        "keyword": segments.keyword,
+        "needs": list(segments.needs),
+    }
+
+
 def _validated_paper_id(raw: Any) -> str | None:
     """Shape-check a Paper ID from the wire; ``None`` means "derive it".
 
@@ -433,19 +458,23 @@ async def post_ingest_derive_id(request: Request) -> dict[str, Any]:
     if not isinstance(year, int) or isinstance(year, bool):
         year = None
 
+    segments = _segments_payload(year, family, title)
+
     if year is None or not family or not title:
         # Not an error the user should see: they are still typing. The form
         # renders an empty id line rather than "no year" the instant it loads.
-        return {"id": None, "error": None, "suggestion": None}
+        return {"id": None, "error": None, "suggestion": None,
+                "segments": segments}
 
     try:
         return {"id": derive_id(year, family, title), "error": None,
-                "suggestion": None}
+                "suggestion": None, "segments": segments}
     except IDError as exc:
         return {
             "id": None,
             "error": str(exc).split("\n")[0],
             "suggestion": suggest_id(year, family, title),
+            "segments": segments,
         }
 
 

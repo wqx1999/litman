@@ -19,12 +19,14 @@ conveniences.
   record for it — a patent, or a journal that registers its DOIs elsewhere —
   fill in the title, year and authors yourself and it goes in the same way;
   a DOI you typed is kept even though CrossRef could not resolve it. The paper
-  id is shown before anything is written and can be typed yourself — which is
-  what lets in a paper whose title is written in a script the id cannot
-  carry. The drop is a copy, and the dialog says so: your original file stays
-  where it is, unlike `lit add`, which moves the PDF it imports. This is
-  otherwise the same import the CLI runs, so a dragged-in paper is
-  indistinguishable from one added there.
+  id is shown before anything is written, and when litman cannot name it on
+  its own the field opens into the three parts an id is made of — year, first
+  author, keyword — with the parts it worked out already filled in and only
+  the missing one waiting for you. A Chinese-titled paper therefore costs you
+  one box, not the whole id. The drop is a copy, and the dialog says so: your
+  original file stays where it is, unlike `lit add`, which moves the PDF it
+  imports. This is otherwise the same import the CLI runs, so a dragged-in
+  paper is indistinguishable from one added there.
 - **litman now tells you what changed after an update.** The first time the
   app opens on a new version, a short "What's new" card lists the handful of
   changes you will actually notice, with a link to this changelog for the

@@ -428,6 +428,22 @@ export interface IngestUploadResult {
   candidates: string[]
 }
 
+/** The name of one of the three parts an id is made of. */
+export type IdSegmentName = 'year' | 'family' | 'keyword'
+
+/** An id taken apart, from the server — the frontend never splits on `_`.
+ *
+ * A segment not listed in `needs` is what the server itself would have used,
+ * so the form shows it as settled and keeps it in step with the fields above.
+ * A segment in `needs` is the user's to write; its value, when non-null, is a
+ * starting point rather than a verdict. */
+export interface IdSegments {
+  year: string | null
+  family: string | null
+  keyword: string | null
+  needs: IdSegmentName[]
+}
+
 export interface IngestPreview {
   doi: string
   title: string
@@ -441,6 +457,7 @@ export interface IngestPreview {
    * null. Null means the server had nothing worth offering — an empty field
    * is a better prompt than a bad default. */
   idSuggestion: string | null
+  idSegments: IdSegments
   /** Non-null = this DOI is already in the vault; Add must stay disabled. */
   inVault: { id: string; title: string } | null
 }
@@ -457,6 +474,7 @@ export interface DeriveIdResult {
   /** Why not — already reduced to one line, safe to show inline. */
   error: string | null
   suggestion: string | null
+  segments: IdSegments
 }
 
 export function deriveIngestId(input: {

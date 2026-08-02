@@ -10,6 +10,7 @@ from litman.core.id import (
     derive_keyword,
     derive_keyword_alternatives,
     find_case_fold_collision,
+    id_segments,
     is_valid_id,
     is_weak_keyword,
     suggest_id,
@@ -318,6 +319,53 @@ def test_the_error_message_carries_a_command_the_reader_can_run() -> None:
 )
 def test_is_weak_keyword(keyword: str, weak: bool) -> None:
     assert is_weak_keyword(keyword) is weak
+
+
+# ---------------------------------------------------------------------------
+# id_segments — the same question per segment, for the GUI's Paper ID field
+# ---------------------------------------------------------------------------
+
+
+def test_id_segments_asks_for_nothing_when_the_id_derives_whole() -> None:
+    seg = id_segments(2021, "Zhang", "Continuous macrocyclisation of peptides")
+    assert seg.needs == ()
+    assert f"{seg.year}_{seg.family}_{seg.keyword}" == derive_id(
+        2021, "Zhang", "Continuous macrocyclisation of peptides"
+    )
+
+
+def test_id_segments_charges_a_chinese_title_only_the_keyword() -> None:
+    """The failures are independent — year and family survive intact."""
+    seg = id_segments(2018, "Zhang", "关于化合物A的合成方法")
+    assert (seg.year, seg.family) == ("2018", "Zhang")
+    assert seg.needs == ("keyword",)
+
+
+def test_id_segments_refuses_to_offer_the_keyword_the_gate_rejected() -> None:
+    """`A` in the keyword box is `2018_Zhang_A` one Enter later."""
+    assert id_segments(2018, "Zhang", "关于化合物A的合成方法").keyword is None
+
+
+def test_id_segments_offers_a_latin_fragment_but_still_wants_it_seen() -> None:
+    seg = id_segments(2018, "Zhang", "一种新型 PROTAC 分子的设计与合成")
+    assert seg.keyword == "PROTAC"
+    # Offered, not settled: derive_id refused this title, so the id is written
+    # only because a person looked at the fragment and let it stand.
+    assert seg.needs == ("keyword",)
+
+
+def test_id_segments_hands_back_a_family_name_that_slugs_to_nothing() -> None:
+    seg = id_segments(2024, "小王", "气泡呼吸")
+    assert seg.year == "2024"
+    assert (seg.family, seg.keyword) == (None, None)
+    assert seg.needs == ("family", "keyword")
+
+
+def test_id_segments_reports_a_missing_year_rather_than_raising() -> None:
+    """`derive_id` raises here; a form has three boxes to fill in instead."""
+    seg = id_segments(None, "Zhang", "Continuous macrocyclisation of peptides")
+    assert seg.year is None
+    assert seg.needs == ("year",)
 
 
 # ---------------------------------------------------------------------------

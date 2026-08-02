@@ -535,10 +535,17 @@ def test_derive_id_returns_what_the_write_would_produce(client: TestClient) -> N
         year=2021,
     )
     assert resp.status_code == 200
-    assert resp.json() == {
-        "id": "2021_Zhang_Method-continuous-macrocyclisation",
-        "error": None,
-        "suggestion": None,
+    body = resp.json()
+    assert body["id"] == "2021_Zhang_Method-continuous-macrocyclisation"
+    assert body["error"] is None
+    assert body["suggestion"] is None
+    # Nothing left for the person to write: the form shows the quiet one-line
+    # id, not the three boxes.
+    assert body["segments"] == {
+        "year": "2021",
+        "family": "Zhang",
+        "keyword": "Method-continuous-macrocyclisation",
+        "needs": [],
     }
 
 
@@ -583,12 +590,101 @@ def test_derive_id_stays_quiet_while_the_form_is_still_being_filled(
         {},
     ):
         body = _derive(client, **fields).json()
-        assert body == {"id": None, "error": None, "suggestion": None}, fields
+        assert {k: body[k] for k in ("id", "error", "suggestion")} == {
+            "id": None,
+            "error": None,
+            "suggestion": None,
+        }, fields
 
 
 def test_derive_id_survives_junk_field_types(client: TestClient) -> None:
     body = _derive(client, title=7, authors="Zhang, Wei", year="2018").json()
-    assert body == {"id": None, "error": None, "suggestion": None}
+    assert {k: body[k] for k in ("id", "error", "suggestion")} == {
+        "id": None,
+        "error": None,
+        "suggestion": None,
+    }
+    # Junk in, no boxes pre-filled — and no crash reaching for `.strip()` on
+    # an int on the way there.
+    assert body["segments"] == {
+        "year": None,
+        "family": None,
+        "keyword": None,
+        "needs": ["year", "family", "keyword"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The three-part Paper ID field: which third of the id is actually the user's
+# ---------------------------------------------------------------------------
+
+
+def test_derive_id_leaves_only_the_keyword_to_the_user(client: TestClient) -> None:
+    """A Chinese title costs the keyword and nothing else.
+
+    The year and the family name are sitting right there and are correct, so
+    the form fills them in and asks for one box, not three. Handing back a
+    single empty field here is what made a first-time reader think the whole
+    id was theirs to invent.
+    """
+    body = _derive(client, title=_CN_TITLE, authors=["Zhang, Wei"], year=2018).json()
+    assert body["id"] is None
+    assert body["segments"] == {
+        "year": "2018",
+        "family": "Zhang",
+        "keyword": None,
+        "needs": ["keyword"],
+    }
+
+
+def test_derive_id_asks_for_two_parts_when_the_author_is_chinese_too(
+    client: TestClient,
+) -> None:
+    """`小王` slugs to nothing, so the family name is the user's as well."""
+    body = _derive(client, title="气泡呼吸", authors=["小王"], year=2024).json()
+    assert body["segments"] == {
+        "year": "2024",
+        "family": None,
+        "keyword": None,
+        "needs": ["family", "keyword"],
+    }
+
+
+def test_derive_id_prefills_a_keyword_it_still_wants_looked_at(
+    client: TestClient,
+) -> None:
+    """The Latin fragment arrives in the box — but as a starting point.
+
+    It is in `needs`, so the box stays editable and the id is written only
+    because someone saw `PROTAC` and let it stand. That is the ASCII gate's
+    judgement, not a formality: the same machinery would otherwise offer
+    `2018_Zhang_A` for a title whose only Latin character is a compound label.
+    """
+    body = _derive(
+        client, title="一种新型 PROTAC 分子的设计与合成", authors=["Zhang, Wei"], year=2018
+    ).json()
+    assert body["segments"]["keyword"] == "PROTAC"
+    assert body["segments"]["needs"] == ["keyword"]
+
+
+def test_derive_id_never_prefills_a_keyword_that_names_nothing(
+    client: TestClient,
+) -> None:
+    """`2018_Zhang_A` is the id the gate exists to prevent — not a default."""
+    body = _derive(client, title=_CN_TITLE, authors=["Zhang, Wei"], year=2018).json()
+    assert body["segments"]["keyword"] is None
+
+
+def test_preview_splits_the_id_for_a_record_crossref_cannot_name(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The DOI path gets the same boxes — a CNKI-registered DOI lands here."""
+    cn = {**SAMPLE_MESSAGE, "title": [_CN_TITLE]}
+    monkeypatch.setattr(ri, "fetch_crossref", lambda doi, client=None: cn)
+    payload = client.get("/api/ingest/preview", params={"doi": _DOI}).json()
+    assert payload["proposedId"] is None
+    assert payload["idSegments"]["needs"] == ["keyword"]
+    assert payload["idSegments"]["year"] and payload["idSegments"]["family"]
 
 
 def test_derive_id_rejects_a_non_object_body(client: TestClient) -> None:

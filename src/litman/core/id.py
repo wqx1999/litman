@@ -41,6 +41,8 @@ Module API:
 - ``suggest_id(year, family, title)``: a candidate id for a title
   ``derive_id`` refuses — what the CLI error and the GUI's Paper ID field
   offer as a starting point.
+- ``id_segments(year, family, title)``: the same question asked per segment,
+  for the GUI's three-part Paper ID field.
 - ``is_weak_keyword(keyword)``: shared with the health check's rule for
   keyword segments already sitting in a vault.
 - ``is_valid_id(id)``: filesystem-safety check used by ``lit add --id``
@@ -52,6 +54,7 @@ All keyword helpers raise ``IDError`` on inputs that cannot yield a valid id.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from litman.exceptions import IDError
 
@@ -323,6 +326,70 @@ def suggest_id(
         return None
 
     return f"{year}_{family}_{keyword}"
+
+
+@dataclass(frozen=True)
+class IdSegments:
+    """An id taken apart into the three things it is made of.
+
+    ``needs`` names the segments a person has to supply — either because
+    nothing could be derived (``None`` value) or because what was derived is a
+    suggestion rather than a verdict (a keyword pulled out from behind the
+    ASCII gate). Everything not in ``needs`` is what :func:`derive_id` itself
+    would have used, so a caller can show it as settled.
+    """
+
+    year: str | None
+    family: str | None
+    keyword: str | None
+    needs: tuple[str, ...]
+
+
+def id_segments(
+    year: int | None, first_author_family: str, title: str
+) -> IdSegments:
+    """Which parts of an id these fields can name, and which need a person.
+
+    :func:`derive_id` answers "yes or no" for the id as a whole, which is the
+    right answer for the CLI — it has one line to spend and a ``--id`` flag to
+    point at. A form can do better, because the three segments fail
+    *independently*: a Chinese title costs you the keyword while the year and
+    the family name are sitting right there, already correct. Collapsing that
+    into one empty box is what makes a first-time reader think the whole id is
+    theirs to invent, so this reports the three separately.
+
+    The keyword follows :func:`suggest_id`'s rule for the second-best case:
+    what the ASCII gate refused as a *derivation* is still worth offering as a
+    starting point (``CRISPR-Cas9 基因编辑技术``), but it lands in ``needs`` —
+    the gate's judgement is that no one should get that id without looking at
+    it. A weak keyword is offered to no one; ``2018_Zhang_A`` is precisely the
+    id the gate exists to prevent.
+    """
+    year_seg = (
+        str(year) if isinstance(year, int) and not isinstance(year, bool) else None
+    )
+    family_seg = family_segment(first_author_family)
+
+    keyword_seg: str | None = None
+    keyword_settled = False
+    guarded = derive_keyword(title)
+    if guarded != "untitled" and not is_weak_keyword(guarded):
+        keyword_seg, keyword_settled = guarded, True
+    else:
+        loose = _derive_keyword_unguarded(title)
+        if loose != "untitled" and not is_weak_keyword(loose):
+            keyword_seg = loose
+
+    needs = tuple(
+        name
+        for name, settled in (
+            ("year", year_seg is not None),
+            ("family", family_seg is not None),
+            ("keyword", keyword_settled),
+        )
+        if not settled
+    )
+    return IdSegments(year_seg, family_seg, keyword_seg, needs)
 
 
 def family_segment(first_author_family: str) -> str | None:
