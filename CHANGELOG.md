@@ -128,6 +128,18 @@ conveniences.
   year in — which then passed every later check and surfaced only as a wrong
   date in an exported citation. It now says outright that the year must not be
   guessed, and where to find the real one.
+- **The two places you can type a year now ask for the same thing.** The add
+  dialog took three or four digits; the metadata editor checked nothing at all
+  and left it to the backend, which only requires a whole number. A library
+  could therefore end up holding both `145` and `12311`, each arrived at
+  through a different door. Both now want four digits, and both print that
+  rule beside the field before you type rather than only greying out the
+  button afterwards — a control that goes grey without saying why sends you
+  looking for the mistake in the wrong place. Four digits rather than a
+  plausible range: a range has to decide where the future ends, and preprints
+  routinely carry next year's date. The editor judges only a year you actually
+  changed, so a paper that already holds a wrong one can still have its title
+  corrected, and `lit modify` still writes whatever you tell it to.
 - **Starting litman from its icon now finds the AI agents you have installed.**
   On Linux and macOS an app started from a desktop shortcut or the Dock is
   handed a shorter search path than a terminal window gets, and every agent
@@ -142,6 +154,26 @@ conveniences.
   package was only matched by chance. Installing Edge — or Chrome, or
   Chromium — now reliably gets you a standalone window instead of a browser
   tab. A browser installed under your home directory is found too.
+- **A snap-packaged Chromium now opens litman's own window.** On Ubuntu,
+  installing Chromium gets you a snap, and a snap is not allowed to reach
+  hidden directories under your home — including the one litman kept its
+  browser profile in. Chromium will not run a profile it cannot lock, so it
+  quit the moment it started: the desktop shortcut showed nothing at all, and
+  installing a browser left you worse off than having none. A snap-packaged
+  browser now keeps its profile in the area snapd grants it, and the shortcut
+  opens a standalone window as it does everywhere else. Every other browser —
+  Windows, macOS, and a Chromium installed from a `.deb` — keeps the location
+  it has always used, and `lit uninstall` clears both.
+- **A browser that quits on startup no longer takes litman with it.** The
+  window launcher read "the browser is gone and no page ever connected" as
+  proof that the launch had failed, and shut the server down — correct when
+  the browser never came up, but it also caught a browser that started and
+  then gave up, leaving nothing on screen at all. litman now opens the page in
+  your usual browser instead, so a window that cannot be had degrades to a tab
+  rather than to nothing. A browser that exits cleanly is left alone: it has
+  handed the page to a window you already had open, and a tab appearing on top
+  of that would be a surprise rather than a rescue. A launch that failed also
+  no longer waits out the patience meant for a slow one.
 
 ## 1.3.2 — 2026-07-29
 
