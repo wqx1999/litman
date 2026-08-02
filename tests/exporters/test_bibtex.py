@@ -29,6 +29,7 @@ from litman.exporters.bibtex import (
         ("book-chapter", "incollection"),
         ("dissertation", "phdthesis"),
         ("report", "techreport"),
+        ("patent", "patent"),
     ],
 )
 def test_entry_type_known_mapping(venue_type: str, expected: str) -> None:
@@ -347,3 +348,51 @@ def test_has_sentinel_ignores_leading_blank_lines() -> None:
 
 def test_has_sentinel_empty_file_is_false() -> None:
     assert has_sentinel("") is False
+
+
+# ---------------------------------------------------------------------------
+# Patents (task-metadata-quality D)
+#
+# Patents carry no DOI, so they never arrive from a CrossRef fetch and
+# `venue-type: patent` is always hand-set. Before the mapping existed they
+# exported as @misc, which renders neither the patent number nor the office.
+# ---------------------------------------------------------------------------
+
+
+def test_patent_exports_as_patent_entry() -> None:
+    entry = emit_entry({
+        "id": "2018_BayerAG_Herbicide",
+        "title": "Herbicidal composition",
+        "authors": ["Bayer AG"],
+        "year": 2018,
+        "venue-type": "patent",
+        "patent-number": "WO2018115466A1",
+    })
+    assert entry.startswith("@patent{2018_BayerAG_Herbicide,")
+    assert "number = {WO2018115466A1}" in entry
+
+
+def test_patent_number_absent_renders_no_number_field() -> None:
+    entry = emit_entry({
+        "id": "2018_BayerAG_Herbicide",
+        "title": "Herbicidal composition",
+        "authors": ["Bayer AG"],
+        "venue-type": "patent",
+    })
+    assert "@patent{" in entry
+    assert "number" not in entry
+
+
+def test_journal_issue_still_wins_the_number_field() -> None:
+    """`issue` and `patent-number` share bibtex's `number`; an article's issue
+    must not be displaceable by a stray patent-number field."""
+    entry = emit_entry({
+        "id": "2024_Chen_Peptide",
+        "title": "A paper",
+        "authors": ["Chen, Yi"],
+        "venue-type": "journal-article",
+        "issue": "7",
+        "patent-number": "WO2018115466A1",
+    })
+    assert "number = {7}" in entry
+    assert "WO2018115466A1" not in entry

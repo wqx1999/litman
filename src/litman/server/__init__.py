@@ -25,10 +25,13 @@ from fastapi.staticfiles import StaticFiles
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
 from litman.server.routes_agent import router as agent_router
+from litman.server.routes_ingest import router as ingest_router
+from litman.server.routes_ingest import sweep_uploads
 from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
 from litman.server.routes_structured import router as structured_router
 from litman.server.routes_trash import router as trash_router
+from litman.server.routes_ui_state import router as ui_state_router
 from litman.server.routes_update import router as update_router
 from litman.server.routes_write import router as write_router
 
@@ -74,6 +77,13 @@ _VAULTLESS_ALLOWED = frozenset(
         ("POST", "/api/vaults/create"),
         ("PUT", "/api/vaults/active"),
         ("GET", "/api/version"),
+        # Same nature as /api/version: a pure read of the installed package
+        # (the what's-new digest), meaningful with or without a vault. Its
+        # write half records a machine-level marker in ui-state.json and
+        # touches no vault either — the welcome page pops the card too, and a
+        # card that cannot be dismissed there would return every launch.
+        ("GET", "/api/whatsnew"),
+        ("PUT", "/api/whatsnew/seen"),
         # The directory picker (task-path-browser): the welcome page has no
         # vault yet and browses the host's folders to create the first one —
         # ``fs/mkdir`` lets that flow make a fresh parent folder without leaving
@@ -147,6 +157,20 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 flag.read_text(encoding="utf-8").strip() or "self-update failed"
             )
             flag.unlink()
+    except Exception:
+        pass
+
+    # Drag-in ingest leaves a stashed PDF under `.litman-upload/` between the
+    # drop and the confirm. Cancelling the dialog deletes its own stash, but a
+    # closed tab or a crash cannot — and at startup no page is loaded yet, so
+    # anything still sitting there is orphaned by definition. Clear it on the
+    # way up (short grace for a second `lit gui` mid-drag on the same vault)
+    # rather than leaving a 100 MB file for the user to find.
+    try:
+        from litman.server.routes_ingest import _STARTUP_TTL_SECONDS
+
+        if app.state.vault is not None:
+            sweep_uploads(app.state.vault, _STARTUP_TTL_SECONDS)
     except Exception:
         pass
 
@@ -251,6 +275,8 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(agent_router)
     app.include_router(presence_router)
     app.include_router(update_router)
+    app.include_router(ui_state_router)
+    app.include_router(ingest_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.

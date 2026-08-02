@@ -41,10 +41,14 @@ from litman.exceptions import SyncError
 RCLONE_BIN = "rclone"
 SYNC_STATE_FILENAME = ".litman-sync-state.yaml"
 
-# Filters applied to every push / pull regardless of user config. All three
+# Filters applied to every push / pull regardless of user config. All four
 # are unconditionally machine-local or derived:
 #   - ``.litman-staging/`` holds in-flight atomic writes (must never leak
 #     across machines);
+#   - ``.litman-upload/`` holds a dropped PDF between the webUI drag-in and
+#     its confirm (server/routes_ingest.py) — scratch by the same argument,
+#     and the one abandoned stash a user might leave behind is the last thing
+#     that should eat their cloud quota;
 #   - ``views/`` is a pure derived projection of metadata, rebuilt on any
 #     machine with ``lit refresh-views`` — ADR-003 mandates it in the hard
 #     exclude set (review F33). It also holds the vault's only symlinks, so
@@ -59,6 +63,7 @@ SYNC_STATE_FILENAME = ".litman-sync-state.yaml"
 # filename matches at any depth (rclone's default behavior for ``--exclude``).
 DEFAULT_EXCLUDES: tuple[str, ...] = (
     ".litman-staging/**",
+    ".litman-upload/**",
     "views/**",
     SYNC_STATE_FILENAME,
 )

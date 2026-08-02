@@ -72,7 +72,7 @@ from litman.core.config import load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
-from litman.core.document import list_papers, load_yaml_or_raise
+from litman.core.document import load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
@@ -86,10 +86,18 @@ from litman.core.project_link import (
     CODE_SUBDIR,
     _papers_using_repo_in_project,
 )
-from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
+from litman.core.project_refs import (
+    LITERATURE_SUBDIR,
+    load_project_member_metas,
+    write_references_md,
+)
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
-from litman.core.views import render_index
+from litman.core.views import (
+    papers_for_index,
+    render_index,
+    view_fields_snapshot,
+)
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import PaperNotFoundError, RmError
 
@@ -287,10 +295,12 @@ def _teardown_project_links(
             if not still_used:
                 remove_link_if_present(link_path)
 
-        # REFERENCES.md reads list_papers(vault); A is already in trash by
-        # the time this runs, so it drops out naturally.
+        # REFERENCES.md re-renders from the member-scoped list the caller
+        # loaded; A is already in trash, so it drops out naturally.
         try:
-            write_references_md(vault, project, project_dir)
+            write_references_md(
+                vault, project, project_dir, papers=surviving_papers
+            )
         except FileNotFoundError:
             continue
 
@@ -329,6 +339,13 @@ class RmPlan:
     note_updates: dict[str, str]
     new_index: str
     n_relations: int
+    # The post-delete paper list new_index was rendered from — reused by
+    # execute_rm's reconcile so the derived rebuild does not re-scan the
+    # vault (task-write-perf). May mix INDEX projections with full metadata.
+    surviving: list[dict[str, Any]]
+    # view_fields_snapshot(target_meta), taken at discover time: the
+    # old-state half of the views delta (new state = {} = gone).
+    victim_view_fields: dict[str, Any]
 
     @property
     def repos_unbound(self) -> list[str]:
@@ -399,7 +416,11 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
     registry = load_config(vault).projects
 
     # ----- Build cascade updates (always; teardown is the default now) -----
-    safe_papers = list_papers(vault)
+    # Verified INDEX projections when fresh, one scan otherwise — the same
+    # splice pattern _apply_modify uses (task-write-perf). The cascade's
+    # parity mutations are projection-safe: relation fields are not
+    # projected (their .get yields [] and is skipped) and updated-at is.
+    safe_papers = papers_for_index(vault)
     cascade_ref_updates, touched_ref_ids = _build_cascade_ref_updates(
         vault, target_meta, paper_id, now, safe_papers
     )
@@ -427,6 +448,11 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
             # `lit rm`. A missed `(deleted)` annotation is left to health-check
             # — not a silent-skip violation (same reviewed trade-off).
             continue
+        if paper_id not in text:
+            # A wikilink to A necessarily contains A's id verbatim, so the
+            # substring probe is exact — it only skips the regex + compare on
+            # the (vast) majority of notes that cannot possibly change.
+            continue
         annotated = annotate_deleted_wikilinks(text, paper_id)
         if annotated != text:
             note_updates[str(md_path.relative_to(vault))] = annotated
@@ -448,6 +474,8 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
         note_updates=note_updates,
         new_index=new_index,
         n_relations=n_relations,
+        surviving=surviving,
+        victim_view_fields=view_fields_snapshot(target_meta),
     )
 
 
@@ -521,12 +549,34 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
 
     # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
     if plan.projects:
+        # Full metadata is needed only for the victim's projects' members
+        # (REFERENCES renders relevance-*, the repo check reads code-clones —
+        # neither is projected); both consumers filter membership internally,
+        # so the member-scoped list is content-identical to the historical
+        # full scan (task-write-perf). The victim is already in trash and the
+        # staged INDEX already excludes it.
         _teardown_project_links(
-            vault, plan.target_meta, paper_id, plan.registry, list_papers(vault)
+            vault,
+            plan.target_meta,
+            paper_id,
+            plan.registry,
+            load_project_member_metas(
+                vault, plan.projects, exclude_ids={paper_id}
+            ),
         )
 
     # ----- Phase 3c: post-commit derived rebuild via the shared funnel -----
-    reconcile_derived(vault, papers=list_papers(vault), project_refs=False)
+    # Reuse the discover-time surviving list (the INDEX.json staged above was
+    # rendered from exactly this list, so the funnel re-derives the identical
+    # INDEX) and drop just the victim's own view links — the single-paper
+    # delta path _apply_modify established; a full rebuild remains the
+    # repair path (`lit health-check --fix`).
+    reconcile_derived(
+        vault,
+        papers=plan.surviving,
+        project_refs=False,
+        views_delta=[(paper_id, plan.victim_view_fields, {})],
+    )
 
     # ----- Ring eviction (trash only): keep at most TRASH_MAX_ENTRIES -----
     evicted: list[str] = []

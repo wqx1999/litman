@@ -50,7 +50,6 @@ from ruamel.yaml import YAMLError
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import now_iso
-from litman.core.document import list_papers
 from litman.core.locking import rmtree
 from litman.core.notes import (
     deannotate_deleted_wikilinks,
@@ -64,7 +63,11 @@ from litman.core.portable_link import (
 from litman.core.project_link import CODE_SUBDIR
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
-from litman.core.views import render_index
+from litman.core.views import (
+    papers_for_index,
+    render_index,
+    view_fields_snapshot,
+)
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TrashError
 
@@ -150,6 +153,14 @@ class RestoreResult:
     repos_rebound: set[str] = field(default_factory=set)
     # projects whose symlink + REFERENCES were re-created.
     projects_rebuilt: set[str] = field(default_factory=set)
+    # The post-restore paper list INDEX.json was rendered from — the caller
+    # hands it to reconcile_derived so the derived rebuild does not re-scan
+    # the vault (task-write-perf). May mix INDEX projections with the
+    # restored paper's full metadata.
+    surviving_papers: list[dict[str, Any]] = field(default_factory=list)
+    # view_fields_snapshot(sealed_meta): the new-state half of the views
+    # delta for the reappearing paper (old state = {} = was gone).
+    restored_view_fields: dict[str, Any] = field(default_factory=dict)
 
 
 def _utc_compact_now() -> str:
@@ -613,8 +624,26 @@ def restore_from_trash(
 
     # INDEX.json reflects the post-restore (pruned) paper list, rendered in
     # memory so it does not depend on the just-moved files being re-read.
-    surviving = [p for p in list_papers(vault) if p.get("id") != paper_id]
-    surviving.append(dict(sealed_meta))
+    # Verified INDEX projections when fresh, one scan otherwise
+    # (task-write-perf); pending_ids covers the just-moved folder, which is
+    # on disk but intentionally absent from the on-disk INDEX until the
+    # staged write below commits.
+    surviving = papers_for_index(
+        vault,
+        drop_ids={paper_id},
+        add_metas=(sealed_meta,),
+        pending_ids={paper_id},
+    )
+    # Parity with the staged writes: every opposite whose paired field gets A
+    # written back takes an `updated-at = now` bump in ref_writes — mirror it
+    # on the in-memory list so the INDEX rendered from `surviving` matches
+    # the committed TRUTH exactly (relation fields themselves are not
+    # projected; historically the caller's post-commit full re-scan papered
+    # over this, which the reuse of `surviving` removes).
+    if ref_writes:
+        for survivor in surviving:
+            if str(survivor.get("id")) in ref_writes:
+                survivor["updated-at"] = now
     new_index = render_index(surviving, now)
 
     try:
@@ -639,6 +668,11 @@ def restore_from_trash(
                 try:
                     text = md_path.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
+                    continue
+                if paper_id not in text:
+                    # The `[[A]] (deleted)` annotation necessarily contains
+                    # A's id verbatim — the substring probe only skips the
+                    # regex on notes that cannot possibly change.
                     continue
                 cleaned = deannotate_deleted_wikilinks(text, paper_id)
                 if cleaned != text:
@@ -679,6 +713,8 @@ def restore_from_trash(
         dead_edges_dropped=dead_edges,
         repos_rebound=repos_rebound,
         projects_rebuilt=projects_rebuilt,
+        surviving_papers=surviving,
+        restored_view_fields=view_fields_snapshot(sealed_meta),
     )
 
 

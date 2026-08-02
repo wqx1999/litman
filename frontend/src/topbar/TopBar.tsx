@@ -30,6 +30,10 @@ import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
 import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
+import {
+  modalBackdropProps,
+  useModalCardFocus,
+} from '../ui/modalShell'
 
 interface Props {
   vaults: VaultsPayload | null
@@ -99,6 +103,9 @@ interface Props {
    * the otherwise hidden `?` convention — without it the shortcuts are
    * undiscoverable (you can't learn `?` opens them if nothing points at it). */
   onShowShortcuts: () => void
+  /** Reopen the "What's new" card (post-update highlights) on demand — the
+   * litman mark doubles as its entry point, macOS about-box style. */
+  onShowWhatsNew?: () => void
   /** Session activity log (newest last) that the log panel renders newest-first.
    * App owns the buffer so every `notify` auto-records (observability slice). */
   activityLog: ActivityLogEntry[]
@@ -167,6 +174,7 @@ export default function TopBar({
   onProjectsOpenChange,
   onVaultManagerOpenChange,
   onShowShortcuts,
+  onShowWhatsNew,
   activityLog,
   logUnread,
   onLogOpened,
@@ -549,9 +557,17 @@ export default function TopBar({
             : 'relative z-30')
         }
       >
-      <div className="relative shrink-0" title="litman">
+      {/* The litman mark doubles as the "What's new" entry point — the same
+          card that pops once after an update, reopenable at will. */}
+      <button
+        type="button"
+        className="relative shrink-0 rounded-md transition duration-200 ease-fluid hover:opacity-70"
+        title="litman — what's new in this version"
+        aria-label="What's new in this version"
+        onClick={onShowWhatsNew}
+      >
         <LitmanMark className="h-6 w-6 select-none text-stone-800" />
-      </div>
+      </button>
 
       {/* Update chip: a labelled pill, not a bare dot — a 10px dot next to the
           logo reads as part of the artwork; text can't be mistaken for it. */}
@@ -873,6 +889,9 @@ function ProjectManager({
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening (see useModalCardFocus).
+  const cardFocus = useModalCardFocus()
   // The project awaiting delete confirmation, being renamed, or having its path
   // re-pointed; the new-project dialog toggle; and whether a write is in flight
   // (all gate the list controls).
@@ -947,9 +966,10 @@ function ProjectManager({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={blocked ? undefined : onClose}
+      {...modalBackdropProps}
     >
       <div
+        {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (
@@ -961,7 +981,7 @@ function ProjectManager({
           )
             onClose()
         }}
-        className="flex max-h-[70vh] w-[28rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="flex max-h-[70vh] w-[28rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Projects</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
@@ -1113,7 +1133,7 @@ function ProjectManager({
 /** Default-No confirm for unregistering a project (P4). The body states the
  * cascade (unlinks N papers, drops reflib links) and that the on-disk directory
  * is kept; Cancel is autofocused, the destructive button is rose, and the
- * backdrop stops click-through so dismissing it keeps the manager open. */
+ * backdrop swallows clicks so a stray one never reaches the manager under it. */
 function DeleteProjectConfirm({
   name,
   count,
@@ -1130,14 +1150,7 @@ function DeleteProjectConfirm({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1183,7 +1196,7 @@ function DeleteProjectConfirm({
  * shell; the input autofocuses + selects. A blank/unchanged name, or one that
  * collides with another registered project, disables Save. The path is carried
  * over unchanged — the backend renames across both truth sources + every paper.
- * Escape cancels and the backdrop stops click-through so dismissing it keeps the
+ * Escape cancels; the backdrop swallows clicks so a stray one never reaches the
  * ProjectManager open. */
 function RenameProjectDialog({
   project,
@@ -1214,14 +1227,7 @@ function RenameProjectDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1283,7 +1289,7 @@ function RenameProjectDialog({
  * the new path must be absolute + already exist + be a directory server-side, so
  * a bad path surfaces the backend's TaxonomyError verbatim and the dialog stays
  * open for correction. Copy makes clear this does NOT move the folder. Escape
- * cancels; the backdrop stops click-through so dismissing keeps the manager open. */
+ * cancels; the backdrop swallows clicks so none reach the manager under it. */
 function SetProjectPathDialog({
   project,
   busy,
@@ -1302,14 +1308,7 @@ function SetProjectPathDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1370,7 +1369,7 @@ function SetProjectPathDialog({
  * shell; the path must be absolute + already exist + be a directory server-side
  * (A7; a relative path is rejected, not resolved against the server cwd), so a
  * bad path surfaces the backend's TaxonomyError verbatim via `notify` and the
- * dialog stays open for correction. Escape cancels. The backdrop stops
+ * dialog stays open for correction. Escape cancels. The backdrop swallows
  * click-through so, when opened from the ProjectManager, dismissing it does not
  * also close the manager. */
 function NewProjectDialog({
@@ -1409,14 +1408,7 @@ function NewProjectDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onClose()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1508,6 +1500,9 @@ function VaultManager({
   onRelocateVault: (name: string, path: string) => Promise<void>
   onClose: () => void
 }) {
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening (see useModalCardFocus).
+  const cardFocus = useModalCardFocus()
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
   // The missing vault whose new home the user is locating (Locate → path input).
   const [pendingLocate, setPendingLocate] = useState<VaultEntry | null>(null)
@@ -1537,9 +1532,10 @@ function VaultManager({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={blocked ? undefined : onClose}
+      {...modalBackdropProps}
     >
       <div
+        {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (
@@ -1551,7 +1547,7 @@ function VaultManager({
           )
             onClose()
         }}
-        className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
@@ -1708,7 +1704,7 @@ function VaultManager({
 /** Default-No confirm for unregistering a vault (vault-manager slice). The body
  * states that ONLY the registry entry is removed and the on-disk directory is
  * kept; Cancel is autofocused, the destructive button is rose, and the backdrop
- * stops click-through so dismissing it keeps the manager open. Mirrors
+ * swallows clicks so none reach the manager under it. Mirrors
  * DeleteProjectConfirm. */
 function UnregisterVaultConfirm({
   name,
@@ -1724,14 +1720,7 @@ function UnregisterVaultConfirm({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1816,14 +1805,7 @@ function LocateVaultDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onCancel()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -1894,7 +1876,7 @@ function LocateVaultDialog({
  * resolve server-side to an existing directory containing a lit-config.yaml. On
  * success `onRegistered(setActive)` closes the form; when setActive the parent
  * also closes so App's reused SwitchVaultDialog stands alone. Escape cancels;
- * the backdrop stops click-through so dismissing it keeps the manager open. */
+ * the backdrop swallows clicks so none reach the manager under it. */
 function RegisterVaultDialog({
   onRegisterVault,
   onClose,
@@ -1934,19 +1916,12 @@ function RegisterVaultDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onClose()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          // Guarded like the backdrop and Cancel: this dialog is the error's
+          // Guarded like Cancel: this dialog is the error's
           // only surface, so closing it mid-request would lose a late failure
           // (setError on an unmounted component is a no-op).
           if (e.key === 'Escape' && !busy) onClose()
@@ -2112,14 +2087,7 @@ function CreateVaultDialog({
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={
-        busy
-          ? undefined
-          : (e) => {
-              e.stopPropagation()
-              onClose()
-            }
-      }
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -2253,6 +2221,9 @@ function HealthPanel({
   onRerun: () => void
   onClose: () => void
 }) {
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening (see useModalCardFocus).
+  const cardFocus = useModalCardFocus()
   // Stable, category-first grouping: walk the (registry-ordered) list once so the
   // first-seen category order is preserved, then sort each bucket by severity.
   const groups: Array<[string, HealthIssue[]]> = []
@@ -2275,14 +2246,15 @@ function HealthPanel({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={onClose}
+      {...modalBackdropProps}
     >
       <div
+        {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose()
         }}
-        className="flex max-h-[70vh] w-[34rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="flex max-h-[70vh] w-[34rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-stone-900">Health check</h2>
@@ -2401,19 +2373,23 @@ function ActivityLogPanel({
   entries: ActivityLogEntry[]
   onClose: () => void
 }) {
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening (see useModalCardFocus).
+  const cardFocus = useModalCardFocus()
   // Newest-first without mutating the source buffer.
   const ordered = entries.slice().reverse()
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={onClose}
+      {...modalBackdropProps}
     >
       <div
+        {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose()
         }}
-        className="flex max-h-[70vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Activity log</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
@@ -2486,6 +2462,9 @@ function AgentPanel({
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening (see useModalCardFocus).
+  const cardFocus = useModalCardFocus()
   const copyCommand = (command: string) => {
     navigator.clipboard
       .writeText(command)
@@ -2495,14 +2474,15 @@ function AgentPanel({
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={onClose}
+      {...modalBackdropProps}
     >
       <div
+        {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose()
         }}
-        className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        className="w-[26rem] animate-grow-in focus:outline-none rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         {ui.kind === 'setup' ? (
           <AgentSetup

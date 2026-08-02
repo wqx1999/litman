@@ -242,13 +242,45 @@ export function fetchFixedEnums(): Promise<FixedEnums> {
   return getJSON<FixedEnums>('/api/fixed-enums')
 }
 
+/** The active vault's pinned paper ids, oldest pin first (server-pruned of
+ * papers that no longer exist). List order IS render order: the client shows
+ * the server's list verbatim and never splices locally, so every mutation
+ * below returns the full post-write list to swap in. */
+export function fetchPins(): Promise<{ pins: string[] }> {
+  return getJSON<{ pins: string[] }>('/api/pins')
+}
+
+export function pinPaper(id: string): Promise<{ pins: string[] }> {
+  return mutateJSON<{ pins: string[] }>(
+    `/api/pins/${encodeURIComponent(id)}`,
+    'PUT',
+  )
+}
+
+export function unpinPaper(id: string): Promise<{ pins: string[] }> {
+  return mutateJSON<{ pins: string[] }>(
+    `/api/pins/${encodeURIComponent(id)}`,
+    'DELETE',
+  )
+}
+
+export function clearPins(): Promise<{ pins: string[] }> {
+  return mutateJSON<{ pins: string[] }>('/api/pins', 'DELETE')
+}
+
 /** The body of a structured metadata write (one transaction). All optional;
- * `set` carries scalar fields (status/priority/type), the tag maps carry
- * topics/methods/data add/remove. */
+ * `set` carries scalar fields (status/priority/type, and the edit dialog's
+ * title/year/journal/...), the tag maps carry topics/methods/data add/remove. */
 export interface MetadataWrite {
   set?: Record<string, string | null>
   addTag?: Record<string, string[]>
   rmTag?: Record<string, string[]>
+  /** Ordered wholesale rewrite of a sequence field. Server-whitelisted to
+   * `authors` — the one list field whose order carries meaning (authors[0]
+   * drives the id and every citation), and the one edit addTag/rmTag cannot
+   * express: add appends, and adds run before removes, so correcting any
+   * name but the last would move it to the end. */
+  setList?: Record<string, string[]>
 }
 
 /** Apply a structured metadata change through the `lit modify` backend
@@ -351,6 +383,196 @@ export interface VersionInfo {
 
 export function fetchVersion(): Promise<VersionInfo> {
   return getJSON<VersionInfo>('/api/version')
+}
+
+/** Release highlights for the RUNNING version — the post-update "What's new"
+ * popup. PURE READ: the bullets ship inside the installed package, so this
+ * never touches the network. `bullets` is empty when the running version has
+ * no section recorded.
+ *
+ * `seen` is the release this MACHINE last dismissed (null = none), and the
+ * reason the popup decision is not a localStorage read: that store is
+ * partitioned per origin (the port walks upward when 8765 is busy) and per
+ * browser profile — and the GUI has two, since `lit gui --window` runs under
+ * its own `--user-data-dir` while a terminal `lit gui` opens a tab in the
+ * everyday browser. Either switch lost the marker and the card came back. */
+export interface WhatsNewInfo {
+  version: string
+  bullets: string[]
+  changelogUrl: string
+  seen: string | null
+}
+
+export function fetchWhatsNew(): Promise<WhatsNewInfo> {
+  return getJSON<WhatsNewInfo>('/api/whatsnew')
+}
+
+/** Mark the running release's card as seen. Sends no version — the server
+ * records the one IT is running, so the client cannot silence a release it
+ * was never shown. Idempotent. */
+export function markWhatsNewSeen(): Promise<{ seen: string }> {
+  return mutateJSON<{ seen: string }>('/api/whatsnew/seen', 'PUT')
+}
+
+/** Drag-in ingest (three steps, one shared `lit add` write path server-side).
+ *
+ * Step 1 stashes the dropped PDF (raw bytes, no multipart) and sniffs DOI
+ * candidates from its text layer. Step 2 previews what a DOI resolves to —
+ * the one explicit, user-initiated network call in the GUI (the server asks
+ * CrossRef). Step 3 ingests the stash through the exact `lit add` backend, so
+ * a GUI drop and a terminal add produce identical vault state. The browser
+ * upload is a copy — the user's original file is never touched. */
+export interface IngestUploadResult {
+  handle: string
+  doi: string | null
+  candidates: string[]
+}
+
+/** The name of one of the three parts an id is made of. */
+export type IdSegmentName = 'year' | 'family' | 'keyword'
+
+/** An id taken apart, from the server — the frontend never splits on `_`.
+ *
+ * A segment not listed in `needs` is what the server itself would have used,
+ * so the form shows it as settled and keeps it in step with the fields above.
+ * A segment in `needs` is the user's to write; its value, when non-null, is a
+ * starting point rather than a verdict. */
+export interface IdSegments {
+  year: string | null
+  family: string | null
+  keyword: string | null
+  needs: IdSegmentName[]
+}
+
+export interface IngestPreview {
+  doi: string
+  title: string
+  authors: string[]
+  year: number | null
+  journal: string
+  /** Null when the CrossRef record can't yield an id; see `idError`. */
+  proposedId: string | null
+  idError: string | null
+  /** A candidate to pre-fill the Paper ID field with when `proposedId` is
+   * null. Null means the server had nothing worth offering — an empty field
+   * is a better prompt than a bad default. */
+  idSuggestion: string | null
+  idSegments: IdSegments
+  /** Non-null = this DOI is already in the vault; Add must stay disabled. */
+  inVault: { id: string; title: string } | null
+}
+
+/** The id a set of fields would produce, from `POST /api/ingest/derive-id`.
+ *
+ * The frontend asks rather than computes on purpose. A TypeScript copy of
+ * `derive_id` would be a second set of rules to keep in step with the Python
+ * one, and its failure mode is the nastiest available: the id shown in the
+ * form and the id actually written drift apart, and nobody finds out until
+ * afterwards. */
+export interface DeriveIdResult {
+  id: string | null
+  /** Why not — already reduced to one line, safe to show inline. */
+  error: string | null
+  suggestion: string | null
+  segments: IdSegments
+}
+
+export function deriveIngestId(input: {
+  title: string
+  authors: string[]
+  year: number | null
+}): Promise<DeriveIdResult> {
+  return mutateJSON<DeriveIdResult>('/api/ingest/derive-id', 'POST', input)
+}
+
+export interface IngestConfirmResult {
+  id: string
+  warnings: string[]
+}
+
+export async function uploadIngestPdf(file: File): Promise<IngestUploadResult> {
+  const resp = await apiFetch('/api/ingest/pdf', {
+    method: 'POST',
+    body: file,
+    headers: { 'Content-Type': 'application/pdf' },
+  })
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    throw new ApiError(detail, resp.status)
+  }
+  return (await resp.json()) as IngestUploadResult
+}
+
+export function fetchIngestPreview(doi: string): Promise<IngestPreview> {
+  return getJSONDetailed<IngestPreview>(
+    `/api/ingest/preview?doi=${encodeURIComponent(doi)}`,
+  )
+}
+
+/** `paperId` overrides id derivation, the way `lit add --id` always has.
+ * Null (the usual case) lets the server derive and auto-suffix on collision;
+ * a value you supply is a claim about which paper this is, so the server
+ * treats a collision on it as an error rather than quietly suffixing. */
+export function confirmIngest(
+  handle: string,
+  doi: string,
+  paperId: string | null = null,
+): Promise<IngestConfirmResult> {
+  return mutateJSON<IngestConfirmResult>('/api/ingest/confirm', 'POST', {
+    handle,
+    doi,
+    ...(paperId ? { id: paperId } : {}),
+  })
+}
+
+/** What the hand-entry form submits when CrossRef cannot supply the record.
+ *
+ * Key names are the server schema's, hyphen included (`venue-type`), rather
+ * than a camelCase shape this file would then have to translate — the schema
+ * is the one `lit add --from-llm-json` validates, and a translation layer is
+ * exactly where the two would drift apart. */
+export interface IngestManualMeta {
+  title: string
+  authors: string[]
+  year: number | null
+  journal?: string | null
+  doi?: string | null
+  'venue-type'?: string | null
+}
+
+/** Ingest a stashed upload from typed-in metadata rather than a DOI.
+ *
+ * For the papers CrossRef does not have: a patent (no DOI at all) or a
+ * Chinese journal article whose DOI is real but registered with CNKI. Same
+ * endpoint, same `_apply_add` write path — only the metadata source differs. */
+export function confirmIngestManual(
+  handle: string,
+  metadata: IngestManualMeta,
+  paperId: string | null = null,
+): Promise<IngestConfirmResult> {
+  return mutateJSON<IngestConfirmResult>('/api/ingest/confirm', 'POST', {
+    handle,
+    metadata,
+    ...(paperId ? { id: paperId } : {}),
+  })
+}
+
+/** Discard a stashed upload the user dismissed. Fire-and-forget by design:
+ * a failed cleanup is not something to put in front of someone who just hit
+ * Cancel, and the server sweeps leftovers on its own regardless. */
+export function discardIngest(handle: string): Promise<void> {
+  return apiFetch(`/api/ingest/${encodeURIComponent(handle)}`, {
+    method: 'DELETE',
+  }).then(
+    () => undefined,
+    () => undefined,
+  )
 }
 
 /** Kick off the one-click update: the server spawns a detached helper and

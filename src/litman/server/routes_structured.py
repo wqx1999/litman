@@ -24,7 +24,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 from litman.commands.init import apply_init
-from litman.commands.modify import _apply_modify
+from litman.commands.modify import ORDERED_LIST_FIELDS, _apply_modify
 from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
 from litman.commands.rm import discover_rm_impact, execute_rm
@@ -115,6 +115,42 @@ def _ops_from_tag_map(tag_map: object, flag: str) -> tuple[str, ...]:
     return tuple(ops)
 
 
+def _set_list_from_payload(payload: object) -> dict[str, list[str]] | None:
+    """Validate a ``setList`` block into ``_apply_modify``'s kwarg shape.
+
+    The field whitelist is enforced HERE and not left to the frontend: the
+    endpoint must not become a generic "overwrite any list" channel, which is
+    exactly the drift `_ops_from_tag_map` already refuses for `projects`.
+    ``_apply_modify`` re-checks the field against ORDERED_LIST_FIELDS anyway —
+    this layer exists so a bad key is a 400 with a webUI-shaped message rather
+    than a ModifyError about command-line flags.
+    """
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="setList must be an object.")
+    out: dict[str, list[str]] = {}
+    for key, values in payload.items():
+        if key not in ORDERED_LIST_FIELDS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"setList cannot rewrite {key!r}. Allowed: "
+                    f"{', '.join(sorted(ORDERED_LIST_FIELDS))}. Other list "
+                    "fields are unordered — use addTag / rmTag."
+                ),
+            )
+        if not isinstance(values, list) or not all(
+            isinstance(v, str) for v in values
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"setList[{key!r}] must be a list of strings.",
+            )
+        out[key] = list(values)
+    return out or None
+
+
 def _resolve_date(payload: object) -> str:
     """Pull an optional ``{date: "YYYY-MM-DD"}`` out of the body, default today.
 
@@ -158,14 +194,17 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
 
     Body JSON (all optional, combined in one transaction):
         ``{"set": {field: value}, "addTag": {key: [values]},
-           "rmTag": {key: [values]}}``
+           "rmTag": {key: [values]}, "setList": {field: [values]}}``
 
-    Carries the cockpit's status/priority/type dropdown changes (``set``) and
-    topics/methods/data chip add/remove (``addTag`` / ``rmTag``). Translated
-    into ``_apply_modify``'s tuple-of-``key=value`` arg shape and dispatched
-    with ``skip_set_noop=True`` so re-selecting the current value is a true
-    no-op (no spurious ``updated-at`` bump). An empty ``value`` in ``set``
-    (e.g. ``{"priority": ""}``) unsets the field to None — ``_apply_modify``
+    Carries the cockpit's status/priority/type dropdown changes (``set``),
+    topics/methods/data chip add/remove (``addTag`` / ``rmTag``), and the
+    metadata editor's ordered author rewrite (``setList`` — whitelisted to
+    ORDERED_LIST_FIELDS, i.e. ``authors``). Translated into
+    ``_apply_modify``'s arg shapes and dispatched with ``skip_set_noop=True``
+    so re-selecting the current value is a true no-op (no spurious
+    ``updated-at`` bump; a same-order ``setList`` is likewise a no-op inside
+    ``_apply_set_list``). An empty ``value`` in ``set`` (e.g.
+    ``{"priority": ""}``) unsets the field to None — ``_apply_modify``
     coerces ``""`` to None and the fixed-enum gate allows it for priority/type.
 
     ``_apply_modify`` does ALL validation (fixed-enum range, TAXONOMY register-
@@ -203,11 +242,15 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
     set_ops = tuple(set_op_list)
     add_tag_ops = _ops_from_tag_map(payload.get("addTag", {}), "addTag")
     rm_tag_ops = _ops_from_tag_map(payload.get("rmTag", {}), "rmTag")
+    set_list_ops = _set_list_from_payload(payload.get("setList"))
 
-    if not (set_ops or add_tag_ops or rm_tag_ops):
+    if not (set_ops or add_tag_ops or rm_tag_ops or set_list_ops):
         raise HTTPException(
             status_code=400,
-            detail="Body must contain at least one of set / addTag / rmTag.",
+            detail=(
+                "Body must contain at least one of set / addTag / rmTag / "
+                "setList."
+            ),
         )
 
     vault = request.app.state.vault
@@ -218,6 +261,7 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
             set_ops=set_ops,
             add_tag_ops=add_tag_ops,
             rm_tag_ops=rm_tag_ops,
+            set_list_ops=set_list_ops,
             skip_set_noop=True,
         )
     except PaperNotFoundError as exc:

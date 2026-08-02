@@ -13,6 +13,7 @@ import {
   PlusIcon,
 } from './icons'
 import { breadcrumbs } from './path'
+import { modalBackdropProps } from './modalShell'
 
 /** What "Select this folder" is allowed to return:
  *  - `existing-dir` / `parent-dir` — any folder that exists (the name is typed
@@ -241,12 +242,7 @@ export default function DirectoryPicker({
   return createPortal(
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 backdrop-blur-sm"
-      onClick={(e) => {
-        // Close only the picker; stopPropagation keeps the click from bubbling
-        // (React portals bubble to the React parent) to the dialog underneath.
-        e.stopPropagation()
-        onCancel()
-      }}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}

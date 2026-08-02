@@ -20,7 +20,7 @@ public repository so the code-binding step works for real. A second paper,
 have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
-> **Tested with** litman 1.3.0 on Unix (Linux and macOS), July 2026, with Claude
+> **Tested with** litman 1.3.3 on Unix (Linux and macOS), August 2026, with Claude
 > Sonnet 5 driving the agent path in Claude Code. The command output shown
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.
@@ -32,7 +32,9 @@ way. Reach for whichever fits the moment:
 
 - 🖥️ **Web UI** — the browser app you open with the litman icon or `lit gui`: a classification tree,
   a tabbed PDF reader, and a context panel. This is the human's home for reading,
-  annotating, and everyday curation — where you spend most of a reading day.
+  annotating, and everyday curation — where you spend most of a reading day. A
+  paper can start here too: drag its PDF onto the window and it is imported
+  without a terminal.
 - 🤖 **Agent** — what you say to your AI agent. `lit agent` starts it in the
   library directory (the Web UI's agent button launches the same thing). The
   bundled skills (`lit-library` for the write side, `lit-reading` for the read
@@ -106,6 +108,21 @@ Double-click it to launch
 straight into the browser app, where the welcome page creates your first library
 and the agent button sets up your AI agent — no `lit setup` needed.
 
+That shortcut opens litman in a window of its own, with no address bar and no
+tabs, and holding such a window is something only a Chrome-family browser can do.
+Windows always has Edge, so there is nothing to arrange. A fresh Linux desktop
+usually ships Firefox alone and a Mac ships Safari, neither of which has an
+equivalent, so until one is installed litman falls back to an ordinary browser
+tab. On Linux that is a single command:
+
+```console
+$ sudo snap install chromium      # Chrome or Edge work just as well
+```
+
+On macOS, install Chrome or Edge the usual way. You do not have to browse with
+it — litman only borrows the browser to hold its own window, and your everyday
+one stays whatever you have set it to.
+
 **To remove it:** run `lit uninstall` first — it strips the agent skills, this
 shortcut, the shell completion, the vault registry, and your agent preferences,
 while leaving your papers untouched — then remove the CLI with `uv tool uninstall
@@ -173,21 +190,29 @@ PepINVENT, from import to its second read.
 
 ## 4. Add the paper
 
-Adding a paper is where the agent earns its keep: it reads the PDF and pulls out
-the metadata, so this step lives on the agent or the command line. `lit add` needs
-the PDF file (litman manages papers you have already obtained; it does not
-download them) and a metadata source. There are two sources:
+Adding a paper needs the PDF file — litman manages papers you have already
+obtained; it does not download them — and something to fill the identity fields
+from: a DOI for CrossRef to resolve, an agent that has read the PDF, or what you
+can type yourself. Each of the three surfaces below reaches those its own way, and
+all of them end in the same import, so a paper is the same paper whichever door it
+came through.
 
-- `--doi` — fetch the metadata from CrossRef. No model involved.
-- `--from-llm-json` — the agent reads the PDF, extracts the metadata to JSON,
-  and hands it to `lit add`. This is the path the `lit-library` skill uses, and
-  where the model (Sonnet, here) does its work.
+🖥️ **Web UI:** drag the PDF onto the window. litman reads the DOI off the first
+pages and shows you what came back — title, authors, year, journal — before
+anything is written; confirm, and the paper is in. A scanned paper often carries
+no DOI litman can read, so that box is left for you to fill in. And when CrossRef
+has never heard of the work at all — a patent, or a journal that registers its
+DOIs somewhere else — type the title, year and authors yourself and it goes in
+just the same. This is the one path that **copies**: your original PDF stays
+where it was.
 
 🤖 **Agent:** drop the PDF into the chat and say *"add this paper to my library"*. The skill reads it, extracts the metadata,
 and runs `lit add --from-llm-json` (or `--doi` for a clean DOI), passing the id
 you named.
 
-⌨️ **CLI:**
+⌨️ **CLI:** `lit add` takes the PDF plus exactly one metadata source — `--doi` to
+fetch from CrossRef with no model involved, or `--from-llm-json` to read the JSON
+the agent prepared.
 
 ```console
 $ lit add ~/Downloads/pepinvent.pdf --doi 10.1039/D4SC07642G --id 2025_Geylan_PepINVENT
@@ -201,9 +226,18 @@ Authors: Geylan, Gökçe et al. (10 authors)
 
 CrossRef fills the identity fields. The `--id` gives the paper a short handle;
 drop it and litman auto-derives one from the year, author, and title (here that
-would be `2025_Geylan_PepINVENT-Generative`). Note that `lit add` *moves* the PDF
-into the vault, so the original in `~/Downloads` is removed once the import
-succeeds — the vault now holds the only copy.
+would be `2025_Geylan_PepINVENT-Generative`). Ids are ASCII, because they have to
+be folder names on Windows, macOS and Linux alike, so a title written in Chinese,
+Japanese or Korean cannot produce one on its own — litman says so and stops,
+rather than invent a handle you would then be stuck with, and you pass `--id`
+yourself. Only the id is ASCII: the title, authors and journal are stored exactly
+as they were written.
+
+One thing to know before you run it on a paper you care about: `lit add` *moves*
+the PDF into the vault, so the original in `~/Downloads` is gone once the import
+succeeds and the vault holds the only copy. Dragging a PDF into the Web UI is the
+exception — the browser hands litman a copy of the bytes and never the path, so
+there is nothing there for it to move.
 
 Add the second paper the same way, so the list has more than one row:
 
@@ -255,6 +289,14 @@ $ lit promote 2025_Geylan_PepINVENT
 `status` is reversible at any time with `lit modify 2025_Geylan_PepINVENT --set
 status=inbox`, so there is nothing to undo here.
 
+While a paper is one you keep coming back to, pin it: click its status dot in the
+browse list, or press `P` with the paper selected, and it moves into a Pinned
+group at the top of the panel and stays there while everything below re-ranks
+itself. Pinning is a Web UI convenience rather than a property of the paper —
+nothing is written into `metadata.yaml` — so it has no `lit` command; each
+library keeps its own pins, and they survive closing litman. Click the dot again
+to send the paper back to its usual place.
+
 ## 6. Capture the discussion as you read
 
 Each paper has a `discussion.md` — your running log of questions, objections, and
@@ -285,7 +327,12 @@ summary. This is the everyday curation the Web UI is built for.
 dropdowns and add `topics` / `methods` tags — type a new value and it is
 registered in the TAXONOMY on the spot. Write the summary straight into the notes
 tab. You are already reading the PDF right there, so nothing pulls you out of the
-paper.
+paper. The bibliographic fields live behind the pencil in the METADATA header:
+open it to correct a title the import garbled, fill in a missing journal, or fix
+the author list — names can be renamed, added, removed, and reordered by dragging
+their handles — and one Save writes the lot. The paper id is shown but not
+editable there, because changing it is a rename that has to rewrite every
+reference to the paper; that stays `lit rename`'s job.
 
 🤖 **Agent:** *"PepINVENT is a research paper, priority A; tag topics
 peptide-design and de-novo-design, method reinforcement-learning; then summarize

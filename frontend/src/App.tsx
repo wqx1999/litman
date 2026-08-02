@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
+  clearPins,
   createVault,
   fetchCapabilities,
   fetchDocMtimes,
   fetchFixedEnums,
   fetchPaper,
   fetchPapers,
+  fetchPins,
   fetchProjects,
   fetchTaxonomy,
   fetchTrash,
   fetchSearch,
   fetchVaults,
   fetchVersion,
+  fetchWhatsNew,
+  markWhatsNewSeen,
+  type WhatsNewInfo,
+  type IngestUploadResult,
+  uploadIngestPdf,
+  discardIngest,
+  pinPaper,
   putActiveVault,
   putDiscussion,
   putNotes,
@@ -20,6 +29,7 @@ import {
   removePaper,
   restorePaper,
   setVaultPath,
+  unpinPaper,
   unregisterVault,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
@@ -27,6 +37,9 @@ import type { MdDraft } from './md/MdView'
 import type { CockpitHandle } from './cockpit/Cockpit'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 import CheatSheet from './ui/CheatSheet'
+import WhatsNew from './ui/WhatsNew'
+import DropZone from './ui/DropZone'
+import AddPaper from './ui/AddPaper'
 import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
@@ -268,6 +281,22 @@ export default function App() {
   // The server's own version, from the same /api/version read — the chip's
   // popover shows "You have X".
   const [versionCurrent, setVersionCurrent] = useState<string | null>(null)
+  // Open "What's new" card (null = closed). Auto-opens once after an update
+  // (the server's recorded `seen` ≠ running version); the TopBar logo reopens
+  // it on demand.
+  const [whatsNew, setWhatsNew] = useState<WhatsNewInfo | null>(null)
+  // True once this session has rendered the welcome page — the marker of a
+  // fresh install (or a relocated vault), where the what's-new card would
+  // describe a "previous version" the person never had.
+  const sawWelcomeRef = useRef(false)
+  // Drag-in ingest: non-null = a dropped PDF is stashed server-side and the
+  // Add-paper confirm dialog is up (a BLOCKING modal — counted in
+  // anyModalOpen). The dropped file's name rides along for the dialog header.
+  const [addUpload, setAddUpload] = useState<
+    (IngestUploadResult & { fileName: string }) | null
+  >(null)
+  // A dropped PDF is on its way up (upload + server-side DOI sniff).
+  const [uploading, setUploading] = useState(false)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -284,6 +313,11 @@ export default function App() {
 
   const [listMode, setListMode] = useState<ListMode>('reading')
   const [projectScope, setProjectScope] = useState<string | null>(null)
+  // Pinned paper ids, oldest pin first — the server's order rendered verbatim
+  // (every pin mutation returns the full post-write list; no local splicing).
+  // Persisted per vault in the machine-level ui-state.json, so pins survive a
+  // restart and never leak across vaults (reloadForVault clears + refetches).
+  const [pins, setPins] = useState<string[]>([])
   // Multi-dimensional client-side filters: one multi-select Set per field, over
   // all six facet dimensions (status/priority/type single-value; topics/methods/
   // data array). Cross-dimension AND, within-dimension OR. `project` is NOT a
@@ -655,6 +689,25 @@ export default function App() {
             { sticky: true },
           )
         }
+        // Post-update "What's new": pop once when the running version is not
+        // the one this MACHINE last dismissed the card for. A fresh install
+        // that just walked the welcome wizard is seeded silently instead —
+        // there is no previous version to tell it about. Best-effort like the
+        // rest of this handler; the card only opens when there are bullets.
+        //
+        // Both halves of the comparison come from one response now, so the
+        // decision cannot be split across a version the client knows and a
+        // marker some other browser profile wrote.
+        fetchWhatsNew()
+          .then((w) => {
+            if (w.seen === w.version) return
+            if (w.seen === null && sawWelcomeRef.current) {
+              void markWhatsNewSeen().catch(() => {})
+              return
+            }
+            if (w.bullets.length > 0) setWhatsNew(w)
+          })
+          .catch(() => {})
         if (v.latest) return
         versionRetry = setTimeout(() => {
           fetchVersion()
@@ -712,6 +765,18 @@ export default function App() {
     if (!served) return
     loadList(listMode)
   }, [served, listMode, loadList])
+
+  // Pins are per-vault GUI state: (re)pull whenever the served vault changes —
+  // mount and every switch (`served` is the served vault's path, and
+  // reloadForVault clears the old vault's pins immediately so they can never
+  // paint over the new vault's list while this fetch is in flight).
+  // Best-effort: a failure degrades to "no pins", never an error surface.
+  useEffect(() => {
+    if (!served) return
+    fetchPins()
+      .then((r) => setPins(r.pins))
+      .catch(() => {})
+  }, [served])
 
   // Debounced notes/discussion search. id/title match instantly off allPapers
   // (no network); only the markdown scopes need the server. An empty query
@@ -803,6 +868,54 @@ export default function App() {
     }
     return out
   }, [scoped, filters, listMode, search, matchedIds])
+
+  // --- Pins (task-gui-pin) -------------------------------------------------
+  // A pin is a SORT override, not a membership override (D1): pinned papers
+  // still pass through the `visible` pipeline above (untouched — pinning is a
+  // render-time regrouping, never a seventh filter dimension). A pin whose
+  // paper the current view/filters/search exclude simply doesn't render (the
+  // Pinned group header counts it as hidden); clearing the search brings it
+  // back because the pin state itself never changed.
+
+  /** The pinned papers present in `visible`, in PIN order (D2: oldest pin
+   * first, never the view's own ranking — positional stability is the whole
+   * point of a pin). */
+  const pinnedVisible = useMemo(() => {
+    if (pins.length === 0) return []
+    const byId = new Map(visible.map((p) => [p.id, p]))
+    return pins
+      .map((id) => byId.get(id))
+      .filter((p): p is IndexPaper => p !== undefined)
+  }, [pins, visible])
+
+  /** The rows in on-screen order: pinned block first, then the rest in view
+   * order. J/K keyboard navigation walks THIS, not `visible`, so the cursor
+   * moves the way the list reads. */
+  const displayOrder = useMemo(() => {
+    if (pinnedVisible.length === 0) return visible
+    const pinnedIds = new Set(pins)
+    return [...pinnedVisible, ...visible.filter((p) => !pinnedIds.has(p.id))]
+  }, [visible, pinnedVisible, pins])
+
+  const togglePin = useCallback(
+    (id: string) => {
+      const req = pins.includes(id) ? unpinPaper(id) : pinPaper(id)
+      req
+        .then((r) => setPins(r.pins))
+        .catch((err) =>
+          notify(err instanceof Error ? err.message : String(err), 'error'),
+        )
+    },
+    [pins, notify],
+  )
+
+  const clearAllPins = useCallback(() => {
+    clearPins()
+      .then((r) => setPins(r.pins))
+      .catch((err) =>
+        notify(err instanceof Error ? err.message : String(err), 'error'),
+      )
+  }, [notify])
 
   const toggleFilter = useCallback((field: FacetKey, value: string) => {
     setFilters((prev) => {
@@ -1223,10 +1336,16 @@ export default function App() {
     notify(`Removed “${id}” to trash · restore from the 🗑 Trash`, 'success')
     // The removed paper drops out of the list + counts; do NOT re-fetch its own
     // metadata (it's gone) — just reload the list, the INDEX projection, and the
-    // trash count (the paper just landed in trash).
+    // trash count (the paper just landed in trash). Pins: a pin on the removed
+    // paper is now dangling — GET /api/pins prunes it server-side and persists
+    // the pruned list, so one refetch converges state with disk (no local
+    // splicing, same one-source-of-order contract as every pin mutation).
     loadList(listMode)
     fetchPapers().then(setAllPapers)
     loadTrash()
+    fetchPins()
+      .then((r) => setPins(r.pins))
+      .catch(() => {})
   }, [pendingRemove, tabs, removeTab, selectedId, notify, loadList, listMode, loadTrash])
 
   // The tab pending close, and whether it is an md tab (drives the dialog copy
@@ -1340,6 +1459,11 @@ export default function App() {
     setSearch('')
     setServerHits([])
     setMdJump(null)
+    // Pins are per-vault: drop the old vault's NOW, before its list unloads —
+    // the pins effect (keyed on `served`) refetches the new vault's own list
+    // once the switch lands, and this instant clear guarantees vault A's pins
+    // never render over vault B's papers while that fetch is in flight.
+    setPins([])
     // The trash is per-vault: leave trash mode and re-pull the new vault's trash.
     setTrashMode(false)
     setRestoringEntry(null)
@@ -1536,6 +1660,76 @@ export default function App() {
   const toggleRight = useCallback(() => setCockpitCollapsed((c) => !c), [])
   const toggleCheatSheet = useCallback(() => setCheatSheetOpen((o) => !o), [])
   const closeCheatSheet = useCallback(() => setCheatSheetOpen(false), [])
+  // Manual reopen from the TopBar logo — same card, fetched fresh (cheap, pure
+  // local read server-side). Shown even with no bullets recorded: the manual
+  // path should at least hand over the changelog link, unlike the auto-popup.
+  const showWhatsNew = useCallback(() => {
+    fetchWhatsNew()
+      .then(setWhatsNew)
+      .catch(() => {})
+  }, [])
+  // Closing is what marks the version as seen. Optimistic: the card closes
+  // now and the PUT rides along silently — a failed write costs one extra
+  // popup next launch, while a card that refuses to close until the server
+  // answers is the failure nobody would forgive.
+  const closeWhatsNew = useCallback(() => {
+    setWhatsNew(null)
+    void markWhatsNewSeen().catch(() => {})
+  }, [])
+
+  // Drag-in ingest step 1: stash the dropped PDF server-side (the upload is a
+  // copy — the user's file on disk is never touched) and open the confirm
+  // dialog with whatever DOI the sniff found.
+  // `uploading` drives the drop overlay's reading state and closes the zone
+  // to a second drop: the upload + DOI sniff is a beat of real work (a fat
+  // scanned PDF is seconds), and silence there reads as "the drop failed".
+  const onPdfDropped = useCallback(
+    (file: File) => {
+      setUploading(true)
+      uploadIngestPdf(file)
+        .then((r) => setAddUpload({ ...r, fileName: file.name }))
+        .catch((e) =>
+          notify(e instanceof Error ? e.message : String(e), 'error'),
+        )
+        .finally(() => setUploading(false))
+    },
+    [notify],
+  )
+  // Dismissing the dialog (Cancel / Esc / jump-to-existing) throws
+  // the stashed upload away rather than leaving it for the sweeper.
+  const dismissAdd = useCallback((handle: string) => {
+    void discardIngest(handle)
+    setAddUpload(null)
+  }, [])
+  // Step 3 landed: refresh the list so the new paper appears, and select it —
+  // the cockpit opening on the fresh paper IS the success feedback.
+  //
+  // BOTH refreshes are required, same as the remove path (`confirmRemove`).
+  // `fetchPapers` alone only refills `allPapers` (the INDEX projection); the
+  // default `reading` view and `recent-read` render `papers`, a server-ordered
+  // smart list that lives in its own state and only `loadList` refills. With
+  // just the first call the paper landed on disk, got selected, and stayed
+  // invisible in the list until a page reload.
+  const onPaperAdded = useCallback(
+    (id: string) => {
+      setAddUpload(null)
+      notify(`Added ${id}`, 'success')
+      loadList(listMode)
+      fetchPapers()
+        .then(setAllPapers)
+        .catch(() => {})
+      selectPaper(id)
+    },
+    [notify, selectPaper, loadList, listMode],
+  )
+  // "Already in your library" jump: drop the stash, open that paper.
+  const onOpenExistingFromAdd = useCallback(
+    (handle: string, id: string) => {
+      dismissAdd(handle)
+      selectPaper(id)
+    },
+    [dismissAdd, selectPaper],
+  )
 
   // PDF-tool keys (V/H/T/D/Esc) only act when the active center tab is a PDF
   // tab; the handle is resolved live from the ref Map (see getPdfHandle's note).
@@ -1616,32 +1810,46 @@ export default function App() {
     observabilityOpen ||
     vaultManagerOpen ||
     agentPanelOpen ||
+    // The Add-paper confirm dialog owns a text input + its own Esc.
+    addUpload !== null ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
 
   // J/K walk the middle-list selection through the same rows BrowsePanel
-  // renders (`visible` — every filter applied), Enter opens the selection's
-  // PDF. Clamped at the ends; J with nothing selected starts at the first
-  // row, K at the last. BrowsePanel scrolls the moved selection into view.
+  // renders — `displayOrder` (pinned block first, then the rest), so the
+  // cursor moves the way the list reads. Enter opens the selection's PDF.
+  // Clamped at the ends; J with nothing selected starts at the first row, K
+  // at the last. BrowsePanel scrolls the moved selection into view.
   const moveSelection = useCallback(
     (delta: 1 | -1) => {
-      if (visible.length === 0) return
-      const idx = selectedId ? visible.findIndex((p) => p.id === selectedId) : -1
+      if (displayOrder.length === 0) return
+      const idx = selectedId
+        ? displayOrder.findIndex((p) => p.id === selectedId)
+        : -1
       const next =
         idx === -1
           ? delta === 1
             ? 0
-            : visible.length - 1
-          : Math.min(visible.length - 1, Math.max(0, idx + delta))
-      const target = visible[next]
+            : displayOrder.length - 1
+          : Math.min(displayOrder.length - 1, Math.max(0, idx + delta))
+      const target = displayOrder[next]
       if (target && target.id !== selectedId) selectPaper(target.id)
     },
-    [visible, selectedId, selectPaper],
+    [displayOrder, selectedId, selectPaper],
   )
   const openSelected = useCallback(() => {
     if (selectedId) openPdf(selectedId)
   }, [selectedId, openPdf])
+  // Bare-key P: toggle the selected paper's pin. The no-selection toast
+  // mirrors the ⌥-curation convention (subtle feedback, never a write).
+  const togglePinSelected = useCallback(() => {
+    if (!selectedId) {
+      notify('No paper selected')
+      return
+    }
+    togglePin(selectedId)
+  }, [selectedId, togglePin, notify])
 
   useKeyboardShortcuts({
     anyModalOpen,
@@ -1654,11 +1862,14 @@ export default function App() {
     activateTabByIndex,
     moveSelection,
     openSelected,
+    togglePinSelected,
     openAgent,
     manageAgents,
     cheatSheetOpen,
     toggleCheatSheet,
     closeCheatSheet,
+    whatsNewOpen: whatsNew !== null,
+    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,
@@ -1672,6 +1883,7 @@ export default function App() {
   // (All hooks above run unconditionally — this branch only gates rendering.)
   if (served === undefined) return null // pre-bootstrap; sub-100ms on localhost
   if (served === null) {
+    sawWelcomeRef.current = true // fresh install — see the what's-new seeding
     return (
       <WelcomePage
         vaults={vaults}
@@ -1790,6 +2002,7 @@ export default function App() {
         onProjectsOpenChange={setProjectsOpen}
         onVaultManagerOpenChange={setVaultManagerOpen}
         onShowShortcuts={toggleCheatSheet}
+        onShowWhatsNew={showWhatsNew}
         activityLog={activityLog}
         logUnread={logUnread}
         onLogOpened={markLogRead}
@@ -1815,6 +2028,10 @@ export default function App() {
             <BrowsePanel
               scoped={scoped}
               visible={visible}
+              pinnedRows={pinnedVisible}
+              pinnedHiddenCount={pins.length - pinnedVisible.length}
+              onTogglePin={togglePin}
+              onClearPins={clearAllPins}
               vaultEmpty={vaultEmpty}
               loadFailed={listFailed}
               loading={loadingList}
@@ -1902,6 +2119,25 @@ export default function App() {
         />
       )}
       {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
+      {whatsNew && <WhatsNew info={whatsNew} onClose={closeWhatsNew} />}
+      {/* Drag-in ingest: the drop catcher is the ONLY GUI add entry (no
+          button by design). Parked while the confirm dialog is up so a
+          second drop can't orphan the first stash. */}
+      <DropZone
+        accepting={addUpload === null && !uploading && !trashMode}
+        busy={uploading}
+        onPdf={onPdfDropped}
+        onReject={(m) => notify(m, 'info')}
+      />
+      {addUpload && (
+        <AddPaper
+          upload={addUpload}
+          fileName={addUpload.fileName}
+          onClose={() => dismissAdd(addUpload.handle)}
+          onAdded={onPaperAdded}
+          onOpenExisting={(id) => onOpenExistingFromAdd(addUpload.handle, id)}
+        />
+      )}
       {toast && (
         <Toast
           message={toast.message}

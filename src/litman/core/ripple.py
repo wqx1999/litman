@@ -53,6 +53,7 @@ def _ripple_replacements(
     replacements: dict[str, str],
     *,
     rename_relevance: bool = False,
+    papers: list[dict[str, Any]] | None = None,
 ) -> tuple[int, list[tuple[str, str]], list[dict[str, Any]]]:
     """Apply ``replacements`` to ``field`` of every paper that references any source.
 
@@ -74,8 +75,21 @@ def _ripple_replacements(
           hand to :func:`staged_write`
         * ``all_papers_with_changes_applied`` — full paper list with
           in-memory modifications, suitable for re-rendering INDEX.json
+
+    ``papers`` lets a caller hand in an already-loaded list (INDEX
+    projections via ``views.papers_for_index`` — the membership fields
+    topics/methods/data/projects are all projected; task-write-perf).
+    FORBIDDEN with ``rename_relevance``: the stray relevance-key probe
+    reads ``relevance-<old>`` off every paper, which the projection does
+    not carry — that path must keep the full-metadata scan.
     """
-    papers = list_papers(vault)
+    if papers is None:
+        papers = list_papers(vault)
+    elif rename_relevance:
+        raise ValueError(
+            "papers= must not be combined with rename_relevance: the stray "
+            "relevance-key probe needs full metadata, not INDEX projections."
+        )
     staged: list[tuple[str, str]] = []
     n_changed = 0
     sources = set(replacements.keys())
@@ -140,6 +154,7 @@ def _ripple_removals(
     value: str,
     *,
     drop_relevance: bool = False,
+    papers: list[dict[str, Any]] | None = None,
 ) -> tuple[int, list[tuple[str, str]], list[dict[str, Any]]]:
     """Drop ``value`` from ``field`` of every paper that references it.
 
@@ -159,8 +174,18 @@ def _ripple_removals(
 
     Returns the same shape as :func:`_ripple_replacements`:
         (n_changed, staged_writes, all_papers_with_changes_applied)
+
+    ``papers`` mirrors :func:`_ripple_replacements`: an already-loaded list
+    (INDEX projections suffice for membership), FORBIDDEN with
+    ``drop_relevance`` for the same stray-relevance-probe reason.
     """
-    papers = list_papers(vault)
+    if papers is None:
+        papers = list_papers(vault)
+    elif drop_relevance:
+        raise ValueError(
+            "papers= must not be combined with drop_relevance: the stray "
+            "relevance-key probe needs full metadata, not INDEX projections."
+        )
     staged: list[tuple[str, str]] = []
     n_changed = 0
     now = now_iso()

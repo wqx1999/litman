@@ -14,6 +14,7 @@ import builtins
 import functools
 import importlib
 import io
+import os
 import re
 import shutil
 import socket
@@ -554,6 +555,17 @@ def _exited_proc() -> subprocess.Popen[bytes]:
     return proc
 
 
+def _crashed_proc() -> subprocess.Popen[bytes]:
+    """A real process that exited non-zero — the snap-confinement shape: the
+    browser started, could not lock the profile it was handed, and aborted
+    rather than corrupt it. It differs from _exited_proc only in its status,
+    which is the whole point: that is what tells a failed launch from a
+    browser that exited having done its job."""
+    proc = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    proc.wait()
+    return proc
+
+
 def _live_proc() -> subprocess.Popen[bytes]:
     """A real process that stays alive — the Windows shape: Edge keeps the
     browser process resident (Startup boost, single-instance-per-profile) long
@@ -628,6 +640,150 @@ def test_watcher_exits_after_grace_when_no_page_ever_connected() -> None:
     watcher.join(timeout=5)
     assert not watcher.is_alive()
     assert server.should_exit is True
+
+
+def test_watcher_opens_a_tab_when_the_window_dies_before_any_page() -> None:
+    # Popen said the browser started; the browser disagreed a moment later —
+    # an Ubuntu snap Chromium refused the hidden --user-data-dir and aborted.
+    # Before this, the grace above simply stopped the server, so *installing*
+    # Chromium left the user worse off than owning no Chromium at all: the
+    # tab fallback only ever ran for a browser that failed to start. The
+    # server must stay up long enough for the tab to arrive and take over.
+    tracker, server = PresenceTracker(), _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_crashed_proc(), server, tracker),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            # Long, so a fallback that fired on this clock would time the
+            # test out: a crash is judged on launch_failure_grace.
+            "first_connect_grace": 30.0,
+            "launch_failure_grace": 0.2,
+            "linger": 0.2,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.6)  # past the grace that used to be a death sentence
+    assert calls == [1] and server.should_exit is False
+    tracker.connect()  # the tab loads the SPA
+    time.sleep(0.3)
+    assert server.should_exit is False  # and now holds the server on its own
+    tracker.disconnect()  # the user closes the tab: normal shutdown resumes
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+def test_watcher_gives_up_when_the_tab_fallback_also_fails() -> None:
+    # webbrowser.open returns False on a box with no browser it can drive.
+    # Nothing is coming, so the original verdict stands — a failed launch may
+    # not leave an orphaned server behind just because we tried twice.
+    server = _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_crashed_proc(), server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: False,
+            # Long, so a fallback that fired on this clock would time the
+            # test out: a crash is judged on launch_failure_grace.
+            "first_connect_grace": 30.0,
+            "launch_failure_grace": 0.2,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+def test_watcher_offers_the_tab_fallback_once_and_then_gives_up() -> None:
+    # The tab opened and its page never connected either (the default browser
+    # is a text-mode one, or the user closed it before it loaded). One more
+    # grace, then stop — the fallback is an extra chance, not a loop that
+    # keeps a dead launch alive by re-offering itself forever.
+    server = _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_crashed_proc(), server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            # Long, so a fallback that fired on this clock would time the
+            # test out: a crash is judged on launch_failure_grace.
+            "first_connect_grace": 30.0,
+            "launch_failure_grace": 0.2,
+            "never_connected_timeout": 1.0,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert calls == [1]  # offered once, not once per poll
+    assert server.should_exit is True
+
+
+def test_watcher_never_offers_the_tab_after_a_clean_exit() -> None:
+    # The other half of the exit-status rule, and what keeps the fallback from
+    # becoming a nuisance: a browser that exits 0 with no page ever connected
+    # is the long-standing hand-off shape (Chromium passed the URL to an
+    # instance we cannot see) or a user who shut the window before it painted.
+    # Neither wants a tab opened at them, so the original verdict stands.
+    server = _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_exited_proc(), server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            "first_connect_grace": 0.2,
+            # Long, and never reached: a clean exit is not a crash.
+            "launch_failure_grace": 30.0,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert calls == []  # never offered
+    assert server.should_exit is True
+
+
+def test_watcher_never_offers_the_tab_while_the_window_is_alive() -> None:
+    # The guard on the whole mechanism: a window merely slow to paint must not
+    # have a second browser opened on top of it. Only an exited process can
+    # have failed this way.
+    proc, server = _live_proc(), _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            "first_connect_grace": 0.05,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    try:
+        watcher.start()
+        time.sleep(0.4)  # many graces' worth, with the process still up
+        assert calls == [] and server.should_exit is False
+    finally:
+        proc.terminate()
+        proc.wait()
+        watcher.join(timeout=5)
 
 
 def test_watcher_holds_while_a_page_is_connected() -> None:
@@ -717,6 +873,214 @@ def test_watcher_torn_snapshot_neither_breaks_nor_crashes() -> None:
     assert server.should_exit is True
 
 
+def test_watcher_gives_up_when_a_live_window_never_loads_a_page() -> None:
+    # The two Windows facts meet: Edge keeps our spawned process resident
+    # forever, and no page ever connects (the window came up on an error page,
+    # a stale cached response, anything). The first-connect grace waits on the
+    # process, so on its own it never fires — and the server outlives every
+    # window there is. The outer bound is what closes that.
+    proc, server = _live_proc(), _FakeServer()
+    try:
+        watcher = threading.Thread(
+            target=_stop_server_when_window_closes,
+            args=(proc, server, PresenceTracker()),
+            kwargs={
+                "first_connect_grace": 30.0,
+                "never_connected_timeout": 0.3,
+                "linger": 0.1,
+                "poll": 0.02,
+            },
+            daemon=True,
+        )
+        watcher.start()
+        watcher.join(timeout=5)
+        assert not watcher.is_alive()
+        assert server.should_exit is True
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_watcher_runs_with_no_process_to_poll() -> None:
+    # The --window fallback: no Chromium found, so the URL opened as a tab in
+    # the user's everyday browser and there is no process of ours to watch.
+    # The page is then the only signal — and it has to be enough, because a
+    # shortcut launch has no console to Ctrl+C from.
+    tracker = PresenceTracker()
+    tracker.connect()
+    server = _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(None, server, tracker),
+        kwargs={"first_connect_grace": 30.0, "linger": 0.1, "poll": 0.02},
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.25)
+    assert server.should_exit is False  # the tab is open; nothing to stop
+    tracker.disconnect()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+# ---------------------------------------------------------------------------
+# shutdown escalation — asking uvicorn to stop is not the same as stopping
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_stands_down_the_moment_the_server_returns() -> None:
+    # The normal path: server.run() returns in well under a second, gui_cmd's
+    # `finally` sets the event, and neither of the louder stages ever happens.
+    server, stopped = _FakeServer(), threading.Event()
+    killed: list[bool] = []
+    stopped.set()
+
+    gui._escalate_shutdown(
+        server,
+        stopped,
+        force_after=5.0,
+        hard_after=10.0,
+        hard_exit=lambda: killed.append(True),
+    )
+
+    assert not hasattr(server, "force_exit")
+    assert killed == []
+
+
+def test_escalate_forces_a_server_that_ignores_the_request() -> None:
+    # One connection uvicorn cannot finish draining. `force_exit` is its own
+    # escape hatch, normally reached only by a second Ctrl+C — which is
+    # precisely what a console-less litw.exe launch cannot send.
+    server, stopped = _FakeServer(), threading.Event()
+    killed: list[bool] = []
+
+    thread = threading.Thread(
+        target=gui._escalate_shutdown,
+        args=(server, stopped),
+        kwargs={
+            "force_after": 0.1,
+            "hard_after": 10.0,
+            "hard_exit": lambda: killed.append(True),
+        },
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.3)
+    assert server.force_exit is True  # insisted
+    assert killed == []  # but still waiting, not killing
+    stopped.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert killed == []
+
+
+def test_escalate_kills_a_server_that_ignores_force_too() -> None:
+    # The end of the line. A GUI process with no window and no console is
+    # unreachable by any means the user has, and on Windows it also blocks its
+    # own next `uv tool install --force` — so leaving is better than staying.
+    server, stopped = _FakeServer(), threading.Event()
+    killed: list[bool] = []
+
+    gui._escalate_shutdown(
+        server,
+        stopped,
+        force_after=0.05,
+        hard_after=0.1,
+        hard_exit=lambda: killed.append(True),
+    )
+
+    assert server.force_exit is True
+    assert killed == [True]
+
+
+def test_window_fallback_to_a_tab_still_watches_the_page(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # --window on a box with no Chrome/Edge/Chromium at all. It degrades to a
+    # tab, and used to degrade the shutdown contract with it: no process, so
+    # no watcher, so nothing could ever stop the server — and the launch this
+    # matters for (the desktop shortcut) has no Ctrl+C either.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    watched: list[object] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(gui, "_app_window_argv", lambda url: None)
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, *a, on_launch_failed=None, **k: watched.append(
+            (proc, on_launch_failed)
+        ),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)] and procs == []
+    # The page gate ran with nothing to poll — and no tab fallback armed:
+    # this launch *is* the tab, so there is nothing left to fall back to.
+    assert watched == [(None, None)]
+
+
+def test_window_launch_arms_the_tab_fallback(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # The seam that makes a snap Chromium's abort survivable: a launch that
+    # spawned a window hands the watcher a way back to a tab, aimed at the
+    # same URL the window was given. Without the callback the watcher can
+    # only stop the server, which is how installing a browser came to break
+    # the desktop shortcut on Ubuntu.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    armed: list[object] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, *a, on_launch_failed=None, **k: armed.append(on_launch_failed),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(procs) == 1 and opened == []  # a window went up, not a tab
+    assert len(armed) == 1 and armed[0] is not None
+    # The command has returned, so its `finally` has set stop_event: the
+    # window's non-zero exit is our own terminate, not a crash, and a tab
+    # thrown up as the run ends is worse than no tab at all.
+    assert armed[0]() is False and opened == []
+
+
+def test_plain_tab_mode_keeps_the_ctrl_c_contract(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # The counterpart: a terminal `lit gui` (no --window) must NOT acquire a
+    # page-presence gate. What the terminal started, the terminal stops —
+    # closing one tab has never been a reason to take the server with it.
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    watched: list[object] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, *a, **k: watched.append(proc),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)]
+    assert watched == []
+
+
 # ---------------------------------------------------------------------------
 # the app window's own browser profile
 # ---------------------------------------------------------------------------
@@ -739,7 +1103,7 @@ def test_browser_profile_dir_defaults_outside_the_config_dir(monkeypatch):
 
 
 def test_remove_browser_profile_is_a_noop_when_absent() -> None:
-    assert remove_browser_profile() is None
+    assert remove_browser_profile() == []
 
 
 def test_remove_browser_profile_deletes_it() -> None:
@@ -747,8 +1111,126 @@ def test_remove_browser_profile_deletes_it() -> None:
     (profile / "Default").mkdir(parents=True)
     (profile / "Default" / "Preferences").write_text("{}", encoding="utf-8")
 
-    assert remove_browser_profile() == profile
+    assert remove_browser_profile() == [profile]
     assert not profile.exists()
+
+
+# ---------------------------------------------------------------------------
+# snap-confined browsers: the profile has to live where they can write
+# ---------------------------------------------------------------------------
+
+
+def _fake_snap(monkeypatch, tmp_path, name="chromium"):
+    """A machine with snap `name` installed, entirely inside tmp_path.
+
+    The per-user snap area follows $LITMAN_REGISTRY_DIR, which the autouse
+    isolation fixture already points at tmp_path — so nothing here can reach
+    a developer's real ~/snap, which matters because the uninstall sweep
+    deletes what it finds.
+    """
+    root = Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "snap"
+    (root / name / "common").mkdir(parents=True)
+    monkeypatch.setattr(gui, "_SNAP_BIN", tmp_path / "snapbin")
+    (tmp_path / "snapbin").mkdir()
+    monkeypatch.setattr(gui, "_SNAP_ROOT", tmp_path / "snaproot")
+    (tmp_path / "snaproot" / name).mkdir(parents=True)
+    return root
+
+
+def test_snap_sweep_cannot_reach_a_real_home(monkeypatch, tmp_path):
+    # Reverse check on a rule that *deletes* directories. The sweep root
+    # follows $LITMAN_REGISTRY_DIR, so neither this suite nor a sandboxed run
+    # can walk into a developer's actual ~/snap. Plant a decoy there and prove
+    # nothing so much as looks at it.
+    decoy = tmp_path / "real-home"
+    planted = decoy / "snap" / "chromium" / "common" / "litman-browser-profile"
+    planted.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: decoy))
+
+    assert gui._snap_user_root() != decoy / "snap"
+    assert gui.browser_profile_dirs() == []
+    assert remove_browser_profile() == []
+    assert planted.is_dir()
+
+
+def test_snap_sweep_uses_the_real_home_when_nothing_overrides_it(monkeypatch):
+    # And the seam's real default, which the test above can never exercise:
+    # unsandboxed, ~/snap is exactly where snapd puts these.
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    assert gui._snap_user_root() == Path.home() / "snap"
+
+
+def test_snap_name_reads_the_snap_from_a_wrapper_path(monkeypatch, tmp_path):
+    # /snap/bin/chromium resolves to snapd itself, so the name is all there is
+    # to go on — confirmed against the /snap/<name> directory the snap owns.
+    monkeypatch.setattr(gui, "_SNAP_BIN", tmp_path / "bin")
+    monkeypatch.setattr(gui, "_SNAP_ROOT", tmp_path / "root")
+    (tmp_path / "root" / "chromium").mkdir(parents=True)
+
+    assert gui._snap_name(tmp_path / "bin" / "chromium") == "chromium"
+    # Aliased as <snap>.<app>: the snap is the part before the dot.
+    assert gui._snap_name(tmp_path / "bin" / "chromium.foo") == "chromium"
+    # Not installed as a snap of that name — do not invent a path for it.
+    assert gui._snap_name(tmp_path / "bin" / "brave") is None
+    # An ordinary browser off PATH is not a snap at all.
+    assert gui._snap_name("/usr/bin/google-chrome") is None
+
+
+def test_browser_profile_dir_moves_out_of_the_hidden_cache_for_a_snap(
+    monkeypatch, tmp_path
+):
+    # The bug: snapd's `home` interface does not reach hidden directories, so
+    # the ~/.cache default made Ubuntu's snap Chromium abort on its
+    # SingletonLock rather than run a profile it could not lock. ~/snap/<snap>
+    # /common is the writable area it is granted.
+    root = _fake_snap(monkeypatch, tmp_path)
+    exe = tmp_path / "snapbin" / "chromium"
+
+    profile = browser_profile_dir(exe)
+
+    assert profile == root / "chromium" / "common" / "litman-browser-profile"
+    assert ".cache" not in str(profile)  # the hidden dir snapd will not grant
+
+
+def test_browser_profile_dir_is_unchanged_for_an_ordinary_browser(monkeypatch):
+    # The guard on the whole mechanism: only a snap gets moved. Windows,
+    # macOS and every deb/rpm Chromium keep the cache dir they have always had.
+    monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
+    assert browser_profile_dir("/usr/bin/google-chrome") == browser_profile_dir()
+
+
+def test_app_window_argv_hands_a_snap_the_profile_it_can_write(monkeypatch, tmp_path):
+    # End to end through the real flag builder: the --user-data-dir on the
+    # command line is the moved one, and it is the browser we found that
+    # decides so.
+    root = _fake_snap(monkeypatch, tmp_path)
+    exe = tmp_path / "snapbin" / "chromium"
+    exe.write_text("")
+    monkeypatch.setattr(gui, "_find_chromium", lambda: str(exe))
+
+    argv = gui._app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None and argv[0] == str(exe)
+    want = root / "chromium" / "common" / "litman-browser-profile"
+    assert f"--user-data-dir={want}" in argv
+
+
+def test_uninstall_sweep_finds_the_snap_profile_too(monkeypatch, tmp_path):
+    # `lit uninstall` promises the profile does not outlive the install, and
+    # it must keep that promise for a profile it moved. The sweep goes by
+    # directory name, because by uninstall time the snap may be gone.
+    root = _fake_snap(monkeypatch, tmp_path)
+    snap_profile = root / "chromium" / "common" / "litman-browser-profile"
+    snap_profile.mkdir(parents=True)
+    default = browser_profile_dir()
+    default.mkdir(parents=True, exist_ok=True)
+    # A neighbour in the same snap that is emphatically not ours.
+    bystander = root / "chromium" / "common" / "chromium"
+    bystander.mkdir()
+
+    assert set(gui.browser_profile_dirs()) == {default, snap_profile}
+    assert set(remove_browser_profile()) == {default, snap_profile}
+    assert bystander.is_dir()  # untouched
 
 
 def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
@@ -773,6 +1255,33 @@ def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
     assert argv is not None
     assert argv[0] == str(binary)
     assert "open" not in argv
+
+
+def test_app_window_argv_reaches_a_browser_the_session_path_omits(
+    monkeypatch, tmp_path
+):
+    # A shortcut-launched litman inherits the desktop session's PATH, which has
+    # neither ~/.local/bin nor a Homebrew prefix. A browser installed there must
+    # still yield an app window rather than degrading to a plain tab.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    chromium = local_bin / "chromium"
+    chromium.touch()
+
+    def fake_which(name):
+        candidate = local_bin / name
+        on_path = str(local_bin) in os.environ["PATH"].split(":")
+        return str(candidate) if on_path and candidate.exists() else None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert argv[0] == str(chromium)
 
 
 # ---------------------------------------------------------------------------

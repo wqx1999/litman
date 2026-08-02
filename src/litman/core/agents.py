@@ -260,36 +260,97 @@ def _windows_registry_path_values() -> list[str]:
     return values
 
 
-def refresh_windows_path() -> None:
-    """Merge live Windows registry PATH entries into this process's PATH.
+# Where a per-user agent install lands, relative to $HOME. A desktop launcher
+# inherits the graphical session's PATH, and that session sources no shell rc —
+# Ubuntu's Wayland session never reads ~/.profile — so a shortcut-started
+# litman sees only the system dirs. Every agent installs under one of these,
+# which is why a missing ~/.local/bin hides all five at once while each one
+# still resolves fine in a terminal.
+_POSIX_USER_BIN_DIRS = (
+    ".local/bin",
+    "bin",
+    ".opencode/bin",
+    ".bun/bin",
+    ".npm-global/bin",
+    ".cargo/bin",
+)
 
-    This is intentionally a no-op off Windows. On Windows it is idempotent and
-    preserves process-only entries (for example an activated uv/venv bin dir)
-    while adding paths registered by installers since Litman started. Updating
-    ``os.environ`` also lets a subsequent Launch inherit the same live PATH.
+# The same hole one level up, absolute: a macOS app bundle launched from Finder
+# or the Dock inherits launchd's PATH (/usr/bin:/bin:/usr/sbin:/sbin), which
+# contains neither Homebrew prefix — so a brew-installed agent is invisible to
+# a double-clicked litman even though every terminal finds it.
+_POSIX_SYSTEM_BIN_DIRS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
+
+
+def _posix_probe_bin_dirs() -> list[str]:
+    """Existing bin dirs a desktop session's PATH may omit, in fixed order.
+
+    Re-probed on every call so a CLI installed while the GUI is running is
+    picked up by the next Recheck instead of needing a restart.
     """
-    if sys.platform != "win32":
-        return
+    candidates: list[str] = []
+    try:
+        home = Path.home()
+    except RuntimeError:  # pragma: no cover - no resolvable home directory
+        pass
+    else:
+        candidates += [str(home / rel) for rel in _POSIX_USER_BIN_DIRS]
+    candidates += _POSIX_SYSTEM_BIN_DIRS
+    return [path for path in candidates if Path(path).is_dir()]
 
+
+def _merge_path_entries(
+    raw_values: list[str], sep: str, *, fold_case: bool
+) -> None:
+    """Rewrite ``PATH`` as ``raw_values`` joined, first occurrence winning."""
     entries: list[str] = []
     seen: set[str] = set()
-    raw_values = [os.environ.get("PATH", ""), *_windows_registry_path_values()]
     for raw_value in raw_values:
-        for raw_entry in os.path.expandvars(raw_value).split(";"):
+        for raw_entry in os.path.expandvars(raw_value).split(sep):
             entry = raw_entry.strip().strip('"')
             if not entry:
                 continue
-            key = entry.rstrip("\\/").casefold()
+            key = entry.rstrip("\\/")
+            if fold_case:
+                key = key.casefold()
             if key in seen:
                 continue
             seen.add(key)
             entries.append(entry)
-    os.environ["PATH"] = ";".join(entries)
+    os.environ["PATH"] = sep.join(entries)
+
+
+def refresh_path() -> None:
+    """Merge the live environment's agent locations into this process's PATH.
+
+    A running process keeps the environment it inherited at startup, and on
+    either platform that environment can be missing an agent the user has
+    installed — for different reasons, so each gets its own source:
+
+    * Windows: installers write the new PATH to the registry, which a running
+      server never re-reads.
+    * POSIX: a desktop-launched process inherits the graphical session's PATH,
+      which omits the bin dirs a shell rc would have added (see
+      :data:`_POSIX_USER_BIN_DIRS` and :data:`_POSIX_SYSTEM_BIN_DIRS`).
+
+    Idempotent, and preserves process-only entries (an activated uv/venv bin
+    dir, say) by keeping the inherited PATH first. Updating ``os.environ``
+    also lets a subsequent Launch inherit the same live PATH.
+    """
+    if sys.platform == "win32":
+        raw = [os.environ.get("PATH", ""), *_windows_registry_path_values()]
+        _merge_path_entries(raw, ";", fold_case=True)
+        return
+    raw = [os.environ.get("PATH", ""), *_posix_probe_bin_dirs()]
+    _merge_path_entries(raw, ":", fold_case=False)
 
 
 def resolve_launch(spec: AgentSpec) -> str | None:
     """Resolve ``spec``'s launch executable against the live environment."""
-    refresh_windows_path()
+    refresh_path()
     argv = shlex.split(spec.launch)
     return shutil.which(argv[0]) if argv else None
 
@@ -345,6 +406,6 @@ def detect(spec: AgentSpec) -> bool:
     Generic, data-driven — no per-agent branching. Probes ``detect_bin`` if
     set, otherwise the first token of the launch command.
     """
-    refresh_windows_path()
+    refresh_path()
     probe = spec.detect_bin or shlex.split(spec.launch)[0]
     return shutil.which(probe) is not None

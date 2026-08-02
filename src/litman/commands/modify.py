@@ -41,7 +41,10 @@ from litman.core.dedup import find_paper_by_doi
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-from litman.core.project_refs import write_references_md
+from litman.core.project_refs import (
+    load_project_member_metas,
+    write_references_md,
+)
 from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import (
@@ -112,6 +115,17 @@ CODE_MANAGED_FIELDS: frozenset[str] = frozenset({"code-clones"})
 USER_TAG_FIELDS: frozenset[str] = (
     LIST_FIELDS - REVERSE_REF_FIELDS - CODE_MANAGED_FIELDS
 )
+
+# List fields whose ORDER carries meaning, and which may therefore be rewritten
+# wholesale by ``_apply_set_list``. Only authors qualifies, and the reason is
+# not stylistic: --add-tag appends, so an author list can never be reordered by
+# composing add/rm ops — correcting any name but the last one moves it to the
+# end, and the first author's family name is what `derive_id` and every
+# citation style take. The other list fields are sets, not sequences:
+# topics/methods/data are TAXONOMY-controlled vocabulary, projects owns a
+# symlink side (see routes_structured.py), and the relation fields carry paired
+# reverse edges — for all of them a wholesale overwrite is the wrong verb.
+ORDERED_LIST_FIELDS: frozenset[str] = frozenset({"authors"})
 
 # Plurals that are not formed by adding "s". Derived reverse-lookup below
 # rather than a hand-kept singular list, so a new list field is covered the
@@ -318,6 +332,58 @@ def _apply_rm_tag(
     return before, after
 
 
+def _apply_set_list(
+    metadata: dict[str, Any], key: str, values: list[str]
+) -> tuple[list[Any], list[Any]] | None:
+    """Replace an ordered list field wholesale. Returns (before, after) or None.
+
+    The op that add/rm cannot express. ``_apply_add_tag`` appends, so a
+    reorder — or a correction to any name but the last — is unreachable by
+    composing the existing primitives; splitting it into "remove all, then add
+    in order" needs two passes, and ``_apply_modify`` runs adds before removes
+    inside its single atomic write, so the removes would delete what the adds
+    just wrote. Hence a fourth op rather than a helper over the other three.
+
+    Validation is about the SHAPE of the list, never about the plausibility of
+    its values: a user rewriting their own library may write whatever they
+    like into it (invariant #7), including the placeholder values that
+    ``lit add`` refuses at the ingest boundary. Clearing a stale value is a
+    legitimate edit, and `lit health-check` is what reports the result.
+    """
+    if key not in ORDERED_LIST_FIELDS:
+        raise ModifyError(
+            f"cannot rewrite {key!r} as an ordered list. "
+            f"Allowed: {', '.join(sorted(ORDERED_LIST_FIELDS))}. "
+            "Other list fields are sets — use --add-tag / --rm-tag."
+        )
+    cleaned: list[str] = []
+    for position, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise ModifyError(
+                f"{key}[{position}] is empty. Every entry must carry a value; "
+                "drop the entry instead of blanking it."
+            )
+        entry = value.strip()
+        if entry in cleaned:
+            raise ModifyError(
+                f"{key} lists {entry!r} twice (positions "
+                f"{cleaned.index(entry)} and {position}). "
+                "A list field holds each value once."
+            )
+        cleaned.append(entry)
+    if not cleaned:
+        raise ModifyError(
+            f"{key} cannot be emptied — a paper with no {key} fails its "
+            "schema check. Pass the full list you want it to end up with."
+        )
+    current = metadata.get(key)
+    before = list(current) if current else []
+    if before == cleaned:
+        return None  # already in the requested order
+    metadata[key] = cleaned
+    return before, cleaned
+
+
 def _reject_reverse_field(key: str, flag_name: str) -> None:
     """Forbid a user from naming a reverse relation field directly.
 
@@ -377,9 +443,10 @@ def _apply_modify(
     set_ops: tuple[str, ...] = (),
     add_tag_ops: tuple[str, ...] = (),
     rm_tag_ops: tuple[str, ...] = (),
+    set_list_ops: dict[str, list[str]] | None = None,
     skip_set_noop: bool = False,
 ) -> bool:
-    """Apply set / add-tag / rm-tag ops to one paper's metadata.yaml.
+    """Apply set-list / set / add-tag / rm-tag ops to one paper's metadata.yaml.
 
     Shared backend for ``lit modify`` and the M13 semantic-sugar commands
     (``lit read`` / ``lit revisit`` / ``lit drop`` / ``lit promote`` /
@@ -401,6 +468,10 @@ def _apply_modify(
         set_ops: Sequence of ``"key=value"`` --set specs.
         add_tag_ops: Sequence of ``"key=value"`` --add-tag specs.
         rm_tag_ops: Sequence of ``"key=value"`` --rm-tag specs.
+        set_list_ops: ``{field: [value, ...]}`` wholesale rewrites of an
+            ordered list field. Applied BEFORE the other three so that a
+            reorder and a scalar edit can ride in one request without the
+            add/rm ops operating on a list that is about to be replaced.
         skip_set_noop: If True, --set ops whose new value equals the
             current value are silently dropped from the diff (no
             ``updated-at`` bump if every op turns out to be redundant).
@@ -445,6 +516,12 @@ def _apply_modify(
     # (op_kind, forward_field, opposite_paper_id). After the originating
     # side is settled, each drives a paired write on the opposite paper.
     relation_ops: list[tuple[str, str, str]] = []
+
+    for key, values in (set_list_ops or {}).items():
+        change = _apply_set_list(metadata, key, values)
+        if change is not None:
+            before, after = change
+            diffs.append((key, before, after))
 
     for spec in set_ops:
         key, value = _parse_kv(spec, "--set")
@@ -599,26 +676,36 @@ def _apply_modify(
     # member's title/authors/year, and the per-project relevance-<project>
     # annotation (review F15) — so edits to those fields must refresh refs
     # too. Both refs paths need FULL metadata (relevance-* is not in the
-    # INDEX projection), which makes them the only two cases below that
-    # still pay a vault scan.
+    # INDEX projection) — but only for the affected projects' MEMBERS, so
+    # the refs_fields_changed case upgrades just those entries off the
+    # projection base (task-write-perf) and only projects_changed (which
+    # rebuilds every registered project via reconcile) still pays a scan.
     refs_fields_changed = any(
         key in {"priority", "title", "authors", "year"}
         or key.startswith("relevance-")
         for key, _, _ in diffs
     )
     member_projects = metadata.get("projects") or []
-    needs_full_metadata = projects_changed or (
-        refs_fields_changed and bool(member_projects)
-    )
 
     # Splice base: the verified INDEX projections when they suffice (the
     # common tag/status/date edit — no scan at all), else ONE list_papers
     # scan (down from two). load_index_papers returning None (missing /
     # stale / older-schema INDEX) falls back to the scan, and the render
     # below regenerates a fresh INDEX from it either way.
-    base_papers = None if needs_full_metadata else load_index_papers(vault)
+    base_papers = None if projects_changed else load_index_papers(vault)
     if base_papers is None:
         base_papers = list_papers(vault)
+    elif refs_fields_changed and member_projects:
+        # The surgical REFERENCES refresh below re-renders this paper's own
+        # projects from all_papers — upgrade those projects' members (and
+        # only them) to full metadata on top of the projection base.
+        member_metas = load_project_member_metas(
+            vault, [str(p) for p in member_projects]
+        )
+        member_ids = {str(m.get("id")) for m in member_metas}
+        base_papers = [
+            p for p in base_papers if str(p.get("id")) not in member_ids
+        ] + member_metas
     all_papers = [p for p in base_papers if p.get("id") not in changed_ids]
     # ruamel YAML's CommentedMap is dict-compatible for our consumers.
     all_papers.append(dict(metadata))
@@ -651,7 +738,8 @@ def _apply_modify(
     # rebuilt too — otherwise `--add-tag projects=X` writes member TRUTH while
     # the project dir stays stale. Gate on the projects diff so an unrelated
     # modify on a non-member paper does not pay the rebuild-all cost.
-    # (all_papers is full metadata in that branch — needs_full_metadata.)
+    # (all_papers is full metadata in that branch — projects_changed forces
+    # the full scan above.)
     reconcile_derived(
         vault,
         papers=all_papers,
@@ -665,9 +753,10 @@ def _apply_modify(
     # itself did not change (the projects_changed path above already rebuilt
     # every project, including one the paper just left). Only the affected
     # paper's own projects are regenerated, reusing the in-memory paper list —
-    # full metadata by construction (this condition implies
-    # needs_full_metadata). Best-effort like rebuild_all_project_refs: a
-    # project whose dir is missing on this machine is silently skipped.
+    # its member entries carry full metadata by construction (this condition
+    # is exactly the member-upgrade branch above). Best-effort like
+    # rebuild_all_project_refs: a project whose dir is missing on this
+    # machine is silently skipped.
     if not projects_changed and refs_fields_changed and member_projects:
         registry = load_config(vault).projects
         for proj in member_projects:
@@ -742,6 +831,19 @@ def _apply_modify(
     metavar="FIELD=VALUE",
     help="Remove a value from a list field (silent if absent). Repeatable.",
 )
+@click.option(
+    "--set-author",
+    "author_ops",
+    multiple=True,
+    metavar="NAME",
+    help=(
+        "Rewrite the author list. Repeatable: the order the flags appear in "
+        "IS the stored order, and together they replace the whole list "
+        "(names not repeated are dropped). Use this rather than "
+        "--add-tag/--rm-tag when order matters — --add-tag can only append. "
+        "One flag per name, since a name already contains a comma."
+    ),
+)
 @library_option
 @vault_option
 def modify_cmd(
@@ -750,6 +852,7 @@ def modify_cmd(
     set_ops: tuple[str, ...],
     add_tag_ops: tuple[str, ...],
     rm_tag_ops: tuple[str, ...],
+    author_ops: tuple[str, ...],
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -762,9 +865,10 @@ def modify_cmd(
     audit timestamp) and INDEX.json atomically; views/by-*/ links
     are rebuilt afterwards.
     """
-    if not (set_ops or add_tag_ops or rm_tag_ops):
+    if not (set_ops or add_tag_ops or rm_tag_ops or author_ops):
         raise ModifyError(
-            "lit modify requires at least one of --set / --add-tag / --rm-tag. "
+            "lit modify requires at least one of --set / --add-tag / "
+            "--rm-tag / --set-author. "
             "Run `lit modify --help` for examples."
         )
 
@@ -776,4 +880,5 @@ def modify_cmd(
         set_ops=set_ops,
         add_tag_ops=add_tag_ops,
         rm_tag_ops=rm_tag_ops,
+        set_list_ops={"authors": list(author_ops)} if author_ops else None,
     )

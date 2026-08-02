@@ -245,6 +245,28 @@ def test_local_vault_size_excludes_staging_dir(vault: Path) -> None:
     assert after.bytes == baseline.bytes
 
 
+def test_local_vault_size_excludes_upload_stash(vault: Path) -> None:
+    """``.litman-upload/**`` is excluded too (task-gui-doi-add).
+
+    A PDF dropped into the webUI is stashed there between the drop and the
+    confirm. It is machine-local scratch exactly like ``.litman-staging/``, so
+    an abandoned 100 MB stash must never be counted into — or pushed by — a
+    sync.
+    """
+    baseline = local_vault_size(vault)
+    stash = vault / ".litman-upload"
+    stash.mkdir(parents=True)
+    (stash / "deadbeef.pdf").write_bytes(b"%PDF-1.4" + b"x" * 9_999)
+    after = local_vault_size(vault)
+    assert after.count == baseline.count
+    assert after.bytes == baseline.bytes
+    assert not any(".litman-upload" in str(p) for p, _ in largest_files(vault, 10))
+
+
+def test_default_excludes_contains_upload_stash() -> None:
+    assert ".litman-upload/**" in DEFAULT_EXCLUDES
+
+
 def test_default_excludes_contains_views() -> None:
     # Review F33: ADR-003 mandates views/** in the hard exclude set (it is a
     # derived projection, rebuilt by `lit refresh-views`).

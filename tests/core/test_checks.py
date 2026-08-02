@@ -17,6 +17,9 @@ from litman.core.checks import (
     all_fixed_enums,
     check_config_readable,
     check_duplicate_doi,
+    check_placeholder_id,
+    check_placeholder_metadata,
+    check_weak_id_keyword,
     check_schema,
     check_taxonomy_drift,
     fixed_enum_allows_none,
@@ -353,3 +356,336 @@ def test_all_fixed_enums_shape_and_order() -> None:
     # Values agree with the private table via the per-field accessor.
     for field, values in enums.items():
         assert set(values) == set(fixed_enum_values(field))
+
+
+# ---------------------------------------------------------------------------
+# task-metadata-quality C: filler identity fields already sitting in a vault.
+#
+# check_schema asks only "non-empty", and "Unknown" is non-empty — so these
+# papers pass every other probe while carrying a filler into the id, the browse
+# list and every exported citation.
+# ---------------------------------------------------------------------------
+
+
+def test_placeholder_author_reported(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Unknown_Amatoxins",
+        title="Chemistry of the amatoxins",
+        authors=["Unknown"],
+    )
+    issues = check_placeholder_metadata(vault, [paper])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "placeholder_metadata"
+    assert issue.severity == "warning"
+    assert issue.paper_id == "2024_Unknown_Amatoxins"
+    assert "Unknown" in issue.message
+    # The user is the only one who knows the real name, so the finding is only
+    # worth reporting if it carries the commands that fix it.
+    assert "lit modify" in (issue.hint or "")
+    assert "lit rename" in (issue.hint or "")
+
+
+def test_placeholder_title_reported(vault: Path) -> None:
+    paper = _minimal_paper(title="Untitled", authors=["Wieland, Theodor"])
+    issues = check_placeholder_metadata(vault, [paper])
+    assert len(issues) == 1
+    assert "title" in issues[0].message
+    assert "lit modify" in (issues[0].hint or "")
+
+
+def test_clean_paper_reports_nothing(vault: Path) -> None:
+    paper = _minimal_paper(
+        title="Chemistry of the amatoxins",
+        authors=["Wieland, Theodor", "Faulstich, Heinz"],
+    )
+    assert check_placeholder_metadata(vault, [paper]) == []
+
+
+def test_anonymous_and_institutional_authors_report_nothing(vault: Path) -> None:
+    """The values `lit add`'s rejection message tells users to write."""
+    for authors in (["Anonymous"], ["Bayer AG"], ["Unknown, Robert"]):
+        paper = _minimal_paper(title="A patent", authors=authors)
+        assert check_placeholder_metadata(vault, [paper]) == [], authors
+
+
+def test_every_placeholder_author_reported_separately(vault: Path) -> None:
+    paper = _minimal_paper(
+        title="Untitled", authors=["Unknown", "N/A", "Wieland, Theodor"]
+    )
+    issues = check_placeholder_metadata(vault, [paper])
+    assert len(issues) == 3  # one title + two authors
+
+
+def test_missing_fields_do_not_crash_the_check(vault: Path) -> None:
+    """A paper mid-repair may have no title / a non-list authors field."""
+    assert check_placeholder_metadata(vault, [_minimal_paper()]) == []
+    assert check_placeholder_metadata(
+        vault, [_minimal_paper(title=None, authors="Wieland, Theodor")]
+    ) == []
+
+
+def test_placeholder_check_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — an unwired check helps nobody.
+
+    Asserted in both directions: a filler paper must surface through
+    ``run_all_checks``, and a clean one must not. The positive half is what
+    fails if the CheckSpec is ever dropped from the registry; the negative
+    half is what fails if the check starts crying wolf.
+    """
+    dirty = _minimal_paper(id="2024_Unknown_X", title="X", authors=["Unknown"])
+    assert any(
+        i.category == "placeholder_metadata"
+        for i in run_all_checks(vault, [dirty])
+    ), "check_placeholder_metadata is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(title="X", authors=["Wieland, Theodor"])
+    assert not any(
+        i.category == "placeholder_metadata"
+        for i in run_all_checks(vault, [clean])
+    )
+
+
+# ---------------------------------------------------------------------------
+# placeholder_id: the filler that got baked into the handle
+# ---------------------------------------------------------------------------
+
+
+def test_placeholder_id_reported(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Untitled",
+        authors=["Unknown"],
+        year=2024,
+    )
+    issues = check_placeholder_id(vault, [paper])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "placeholder_id"
+    assert issue.severity == "warning"
+    assert issue.paper_id == "2024_Unknown_Untitled"
+    assert "'Unknown'" in issue.message
+    assert "'Untitled'" in issue.message
+
+
+def test_placeholder_id_survives_the_metadata_repair(vault: Path) -> None:
+    """The whole reason this check exists, asserted against its sibling.
+
+    `check_placeholder_metadata` reads the fields, so `lit modify` clears it —
+    and with it the only thing that ever mentioned the handle those fields
+    built. This one reads the id, so it is still there afterwards, and by then
+    it can name the exact rename.
+    """
+    repaired = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    assert check_placeholder_metadata(vault, [repaired]) == []
+
+    issues = check_placeholder_id(vault, [repaired])
+    assert len(issues) == 1
+    assert (
+        "lit rename 2024_Unknown_Untitled 2024_Zhang_Deep-learning-protein"
+        in (issues[0].hint or "")
+    )
+
+
+def test_placeholder_id_hint_blanks_only_what_it_cannot_know(vault: Path) -> None:
+    """A Chinese title yields no keyword, but the family name is right there."""
+    paper = _minimal_paper(
+        id="2018_Unknown_Untitled",
+        title="关于化合物的合成方法研究",
+        authors=["Zhang, Tianshun"],
+        year=2018,
+    )
+    issues = check_placeholder_id(vault, [paper])
+    assert len(issues) == 1
+    assert "2018_Zhang_<Keyword>" in (issues[0].hint or "")
+
+
+def test_placeholder_id_never_proposes_a_rename_to_itself(vault: Path) -> None:
+    """Metadata still holding the filler must not be offered back as the fix."""
+    paper = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Untitled",
+        authors=["Unknown"],
+        year=2024,
+    )
+    hint = check_placeholder_id(vault, [paper])[0].hint or ""
+    # The last token is `lit rename`'s second argument — the id being proposed.
+    # Matching on the whole hint would pass on the OLD id, which is in there too.
+    target = hint.split()[-1].strip("`")
+    assert target == "2024_<Family>_<Keyword>"
+
+
+def test_placeholder_id_keeps_the_half_that_is_honest(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Unknown_Deep-learning",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    issues = check_placeholder_id(vault, [paper])
+    assert len(issues) == 1
+    assert "'Unknown'" in issues[0].message
+    assert "'Deep-learning'" not in issues[0].message
+
+
+@pytest.mark.parametrize(
+    "paper_id",
+    [
+        "2024_Na_Deep-learning",  # 나 / 娜 — a real family name
+        "2024_Nil_Deep-learning",
+        "2024_Anonymous_Deep-learning",  # a claim about the document, not a filler
+        "2024_Zhang_Deep-learning",
+    ],
+)
+def test_placeholder_id_leaves_honest_ids_alone(vault: Path, paper_id: str) -> None:
+    """The false positive this check must never produce.
+
+    `Na` is the one that matters: flagging it would put a permanent warning on
+    exactly the authors the ASCII-id work exists to serve. The cost is that
+    `2024_NA_...` goes unreported here — `check_weak_id_keyword` covers a
+    segment that short whatever produced it.
+    """
+    paper = _minimal_paper(
+        id=paper_id,
+        title="Deep learning for protein design",
+        authors=["Someone, Real"],
+        year=2024,
+    )
+    assert check_placeholder_id(vault, [paper]) == []
+
+
+def test_placeholder_id_and_weak_keyword_do_not_both_fire(vault: Path) -> None:
+    """One paper, one `lit rename` — two warnings saying it would be noise."""
+    paper = _minimal_paper(
+        id="2024_Zhang_None", title="关于化合物的合成方法研究", year=2024
+    )
+    assert len(check_placeholder_id(vault, [paper])) == 1
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_placeholder_id_survives_ids_it_cannot_parse(vault: Path) -> None:
+    for paper in (
+        _minimal_paper(id="nosegments"),
+        _minimal_paper(id=None),
+        _minimal_paper(id="notayear_Unknown_Untitled"),
+        _minimal_paper(id="2024_Unknown_Untitled", authors="not a list"),
+        _minimal_paper(id="2024_Unknown_Untitled", year="not an int"),
+    ):
+        check_placeholder_id(vault, [paper])  # must not raise
+
+
+def test_placeholder_id_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — asserted in both directions."""
+    dirty = _minimal_paper(
+        id="2024_Unknown_Untitled",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    assert any(
+        i.category == "placeholder_id" for i in run_all_checks(vault, [dirty])
+    ), "check_placeholder_id is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(
+        id="2024_Zhang_Deep-learning-protein",
+        title="Deep learning for protein design",
+        authors=["Zhang, San"],
+        year=2024,
+    )
+    assert not any(
+        i.category == "placeholder_id" for i in run_all_checks(vault, [clean])
+    )
+
+
+# ---------------------------------------------------------------------------
+# weak_id_keyword: ids born before the ASCII gate in core/id.py
+# ---------------------------------------------------------------------------
+
+
+def test_weak_id_keyword_reported(vault: Path) -> None:
+    """`2018_Zhang_A` from `关于化合物A的合成方法` — the id the gate now prevents."""
+    paper = _minimal_paper(id="2018_Zhang_A", title="关于化合物A的合成方法")
+    issues = check_weak_id_keyword(vault, [paper])
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.category == "weak_id_keyword"
+    assert issue.severity == "warning"
+    assert issue.paper_id == "2018_Zhang_A"
+    assert "'A'" in issue.message
+    # `lit rename` is the only command that moves an id without stranding the
+    # wiki-links and project symlinks aimed at it.
+    assert "lit rename 2018_Zhang_A 2018_Zhang_<Keyword>" in (issue.hint or "")
+
+
+def test_weak_id_keyword_hint_names_a_concrete_id_when_one_exists(
+    vault: Path,
+) -> None:
+    """A title with a usable Latin fragment turns the hint into one keystroke."""
+    paper = _minimal_paper(
+        id="2018_Zhang_A", title="一种新型 PROTAC 分子的设计与合成"
+    )
+    issues = check_weak_id_keyword(vault, [paper])
+    assert len(issues) == 1
+    assert "lit rename 2018_Zhang_A 2018_Zhang_PROTAC" in (issues[0].hint or "")
+
+
+def test_a_deliberately_short_id_on_a_normal_title_is_not_reported(
+    vault: Path,
+) -> None:
+    """The reason the rule needs both conditions, not just the short keyword.
+
+    Nothing in the vault records whether an id was derived or supplied, so a
+    hand-chosen `--id 2020_Chen_ML` is indistinguishable from an accident by
+    shape alone. Its title still yields a keyword, which is what tells them
+    apart — a warning nobody can ever clear would be worse than a silent one.
+    """
+    paper = _minimal_paper(
+        id="2020_Chen_ML", title="Machine learning for protein design"
+    )
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_a_hand_written_id_for_a_chinese_title_is_not_reported(vault: Path) -> None:
+    """The exact escape hatch `lit add --id` offers must not be punished."""
+    paper = _minimal_paper(
+        id="2018_Zhang_Qipao-huxi", title="气泡呼吸行为在气液反应器中的研究"
+    )
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_ordinary_papers_are_not_reported(vault: Path) -> None:
+    paper = _minimal_paper(
+        id="2024_Wieland_Chemistry-amatoxins", title="Chemistry of the amatoxins"
+    )
+    assert check_weak_id_keyword(vault, [paper]) == []
+
+
+def test_weak_id_check_survives_ids_and_titles_it_cannot_parse(vault: Path) -> None:
+    """A paper mid-repair must not crash the health check."""
+    for paper in (
+        _minimal_paper(id="nosegments", title="关于化合物A的合成方法"),
+        _minimal_paper(id="2018_Zhang_A", title=None),
+        _minimal_paper(id=None, title="关于化合物A的合成方法"),
+        _minimal_paper(id="notayear_Zhang_A", title="关于化合物A的合成方法"),
+    ):
+        check_weak_id_keyword(vault, [paper])  # must not raise
+
+
+def test_weak_id_check_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — asserted in both directions."""
+    dirty = _minimal_paper(id="2018_Zhang_A", title="关于化合物A的合成方法")
+    assert any(
+        i.category == "weak_id_keyword" for i in run_all_checks(vault, [dirty])
+    ), "check_weak_id_keyword is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(
+        id="2024_Wieland_Chemistry-amatoxins", title="Chemistry of the amatoxins"
+    )
+    assert not any(
+        i.category == "weak_id_keyword" for i in run_all_checks(vault, [clean])
+    )

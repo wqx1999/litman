@@ -124,6 +124,16 @@ def emit_entry(meta: dict[str, Any]) -> str:
     if issue:
         # Bibtex name for CrossRef's "issue" is "number".
         fields.append(("number", escape_bibtex(issue)))
+    else:
+        # A patent's identity is its number, and biblatex's @patent reads it
+        # from the same `number` field an article uses for its issue. The two
+        # can never collide (no journal issue on a patent), so the field is
+        # only consulted when `issue` left it free. `patent-number` is a
+        # schemaless field the user sets by hand — patents carry no DOI, so
+        # nothing populates it automatically.
+        patent_number = str(meta.get("patent-number") or "").strip()
+        if patent_number:
+            fields.append(("number", escape_bibtex(patent_number)))
 
     pages = (meta.get("pages") or "").strip()
     if pages:
@@ -216,6 +226,11 @@ _VENUE_TYPE_TO_ENTRY: dict[str, str] = {
     "book-chapter": "incollection",
     "dissertation": "phdthesis",
     "report": "techreport",
+    # Not a CrossRef type: patents have no DOI and never come back from a
+    # CrossRef fetch, so `venue-type: patent` is always hand-set. biblatex has
+    # a native @patent, and without this row a patent exported as @misc — an
+    # entry type that renders no patent number and no issuing office.
+    "patent": "patent",
 }
 
 

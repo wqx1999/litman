@@ -2,8 +2,178 @@
 
 Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/project/litman/).
 
-Versions follow [semantic versioning](https://semver.org/): a patch release fixes
-behaviour, a minor release adds it, a major release breaks it.
+Versions follow [semantic versioning](https://semver.org/): a major release
+breaks something you relied on, a minor release opens a new way of working with
+litman, and a patch release is everything else — fixes, new controls, and
+conveniences.
+
+## 1.3.3 — unreleased
+
+### Added
+
+- **Add a paper by dragging its PDF into the window.** litman reads the DOI
+  off the first pages and shows you what it found — title, authors, year,
+  journal — before anything is saved; correct or type the DOI yourself when
+  the PDF has none, as scanned papers often do. A DOI already in your library
+  is refused with a link to the paper you already have. When CrossRef has no
+  record for it — a patent, or a journal that registers its DOIs elsewhere —
+  fill in the title, year and authors yourself and it goes in the same way;
+  a DOI you typed is kept even though CrossRef could not resolve it. The paper
+  id is shown before anything is written, and when litman cannot name it on
+  its own the field opens into the three parts an id is made of — year, first
+  author, keyword — with the parts it worked out already filled in and only
+  the missing one waiting for you. A Chinese-titled paper therefore costs you
+  one box, not the whole id. The drop is a copy, and the dialog says so: your
+  original file stays where it is, unlike `lit add`, which moves the PDF it
+  imports. This is otherwise the same import the CLI runs, so a dragged-in
+  paper is indistinguishable from one added there.
+- **litman now tells you what changed after an update.** The first time the
+  app opens on a new version, a short "What's new" card lists the handful of
+  changes you will actually notice, with a link to this changelog for the
+  rest; click the litman mark in the top-left corner to read it again later.
+  The card's text ships inside the package, so it needs no network and a
+  fresh install never sees it — there is no previous version to tell it
+  about.
+- **Pin papers to the top of the list.** Papers you are actively working with
+  can be pinned: they gather in a "Pinned" group at the top of the browse
+  panel and stay there, instead of drifting as the reading list re-ranks
+  itself. Pin from the row (the pin icon, or `P` on the selected paper), and
+  unpin to send a paper back to its usual place. Pins survive closing and
+  reopening litman, and each library keeps its own.
+- **`lit health-check` reports papers whose author or title is a placeholder.**
+  Papers imported with a filler value — `Unknown`, `N/A`, `untitled` — used to
+  pass every check, because the field was technically filled in. They are now
+  listed by name, each with the `lit modify` command that writes the real value
+  — and, when the filler reached the paper's id as well, the `lit rename` that
+  clears it from there.
+- **`lit health-check` reports papers whose id says nothing about them.** An id
+  like `2018_Zhang_A` — the keyword reduced to a single stray letter — is
+  listed with the `lit rename` that replaces it. Only papers whose title
+  cannot produce a better keyword are reported, so an id you chose yourself is
+  left alone.
+- **`lit health-check` reports placeholders left inside a paper id.** A paper
+  imported as `2024_Unknown_Untitled` keeps that name after you correct its
+  author and title — the id is the folder name, the target of every `[[link]]`
+  in your notes, and the cite key in exported BibTeX, and only `lit rename`
+  changes it. It is now listed on its own, so correcting the fields no longer
+  makes the last mention of the bad id disappear along with them. Once the
+  fields are right the report hands you the complete rename, both ids filled
+  in; when the title is in a script that cannot produce a keyword, it fills in
+  everything it can and leaves that one blank for you.
+- **`lit health-check --all`.** Each category now lists its first few findings
+  and folds the rest into a count — a library imported before a guard existed
+  can hold hundreds of one kind, and printing every one buries everything
+  else. The counts stay exact; `--all` prints the full list, which is what to
+  use when working through a category paper by paper.
+- **Patents export as patents.** A paper with `venue-type: patent` now becomes
+  a `@patent` entry instead of a bare `@misc`, and a `patent-number` field is
+  rendered as the entry's number.
+- **Edit metadata in the GUI.** The selected paper's panel has an Edit button:
+  title, year, journal, DOI, volume/issue/pages, publisher, venue type, book
+  title — and the author list, where authors can be renamed, added, removed
+  and reordered (drag the handle, or the ↑/↓ buttons). One Save writes
+  everything in a single transaction through the same validated path the CLI
+  uses; if something is rejected — a DOI another paper already carries, a
+  non-numeric year — the dialog shows the reason and keeps your input. The
+  paper id is not editable here: changing it is a rename that updates every
+  reference, which remains `lit rename`'s job.
+- **`lit modify --set-author` rewrites the author list in order.** Repeat the
+  flag once per author; the order the flags appear in is the order stored.
+  This is the way to reorder authors or correct a name in place —
+  `--add-tag` appends to the end of the list, so it cannot express either.
+
+### Changed
+
+- **Deleting, restoring, re-tagging and project-linking papers is now fast in
+  large libraries.** These operations used to re-read every paper's metadata
+  from disk — several times each — so in a 4,000-paper library one click in
+  the GUI could stall for seconds. They now reuse the library's index and
+  update only what actually changed, making their cost independent of library
+  size; the same atomic write path and the same on-disk results as before,
+  just without the re-reading. Editing a paper's title or authors in the GUI
+  got the same treatment when the paper belongs to a project.
+- **YAML parsing is C-accelerated.** litman now installs `ruamel.yaml.clib`,
+  which recent versions of the YAML library stopped bundling — full-library
+  operations such as `lit health-check` read metadata roughly 3–4× faster.
+- **A paper can no longer be imported with a placeholder title or first
+  author.** `lit add --from-llm-json` refuses values like `Unknown`, `N/A` or
+  `untitled` in the two places that become part of the paper id, and explains
+  what to write instead. **This will interrupt an agent that used to fill those
+  in** — which is the point: an id is permanent short of renaming the paper and
+  every reference to it. When a work has no personal author, name the issuing
+  body — the patent assignee, the journal, the organisation. When it is
+  genuinely unattributed, write `Anonymous`. A filler further down the author
+  list still comes in, since it never reaches the id; the import warns and says
+  how to correct it. Metadata fetched by DOI is unaffected, and `lit modify`
+  still lets you write anything you like into your own library.
+
+### Fixed
+
+- **A title written in a script the id cannot carry no longer produces a
+  nonsense id.** Paper ids are ASCII, because they are folder names on
+  Windows, macOS and Linux alike — and litman picked the keyword by splitting
+  the title on spaces. A Chinese, Japanese or Korean title has none, so the
+  whole title arrived as one word and was reduced to whatever Latin characters
+  happened to sit inside it: `关于化合物A的合成方法` became `2018_Zhang_A`,
+  silently, and short of renaming the paper that id was permanent. Such a
+  title is now refused instead, and the message names the `--id` that gets
+  past it, offering a candidate whenever the title held a usable fragment.
+  Nothing about the stored metadata changed — titles, authors and journals in
+  any script are kept exactly as written, and only the id is ASCII. Write the
+  first author's family name in romanised form and the rest can stay in its
+  own script.
+- **The "no year" error no longer reads as an invitation to guess one.** When
+  imported metadata carried no publication year, the message asked for an id
+  and left the rest open, and the quickest way past it was to put the download
+  year in — which then passed every later check and surfaced only as a wrong
+  date in an exported citation. It now says outright that the year must not be
+  guessed, and where to find the real one.
+- **The two places you can type a year now ask for the same thing.** The add
+  dialog took three or four digits; the metadata editor checked nothing at all
+  and left it to the backend, which only requires a whole number. A library
+  could therefore end up holding both `145` and `12311`, each arrived at
+  through a different door. Both now want four digits, and both print that
+  rule beside the field before you type rather than only greying out the
+  button afterwards — a control that goes grey without saying why sends you
+  looking for the mistake in the wrong place. Four digits rather than a
+  plausible range: a range has to decide where the future ends, and preprints
+  routinely carry next year's date. The editor judges only a year you actually
+  changed, so a paper that already holds a wrong one can still have its title
+  corrected, and `lit modify` still writes whatever you tell it to.
+- **Starting litman from its icon now finds the AI agents you have installed.**
+  On Linux and macOS an app started from a desktop shortcut or the Dock is
+  handed a shorter search path than a terminal window gets, and every agent
+  CLI lives outside it — so litman reported Claude Code, Codex, Cursor,
+  OpenCode and Antigravity as all missing at once, Recheck kept saying the
+  same, and the skills could not be installed. It now looks in the places
+  those tools actually install to, so double-clicking the icon and running
+  `lit gui` in a terminal see the same agents. Installing an agent while
+  litman is open still needs only Recheck, not a restart.
+- **Microsoft Edge on Linux is recognised as a window browser.** litman opens
+  its own window when it finds a Chrome-family browser, and Edge's Linux
+  package was only matched by chance. Installing Edge — or Chrome, or
+  Chromium — now reliably gets you a standalone window instead of a browser
+  tab. A browser installed under your home directory is found too.
+- **A snap-packaged Chromium now opens litman's own window.** On Ubuntu,
+  installing Chromium gets you a snap, and a snap is not allowed to reach
+  hidden directories under your home — including the one litman kept its
+  browser profile in. Chromium will not run a profile it cannot lock, so it
+  quit the moment it started: the desktop shortcut showed nothing at all, and
+  installing a browser left you worse off than having none. A snap-packaged
+  browser now keeps its profile in the area snapd grants it, and the shortcut
+  opens a standalone window as it does everywhere else. Every other browser —
+  Windows, macOS, and a Chromium installed from a `.deb` — keeps the location
+  it has always used, and `lit uninstall` clears both.
+- **A browser that quits on startup no longer takes litman with it.** The
+  window launcher read "the browser is gone and no page ever connected" as
+  proof that the launch had failed, and shut the server down — correct when
+  the browser never came up, but it also caught a browser that started and
+  then gave up, leaving nothing on screen at all. litman now opens the page in
+  your usual browser instead, so a window that cannot be had degrades to a tab
+  rather than to nothing. A browser that exits cleanly is left alone: it has
+  handed the page to a window you already had open, and a tab appearing on top
+  of that would be a surprise rather than a rescue. A launch that failed also
+  no longer waits out the patience meant for a slow one.
 
 ## 1.3.2 — 2026-07-29
 

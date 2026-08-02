@@ -699,3 +699,223 @@ def test_cli_add_from_llm_json_stdin_mutually_exclusive_with_doi(
     assert result.exit_code != 0
     assert isinstance(result.exception, AddError)
     assert "mutually exclusive" in str(result.exception)
+
+
+# ---------------------------------------------------------------------------
+# Placeholder guard (task-metadata-quality B)
+#
+# The agent that cannot read a field tends to write "Unknown" rather than
+# report the gap, and the value then bakes into the paper id. These refuse it
+# at the importer boundary, where the source PDF is still untouched.
+#
+# The guard covers the FIRST author and the title — the two values that reach
+# the id. A filler further down the author list is let through on purpose (see
+# test_filler_after_the_first_author_is_accepted); refusing there would strand
+# papers whose author block was only partly legible.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "authors",
+    [
+        ["Unknown"],
+        ["unknown"],
+        ["N/A"],
+        ["Author"],
+        ["   "],
+        ["et al."],
+        # Real names behind it do not rescue it: position 0 drives the id.
+        ["Unknown", "Wieland, Theodor"],
+    ],
+)
+def test_placeholder_author_rejected(authors: list[str]) -> None:
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({"title": "Amatoxins", "authors": authors})
+        )
+    assert "placeholder" in str(exc.value)
+
+
+def test_placeholder_rejection_names_the_escape_hatches() -> None:
+    """The message must offer the issuing body / Anonymous, never --id.
+
+    `authors` is required whether or not --id is passed, so pointing at --id
+    would send the agent down a path that cannot work.
+    """
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({"title": "Amatoxins", "authors": ["Unknown"]})
+        )
+    message = str(exc.value)
+    assert "Anonymous" in message
+    assert "issuing body" in message
+    assert "--id" not in message
+
+
+def test_pydantic_machinery_stripped_from_the_message() -> None:
+    """"Value error, " is pydantic talking to itself, not to the reader."""
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({"title": "Amatoxins", "authors": ["Unknown"]})
+        )
+    assert "Value error" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "authors",
+    [
+        ["Anonymous"],
+        ["Bayer AG"],
+        # Whole-value matching: a real surname containing a filler word.
+        ["Unknown, Robert"],
+        ["Wieland, Theodor", "Anonymous"],
+    ],
+)
+def test_real_authors_accepted(authors: list[str]) -> None:
+    parsed = parse_llm_json_text(
+        json.dumps({"title": "Amatoxins", "authors": authors})
+    )
+    assert parsed["authors"] == authors
+
+
+def test_filler_after_the_first_author_is_accepted() -> None:
+    """Only position 0 reaches the id; the rest cost an exported citation.
+
+    Refusing here would strand a paper whose author block was merely partly
+    legible — a scanned two-column header, a name in a script the extractor
+    could not transliterate — even though the id would have been right.
+    """
+    parsed = parse_llm_json_text(
+        json.dumps({
+            "title": "Amatoxins",
+            "authors": ["Wieland, Theodor", "Unknown"],
+        })
+    )
+    assert parsed["authors"] == ["Wieland, Theodor", "Unknown"]
+
+
+@pytest.mark.parametrize("title", ["Unknown", "untitled", "N/A", "  "])
+def test_placeholder_title_rejected(title: str) -> None:
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({"title": title, "authors": ["Wieland, Theodor"]})
+        )
+    assert "placeholder" in str(exc.value)
+
+
+def test_title_containing_a_filler_word_accepted() -> None:
+    parsed = parse_llm_json_text(
+        json.dumps({
+            "title": "The Unknown Structure of Amanitin",
+            "authors": ["Wieland, Theodor"],
+        })
+    )
+    assert parsed["title"] == "The Unknown Structure of Amanitin"
+
+
+def test_cli_add_rejects_placeholder_and_leaves_the_source_pdf(
+    vault: Path, fake_pdf: Path, tmp_path: Path
+) -> None:
+    """`lit add` is mv semantics — a rejected import must not eat the source."""
+    payload_path = _write_json(
+        tmp_path / "meta.json",
+        {"title": "Amatoxins", "authors": ["Unknown"], "year": 1963},
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", str(payload_path),
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert fake_pdf.exists(), "source PDF was consumed by a rejected add"
+    assert not list((vault / "papers").iterdir()), "a paper dir was created"
+
+
+def test_explicit_id_does_not_bypass_the_placeholder_guard(
+    vault: Path, fake_pdf: Path, tmp_path: Path
+) -> None:
+    """--id resolves a missing YEAR, not a missing author (AC-6)."""
+    payload_path = _write_json(
+        tmp_path / "meta.json",
+        {"title": "Amatoxins", "authors": ["Unknown"], "year": 1963},
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", str(payload_path),
+            "--id", "1963_Wieland_Amatoxins",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "placeholder" in str(result.exception)
+    assert fake_pdf.exists()
+
+
+def test_cli_add_ingests_a_trailing_filler_and_warns(
+    vault: Path, fake_pdf: Path, tmp_path: Path
+) -> None:
+    """The paper lands, and the warning carries the command that repairs it.
+
+    Without the warning the filler is invisible until it shows up inside a
+    .bib months later — the very failure this task exists to end.
+    """
+    payload_path = _write_json(
+        tmp_path / "meta.json",
+        {
+            "title": "Amatoxins",
+            "authors": ["Wieland, Theodor", "Unknown"],
+            "year": 1963,
+        },
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", str(payload_path),
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    added = list((vault / "papers").iterdir())
+    assert len(added) == 1
+    assert added[0].name.startswith("1963_Wieland_")
+
+    # Rich wraps the warning at the terminal width, so match on the flattened
+    # text rather than on the line breaks of the day.
+    flat = " ".join(result.output.split())
+    assert "Warning" in flat
+    assert "'Unknown'" in flat, "the warning must quote the offending value"
+    assert "lit modify" in flat, "the warning must carry the repair command"
+
+
+def test_missing_year_error_forbids_guessing(
+    vault: Path, fake_pdf: Path, tmp_path: Path
+) -> None:
+    """The schema allows year=null but id derivation needs it; the message is
+    the only thing standing between that gap and an invented year."""
+    payload_path = _write_json(
+        tmp_path / "meta.json",
+        {"title": "Amatoxins", "authors": ["Wieland, Theodor"], "year": None},
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", str(payload_path),
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code != 0
+    message = str(result.exception)
+    assert "download year" in message
+    assert "--id" in message
+    assert fake_pdf.exists()

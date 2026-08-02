@@ -34,6 +34,7 @@ from litman.core.skill import (
     list_bundled_skills,
     uninstall_skill,
 )
+from litman.core.ui_state import save_pins, ui_state_path
 from litman.core.vault_registry import (
     add_vault,
     load_registry,
@@ -610,6 +611,49 @@ def test_uninstall_yes_removes_shortcut_and_prefs(
     assert not prefs.exists()
     # registry + preferences both gone → the shared config dir is removed too
     assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_yes_removes_ui_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-6 (task-gui-pin): `lit uninstall -y` carries off ui-state.json too,
+    and — it being the last sibling — rmdirs the shared config dir. Real
+    delete sequence, no mocks."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    reg = _seed_artifacts(tmp_path)
+    save_default_agent("claude")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    save_pins(vault, ["some_paper"])
+    state = ui_state_path()
+    assert state.is_file()
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not state.exists()
+    # registry + prefs + ui-state all gone → the shared config dir too
+    assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_dry_run_lists_and_keeps_ui_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    save_pins(vault, ["some_paper"])
+
+    result = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "GUI state" in normalized
+    assert ui_state_path().is_file()
 
 
 @pytest.mark.no_skills_isolation

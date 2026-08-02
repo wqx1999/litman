@@ -30,6 +30,9 @@ from litman.core.checks import (
 # loudly (Phase 3 will ADD more; this list is updated deliberately).
 _EXPECTED_CATEGORIES = (
     "schema",
+    "placeholder_metadata",
+    "placeholder_id",
+    "weak_id_keyword",
     "duplicate_doi",
     "paper_dir_validity",
     "discussion_scaffold",
@@ -57,7 +60,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 24
+    assert len(_CHECK_REGISTRY) == 27
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 

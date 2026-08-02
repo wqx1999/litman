@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchRmPreview, type RmPreview } from '../api'
+import { modalBackdropProps } from '../ui/modalShell'
 
 /** Default-No confirm for soft-deleting a paper from the tab's trash icon.
  *
@@ -10,9 +11,9 @@ import { fetchRmPreview, type RmPreview } from '../api'
  * states it is recoverable from the in-app Trash, and (b) fetches the cascade
  * preview on mount and lists exactly which soft-links break — the user asked to
  * be warned before deleting "which symlinks will break". Cancel is autofocused
- * and the destructive button is rose; the backdrop / Esc cancel unless a delete
- * is in flight. macOS-style modal shell shared with UnreadConfirm /
- * DeleteProjectConfirm; portaled to document.body so `fixed inset-0` resolves
+ * and the destructive button is rose; Esc cancels unless a delete is in flight
+ * (a click outside only nudges the card — see ui/modalShell). macOS-style modal
+ * shell shared with UnreadConfirm / DeleteProjectConfirm; portaled to document.body so `fixed inset-0` resolves
  * against the viewport, not the tab strip's backdrop-filter ancestor. */
 export default function RemovePaperConfirm({
   paperId,
@@ -21,7 +22,7 @@ export default function RemovePaperConfirm({
   onConfirm,
 }: {
   paperId: string
-  /** A delete is in flight — gates the buttons + backdrop dismiss. */
+  /** A delete is in flight — gates the buttons and Esc. */
   busy: boolean
   onCancel: () => void
   onConfirm: () => void
@@ -69,7 +70,7 @@ export default function RemovePaperConfirm({
   return createPortal(
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
-      onClick={busy ? undefined : onCancel}
+      {...modalBackdropProps}
     >
       <div
         onClick={(e) => e.stopPropagation()}

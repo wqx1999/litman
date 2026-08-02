@@ -58,9 +58,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from litman.core.dedup import canonicalize_doi
+from litman.core.placeholders import is_placeholder
 from litman.exceptions import ImporterError
 
 
@@ -135,6 +136,49 @@ class LLMCandidateMeta(BaseModel):
         ),
     )
 
+    # Filler values on the two identity fields are refused here rather than
+    # written and regretted later. Both feed the paper id, so "Unknown" does
+    # not stay a metadata blemish — it becomes the folder name, the citation
+    # key, and the label in every list, and only `lit rename` can take it back.
+    # Blank-after-strip is caught too: min_length applies to the list, not to
+    # the strings inside it, so `["   "]` used to reach id derivation and fail
+    # there with a message about family names.
+
+    @field_validator("title")
+    @classmethod
+    def _title_is_real(cls, value: str) -> str:
+        if is_placeholder(value):
+            raise ValueError(
+                f"title is {value.strip()!r}, a placeholder. Take it from "
+                "page 1; if the PDF will not open, ask rather than invent one."
+            )
+        return value
+
+    @field_validator("authors")
+    @classmethod
+    def _first_author_is_real(cls, value: list[str]) -> list[str]:
+        """Refuse a filler in the one position that reaches the paper id.
+
+        The scope is the FIRST position only, deliberately. ``derive_id``
+        takes the first author's family name, so a placeholder there is baked
+        into the folder name, into every wikilink pointing at the paper and
+        into the citation key — undoable short of ``lit rename`` and its
+        backlink cascade. A placeholder further down the list costs an
+        exported citation, which one ``lit modify --rm-tag`` repairs in place,
+        so refusing the whole import over it would strand papers whose author
+        block was merely partly legible: a scanned two-column header, a name
+        in a script the extractor could not transliterate. Those come in —
+        ``lit add`` warns about them on the way, and
+        ``check_placeholder_metadata`` lists them vault-wide afterwards.
+        """
+        if value and is_placeholder(value[0]):
+            raise ValueError(
+                f"the first author is {value[0].strip()!r}, a placeholder. "
+                "Take it from page 1; for a work with no personal author use "
+                "the issuing body, or 'Anonymous'."
+            )
+        return value
+
 
 def _normalize_meta(meta: LLMCandidateMeta) -> dict[str, Any]:
     """Project a validated ``LLMCandidateMeta`` onto ``parse_crossref``'s shape.
@@ -161,6 +205,48 @@ def _normalize_meta(meta: LLMCandidateMeta) -> dict[str, Any]:
         "arxiv-id": meta.arxiv_id,
         "abstract": meta.abstract,
     }
+
+
+def validate_candidate_metadata(
+    raw: dict[str, Any], *, context: str
+) -> dict[str, Any]:
+    """Validate a decoded metadata mapping and normalize it. Never fetches.
+
+    The schema half of this module, split out from the JSON-text half so a
+    caller that already holds a mapping — the webUI's hand-entry form, which
+    gets one from FastAPI's own body parse — validates against exactly the
+    rules ``lit add --from-llm-json`` does. That matters most for the two
+    identity fields: a placeholder first author is refused here, once, rather
+    than in each channel that could write one.
+
+    ``context`` prefixes the error so the message names where the bad value
+    came from ("Invalid LLM metadata JSON at foo.json", "Cannot add this
+    paper"); the field name and the guidance after it are the schema's own.
+
+    Args:
+        raw: Decoded mapping to validate.
+        context: Sentence-leading label for any error raised.
+
+    Returns:
+        Dict with the same shape ``parse_crossref`` produces.
+
+    Raises:
+        ImporterError: schema validation failure (missing required field,
+            unknown key, wrong type, empty title / authors, placeholder in
+            title or first author).
+    """
+    try:
+        meta = LLMCandidateMeta.model_validate(raw)
+    except ValidationError as e:
+        first = e.errors()[0]
+        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
+        # pydantic prefixes anything a custom validator raises with
+        # "Value error, ". The validators here carry user-facing guidance, so
+        # strip the machinery and let the sentence start where it should.
+        detail = first["msg"].removeprefix("Value error, ")
+        raise ImporterError(f"{context}: field {loc!r}: {detail}") from e
+
+    return _normalize_meta(meta)
 
 
 def parse_llm_json_text(
@@ -197,17 +283,9 @@ def parse_llm_json_text(
             f"{source} must contain a JSON object at the top level, "
             f"got {type(raw).__name__}."
         )
-    try:
-        meta = LLMCandidateMeta.model_validate(raw)
-    except ValidationError as e:
-        first = e.errors()[0]
-        loc = ".".join(str(p) for p in first["loc"]) or "<root>"
-        raise ImporterError(
-            f"Invalid LLM metadata JSON at {source}: "
-            f"field {loc!r}: {first['msg']}"
-        ) from e
-
-    return _normalize_meta(meta)
+    return validate_candidate_metadata(
+        raw, context=f"Invalid LLM metadata JSON at {source}"
+    )
 
 
 def parse_llm_json(json_path: Path) -> dict[str, Any]:

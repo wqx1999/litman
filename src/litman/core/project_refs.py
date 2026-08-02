@@ -22,11 +22,60 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ruamel.yaml import YAMLError
+
 from litman.core.dates import now_iso
-from litman.core.document import list_papers
+from litman.core.document import list_papers, read_metadata
+from litman.core.views import load_index_papers
 
 REFERENCES_FILENAME = "REFERENCES.md"
 LITERATURE_SUBDIR = "litman_reflib"
+
+
+def load_project_member_metas(
+    vault: Path,
+    projects: list[str] | tuple[str, ...],
+    *,
+    exclude_ids: frozenset[str] | set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Load FULL metadata for the papers belonging to any of ``projects``.
+
+    REFERENCES.md and the project-side code-symlink checks need fields the
+    INDEX projection does not carry (``relevance-<project>``,
+    ``code-clones``) — but only for the projects' MEMBER papers. This uses
+    the verified INDEX projection purely as the membership filter (the
+    ``projects`` field IS projected) and round-trips ``read_metadata`` on
+    the members only, so a write command touching one project reads
+    O(project) files instead of O(vault).
+
+    Falls back to a plain ``list_papers`` scan (minus ``exclude_ids``) when
+    the INDEX is missing/stale — every consumer filters membership
+    internally, so the full list is behavior-identical, just slower.
+    A member whose metadata.yaml is unreadable/corrupt is skipped, exactly
+    mirroring ``list_papers``' tolerance (health-check owns the finding).
+    """
+    index = load_index_papers(vault)
+    if index is None:
+        return [
+            p
+            for p in list_papers(vault)
+            if str(p.get("id")) not in exclude_ids
+        ]
+    wanted = {str(p) for p in projects}
+    members: list[dict[str, Any]] = []
+    for entry in index:
+        pid = str(entry.get("id"))
+        if pid in exclude_ids:
+            continue
+        if not wanted.intersection(entry.get("projects") or []):
+            continue
+        try:
+            meta = read_metadata(vault / "papers" / pid / "metadata.yaml")
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if isinstance(meta, dict) and meta:
+            members.append(meta)
+    return members
 
 # Priority order, with ``None`` (unprioritized) coming last.
 _PRIORITY_ORDER = ("A", "B", "C")
@@ -217,6 +266,11 @@ def write_references_md(
         raise FileNotFoundError(
             f"Project directory does not exist: {project_dir}"
         )
+    if papers is None:
+        # Member-scoped load instead of the historical full-vault scan:
+        # render filters to this project's members anyway, so the narrower
+        # list is content-identical (task-write-perf).
+        papers = load_project_member_metas(vault, [project])
     literature_dir = project_dir / LITERATURE_SUBDIR
     literature_dir.mkdir(exist_ok=True)
     target = literature_dir / REFERENCES_FILENAME

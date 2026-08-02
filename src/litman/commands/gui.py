@@ -23,7 +23,11 @@ entry that runs ``lit gui --window`` and exits without starting the server
 it stops the server, and Ctrl+C closes the window. The shutdown signal is the
 last live *page*, not the browser process: the SPA holds a ``/api/presence``
 WebSocket while it is loaded, and the server stops a short linger after that
-count reaches zero (see :func:`_stop_server_when_window_closes`). The spawned
+count reaches zero (see :func:`_stop_server_when_window_closes`). Asking is
+not the same as stopping, so a window launch also escalates a request uvicorn
+does not honour (see :func:`_escalate_shutdown`) — a GUI process has no
+console to Ctrl+C twice from, and on Windows one that outlives its window
+blocks its own next upgrade. The spawned
 process is only a secondary hint — it can outlive the window (on Windows Edge
 keeps the browser resident after the window closes) or die before it (Chromium
 hands a fresh profile's first window to another process), so *waiting* on it
@@ -113,7 +117,10 @@ _CHROMIUM_CANDIDATES = (
     "google-chrome-stable",
     "chromium",
     "chromium-browser",
+    # Edge's Linux package installs microsoft-edge-stable and only sometimes
+    # leaves a microsoft-edge symlink beside it, so probe both.
     "microsoft-edge",
+    "microsoft-edge-stable",
     "msedge",
     "brave-browser",
 )
@@ -132,10 +139,58 @@ def display_available() -> bool:
 
 
 _BROWSER_PROFILE_DIRNAME = "browser-profile"
+# Under ~/snap/<snap>/common/ the profile sits among that snap's own data, so
+# the name has to say whose it is — and it keeps the uninstall sweep from
+# matching anything but ours.
+_SNAP_PROFILE_DIRNAME = "litman-browser-profile"
+_SNAP_BIN = Path("/snap/bin")
+_SNAP_ROOT = Path("/snap")
 
 
-def browser_profile_dir() -> Path:
+def _snap_name(browser_exe: str | os.PathLike[str]) -> str | None:
+    """The snap a browser executable belongs to, or None if it is not one.
+
+    ``/snap/bin/chromium`` is snapd's wrapper — it resolves to ``snap``
+    itself, so the name is all there is to go on. Snap commands are named
+    ``<snap>`` or ``<snap>.<app>`` and every installed snap owns a real
+    ``/snap/<snap>`` directory, which is enough to derive the name and
+    confirm it in one step rather than guess.
+    """
+    path = Path(browser_exe)
+    if path.parent != _SNAP_BIN:
+        return None
+    snap = path.name.split(".", 1)[0]
+    return snap if (_SNAP_ROOT / snap).is_dir() else None
+
+
+def _snap_user_root() -> Path:
+    """Where snapd grants each snap its writable per-user area.
+
+    Follows ``$LITMAN_REGISTRY_DIR`` when set. That override is the project's
+    one "keep every litman-owned path inside this sandbox" seam — the test
+    suite's autouse isolation leans on it — and a sweep that *deletes*
+    directories must not be the single place that reaches past it into a real
+    home. The cost is that a real machine which sets the override hands a
+    confined browser an unwritable profile again, and gets the tab fallback
+    in :func:`_stop_server_when_window_closes` instead of a window.
+    """
+    override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
+    return (Path(override).expanduser() if override else Path.home()) / "snap"
+
+
+def browser_profile_dir(browser_exe: str | os.PathLike[str] | None = None) -> Path:
     """Chromium ``--user-data-dir`` for the ``--window`` app window.
+
+    ``browser_exe`` is the browser this profile is for. It matters for
+    exactly one case: a snap-packaged browser is confined out of hidden
+    directories under ``$HOME``, and the cache dir below is one
+    (``~/.cache/...``). Handed it, Ubuntu's snap Chromium cannot create its
+    ``SingletonLock`` and *aborts* rather than run a profile it cannot lock —
+    so a machine that installed a browser ended up with no window at all,
+    where a machine with none at least got a tab. ``~/snap/<snap>/common`` is
+    the writable area snapd grants that snap, so that is where its profile
+    goes. Omitting the argument gives the default location, which is what
+    ``lit uninstall`` and the tests want.
 
     A dedicated profile gives us a browser instance of our own. Launched
     against the user's normal profile, a Chromium hands the URL to the
@@ -150,25 +205,43 @@ def browser_profile_dir() -> Path:
     suite's ``_isolate_registry`` fixture keeps it out of a developer's real
     home for free.
     """
+    snap = _snap_name(browser_exe) if browser_exe is not None else None
+    if snap is not None:
+        return _snap_user_root() / snap / "common" / _SNAP_PROFILE_DIRNAME
     override = os.environ.get(REGISTRY_ENV_VAR, "").strip()
     if override:
         return Path(override).expanduser() / _BROWSER_PROFILE_DIRNAME
     return Path(user_cache_dir(REGISTRY_APP_NAME)) / _BROWSER_PROFILE_DIRNAME
 
 
-def remove_browser_profile() -> Path | None:
-    """Delete the app-window browser profile. Returns the path, or None.
+def browser_profile_dirs() -> list[Path]:
+    """Every app-window browser profile that exists on this machine.
 
-    Counterpart to :func:`browser_profile_dir`, used by ``lit uninstall`` so
-    the profile does not outlive the install. Returns None when there was
-    nothing to remove, or when something still holds it open (a running
-    browser on Windows) and the directory survived.
+    The default location, plus a per-snap copy for each confined browser
+    :func:`browser_profile_dir` had to route elsewhere. A machine that has
+    run both an ordinary and a snap Chromium holds two, and ``lit uninstall``
+    owes the user both — so the sweep is by directory name, not by asking
+    which browsers are installed now (by uninstall time one may not be).
     """
-    target = browser_profile_dir()
-    if not target.is_dir():
-        return None
-    _rmtree(target, ignore_errors=True)
-    return None if target.is_dir() else target
+    found = [browser_profile_dir()]
+    found += sorted(_snap_user_root().glob(f"*/common/{_SNAP_PROFILE_DIRNAME}"))
+    return [p for p in found if p.is_dir()]
+
+
+def remove_browser_profile() -> list[Path]:
+    """Delete every app-window browser profile. Returns the ones now gone.
+
+    Counterpart to :func:`browser_profile_dirs`, used by ``lit uninstall`` so
+    the profile does not outlive the install. A directory missing from the
+    result is one something still holds open (a running browser on Windows)
+    and which survived the attempt.
+    """
+    removed = []
+    for target in browser_profile_dirs():
+        _rmtree(target, ignore_errors=True)
+        if not target.is_dir():
+            removed.append(target)
+    return removed
 
 
 # Chromium treats the presence of this file in the user-data-dir as proof that
@@ -271,10 +344,19 @@ def _app_window_argv(url: str) -> list[str] | None:
     greets the user with a first-run tab, a make-me-default prompt and a
     translate bubble on top of their library. The profile's sentinel file
     quiets the rest (see :func:`_quiet_browser_profile`).
+
+    The browser is found before the flags are built, because which browser it
+    is decides where its profile can live (:func:`browser_profile_dir`).
     """
-    flags = [
+    exe = _find_chromium()
+    return None if exe is None else [exe, *_app_window_flags(url, exe)]
+
+
+def _app_window_flags(url: str, browser_exe: str) -> list[str]:
+    """The ``--app=`` flag set for ``browser_exe``. See :func:`_app_window_argv`."""
+    return [
         f"--app={url}",
-        f"--user-data-dir={browser_profile_dir()}",
+        f"--user-data-dir={browser_profile_dir(browser_exe)}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate",
@@ -284,10 +366,22 @@ def _app_window_argv(url: str) -> list[str] | None:
         # session _purge_stale_browser_session has already emptied.
         "--hide-crash-restore-bubble",
     ]
+
+
+def _find_chromium() -> str | None:
+    """Path to a Chromium-family browser, or None if this box has none."""
+    # A shortcut-launched litman inherits the desktop session's PATH, which
+    # omits the per-user and Homebrew bin dirs (see refresh_path) — without
+    # this a browser installed there is as invisible as an agent CLI was.
+    # Imported here, not at module scope, to keep `lit gui`'s startup import
+    # graph unchanged.
+    from litman.core.agents import refresh_path
+
+    refresh_path()
     for name in _CHROMIUM_CANDIDATES:
         exe = shutil.which(name)
         if exe:
-            return [exe, *flags]
+            return exe
     if sys.platform == "darwin":
         # Chrome/Edge on macOS are .app bundles, not on PATH. Run the binary
         # inside the bundle rather than `open -na`: `open` asks Launch Services
@@ -296,7 +390,7 @@ def _app_window_argv(url: str) -> list[str] | None:
             for root in (Path("/Applications"), Path.home() / "Applications"):
                 binary = root / f"{app}.app" / "Contents" / "MacOS" / app
                 if binary.exists():
-                    return [str(binary), *flags]
+                    return str(binary)
     if sys.platform == "win32":
         # Edge ships with Win10+ but is not always on PATH.
         for env in ("ProgramFiles(x86)", "ProgramFiles"):
@@ -306,16 +400,19 @@ def _app_window_argv(url: str) -> list[str] | None:
                     Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
                 )
                 if exe_path.exists():
-                    return [str(exe_path), *flags]
+                    return str(exe_path)
     return None
 
 
 def _stop_server_when_window_closes(
-    proc: subprocess.Popen[bytes],
+    proc: subprocess.Popen[bytes] | None,
     server: Any,
     presence: PresenceTracker,
     *,
+    on_launch_failed: Callable[[], bool] | None = None,
     first_connect_grace: float = 15.0,
+    launch_failure_grace: float = 1.5,
+    never_connected_timeout: float = 180.0,
     linger: float = 5.0,
     poll: float = 0.25,
 ) -> None:
@@ -337,12 +434,38 @@ def _stop_server_when_window_closes(
       ``first_connect_grace`` bounds the wait so a failed launch leaves no
       orphan, but the clock only starts once the spawned process is *gone*:
       a window merely slow to paint (process still alive) must not be shot
-      before its first page loads.
+      before its first page loads. ``never_connected_timeout`` is the outer
+      bound on that patience, because on Windows the process may never exit
+      at all (Edge stays resident) — without it, a window that comes up and
+      then fails to load a single page keeps the server alive forever, which
+      is the same orphan by a different route.
 
     ``proc`` is *polled*, never waited on. An earlier version blocked on
     ``proc.wait()`` before it ever read presence — which is exactly what let a
     resident Windows browser keep the server alive after the window closed
-    (the wait never returned, so the presence loop never ran).
+    (the wait never returned, so the presence loop never ran). ``None`` means
+    there is no process to poll (the fallback that opens a tab in the user's
+    everyday browser); the page is then the only signal there is.
+
+    ``on_launch_failed`` is that fallback, offered once, at the only moment
+    this loop can tell a launch failed: the process is gone with a non-zero
+    status and no page ever connected. ``Popen`` succeeding does not mean the
+    window came up — the browser can exit on its own a moment later — and
+    that gap is not hypothetical: an Ubuntu snap Chromium is confined out of
+    the hidden cache dir :func:`browser_profile_dir` hands it and aborts
+    rather than corrupt a profile it cannot lock. The status is what
+    separates that from the clean exits this gate was built for (a Chromium
+    that handed the URL to an instance we never see), so only a crash buys
+    the second chance. Returning True means a tab was opened and the watch
+    continues against the page alone; False (or no callback) keeps the
+    original verdict.
+
+    A crash is also judged on its own, much shorter clock. The 15 seconds of
+    ``first_connect_grace`` are patience for a hand-off — an invisible window
+    that still has a page to load — and a process that aborted has no page
+    coming. Spending them anyway is 15 seconds of a desktop shortcut that
+    looks like it did nothing, which is how this bug was reported in the
+    first place.
 
     The keyword defaults are the shipped values; tests inject shorter ones.
     Each round reads the tracker through a single ``snapshot()`` call — read
@@ -355,10 +478,14 @@ def _stop_server_when_window_closes(
     100 ms, so setting the flag from this thread is the supported way to stop
     it from outside the event loop.
     """
+    started = time.monotonic()
     exited_at: float | None = None
     while True:
-        if exited_at is None and proc.poll() is not None:
+        if exited_at is None and proc is not None and proc.poll() is not None:
             exited_at = time.monotonic()
+        # A non-zero exit is a failed launch rather than a hand-off, and gets
+        # neither the patience nor the second-chance rules of one.
+        crashed = proc is not None and proc.returncode not in (0, None)
         count, ever_connected, last_zero = presence.snapshot()
         if count == 0:
             if ever_connected:
@@ -371,13 +498,87 @@ def _stop_server_when_window_closes(
                 if last_zero is not None and time.monotonic() - last_zero >= linger:
                     break
             elif exited_at is not None and (
-                time.monotonic() - exited_at >= first_connect_grace
+                time.monotonic() - exited_at
+                >= (launch_failure_grace if crashed else first_connect_grace)
             ):
                 # No page ever connected and the window process is gone: a
-                # launch that never came up. Give up so it leaves no orphan.
+                # launch that never came up. One fallback first, and only on
+                # a *non-zero* exit — a browser that aborts is a launch
+                # failure Popen reported as success (a confined snap
+                # Chromium refusing its --user-data-dir), and the user who
+                # installed that browser must not end up worse off than the
+                # user who owns none. A clean exit is not that: it either
+                # handed the URL to an instance we cannot see or the user
+                # shut the window before its page painted, and a tab opening
+                # on top of those is the surprise, not the rescue.
+                took_over = (
+                    crashed and on_launch_failed is not None and on_launch_failed()
+                )
+                if not took_over:
+                    break  # give up, so a failed launch leaves no orphan
+                # A tab took over: nothing left to poll, and its page gets
+                # the same patience the window got.
+                on_launch_failed = None
+                proc = None
+                exited_at = None
+                started = time.monotonic()
+            elif time.monotonic() - started >= never_connected_timeout:
+                # Same verdict, reached without the process ever exiting: a
+                # browser that has been up for minutes without loading one
+                # page is not a window that is merely slow to paint.
                 break
         time.sleep(poll)
     server.should_exit = True
+
+
+# Shutdown escalation for a window launch, in seconds from the moment the
+# watcher asks the server to stop. Generous, because the normal path returns
+# in well under a second and these only ever fire on a wedge.
+FORCE_EXIT_AFTER = 10.0
+HARD_EXIT_AFTER = 25.0
+
+
+def _escalate_shutdown(
+    server: Any,
+    stopped: threading.Event,
+    *,
+    force_after: float = FORCE_EXIT_AFTER,
+    hard_after: float = HARD_EXIT_AFTER,
+    hard_exit: Callable[[], None] | None = None,
+) -> None:
+    """Make sure a requested shutdown actually ends this process.
+
+    ``should_exit`` is a *request*: uvicorn stops accepting, then waits — with
+    no timeout of its own — for every open connection and task to finish. Its
+    escape hatch, ``force_exit``, is normally reached only by a second Ctrl+C,
+    and the launch this whole file is built around (a desktop shortcut running
+    the console-less ``litw.exe``) has no console to send one from. One
+    connection that never closes therefore leaves a GUI process running with
+    no window, no console and nothing the user can reach it by — and because
+    Windows will not overwrite a running executable, the next
+    ``uv tool install --force`` then fails with a permission error on
+    ``litw.exe`` rather than upgrading.
+
+    So: ask, then insist, then leave. ``stopped`` is set by ``gui_cmd``'s
+    ``finally`` the instant ``server.run()`` returns, which is how every stage
+    normally ends.
+
+    The last stage is ``os._exit`` — deliberately the one exit no event loop
+    can hold up. It is safe here because every vault write has already
+    completed by the time it could fire: writes are atomic and per-request,
+    and this process buffers no state that a graceful teardown would flush.
+    Only a ``--window`` launch arms this. A terminal ``lit gui`` keeps the
+    plain Ctrl+C contract, where the second Ctrl+C is the user's own force.
+    """
+    if stopped.wait(force_after):
+        return
+    server.force_exit = True
+    if stopped.wait(max(0.0, hard_after - force_after)):
+        return
+    if hard_exit is not None:
+        hard_exit()
+    else:  # pragma: no cover - the shipped default kills the interpreter
+        os._exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +1137,57 @@ def gui_cmd(
         elif app_argv is not None:
             console.print("[dim]Close the window to stop the server (or Ctrl+C).[/]")
 
+        def _hard_exit() -> None:
+            # `finally` never runs after os._exit, so take the window down
+            # here rather than leave a shell on screen pointing at a server
+            # that is about to stop existing.
+            for spawned in owned:
+                with contextlib.suppress(OSError):
+                    spawned.terminate()
+            os._exit(0)
+
+        def _fall_back_to_tab() -> bool:
+            """Open a tab for a window that died before it loaded a page.
+
+            The last-resort twin of the `except OSError` arm in `_open`: that
+            one catches a browser that would not start, this one a browser
+            that started and then quit. Same remedy, because the splash is
+            still up and the server is still serving a UI nobody can see.
+
+            Unless the run is already ending: `_hard_exit` and the `finally`
+            below terminate the window themselves, and a signalled process
+            exits non-zero exactly like a crashed one. Ctrl+C would otherwise
+            throw a tab up on its way out — the parting gift nobody asked for.
+            """
+            if stop_event.is_set():
+                return False
+            _terminate_splash()
+            return webbrowser.open(url)
+
+        def _watch_window(proc: subprocess.Popen[bytes] | None) -> None:
+            """Stop the server when the last page goes, and see it through."""
+            _stop_server_when_window_closes(
+                proc,
+                server,
+                app.state.presence,
+                # Only a launch that spawned something can have failed this
+                # way; a tab that never connects has nothing left to fall
+                # back to.
+                on_launch_failed=_fall_back_to_tab if proc is not None else None,
+            )
+            # The server may already be down (Ctrl+C raced the window close),
+            # in which case there is nothing to escalate against — and arming
+            # the kill stage against a finished run is exactly the mistake
+            # worth being structural about.
+            if stop_event.is_set():
+                return
+            _escalate_shutdown(server, stop_event, hard_exit=_hard_exit)
+
+        def _start_watcher(proc: subprocess.Popen[bytes] | None) -> None:
+            threading.Thread(
+                target=_watch_window, args=(proc,), daemon=True
+            ).start()
+
         def _open() -> None:
             if app_argv is None:
                 # A plain tab (no Chromium found, or tab mode): no window
@@ -943,9 +1195,19 @@ def gui_cmd(
                 # so close it now (SF-5).
                 _terminate_splash()
                 webbrowser.open(url)
+                # `--window` still owes the user a way to stop the server, and
+                # the tab is the window here. Its launch may well have come
+                # from the desktop shortcut, where the console-less litw.exe
+                # leaves no Ctrl+C to fall back on — so watch the page even
+                # though there is no process to poll alongside it.
+                if window:
+                    _start_watcher(None)
                 return
             try:
-                profile = browser_profile_dir()
+                # The same directory _app_window_flags put on the command
+                # line: argv[0] is the browser, and for a confined one that
+                # is what decides where its profile is allowed to live.
+                profile = browser_profile_dir(app_argv[0])
                 profile.mkdir(parents=True, exist_ok=True)
                 _quiet_browser_profile(profile)
                 _purge_stale_browser_session(profile)
@@ -958,19 +1220,15 @@ def gui_cmd(
                 )
             except OSError:
                 # The browser vanished between the `which` probe and now. A tab
-                # is a worse window, but no window at all is worse still — and
-                # without a process to watch, the server keeps the Ctrl+C
-                # contract rather than exiting immediately. No window to paint,
-                # so close the splash now (SF-5).
+                # is a worse window, but no window at all is worse still. No
+                # window to paint, so close the splash now (SF-5); the page
+                # gate still applies, for the same reason as above.
                 _terminate_splash()
                 webbrowser.open(url)
+                _start_watcher(None)
                 return
             owned.append(proc)
-            threading.Thread(
-                target=_stop_server_when_window_closes,
-                args=(proc, server, app.state.presence),
-                daemon=True,
-            ).start()
+            _start_watcher(proc)
 
         def _after_open() -> None:
             # Splash hand-off: only a real app window has a page that will hold

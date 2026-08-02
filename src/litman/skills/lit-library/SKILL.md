@@ -28,8 +28,8 @@ Classify every action before you take it.
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
 | 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, `lit cite`, scan a PDF, query INDEX via `lit list --format json`, `lit project list`, `lit code list`, `lit trash list`, `lit taxonomy list`, `lit vault list` (all five take `--format json`), `lit health-check` |
-| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=` |
-| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm — [A]/[B]), `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
+| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit modify --set-author "…"` *(ordered author rewrite)*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=` |
+| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm — [A]/[B]), **`lit rename <old> <new>`** *(paper id — cascades into other papers' ref lists, every `[[id]]` in notes, project links; see [A]'s standalone-rename rule)*, `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
 
 The CLI hard-rejects unregistered controlled-vocabulary values, so your job is to **not invent values**.
 
@@ -104,6 +104,7 @@ If the user has both a project `References/` and a global vault, ask which one t
 - **[H] Project operations** — register / link / unlink / list / rename / delete / set-path.
 - **[I] Restore a trashed paper** — execute the restore lit-reading B13 confirmed.
 - **[J] TAXONOMY governance** — merge / rename / remove a controlled value.
+- **[K] Repair a legacy library** — health-check reports filler metadata / filler ids in bulk on a vault filled before the guards existed.
 
 **SOP-1 (hard rule for every branch):** the agent does not proactively tag, edge-link, project-link, or code-bind a paper. Listing observations ("this touches tokenization, evaluation") is fine — *listing ≠ tagging*. Always **propose → user decides → you run the CLI.** Never self-initiate a structural write.
 
@@ -181,8 +182,11 @@ Unknown keys are rejected. Topics/methods/data are **NOT** in this schema — cl
 ### When `lit add --from-llm-json` errors
 
 - **`DuplicateDOIError` / "DOI 'x' already registered"** → see Duplicate-add path above.
-- **"Metadata from LLM JSON has no year"** → re-read the PDF for a year, ask the user, or pass `--id 2024_Family_Keyword` explicitly.
+- **"Metadata from LLM JSON has no year"** → re-read the PDF (page 1, header/footer, DOI landing page), ask the user, or pass `--id <year>_<Family>_<Keyword>` explicitly. 🔴 **Never substitute the download year, the file's date, or the current year.** The year is baked into the id and into every exported citation; a guessed one passes every later check and is only findable by hand, years on.
 - **"field 'title': String should have at least 1 character"** → re-extract.
+- **"This title cannot produce a paper id"** → the title is in a script the id cannot carry. Ids are ASCII (they are folder names on Windows, macOS and Linux alike), and both keyword paths split on whitespace — so a Chinese, Japanese or Korean title arrives as one token and slugs down to whatever stray Latin fragment was inside it (`关于化合物A的合成方法` → `2018_Zhang_A`). That id is refused rather than written, because short of `lit rename` it is permanent. **Pass `--id <year>_<Family>_<Keyword>`.** The error names a candidate when the title held a usable fragment (`--id 2018_Zhang_PROTAC`); otherwise the keyword is **yours to invent** — the paper's English title if it has one (most Chinese journals print it), a transliteration otherwise. 🔴 **Say so and stop.** Report the id you chose *as invented*, not derived ("这个关键词是我起的,不是从标题算出来的 —— 用 `2018_Zhang_Green-synthesis` 可以吗?"), and let the user replace it before you run the add. Nothing in the vault records that an id was guessed, and short of `lit rename` it is permanent; one line now costs less than a handle nobody recognises. The keyword does **not** have to match the stored title, and the stored title stays in its own script: only the handle is ASCII. 🔴 **Never translate the `title` field to make the id easier** — the id is a door plate, not a translation, and rewriting the stored title to English destroys the paper's actual name. 🔴 The first author's family name has the same constraint — write it in pinyin/romanised form (`Zhang, Tianshun`), which is also what CrossRef and every .bib consumer expect.
+- **"is `…`, a placeholder"** (on `title` or on the **first author**) → the field holds a filler like `Unknown` / `N/A` / `untitled`. Re-extract it from page 1. 🔴 **Never fill a placeholder to get the add through** — the title keyword and the first author's family name both go into the id, so either one is permanent short of `lit rename`. For a work with no personal author (patent, editorial, standards document) name the **issuing body** — the patent assignee, the journal, the organisation. For a genuinely unattributed work write `Anonymous`: that is a claim about the document, whereas `Unknown` only says the metadata was never read.
+- **`Warning: author N of M is 'Unknown' — a filler, not a real name`** (the add **succeeded**) → a filler after the first author does not block the import, because it never reaches the id. Do not walk away from it: re-read that one name off the PDF and rewrite the list with `lit modify <id> --set-author "…"` (one flag per author, **in order** — 🔴 not `--rm-tag`+`--add-tag`, which appends the correction to the END of the list). If the name is genuinely unreadable, say which position is unresolved when you report the add — do not leave the user to find `Unknown` inside a .bib later.
 
 ### Title / id rollback (when the confirm gate fails)
 
@@ -431,6 +435,40 @@ Agent behavior:
 
 ---
 
+## [K] Repair a legacy library (filler metadata / filler ids)
+
+Trigger: `lit health-check` reports `placeholder_metadata`, `placeholder_id` or `weak_id_keyword` — typically dozens or hundreds at once, on a vault filled before those guards existed. The user's phrasing is usually "库里好多 Unknown" / "clean up these bad ids".
+
+**Get the whole list first.** The report caps each category at its first few findings; **`lit health-check --all`** prints every one. Working from the capped view silently repairs 5 papers and reports the category done.
+
+**Fix the fields before the id, always.** The two are separate commands and the order is not cosmetic:
+
+```bash
+lit modify <id> --set title="…" --set-author "Family, Given" --set-author "…"   # Tier 2
+lit rename <old-id> <new-id>                                                     # Tier 3
+```
+
+Repairing the fields is the half that needs the PDF reopened. Once they are right, **re-run `lit health-check`** — `placeholder_id`'s hint is now a complete, filled-in `lit rename <old> <new>` computed from the corrected metadata, so the second half costs no thinking at all.
+
+🔴 **`--set-author`, one flag per author, the whole list in order.** `--add-tag` appends, which puts a corrected first author last — and the first author's family name is what the id is built from.
+
+**Batch the confirmation, don't batch the decision.** `lit rename` is Tier 3 and these are permanent handles, but asking 300 times is not "asking once". Present **one table** and take **one nod**:
+
+| old id | proposed | from |
+|---|---|---|
+| `2018_Unknown_Untitled` | `2018_Zhang_Green-synthesis` | 标题:关于化合物的绿色合成方法 |
+| `2019_Unknown_A` | `2019_Li_CRISPR-Cas9` | 标题里的 CRISPR-Cas9 |
+
+Then run the whole batch and report. The user scans, corrects the few they care about, and approves the rest in one message.
+
+**Mark the invented ones.** When a title is in a non-Latin script the keyword is yours to invent, not derive ([A]'s rule) — say which rows are guesses so the user knows where to look. 🔴 Never translate the `title` field to make an id easier.
+
+**What `lit rename` cannot reach.** It rewrites every in-vault reference — other papers' `related` / `extends` / `contradicts`, every `[[id]]` in notes, project links, INDEX. It cannot rewrite what left the vault: a `\cite{2024_Unknown_Untitled}` already sitting in the user's manuscript, a link they pasted somewhere. On an old library that is a real risk — **say it once** when proposing the batch, so "一次起对" is a choice and not a surprise.
+
+**Reporting is not fixing.** All three checks are report-only by design: only the reader knows what a paper should be called, so `--fix` never picks a handle. A paper the user chooses to leave alone stays reported — that is correct, not a bug to work around.
+
+---
+
 ## [J] TAXONOMY governance
 
 Maintain the controlled vocabulary. Trigger keywords: "合并这两个 topic" / "merge X into Y", "把 X 改名" / "rename", "删掉这个 topic/method/值" / "remove this value".
@@ -483,6 +521,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit search <query> [--in notes,discussion] [--limit N]` | Search free-form notes / discussion (read-only); `--limit` = first N hits; routes to lit-reading territory but usable here |
 | `lit related <id> [--by edges\|taxonomy]` | Knowledge-graph neighbours (read-only); routes to lit-reading territory but usable here |
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields / tag ([E]) |
+| `lit modify <id> --set-author "Family, Given" …` | Rewrite the author list (repeatable flag; flag order = stored order). The ONLY way to reorder authors or fix a non-final name in place — `--add-tag` appends | 
 | `lit read / revisit / drop / promote / skim <id>` | Status & date sugar ([E]) |
 | `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Topics/methods/data vocab; `list` takes `--format json`; merge/rm prompt — pass `--yes` non-interactively ([J]) |
 | `lit project {add,list,rename,set-path,rm} [args]` | Project registry ([H]); `list` takes `--format json`; `rm` prompts — pass `--yes` non-interactively |
@@ -493,7 +532,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit code unlink <repo> --paper <id>` | Unbind one paper, keep the clone ([C.3]) |
 | `lit code list [--paper <id>] [--orphan] [--format json]` | Browse code repos; `--format json` emits each `repo-meta.yaml` (incl. the `papers` reverse list) |
 | `lit code rm <repo> --cascade` | Retire a repo (last citer only — [C.3]) |
-| `lit health-check [--fix]` | Vault consistency report; `--fix` regenerates derived artifacts + cleans staging/sidecar leftovers (user's nod first) |
+| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` regenerates derived artifacts + cleans staging/sidecar leftovers (user's nod first) |
 | `lit rename <old> <new>` | Atomic id rename with cascade |
 | `lit cite <id-or-substring>` | Paste-ready ACS citation on stdout (caveats → stderr; `--paper-doi` supported) |
 | `lit rm <id> [--dry-run\|--yes\|--purge]` | Soft-delete (trash) or purge; `--dry-run` previews the impact set, a non-tty run needs `--yes` |

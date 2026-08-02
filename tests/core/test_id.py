@@ -10,7 +10,10 @@ from litman.core.id import (
     derive_keyword,
     derive_keyword_alternatives,
     find_case_fold_collision,
+    id_segments,
     is_valid_id,
+    is_weak_keyword,
+    suggest_id,
 )
 from litman.exceptions import IDError
 
@@ -200,6 +203,169 @@ def test_derive_id_non_ascii_family_raises() -> None:
 def test_derive_id_untitled_raises() -> None:
     with pytest.raises(IDError, match="title"):
         derive_id(2024, "Smith", "")
+
+
+# ---------------------------------------------------------------------------
+# The ASCII gate — a title in a space-less script must not name a paper by
+# whatever Latin fragment it happens to contain.
+# ---------------------------------------------------------------------------
+
+
+def test_a_chinese_title_with_a_compound_label_does_not_become_that_label() -> None:
+    """The regression this gate exists for: `2018_Zhang_A` was born silently.
+
+    One token (no spaces in the script), slugged down to the one Latin
+    character in it. The id is a folder name and a wiki-link target, so it
+    outlives the mistake in a way a wrong field does not.
+    """
+    assert derive_keyword("关于化合物A的合成方法") == "untitled"
+    with pytest.raises(IDError, match="mostly not"):
+        derive_id(2018, "Zhang", "关于化合物A的合成方法")
+
+
+def test_a_wholly_chinese_title_is_refused_too() -> None:
+    assert derive_keyword("气泡呼吸行为在气液反应器中的研究") == "untitled"
+
+
+def test_a_mixed_title_below_the_ratio_is_refused_however_good_the_fragment() -> None:
+    """35% Latin: `PROTAC` alone would be a legal id and still a poor one.
+
+    wangq's call, deliberately the strict reading — "a Chinese title always
+    needs an id from you" is easier to live with than "sometimes it works".
+    """
+    assert derive_keyword("一种新型 PROTAC 分子的设计与合成") == "untitled"
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("Bubble breathing behaviour in a gas-liquid reactor",
+         "Bubble-breathing-behaviour"),
+        ("BERT: Pre-training of Deep Bidirectional Transformers",
+         "BERT-Pretraining"),
+        ("Attention Is All You Need", "Attention-All-You"),
+        # Latin script with non-ASCII letters in it stays comfortably above the
+        # ratio — the gate is about scripts, not about stray diacritics. (The
+        # keyword itself is poor because the stop-word list is English-only;
+        # that predates the gate and is not what this asserts.)
+        ("Rôle de la protéine dans la réaction", "Rle-de-la"),
+        ("α-Synuclein aggregation in vivo", "-Synuclein-aggregation-vivo"),
+    ],
+)
+def test_the_gate_leaves_ordinary_titles_alone(title: str, expected: str) -> None:
+    """The gate's whole risk is false positives; these are the guard against it."""
+    assert derive_keyword(title) == expected
+
+
+def test_a_title_that_is_half_latin_still_passes() -> None:
+    """The boundary is inclusive, and `CRISPR-Cas9` is worth keeping."""
+    assert derive_id(2018, "Zhang", "CRISPR-Cas9 基因编辑技术的研究进展") == (
+        "2018_Zhang_CRISPR-Cas9"
+    )
+
+
+# ---------------------------------------------------------------------------
+# suggest_id — what the CLI error and the GUI's Paper ID field start from
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_id_keeps_the_latin_part_of_a_refused_title() -> None:
+    """The gate refuses the title as a whole; the fragment is still usable."""
+    assert derive_keyword("一种新型 PROTAC 分子的设计与合成") == "untitled"
+    assert suggest_id(2018, "Zhang", "一种新型 PROTAC 分子的设计与合成") == (
+        "2018_Zhang_PROTAC"
+    )
+
+
+def test_suggest_id_refuses_to_offer_the_very_id_the_gate_rejected() -> None:
+    """Offering `2018_Zhang_A` would hand back exactly what was just refused."""
+    assert suggest_id(2018, "Zhang", "关于化合物A的合成方法") is None
+
+
+def test_suggest_id_has_nothing_to_offer_for_a_title_with_no_latin_at_all() -> None:
+    assert suggest_id(2018, "Zhang", "气泡呼吸行为在气液反应器中的研究") is None
+
+
+@pytest.mark.parametrize(
+    "year,family,title",
+    [
+        (None, "Zhang", "一种新型 PROTAC 分子的设计与合成"),
+        (2018, "张", "一种新型 PROTAC 分子的设计与合成"),
+        (2018, "Zhang", "   "),
+    ],
+)
+def test_suggest_id_returns_none_when_a_segment_is_missing(
+    year: int | None, family: str, title: str
+) -> None:
+    """Callers render None as an empty field rather than as a bad default."""
+    assert suggest_id(year, family, title) is None
+
+
+def test_the_error_message_carries_a_command_the_reader_can_run() -> None:
+    """As often an agent mid-batch as a person; an unactionable error stalls it."""
+    with pytest.raises(IDError) as exc:
+        derive_id(2018, "Zhang", "一种新型 PROTAC 分子的设计与合成")
+    assert "--id 2018_Zhang_PROTAC" in str(exc.value)
+
+    with pytest.raises(IDError) as exc:
+        derive_id(2018, "Zhang", "气泡呼吸行为在气液反应器中的研究")
+    assert "--id 2018_Zhang_<Keyword>" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "keyword,weak",
+    [("A", True), ("AI", True), ("ML", True), ("PROTAC", False),
+     ("Qipao-huxi", False), ("Cell-free", False)],
+)
+def test_is_weak_keyword(keyword: str, weak: bool) -> None:
+    assert is_weak_keyword(keyword) is weak
+
+
+# ---------------------------------------------------------------------------
+# id_segments — the same question per segment, for the GUI's Paper ID field
+# ---------------------------------------------------------------------------
+
+
+def test_id_segments_asks_for_nothing_when_the_id_derives_whole() -> None:
+    seg = id_segments(2021, "Zhang", "Continuous macrocyclisation of peptides")
+    assert seg.needs == ()
+    assert f"{seg.year}_{seg.family}_{seg.keyword}" == derive_id(
+        2021, "Zhang", "Continuous macrocyclisation of peptides"
+    )
+
+
+def test_id_segments_charges_a_chinese_title_only_the_keyword() -> None:
+    """The failures are independent — year and family survive intact."""
+    seg = id_segments(2018, "Zhang", "关于化合物A的合成方法")
+    assert (seg.year, seg.family) == ("2018", "Zhang")
+    assert seg.needs == ("keyword",)
+
+
+def test_id_segments_refuses_to_offer_the_keyword_the_gate_rejected() -> None:
+    """`A` in the keyword box is `2018_Zhang_A` one Enter later."""
+    assert id_segments(2018, "Zhang", "关于化合物A的合成方法").keyword is None
+
+
+def test_id_segments_offers_a_latin_fragment_but_still_wants_it_seen() -> None:
+    seg = id_segments(2018, "Zhang", "一种新型 PROTAC 分子的设计与合成")
+    assert seg.keyword == "PROTAC"
+    # Offered, not settled: derive_id refused this title, so the id is written
+    # only because a person looked at the fragment and let it stand.
+    assert seg.needs == ("keyword",)
+
+
+def test_id_segments_hands_back_a_family_name_that_slugs_to_nothing() -> None:
+    seg = id_segments(2024, "小王", "气泡呼吸")
+    assert seg.year == "2024"
+    assert (seg.family, seg.keyword) == (None, None)
+    assert seg.needs == ("family", "keyword")
+
+
+def test_id_segments_reports_a_missing_year_rather_than_raising() -> None:
+    """`derive_id` raises here; a form has three boxes to fill in instead."""
+    seg = id_segments(None, "Zhang", "Continuous macrocyclisation of peptides")
+    assert seg.year is None
+    assert seg.needs == ("year",)
 
 
 # ---------------------------------------------------------------------------

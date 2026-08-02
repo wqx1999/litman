@@ -123,9 +123,10 @@ async def launch_agent(request: Request) -> dict[str, object]:
     permission = spec.install_lit_permission()
 
     # A CLI may have been installed while this long-running GUI server was
-    # open. On Windows, merge the live registry PATH before launching so the
-    # child terminal sees the same command that Recheck just detected.
-    agents.refresh_windows_path()
+    # open, or live under a per-user bin dir the desktop session's PATH omits.
+    # Refresh before launching so the child terminal sees the same command
+    # that Recheck just detected.
+    agents.refresh_path()
 
     # Module-attribute access (not a from-import) so tests can stub the spawn
     # at its home module — the invariant-#5 purge test drops litman.server*

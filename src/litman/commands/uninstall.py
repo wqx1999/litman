@@ -30,7 +30,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from litman.commands.gui import (
-    browser_profile_dir,
+    browser_profile_dirs,
     remove_browser_profile,
     remove_shortcut,
     shortcut_path,
@@ -43,6 +43,7 @@ from litman.commands.install_completion import (
 from litman.core.agent_prefs import prefs_path, remove_prefs
 from litman.core.agents import skills_parent_dirs
 from litman.core.skill import installed_skill_names, uninstall_skill
+from litman.core.ui_state import remove_ui_state, ui_state_path
 from litman.core.vault_registry import registry_path, remove_registry
 
 console = Console()
@@ -107,8 +108,11 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     reg_present = reg.is_file()
     prefs = prefs_path()
     prefs_present = prefs.is_file()
-    profile = browser_profile_dir()
-    profile_present = profile.is_dir()
+    ui_state = ui_state_path()
+    ui_state_present = ui_state.is_file()
+    # Plural: a confined snap browser keeps its profile in its own
+    # writable area, so a machine can hold more than one.
+    profiles = browser_profile_dirs()
 
     plan_lines: list[str] = []
     for parent, names in skill_groups:
@@ -130,12 +134,17 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             "[bold]Agent preferences[/] [dim](machine-level default agent)[/]:"
         )
         plan_lines.append(f"  [red]•[/] {escape(str(prefs))}")
-    if profile_present:
+    if ui_state_present:
+        plan_lines.append(
+            "[bold]GUI state[/] [dim](pinned papers per library)[/]:"
+        )
+        plan_lines.append(f"  [red]•[/] {escape(str(ui_state))}")
+    if profiles:
         plan_lines.append(
             "[bold]App-window browser profile[/] "
             "[dim](Chromium state for `lit gui --window`)[/]:"
         )
-        plan_lines.append(f"  [red]•[/] {escape(str(profile))}")
+        plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in profiles]
 
     if not plan_lines:
         console.print(
@@ -189,12 +198,15 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             done.append(f"completion ({shell})")
     if reg_present and remove_registry()["removed"]:
         done.append("vault registry")
-    # After the registry file: only now can the shared config dir be empty, so
-    # remove_prefs() gets the chance to rmdir it (remove_registry keeps a dir
-    # that still holds preferences.yaml).
+    # After the registry file: the shared config dir can only be empty once
+    # its last sibling is gone, so the removers run registry → prefs →
+    # ui-state, and each later one gets the rmdir chance the earlier ones
+    # pass up (remove_prefs keeps a dir that still holds ui-state.json).
     if prefs_present and remove_prefs()["removed"]:
         done.append("agent preferences")
-    if profile_present and remove_browser_profile() is not None:
+    if ui_state_present and remove_ui_state()["removed"]:
+        done.append("GUI state (pins)")
+    if profiles and remove_browser_profile():
         done.append("app-window browser profile")
 
     out = ["[bold green]Removed:[/]"]

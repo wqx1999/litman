@@ -251,3 +251,21 @@ def test_parse_explicit_none_volume_normalizes_to_empty_string() -> None:
     assert parsed["volume"] == ""
     assert parsed["issue"] == ""
     assert parsed["pages"] == ""
+
+
+def test_placeholder_guard_does_not_reach_the_crossref_path() -> None:
+    """CrossRef is authoritative — its answer is not second-guessed.
+
+    The placeholder guard lives on the LLM-JSON schema because that payload is
+    an agent's reading of a PDF. A registry that genuinely records an author as
+    "Unknown" is stating a fact about the record, and rejecting it would leave
+    the paper with no import route at all.
+    """
+    parsed = parse_crossref({
+        "title": ["A work of uncertain authorship"],
+        "author": [{"family": "Unknown", "given": ""}],
+        "published-print": {"date-parts": [[1963]]},
+        "DOI": "10.1/x",
+        "type": "journal-article",
+    })
+    assert parsed["authors"] == ["Unknown"]

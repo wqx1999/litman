@@ -87,7 +87,7 @@ whatever you already pay for. **Start with Claude Code.**
 
 Every write is validated, so a weaker model just needs more turns — it never
 corrupts the library. Scores and method:
-[agent model benchmark](docs/6-agent-benchmark.md).
+[agent model benchmark](https://github.com/wqx1999/litman/blob/main/docs/6-agent-benchmark.md).
 
 ## Update and uninstall
 
@@ -104,7 +104,7 @@ installed litman, uv or pipx. It prints `current → latest` and asks once.
 litman asks PyPI for the newest version number once a day, and mentions it when
 yours is older; `lit hello` tells you every time you ask.
 `LITMAN_NO_UPDATE_CHECK=1` switches all of it off —
-[what it checks](docs/4-commands.md#lit-self-update).
+[what it checks](https://github.com/wqx1999/litman/blob/main/docs/4-commands.md#lit-self-update).
 
 </details>
 
@@ -126,18 +126,20 @@ touched by any of this; delete that directory by hand if you want the data gone.
 
 ## Documentation
 
-Full documentation lives under [`docs/`](docs/). New to litman? The
-[tutorial](docs/5-tutorial.md) covers about 80% of everyday use.
+Full documentation lives under
+[`docs/`](https://github.com/wqx1999/litman/tree/main/docs). New to litman? The
+[tutorial](https://github.com/wqx1999/litman/blob/main/docs/5-tutorial.md)
+covers about 80% of everyday use.
 
 | Topic | File |
 |---|---|
-| Start here — docs map | [docs/0-readme.md](docs/0-readme.md) |
-| Design philosophy | [docs/1-philosophy.md](docs/1-philosophy.md) |
-| Four-layer architecture | [docs/2-architecture.md](docs/2-architecture.md) |
-| Concepts and field reference | [docs/3-concepts.md](docs/3-concepts.md) |
-| Command reference | [docs/4-commands.md](docs/4-commands.md) |
-| Tutorial | [docs/5-tutorial.md](docs/5-tutorial.md) |
-| Agent model benchmark | [docs/6-agent-benchmark.md](docs/6-agent-benchmark.md) |
+| Start here — docs map | [docs/0-readme.md](https://github.com/wqx1999/litman/blob/main/docs/0-readme.md) |
+| Design philosophy | [docs/1-philosophy.md](https://github.com/wqx1999/litman/blob/main/docs/1-philosophy.md) |
+| Four-layer architecture | [docs/2-architecture.md](https://github.com/wqx1999/litman/blob/main/docs/2-architecture.md) |
+| Concepts and field reference | [docs/3-concepts.md](https://github.com/wqx1999/litman/blob/main/docs/3-concepts.md) |
+| Command reference | [docs/4-commands.md](https://github.com/wqx1999/litman/blob/main/docs/4-commands.md) |
+| Tutorial | [docs/5-tutorial.md](https://github.com/wqx1999/litman/blob/main/docs/5-tutorial.md) |
+| Agent model benchmark | [docs/6-agent-benchmark.md](https://github.com/wqx1999/litman/blob/main/docs/6-agent-benchmark.md) |
 
 ## Acknowledgments
 
@@ -167,8 +169,8 @@ The litman wordmark is adapted from [Nunito](https://fonts.google.com/specimen/N
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](https://github.com/wqx1999/litman/blob/main/LICENSE).
 
 ---
 
-<sub>AI agents: a condensed, link-dense map of this project lives in [README-Agent.md](README-Agent.md).</sub>
+<sub>AI agents: a condensed, link-dense map of this project lives in [README-Agent.md](https://github.com/wqx1999/litman/blob/main/README-Agent.md).</sub>
