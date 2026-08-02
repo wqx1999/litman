@@ -555,6 +555,17 @@ def _exited_proc() -> subprocess.Popen[bytes]:
     return proc
 
 
+def _crashed_proc() -> subprocess.Popen[bytes]:
+    """A real process that exited non-zero — the snap-confinement shape: the
+    browser started, could not lock the profile it was handed, and aborted
+    rather than corrupt it. It differs from _exited_proc only in its status,
+    which is the whole point: that is what tells a failed launch from a
+    browser that exited having done its job."""
+    proc = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    proc.wait()
+    return proc
+
+
 def _live_proc() -> subprocess.Popen[bytes]:
     """A real process that stays alive — the Windows shape: Edge keeps the
     browser process resident (Startup boost, single-instance-per-profile) long
@@ -629,6 +640,139 @@ def test_watcher_exits_after_grace_when_no_page_ever_connected() -> None:
     watcher.join(timeout=5)
     assert not watcher.is_alive()
     assert server.should_exit is True
+
+
+def test_watcher_opens_a_tab_when_the_window_dies_before_any_page() -> None:
+    # Popen said the browser started; the browser disagreed a moment later —
+    # an Ubuntu snap Chromium refused the hidden --user-data-dir and aborted.
+    # Before this, the grace above simply stopped the server, so *installing*
+    # Chromium left the user worse off than owning no Chromium at all: the
+    # tab fallback only ever ran for a browser that failed to start. The
+    # server must stay up long enough for the tab to arrive and take over.
+    tracker, server = PresenceTracker(), _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_crashed_proc(), server, tracker),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            "first_connect_grace": 0.2,
+            "linger": 0.2,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    time.sleep(0.6)  # past the grace that used to be a death sentence
+    assert calls == [1] and server.should_exit is False
+    tracker.connect()  # the tab loads the SPA
+    time.sleep(0.3)
+    assert server.should_exit is False  # and now holds the server on its own
+    tracker.disconnect()  # the user closes the tab: normal shutdown resumes
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+def test_watcher_gives_up_when_the_tab_fallback_also_fails() -> None:
+    # webbrowser.open returns False on a box with no browser it can drive.
+    # Nothing is coming, so the original verdict stands — a failed launch may
+    # not leave an orphaned server behind just because we tried twice.
+    server = _FakeServer()
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_crashed_proc(), server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: False,
+            "first_connect_grace": 0.2,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert server.should_exit is True
+
+
+def test_watcher_offers_the_tab_fallback_once_and_then_gives_up() -> None:
+    # The tab opened and its page never connected either (the default browser
+    # is a text-mode one, or the user closed it before it loaded). One more
+    # grace, then stop — the fallback is an extra chance, not a loop that
+    # keeps a dead launch alive by re-offering itself forever.
+    server = _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_crashed_proc(), server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            "first_connect_grace": 0.2,
+            "never_connected_timeout": 1.0,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert calls == [1]  # offered once, not once per poll
+    assert server.should_exit is True
+
+
+def test_watcher_never_offers_the_tab_after_a_clean_exit() -> None:
+    # The other half of the exit-status rule, and what keeps the fallback from
+    # becoming a nuisance: a browser that exits 0 with no page ever connected
+    # is the long-standing hand-off shape (Chromium passed the URL to an
+    # instance we cannot see) or a user who shut the window before it painted.
+    # Neither wants a tab opened at them, so the original verdict stands.
+    server = _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(_exited_proc(), server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            "first_connect_grace": 0.2,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    watcher.start()
+    watcher.join(timeout=5)
+    assert not watcher.is_alive()
+    assert calls == []  # never offered
+    assert server.should_exit is True
+
+
+def test_watcher_never_offers_the_tab_while_the_window_is_alive() -> None:
+    # The guard on the whole mechanism: a window merely slow to paint must not
+    # have a second browser opened on top of it. Only an exited process can
+    # have failed this way.
+    proc, server = _live_proc(), _FakeServer()
+    calls: list[int] = []
+    watcher = threading.Thread(
+        target=_stop_server_when_window_closes,
+        args=(proc, server, PresenceTracker()),
+        kwargs={
+            "on_launch_failed": lambda: (calls.append(1), True)[1],
+            "first_connect_grace": 0.05,
+            "linger": 0.1,
+            "poll": 0.02,
+        },
+        daemon=True,
+    )
+    try:
+        watcher.start()
+        time.sleep(0.4)  # many graces' worth, with the process still up
+        assert calls == [] and server.should_exit is False
+    finally:
+        proc.terminate()
+        proc.wait()
+        watcher.join(timeout=5)
 
 
 def test_watcher_holds_while_a_page_is_connected() -> None:
@@ -855,14 +999,51 @@ def test_window_fallback_to_a_tab_still_watches_the_page(
     monkeypatch.setattr(
         gui,
         "_stop_server_when_window_closes",
-        lambda proc, *a, **k: watched.append(proc),
+        lambda proc, *a, on_launch_failed=None, **k: watched.append(
+            (proc, on_launch_failed)
+        ),
     )
 
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
 
     assert result.exit_code == 0, result.output
     assert opened == [_served_url(result.output)] and procs == []
-    assert watched == [None]  # the page gate ran, with nothing to poll
+    # The page gate ran with nothing to poll — and no tab fallback armed:
+    # this launch *is* the tab, so there is nothing left to fall back to.
+    assert watched == [(None, None)]
+
+
+def test_window_launch_arms_the_tab_fallback(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # The seam that makes a snap Chromium's abort survivable: a launch that
+    # spawned a window hands the watcher a way back to a tab, aimed at the
+    # same URL the window was given. Without the callback the watcher can
+    # only stop the server, which is how installing a browser came to break
+    # the desktop shortcut on Ubuntu.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    armed: list[object] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, *a, on_launch_failed=None, **k: armed.append(on_launch_failed),
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(procs) == 1 and opened == []  # a window went up, not a tab
+    assert len(armed) == 1 and armed[0] is not None
+    # The command has returned, so its `finally` has set stop_event: the
+    # window's non-zero exit is our own terminate, not a crash, and a tab
+    # thrown up as the run ends is worse than no tab at all.
+    assert armed[0]() is False and opened == []
 
 
 def test_plain_tab_mode_keeps_the_ctrl_c_contract(

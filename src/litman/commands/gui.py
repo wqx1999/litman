@@ -330,6 +330,7 @@ def _stop_server_when_window_closes(
     server: Any,
     presence: PresenceTracker,
     *,
+    on_launch_failed: Callable[[], bool] | None = None,
     first_connect_grace: float = 15.0,
     never_connected_timeout: float = 180.0,
     linger: float = 5.0,
@@ -366,6 +367,19 @@ def _stop_server_when_window_closes(
     there is no process to poll (the fallback that opens a tab in the user's
     everyday browser); the page is then the only signal there is.
 
+    ``on_launch_failed`` is that fallback, offered once, at the only moment
+    this loop can tell a launch failed: the process is gone with a non-zero
+    status and no page ever connected. ``Popen`` succeeding does not mean the
+    window came up — the browser can exit on its own a moment later — and
+    that gap is not hypothetical: an Ubuntu snap Chromium is confined out of
+    the hidden cache dir :func:`browser_profile_dir` hands it and aborts
+    rather than corrupt a profile it cannot lock. The status is what
+    separates that from the clean exits this gate was built for (a Chromium
+    that handed the URL to an instance we never see), so only a crash buys
+    the second chance. Returning True means a tab was opened and the watch
+    continues against the page alone; False (or no callback) keeps the
+    original verdict.
+
     The keyword defaults are the shipped values; tests inject shorter ones.
     Each round reads the tracker through a single ``snapshot()`` call — read
     as separate properties, a connect landing between reads can show
@@ -397,8 +411,29 @@ def _stop_server_when_window_closes(
                 time.monotonic() - exited_at >= first_connect_grace
             ):
                 # No page ever connected and the window process is gone: a
-                # launch that never came up. Give up so it leaves no orphan.
-                break
+                # launch that never came up. One fallback first, and only on
+                # a *non-zero* exit — a browser that aborts is a launch
+                # failure Popen reported as success (a confined snap
+                # Chromium refusing its --user-data-dir), and the user who
+                # installed that browser must not end up worse off than the
+                # user who owns none. A clean exit is not that: it either
+                # handed the URL to an instance we cannot see or the user
+                # shut the window before its page painted, and a tab opening
+                # on top of those is the surprise, not the rescue.
+                took_over = (
+                    on_launch_failed is not None
+                    and proc is not None
+                    and proc.returncode not in (0, None)
+                    and on_launch_failed()
+                )
+                if not took_over:
+                    break  # give up, so a failed launch leaves no orphan
+                # A tab took over: nothing left to poll, and its page gets
+                # the same patience the window got.
+                on_launch_failed = None
+                proc = None
+                exited_at = None
+                started = time.monotonic()
             elif time.monotonic() - started >= never_connected_timeout:
                 # Same verdict, reached without the process ever exiting: a
                 # browser that has been up for minutes without loading one
@@ -1023,9 +1058,35 @@ def gui_cmd(
                     spawned.terminate()
             os._exit(0)
 
+        def _fall_back_to_tab() -> bool:
+            """Open a tab for a window that died before it loaded a page.
+
+            The last-resort twin of the `except OSError` arm in `_open`: that
+            one catches a browser that would not start, this one a browser
+            that started and then quit. Same remedy, because the splash is
+            still up and the server is still serving a UI nobody can see.
+
+            Unless the run is already ending: `_hard_exit` and the `finally`
+            below terminate the window themselves, and a signalled process
+            exits non-zero exactly like a crashed one. Ctrl+C would otherwise
+            throw a tab up on its way out — the parting gift nobody asked for.
+            """
+            if stop_event.is_set():
+                return False
+            _terminate_splash()
+            return webbrowser.open(url)
+
         def _watch_window(proc: subprocess.Popen[bytes] | None) -> None:
             """Stop the server when the last page goes, and see it through."""
-            _stop_server_when_window_closes(proc, server, app.state.presence)
+            _stop_server_when_window_closes(
+                proc,
+                server,
+                app.state.presence,
+                # Only a launch that spawned something can have failed this
+                # way; a tab that never connects has nothing left to fall
+                # back to.
+                on_launch_failed=_fall_back_to_tab if proc is not None else None,
+            )
             # The server may already be down (Ctrl+C raced the window close),
             # in which case there is nothing to escalate against — and arming
             # the kill stage against a finished run is exactly the mistake
