@@ -56,8 +56,13 @@ core.
 left, a tabbed PDF reader in the
 middle, a context panel on the right — for the things you do most: browsing,
 reading, annotating, taking notes, and the everyday curation around them — status
-and tags, delete and restore, projects, the taxonomy. What the UI exposes is a
-subset of the CLI, and a growing one. Day to day, this is where you work, and you
+and tags, delete and restore, projects, the taxonomy, the bibliographic fields
+and author order, and pinning the two or three papers you are currently working
+between to the top of the list. A paper can enter the library here as well:
+dragging its PDF onto the window imports it, one paper at a time, at the moment
+you decide it is worth keeping — which is the same deliberate act described
+above, with a shorter path to it. What the UI exposes is a subset of the CLI, and
+a growing one. Day to day, this is where you work, and you
 rarely need to think about commands at all.
 
 **The CLI is the foundation everything else rests on.** Every operation on the

@@ -57,9 +57,9 @@ JSON (`lit add --from-llm-json`). You rarely touch these after add.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | string | required | Folder name. Format `<year>_<Family>_<Keyword>`. Change only via `lit rename`, which rewrites every back-reference. |
-| `title` | string | required at add time | The paper's title, not normalized. |
-| `authors` | list[string] | `[]` | Each entry `"Family, Given"`. The first entry's family name drives id derivation. |
+| `id` | string | required | Folder name. Format `<year>_<Family>_<Keyword>`, ASCII only — it has to be a directory name on Windows, macOS and Linux alike. A title that cannot yield an ASCII keyword is refused at add rather than reduced to a nonsense one; `lit add --id` is the way past. Change it only via `lit rename`, which rewrites every back-reference. |
+| `title` | string | required at add time | The paper's title, not normalized, in whatever script it was written in. A filler value (`Unknown`, `untitled`) is refused at add. |
+| `authors` | list[string] | `[]` | Each entry `"Family, Given"`. The first entry's family name drives id derivation, so a filler there is refused at add; further down the list it is accepted with a warning, since it never reaches the id. Rewrite the list in order with `lit modify --set-author`. |
 | `year` | integer or null | null | Publication year. |
 | `journal` | string | `""` | Journal, conference, or preprint server. |
 | `doi` | string | `""` | Canonical DOI, no URL prefix. Used for `lit add` deduplication, matched case-insensitively. |
@@ -69,8 +69,9 @@ JSON (`lit add --from-llm-json`). You rarely touch these after add.
 | `issue` | string | `""` | Journal issue or number. |
 | `pages` | string | `""` | Page range in raw CrossRef form (e.g. `"45-67"`). |
 | `publisher` | string | `""` | Publisher or conference organizer. |
-| `venue-type` | string | `""` | CrossRef-style publication form (`journal-article`, `proceedings-article`, `posted-content`, `book-chapter`, ...). `lit export` picks the BibTeX entry type from it. |
+| `venue-type` | string | `""` | CrossRef-style publication form (`journal-article`, `proceedings-article`, `posted-content`, `book-chapter`, `patent`, ...). `lit export` picks the BibTeX entry type from it; `patent` yields `@patent` rather than a bare `@misc`. |
 | `booktitle` | string | `""` | Conference or book title, for proceedings and chapter entries. |
+| `patent-number` | string | absent | The patent's number, rendered as the `@patent` entry's `number`. Only meaningful alongside `venue-type: patent`; set it with `lit modify`. |
 
 **`type` vs `venue-type`.** `type` (classification layer below) is your
 editorial label for what the paper is to you. `venue-type` is CrossRef's label
@@ -480,10 +481,15 @@ emits the same per-paper projection, so its schema never drifts from the index.
 
 The registry is litman's state that lives outside any vault: a user-level file
 recording which vaults exist on this machine and which one is active. It is
-**not** part of a vault, so it is never synced with one. A second user-level
-file, `preferences.yaml`, sits next to it and holds your default agent — also
-machine-level, for the same reason (which agent you run is a property of the
-machine, not of a library).
+**not** part of a vault, so it is never synced with one. Two more user-level files
+sit next to it, machine-level for the same reason. `preferences.yaml` holds your
+default agent, because which agent you run is a property of the machine rather
+than of a library. `ui-state.json` holds the Web UI's own state — the pinned
+papers of each library, keyed by vault name, and the version whose "What's new"
+card you have already seen. Pins live here rather than in `metadata.yaml`
+deliberately: writing a paper's metadata refreshes `updated-at`, which is the
+recency sort key, so a pin stored there would reorder the very list it exists to
+hold still.
 
 Location, highest precedence first:
 
@@ -538,9 +544,11 @@ each is written.
 
 **Paper id.** The on-disk handle for a paper: both the folder name and the
 value other places use to refer to it. Default format `<year>_<Family>_<Keyword>`
-(e.g. `2017_Vaswani_Attention`). Change it only with `lit rename`, never `mv`,
-so every back-reference (other papers' relations, notes wikilinks, project
-links) is rewritten.
+(e.g. `2017_Vaswani_Attention`), and ASCII, because it must work as a directory
+name on every platform — a title in a script that cannot produce a keyword is
+refused at add, and you supply the handle with `lit add --id`. Change it only
+with `lit rename`, never `mv`, so every back-reference (other papers' relations,
+notes wikilinks, project links) is rewritten.
 
 **Tag.** Informal shorthand for a value in a list-typed metadata field
 (`topics`, `methods`, `projects`, `data`, the relation fields, `code-clones`).

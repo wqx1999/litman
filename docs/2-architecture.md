@@ -40,7 +40,8 @@ discussion, the links between papers, and the code repositories cloned for it.
 │   └── by-status/
 │
 ├── .trash/                 # recoverable-delete bin (created on first delete)
-└── .litman-staging/        # atomic-op staging area; transient
+├── .litman-staging/        # atomic-op staging area; transient
+└── .litman-upload/         # PDFs dropped into the Web UI, awaiting confirmation; transient
 ```
 
 The files split into two kinds:
@@ -108,7 +109,10 @@ annotating, and curating. It is a wrapper, not a parallel system: its read
 endpoints call the same `core/` functions the CLI uses (`list_papers`,
 `find_vault`, the INDEX reader), and each structured write routes back through
 the same command code paths a `lit` command would run, so the browser is never a
-second way to write to the vault. The only vault files it writes directly are a
+second way to write to the vault. Importing a paper by dragging its PDF onto the
+window is the same arrangement rather than an exception: the drop lands in
+`.litman-upload/`, and confirming it calls the very function `lit add` calls, so
+a dragged-in paper and a typed one are validated and written identically. The only vault files it writes directly are a
 small whitelist — PDF annotations embedded in the paper, `notes.md`, and
 `discussion.md` — each through the same atomic staged write. What the UI exposes
 is a subset of the CLI, and a growing one: the everyday operations have UI

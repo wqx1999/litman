@@ -169,8 +169,10 @@ lit install-skill --skill lit-reading
 Reverse of `lit setup`: remove the bundled skills (from every agent skills
 directory litman knows), the desktop shortcut, the
 shell-completion block, the vault registry (the list of vault names/paths), the
-machine-level agent preferences, and the browser profile used by the `lit gui
---window` app window. It does not remove the `lit` CLI itself — a
+machine-level agent preferences, and the browser profile the `lit gui --window`
+app window runs against (a sandboxed browser keeps that profile somewhere its
+sandbox allows, so both locations are swept). It does not remove the `lit` CLI
+itself — a
 running command can't delete its own environment — so it prints the final
 CLI-removal step (`uv tool uninstall litman` or `pipx uninstall litman`,
 depending on how you installed it) for you to run. Your vault directories
@@ -203,7 +205,20 @@ empty `discussion.md`.
 
 The source PDF is **moved**, not copied: once the import succeeds, the file you
 passed in is gone from where it was. Hand `lit add` a copy if you want to keep
-the original in place.
+the original in place. (Dragging a PDF into the Web UI is the one import that
+copies — the browser hands over the bytes and never the path, so there is nothing
+there to move.)
+
+Two identity fields are guarded at import, because both reach the paper id and an
+id outlives the mistake that made it. A first author or title given as a filler —
+`Unknown`, `N/A`, `untitled` — is refused, with the value litman read and what to
+write instead: for a work with no personal author, name the issuing body; for a
+genuinely unattributed one, `Anonymous`. A title in a script that cannot produce
+an ASCII keyword is refused the same way, and `--id` is how you get past it —
+pass the handle yourself rather than let `关于化合物A的合成方法` reduce to
+whichever Latin characters happened to sit inside it. None of this touches what
+is stored: titles, authors and journals keep whatever script they were written
+in, and only the id is ASCII.
 
 ```
 lit add <pdf> --doi <doi>
@@ -216,7 +231,7 @@ lit add <pdf> --doi <doi> --auto-suffix
 |---|---|
 | `--doi <doi>` | Fetch metadata from CrossRef. Mutually exclusive with `--from-llm-json`. |
 | `--from-llm-json <path>` | Read metadata from a JSON file, or `-` for stdin. Used by the `lit-library` skill. Mutually exclusive with `--doi`. |
-| `--id <id>` | Override the auto-derived id. |
+| `--id <id>` | Override the auto-derived id, and the way past a title litman cannot turn into one. |
 | `--auto-suffix` | On id collision, auto-append `_b` / `_c` without prompting. Required for non-interactive (non-TTY) batch use. |
 
 `lit add` writes a complete metadata skeleton (all fields, defaults filled); see
@@ -399,6 +414,7 @@ lit modify <id> --rm-tag topics=transformer
 | `--set KEY=VALUE` | Set a scalar field. Repeatable. Empty value unsets (writes `null`). |
 | `--add-tag FIELD=VALUE` | Append to a list field (deduped). Repeatable. |
 | `--rm-tag FIELD=VALUE` | Remove from a list field (silent if absent). Repeatable. |
+| `--set-author "Family, Given"` | Rewrite the whole author list. Repeat once per author; the order the flags appear in is the order stored. |
 
 Tag operations refuse values not registered in the corresponding TAXONOMY dict
 (register-first). See [3-concepts.md](3-concepts.md) §1.3 for the two-step
@@ -408,6 +424,12 @@ register-then-tag model and which fields are controlled.
 a tag field — `--set topic=X` where you meant `--add-tag topics=X` — writes a
 plain scalar that the taxonomy never validates and no view indexes. The write
 still goes through; litman prints a warning pointing at the `--add-tag` form.
+
+Authors are the one list with an order that means something, which is why they
+have their own flag. `--add-tag authors=…` appends, so using it to correct a
+misread name leaves the correction at the end of the list — and if the name you
+were fixing was the first author, that is also the name the paper id came from.
+`--set-author` states the whole list at once and is the only way to reorder it.
 
 ### `lit rename`
 
@@ -632,14 +654,31 @@ if any error or warning is found (so it can gate cron / CI). `info` findings —
 notes about the host, such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
 
+Three of the checks look for papers that entered the library before litman
+guarded the door, so they matter most on one you have been keeping a while. One
+reports a title or author still holding a filler value; one reports a paper id
+that carries such a filler, which survives correcting the fields because only
+`lit rename` touches an id; and one reports an id whose keyword says nothing
+about the paper, the `2018_Zhang_A` left behind by a title the derivation could
+not read. Each finding comes with the command that fixes it, complete and ready
+to paste.
+
 ```
 lit health-check
 lit health-check --fix
+lit health-check --all
 ```
 
 | Flag | What it does |
 |---|---|
 | `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata), clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--all` | Print every finding instead of the first few per category. |
+
+A library imported before a guard existed can hold hundreds of one kind of
+finding, and printing all of them buries everything else, so each category shows
+its first five and folds the remainder into a count. The counts are exact either
+way and the exit code does not change — `--all` only decides how much is printed,
+and it is what you want when working through one category paper by paper.
 
 ### `lit refresh-views`
 
@@ -729,6 +768,11 @@ hand-curated `.bib` at the same path is safe. The exporter uses the bib-oriented
 fields filled in by `lit add`; fill them on older papers with
 `lit modify <id> --set venue-type=journal-article` etc.
 
+`venue-type` chooses the entry type, so a paper carrying `patent` is exported as
+`@patent` rather than a bare `@misc`, and a `patent-number` on the paper becomes
+that entry's number. Both are ordinary metadata fields — set them with
+`lit modify` on a patent that came in without them.
+
 ### `lit config`
 
 Inspect the active vault's `lit-config.yaml`.
@@ -776,10 +820,26 @@ is just a tab, and Ctrl-C in the terminal is what stops the server. On Windows
 the desktop shortcut targets `litw`, the console-less twin of `lit`, so
 double-clicking it opens no console box.
 
+Only a Chrome-family browser can hold such a window: `--app` is their flag and
+Firefox has no equivalent. On a machine with none installed, `--window` opens an
+ordinary tab and carries on. That is the usual state of a fresh Linux desktop, and
+`sudo snap install chromium` — or Chrome, or Edge — settles it; litman borrows the
+browser only to hold its window, so it need not be the one you browse with.
+
 On a fresh install with no vault yet, `lit gui` still starts and shows a welcome
 page that creates your first library right in the browser — no terminal step. It
 also appears if the active vault's folder has moved, letting you create a new
 library or open a registered one.
+
+Beyond browsing and reading, the window carries a few things worth knowing about
+here. Dragging a PDF onto it imports the paper, running `lit add`'s own code with
+one difference: the browser can only hand over a copy of the bytes, so your
+original file stays where it is. The pencil in the METADATA header edits the
+bibliographic fields and the author list. Clicking a paper's status dot pins it to
+the top of the browse list — a per-library convenience kept outside the vault,
+which is why it has no `lit` command. And the first time the app opens on a new
+version it shows a short "What's new" card; the litman mark in the top-left corner
+reopens it whenever you want it again.
 
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server
