@@ -41,6 +41,7 @@ import {
 } from '../api'
 import type { MetadataWrite } from '../api'
 import AuthorRows from '../ui/AuthorRows'
+import { isYearShape, YEAR_HINT } from '../ui/year'
 import {
   modalBackdropProps,
   useModalCardFocus,
@@ -843,9 +844,15 @@ function Relations({
  * whose only prior edit path was the CLI. `id` is deliberately absent: an id
  * change is `lit rename`'s cascade (wikilinks, back-references), not a field
  * write, and the dialog says so instead of offering an input. */
-const EDIT_SCALARS = [
+const EDIT_SCALARS: ReadonlyArray<{
+  key: string
+  label: string
+  wide: boolean
+  /** Shown beside the label, always — the shape rule, not an error. */
+  hint?: string
+}> = [
   { key: 'title', label: 'Title', wide: true },
-  { key: 'year', label: 'Year', wide: false },
+  { key: 'year', label: 'Year', wide: false, hint: YEAR_HINT },
   { key: 'journal', label: 'Journal', wide: true },
   { key: 'doi', label: 'DOI', wide: true },
   { key: 'volume', label: 'Volume', wide: false },
@@ -854,7 +861,7 @@ const EDIT_SCALARS = [
   { key: 'publisher', label: 'Publisher', wide: true },
   { key: 'venue-type', label: 'Venue type', wide: false },
   { key: 'booktitle', label: 'Book title', wide: true },
-] as const
+]
 
 /** Edit dialog for bibliographic metadata (task-gui-metadata-edit).
  *
@@ -904,6 +911,15 @@ function MetadataEditDialog({
       if (next === original[f.key].trim()) continue
       set[f.key] = next === '' ? null : next
     }
+    // Only a year the user actually touched is judged. A paper already
+    // holding `12311` (the backend has always taken any integer, and still
+    // does — `lit modify` is the escape hatch) must not have its title edit
+    // held hostage by a field nobody came here to change.
+    if (typeof set.year === 'string' && !isYearShape(set.year)) {
+      setError(`Year must be ${YEAR_HINT} — got '${set.year}'.`)
+      return
+    }
+
     const cleanedAuthors = authors.map((a) => a.trim()).filter(Boolean)
     const authorsChanged =
       cleanedAuthors.length !== paper.authors.length ||
@@ -955,6 +971,11 @@ function MetadataEditDialog({
             >
               <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                 {f.label}
+                {f.hint && (
+                  <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-400">
+                    {f.hint}
+                  </span>
+                )}
               </span>
               <input
                 type="text"

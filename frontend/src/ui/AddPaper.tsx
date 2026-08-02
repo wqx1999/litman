@@ -12,6 +12,7 @@ import {
 import AuthorRows from './AuthorRows'
 import { modalBackdropProps } from './modalShell'
 import PaperIdField from './PaperIdField'
+import { isYearShape, YEAR_HINT } from './year'
 
 /** Confirm dialog for the drag-in ingest: DOI (sniffed, editable) → CrossRef
  * preview → Add, with a hand-entry path for the papers CrossRef lacks.
@@ -139,7 +140,7 @@ export default function AddPaper({
   // duplicate the validator.
   const manualReady =
     mTitle.trim() !== '' &&
-    /^\d{3,4}$/.test(mYear.trim()) &&
+    isYearShape(mYear) &&
     (mAuthors[0] ?? '').trim() !== ''
 
   const mAuthorList = mAuthors.map((a) => a.trim()).filter(Boolean)
@@ -363,6 +364,13 @@ export default function AddPaper({
               <label className="block">
                 <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
                   Year <span className="text-red-500">*</span>
+                  {/* Same reasoning as the Paper ID charset: the rule has to
+                      be readable before the first keystroke. Add going grey is
+                      the only other signal this field has, and a disabled
+                      button that will not say why is the thing being fixed. */}
+                  <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-400">
+                    {YEAR_HINT}
+                  </span>
                 </span>
                 <input
                   type="text"
