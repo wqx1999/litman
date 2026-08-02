@@ -21,7 +21,7 @@ and release.sh refuses to publish without one.
 
 ## 1.3.3
 
-- Drag a PDF in to add it, even without a DOI.
+- Drag a PDF in to add it.
 - Edit paper metadata, and choose the id when adding.
 - Pin papers to keep them at the top.
 - Faster deleting, restoring and tagging in large libraries.
