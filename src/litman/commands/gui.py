@@ -923,11 +923,63 @@ def _write_shortcut_win32(target: Path, lit: str) -> None:
         ) from e
 
 
+# platformdirs' user_log_dir on macOS, spelled in shell because the stub below
+# runs before any Python does.
+_DARWIN_LOG_DIR = "$HOME/Library/Logs/litman"
+
+# Launched from Finder / Launchpad / the Dock, the bundle has no console, so
+# without a log a launch that failed and a launch that is merely slow look
+# exactly alike — nothing on screen either way until the browser window shows
+# up. The console-less Windows launcher keeps litw.log for the same reason.
+# Truncated per launch rather than appended, so it never grows.
+#
+# The bare `exec` on the last line is the fallback, and it is load-bearing: a
+# redirection onto a path the shell cannot open aborts the script, which would
+# turn an unwritable log directory into an app that does not start at all. The
+# log is a diagnostic; it never gets a vote on whether litman runs.
+_DARWIN_STUB = """\
+#!/bin/sh
+LOG_DIR="{log_dir}"
+if mkdir -p "$LOG_DIR" 2>/dev/null && : >"$LOG_DIR/litman.log" 2>/dev/null; then
+    exec "{lit}" gui --window >"$LOG_DIR/litman.log" 2>&1
+fi
+exec "{lit}" gui --window
+"""
+
+
+def _install_darwin_icon(target: Path) -> str | None:
+    """Copy the bundled ``.icns`` into ``target``. Returns the name, or None.
+
+    Without ``CFBundleIconFile`` and this file beside it, the Dock and
+    Launchpad draw the generic executable tile — which is what every macOS
+    install through 1.3.3 got. The artwork is the same mark the Windows
+    ``.ico`` carries, inset to Apple's icon grid (the rounded body is 824 of
+    1024) so it does not sit visibly larger than its neighbours in the Dock.
+
+    Best effort by design: an install missing the asset still deserves a
+    working launcher, so a failed copy drops the plist key rather than the
+    shortcut.
+    """
+    source = _icon_path("litman.icns")
+    dest = target / "Contents" / "Resources" / source.name
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, dest)
+    except OSError:
+        return None
+    return source.name
+
+
 def _write_shortcut_darwin(target: Path, lit: str) -> None:
-    # Minimal .app bundle: Info.plist + an executable shell stub. No .icns
-    # pipeline in v1 — the bundle works without a custom icon.
+    """Write the ``~/Applications/litman.app`` launcher bundle.
+
+    A minimal bundle — Info.plist, an icon, and an executable shell stub that
+    runs ``lit gui --window``. See :data:`_DARWIN_STUB` for why the stub logs
+    and :func:`_install_darwin_icon` for the icon.
+    """
     macos_dir = target / "Contents" / "MacOS"
     macos_dir.mkdir(parents=True, exist_ok=True)
+    icon = _install_darwin_icon(target)
     (target / "Contents" / "Info.plist").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -938,13 +990,27 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
         "  <key>CFBundleIdentifier</key><string>io.github.litman</string>\n"
         "  <key>CFBundleExecutable</key><string>litman</string>\n"
         "  <key>CFBundlePackageType</key><string>APPL</string>\n"
-        "</dict>\n"
+        + (
+            f"  <key>CFBundleIconFile</key><string>{icon}</string>\n"
+            if icon
+            else ""
+        )
+        + "</dict>\n"
         "</plist>\n",
         encoding="utf-8",
     )
     stub = macos_dir / "litman"
-    stub.write_text(f'#!/bin/sh\nexec "{lit}" gui --window\n', encoding="utf-8")
+    stub.write_text(
+        _DARWIN_STUB.format(lit=lit, log_dir=_DARWIN_LOG_DIR), encoding="utf-8"
+    )
     stub.chmod(0o755)
+    # Finder and the Dock cache a bundle's icon; the cache is keyed on the
+    # bundle and dropped when its modification date moves. Rewriting the files
+    # *inside* Contents/ does not move the .app's own date, so an install that
+    # already showed the generic tile would keep showing it. Best effort — a
+    # refused utime costs an icon, not the shortcut.
+    with contextlib.suppress(OSError):
+        os.utime(target)
 
 
 @click.command("gui")

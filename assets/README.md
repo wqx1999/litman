@@ -10,6 +10,25 @@ Current artwork, referenced by `README.md`:
 | `mark.svg`, `mark-dark.svg` | mark alone |
 | `icon.svg` | app / shortcut icon source |
 
+## Derived: `src/litman/assets/icons/`
+
+`icon.svg` is the source; the shipped rasters are built from it, never drawn
+by hand. Three consumers, three shapes:
+
+| File | Consumer | Shape |
+|---|---|---|
+| `litman.ico` | Windows `.lnk` | full bleed |
+| `litman.png`, `litman_<px>.png` | Linux `.desktop`, the launch splash | full bleed, white-clamped (the splash keys pure white transparent) |
+| `litman.icns` | macOS `.app` | **inset**: the tile is 824 of a 1024 canvas |
+
+The macOS inset is Apple's icon grid, not a mistake. Every native app follows
+it, so a full-bleed squircle sits visibly larger than its Dock neighbours.
+Rebuild the `.icns` by rendering `icon.svg` at 824 px, centring it on a
+transparent 1024 canvas, LANCZOS-downscaling to 32/64/128/256/512, and handing
+the set to Pillow (`master.save("litman.icns", append_images=[...])`, which
+fills ic07–ic14). Pillow's own resize would otherwise invent a 1024 from the
+512 raster.
+
 ## Do not delete: `logo1.png`, `logo2.png`, `logo2.svg`
 
 Nothing in this repo links to them. They exist for PyPI.

@@ -1467,6 +1467,100 @@ def test_make_shortcut_darwin_builds_app_bundle(
     assert "CFBundleExecutable" in plist
 
 
+def test_make_shortcut_darwin_bundle_carries_the_icon(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Without both halves — the .icns inside Resources AND the plist key
+    # naming it — the Dock and Launchpad draw the generic executable tile,
+    # which is what every macOS install through 1.3.3 got.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
+
+    app = tmp_path / "Applications" / "litman.app"
+    icns = app / "Contents" / "Resources" / "litman.icns"
+    assert icns.is_file()
+    assert icns.read_bytes()[:4] == b"icns", "must be a real icon file"
+    plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
+    assert "<key>CFBundleIconFile</key><string>litman.icns</string>" in plist
+
+
+def test_make_shortcut_darwin_survives_a_missing_icon_asset(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # An install whose package data lost the .icns still deserves a working
+    # launcher: the key drops out rather than the shortcut. Asserting the key
+    # is *absent* matters as much as the file — a plist naming an icon that
+    # is not there is a bundle macOS reports as broken.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "litman.commands.gui._icon_path", lambda name: tmp_path / "gone" / name
+    )
+
+    assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
+
+    app = tmp_path / "Applications" / "litman.app"
+    assert (app / "Contents" / "MacOS" / "litman").is_file()
+    assert not (app / "Contents" / "Resources" / "litman.icns").exists()
+    plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
+    assert "CFBundleIconFile" not in plist
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX /bin/sh")
+def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
+    monkeypatch, tmp_path
+) -> None:
+    # The stub is the one piece of this bundle no test host can be macOS for,
+    # but it is plain POSIX sh — so run it. Finder gives it no console, so the
+    # log is the only evidence a failed launch ever leaves; and a log that
+    # cannot be opened must cost the diagnostic, never the launch itself.
+    lit = tmp_path / "fake lit"  # space: the quoting is what is under test
+    lit.write_text('#!/bin/sh\necho "argv: $*"\necho oops >&2\n', encoding="utf-8")
+    lit.chmod(0o755)
+    stub = tmp_path / "stub.sh"
+    stub.write_text(
+        gui._DARWIN_STUB.format(lit=lit, log_dir=gui._DARWIN_LOG_DIR),
+        encoding="utf-8",
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    done = subprocess.run(
+        ["/bin/sh", str(stub)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0
+    assert done.stdout == "", "a logged launch must print nothing to the console"
+    log = home / "Library" / "Logs" / "litman" / "litman.log"
+    assert log.read_text(encoding="utf-8") == "argv: gui --window\noops\n"
+
+    # Second run truncates: the log records the last launch, it does not grow.
+    subprocess.run(
+        ["/bin/sh", str(stub)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+    )
+    assert log.read_text(encoding="utf-8").count("argv:") == 1
+
+    # A home the log cannot be created under: same launch, output falls back
+    # to the console instead of taking the app down with it.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    done = subprocess.run(
+        ["/bin/sh", str(stub)],
+        env={**os.environ, "HOME": str(blocked)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0
+    assert done.stdout == "argv: gui --window\n"
+
+
 # ---------------------------------------------------------------------------
 # bundled icon assets (task-gui-desktop-entry D3, package-data)
 # ---------------------------------------------------------------------------
@@ -1475,10 +1569,39 @@ def test_make_shortcut_darwin_builds_app_bundle(
 def test_bundled_icons_resolve_via_importlib_resources() -> None:
     from importlib.resources import files
 
-    for name in ("litman.png", "litman.ico"):
+    for name in ("litman.png", "litman.ico", "litman.icns"):
         icon = files("litman").joinpath("assets", "icons", name)
         assert icon.is_file(), f"missing bundled icon {name}"
         assert len(icon.read_bytes()) > 0
+
+
+def test_bundled_icns_carries_the_sizes_macos_draws() -> None:
+    # The .icns is a build-time artifact no test host here can regenerate (it
+    # is rendered from assets/icon.svg), so what a test can still do is refuse
+    # a replacement that is not a real icon file or that dropped the sizes the
+    # Dock and Retina Launchpad ask for. A truncated or single-size .icns is
+    # accepted by nothing on macOS and shows as the generic tile again.
+    import struct
+    from importlib.resources import files
+
+    raw = files("litman").joinpath("assets", "icons", "litman.icns").read_bytes()
+    assert raw[:4] == b"icns"
+    declared = struct.unpack(">I", raw[4:8])[0]
+    assert declared == len(raw), "declared length must match the file"
+
+    chunks, offset = {}, 8
+    while offset < declared:
+        kind = raw[offset : offset + 4].decode("latin1")
+        length = struct.unpack(">I", raw[offset + 4 : offset + 8])[0]
+        assert 8 < length <= declared - offset, f"bad chunk length for {kind}"
+        chunks[kind] = raw[offset + 8 : offset + length]
+        offset += length
+    assert offset == declared, "chunk lengths must tile the file exactly"
+
+    # ic07/ic08/ic09 are 128/256/512; ic13/ic14 the Retina Dock pair.
+    for kind in ("ic07", "ic08", "ic09", "ic13", "ic14"):
+        assert kind in chunks, f"missing {kind}"
+        assert chunks[kind][:8] == b"\x89PNG\r\n\x1a\n", f"{kind} is not a PNG"
 
 
 # ===========================================================================
