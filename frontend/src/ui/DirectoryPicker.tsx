@@ -231,10 +231,35 @@ export default function DirectoryPicker({
   const selectDisabled = loading || !listing || vaultBlocked
   const crumbs = breadcrumbs(listing?.path ?? address)
 
+  // Places (Home / Desktop / …) draw as labelled chips; drive roots draw as one
+  // segmented control instead. A drive is a device, not a favourite folder, and
+  // giving both the same pill put eight equal-weight capsules across two rows —
+  // an undifferentiated pile. Both groups are empty-safe: POSIX returns no
+  // drives, so that side simply renders nothing.
+  const anchors = listing?.anchors ?? []
+  const places = anchors.filter((a) => a.kind !== 'drive')
+  const drives = anchors.filter((a) => a.kind === 'drive')
+  // A Windows path always opens with "<letter>:", so its first two characters
+  // name the drive we are inside. No platform check is needed: a POSIX path can
+  // never collide with a drive label, and POSIX has no drives to highlight.
+  const currentDrive = (listing?.path ?? '').slice(0, 2).toUpperCase()
+
   const CHIP =
     'inline-flex items-center gap-1.5 rounded-full border border-stone-300 bg-white ' +
     'py-1 pl-2 pr-2.5 text-xs text-stone-600 shadow-sm transition-colors hover:bg-stone-50 ' +
     'disabled:opacity-40'
+  // A recessed track holding one raised pill for the current drive. Spacing is
+  // gap-based rather than divider-based so a machine with a dozen mapped drives
+  // wraps into a tidy block, instead of stranding a divider at the start of
+  // every wrapped row the way `divide-x` would. No left margin: four place
+  // chips already fill the modal, so the track almost always starts a second
+  // row, where any indent just misaligns it against the chip above.
+  const DRIVE_TRACK =
+    'flex flex-wrap items-center gap-0.5 rounded-lg bg-stone-100 p-0.5'
+  // Deliberately not `font-mono` — these are two-character labels, not paths,
+  // and a monospace cell strands the colon a full advance away from its letter
+  // ("C :").
+  const DRIVE = 'rounded-md px-2 py-0.5 text-xs transition-colors'
   const ADDRESS_INPUT =
     'w-full min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 ' +
     'font-mono text-xs text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400'
@@ -261,9 +286,9 @@ export default function DirectoryPicker({
           </label>
         </div>
 
-        {listing && listing.anchors.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {listing.anchors.map((a) => (
+        {anchors.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {places.map((a) => (
               <button
                 key={a.path}
                 type="button"
@@ -274,6 +299,24 @@ export default function DirectoryPicker({
                 {a.label}
               </button>
             ))}
+            {drives.length > 0 && (
+              <div className={DRIVE_TRACK}>
+                {drives.map((d) => (
+                  <button
+                    key={d.path}
+                    type="button"
+                    onClick={() => go(d.path)}
+                    className={`${DRIVE} ${
+                      d.label.toUpperCase() === currentDrive
+                        ? 'bg-white text-stone-900 shadow-sm'
+                        : 'text-stone-500 hover:text-stone-800'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

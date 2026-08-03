@@ -149,13 +149,19 @@ def test_a3b_windows_drive_anchors(
 
     resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
     assert resp.status_code == 200
-    anchors = [(a["label"], a["path"]) for a in resp.json()["anchors"]]
+    anchors = [(a["kind"], a["label"], a["path"]) for a in resp.json()["anchors"]]
 
     # Order matters: home locations first, then the drives, exactly as
     # listdrives reports them. Label drops the trailing separator ("C:"),
     # path keeps it ("C:\\" — a bare "C:" means "cwd on C:" on Windows).
-    assert anchors[0][0] == "Home"
-    assert anchors[1:] == [("C:", "C:\\"), ("D:", "D:\\")]
+    # ``kind`` is what the picker splits on to draw drives as a segmented
+    # control rather than another row of place chips, so pin it here: losing it
+    # silently merges the two groups back into one pile in the GUI.
+    assert anchors[0][:2] == ("place", "Home")
+    assert anchors[1:] == [
+        ("drive", "C:", "C:\\"),
+        ("drive", "D:", "D:\\"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +179,9 @@ def test_a3c_listdrives_failure_degrades(
 
     resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
     assert resp.status_code == 200
-    assert [a["label"] for a in resp.json()["anchors"]] == ["Home"]
+    assert [(a["kind"], a["label"]) for a in resp.json()["anchors"]] == [
+        ("place", "Home")
+    ]
 
 
 # ---------------------------------------------------------------------------
