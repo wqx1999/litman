@@ -132,6 +132,51 @@ def test_a3_anchors_only_existing(
 
 
 # ---------------------------------------------------------------------------
+# A3b — anchors: Windows drive roots become chips after the home locations.
+#       ``os.listdrives`` exists only on Windows, so the production branch is
+#       gated on hasattr — injecting the function on POSIX (raising=False)
+#       drives the REAL branch end-to-end through the HTTP route. The os
+#       module OBJECT is patched (not a dotted string), so the patch cannot
+#       miss the reference routes_read already holds.
+# ---------------------------------------------------------------------------
+def test_a3b_windows_drive_anchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        os, "listdrives", lambda: ["C:\\", "D:\\"], raising=False
+    )
+
+    resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
+    assert resp.status_code == 200
+    anchors = [(a["label"], a["path"]) for a in resp.json()["anchors"]]
+
+    # Order matters: home locations first, then the drives, exactly as
+    # listdrives reports them. Label drops the trailing separator ("C:"),
+    # path keeps it ("C:\\" — a bare "C:" means "cwd on C:" on Windows).
+    assert anchors[0][0] == "Home"
+    assert anchors[1:] == [("C:", "C:\\"), ("D:", "D:\\")]
+
+
+# ---------------------------------------------------------------------------
+# A3c — anchors: a failing listdrives degrades to no drive chips, never a 500.
+# ---------------------------------------------------------------------------
+def test_a3c_listdrives_failure_degrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    def boom() -> list[str]:
+        raise OSError("drive table unavailable")
+
+    monkeypatch.setattr(os, "listdrives", boom, raising=False)
+
+    resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
+    assert resp.status_code == 200
+    assert [a["label"] for a in resp.json()["anchors"]] == ["Home"]
+
+
+# ---------------------------------------------------------------------------
 # A4 — suggested start: first existing of Desktop → Documents → Home
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
