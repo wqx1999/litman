@@ -321,10 +321,15 @@ def _apply_add(
             # be to put a number in. A download year passes every check
             # downstream and surfaces years later as a wrong date in an
             # exported citation, so say outright that guessing is not the fix.
+            # `source_label` carries a DOI or a JSON path, which is why the
+            # ~120-character budget has to be met by the fixed half: with a
+            # real label the previous wording ran 212-228 and broke the 200
+            # ceiling on every path. The DOI landing page as a second place to
+            # look lives in lit-library/SKILL.md, where the rationale belongs;
+            # `lit add` always has the PDF in hand, so page 1 always answers.
             raise IDError(
-                f"Metadata from {source_label} has no year, and the year is "
-                "part of the paper id. Take it from page 1 or the DOI landing "
-                "page — not the download year. If there is none at all, pass "
+                f"Metadata from {source_label} has no year, which the paper id "
+                "needs. Take it from page 1 — not the download year — or pass "
                 "--id <year>_<Family>_<Keyword>."
             )
         family_raw = first_author_family(parsed["authors"])
