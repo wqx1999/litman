@@ -1664,10 +1664,9 @@ def test_make_shortcut_darwin_builds_app_bundle(
     stub = app / "Contents" / "MacOS" / "litman"
     assert stub.is_file()
     assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
-    # Quoted (the path may hold spaces) and backgrounded — the stub must not
-    # become the process Launch Services holds onto as the running app.
     assert (
-        f'"{fake_lit_on_path}" gui --window &' in stub.read_text(encoding="utf-8")
+        f'exec "{fake_lit_on_path}" gui --window'
+        in stub.read_text(encoding="utf-8")
     )
     plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
     assert "CFBundleExecutable" in plist
@@ -1834,21 +1833,6 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
 
     home = tmp_path / "home"
     home.mkdir()
-    log = home / "Library" / "Logs" / "litman" / "litman.log"
-
-    def _log_settles_on(expected: str) -> bool:
-        # The stub backgrounds the launch and returns, so the child may not have
-        # written anything yet by the time the shell exits.
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            try:
-                if log.read_text(encoding="utf-8") == expected:
-                    return True
-            except OSError:
-                pass
-            time.sleep(0.02)
-        return False
-
     done = subprocess.run(
         ["/bin/sh", str(stub)],
         env={**os.environ, "HOME": str(home)},
@@ -1857,7 +1841,8 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
     )
     assert done.returncode == 0
     assert done.stdout == "", "a logged launch must print nothing to the console"
-    assert _log_settles_on("argv: gui --window\noops\n")
+    log = home / "Library" / "Logs" / "litman" / "litman.log"
+    assert log.read_text(encoding="utf-8") == "argv: gui --window\noops\n"
 
     # Second run truncates: the log records the last launch, it does not grow.
     subprocess.run(
@@ -1866,12 +1851,10 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
         capture_output=True,
         text=True,
     )
-    assert _log_settles_on("argv: gui --window\noops\n")
+    assert log.read_text(encoding="utf-8").count("argv:") == 1
 
     # A home the log cannot be created under: same launch, output falls back
-    # to the console instead of taking the app down with it. Nothing to poll
-    # for here — the backgrounded child inherits this pipe, so capture_output
-    # cannot see EOF until the child itself is done.
+    # to the console instead of taking the app down with it.
     blocked = tmp_path / "blocked"
     blocked.write_text("not a directory", encoding="utf-8")
     done = subprocess.run(
@@ -1882,47 +1865,6 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
     )
     assert done.returncode == 0
     assert done.stdout == "argv: gui --window\n"
-
-
-def test_darwin_stub_returns_without_waiting_for_the_server(tmp_path) -> None:
-    # The double-launch fix. Launch Services identifies a running app by the
-    # process it started from the bundle: while that was the server itself,
-    # litman sat registered as a foreground app with no window server
-    # connection, and a second double-click became an activation request
-    # nothing could answer — Dock bounce, then "litman is not responding".
-    # The stub must therefore start the server and get out of the way.
-    lit = tmp_path / "fake lit"
-    lit.write_text('#!/bin/sh\nsleep 5\necho "argv: $*"\n', encoding="utf-8")
-    lit.chmod(0o755)
-    stub = tmp_path / "stub.sh"
-    stub.write_text(
-        gui._DARWIN_STUB.format(lit=lit, log_dir=gui._DARWIN_LOG_DIR),
-        encoding="utf-8",
-    )
-    home = tmp_path / "home"
-    home.mkdir()
-
-    started = time.monotonic()
-    done = subprocess.run(
-        ["/bin/sh", str(stub)],
-        env={**os.environ, "HOME": str(home)},
-        capture_output=True,
-        text=True,
-    )
-    elapsed = time.monotonic() - started
-
-    assert done.returncode == 0
-    assert elapsed < 2.0, f"the stub waited for the server ({elapsed:.1f}s)"
-
-    # ...and got out of the way without taking the server with it.
-    log = home / "Library" / "Logs" / "litman" / "litman.log"
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        if log.read_text(encoding="utf-8") == "argv: gui --window\n":
-            break
-        time.sleep(0.05)
-    else:
-        raise AssertionError("the backgrounded launch did not survive the stub")
 
 
 # ---------------------------------------------------------------------------

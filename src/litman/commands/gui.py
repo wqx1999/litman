@@ -1130,38 +1130,17 @@ _DARWIN_LOG_DIR = "$HOME/Library/Logs/litman"
 # up. The console-less Windows launcher keeps litw.log for the same reason.
 # Truncated per launch rather than appended, so it never grows.
 #
-# The else branch is the fallback, and it is load-bearing: a redirection onto a
-# path the shell cannot open aborts the script, which would turn an unwritable
-# log directory into an app that does not start at all. The log is a diagnostic;
-# it never gets a vote on whether litman runs.
-#
-# Backgrounded, then `exit 0` — never `exec`. Launch Services identifies a
-# running app by the process it started from the bundle, and `exec` made that
-# process the long-lived server. Registered as type="Foreground" with no window
-# server connection (both confirmed via `lsappinfo` on macOS 26.5), litman was
-# an app the system believed had windows it could raise. It had none, and a
-# second double-click was routed to that process as an activation request
-# nothing there could answer — so the Dock icon bounced until macOS declared
-# litman unresponsive. The stub could not have helped: a second launch never
-# re-runs it.
-#
-# Letting the stub exit takes the bundle out of that role. Launch Services sees
-# an app that started and finished, so every double-click runs the stub afresh —
-# which is what the Windows shortcut has always done, and why a second instance
-# is survivable there (the port finder steps to the next free port).
-#
-# The cost is that litman no longer shows up in Force Quit. So does the hang it
-# would have been needed for, and closing the window still stops the server
-# through the presence gate.
+# The bare `exec` on the last line is the fallback, and it is load-bearing: a
+# redirection onto a path the shell cannot open aborts the script, which would
+# turn an unwritable log directory into an app that does not start at all. The
+# log is a diagnostic; it never gets a vote on whether litman runs.
 _DARWIN_STUB = """\
 #!/bin/sh
 LOG_DIR="{log_dir}"
 if mkdir -p "$LOG_DIR" 2>/dev/null && : >"$LOG_DIR/litman.log" 2>/dev/null; then
-    "{lit}" gui --window >"$LOG_DIR/litman.log" 2>&1 &
-else
-    "{lit}" gui --window &
+    exec "{lit}" gui --window >"$LOG_DIR/litman.log" 2>&1
 fi
-exit 0
+exec "{lit}" gui --window
 """
 
 
