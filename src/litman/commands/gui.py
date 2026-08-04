@@ -808,6 +808,41 @@ def _warn_console_shortcut() -> None:
     )
 
 
+def _brand_windows_taskbar(stop_event: threading.Event) -> threading.Thread | None:
+    """Give the app window litman's taskbar face (win32 only), off-thread.
+
+    The --app window already sits in a taskbar group of its own (Chromium
+    derives its AppUserModelID from our URL), but the group wears the
+    browser's icon and name — those come from relaunch properties Chromium
+    writes onto the window, and rewriting them after the window appears is
+    the fix. Mechanism and measurements: :mod:`litman.commands._win_taskbar`.
+
+    Best effort in both directions: daemon thread, and any failure leaves
+    the browser's face in place rather than touching the launch.
+    """
+    if sys.platform != "win32":
+        return None
+
+    def worker() -> None:
+        try:
+            from litman.commands import _win_taskbar
+
+            relaunch = subprocess.list2cmdline(
+                [_shortcut_executable(), "gui", "--window"]
+            )
+            _win_taskbar.adopt_window(
+                str(_icon_path("litman.ico")),
+                relaunch,
+                give_up=stop_event.is_set,
+            )
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
+    thread.start()
+    return thread
+
+
 def _windows_desktop_dir() -> Path:
     """The folder the shell actually shows as Desktop.
 
@@ -1360,6 +1395,7 @@ def gui_cmd(
                 _start_watcher(None)
                 return
             owned.append(proc)
+            _brand_windows_taskbar(stop_event)
             _start_watcher(proc)
 
         def _after_open() -> None:

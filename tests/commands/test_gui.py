@@ -1424,6 +1424,90 @@ def test_make_shortcut_linux_wm_class_matches_the_window_flag(
     assert wm_class == class_values == ["litman"]
 
 
+# ---------------------------------------------------------------------------
+# win32 taskbar branding (task-launcher-identity Part D)
+# ---------------------------------------------------------------------------
+
+
+def test_gui_window_starts_the_taskbar_brander(
+    gui_harness, chromium_on_path, vault_with_paper, monkeypatch
+) -> None:
+    # The relaunch properties die with the window, so every --window launch
+    # that spawned a browser must arm the brander (a no-op off win32) and
+    # hand it the stop event that ends its polling on shutdown.
+    handed: list[threading.Event] = []
+    monkeypatch.setattr(
+        gui, "_brand_windows_taskbar", lambda ev: handed.append(ev)
+    )
+    vault, _pid = vault_with_paper
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(handed) == 1
+    assert isinstance(handed[0], threading.Event)
+
+
+def test_brand_windows_taskbar_is_a_no_op_off_win32(monkeypatch) -> None:
+    from litman.commands import _win_taskbar
+
+    calls: list[object] = []
+    monkeypatch.setattr(_win_taskbar, "adopt_window", lambda *a, **k: calls.append(a))
+
+    assert gui._brand_windows_taskbar(threading.Event()) is None
+    assert calls == []
+
+
+def test_brand_windows_taskbar_hands_the_worker_its_pieces(monkeypatch) -> None:
+    from litman.commands import _win_taskbar
+
+    calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        _win_taskbar,
+        "adopt_window",
+        lambda *a, **k: calls.append((a, k)) or True,
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gui, "_shortcut_executable", lambda: r"C:\tools\litw.exe")
+    stop = threading.Event()
+
+    thread = gui._brand_windows_taskbar(stop)
+    assert thread is not None
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    (args, kwargs), = calls
+    icon, relaunch = args
+    assert icon.endswith("litman.ico")
+    # The same command the pinned button will run: pinning a branded group
+    # snapshots RelaunchCommand, so it must bring litman back, not the
+    # browser.
+    assert relaunch == r"C:\tools\litw.exe gui --window"
+    # A bound method compares by behavior, not identity: the worker's
+    # give_up must track this launch's stop event.
+    assert kwargs["give_up"]() is False
+    stop.set()
+    assert kwargs["give_up"]() is True
+
+
+def test_brand_windows_taskbar_contains_a_failing_worker(monkeypatch) -> None:
+    # Cosmetic best-effort: a raise anywhere in the worker dies quietly in
+    # its own thread and takes nothing of the launch with it.
+    from litman.commands import _win_taskbar
+
+    def boom(*a, **k):
+        raise RuntimeError("no shell here")
+
+    monkeypatch.setattr(_win_taskbar, "adopt_window", boom)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gui, "_shortcut_executable", lambda: "litw")
+
+    thread = gui._brand_windows_taskbar(threading.Event())
+    assert thread is not None
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
 def test_shortcut_path_win32_is_on_desktop(monkeypatch, tmp_path) -> None:
     """Fallback arm: no shell API reachable (this POSIX host has no
     ctypes.windll) → the literal %USERPROFILE%\\Desktop."""
