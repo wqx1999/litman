@@ -31,7 +31,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman import cli
-from litman.commands import gui
+from litman.commands import _mac_shell, gui
 from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
@@ -1868,6 +1868,742 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
 
 
 # ---------------------------------------------------------------------------
+# macOS native shell (task-mac-native-shell): darwin --window owns its window
+# ---------------------------------------------------------------------------
+
+
+class _ShellEvent:
+    """pywebview's ``window.events.closed += handler`` shape."""
+
+    def __init__(self) -> None:
+        self.handlers: list = []
+
+    def __iadd__(self, handler) -> _ShellEvent:
+        self.handlers.append(handler)
+        return self
+
+
+class _ShellWindow:
+    def __init__(self, title: str, html: str | None, **kw) -> None:
+        self.title = title
+        self.created_html = html
+        self.kw = kw
+        self.ops: list[tuple[str, str]] = []
+        self.events = SimpleNamespace(closed=_ShellEvent())
+        self.destroyed = threading.Event()
+
+    def load_url(self, url: str) -> None:
+        self.ops.append(("load_url", url))
+
+    def load_html(self, html: str) -> None:
+        self.ops.append(("load_html", html))
+
+    def close(self) -> None:
+        for handler in list(self.events.closed.handlers):
+            handler()
+
+    def destroy(self) -> None:
+        # pywebview's destroy fires the closed event and, as the last
+        # window, ends the GUI loop.
+        self.destroyed.set()
+        self.close()
+
+
+class _ShellWebview:
+    """pywebview module stand-in driven through the injection seam.
+
+    ``script`` plays the GUI loop: it receives ``(self, drive)`` and decides
+    when the readiness driver runs and when the window closes. pywebview runs
+    the ``start()`` func on a thread of its own; running it synchronously
+    here makes every sequence assertion exact. The default script is the
+    happy path — the loop comes up, then the user closes the window."""
+
+    def __init__(self, script=None) -> None:
+        self.settings: dict[str, object] = {}
+        self.windows: list[_ShellWindow] = []
+        self.script = script
+
+    def create_window(self, title, url=None, html=None, **kw) -> _ShellWindow:
+        window = _ShellWindow(title, html, **kw)
+        self.windows.append(window)
+        return window
+
+    def start(self, func=None, args=None, **kw) -> None:
+        def drive() -> None:
+            if func is not None:
+                func(*(args or ()))
+
+        if self.script is None:
+            drive()
+            self.windows[0].close()
+        else:
+            self.script(self, drive)
+
+
+class _ShellServer:
+    """uvicorn.Server stand-in for run_shell: ``run()`` parks on whatever
+    thread it was given until ``should_exit``, like the real loop's 100ms
+    poll — so the join in run_shell's tail is actually exercised."""
+
+    def __init__(self, started: bool = True) -> None:
+        self.started = started
+        self.should_exit = False
+        self.force_exit = False
+        self.ran_on: threading.Thread | None = None
+
+    def run(self) -> None:
+        self.ran_on = threading.current_thread()
+        while not self.should_exit:
+            time.sleep(0.005)
+
+
+@pytest.fixture
+def quiet_mac_gate(monkeypatch):
+    """run_shell arms the browser route's presence gate on a daemon thread as
+    its backup exit signal; park it so no test leaves a 180s poller behind."""
+    monkeypatch.setattr(
+        gui, "_stop_server_when_window_closes", lambda *a, **k: None
+    )
+
+
+@pytest.fixture
+def fake_darwin(monkeypatch):
+    """Pretend to be macOS without tripping the darwin-only stdlib imports.
+
+    urllib.request imports the mac-only ``_scproxy`` C module at module level
+    whenever ``sys.platform`` reads "darwin" — so on a Linux host it must be
+    imported (and cached) while the platform is still honest, or the first
+    server import under the fake platform dies on it."""
+    import urllib.request  # noqa: F401  (imported for the cache side effect)
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+
+def test_load_mac_shell_returns_the_loaded_webview(monkeypatch) -> None:
+    sentinel = object()
+    monkeypatch.setattr(_mac_shell, "load_webview", lambda: sentinel)
+    assert gui._load_mac_shell() is sentinel
+
+
+def test_load_mac_shell_swallows_a_broken_probe(monkeypatch) -> None:
+    # AC-S2's contract at the seam: any blow-up inside the probe reads as
+    # "no native window here", never as a failed launch.
+    def _boom():
+        raise ImportError("pyobjc fell over")
+
+    monkeypatch.setattr(_mac_shell, "load_webview", _boom)
+    assert gui._load_mac_shell() is None
+
+
+def test_mac_shell_load_webview_none_without_pywebview(monkeypatch) -> None:
+    # The Linux/Windows shape of every install, and the macOS shape of a
+    # broken one: no webview importable.
+    real_import = builtins.__import__
+
+    def _no_webview(name, *args, **kwargs):
+        if name == "webview" or name.startswith("webview."):
+            raise ImportError("No module named 'webview'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_webview)
+    assert _mac_shell.load_webview() is None
+
+
+def test_mac_shell_load_webview_returns_the_module(monkeypatch) -> None:
+    fake = SimpleNamespace(settings={})
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    assert _mac_shell.load_webview() is fake
+
+
+def test_mac_shell_pages_are_self_contained() -> None:
+    # These pages exist precisely when the server can serve nothing, so they
+    # may reference nothing over the network; the book mark rides inline.
+    for html in (_mac_shell._loading_html(), _mac_shell._error_html()):
+        assert "http://" not in html and "https://" not in html
+        assert "data:image/png;base64," in html
+    assert "Starting litman" in _mac_shell._loading_html()
+    # One verdict + one way out, on budget.
+    assert "didn't start" in _mac_shell._error_html()
+    assert "Close this window" in _mac_shell._error_html()
+
+
+def test_mac_shell_close_callback_stops_the_server(quiet_mac_gate) -> None:
+    # AC-S3: the closed event is the main exit signal — should_exit flips
+    # the moment the window goes, inside the GUI loop, not merely when
+    # run_shell unwinds afterwards.
+    server = _ShellServer()
+    seen: list[tuple[str, bool]] = []
+
+    def script(fake, drive):
+        drive()
+        seen.append(("before close", server.should_exit))
+        fake.windows[0].close()
+        seen.append(("after close", server.should_exit))
+
+    _mac_shell.run_shell(
+        _ShellWebview(script), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert seen == [("before close", False), ("after close", True)]
+
+
+def test_mac_shell_runs_the_server_off_the_main_thread(quiet_mac_gate) -> None:
+    # Cocoa owns the main thread, so uvicorn moves off it — where it skips
+    # signal-handler installation on its own. run_shell's tail joins the
+    # server thread, so ran_on is settled by the time this reads it.
+    server = _ShellServer()
+
+    _mac_shell.run_shell(
+        _ShellWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert server.ran_on is not None
+    assert server.ran_on is not threading.main_thread()
+
+
+def test_mac_shell_window_opens_on_loading_and_swaps_to_the_app(
+    quiet_mac_gate,
+) -> None:
+    # Loading → load_url ordering: the window is born on the inline loading
+    # page (WKWebView would otherwise sit plain white until uvicorn listens)
+    # and swaps to the served app exactly once, on readiness.
+    server = _ShellServer(started=True)
+    url = "http://127.0.0.1:8765"
+    fake = _ShellWebview()
+
+    _mac_shell.run_shell(fake, server, url, PresenceTracker())
+
+    (window,) = fake.windows
+    assert window.title == "litman"
+    assert window.created_html == _mac_shell._loading_html()
+    assert window.ops == [("load_url", url)]
+
+
+def test_mac_shell_swaps_to_the_error_page_when_the_server_never_starts(
+    quiet_mac_gate,
+) -> None:
+    # WKWebView paints plain white against a dead server — no free browser
+    # error page exists inside the shell, so run_shell owes the user one.
+    server = _ShellServer(started=False)  # never listens; run() still parks
+    fake = _ShellWebview()
+
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=0.05,
+        ready_poll=0.01,
+    )
+
+    (window,) = fake.windows
+    assert window.ops == [("load_html", _mac_shell._error_html())]
+
+
+def test_mac_shell_close_during_startup_skips_the_swap(quiet_mac_gate) -> None:
+    # The user closes the loading window before the server is up: the closed
+    # callback stands the readiness poller down, so neither the URL nor the
+    # error page is loaded into a corpse — and the server is asked to exit.
+    server = _ShellServer(started=False)
+
+    def script(fake, drive):
+        fake.windows[0].close()  # closed before the loop's driver ran
+        drive()
+
+    fake = _ShellWebview(script)
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=5.0,
+        ready_poll=0.01,
+    )
+
+    assert fake.windows[0].ops == []
+    assert server.should_exit is True
+
+
+def test_mac_shell_enables_downloads(quiet_mac_gate) -> None:
+    # pywebview refuses downloads by default, and the vault hands out PDFs.
+    fake = _ShellWebview()
+
+    _mac_shell.run_shell(
+        fake, _ShellServer(), "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert fake.settings == {"ALLOW_DOWNLOADS": True}
+
+
+def test_mac_shell_arms_the_presence_gate_as_backup(monkeypatch) -> None:
+    # The backup exit signal: the same page gate the browser route runs, with
+    # no process to poll — a window that dies without its closed event still
+    # stops the server.
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, server, presence, **kw: calls.append(
+            (proc, server, presence)
+        ),
+    )
+    server = _ShellServer()
+    tracker = PresenceTracker()
+
+    _mac_shell.run_shell(
+        _ShellWebview(), server, "http://127.0.0.1:8765", tracker
+    )
+
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == [(None, server, tracker)]
+
+
+def test_mac_shell_forces_a_server_that_ignores_the_ask(
+    quiet_mac_gate, monkeypatch
+) -> None:
+    # The compressed escalation ladder: ask (should_exit), insist
+    # (force_exit) — and the daemon flag on the server thread is the "leave"
+    # stage, so a wedged uvicorn cannot hold the closed window's process open.
+    monkeypatch.setattr(gui, "FORCE_EXIT_AFTER", 0.1)
+    monkeypatch.setattr(gui, "HARD_EXIT_AFTER", 0.3)
+
+    class _WedgedServer(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+            while not self.force_exit:
+                time.sleep(0.005)
+
+    server = _WedgedServer()
+    _mac_shell.run_shell(
+        _ShellWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert server.force_exit is True
+
+
+def test_mac_shell_closes_the_window_when_the_server_stops(
+    quiet_mac_gate,
+) -> None:
+    # Self-update (POST /api/self-update) and the presence gate both stop
+    # the server from inside the process. The shell must then take the
+    # window down too — a dead SPA in a live window, whose process the
+    # relaunch would double, is what the browser route's `finally`
+    # terminate prevents.
+    class _StopsItself(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+            # Returns at once: stopped from inside, not by the window.
+
+    server = _StopsItself(started=True)
+
+    def script(fake, drive):
+        drive()
+        # The GUI loop parks until something destroys the window.
+        assert fake.windows[0].destroyed.wait(timeout=5)
+
+    fake = _ShellWebview(script)
+    assert (
+        _mac_shell.run_shell(fake, server, "http://127.0.0.1:8765", PresenceTracker())
+        is True
+    )
+    assert fake.windows[0].destroyed.is_set(), "server stopped, window stayed"
+
+
+def test_mac_shell_leaves_the_error_page_up_when_the_server_never_started(
+    quiet_mac_gate,
+) -> None:
+    # The reaper's guard rail: a server that never listened has its verdict
+    # on screen — the window is the only place that verdict lives, so it
+    # must not be taken down with the corpse.
+    class _DiesAtStartup(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+            # Dies without ever listening; started stays False.
+
+    server = _DiesAtStartup(started=False)
+
+    def script(fake, drive):
+        drive()  # dead server thread → error page, at once
+        time.sleep(0.3)  # plenty of time for a wrong destroy to land
+        fake.windows[0].close()  # the user reads the verdict and closes
+
+    fake = _ShellWebview(script)
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=30.0,
+        ready_poll=0.01,
+    )
+
+    (window,) = fake.windows
+    assert window.ops == [("load_html", _mac_shell._error_html())]
+    assert not window.destroyed.is_set()
+
+
+def test_mac_shell_error_page_short_circuits_on_a_dead_server_thread(
+    quiet_mac_gate,
+) -> None:
+    # AC-S10 side of the readiness poll: a server thread that died before
+    # listening has no readiness coming, so the spinner must give way to the
+    # error page at once, not after the full timeout.
+    class _DiesAtStartup(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+
+    server = _DiesAtStartup(started=False)
+    fake = _ShellWebview()
+    started_at = time.monotonic()
+
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=30.0,
+        ready_poll=0.01,
+    )
+
+    elapsed = time.monotonic() - started_at
+    (window,) = fake.windows
+    assert window.ops == [("load_html", _mac_shell._error_html())]
+    assert elapsed < 5.0, f"error page waited out the timeout ({elapsed:.1f}s)"
+
+
+def test_mac_shell_window_failure_before_the_server_falls_back() -> None:
+    # A window layer that fails with the server not yet running must report
+    # the launch unconsumed (False) and leave the server untouched — the
+    # caller still owns it and the browser route can make good on it.
+    class _NoWindowWebview(_ShellWebview):
+        def create_window(self, *a, **kw):
+            raise RuntimeError("no WindowServer on this box")
+
+    server = _ShellServer()
+
+    ran = _mac_shell.run_shell(
+        _NoWindowWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert ran is False
+    assert server.ran_on is None  # the server never ran...
+    assert server.should_exit is False  # ...and was never asked to stop
+
+
+def test_mac_shell_start_failure_still_collects_the_server(
+    quiet_mac_gate,
+) -> None:
+    # The late failure point: the GUI loop itself refuses to run, after the
+    # server thread is already up. run_shell owns the cleanup — server
+    # stopped and collected — and reports the launch consumed (True: there
+    # is nothing left to fall back onto).
+    class _NoLoopWebview(_ShellWebview):
+        def start(self, func=None, args=None, **kw) -> None:
+            raise RuntimeError("cocoa refused the loop")
+
+    server = _ShellServer()  # parks until should_exit
+
+    ran = _mac_shell.run_shell(
+        _NoLoopWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert ran is True
+    assert server.should_exit is True
+    assert server.ran_on is not None  # it really ran — and was collected
+
+
+def test_gui_window_darwin_selects_the_native_shell(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # AC-S1 (darwin arm): darwin + --window hands the launch to the native
+    # runner — no browser process, no tab — and the self-update relaunch
+    # recipe stays the shortcut one, so double-click semantics survive an
+    # in-app update.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+    )
+    shell = object()
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: shell)
+    runs: list[tuple] = []
+    monkeypatch.setattr(
+        # True: the session ran under the shell — gui_cmd must simply return.
+        _mac_shell,
+        "run_shell",
+        lambda *a, **k: (runs.append((a, k)), True)[1],
+    )
+    import litman.server as server_mod
+
+    real_create_app = server_mod.create_app
+    apps: list = []
+
+    def _spy_create_app(vault_arg):
+        application = real_create_app(vault_arg)
+        apps.append(application)
+        return application
+
+    monkeypatch.setattr(server_mod, "create_app", _spy_create_app)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    ((args, kwargs),) = runs
+    assert kwargs == {}
+    passed_webview, passed_server, passed_url, passed_presence = args
+    assert passed_webview is shell
+    (fake_server,) = _FakeServer.instances
+    assert passed_server is fake_server
+    assert passed_url == _served_url(result.output)
+    (application,) = apps
+    assert passed_presence is application.state.presence
+    # run_shell owns server.run; gui_cmd must not fall through and run it too.
+    assert fake_server.ran is False
+    assert procs == [] and opened == []  # no browser of any kind
+    # AC-S2 reverse: a working shell prints no fallback line.
+    assert "Native window unavailable" not in result.output
+    assert "Close the window to stop the server" in result.output
+    assert application.state.self_update_relaunch == [
+        "/opt/bin/lit",
+        "gui",
+        "--window",
+    ]
+
+
+def test_gui_darwin_tab_mode_never_goes_native(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # Plain `lit gui` keeps the tab contract on macOS too: the shell is for
+    # --window only.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
+    def _boom():
+        raise AssertionError("tab mode must never probe the mac shell")
+
+    monkeypatch.setattr(gui, "_load_mac_shell", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)] and procs == []
+
+
+def test_gui_window_darwin_shell_failure_falls_back_to_the_browser_unchanged(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper, tmp_path
+) -> None:
+    # AC-S2: a probe that blows up (ImportError included) must cost nothing —
+    # the Chromium route runs byte-for-byte as it always did, announced by
+    # one dim line. The break is planted below gui's own seam (in
+    # load_webview), so the catch inside the real _load_mac_shell is what
+    # this drives — not the belt-and-braces try around it.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    binary = (
+        tmp_path
+        / "Applications"
+        / "Google Chrome.app"
+        / "Contents"
+        / "MacOS"
+        / "Google Chrome"
+    )
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+
+    def _boom():
+        raise ImportError("no pywebview on this box")
+
+    monkeypatch.setattr(_mac_shell, "load_webview", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert "Native window unavailable" in result.output  # the one dim line
+    url = _served_url(result.output)
+    profile = (
+        Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "browser-profile"
+    )
+    (proc,) = procs
+    assert proc.argv == [
+        str(binary),
+        f"--app={url}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
+        "--hide-crash-restore-bubble",
+    ]
+    assert opened == []
+
+
+def test_gui_window_darwin_window_layer_failure_falls_back_to_the_browser(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # The late twin of the test above: pywebview imported fine, but the
+    # window layer failed before the server ever ran (run_shell → False).
+    # The launch is still gui_cmd's to make good on — same dim line, and the
+    # server runs under the browser route.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: object())
+    monkeypatch.setattr(_mac_shell, "run_shell", lambda *a, **k: False)
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert "Native window unavailable" in result.output
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran  # gui_cmd still ran the server itself
+    (proc,) = procs
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert opened == []
+
+
+def test_gui_window_linux_argv_is_unchanged_by_the_native_shell(
+    monkeypatch, gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # AC-S1 (Linux arm): the native shell is darwin-only — never probed here —
+    # and the spawned window's argv is byte-for-byte the pre-shell recipe.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
+    def _boom():
+        raise AssertionError("the mac shell must never be probed off darwin")
+
+    monkeypatch.setattr(gui, "_load_mac_shell", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    url = _served_url(result.output)
+    profile = (
+        Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "browser-profile"
+    )
+    (proc,) = procs
+    assert proc.argv == [
+        "/usr/bin/google-chrome",
+        f"--app={url}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
+        "--hide-crash-restore-bubble",
+        "--class=litman",
+        "--ozone-platform=x11",
+    ]
+
+
+def test_gui_window_win32_argv_is_unchanged_by_the_native_shell(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # AC-S1 (Windows arm): same guarantee as the Linux one, minus the two
+    # Linux-only flags.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "C:\\browsers\\google-chrome"
+        if name == "google-chrome"
+        else None,
+    )
+
+    def _boom():
+        raise AssertionError("the mac shell must never be probed off darwin")
+
+    monkeypatch.setattr(gui, "_load_mac_shell", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    url = _served_url(result.output)
+    profile = (
+        Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "browser-profile"
+    )
+    (proc,) = procs
+    assert proc.argv == [
+        "C:\\browsers\\google-chrome",
+        f"--app={url}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
+        "--hide-crash-restore-bubble",
+    ]
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="the real WKWebView shell needs macOS"
+)
+def test_mac_shell_real_default_end_to_end() -> None:
+    # AC-S5, the inject-seam red line: the shipped default through the real
+    # seam — real pywebview import, real window, real close, server really
+    # gone. No fakes anywhere.
+    import uvicorn
+
+    from litman.server import create_app
+
+    webview = gui._load_mac_shell()
+    assert webview is not None, "pywebview must be installed on the mac host"
+
+    port = _find_free_port(_DEFAULT_PORT)
+    application = create_app(None)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            application, host="127.0.0.1", port=port, log_level="warning"
+        )
+    )
+
+    failures: list[str] = []
+
+    def _close_once_up() -> None:
+        import contextlib
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if getattr(server, "started", False) and webview.windows:
+                time.sleep(1.0)  # let the readiness swap land in the window
+                webview.windows[0].destroy()
+                return
+            time.sleep(0.05)
+        # A silent return here would leave run_shell parked in the GUI loop
+        # forever: record the failure, then force everything down so the
+        # main thread comes back and the assertion below can fire.
+        failures.append("server/window never came up within 15s")
+        server.should_exit = True
+        for window in list(webview.windows):
+            with contextlib.suppress(Exception):
+                window.destroy()
+
+    threading.Thread(target=_close_once_up, daemon=True).start()
+    _mac_shell.run_shell(
+        webview, server, f"http://127.0.0.1:{port}", application.state.presence
+    )
+
+    assert failures == []
+    assert server.started is True  # it really served
+    assert server.should_exit is True  # and was really asked to stop
+    # ...and really stopped: no live listener holds the port. SO_REUSEADDR,
+    # because the shell's real HTTP traffic leaves TIME_WAIT pairs a bare
+    # bind trips over on BSD — while a socket still LISTENing would refuse
+    # this bind regardless, which is the property under test.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
+
+
+# ---------------------------------------------------------------------------
 # bundled icon assets (task-gui-desktop-entry D3, package-data)
 # ---------------------------------------------------------------------------
 
@@ -1954,6 +2690,21 @@ def test_open_when_ready_timeout_backstop_opens_anyway() -> None:
         ready_timeout=0.05, ready_poll=0.01,
     )
     assert calls == [1]
+
+
+def test_open_when_ready_gives_up_early_when_told() -> None:
+    # The mac shell's probe: a server thread that died has no readiness
+    # coming, so the poll must break to the open decision at once instead of
+    # sitting out the timeout (the caller's callback shows the error page).
+    server = _StartFlag(started=False)
+    calls: list[int] = []
+    started_at = time.monotonic()
+    _open_when_ready(
+        server, lambda: calls.append(1), threading.Event(),
+        ready_timeout=30.0, ready_poll=0.01, give_up=lambda: True,
+    )
+    assert calls == [1]  # opened (the callback decides what that means)
+    assert time.monotonic() - started_at < 5.0
 
 
 def test_open_when_ready_skips_open_when_already_stopped() -> None:

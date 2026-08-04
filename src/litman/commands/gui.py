@@ -13,7 +13,11 @@ upward to the next free port (Jupyter model) and the actual port is printed.
 
 When the session has a display, the URL also opens in the user's browser
 (``--no-browser`` suppresses it; ``--window`` opens a Chromium ``--app=``
-window instead of a tab). Headless sessions never attempt a browser launch —
+window instead of a tab). On macOS ``--window`` prefers a WKWebView window
+owned by this very process (:mod:`litman.commands._mac_shell`) — the Dock
+then badges it as litman, and no browser needs to exist — quietly falling
+back to the Chromium window when pywebview cannot come up. Headless sessions
+never attempt a browser launch —
 ``webbrowser`` on a display-less Linux box can drag up a text-mode browser,
 which is worse than the printed URL. ``--make-shortcut`` writes a desktop
 entry that runs ``lit gui --window`` and exits without starting the server
@@ -636,6 +640,7 @@ def _open_when_ready(
     ready_timeout: float = READY_TIMEOUT,
     ready_poll: float = READY_POLL,
     after_open: Callable[[], None] | None = None,
+    give_up: Callable[[], bool] | None = None,
 ) -> None:
     """Open the browser the instant the server is listening — no fixed guess.
 
@@ -651,12 +656,21 @@ def _open_when_ready(
     the one-``ready_poll``-wide window where the event lands between the break
     and the open. ``after_open`` runs once, right after the open, for the
     splash hand-off (wait for the page to paint, then close the splash).
+
+    ``give_up`` is polled alongside ``started``: True means readiness is
+    never coming — the mac shell hands in "the server thread died" — so stop
+    waiting now rather than sit out the timeout. The open still runs, same
+    as the timeout backstop; the caller's callback is what decides what
+    opening means against a server that never came up (the shell swaps in
+    its error page instead of a URL).
     """
     deadline = time.monotonic() + ready_timeout
     while True:
         if stop_event.is_set():
             return
         if getattr(server, "started", False):
+            break
+        if give_up is not None and give_up():
             break
         if time.monotonic() >= deadline:
             break
@@ -848,6 +862,23 @@ def _brand_windows_taskbar(stop_event: threading.Event) -> threading.Thread | No
     thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
     thread.start()
     return thread
+
+
+def _load_mac_shell() -> Any | None:
+    """The pywebview module for the macOS native shell, or None.
+
+    The one seam ``gui_cmd`` reaches the shell through, and the surface the
+    tests fake a webview (or its absence) behind. None — a missing pywebview,
+    or anything else going wrong in the probe — sends the launch down the
+    Chromium route exactly as it always ran, so falling back is the one path
+    that needs no new trust.
+    """
+    try:
+        from litman.commands import _mac_shell
+
+        return _mac_shell.load_webview()
+    except Exception:
+        return None
 
 
 def _windows_desktop_dir() -> Path:
@@ -1134,6 +1165,14 @@ _DARWIN_LOG_DIR = "$HOME/Library/Logs/litman"
 # redirection onto a path the shell cannot open aborts the script, which would
 # turn an unwritable log directory into an app that does not start at all. The
 # log is a diagnostic; it never gets a vote on whether litman runs.
+#
+# `exec` itself is load-bearing too: Launch Services identifies the running
+# app by the process it started from the bundle, so exec hands litman.app's
+# identity to the server process — which is what lets the WKWebView window
+# that process opens wear litman's Dock tile (see _mac_shell). Identity
+# without a window once deadlocked second launches (an activation request
+# arrived at a process that could answer nothing); now the process really
+# owns a window and an event loop, so a reopen has somewhere to land.
 _DARWIN_STUB = """\
 #!/bin/sh
 LOG_DIR="{log_dir}"
@@ -1389,6 +1428,32 @@ def gui_cmd(
         # leave the relaunch recipe unset — one-click update then refuses with
         # its manual hint instead of arming a restart that cannot work.
         pass
+
+    # macOS --window: prefer a window this process owns. The Dock badges a
+    # window with the owning process's bundle, so a WKWebView here wears
+    # litman's own face (the .app stub exec'd us) where the Chromium --app
+    # window wore the browser's — and no browser needs to be installed at
+    # all. Anything short of a working pywebview falls back to the Chromium
+    # route below, byte-for-byte the launch it always was.
+    if window and sys.platform == "darwin":
+        try:
+            shell = _load_mac_shell()
+        except Exception:
+            # Belt and braces: the seam already swallows its own failures —
+            # this catch only survives a broken (or test-patched) seam
+            # object itself.
+            shell = None
+        if shell is not None:
+            console.print("[dim]Close the window to stop the server.[/]")
+            from litman.commands import _mac_shell
+
+            if _mac_shell.run_shell(shell, server, url, app.state.presence):
+                return
+            # False: the window layer failed before the server ever ran, so
+            # the launch is still ours to make good on below.
+        console.print(
+            "[dim]Native window unavailable; falling back to the browser.[/]"
+        )
 
     # Signals the readiness poller to stand down: set in `finally` so a server
     # that raised before it ever listened never gets a browser opened onto it.
