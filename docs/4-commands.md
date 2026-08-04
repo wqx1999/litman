@@ -810,7 +810,7 @@ lit gui --make-shortcut    # create a desktop shortcut, then exit
 | `--port <n>` | Port to bind. Default `8765`; auto-increments if busy. |
 | `--no-browser` | Don't open a browser automatically. |
 | `--window` | Open in a Chrome/Edge/Chromium app window (no address bar) instead of a browser tab. Falls back to a normal tab if none is installed. |
-| `--make-shortcut` | Create a desktop shortcut — Desktop (Windows), applications menu (Linux), `~/Applications` (macOS) — that runs `lit gui --window`, then exit without starting the server. Re-running refreshes it. The install script runs this for you, so a fresh install already has the shortcut. |
+| `--make-shortcut` | Create a desktop shortcut — Desktop (Windows), applications menu (Linux), `/Applications` (macOS; falls back to `~/Applications` when that is not writable) — that runs `lit gui --window`, then exit without starting the server. Re-running refreshes it. The install script runs this for you, so a fresh install already has the shortcut. |
 
 In `--window` mode the app window *is* the application: closing it stops the
 server, and Ctrl-C stops the server and closes the window. It runs against a

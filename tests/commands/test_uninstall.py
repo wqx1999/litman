@@ -13,6 +13,7 @@ tests do not seed.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -494,8 +495,11 @@ def _seed_shortcut(monkeypatch: pytest.MonkeyPatch) -> Path:
 
     HOME must already be redirected by the caller; XDG_DATA_HOME is cleared so
     the Linux path resolves under the redirected HOME (not the dev's real
-    ~/.local/share).
+    ~/.local/share). The platform is pinned to Linux: the darwin branch scans
+    real bundle homes (its flavour has bundle tests of its own below) and the
+    win32 branch writes to the real Desktop.
     """
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     target = shortcut_path()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -519,25 +523,77 @@ def test_remove_shortcut_deletes_file(
 def test_remove_shortcut_absent_returns_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Pinned off darwin: that branch sweeps the real bundle homes, and on a
+    # Mac host with litman installed this test would delete the real bundle.
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     assert remove_shortcut() is None
 
 
+def _seed_bundle(home: Path, bundle_id: str = "io.github.litman") -> Path:
+    """Build a minimal ``litman.app`` under ``home`` and return it."""
+    contents = home / "litman.app" / "Contents"
+    contents.mkdir(parents=True)
+    (contents / "Info.plist").write_text(
+        f"<string>{bundle_id}</string>", encoding="utf-8"
+    )
+    return home / "litman.app"
+
+
 def test_remove_shortcut_removes_app_bundle_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The macOS artifact is a ``.app`` directory bundle — remove it whole,
-    not just a single file."""
-    bundle = tmp_path / "litman.app"
-    (bundle / "Contents").mkdir(parents=True)
-    (bundle / "Contents" / "Info.plist").write_text("x", encoding="utf-8")
-    monkeypatch.setattr("litman.commands.gui.shortcut_path", lambda: bundle)
+    """The macOS artifact is a ``.app`` directory bundle — removed whole,
+    once its Info.plist vouches it is ours."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "litman.commands.gui._DARWIN_SYSTEM_APPS", tmp_path / "system-apps"
+    )
+    bundle = _seed_bundle(tmp_path / "Applications")
 
     removed = remove_shortcut()
 
     assert removed == bundle
     assert not bundle.exists()
+
+
+def test_remove_shortcut_darwin_sweeps_both_bundle_homes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uninstall is a one-shot exit — a bundle in each home (a hand-moved
+    install, a pre-migration leftover) must not survive it."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr("litman.commands.gui._DARWIN_SYSTEM_APPS", system_apps)
+    system_bundle = _seed_bundle(system_apps)
+    user_bundle = _seed_bundle(tmp_path / "Applications")
+
+    removed = remove_shortcut()
+
+    assert removed == system_bundle
+    assert not system_bundle.exists()
+    assert not user_bundle.exists()
+
+
+def test_remove_shortcut_darwin_spares_a_foreign_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A litman.app whose Info.plist is not ours is not ours to delete."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr("litman.commands.gui._DARWIN_SYSTEM_APPS", system_apps)
+    foreign_bundle = _seed_bundle(system_apps, bundle_id="com.example.imposter")
+    user_bundle = _seed_bundle(tmp_path / "Applications")
+
+    removed = remove_shortcut()
+
+    assert removed == user_bundle
+    assert not user_bundle.exists()
+    assert foreign_bundle.exists()
 
 
 # --------------------------------------------------------------------------

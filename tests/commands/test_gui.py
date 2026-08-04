@@ -1630,6 +1630,9 @@ def test_make_shortcut_darwin_builds_app_bundle(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Every darwin shortcut test redirects _DARWIN_SYSTEM_APPS: unpatched, the
+    # code would probe — or on a Mac host, write into — the real /Applications.
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
 
     result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
     assert result.exit_code == 0, result.output
@@ -1655,6 +1658,7 @@ def test_make_shortcut_darwin_bundle_carries_the_icon(
     # which is what every macOS install through 1.3.3 got.
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
 
     assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
 
@@ -1675,6 +1679,7 @@ def test_make_shortcut_darwin_survives_a_missing_icon_asset(
     # is not there is a bundle macOS reports as broken.
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
     monkeypatch.setattr(
         "litman.commands.gui._icon_path", lambda name: tmp_path / "gone" / name
     )
@@ -1686,6 +1691,105 @@ def test_make_shortcut_darwin_survives_a_missing_icon_asset(
     assert not (app / "Contents" / "Resources" / "litman.icns").exists()
     plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
     assert "CFBundleIconFile" not in plist
+
+
+def test_make_shortcut_darwin_prefers_system_applications(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Finder's sidebar "Applications" is hardwired to /Applications; a bundle
+    # in ~/Applications is invisible from the one place users look. When the
+    # system folder takes writes the bundle belongs there — and the Finder-drag
+    # hint must not print, or it would be shouting on every run.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    system_apps.mkdir()
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    assert (system_apps / "litman.app" / "Contents" / "MacOS" / "litman").is_file()
+    assert not (tmp_path / "Applications" / "litman.app").exists()
+    assert "Finder" not in result.output
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores directory permission bits",
+)
+def test_make_shortcut_darwin_falls_back_when_system_apps_reject_writes(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Writability is probed by writing, not os.access: non-admin accounts, MDM
+    # and TCC each veto in their own way. The fallback names the Finder drag as
+    # the way over — Finder has an escalation channel, a CLI must not — and
+    # still exits 0: a shortcut in ~/Applications is an install, not an error.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    system_apps.mkdir(mode=0o500)
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    stub = tmp_path / "Applications" / "litman.app" / "Contents" / "MacOS" / "litman"
+    assert stub.is_file()
+    assert not (system_apps / "litman.app").exists()
+    assert "no write access" in result.output
+    assert "Finder" in result.output
+
+
+def test_make_shortcut_darwin_migrates_the_user_home_bundle(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # One copy, ever: a bundle left behind in ~/Applications is how a stale
+    # stub outlives an upgrade — --make-shortcut refreshes the preferred home
+    # while yesterday's copy keeps launching yesterday's code.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
+    user_bundle = tmp_path / "Applications" / "litman.app"
+    assert user_bundle.is_dir()
+
+    system_apps.mkdir()  # today the system home takes writes
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    assert (system_apps / "litman.app" / "Contents" / "MacOS" / "litman").is_file()
+    assert not user_bundle.exists()
+    # The (path, existed) contract sees through the move: an install was
+    # already present, so this is an update, not a first run.
+    assert "updated" in result.output
+
+
+def test_make_shortcut_darwin_leaves_a_foreign_bundle_alone(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # /Applications is shared territory: a litman.app whose Info.plist is not
+    # ours is never rewritten, migrated or deleted — the user home takes over,
+    # without the drag hint (dragging onto a stranger's bundle is no way out).
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = system_apps / "litman.app" / "Contents" / "Info.plist"
+    foreign_plist.parent.mkdir(parents=True)
+    foreign_plist.write_text("<string>com.example.imposter</string>", encoding="utf-8")
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    stub = tmp_path / "Applications" / "litman.app" / "Contents" / "MacOS" / "litman"
+    assert stub.is_file()
+    assert foreign_plist.read_text(encoding="utf-8") == (
+        "<string>com.example.imposter</string>"
+    )
+    assert not (system_apps / "litman.app" / "Contents" / "MacOS").exists()
+    assert "Finder" not in result.output
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX /bin/sh")

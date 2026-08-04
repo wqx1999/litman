@@ -871,20 +871,78 @@ def _windows_desktop_dir() -> Path:
     return Path(userprofile) / "Desktop"
 
 
+# Monkeypatchable for tests: pretending to be darwin on another OS must not
+# probe (or worse, write) the test host's real /Applications.
+_DARWIN_SYSTEM_APPS = Path("/Applications")
+
+
+def _darwin_bundle_locations() -> tuple[Path, Path]:
+    """The (system, user) homes for litman.app, in preference order.
+
+    ``/Applications`` first because Finder's sidebar "Applications" is
+    hardwired to it — a bundle in ``~/Applications`` is invisible from the
+    one place users look. On a stock Mac the folder is admin-group writable,
+    so preferring it costs no escalation.
+    """
+    return (
+        _DARWIN_SYSTEM_APPS / "litman.app",
+        Path.home() / "Applications" / "litman.app",
+    )
+
+
+def _is_litman_bundle(bundle: Path) -> bool:
+    """True when the bundle is ours — the guard every delete goes through.
+
+    ``/Applications`` is shared territory: nothing there is removed,
+    rewritten or migrated away from unless its Info.plist says litman.
+    Every bundle this code ever wrote carries the identifier.
+    """
+    try:
+        plist = (bundle / "Contents" / "Info.plist").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "io.github.litman" in plist
+
+
+def _dir_accepts_writes(directory: Path) -> bool:
+    """Probe by writing, not by ``os.access``: a non-admin account, MDM
+    management and TCC each veto in their own way, and only a real write
+    trips them all."""
+    if not directory.is_dir():
+        return False
+    probe = directory / f".litman-write-probe-{os.getpid()}"
+    try:
+        probe.touch()
+    except OSError:
+        return False
+    with contextlib.suppress(OSError):
+        probe.unlink()
+    return True
+
+
 def shortcut_path() -> Path:
     """Where the desktop shortcut lives on this platform.
 
     Windows lands on the actual Desktop (``%USERPROFILE%\\Desktop``) so the
     icon is visible the moment the installer finishes — the install script
     creates it, and a fresh install is meant to be started by double-clicking
-    it, not by running ``lit setup``. macOS uses ``~/Applications`` and Linux
-    the applications menu, each platform's own launcher home (a ``.desktop``
-    file on the Linux Desktop would need a manual "trust" step).
+    it, not by running ``lit setup``. macOS prefers ``/Applications`` (see
+    :func:`_darwin_bundle_locations`), falling back to ``~/Applications``
+    when it cannot write there — but an existing install in either home wins
+    over preference, because uninstall's removal preview and setup's
+    skip-this-step probe both ask this function where the shortcut *is*, and
+    answering with the preferred home would silently overlook the other.
+    Linux uses the applications menu (a ``.desktop`` file on the Desktop
+    would need a manual "trust" step).
     """
     if sys.platform == "win32":
         return _windows_desktop_dir() / "litman.lnk"
     if sys.platform == "darwin":
-        return Path.home() / "Applications" / "litman.app"
+        system, user = _darwin_bundle_locations()
+        for bundle in (system, user):
+            if bundle.exists() and _is_litman_bundle(bundle):
+                return bundle
+        return system if _dir_accepts_writes(_DARWIN_SYSTEM_APPS) else user
     data_home = os.environ.get("XDG_DATA_HOME") or str(
         Path.home() / ".local" / "share"
     )
@@ -896,15 +954,66 @@ def create_shortcut() -> tuple[Path, bool]:
 
     Idempotent: an existing shortcut is overwritten, never an error.
     """
+    lit = _shortcut_executable()
+    if sys.platform == "darwin":
+        return _create_shortcut_darwin(lit)
     target = shortcut_path()
     existed = target.exists()
-    lit = _shortcut_executable()
     if sys.platform == "win32":
         _write_shortcut_win32(target, lit)
-    elif sys.platform == "darwin":
-        _write_shortcut_darwin(target, lit)
     else:
         _write_shortcut_linux(target, lit)
+    return target, existed
+
+
+def _create_shortcut_darwin(lit: str) -> tuple[Path, bool]:
+    """Write litman.app into the preferred home and leave exactly one copy.
+
+    One copy, because a bundle in each home is how a stale stub outlives an
+    upgrade: ``--make-shortcut`` rewrites wherever :func:`shortcut_path`
+    points, and a second bundle elsewhere keeps launching yesterday's code
+    (it happened — a hand-moved bundle in /Applications survived a whole
+    day). Whichever home gets written, a litman bundle in the other is
+    removed.
+
+    Never escalates. A POSIX write into /Applications without permission is
+    a flat EACCES — no password prompt exists on this path; only Finder's
+    drag has one. So the fallback names the drag as the way over and leaves
+    escalating to the program entitled to it.
+    """
+    system, user = _darwin_bundle_locations()
+    system_preexisted = system.exists()
+    existed = system_preexisted or user.exists()
+    if system_preexisted:
+        # In-place refresh of our own install; a foreign litman.app is not
+        # ours to touch, so the user home takes over (without the drag hint —
+        # dragging onto a stranger's bundle is no way out).
+        target = system if _is_litman_bundle(system) else user
+        say_drag = False
+    elif _dir_accepts_writes(_DARWIN_SYSTEM_APPS):
+        target, say_drag = system, False
+    else:
+        target, say_drag = user, _DARWIN_SYSTEM_APPS.is_dir()
+    try:
+        _write_shortcut_darwin(target, lit)
+    except OSError:
+        if target == user:
+            raise
+        # The probe passed but the bundle write failed (a raced permission
+        # change, a per-bundle veto): clean up the partial copy and fall
+        # back rather than die half-installed.
+        if not system_preexisted:
+            shutil.rmtree(system, ignore_errors=True)
+        target, say_drag = user, _DARWIN_SYSTEM_APPS.is_dir()
+        _write_shortcut_darwin(target, lit)
+    other = user if target == system else system
+    if other.exists() and _is_litman_bundle(other):
+        shutil.rmtree(other, ignore_errors=True)
+    if say_drag:
+        console.print(
+            "Installed to ~/Applications (no write access to /Applications). "
+            "To move it: drag litman.app there in Finder."
+        )
     return target, existed
 
 
@@ -912,14 +1021,24 @@ def remove_shortcut() -> Path | None:
     """Delete the desktop shortcut if present. Counterpart to
     :func:`create_shortcut`, used by ``lit uninstall``.
 
-    Returns the path removed, or ``None`` when there was nothing there. The
-    macOS artifact is a ``.app`` bundle (a directory) so it is removed
-    recursively; the Linux ``.desktop`` and Windows ``.lnk`` are single files.
+    Returns the path removed, or ``None`` when there was nothing there.
+    macOS sweeps both bundle homes — uninstall is a one-shot exit,
+    completeness wins — though only bundles :func:`_is_litman_bundle`
+    vouches for; the first one actually removed is the return value. The
+    Linux ``.desktop`` and Windows ``.lnk`` are single files.
     """
+    if sys.platform == "darwin":
+        removed: Path | None = None
+        for bundle in _darwin_bundle_locations():
+            if bundle.exists() and _is_litman_bundle(bundle):
+                shutil.rmtree(bundle, ignore_errors=True)
+                if removed is None:
+                    removed = bundle
+        return removed
     target = shortcut_path()
     if not target.exists():
         return None
-    if target.is_dir():  # macOS .app bundle
+    if target.is_dir():  # a bundle handed in by a patched shortcut_path
         shutil.rmtree(target, ignore_errors=True)
     else:
         target.unlink()
