@@ -110,19 +110,15 @@ straight into the browser app, where the welcome page creates your first library
 and the agent button sets up your AI agent — no `lit setup` needed.
 
 That shortcut opens litman in a window of its own, with no address bar and no
-tabs, and holding such a window is something only a Chrome-family browser can do.
-Windows always has Edge, so there is nothing to arrange. A fresh Linux desktop
-usually ships Firefox alone and a Mac ships Safari, neither of which has an
-equivalent, so until one is installed litman falls back to an ordinary browser
-tab. On Linux that is a single command:
+tabs. On macOS that window is litman's own — WebKit ships with the system, so
+there is nothing to install. Windows always has Edge, so there is nothing to
+arrange there either. A fresh Linux desktop usually ships Firefox alone, which
+cannot hold such a window, so until a Chrome-family browser is installed litman
+falls back to an ordinary browser tab. On Linux that is a single command:
 
 ```console
 $ sudo snap install chromium      # Chrome or Edge work just as well
 ```
-
-On macOS, install Chrome or Edge the usual way. You do not have to browse with
-it — litman only borrows the browser to hold its own window, and your everyday
-one stays whatever you have set it to.
 
 **To remove it:** run `lit uninstall` first — it strips the agent skills, this
 shortcut, the shell completion, the vault registry, and your agent preferences,

@@ -1267,7 +1267,7 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
     "--window",
     is_flag=True,
     help=(
-        "Open in a Chrome/Edge app window (no address bar) instead of a "
+        "Open in a standalone app window (no address bar) instead of a "
         "browser tab."
     ),
 )

@@ -801,7 +801,7 @@ one (Jupyter-style) and prints the port it landed on.
 ```
 lit gui
 lit gui --port 9000
-lit gui --window           # standalone app window (Chrome/Edge, no address bar)
+lit gui --window           # standalone app window (no address bar)
 lit gui --make-shortcut    # create a desktop shortcut, then exit
 ```
 
@@ -809,22 +809,25 @@ lit gui --make-shortcut    # create a desktop shortcut, then exit
 |---|---|
 | `--port <n>` | Port to bind. Default `8765`; auto-increments if busy. |
 | `--no-browser` | Don't open a browser automatically. |
-| `--window` | Open in a Chrome/Edge/Chromium app window (no address bar) instead of a browser tab. Falls back to a normal tab if none is installed. |
+| `--window` | Open a standalone app window (no address bar) instead of a browser tab. On macOS the window is litman's own; elsewhere it borrows a Chrome-family browser, falling back to a normal tab if none is installed. |
 | `--make-shortcut` | Create a desktop shortcut — Desktop (Windows), applications menu (Linux), `/Applications` (macOS; falls back to `~/Applications` when that is not writable) — that runs `lit gui --window`, then exit without starting the server. Re-running refreshes it. The install script runs this for you, so a fresh install already has the shortcut. |
 
 In `--window` mode the app window *is* the application: closing it stops the
-server, and Ctrl-C stops the server and closes the window. It runs against a
-browser profile of its own, not your everyday one (`lit uninstall` removes that
-profile). A plain `lit gui` in a terminal keeps the ordinary contract — the tab
-is just a tab, and Ctrl-C in the terminal is what stops the server. On Windows
-the desktop shortcut targets `litw`, the console-less twin of `lit`, so
-double-clicking it opens no console box.
+server (on Windows and Linux, Ctrl-C stops the server and closes the window
+too). When a browser holds the window it runs against a browser profile of its
+own, not your everyday one (`lit uninstall` removes that profile). A plain
+`lit gui` in a terminal keeps the ordinary contract — the tab is just a tab,
+and Ctrl-C in the terminal is what stops the server. On Windows the desktop
+shortcut targets `litw`, the console-less twin of `lit`, so double-clicking it
+opens no console box.
 
-Only a Chrome-family browser can hold such a window: `--app` is their flag and
-Firefox has no equivalent. On a machine with none installed, `--window` opens an
-ordinary tab and carries on. That is the usual state of a fresh Linux desktop, and
-`sudo snap install chromium` — or Chrome, or Edge — settles it; litman borrows the
-browser only to hold its window, so it need not be the one you browse with.
+On macOS the window is litman's own — WebKit ships with the system, so nothing
+needs installing. Elsewhere only a Chrome-family browser can hold such a
+window: `--app` is their flag and Firefox has no equivalent. On a machine with
+none installed, `--window` opens an ordinary tab and carries on. That is the
+usual state of a fresh Linux desktop, and `sudo snap install chromium` — or
+Chrome, or Edge — settles it; litman borrows the browser only to hold its
+window, so it need not be the one you browse with.
 
 On a fresh install with no vault yet, `lit gui` still starts and shows a welcome
 page that creates your first library right in the browser — no terminal step. It
