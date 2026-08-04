@@ -125,6 +125,27 @@ _CHROMIUM_CANDIDATES = (
     "brave-browser",
 )
 
+# macOS ships browsers as .app bundles and puts nothing on PATH, so the tuple
+# above almost never fires there — these bundle names are the real lookup, and
+# a name missing from them makes an installed browser invisible. Kept in step
+# with _CHROMIUM_CANDIDATES on purpose: a browser Linux finds has no reason to
+# be a plain tab on macOS.
+#
+# Every entry must honour --app and --user-data-dir. A browser that ignores
+# them is worse than the tab fallback, because it would cost both the
+# standalone window and the shutdown gate that waits on our own instance —
+# which is why the heavily reskinned Chromium derivatives are not here.
+#
+# Each name is both the bundle and the executable inside it
+# (Chromium.app/Contents/MacOS/Chromium); a browser that broke that symmetry
+# would need its own entry shape.
+_DARWIN_APP_CANDIDATES = (
+    "Google Chrome",
+    "Microsoft Edge",
+    "Chromium",
+    "Brave Browser",
+)
+
 
 def display_available() -> bool:
     """True when this session can show a browser window.
@@ -383,10 +404,10 @@ def _find_chromium() -> str | None:
         if exe:
             return exe
     if sys.platform == "darwin":
-        # Chrome/Edge on macOS are .app bundles, not on PATH. Run the binary
-        # inside the bundle rather than `open -na`: `open` asks Launch Services
-        # to start the app and returns immediately, so it never owns the window.
-        for app in ("Google Chrome", "Microsoft Edge"):
+        # Run the binary inside the bundle rather than `open -na`: `open` asks
+        # Launch Services to start the app and returns immediately, so it never
+        # owns the window. See _DARWIN_APP_CANDIDATES for the name list.
+        for app in _DARWIN_APP_CANDIDATES:
             for root in (Path("/Applications"), Path.home() / "Applications"):
                 binary = root / f"{app}.app" / "Contents" / "MacOS" / app
                 if binary.exists():

@@ -1257,6 +1257,55 @@ def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
     assert "open" not in argv
 
 
+def test_app_window_argv_darwin_finds_every_bundle_it_lists(monkeypatch, tmp_path):
+    # macOS puts no browser binary on PATH, so _DARWIN_APP_CANDIDATES *is* the
+    # lookup — a name that fails to resolve silently demotes an installed
+    # browser to a plain tab. Each name goes through the real resolver rather
+    # than being asserted against the tuple, which would only restate the source.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    apps = tmp_path / "Applications"
+
+    # The list is a capability promise, so pin it: a name quietly dropped here
+    # is a browser that stops working with nothing else noticing.
+    assert set(gui._DARWIN_APP_CANDIDATES) == {
+        "Google Chrome",
+        "Microsoft Edge",
+        "Chromium",
+        "Brave Browser",
+    }
+
+    for app in gui._DARWIN_APP_CANDIDATES:
+        binary = apps / f"{app}.app" / "Contents" / "MacOS" / app
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+
+        argv = _app_window_argv("http://127.0.0.1:8765")
+
+        assert argv is not None, f"{app} is installed but yielded no app window"
+        assert argv[0] == str(binary)
+        shutil.rmtree(apps)
+
+
+def test_app_window_argv_darwin_prefers_chrome_to_the_forks(monkeypatch, tmp_path):
+    # Tuple order is preference order. A machine carrying both Chrome and a fork
+    # must get Chrome — the forks are the fallback, not a coin flip on whatever
+    # the filesystem hands back first.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for app in ("Brave Browser", "Chromium", "Google Chrome"):
+        binary = tmp_path / "Applications" / f"{app}.app" / "Contents" / "MacOS" / app
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert argv[0].endswith("Google Chrome.app/Contents/MacOS/Google Chrome")
+
+
 def test_app_window_argv_reaches_a_browser_the_session_path_omits(
     monkeypatch, tmp_path
 ):
