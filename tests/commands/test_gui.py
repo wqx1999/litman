@@ -1934,6 +1934,26 @@ def test_want_splash_true_for_consoleless_window_with_display(
     assert len(splash_gui.splashes) == 1
 
 
+def test_want_splash_false_on_macos(monkeypatch, splash_gui, vault_with_paper) -> None:
+    # Same conditions as the test above — the ones that DO launch a splash —
+    # differing only in the platform. Aqua's Tk ignores overrideredirect, so the
+    # splash arrives as an ordinary titled window (Tk's default "tk" in the
+    # title bar, traffic lights, its own Dock tile) that impersonates litman's
+    # main window until it vanishes. Launch Services already bounces the Dock
+    # icon, which is the feedback the splash exists to provide.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    # Subject first: this is the assertion the guard exists for, and it must be
+    # the one that fails when the guard goes away.
+    assert not _splash_launched(splash_gui.argvs)
+    assert result.exit_code == 0, result.output
+
+
 def test_want_splash_false_in_a_terminal_window(
     monkeypatch, splash_gui, vault_with_paper
 ) -> None:

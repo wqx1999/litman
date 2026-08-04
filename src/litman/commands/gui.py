@@ -1111,6 +1111,15 @@ def gui_cmd(
         and not no_browser
         and display_available()
         and _launched_without_console()
+        # Not macOS. Aqua's Tk ignores overrideredirect, so instead of a
+        # floating mark the splash comes up as an ordinary titled window —
+        # traffic lights, Tk's default "tk" in the title bar, its own Dock tile
+        # and the menu bar to itself. It reads as litman's main window right up
+        # until it vanishes and the real one appears somewhere else, which is
+        # worse than no splash at all. The feedback it exists to give is already
+        # there anyway: Launch Services bounces the Dock icon while the bundle
+        # starts, which is exactly what a Windows .lnk does not do.
+        and sys.platform != "darwin"
     )
     if want_splash:
         with contextlib.suppress(Exception):
