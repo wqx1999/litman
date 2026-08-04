@@ -400,6 +400,13 @@ def _app_window_flags(url: str, browser_exe: str) -> list[str]:
         # Windows groups by AppUserModelID and macOS by owning bundle, so the
         # flag has nothing to do there.
         flags.append(f"--class={_LINUX_WM_CLASS}")
+        if os.environ.get("DISPLAY"):
+            # Native-Wayland Chromium ignores --class (its app_id stays the
+            # browser's own — measured on Ubuntu 24.04 / chromium snap 150),
+            # so WM_CLASS only works through XWayland. $DISPLAY guards the
+            # rare XWayland-less compositor, where forcing x11 would mean no
+            # window at all instead of a wrongly-badged one.
+            flags.append("--ozone-platform=x11")
     return flags
 
 

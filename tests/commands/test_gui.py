@@ -1393,6 +1393,29 @@ def test_app_window_flags_carry_the_wm_class_only_on_linux(monkeypatch) -> None:
         assert not [f for f in flags if f.startswith("--class")]
 
 
+def test_app_window_flags_force_x11_only_when_xwayland_is_reachable(
+    monkeypatch,
+) -> None:
+    # Native-Wayland Chromium ignores --class, so the WM_CLASS fix only
+    # works through XWayland; without $DISPLAY forcing x11 would trade a
+    # wrongly-badged window for none at all.
+    url = "http://127.0.0.1:8765"
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert "--ozone-platform=x11" in gui._app_window_flags(url, "/usr/bin/chromium")
+
+    monkeypatch.delenv("DISPLAY")
+    assert "--ozone-platform=x11" not in gui._app_window_flags(
+        url, "/usr/bin/chromium"
+    )
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    for platform in ("win32", "darwin"):
+        monkeypatch.setattr(sys, "platform", platform)
+        flags = gui._app_window_flags(url, "/usr/bin/chromium")
+        assert not [f for f in flags if f.startswith("--ozone-platform")]
+
+
 def test_make_shortcut_linux_wm_class_matches_the_window_flag(
     monkeypatch, tmp_path, fake_lit_on_path
 ) -> None:
