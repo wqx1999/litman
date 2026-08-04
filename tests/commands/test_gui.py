@@ -1378,6 +1378,52 @@ def test_make_shortcut_linux_writes_desktop_file(
     assert "updated" in result2.output
 
 
+def test_app_window_flags_carry_the_wm_class_only_on_linux(monkeypatch) -> None:
+    # X11 matches the window's WM_CLASS against StartupWMClass in
+    # litman.desktop; Windows groups by AppUserModelID and macOS by owning
+    # bundle, so --class would be noise there at best.
+    url = "http://127.0.0.1:8765"
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert f"--class={gui._LINUX_WM_CLASS}" in gui._app_window_flags(
+        url, "/usr/bin/chromium"
+    )
+    for platform in ("win32", "darwin"):
+        monkeypatch.setattr(sys, "platform", platform)
+        flags = gui._app_window_flags(url, "/usr/bin/chromium")
+        assert not [f for f in flags if f.startswith("--class")]
+
+
+def test_make_shortcut_linux_wm_class_matches_the_window_flag(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # One test through both production chains: the .desktop's StartupWMClass
+    # and the window's --class must be the same string or the taskbar match
+    # silently breaks — only --class regroups the window under a name no
+    # .desktop claims (falling back to the 16px tab favicon), only
+    # StartupWMClass never matches the browser's own class. Either half
+    # alone is worse than neither.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+    content = (tmp_path / "share" / "applications" / "litman.desktop").read_text(
+        encoding="utf-8"
+    )
+    wm_class = [
+        line.removeprefix("StartupWMClass=")
+        for line in content.splitlines()
+        if line.startswith("StartupWMClass=")
+    ]
+
+    flags = gui._app_window_flags("http://127.0.0.1:8765", "/usr/bin/chromium")
+    class_values = [
+        f.removeprefix("--class=") for f in flags if f.startswith("--class=")
+    ]
+
+    assert wm_class == class_values == ["litman"]
+
+
 def test_shortcut_path_win32_is_on_desktop(monkeypatch, tmp_path) -> None:
     """Fallback arm: no shell API reachable (this POSIX host has no
     ctypes.windll) → the literal %USERPROFILE%\\Desktop."""

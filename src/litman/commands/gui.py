@@ -159,6 +159,13 @@ def display_available() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+# The identity an X11 desktop matches against StartupWMClass in
+# litman.desktop. Passed via --class AND written into the .desktop file —
+# the two must stay one constant: --class alone regroups the window under a
+# name no .desktop file claims (falling back to the 16px tab favicon, worse
+# than today), StartupWMClass alone never matches "Chromium-browser".
+_LINUX_WM_CLASS = "litman"
+
 _BROWSER_PROFILE_DIRNAME = "browser-profile"
 # Under ~/snap/<snap>/common/ the profile sits among that snap's own data, so
 # the name has to say whose it is — and it keeps the uninstall sweep from
@@ -375,7 +382,7 @@ def _app_window_argv(url: str) -> list[str] | None:
 
 def _app_window_flags(url: str, browser_exe: str) -> list[str]:
     """The ``--app=`` flag set for ``browser_exe``. See :func:`_app_window_argv`."""
-    return [
+    flags = [
         f"--app={url}",
         f"--user-data-dir={browser_profile_dir(browser_exe)}",
         "--no-first-run",
@@ -387,6 +394,13 @@ def _app_window_flags(url: str, browser_exe: str) -> list[str]:
         # session _purge_stale_browser_session has already emptied.
         "--hide-crash-restore-bubble",
     ]
+    if sys.platform not in ("win32", "darwin"):
+        # Without this the window's WM_CLASS is the browser's own
+        # ("Chromium-browser"), so the taskbar files it as a browser window.
+        # Windows groups by AppUserModelID and macOS by owning bundle, so the
+        # flag has nothing to do there.
+        flags.append(f"--class={_LINUX_WM_CLASS}")
+    return flags
 
 
 def _find_chromium() -> str | None:
@@ -886,6 +900,7 @@ def _write_shortcut_linux(target: Path, lit: str) -> None:
         "Comment=Personal literature vault\n"
         f'Exec="{lit}" gui --window\n'
         f"Icon={_icon_path('litman.png')}\n"
+        f"StartupWMClass={_LINUX_WM_CLASS}\n"
         "Terminal=false\n"
         "Categories=Office;Science;\n",
         encoding="utf-8",
