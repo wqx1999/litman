@@ -11,7 +11,7 @@ lines as extractable text. Used by the M20 code-URL scanner tests and the
 from __future__ import annotations
 
 import io
-import sys
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -208,10 +208,7 @@ def _isolate_machine_config_roots(
     # read as litter the test is hunting for.
     home = tmp_path_factory.mktemp("machine-home")
     monkeypatch.setenv("HOME", str(home))
-    if sys.platform == "win32":
-        monkeypatch.setenv("USERPROFILE", str(home))
-        monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
-        monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+    monkeypatch.setenv("USERPROFILE", str(home))
     for var in (
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
@@ -219,6 +216,39 @@ def _isolate_machine_config_roots(
         "CURSOR_CONFIG_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
+
+    # Pinning env vars is not enough on Windows, and this is the whole reason
+    # 35 registry failures survived the first attempt at this fixture:
+    #
+    #   * ``Path.home()`` reads %USERPROFILE%, never $HOME — so the 29 modules
+    #     that redirect $HOME (the suite's established convention) redirect
+    #     nothing there.
+    #   * platformdirs asks the OS through ctypes (``SHGetFolderPathW``) and
+    #     ignores %LOCALAPPDATA% entirely, so no env var can move it.
+    #
+    # ``registry_path``'s docstring promises "tests that monkeypatch HOME see
+    # the redirected location". That promise held on POSIX only. Redirecting
+    # the two functions themselves makes it true everywhere — and both read
+    # the environment at CALL time, so a module fixture that re-points $HOME
+    # after this one still wins.
+    monkeypatch.setattr(
+        Path, "home", classmethod(lambda cls: Path(os.environ["HOME"]))
+    )
+    # config and cache must stay DISTINCT: the browser profile lives under the
+    # cache dir precisely so it is not inside the config dir, and a test pins
+    # that separation.
+    for mod, attr, sub in (
+        ("litman.core.vault_registry", "user_config_dir", ".config"),
+        ("litman.core.agent_prefs", "user_config_dir", ".config"),
+        ("litman.core.ui_state", "user_config_dir", ".config"),
+        ("litman.commands.gui", "user_cache_dir", ".cache"),
+    ):
+        monkeypatch.setattr(
+            f"{mod}.{attr}",
+            lambda app, *a, _sub=sub, **k: str(
+                Path(os.environ["HOME"]) / _sub / app
+            ),
+        )
 
 
 @pytest.fixture(autouse=True)
