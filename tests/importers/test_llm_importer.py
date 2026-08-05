@@ -900,11 +900,18 @@ def test_missing_year_error_forbids_guessing(
     vault: Path, fake_pdf: Path, tmp_path: Path
 ) -> None:
     """The schema allows year=null but id derivation needs it; the message is
-    the only thing standing between that gap and an invented year."""
+    the only thing standing between that gap and an invented year.
+
+    The JSON sits at the bottom of a path longer than the whole message is
+    allowed to be: the label must carry the basename only, or no wording
+    could ever hold the ceiling."""
+    deep = tmp_path / ("a" * 70) / ("b" * 70) / ("c" * 70)
+    deep.mkdir(parents=True)
     payload_path = _write_json(
-        tmp_path / "meta.json",
+        deep / "meta.json",
         {"title": "Amatoxins", "authors": ["Wieland, Theodor"], "year": None},
     )
+    assert len(str(payload_path)) > 200
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -918,4 +925,9 @@ def test_missing_year_error_forbids_guessing(
     message = str(result.exception)
     assert "download year" in message
     assert "--id" in message
+    # The error budget: one verdict + one way out, and never past 200 —
+    # measured with the real label in place, not on the fixed half alone.
+    assert len(message) <= 200
+    # Bounded must not mean anonymous: the agent still sees which file.
+    assert "meta.json" in message
     assert fake_pdf.exists()
