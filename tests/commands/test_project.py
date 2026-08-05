@@ -367,7 +367,7 @@ def test_project_set_path_happy(
     assert result.exit_code == 0, result.output
     assert _config_projects(vault) == {"p": str(b)}
     # Non-interactive: no prompt possible, so the manual hint survives here.
-    assert "lit link --rebuild-all" in result.output
+    assert "lit link --rebuild-all" in result.output.replace("\n", "")
 
 
 def test_project_set_path_interactive_rebuilds_links_with_one_enter(

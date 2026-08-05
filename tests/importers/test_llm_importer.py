@@ -370,7 +370,7 @@ def test_cli_add_from_llm_json_creates_paper(
     assert (paper_dir / "paper.pdf").is_file()
     assert (paper_dir / "metadata.yaml").is_file()
 
-    meta = _yaml.load((paper_dir / "metadata.yaml").read_text())
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
     assert meta["title"] == _FULL_LLM_PAYLOAD["title"]
     assert meta["authors"] == _FULL_LLM_PAYLOAD["authors"]
     assert meta["doi"] == _FULL_LLM_PAYLOAD["doi"]
@@ -594,7 +594,7 @@ def test_cli_add_from_llm_json_stdin_creates_paper(
     assert (paper_dir / "paper.pdf").is_file()
     assert (paper_dir / "metadata.yaml").is_file()
 
-    meta = _yaml.load((paper_dir / "metadata.yaml").read_text())
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
     assert meta["title"] == _FULL_LLM_PAYLOAD["title"]
     assert meta["authors"] == _FULL_LLM_PAYLOAD["authors"]
     assert meta["doi"] == _FULL_LLM_PAYLOAD["doi"]
@@ -625,7 +625,7 @@ def test_cli_add_from_llm_json_stdin_non_ascii(
     assert result.exit_code == 0, result.output
 
     paper_dir = vault / "papers" / "2024_Chen_CJK"
-    meta = _yaml.load((paper_dir / "metadata.yaml").read_text())
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
     assert meta["title"] == "环肽的从头设计"
     assert meta["authors"] == ["陈, 一", "王, 琳"]
 

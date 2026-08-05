@@ -40,6 +40,16 @@ def vault(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the stand-in `claude` is an extensionless #!/usr/bin/env script made "
+        "runnable with chmod 0o755 — neither the shebang nor the mode means "
+        "anything to Windows, and PATHEXT will not resolve a name without a "
+        "suffix, so shutil.which never finds it. A .cmd shim would test the "
+        "shim, not the exec path this covers."
+    ),
+)
 def test_agent_real_spawn_execs_catalog_default_in_vault(
     vault: Path, tmp_path: Path
 ) -> None:

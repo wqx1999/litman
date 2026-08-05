@@ -203,7 +203,7 @@ def test_rebuild_views_creates_relative_symlinks(tmp_path: Path) -> None:
     if sys.platform != "win32":
         raw = os.readlink(link)
         assert not os.path.isabs(raw)
-    assert raw == "../../../papers/2024_Foo_Bar"
+        assert raw == "../../../papers/2024_Foo_Bar"
 
 
 def test_rebuild_views_empty_lists_create_no_symlinks(tmp_path: Path) -> None:
@@ -220,6 +220,12 @@ def test_rebuild_views_empty_lists_create_no_symlinks(tmp_path: Path) -> None:
 
 def test_rebuild_views_clears_stale_entries(tmp_path: Path) -> None:
     vault = create_vault(tmp_path)
+    # The link target has to exist before the link can be made: Windows uses a
+    # junction, and ``_winapi.CreateJunction`` refuses a target that isn't
+    # there (portable_link.py's own note: "always true at litman's call
+    # sites"). A symlink would happily dangle, which is why leaving this out
+    # went unnoticed on POSIX.
+    _write_paper(vault, "p1", topics=["alpha"], status="inbox")
     # First: paper with topic alpha
     papers_v1 = [{"id": "p1", "topics": ["alpha"], "status": "inbox"}]
     rebuild_views(vault, papers_v1)

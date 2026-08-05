@@ -14,6 +14,7 @@ Guarded with ``importorskip`` so the suite still collects without fastapi
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -123,7 +124,14 @@ def test_a3_anchors_only_existing(
 
     resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
     assert resp.status_code == 200
-    anchors = {a["label"]: a["path"] for a in resp.json()["anchors"]}
+    # Places only. On Windows every drive root is appended as a second,
+    # ``kind="drive"`` group — that is this route's job there and A3b pins it
+    # exactly; mixing the two groups made this assertion host-dependent.
+    anchors = {
+        a["label"]: a["path"]
+        for a in resp.json()["anchors"]
+        if a["kind"] == "place"
+    }
 
     # Home always present; Desktop present; the two absent ones are excluded.
     assert set(anchors) == {"Home", "Desktop"}
@@ -236,8 +244,13 @@ def test_a5_file_not_dir_400(tmp_path: Path) -> None:
 # A6 — PermissionError listing children → 200 + denied, not a 500
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses directory permission bits; chmod 000 would not deny",
+    (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "Same on Windows for a second reason: chmod only flips the read-only "
+        "attribute and never applies to a directory, so nothing is denied "
+        "and there is no degrade path left to observe."
+    ),
 )
 def test_a6_permission_denied_degrades_not_500(tmp_path: Path) -> None:
     locked = tmp_path / "locked"
@@ -386,8 +399,13 @@ def test_m5_file_name_conflict_400(tmp_path: Path) -> None:
 # M6 — no write permission on parent → friendly error status, never a 500
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses directory permission bits; chmod 000 would not deny",
+    (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "Same on Windows for a second reason: chmod only flips the read-only "
+        "attribute and never applies to a directory, so nothing is denied "
+        "and there is no degrade path left to observe."
+    ),
 )
 def test_m6_permission_denied_not_500(tmp_path: Path) -> None:
     locked = tmp_path / "locked"
@@ -424,8 +442,13 @@ def test_m7_reachable_without_active_vault(tmp_path: Path) -> None:
 #      stat() raise PermissionError → an unhandled 500.
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses directory permission bits; chmod 000 would not deny",
+    (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "Same on Windows for a second reason: chmod only flips the read-only "
+        "attribute and never applies to a directory, so nothing is denied "
+        "and there is no degrade path left to observe."
+    ),
 )
 def test_m8_locked_ancestor_not_500(tmp_path: Path) -> None:
     locked = tmp_path / "locked"

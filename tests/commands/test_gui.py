@@ -53,6 +53,30 @@ from litman.core.presence import PresenceTracker
 from litman.core import locking
 
 
+def _slashed(p: str) -> str:
+    """``p`` with forward slashes, so a path assertion reads the same anywhere.
+
+    The separator is not part of any contract these tests are about — the
+    branch taken is. ``monkeypatch.setattr(sys, "platform", ...)`` moves the
+    branch but not ``pathlib``, which always speaks the real host's flavour.
+    """
+    return str(p).replace(os.sep, "/")
+
+
+def _host_abs(posix_path: str) -> str:
+    """``posix_path`` made absolute on the *real* host, not the faked one.
+
+    ``_resolve_lit_executable`` runs whatever ``shutil.which`` returns through
+    ``Path(...).resolve()``, and that is real-OS pathlib no matter what
+    ``sys.platform`` has been set to. On Windows a leading slash is
+    drive-relative, so a ``/opt/...`` stub comes back as ``D:\\opt\\...`` and
+    no literal can match it. Anchoring at ``C:`` keeps the round-trip exact.
+    """
+    if sys.platform == "win32":
+        return str(Path("C:/" + posix_path.lstrip("/")).resolve())
+    return posix_path
+
+
 @pytest.fixture(autouse=True)
 def _no_real_native_window(request, monkeypatch) -> None:
     """Keep a faked platform from opening a real macOS window.
@@ -1333,7 +1357,9 @@ def test_app_window_argv_darwin_prefers_chrome_to_the_forks(monkeypatch, tmp_pat
     argv = _app_window_argv("http://127.0.0.1:8765")
 
     assert argv is not None
-    assert argv[0].endswith("Google Chrome.app/Contents/MacOS/Google Chrome")
+    assert _slashed(argv[0]).endswith(
+        "Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
 
 
 def test_app_window_argv_darwin_searches_the_system_folder_first(
@@ -1359,6 +1385,15 @@ def test_app_window_argv_darwin_searches_the_system_folder_first(
     assert argv[0] == str(system_apps / tail)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX-only premise, and unfakeable here: refresh_path's non-win32 arm "
+        "joins PATH with ':', which is also the drive separator — a real "
+        "Windows bin dir cannot survive that round-trip. Windows reads its "
+        "PATH from the registry instead (refresh_path's other arm)."
+    ),
+)
 def test_app_window_argv_reaches_a_browser_the_session_path_omits(
     monkeypatch, tmp_path
 ):
@@ -1395,7 +1430,7 @@ def test_app_window_argv_reaches_a_browser_the_session_path_omits(
 def fake_lit_on_path(monkeypatch):
     """Pin `lit` resolution to a fixed path (with a space, to prove quoting)
     so shortcut content is deterministic regardless of the test host PATH."""
-    fake = "/opt/lit tools/bin/lit"
+    fake = _host_abs("/opt/lit tools/bin/lit")
     monkeypatch.setattr(
         shutil, "which", lambda name: fake if name == "lit" else None
     )
@@ -1524,6 +1559,10 @@ def test_gui_window_starts_the_taskbar_brander(
     assert isinstance(handed[0], threading.Event)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts the off-win32 arm; on win32 branding is the real behaviour",
+)
 def test_brand_windows_taskbar_is_a_no_op_off_win32(monkeypatch) -> None:
     from litman.commands import _win_taskbar
 
@@ -1716,7 +1755,11 @@ def test_make_shortcut_darwin_builds_app_bundle(
     app = tmp_path / "Applications" / "litman.app"
     stub = app / "Contents" / "MacOS" / "litman"
     assert stub.is_file()
-    assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
+    if sys.platform != "win32":
+        # NTFS has no exec bit — chmod cannot set it and stat never reports
+        # it — so this half is asserted on the arm that can hold it. Every
+        # other assertion in this test still runs on Windows.
+        assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
     stub_text = stub.read_text(encoding="utf-8")
     # Marked and exec'd: the env prefix tells the launched process it wears
     # the bundle's identity; exec is what hands that identity over.
@@ -1801,6 +1844,14 @@ def test_make_shortcut_darwin_prefers_system_applications(
 @pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="root ignores directory permission bits",
+)
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the unwritable dir is built with mkdir(mode=0o500); Windows ignores "
+        "the mode, and the CI account is admin, so the write succeeds and "
+        "there is no rejection left to fall back from"
+    ),
 )
 def test_make_shortcut_darwin_falls_back_when_system_apps_reject_writes(
     monkeypatch, tmp_path, fake_lit_on_path
@@ -2480,7 +2531,7 @@ def test_gui_window_darwin_selects_the_native_shell(
     # `procs == []` below covers the marker path too.
     monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
     monkeypatch.setattr(
-        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
     )
     shell = object()
     monkeypatch.setattr(gui, "_load_mac_shell", lambda: shell)
@@ -2522,7 +2573,7 @@ def test_gui_window_darwin_selects_the_native_shell(
     assert "Native window unavailable" not in result.output
     assert "Close the window to stop the server" in result.output
     assert application.state.self_update_relaunch == [
-        "/opt/bin/lit",
+        _host_abs("/opt/bin/lit"),
         "gui",
         "--window",
     ]
@@ -2666,7 +2717,7 @@ def test_gui_window_darwin_bundle_fallback_respawns_without_identity(
     monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
     monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
     monkeypatch.setattr(
-        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
     )
     spawned: list[tuple[list, dict]] = []
     monkeypatch.setattr(
@@ -2679,7 +2730,7 @@ def test_gui_window_darwin_bundle_fallback_respawns_without_identity(
 
     assert result.exit_code == 0, result.output
     ((argv, kwargs),) = spawned
-    assert argv == ["/opt/bin/lit", "gui", "--window"]
+    assert argv == [_host_abs("/opt/bin/lit"), "gui", "--window"]
     assert kwargs["start_new_session"] is True
     # The stripped marker is the recursion gate: the child, falling back
     # again, serves in place.
@@ -2702,7 +2753,7 @@ def test_gui_window_darwin_bundle_fallback_after_window_failure_respawns(
     monkeypatch.setattr(gui, "_load_mac_shell", lambda: object())
     monkeypatch.setattr(_mac_shell, "run_shell", lambda *a, **k: False)
     monkeypatch.setattr(
-        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
     )
     spawned: list[tuple[list, dict]] = []
     monkeypatch.setattr(
@@ -2715,7 +2766,7 @@ def test_gui_window_darwin_bundle_fallback_after_window_failure_respawns(
 
     assert result.exit_code == 0, result.output
     ((argv, kwargs),) = spawned
-    assert argv == ["/opt/bin/lit", "gui", "--window"]
+    assert argv == [_host_abs("/opt/bin/lit"), "gui", "--window"]
     assert kwargs["start_new_session"] is True
     assert "LITMAN_DARWIN_APP_LAUNCH" not in kwargs["env"]
     (fake_server,) = _FakeServer.instances
@@ -2734,7 +2785,7 @@ def test_gui_window_darwin_respawn_failure_serves_in_place(
     monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
     monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
     monkeypatch.setattr(
-        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
     )
     monkeypatch.setattr(
         gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]

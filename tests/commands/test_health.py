@@ -20,6 +20,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.commands.health import _CATEGORY_PREVIEW
 from litman.core import viewer as viewer_mod
+from litman.core.locking import unlock_truth_file
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     INBOX_STALE_DAYS,
@@ -910,6 +911,10 @@ def test_taxonomy_drift_unregistered_value(vault: Path) -> None:
 
 
 def test_taxonomy_drift_missing_taxonomy_file(vault: Path) -> None:
+    # TAXONOMY.md is a locked TRUTH file, and Windows refuses os.unlink on a
+    # read-only one (WinError 5). Clearing the bit through litman's own helper
+    # is what every production deletion path does.
+    unlock_truth_file(vault / "TAXONOMY.md")
     (vault / "TAXONOMY.md").unlink()
     issues = check_taxonomy_drift(vault, [])
     assert len(issues) == 1
@@ -2276,13 +2281,20 @@ def test_health_check_unregistered_library_does_not_refresh(
 
 
 def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fake the OS boundary, not litman's helpers — every layer above runs real."""
+    """Fake the OS boundary, not litman's helpers — every layer above runs real.
+
+    BOTH mechanisms have to go. Poisoning only ``Path.symlink_to`` left the
+    Windows junction constructor untouched, so the probe still said "links
+    work" and the linkless-drive scenario quietly stopped being linkless.
+    """
+    from litman.core import portable_link
     from litman.core.portable_link import reset_link_probe_cache
 
-    def boom(self: Path, target: Any, target_is_directory: bool = False) -> None:
+    def boom(*_a: Any, **_k: Any) -> None:
         raise OSError(1, "Operation not permitted")
 
     monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
     reset_link_probe_cache()
 
 
@@ -2311,7 +2323,12 @@ def _linkless_vault(
     from litman.core.project_link import add_project
     from litman.core.taxonomy import add_taxonomy_values
 
-    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")  # quiet pdf_viewer
+    # Patch the probe, not sys.platform: ``viewer_mod.sys`` IS the global sys
+    # module, so faking "darwin" there also sent core.atomic._fsync_dir down
+    # its POSIX arm on a Windows host, where os.O_DIRECTORY does not exist.
+    # checks.py imports this function at call time, so the module attribute is
+    # the seam. Windows would answer its own sentinel here anyway.
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
 
     proj = tmp_path / "myproj"
     proj.mkdir()

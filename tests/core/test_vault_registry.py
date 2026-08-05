@@ -57,6 +57,10 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # Windows has no $HOME: Path.home() and Path.expanduser() read
+    # %USERPROFILE%, so redirecting only HOME left "~" pointing at the
+    # session-wide fake this suite's conftest pins.
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return home

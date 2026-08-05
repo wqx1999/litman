@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,27 @@ def test_staged_write_rollback_does_not_create_new_targets(vault: Path) -> None:
 
 
 def test_staged_write_rejects_absolute_path(vault: Path) -> None:
+    # Host-native absolute form: "/etc/passwd" is NOT absolute to Windows
+    # pathlib (no drive), so the POSIX literal tested nothing there.
+    evil = "C:/evil.txt" if sys.platform == "win32" else "/etc/passwd"
+    with pytest.raises(ValueError, match="relative"):
+        with staged_write(vault) as stage:
+            stage.write_text(evil, "evil")
+
+
+@pytest.mark.xfail(
+    sys.platform == "win32",
+    reason=(
+        "KNOWN GAP, not a test artifact: _staged_path guards with "
+        "Path.is_absolute(), which answers False for a drive-relative path "
+        "like '/etc/passwd' on Windows, and the subsequent join re-anchors it "
+        "to the staging root's drive -> C:\\etc\\passwd, outside the vault. "
+        "Reported for a decision; the fix belongs in src, not here."
+    ),
+    strict=True,
+)
+def test_staged_write_rejects_a_drive_relative_path(vault: Path) -> None:
+    """A rooted-but-driveless relpath must not escape the staging root."""
     with pytest.raises(ValueError, match="relative"):
         with staged_write(vault) as stage:
             stage.write_text("/etc/passwd", "evil")
