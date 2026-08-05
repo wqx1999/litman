@@ -14,7 +14,6 @@ Covers three Phase-4 deliverables (spec §9 Phase 4 + verification tasks 1/2):
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
