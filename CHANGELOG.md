@@ -52,6 +52,12 @@ conveniences.
 - **The "no year" import error fits on a line.** It now meets the same
   one-verdict-one-way-out budget as the other import errors, instead of
   running past it when a DOI or file path was attached.
+- **On Windows, a tag ending in a period gets its browsing folder.** A topic
+  or method named "Fig." built its folder under `views/by-topic/` but never
+  the shortcut inside it — and litman blamed the drive, reporting that the
+  filesystem could not hold folder links and suggesting you move the library
+  off a USB stick. The tag name was the problem, not the disk, and such names
+  are now stored in a form Windows keeps.
 
 ## 1.3.3 — 2026-08-02
 
