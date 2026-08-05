@@ -2168,6 +2168,11 @@ def test_mac_shell_pages_are_self_contained() -> None:
     for html in (_mac_shell._loading_html(), _mac_shell._error_html()):
         assert "http://" not in html and "https://" not in html
         assert "data:image/png;base64," in html
+        # These two pages are the only thing here that follows the OS
+        # appearance — the app itself has its own toggle. Lose the dark half
+        # and a white slab flashes in a dark Mac's face on every launch, with
+        # nothing else in the suite to notice.
+        assert "@media (prefers-color-scheme: dark)" in html
     assert "Starting litman" in _mac_shell._loading_html()
     # One verdict + one way out, on budget.
     assert "didn't start" in _mac_shell._error_html()
