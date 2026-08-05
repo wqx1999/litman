@@ -103,6 +103,8 @@ export default function TabArea({
   // Layout x of every tab captured JUST BEFORE a reorder, so the slide
   // animation below knows where each one came from (FLIP).
   const prevSlotsRef = useRef<Map<string, number> | null>(null)
+  // Tears down the current drag's window listeners (see onTabPointerDown).
+  const detachRef = useRef<(() => void) | null>(null)
 
   // Layout position of a tab, in viewport x. Read off offsetLeft rather than
   // getBoundingClientRect BECAUSE the drag and the slide animation both paint
@@ -142,14 +144,20 @@ export default function TabArea({
     const from = tabs.findIndex((t) => t.key === drag.key)
     if (from === -1 || els.length !== tabs.length) return
     const stripLeft = strip.getBoundingClientRect().left
-    // Insertion index = how many OTHER tabs sit with their midpoint left of the
-    // dragged tab's own leading edge. Stable at boundaries: after a swap the
-    // two thresholds differ by a tab's width, a built-in hysteresis.
-    const lead = x - drag.grabDX + drag.el.offsetWidth / 2
+    // Insertion index = how many OTHER tabs have their midpoint behind the
+    // dragged tab's LEADING edge — its right edge for neighbours on the right,
+    // its left edge for those on the left. Comparing centre-to-centre instead
+    // (the obvious formula) makes you drag a whole tab's width before anything
+    // trades places, which reads as a dead strip; against the leading edge it
+    // is half that, like a browser. Still hysteretic: after a swap the two
+    // thresholds sit a tab-width apart, so a jittering hand cannot flap it.
+    const leftEdge = x - drag.grabDX
+    const rightEdge = leftEdge + drag.el.offsetWidth
     let to = 0
     els.forEach((el, i) => {
       if (i === from) return
-      if (slotLeft(el, strip, stripLeft) + el.offsetWidth / 2 < lead) to++
+      const centre = slotLeft(el, strip, stripLeft) + el.offsetWidth / 2
+      if (i < from ? centre < leftEdge : centre < rightEdge) to++
     })
     if (to === from) return
     const slots = new Map<string, number>()
@@ -200,6 +208,8 @@ export default function TabArea({
   }
 
   const endDrag = () => {
+    detachRef.current?.()
+    detachRef.current = null
     const drag = dragRef.current
     if (!drag) return
     if (drag.started) {
@@ -226,7 +236,10 @@ export default function TabArea({
     stopAutoScroll()
   }
 
-  const onStripPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  // Reassigned every render and reached through the ref, so the per-drag
+  // window listener below always runs the current render's logic.
+  const moveRef = useRef<(e: PointerEvent) => void>(() => {})
+  moveRef.current = (e: PointerEvent) => {
     const drag = dragRef.current
     if (!drag || e.pointerId !== drag.pointerId) return
     // Self-heal: a pointerup that landed outside the window pre-capture never
@@ -299,9 +312,6 @@ export default function TabArea({
     <section className="flex min-w-0 flex-1 flex-col bg-white">
       <div
         ref={stripRef}
-        onPointerMove={onStripPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
         onContextMenu={(e) => {
           // With no tabs there is nothing to close — leave the native menu be.
           if (tabs.length === 0) return
@@ -337,6 +347,23 @@ export default function TabArea({
                   lastX: e.clientX,
                   grabDX: e.clientX - e.currentTarget.getBoundingClientRect().left,
                   started: false,
+                }
+                // 🔴 These listeners go on the WINDOW, not on the strip. The
+                // strip is ~33px tall and pointer capture is only taken once
+                // the 4px threshold is crossed, so a hand that drifts a little
+                // vertically leaves the strip before the drag has begun — its
+                // pointermove then goes to whatever is underneath and the drag
+                // never starts at all. That is not a rare edge: it is what a
+                // real drag looks like, and it made the strip feel dead.
+                const move = (ev: PointerEvent) => moveRef.current(ev)
+                const up = () => endDrag()
+                window.addEventListener('pointermove', move)
+                window.addEventListener('pointerup', up)
+                window.addEventListener('pointercancel', up)
+                detachRef.current = () => {
+                  window.removeEventListener('pointermove', move)
+                  window.removeEventListener('pointerup', up)
+                  window.removeEventListener('pointercancel', up)
                 }
               }}
               // A carried tab reads as picked UP, not merely marked: it goes
