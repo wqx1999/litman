@@ -41,7 +41,9 @@ conveniences.
   the stray Tk splash window that flashed at launch is gone.
 - **The Windows folder picker knows your drives.** Browse… dialogs list each
   real drive as its own cell in a segmented control beside the Home/Desktop
-  shortcuts, with the drive you are on highlighted.
+  shortcuts, with the drive you are on highlighted — and announced as such to
+  a screen reader, which now says the group is a drive list and which drive
+  you are in.
 - **The "no year" import error fits on a line.** It now meets the same
   one-verdict-one-way-out budget as the other import errors, instead of
   running past it when a DOI or file path was attached.
