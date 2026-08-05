@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+    branches: [main, 'dev/**', 'feat/**']
+    paths-ignore:
+      - '**.md'
+      - 'dev_docs/**'
+  workflow_dispatch:
+
+# A branch only needs its newest run. Pushing three times in a row shouldn't
+# leave two stale suites burning runners and mailing dead failures.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      # The whole point is a per-platform verdict, so a red macOS must not
+      # cancel the Windows job before it reports.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # The suite runs in minutes; anything near this is a hang, not a slow run.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
