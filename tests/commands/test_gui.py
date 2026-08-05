@@ -51,6 +51,28 @@ from litman.commands.gui import (
 )
 from litman.core.presence import PresenceTracker
 
+
+@pytest.fixture(autouse=True)
+def _no_real_native_window(request, monkeypatch) -> None:
+    """Keep a faked platform from opening a real macOS window.
+
+    A test that sets ``sys.platform`` to "darwin" and runs ``gui_cmd --window``
+    reaches the native shell for real when the host *is* a Mac: pywebview
+    imports, a window opens over whatever the developer is doing, and the run
+    blocks until someone closes it. On Linux the same test falls straight
+    through to the browser, so the trap is invisible where the suite usually
+    runs — and this repo has no CI to run it anywhere else. Neutralise the
+    loader by default; a test that means to drive the shell patches
+    ``load_webview`` itself, which lands after this and wins. The three tests
+    whose subject *is* the loader carry ``real_webview_loader`` — without the
+    opt-out this fixture would answer for them, and the two expecting ``None``
+    would keep passing while proving nothing.
+    """
+    if "real_webview_loader" in request.keywords:
+        return
+    monkeypatch.setattr(_mac_shell, "load_webview", lambda: None)
+
+
 # ---------------------------------------------------------------------------
 # A1(a) — importing the CLI must not pull fastapi into the process
 # ---------------------------------------------------------------------------
@@ -2118,6 +2140,7 @@ def test_load_mac_shell_swallows_a_broken_probe(monkeypatch) -> None:
     assert gui._load_mac_shell() is None
 
 
+@pytest.mark.real_webview_loader
 def test_mac_shell_load_webview_none_without_pywebview(monkeypatch) -> None:
     # The Linux/Windows shape of every install, and the macOS shape of a
     # broken one: no webview importable.
@@ -2132,6 +2155,7 @@ def test_mac_shell_load_webview_none_without_pywebview(monkeypatch) -> None:
     assert _mac_shell.load_webview() is None
 
 
+@pytest.mark.real_webview_loader
 def test_mac_shell_load_webview_returns_the_module(monkeypatch) -> None:
     fake = SimpleNamespace(settings={})
     monkeypatch.setitem(sys.modules, "webview", fake)
@@ -2826,6 +2850,7 @@ def test_gui_window_win32_argv_is_unchanged_by_the_native_shell(
     ]
 
 
+@pytest.mark.real_webview_loader
 @pytest.mark.skipif(
     sys.platform != "darwin", reason="the real WKWebView shell needs macOS"
 )
