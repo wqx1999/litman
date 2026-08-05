@@ -48,7 +48,7 @@ import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import TracebackType
 from typing import Literal
 
@@ -368,12 +368,23 @@ class StagedWrite:
     # ----- internals ---------------------------------------------------
 
     def _staged_path(self, relpath: str) -> Path:
-        rel = Path(relpath)
-        if rel.is_absolute() or ".." in rel.parts:
+        # Judged under BOTH path flavours, never just this host's. Windows
+        # calls "/etc/passwd" relative — there is no drive letter — yet still
+        # re-anchors it to the staging root's drive when joined, so that shape
+        # sailed past ``is_absolute()`` there and landed on C:\etc\passwd,
+        # outside the vault. ``anchor`` is drive + root together, so it covers
+        # the driveless-rooted form, the bare-drive form ("C:x") and UNC
+        # alike; ".." needs its own test because a traversal has no anchor at
+        # all. Asking both flavours costs nothing — no legitimate relpath here
+        # is anything but "papers/<id>/..." or a bare filename — and buys the
+        # property worth having in a containment check: the same verdict on
+        # every platform, by construction rather than by test coverage.
+        posix, win = PurePosixPath(relpath), PureWindowsPath(relpath)
+        if posix.anchor or win.anchor or ".." in posix.parts or ".." in win.parts:
             raise ValueError(
                 f"relpath must be a relative path within the vault: {relpath!r}"
             )
-        return self.staging_root / rel
+        return self.staging_root / relpath
 
     def _stage(self, relpath: str, payload: bytes) -> Path:
         staging_path = self._staged_path(relpath)

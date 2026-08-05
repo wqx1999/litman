@@ -660,24 +660,38 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
 
 def test_rebuild_views_neutralizes_dotdot_tag(vault: Path) -> None:
     # Review A3: a tag value ".." must not make views/by-topic/.. resolve to
-    # views/ itself — _safe_name neutralizes it to a single, non-traversing
-    # path segment ("_..").
+    # views/ itself — _safe_name turns it into a single, non-traversing path
+    # segment. The trailing "_" is the second half of that: Windows strips a
+    # component's trailing dots, so "_.." reached disk as "_." while the
+    # junction constructor still looked for the literal name and dropped the
+    # link. One name on every platform, so this asserts unconditionally.
     from litman.core.document import list_papers
     from litman.core.views import rebuild_views
 
     _write_paper(vault, "2024_A", topics=[".."])
     rebuild_views(vault, list_papers(vault))
 
-    assert (vault / "views" / "by-topic" / "_..").is_dir()
-    if sys.platform != "win32":
-        # The bucket exists on Windows too (asserted above) and nothing
-        # escapes into views/ (asserted below) — the A3 contract holds. Only
-        # the link inside it is missing: Win32 strips trailing dots from a
-        # path component, so the directory on disk is really "_", while
-        # _winapi.CreateJunction addresses it through a \\?\ prefix that
-        # skips that normalization and looks for a literal "_..". A platform
-        # difference, not a test bug: the user-visible cost is that the
-        # linkless-filesystem warning fires and misattributes the cause.
-        assert is_portable_link(vault / "views" / "by-topic" / "_.." / "2024_A")
-    # The symlink did NOT escape up into views/ (the pre-fix ".." bucket).
+    bucket = vault / "views" / "by-topic" / "_.._"
+    assert bucket.is_dir()
+    assert is_portable_link(bucket / "2024_A")
+    # The link did NOT escape up into views/ (the pre-fix ".." bucket).
     assert not (vault / "views" / "2024_A").exists()
+
+
+def test_view_bucket_never_ends_in_a_dot_or_space(vault: Path) -> None:
+    """Any tag ending in "." or " " still gets a bucket Windows can address.
+
+    Such a component is not storable under that name there: the Win32 layer
+    strips the trailing character, the \\\\?\\ layer does not, and the two stop
+    agreeing about what the directory is called.
+    """
+    from litman.core.document import list_papers
+    from litman.core.views import rebuild_views
+
+    _write_paper(vault, "2024_B", topics=["Fig.", "et al. ", "..."])
+    rebuild_views(vault, list_papers(vault))
+
+    buckets = sorted(d.name for d in (vault / "views" / "by-topic").iterdir())
+    assert buckets == ["..._", "Fig._", "et al._"]
+    for name in buckets:
+        assert is_portable_link(vault / "views" / "by-topic" / name / "2024_B")
