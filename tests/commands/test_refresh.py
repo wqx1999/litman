@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -196,8 +197,12 @@ def test_rebuild_views_creates_relative_symlinks(tmp_path: Path) -> None:
     assert link.resolve() == (vault / "papers" / "2024_Foo_Bar").resolve()
 
     # Symlink target is RELATIVE, not absolute (cross-machine portability).
-    raw = os.readlink(link)
-    assert not os.path.isabs(raw)
+    # A junction records an absolute target by construction (ADR-005 accepts
+    # that), so this half is asserted on the arm that can hold it; every
+    # assertion above still runs on Windows.
+    if sys.platform != "win32":
+        raw = os.readlink(link)
+        assert not os.path.isabs(raw)
     assert raw == "../../../papers/2024_Foo_Bar"
 
 

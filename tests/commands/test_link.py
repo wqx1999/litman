@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -121,8 +122,12 @@ def test_link_adds_to_projects_and_symlinks(vault: Path, project_dir: Path) -> N
     link = project_dir / "litman_reflib" / "p1"
     assert is_portable_link(link)
     assert link.resolve() == (vault / "papers" / "p1").resolve()
-    # Symlink stores a RELATIVE path (M0 invariant).
-    assert not Path(_resolve_symlink_relative(link)).is_absolute()
+    # Symlink stores a RELATIVE path (M0 invariant). A junction cannot: it
+    # records an absolute target by construction (ADR-005 accepts that), so
+    # the invariant is asserted on the arm able to hold it. Everything above
+    # this line still runs on Windows.
+    if sys.platform != "win32":
+        assert not Path(_resolve_symlink_relative(link)).is_absolute()
 
 
 def test_link_idempotent_no_metadata_change(vault: Path, project_dir: Path) -> None:
