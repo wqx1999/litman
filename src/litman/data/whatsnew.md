@@ -19,6 +19,13 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.4
+
+- On a Mac, litman opens in its own window — no browser needed.
+- Your taskbar and Dock now show litman itself.
+- Reorder tabs by dragging; right-click to close them in bulk.
+- Browse dialogs on Windows list your drives.
+
 ## 1.3.3
 
 - Drag a PDF in to add it.
