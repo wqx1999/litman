@@ -675,8 +675,9 @@ def test_rebuild_views_neutralizes_dotdot_tag(vault: Path) -> None:
         # the link inside it is missing: Win32 strips trailing dots from a
         # path component, so the directory on disk is really "_", while
         # _winapi.CreateJunction addresses it through a \\?\ prefix that
-        # skips that normalization and looks for a literal "_..". See the
-        # note in dev_docs — this is a platform difference, not a test bug.
+        # skips that normalization and looks for a literal "_..". A platform
+        # difference, not a test bug: the user-visible cost is that the
+        # linkless-filesystem warning fires and misattributes the cause.
         assert is_portable_link(vault / "views" / "by-topic" / "_.." / "2024_A")
     # The symlink did NOT escape up into views/ (the pre-fix ".." bucket).
     assert not (vault / "views" / "2024_A").exists()
