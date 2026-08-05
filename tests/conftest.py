@@ -11,6 +11,7 @@ lines as extractable text. Used by the M20 code-URL scanner tests and the
 from __future__ import annotations
 
 import io
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -176,6 +177,48 @@ def fake_junction(
         return path
 
     return _plant
+
+
+@pytest.fixture(autouse=True)
+def _isolate_machine_config_roots(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin every OS config-dir ROOT at tmp, so no test can reach the real box.
+
+    ``_isolate_registry`` below pins ``$LITMAN_REGISTRY_DIR``, but 13 test
+    modules deliberately ``delenv`` it — they exercise the *default* resolution
+    and redirect ``$HOME`` instead. That holds on POSIX and is inert on
+    Windows: ``Path.home()`` reads ``%USERPROFILE%`` and platformdirs reads
+    ``%LOCALAPPDATA%``, so all 13 fell through to the machine-level
+    ``C:\\Users\\<user>\\AppData\\Local\\litman`` — ONE registry shared by the
+    whole session. Tests then saw each other's vaults ("already registered"),
+    and a plain ``pytest`` run rewrote the real user's registry.
+
+    Pinning the roots makes the fallback safe whichever override a test drops.
+
+    ``XDG_*`` / ``CURSOR_CONFIG_DIR`` are cleared rather than pinned so the
+    POSIX defaults (``$HOME/.config``, ``~/.cursor``) resolve under whatever
+    tmp home is in force. Left set, ``lit install-skill --agent cursor`` writes
+    to the developer's real ``~/.config/cursor/cli-config.json`` — which it did
+    on every box where ``$XDG_CONFIG_HOME`` happens to be exported.
+    """
+    # Deliberately NOT under the test's own ``tmp_path``: several tests assert
+    # a directory they were handed is empty ("the probe left nothing behind",
+    # "the profile wrote nothing else"), and a home planted inside it would
+    # read as litter the test is hunting for.
+    home = tmp_path_factory.mktemp("machine-home")
+    monkeypatch.setenv("HOME", str(home))
+    if sys.platform == "win32":
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+        monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+    for var in (
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "CURSOR_CONFIG_DIR",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)
