@@ -241,10 +241,22 @@ export default function TabArea({
   const moveRef = useRef<(e: PointerEvent) => void>(() => {})
   moveRef.current = (e: PointerEvent) => {
     const drag = dragRef.current
-    if (!drag || e.pointerId !== drag.pointerId) return
-    // Self-heal: a pointerup that landed outside the window pre-capture never
-    // reached us — do not let a buttonless hover keep "dragging".
-    if (e.buttons === 0) {
+    if (!drag) return
+    // 🔴 Do NOT demand e.pointerId === drag.pointerId here. One physical
+    // cursor can arrive as TWO pointer streams: a Wayland VM (libinput
+    // exposing the emulated absolute device as a tablet tool) reports the
+    // press as mouse/id=1 but every move as pen/id=2/buttons=0 — an id match
+    // discards each move and the strip reads as simply undraggable
+    // (2026-08-05, wangq's ubuntu-demo box, DevTools trace). Desktops have
+    // one hover cursor, so accept any hover-capable pointer's moves and keep
+    // only touch out (touch must stay native scroll).
+    if (e.pointerType === 'touch') return
+    // Self-heal for a press whose release we never heard (pointerup outside
+    // the window, pre-capture): a buttonless move from the PRESSING pointer
+    // means the button is up. Only that pointer may say so — the pen half of
+    // a split stream reports buttons=0 while dragging, legitimately — and
+    // only before capture, after which pointerup delivery is guaranteed.
+    if (!drag.started && e.pointerId === drag.pointerId && e.buttons === 0) {
       endDrag()
       return
     }
@@ -252,7 +264,12 @@ export default function TabArea({
     if (!drag.started) {
       if (Math.abs(e.clientX - drag.startX) < DRAG_THRESHOLD) return
       drag.started = true
-      drag.el.setPointerCapture(drag.pointerId)
+      try {
+        drag.el.setPointerCapture(drag.pointerId)
+      } catch {
+        /* capture only extends the drag beyond the window edge — the window
+           listeners carry it regardless, so a refusal is survivable */
+      }
       setDragKey(drag.key)
     }
     paintDrag(e.clientX)
