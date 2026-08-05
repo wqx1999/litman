@@ -30,6 +30,7 @@ from litman.core.vault_registry import (
 )
 from litman.core.vault_registry import VaultRegistry
 from litman.exceptions import VaultRegistryError
+from litman.core import locking
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +341,7 @@ def test_cli_vault_add_dead_name_points_at_set_path(
 
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
-    shutil.rmtree(vault_a)
+    locking.rmtree(vault_a)
     result = runner.invoke(cli, ["vault", "add", "main", str(vault_a.parent)])
     assert result.exit_code != 0
     assert isinstance(result.exception, VaultRegistryError)
@@ -470,7 +471,7 @@ def test_cli_vault_info_stale_path_warns(
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
     import shutil
-    shutil.rmtree(vault_a)
+    locking.rmtree(vault_a)
 
     result = runner.invoke(cli, ["vault", "info", "main"])
     # info should still succeed (exit 0), just emit a warning Panel.

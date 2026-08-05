@@ -29,9 +29,14 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+import litman.core.portable_link as portable_link
 from litman.core.library import create_vault
 from litman.core.portable_link import reset_link_probe_cache
 from litman.server import create_app
+
+# What a working drive answers on this host — the endpoint reports the
+# mechanism, and the mechanism is not the same one everywhere.
+_NATIVE = "junction" if sys.platform == "win32" else "symlink"
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +58,7 @@ def test_reports_the_working_mechanism_on_a_normal_filesystem(
 
     assert r.status_code == 200
     body = r.json()
-    assert body["links"] == "symlink"  # POSIX test host; Windows would say junction
+    assert body["links"] == _NATIVE
     assert body["platform"] == sys.platform
 
 
@@ -62,10 +67,13 @@ def test_reports_none_when_the_drive_refuses_links(
 ) -> None:
     vault = create_vault(tmp_path)
 
-    def boom(self: Path, target: Any, target_is_directory: bool = False) -> None:
+    def boom(*_a: Any, **_k: Any) -> None:
         raise OSError(1, "Operation not permitted")
 
+    # Both mechanisms: Windows never reaches symlink_to, so poisoning it alone
+    # left this asserting "none" against a host where junctions worked.
     monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
     reset_link_probe_cache()
 
     body = _client(vault).get("/api/capabilities").json()
@@ -81,17 +89,32 @@ def test_probe_runs_once_for_the_life_of_the_server(tmp_path: Path) -> None:
     """
     vault = create_vault(tmp_path)
     calls: list[Path] = []
-    real = Path.symlink_to
-
-    def counting(self: Path, target: Any, target_is_directory: bool = False) -> None:
-        calls.append(self)
-        return real(self, target, target_is_directory)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(Path, "symlink_to", counting)
+        # Count whichever mechanism this host probes with; counting
+        # Path.symlink_to on Windows would assert 0 == 1.
+        if sys.platform == "win32":
+            real_junction = portable_link._create_junction
+
+            def counting_junction(link: Path, target: Path) -> None:
+                calls.append(link)
+                return real_junction(link, target)
+
+            mp.setattr(portable_link, "_create_junction", counting_junction)
+        else:
+            real = Path.symlink_to
+
+            def counting(
+                self: Path, target: Any, target_is_directory: bool = False
+            ) -> None:
+                calls.append(self)
+                return real(self, target, target_is_directory)
+
+            mp.setattr(Path, "symlink_to", counting)
+
         client = _client(vault)
         for _ in range(4):
-            assert client.get("/api/capabilities").json()["links"] == "symlink"
+            assert client.get("/api/capabilities").json()["links"] == _NATIVE
 
     assert len(calls) == 1
 

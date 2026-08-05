@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from litman.core.ui_state import load_pins, ui_state_path
 from litman.server import create_app
+from litman.core import locking
 
 
 def _client(vault: Path) -> TestClient:
@@ -117,7 +118,7 @@ def test_get_prunes_dangling_pin_and_writes_back(
     client.put(f"/api/pins/{paper_id}")
     client.put("/api/pins/2020_Second_Paper")
 
-    shutil.rmtree(vault / "papers" / "2020_Second_Paper")
+    locking.rmtree(vault / "papers" / "2020_Second_Paper")
 
     resp = client.get("/api/pins")
     assert resp.json() == {"pins": [paper_id]}

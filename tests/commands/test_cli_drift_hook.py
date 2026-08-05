@@ -24,6 +24,7 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 
 @pytest.fixture(autouse=True)
@@ -345,7 +346,7 @@ def test_hook_vanished_id_tty_regens_index_and_annotates(
     (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
         "see [[2024_P1_Foo]]\n", encoding="utf-8"
     )
-    shutil.rmtree(vault / "papers" / "2024_P1_Foo")
+    locking.rmtree(vault / "papers" / "2024_P1_Foo")
 
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
@@ -379,7 +380,7 @@ def test_hook_vanished_id_reads_no_per_paper_metadata(
     import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 2)
-    shutil.rmtree(vault / "papers" / "2024_P1_Foo")
+    locking.rmtree(vault / "papers" / "2024_P1_Foo")
     # Pre-condition: the dead id is still in INDEX before the hook runs.
     before = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
     assert "2024_P1_Foo" in {p["id"] for p in before["papers"]}
@@ -425,7 +426,7 @@ def test_hook_vanished_id_bulk_defers_to_health_check(
     )
     # Remove 6 papers (> 5) out of band.
     for i in range(1, 7):
-        shutil.rmtree(vault / "papers" / f"2024_P{i}_Foo")
+        locking.rmtree(vault / "papers" / f"2024_P{i}_Foo")
 
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
@@ -462,7 +463,7 @@ def test_hook_vanished_id_exactly_5_uses_per_id_annotate(
     )
     # Remove exactly 5 papers (== threshold, NOT > 5).
     for i in range(1, 6):
-        shutil.rmtree(vault / "papers" / f"2024_P{i}_Foo")
+        locking.rmtree(vault / "papers" / f"2024_P{i}_Foo")
 
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
@@ -495,7 +496,7 @@ def test_hook_vanished_id_exactly_6_uses_bulk_defer(
     )
     # Remove exactly 6 papers (> 5 → bulk).
     for i in range(1, 7):
-        shutil.rmtree(vault / "papers" / f"2024_P{i}_Foo")
+        locking.rmtree(vault / "papers" / f"2024_P{i}_Foo")
 
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
@@ -519,7 +520,7 @@ def test_hook_vanished_id_non_tty_report_only(
     import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 2)
-    shutil.rmtree(vault / "papers" / "2024_P1_Foo")
+    locking.rmtree(vault / "papers" / "2024_P1_Foo")
     index_before = (vault / "INDEX.json").read_bytes()
 
     runner = CliRunner()  # non-TTY by default

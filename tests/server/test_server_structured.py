@@ -43,6 +43,7 @@ from litman.core.vault_registry import (
 )
 from litman.server import create_app
 from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 _yaml = YAML(typ="safe")
 
@@ -1433,7 +1434,7 @@ def test_put_active_vault_missing_path_refused_400(tmp_path: Path) -> None:
 
     v1, v2 = _two_registered_vaults(tmp_path)
     app = create_app(v1)
-    shutil.rmtree(v2)  # vault two moved / deleted out from under the registry
+    locking.rmtree(v2)  # vault two moved / deleted out from under the registry
 
     resp = TestClient(app).put("/api/vaults/active", json={"name": "two"})
     assert resp.status_code == 400

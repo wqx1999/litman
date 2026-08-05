@@ -45,6 +45,7 @@ from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -375,7 +376,7 @@ def test_index_vs_disk_vanished_id_is_error(vault: Path) -> None:
     # Manual rm of the paper dir, INDEX not rebuilt.
     import shutil
 
-    shutil.rmtree(vault / "papers" / "2024_Foo_Bar")
+    locking.rmtree(vault / "papers" / "2024_Foo_Bar")
     issues = check_index_vs_disk(vault, [])
     vanished = [i for i in issues if i.severity == "error"]
     assert len(vanished) == 1

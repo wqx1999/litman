@@ -33,6 +33,7 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 
 def _seed_paper(vault: Path, paper_id: str, **fields: object) -> None:
@@ -116,7 +117,7 @@ def test_paper_dir_added_behind_indexs_back_is_none(tmp_path: Path) -> None:
 
 def test_paper_dir_removed_behind_indexs_back_is_none(tmp_path: Path) -> None:
     v = _fresh_vault(tmp_path)
-    shutil.rmtree(v / "papers" / "2024_Two_Beta")
+    locking.rmtree(v / "papers" / "2024_Two_Beta")
     assert load_index_papers(v) is None
 
 

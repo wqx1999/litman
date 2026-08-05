@@ -34,6 +34,7 @@ from litman.core.code import (
 )
 from litman.core.library import create_vault
 from litman.exceptions import CodeError, PaperNotFoundError
+from litman.core import locking
 
 _yaml_safe = YAML(typ="safe")
 _yaml = YAML()
@@ -1381,7 +1382,7 @@ def test_restore_reclones_missing_repo(
     assert result.exit_code == 0, result.output
 
     # Simulate cross-machine state: repo-meta.yaml survives, repo/ does not.
-    shutil.rmtree(vault / "codes" / "Gone" / "repo")
+    locking.rmtree(vault / "codes" / "Gone" / "repo")
     assert not (vault / "codes" / "Gone" / "repo").exists()
 
     report = restore_missing_repos(vault)
@@ -1404,7 +1405,7 @@ def test_restore_mixed_present_and_missing(
              "--library", str(vault)],
         )
         assert r.exit_code == 0, r.output
-    shutil.rmtree(vault / "codes" / "Drop" / "repo")
+    locking.rmtree(vault / "codes" / "Drop" / "repo")
 
     report = restore_missing_repos(vault)
     by_name = {it.name: it for it in report.items}
@@ -1449,7 +1450,7 @@ def test_restore_isolates_failures(
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output
-    shutil.rmtree(vault / "codes" / "Good" / "repo")
+    locking.rmtree(vault / "codes" / "Good" / "repo")
 
     _make_repo(vault, "Bad", upstream="/nonexistent/path")
 
@@ -1522,7 +1523,7 @@ def test_cli_code_restore_all_happy_path(
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output
-    shutil.rmtree(vault / "codes" / "BackMe" / "repo")
+    locking.rmtree(vault / "codes" / "BackMe" / "repo")
 
     result = runner.invoke(
         cli, ["code", "restore-all", "--library", str(vault)]
@@ -1543,7 +1544,7 @@ def test_cli_code_restore_all_dry_run_does_not_clone(
          "--library", str(vault)],
     )
     assert r.exit_code == 0, r.output
-    shutil.rmtree(vault / "codes" / "Preview" / "repo")
+    locking.rmtree(vault / "codes" / "Preview" / "repo")
 
     result = runner.invoke(
         cli, ["code", "restore-all", "--dry-run", "--library", str(vault)]

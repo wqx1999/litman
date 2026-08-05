@@ -50,6 +50,7 @@ from litman.commands.gui import (
     shortcut_path,
 )
 from litman.core.presence import PresenceTracker
+from litman.core import locking
 
 
 @pytest.fixture(autouse=True)
@@ -1313,7 +1314,7 @@ def test_app_window_argv_darwin_finds_every_bundle_it_lists(monkeypatch, tmp_pat
 
         assert argv is not None, f"{app} is installed but yielded no app window"
         assert argv[0] == str(binary)
-        shutil.rmtree(apps)
+        locking.rmtree(apps)
 
 
 def test_app_window_argv_darwin_prefers_chrome_to_the_forks(monkeypatch, tmp_path):

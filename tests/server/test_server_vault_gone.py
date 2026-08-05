@@ -44,6 +44,7 @@ from litman.core.vault_registry import (
 )
 from litman.server import create_app
 from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 
 def _client(vault: Path) -> TestClient:
@@ -90,7 +91,7 @@ def test_deleted_vault_is_410(tmp_path: Path) -> None:
     """Deleted, not moved — same verdict, the server can no longer see it."""
     vault = create_vault(tmp_path, name="lib")
     client = _client(vault)
-    shutil.rmtree(vault)
+    locking.rmtree(vault)
 
     assert client.get("/api/papers").status_code == 410
 
