@@ -22,6 +22,7 @@ from litman.core.taxonomy import (
     update_user_dict_section,
 )
 from litman.exceptions import TaxonomyError
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -375,7 +376,7 @@ def test_taxonomy_rename_refreshes_index_and_views(vault: Path) -> None:
     runner.invoke(cli, ["taxonomy", "add", "topics", "peptide",
                         "--library", str(vault)])
     runner.invoke(cli, ["refresh-views", "--library", str(vault)])
-    assert (vault / "views/by-topic/peptide/2024_A").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/peptide/2024_A")
 
     result = runner.invoke(
         cli,
@@ -389,7 +390,7 @@ def test_taxonomy_rename_refreshes_index_and_views(vault: Path) -> None:
     assert p["topics"] == ["AMP"]
     # Old view bucket gone, new one present.
     assert not (vault / "views/by-topic/peptide").exists()
-    assert (vault / "views/by-topic/AMP/2024_A").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/AMP/2024_A")
 
 
 def test_taxonomy_rename_missing_old(vault: Path) -> None:

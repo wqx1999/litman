@@ -28,6 +28,7 @@ from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.trash import list_trash, move_to_trash
 from litman.server import create_app
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -296,7 +297,7 @@ def test_restore_moves_paper_back_and_rebuilds_index(vault: Path) -> None:
     payload = json.loads((vault / "INDEX.json").read_text())
     assert "2024_Foo" in [p["id"] for p in payload["papers"]]
     # views rebuilt: by-topic/alpha/2024_Foo symlink is back.
-    assert (vault / "views/by-topic/alpha/2024_Foo").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/alpha/2024_Foo")
     # Trash is now empty.
     assert list_trash(vault) == []
 

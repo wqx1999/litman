@@ -21,6 +21,7 @@ from litman.exceptions import (
     ModifyError,
     PaperNotFoundError,
 )
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -682,9 +683,9 @@ def test_modify_rebuilds_views(vault_with_paper: tuple[Path, str]) -> None:
     )
     assert result.exit_code == 0, result.output
 
-    assert (vault / "views" / "by-topic" / "peptide" / paper_id).is_symlink()
-    assert (vault / "views" / "by-project" / "pepforge" / paper_id).is_symlink()
-    assert (vault / "views" / "by-status" / "deep-read" / paper_id).is_symlink()
+    assert is_portable_link(vault / "views" / "by-topic" / "peptide" / paper_id)
+    assert is_portable_link(vault / "views" / "by-project" / "pepforge" / paper_id)
+    assert is_portable_link(vault / "views" / "by-status" / "deep-read" / paper_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1283,7 +1284,7 @@ def test_modify_serves_the_edit_from_index_without_a_vault_scan(
     entries = {p["id"]: p for p in _read_index(vault)["papers"]}
     assert entries[paper_id]["status"] == "skim"
     # Views moved incrementally: new bucket linked, emptied bucket gone.
-    assert (vault / "views" / "by-status" / "skim" / paper_id).is_symlink()
+    assert is_portable_link(vault / "views" / "by-status" / "skim" / paper_id)
     assert not (vault / "views" / "by-status" / "inbox").exists()
 
 
@@ -1340,7 +1341,7 @@ def test_modify_views_state_equals_a_full_rebuild(
         out: dict[str, str] = {}
         for p in sorted(root.rglob("*")):
             rel = p.relative_to(root).as_posix()
-            out[rel] = "link" if p.is_symlink() else (
+            out[rel] = "link" if is_portable_link(p) else (
                 "dir" if p.is_dir() else "file"
             )
         return out

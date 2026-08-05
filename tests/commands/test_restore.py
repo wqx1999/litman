@@ -35,6 +35,7 @@ from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import TrashError
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -251,7 +252,7 @@ def test_restore_rebuilds_project_symlink_and_references(
     runner.invoke(
         cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
     )
-    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "2024_Target")
 
     runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
     assert not (project_dir / "litman_reflib" / "2024_Target").exists()
@@ -261,7 +262,7 @@ def test_restore_rebuilds_project_symlink_and_references(
     )
     assert result.exit_code == 0, result.output
     # Symlink re-created and REFERENCES re-rendered with the paper.
-    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "2024_Target")
     refs = (project_dir / "litman_reflib" / "REFERENCES.md").read_text()
     assert "2024_Target" in refs
 
@@ -506,7 +507,7 @@ def test_restore_refreshes_index_and_views(vault: Path) -> None:
 
     payload = json.loads((vault / "INDEX.json").read_text())
     assert "2024_Foo" in [p["id"] for p in payload["papers"]]
-    assert (vault / "views/by-topic/alpha/2024_Foo").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/alpha/2024_Foo")
 
 
 # ===========================================================================

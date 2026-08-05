@@ -44,6 +44,7 @@ from litman.core.vault_registry import (
     remove_registry,
     save_registry,
 )
+from litman.core.portable_link import is_portable_link
 
 # --------------------------------------------------------------------------
 # uninstall_skill
@@ -367,7 +368,7 @@ def test_uninstall_skill_skips_symlinked_dir(tmp_path: Path) -> None:
 
     assert result["mode"] == "skipped"
     assert result["removed"] == []
-    assert link.is_symlink()  # link left in place
+    assert is_portable_link(link)  # link left in place
     assert (real / "SKILL.md").exists()  # nothing deleted through the link
 
 

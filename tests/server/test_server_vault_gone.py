@@ -43,6 +43,7 @@ from litman.core.vault_registry import (
     set_active,
 )
 from litman.server import create_app
+from litman.core.portable_link import is_portable_link
 
 
 def _client(vault: Path) -> TestClient:
@@ -405,7 +406,7 @@ def _link_paper_into_project(vault: Path, tmp_path: Path) -> Path:
         )
     rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink() and link.exists()
+    assert is_portable_link(link) and link.exists()
     return link
 
 
@@ -421,7 +422,7 @@ def test_switch_to_recovered_vault_heals_project_bridges(tmp_path: Path) -> None
     client = _client(vault)
 
     moved = _move_away(vault, tmp_path / "moved")
-    assert link.is_symlink() and not link.exists()  # bridge dangles
+    assert is_portable_link(link) and not link.exists()  # bridge dangles
 
     assert (
         client.post(
@@ -434,7 +435,7 @@ def test_switch_to_recovered_vault_heals_project_bridges(tmp_path: Path) -> None
         == 200
     )
 
-    assert link.is_symlink() and link.exists()
+    assert is_portable_link(link) and link.exists()
     assert link.resolve() == (moved / "papers" / "p1").resolve()
 
 
@@ -734,14 +735,14 @@ def test_relocate_active_vault_heals_project_bridges(tmp_path: Path) -> None:
     client = _client(vault)
 
     moved = _move_away(vault, tmp_path / "moved")
-    assert link.is_symlink() and not link.exists()  # bridge dangles after the move
+    assert is_portable_link(link) and not link.exists()  # bridge dangles after the move
 
     assert (
         client.put("/api/vaults/lib/path", json={"path": str(moved)}).status_code
         == 200
     )
 
-    assert link.is_symlink() and link.exists()
+    assert is_portable_link(link) and link.exists()
     assert link.resolve() == (moved / "papers" / "p1").resolve()
 
 

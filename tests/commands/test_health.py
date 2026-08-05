@@ -44,6 +44,7 @@ from litman.core.checks import (
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -617,7 +618,7 @@ def test_project_bridge_dangling_moved_vault_reported_and_fixed(
     moved = tmp_path / "moved_vault"
     vault.rename(moved)
     link = proj / "litman_reflib" / "2024_Foo_Bar"
-    assert link.is_symlink() and not link.exists()  # dangling, name intact
+    assert is_portable_link(link) and not link.exists()  # dangling, name intact
 
     issues = check_project_bridge_dangling(moved, [])
     assert len(issues) == 1
@@ -632,7 +633,7 @@ def test_project_bridge_dangling_moved_vault_reported_and_fixed(
     assert "points at nothing" in flat  # n=1 → singular verb
 
     runner.invoke(cli, ["health-check", "--fix", "--library", str(moved)])
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (moved / "papers" / "2024_Foo_Bar").resolve()
     assert check_project_bridge_dangling(moved, []) == []
 
@@ -2429,7 +2430,7 @@ def test_vault_can_link_but_project_drive_cannot(
 
     # Tear the project's bridge away; the vault's views stay intact.
     for child in (proj / "litman_reflib").iterdir():
-        if child.is_symlink():
+        if is_portable_link(child):
             child.unlink()
 
     # The project's missing bridge is suppressed (that drive cannot make it)...

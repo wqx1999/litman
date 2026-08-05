@@ -32,6 +32,7 @@ from litman.core.views import (
     update_views_for_paper,
     view_fields_snapshot,
 )
+from litman.core.portable_link import is_portable_link
 
 
 def _seed_paper(vault: Path, paper_id: str, **fields: object) -> None:
@@ -151,7 +152,7 @@ def _views_tree(vault: Path) -> dict[str, str]:
     root = vault / "views"
     for p in sorted(root.rglob("*")):
         rel = p.relative_to(root).as_posix()
-        if p.is_symlink():
+        if is_portable_link(p):
             out[rel] = f"link:{os.readlink(p)}"
         elif p.is_dir():
             out[rel] = "dir"
@@ -268,10 +269,10 @@ def test_incremental_maintains_but_never_repairs_foreign_damage(
     )
 
     assert not vandalized.exists()  # untouched by the incremental path
-    assert (v / "views" / "by-status" / "skim" / "2023_One_Alpha").is_symlink()
+    assert is_portable_link(v / "views" / "by-status" / "skim" / "2023_One_Alpha")
 
     reconcile_derived(v, project_refs=False)  # the repair path
-    assert vandalized.is_symlink()
+    assert is_portable_link(vandalized)
 
 
 # ---------------------------------------------------------------------------

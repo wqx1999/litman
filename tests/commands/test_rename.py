@@ -22,6 +22,7 @@ from litman.exceptions import (
     PaperNotFoundError,
     RenameError,
 )
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -277,7 +278,7 @@ def test_rename_refreshes_index_and_views(vault: Path) -> None:
 
     runner = CliRunner()
     runner.invoke(cli, ["refresh-views", "--library", str(vault)])
-    assert (vault / "views/by-topic/alpha/2024_Foo_Bar").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/alpha/2024_Foo_Bar")
 
     result = runner.invoke(
         cli,
@@ -291,7 +292,7 @@ def test_rename_refreshes_index_and_views(vault: Path) -> None:
 
     assert not (vault / "views/by-topic/alpha/2024_Foo_Bar").exists()
     new_link = vault / "views/by-topic/alpha/2024_Foo_Baz"
-    assert new_link.is_symlink()
+    assert is_portable_link(new_link)
     assert new_link.resolve() == (vault / "papers/2024_Foo_Baz").resolve()
 
 

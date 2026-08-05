@@ -25,6 +25,7 @@ from litman.cli import cli
 from litman.core import checks, correctors
 from litman.core.library import create_vault
 from litman.core.views import load_index_ids
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 _FAKE_PDF_BYTES = b"%PDF-1.4\n% fake content for tests\n%%EOF\n"
@@ -567,7 +568,7 @@ def test_modify_add_project_tag_builds_project_side(
     )
     assert result.exit_code == 0, result.output
 
-    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_A")
     refs = (_reflib(proj_dir) / "REFERENCES.md").read_text(encoding="utf-8")
     assert "2024_A" in refs
 
@@ -587,7 +588,7 @@ def test_modify_rm_project_tag_clears_project_side(
         cli,
         ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
     )
-    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_A")
 
     result = runner.invoke(
         cli,
@@ -614,7 +615,7 @@ def test_rename_project_linked_paper_rebuilds_project_side(
         cli,
         ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
     )
-    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_A")
 
     result = runner.invoke(
         cli,
@@ -623,7 +624,7 @@ def test_rename_project_linked_paper_rebuilds_project_side(
     assert result.exit_code == 0, result.output
 
     assert not (_reflib(proj_dir) / "2024_A").exists()
-    assert (_reflib(proj_dir) / "2024_B").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_B")
     refs = (_reflib(proj_dir) / "REFERENCES.md").read_text(encoding="utf-8")
     assert "2024_B" in refs
 
@@ -645,7 +646,7 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
         ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
     )
     link = _reflib(proj_dir) / "2024_A"
-    assert link.is_symlink()
+    assert is_portable_link(link)
 
     # Simulate drift: the symlink is gone but membership TRUTH remains.
     link.unlink()
@@ -653,7 +654,7 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
 
     result = runner.invoke(cli, ["refresh-views", "--library", str(vault)])
     assert result.exit_code == 0, result.output
-    assert link.is_symlink()
+    assert is_portable_link(link)
 
 
 def test_rebuild_views_neutralizes_dotdot_tag(vault: Path) -> None:
@@ -667,6 +668,6 @@ def test_rebuild_views_neutralizes_dotdot_tag(vault: Path) -> None:
     rebuild_views(vault, list_papers(vault))
 
     assert (vault / "views" / "by-topic" / "_..").is_dir()
-    assert (vault / "views" / "by-topic" / "_.." / "2024_A").is_symlink()
+    assert is_portable_link(vault / "views" / "by-topic" / "_.." / "2024_A")
     # The symlink did NOT escape up into views/ (the pre-fix ".." bucket).
     assert not (vault / "views" / "2024_A").exists()

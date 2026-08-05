@@ -23,6 +23,7 @@ from litman.core.vault_registry import (
     load_registry,
     save_registry,
 )
+from litman.core.portable_link import is_portable_link
 
 
 @pytest.fixture(autouse=True)
@@ -718,7 +719,7 @@ def test_hook_bridge_heal_end_to_end(
     assert result.exit_code == 0, result.output
     assert "Rebuilt project links" in result.output
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (moved / "papers" / "p1").resolve()
 
 

@@ -39,6 +39,7 @@ from litman.core.taxonomy import (
     remove_taxonomy_value,
     rename_taxonomy_value,
 )
+from litman.core.portable_link import is_portable_link
 
 # Modules whose namespace holds a reachable ``list_papers`` reference on the
 # write paths under test. ``litman.core.document`` covers every lazy
@@ -184,7 +185,7 @@ def _views_tree(vault: Path) -> dict[str, str]:
     views = vault / "views"
     for p in sorted(views.rglob("*")):
         rel = str(p.relative_to(views))
-        if p.is_symlink():
+        if is_portable_link(p):
             out[rel] = str(p.resolve().name)
         elif p.is_dir():
             out[rel] = "<dir>"

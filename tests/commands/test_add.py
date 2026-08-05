@@ -23,6 +23,7 @@ from litman.exceptions import (
     IDError,
     LibraryNotFoundError,
 )
+from litman.core.portable_link import is_portable_link
 
 _PAPER_ID = "2024_Chen_HELM-GPT-Macrocyclic"
 
@@ -902,8 +903,8 @@ def test_add_indexes_the_new_paper_without_rescanning_the_vault(
     assert ids == {"2020_Prior_Work", _PAPER_ID}
     # The new paper joined by-status/inbox; the seeded one kept its link.
     inbox = vault / "views" / "by-status" / "inbox"
-    assert (inbox / _PAPER_ID).is_symlink()
-    assert (inbox / "2020_Prior_Work").is_symlink()
+    assert is_portable_link(inbox / _PAPER_ID)
+    assert is_portable_link(inbox / "2020_Prior_Work")
 
 
 def test_add_with_stale_index_falls_back_to_the_full_rebuild(
@@ -930,6 +931,4 @@ def test_add_with_stale_index_falls_back_to_the_full_rebuild(
     index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
     ids = {p["id"] for p in index["papers"]}
     assert ids == {"2020_Unindexed_Paper", _PAPER_ID}
-    assert (
-        vault / "views" / "by-status" / "inbox" / "2020_Unindexed_Paper"
-    ).is_symlink()
+    assert is_portable_link(vault / "views" / "by-status" / "inbox" / "2020_Unindexed_Paper")

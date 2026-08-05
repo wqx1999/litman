@@ -42,6 +42,7 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.server import create_app
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -618,7 +619,7 @@ def test_post_project_links_paper_writes_backend_and_reprojects_index(
     # … DERIVED projection recomputed to match …
     assert _index_paper(vault, paper_id)["projects"] == ["pepforge"]
     # … and the project-side side effects ran (symlink + REFERENCES.md).
-    assert (project_dir / "litman_reflib" / paper_id).is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / paper_id)
     assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
 
@@ -1040,7 +1041,7 @@ def test_delete_project_cascades_and_keeps_dir(
     # Link the paper so the cascade has something to untag + symlinks to tear down.
     client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
     assert _meta(vault, paper_id)["projects"] == ["pepforge"]
-    assert (project_dir / "litman_reflib" / paper_id).is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / paper_id)
     assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
     resp = client.delete("/api/projects/pepforge")
