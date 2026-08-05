@@ -1240,6 +1240,10 @@ def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Every darwin browser-lookup test redirects _DARWIN_SYSTEM_APPS as well:
+    # HOME alone leaves the system folder real, so on a Mac host the answer
+    # comes from whatever browsers that machine happens to have installed.
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
     binary = (
         tmp_path
         / "Applications"
@@ -1266,6 +1270,7 @@ def test_app_window_argv_darwin_finds_every_bundle_it_lists(monkeypatch, tmp_pat
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
     apps = tmp_path / "Applications"
 
     # The list is a capability promise, so pin it: a name quietly dropped here
@@ -1296,6 +1301,7 @@ def test_app_window_argv_darwin_prefers_chrome_to_the_forks(monkeypatch, tmp_pat
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
     for app in ("Brave Browser", "Chromium", "Google Chrome"):
         binary = tmp_path / "Applications" / f"{app}.app" / "Contents" / "MacOS" / app
         binary.parent.mkdir(parents=True)
@@ -1305,6 +1311,29 @@ def test_app_window_argv_darwin_prefers_chrome_to_the_forks(monkeypatch, tmp_pat
 
     assert argv is not None
     assert argv[0].endswith("Google Chrome.app/Contents/MacOS/Google Chrome")
+
+
+def test_app_window_argv_darwin_searches_the_system_folder_first(
+    monkeypatch, tmp_path
+):
+    # /Applications is where a Mac browser actually lands, and it is searched
+    # ahead of ~/Applications. Every other test here seeds only HOME, so all of
+    # them would stay green if the system folder fell out of the search.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    tail = Path("Google Chrome.app") / "Contents" / "MacOS" / "Google Chrome"
+    for root in (system_apps, home / "Applications"):
+        (root / tail).parent.mkdir(parents=True)
+        (root / tail).touch()
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert argv[0] == str(system_apps / tail)
 
 
 def test_app_window_argv_reaches_a_browser_the_session_path_omits(
@@ -2502,6 +2531,7 @@ def test_gui_window_darwin_shell_failure_falls_back_to_the_browser_unchanged(
     monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
     binary = (
         tmp_path
         / "Applications"

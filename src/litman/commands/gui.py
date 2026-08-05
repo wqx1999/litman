@@ -150,6 +150,12 @@ _DARWIN_APP_CANDIDATES = (
     "Brave Browser",
 )
 
+# Every reach into /Applications goes through this name, never the literal:
+# a test pretending to be darwin must not probe — or, on a Mac host, write
+# into — the real folder. A literal reads as green on Linux and then answers
+# with the host's own browsers on a Mac, which is a test that proves nothing.
+_DARWIN_SYSTEM_APPS = Path("/Applications")
+
 
 def display_available() -> bool:
     """True when this session can show a browser window.
@@ -433,7 +439,7 @@ def _find_chromium() -> str | None:
         # Launch Services to start the app and returns immediately, so it never
         # owns the window. See _DARWIN_APP_CANDIDATES for the name list.
         for app in _DARWIN_APP_CANDIDATES:
-            for root in (Path("/Applications"), Path.home() / "Applications"):
+            for root in (_DARWIN_SYSTEM_APPS, Path.home() / "Applications"):
                 binary = root / f"{app}.app" / "Contents" / "MacOS" / app
                 if binary.exists():
                     return str(binary)
@@ -955,11 +961,6 @@ def _windows_desktop_dir() -> Path:
         pass
     userprofile = os.environ.get("USERPROFILE") or str(Path.home())
     return Path(userprofile) / "Desktop"
-
-
-# Monkeypatchable for tests: pretending to be darwin on another OS must not
-# probe (or worse, write) the test host's real /Applications.
-_DARWIN_SYSTEM_APPS = Path("/Applications")
 
 
 def _darwin_bundle_locations() -> tuple[Path, Path]:
