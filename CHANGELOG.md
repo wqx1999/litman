@@ -21,6 +21,11 @@ conveniences.
   to litman the moment the server is ready; if the server ever stops first
   (an update, say), the window closes with it rather than lingering as a dead
   page. Windows and Linux keep the browser-held window they already had.
+- **Reorder your tabs, and close them in bulk.** Drag a tab along the strip to
+  put it where you want it; the strip scrolls itself when you drag past its
+  edge, so a crowded row is no obstacle. Right-click the tab strip for "Close
+  other tabs" (everything but the one you are reading) and "Close all tabs" —
+  a tab with unsaved notes or annotations still asks before it goes.
 
 ### Fixed
 
