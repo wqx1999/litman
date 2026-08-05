@@ -905,7 +905,7 @@ export interface FsEntry {
  * draws the two groups differently, so it reads this rather than pattern-matching
  * the label. */
 export interface FsAnchor {
-  kind: string
+  kind: 'place' | 'drive'
   label: string
   path: string
 }
