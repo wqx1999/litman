@@ -186,9 +186,13 @@ def _readd_taskbar_tab(hwnd: int) -> None:
 
 
 def _brand_pass(icon_path: str, relaunch_command: str) -> bool:
-    """One sweep over the visible windows; True once any litman window is
-    branded (this pass or, judged by its display name, an earlier one — a
-    second instance must not blink the first window's button again)."""
+    """One sweep over the visible windows; True only when this pass branded one.
+
+    A window already wearing the display name was finished by an earlier pass
+    — possibly another instance's — so it is skipped without a write or a
+    taskbar blink, but never counted as success: a second instance's own
+    window is still on its way, and claiming the first one's would end the
+    polling before it arrives."""
     branded = False
     for hwnd in _visible_windows():
         store = _window_store(hwnd)
@@ -199,12 +203,15 @@ def _brand_pass(icon_path: str, relaunch_command: str) -> bool:
             if not _is_litman_aumid(_read_string(store, _PID_ID)):
                 continue
             if _read_string(store, _PID_RELAUNCH_DISPLAY_NAME) == _DISPLAY_NAME:
-                branded = True
                 continue
+            # Write order is load-bearing: the display name doubles as the
+            # done-marker read above, so it lands last — a pass that dies on
+            # the command or icon leaves no marker, and the next pass retries
+            # the window instead of locking "done" onto the wrong face.
             ok = (
-                _write_string(store, _PID_RELAUNCH_DISPLAY_NAME, _DISPLAY_NAME)
+                _write_string(store, _PID_RELAUNCH_COMMAND, relaunch_command)
                 and _write_string(store, _PID_RELAUNCH_ICON, f"{icon_path},0")
-                and _write_string(store, _PID_RELAUNCH_COMMAND, relaunch_command)
+                and _write_string(store, _PID_RELAUNCH_DISPLAY_NAME, _DISPLAY_NAME)
                 and _com_method(store, 7)() == 0  # Commit
             )
         finally:
@@ -223,14 +230,17 @@ def adopt_window(
     timeout: float = 30.0,
     poll: float = 0.25,
 ) -> bool:
-    """Poll for the app window and rebrand it. True once something was branded.
+    """Poll for the app window and rebrand it. True once this call branded one.
 
     Polling, because the window exists only after the browser gets around to
     creating it — and Chromium stamps the AppUserModelID at creation, so an
     unstamped window simply fails the match this pass and is caught on a
-    later one. ``give_up`` (the server's stop event) ends the wait early on
-    shutdown. Best-effort by contract: the caller treats False the same as
-    success minus the icon.
+    later one. Windows an earlier call already branded do not count: a second
+    instance keeps polling for its *own* window until it appears or the
+    deadline runs out (idle sweeps past a long-lived first window are the
+    daemon thread's cheap price). ``give_up`` (the server's stop event) ends
+    the wait early on shutdown. Best-effort by contract: the caller treats
+    False the same as success minus the icon.
     """
     ctypes.windll.ole32.CoInitialize(None)  # per-thread; S_FALSE is fine
     deadline = time.monotonic() + timeout

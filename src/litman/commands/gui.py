@@ -13,7 +13,11 @@ upward to the next free port (Jupyter model) and the actual port is printed.
 
 When the session has a display, the URL also opens in the user's browser
 (``--no-browser`` suppresses it; ``--window`` opens a Chromium ``--app=``
-window instead of a tab). Headless sessions never attempt a browser launch —
+window instead of a tab). On macOS ``--window`` prefers a WKWebView window
+owned by this very process (:mod:`litman.commands._mac_shell`) — the Dock
+then badges it as litman, and no browser needs to exist — quietly falling
+back to the Chromium window when pywebview cannot come up. Headless sessions
+never attempt a browser launch —
 ``webbrowser`` on a display-less Linux box can drag up a text-mode browser,
 which is worse than the printed URL. ``--make-shortcut`` writes a desktop
 entry that runs ``lit gui --window`` and exits without starting the server
@@ -145,6 +149,12 @@ _DARWIN_APP_CANDIDATES = (
     "Chromium",
     "Brave Browser",
 )
+
+# Every reach into /Applications goes through this name, never the literal:
+# a test pretending to be darwin must not probe — or, on a Mac host, write
+# into — the real folder. A literal reads as green on Linux and then answers
+# with the host's own browsers on a Mac, which is a test that proves nothing.
+_DARWIN_SYSTEM_APPS = Path("/Applications")
 
 
 def display_available() -> bool:
@@ -429,7 +439,7 @@ def _find_chromium() -> str | None:
         # Launch Services to start the app and returns immediately, so it never
         # owns the window. See _DARWIN_APP_CANDIDATES for the name list.
         for app in _DARWIN_APP_CANDIDATES:
-            for root in (Path("/Applications"), Path.home() / "Applications"):
+            for root in (_DARWIN_SYSTEM_APPS, Path.home() / "Applications"):
                 binary = root / f"{app}.app" / "Contents" / "MacOS" / app
                 if binary.exists():
                     return str(binary)
@@ -636,6 +646,7 @@ def _open_when_ready(
     ready_timeout: float = READY_TIMEOUT,
     ready_poll: float = READY_POLL,
     after_open: Callable[[], None] | None = None,
+    give_up: Callable[[], bool] | None = None,
 ) -> None:
     """Open the browser the instant the server is listening — no fixed guess.
 
@@ -651,12 +662,21 @@ def _open_when_ready(
     the one-``ready_poll``-wide window where the event lands between the break
     and the open. ``after_open`` runs once, right after the open, for the
     splash hand-off (wait for the page to paint, then close the splash).
+
+    ``give_up`` is polled alongside ``started``: True means readiness is
+    never coming — the mac shell hands in "the server thread died" — so stop
+    waiting now rather than sit out the timeout. The open still runs, same
+    as the timeout backstop; the caller's callback is what decides what
+    opening means against a server that never came up (the shell swaps in
+    its error page instead of a URL).
     """
     deadline = time.monotonic() + ready_timeout
     while True:
         if stop_event.is_set():
             return
         if getattr(server, "started", False):
+            break
+        if give_up is not None and give_up():
             break
         if time.monotonic() >= deadline:
             break
@@ -845,9 +865,74 @@ def _brand_windows_taskbar(stop_event: threading.Event) -> threading.Thread | No
         except Exception:
             pass
 
-    thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
-    thread.start()
+    # The worker swallows its own failures, but running out of threads fails
+    # the start() itself — same best-effort verdict: no icon, never no window.
+    try:
+        thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
+        thread.start()
+    except Exception:
+        return None
     return thread
+
+
+def _load_mac_shell() -> Any | None:
+    """The pywebview module for the macOS native shell, or None.
+
+    The one seam ``gui_cmd`` reaches the shell through, and the surface the
+    tests fake a webview (or its absence) behind. None — a missing pywebview,
+    or anything else going wrong in the probe — sends the launch down the
+    Chromium route exactly as it always ran, so falling back is the one path
+    that needs no new trust.
+    """
+    try:
+        from litman.commands import _mac_shell
+
+        return _mac_shell.load_webview()
+    except Exception:
+        return None
+
+
+# Set (to "1") by both exec lines of _DARWIN_STUB, so a process can tell a
+# bundle launch — one wearing litman.app's Launch Services identity — from a
+# terminal `lit gui --window`, which has no identity to speak of.
+_DARWIN_APP_LAUNCH_ENV = "LITMAN_DARWIN_APP_LAUNCH"
+
+
+def _shed_darwin_app_identity() -> bool:
+    """Hand a bundle launch that lost its window to an identity-less child.
+
+    Only reached when the native shell could not put up a window. A bundle
+    launch that then serves a *browser* window keeps litman.app's Launch
+    Services identity on a process with no window of its own — the exact
+    configuration in which a second double-click became an activation
+    request nothing could answer, bouncing the Dock icon until macOS called
+    litman unresponsive. So the fallback re-launches itself as a detached
+    child with the marker stripped and lets this process exit: Launch
+    Services sees an app that started and finished (every double-click runs
+    the stub afresh), while the child serves the browser window as a plain
+    process. The stripped marker is also the recursion gate — a child that
+    falls back again finds no marker and serves in place.
+
+    Returns True when the launch was handed off (the caller just returns).
+    False keeps the launch here: a terminal launch has no identity to shed,
+    and a child that cannot be spawned is no reason to serve nothing —
+    running with the residual identity risk beats not running.
+    """
+    if not os.environ.get(_DARWIN_APP_LAUNCH_ENV):
+        return False
+    env = dict(os.environ)
+    env.pop(_DARWIN_APP_LAUNCH_ENV, None)
+    try:
+        # Fixed argv, because the marker only ever comes from the stub and
+        # this is the stub's exact launch shape (no --library/--port to lose).
+        subprocess.Popen(
+            [_resolve_lit_executable(), "gui", "--window"],
+            env=env,
+            start_new_session=True,
+        )
+    except (OSError, LitmanError):
+        return False
+    return True
 
 
 def _windows_desktop_dir() -> Path:
@@ -878,11 +963,6 @@ def _windows_desktop_dir() -> Path:
     return Path(userprofile) / "Desktop"
 
 
-# Monkeypatchable for tests: pretending to be darwin on another OS must not
-# probe (or worse, write) the test host's real /Applications.
-_DARWIN_SYSTEM_APPS = Path("/Applications")
-
-
 def _darwin_bundle_locations() -> tuple[Path, Path]:
     """The (system, user) homes for litman.app, in preference order.
 
@@ -902,13 +982,15 @@ def _is_litman_bundle(bundle: Path) -> bool:
 
     ``/Applications`` is shared territory: nothing there is removed,
     rewritten or migrated away from unless its Info.plist says litman.
-    Every bundle this code ever wrote carries the identifier.
+    Every bundle this code ever wrote carries the identifier as literal
+    ASCII text, so probing bytes is enough — and a foreign bundle's plist
+    is usually binary (Xcode's default), which a text read would die on.
     """
     try:
-        plist = (bundle / "Contents" / "Info.plist").read_text(encoding="utf-8")
+        plist = (bundle / "Contents" / "Info.plist").read_bytes()
     except OSError:
         return False
-    return "io.github.litman" in plist
+    return b"io.github.litman" in plist
 
 
 def _dir_accepts_writes(directory: Path) -> bool:
@@ -935,8 +1017,9 @@ def shortcut_path() -> Path:
     creates it, and a fresh install is meant to be started by double-clicking
     it, not by running ``lit setup``. macOS prefers ``/Applications`` (see
     :func:`_darwin_bundle_locations`), falling back to ``~/Applications``
-    when it cannot write there — but an existing install in either home wins
-    over preference, because uninstall's removal preview and setup's
+    when it cannot write there or when a foreign litman.app holds the slot —
+    but an existing install of ours in either home wins over preference,
+    because uninstall's removal preview and setup's
     skip-this-step probe both ask this function where the shortcut *is*, and
     answering with the preferred home would silently overlook the other.
     Linux uses the applications menu (a ``.desktop`` file on the Desktop
@@ -949,6 +1032,12 @@ def shortcut_path() -> Path:
         for bundle in (system, user):
             if bundle.exists() and _is_litman_bundle(bundle):
                 return bundle
+        # The system slot held by a foreign litman.app is not ours to answer
+        # with: uninstall would preview a stranger's app for deletion, and
+        # setup would call the step done and never create anything. The user
+        # home takes over — the same verdict _create_shortcut_darwin reaches.
+        if system.exists():
+            return user
         return system if _dir_accepts_writes(_DARWIN_SYSTEM_APPS) else user
     data_home = os.environ.get("XDG_DATA_HOME") or str(
         Path.home() / ".local" / "share"
@@ -1039,7 +1128,10 @@ def remove_shortcut() -> Path | None:
         for bundle in _darwin_bundle_locations():
             if bundle.exists() and _is_litman_bundle(bundle):
                 shutil.rmtree(bundle, ignore_errors=True)
-                if removed is None:
+                # Re-check rather than trust the call (the same verdict
+                # remove_browser_profile reaches): reporting a bundle gone
+                # while it still launches is worse than admitting the miss.
+                if removed is None and not bundle.exists():
                     removed = bundle
         return removed
     target = shortcut_path()
@@ -1130,38 +1222,32 @@ _DARWIN_LOG_DIR = "$HOME/Library/Logs/litman"
 # up. The console-less Windows launcher keeps litw.log for the same reason.
 # Truncated per launch rather than appended, so it never grows.
 #
-# The else branch is the fallback, and it is load-bearing: a redirection onto a
-# path the shell cannot open aborts the script, which would turn an unwritable
-# log directory into an app that does not start at all. The log is a diagnostic;
-# it never gets a vote on whether litman runs.
+# The bare `exec` on the last line is the fallback, and it is load-bearing: a
+# redirection onto a path the shell cannot open aborts the script, which would
+# turn an unwritable log directory into an app that does not start at all. The
+# log is a diagnostic; it never gets a vote on whether litman runs.
 #
-# Backgrounded, then `exit 0` — never `exec`. Launch Services identifies a
-# running app by the process it started from the bundle, and `exec` made that
-# process the long-lived server. Registered as type="Foreground" with no window
-# server connection (both confirmed via `lsappinfo` on macOS 26.5), litman was
-# an app the system believed had windows it could raise. It had none, and a
-# second double-click was routed to that process as an activation request
-# nothing there could answer — so the Dock icon bounced until macOS declared
-# litman unresponsive. The stub could not have helped: a second launch never
-# re-runs it.
+# `exec` itself is load-bearing too: Launch Services identifies the running
+# app by the process it started from the bundle, so exec hands litman.app's
+# identity to the server process — which is what lets the WKWebView window
+# that process opens wear litman's Dock tile (see _mac_shell). Identity
+# without a window once deadlocked second launches (an activation request
+# arrived at a process that could answer nothing); now the process really
+# owns a window and an event loop, so a reopen has somewhere to land.
 #
-# Letting the stub exit takes the bundle out of that role. Launch Services sees
-# an app that started and finished, so every double-click runs the stub afresh —
-# which is what the Windows shortcut has always done, and why a second instance
-# is survivable there (the port finder steps to the next free port).
-#
-# The cost is that litman no longer shows up in Force Quit. So does the hang it
-# would have been needed for, and closing the window still stops the server
-# through the presence gate.
-_DARWIN_STUB = """\
+# Both exec lines carry _DARWIN_APP_LAUNCH_ENV (an assignment prefix rides
+# into the exec'd program's environment), so the launched process knows it
+# wears the bundle's identity. That matters exactly once: a browser-route
+# fallback must not keep that identity on a windowless server (see
+# _shed_darwin_app_identity) — and a terminal launch, which never comes
+# through here, must not shed one it never had.
+_DARWIN_STUB = f"""\
 #!/bin/sh
-LOG_DIR="{log_dir}"
+LOG_DIR="{{log_dir}}"
 if mkdir -p "$LOG_DIR" 2>/dev/null && : >"$LOG_DIR/litman.log" 2>/dev/null; then
-    "{lit}" gui --window >"$LOG_DIR/litman.log" 2>&1 &
-else
-    "{lit}" gui --window &
+    {_DARWIN_APP_LAUNCH_ENV}=1 exec "{{lit}}" gui --window >"$LOG_DIR/litman.log" 2>&1
 fi
-exit 0
+{_DARWIN_APP_LAUNCH_ENV}=1 exec "{{lit}}" gui --window
 """
 
 
@@ -1169,8 +1255,8 @@ def _install_darwin_icon(target: Path) -> str | None:
     """Copy the bundled ``.icns`` into ``target``. Returns the name, or None.
 
     Without ``CFBundleIconFile`` and this file beside it, the Dock and
-    Launchpad draw the generic executable tile — which is what every macOS
-    install through 1.3.3 got. The artwork is the same mark the Windows
+    Launchpad draw the generic executable tile — which is what earlier
+    installs got. The artwork is the same mark the Windows
     ``.ico`` carries, inset to Apple's icon grid (the rounded body is 824 of
     1024) so it does not sit visibly larger than its neighbours in the Dock.
 
@@ -1249,7 +1335,7 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
     "--window",
     is_flag=True,
     help=(
-        "Open in a Chrome/Edge app window (no address bar) instead of a "
+        "Open in a standalone app window (no address bar) instead of a "
         "browser tab."
     ),
 )
@@ -1411,6 +1497,38 @@ def gui_cmd(
         # its manual hint instead of arming a restart that cannot work.
         pass
 
+    # macOS --window: prefer a window this process owns. The Dock badges a
+    # window with the owning process's bundle, so a WKWebView here wears
+    # litman's own face (the .app stub exec'd us) where the Chromium --app
+    # window wore the browser's — and no browser needs to be installed at
+    # all. Anything short of a working pywebview falls back to the Chromium
+    # route below, byte-for-byte the launch it always was.
+    if window and sys.platform == "darwin":
+        try:
+            shell = _load_mac_shell()
+        except Exception:
+            # Belt and braces: the seam already swallows its own failures —
+            # this catch only survives a broken (or test-patched) seam
+            # object itself.
+            shell = None
+        if shell is not None:
+            console.print("[dim]Close the window to stop the server.[/]")
+            from litman.commands import _mac_shell
+
+            if _mac_shell.run_shell(shell, server, url, app.state.presence):
+                return
+            # False: the window layer failed before the server ever ran, so
+            # the launch is still ours to make good on below.
+        if _shed_darwin_app_identity():
+            console.print(
+                "[dim]Native window unavailable; relaunching in the "
+                "browser.[/]"
+            )
+            return
+        console.print(
+            "[dim]Native window unavailable; falling back to the browser.[/]"
+        )
+
     # Signals the readiness poller to stand down: set in `finally` so a server
     # that raised before it ever listened never gets a browser opened onto it.
     stop_event = threading.Event()
@@ -1521,8 +1639,11 @@ def gui_cmd(
                 _start_watcher(None)
                 return
             owned.append(proc)
-            _brand_windows_taskbar(stop_event)
+            # Watcher first: closing the window must always stop the server,
+            # and the brander is cosmetics — it never gets to stand in front
+            # of the lifeline.
             _start_watcher(proc)
+            _brand_windows_taskbar(stop_event)
 
         def _after_open() -> None:
             # Splash hand-off: only a real app window has a page that will hold

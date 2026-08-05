@@ -300,11 +300,18 @@ export default function DirectoryPicker({
               </button>
             ))}
             {drives.length > 0 && (
-              <div className={DRIVE_TRACK}>
+              // role="group" + aria-current, not radiogroup/radio: these are
+              // plain one-click buttons without the roving arrow-key focus a
+              // radio group promises, and aria-current is exactly "the item
+              // in this set that reflects where you are".
+              <div className={DRIVE_TRACK} role="group" aria-label="Drives">
                 {drives.map((d) => (
                   <button
                     key={d.path}
                     type="button"
+                    aria-current={
+                      d.label.toUpperCase() === currentDrive ? 'true' : undefined
+                    }
                     onClick={() => go(d.path)}
                     className={`${DRIVE} ${
                       d.label.toUpperCase() === currentDrive
