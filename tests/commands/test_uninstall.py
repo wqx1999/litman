@@ -13,6 +13,7 @@ tests do not seed.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -575,6 +576,35 @@ def test_remove_shortcut_darwin_sweeps_both_bundle_homes(
 
     assert removed == system_bundle
     assert not system_bundle.exists()
+    assert not user_bundle.exists()
+
+
+def test_remove_shortcut_darwin_reports_only_what_actually_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ignore_errors=True`` swallows a failed delete (a running bundle on a
+    locked volume, a permission flip) — the return value must come from a
+    re-check of the filesystem, not from having made the call."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr("litman.commands.gui._DARWIN_SYSTEM_APPS", system_apps)
+    system_bundle = _seed_bundle(system_apps)
+    user_bundle = _seed_bundle(tmp_path / "Applications")
+
+    real_rmtree = shutil.rmtree
+
+    def sparing_the_system_bundle(path, ignore_errors=False, **kwargs):
+        if Path(path) == system_bundle:
+            return  # the silent failure ignore_errors=True turns into
+        real_rmtree(path, ignore_errors=ignore_errors, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", sparing_the_system_bundle)
+
+    removed = remove_shortcut()
+
+    assert removed == user_bundle
+    assert system_bundle.exists()
     assert not user_bundle.exists()
 
 

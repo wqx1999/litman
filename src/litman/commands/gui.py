@@ -859,8 +859,13 @@ def _brand_windows_taskbar(stop_event: threading.Event) -> threading.Thread | No
         except Exception:
             pass
 
-    thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
-    thread.start()
+    # The worker swallows its own failures, but running out of threads fails
+    # the start() itself — same best-effort verdict: no icon, never no window.
+    try:
+        thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
+        thread.start()
+    except Exception:
+        return None
     return thread
 
 
@@ -976,13 +981,15 @@ def _is_litman_bundle(bundle: Path) -> bool:
 
     ``/Applications`` is shared territory: nothing there is removed,
     rewritten or migrated away from unless its Info.plist says litman.
-    Every bundle this code ever wrote carries the identifier.
+    Every bundle this code ever wrote carries the identifier as literal
+    ASCII text, so probing bytes is enough — and a foreign bundle's plist
+    is usually binary (Xcode's default), which a text read would die on.
     """
     try:
-        plist = (bundle / "Contents" / "Info.plist").read_text(encoding="utf-8")
+        plist = (bundle / "Contents" / "Info.plist").read_bytes()
     except OSError:
         return False
-    return "io.github.litman" in plist
+    return b"io.github.litman" in plist
 
 
 def _dir_accepts_writes(directory: Path) -> bool:
@@ -1009,8 +1016,9 @@ def shortcut_path() -> Path:
     creates it, and a fresh install is meant to be started by double-clicking
     it, not by running ``lit setup``. macOS prefers ``/Applications`` (see
     :func:`_darwin_bundle_locations`), falling back to ``~/Applications``
-    when it cannot write there — but an existing install in either home wins
-    over preference, because uninstall's removal preview and setup's
+    when it cannot write there or when a foreign litman.app holds the slot —
+    but an existing install of ours in either home wins over preference,
+    because uninstall's removal preview and setup's
     skip-this-step probe both ask this function where the shortcut *is*, and
     answering with the preferred home would silently overlook the other.
     Linux uses the applications menu (a ``.desktop`` file on the Desktop
@@ -1023,6 +1031,12 @@ def shortcut_path() -> Path:
         for bundle in (system, user):
             if bundle.exists() and _is_litman_bundle(bundle):
                 return bundle
+        # The system slot held by a foreign litman.app is not ours to answer
+        # with: uninstall would preview a stranger's app for deletion, and
+        # setup would call the step done and never create anything. The user
+        # home takes over — the same verdict _create_shortcut_darwin reaches.
+        if system.exists():
+            return user
         return system if _dir_accepts_writes(_DARWIN_SYSTEM_APPS) else user
     data_home = os.environ.get("XDG_DATA_HOME") or str(
         Path.home() / ".local" / "share"
@@ -1113,7 +1127,10 @@ def remove_shortcut() -> Path | None:
         for bundle in _darwin_bundle_locations():
             if bundle.exists() and _is_litman_bundle(bundle):
                 shutil.rmtree(bundle, ignore_errors=True)
-                if removed is None:
+                # Re-check rather than trust the call (the same verdict
+                # remove_browser_profile reaches): reporting a bundle gone
+                # while it still launches is worse than admitting the miss.
+                if removed is None and not bundle.exists():
                     removed = bundle
         return removed
     target = shortcut_path()
@@ -1237,8 +1254,8 @@ def _install_darwin_icon(target: Path) -> str | None:
     """Copy the bundled ``.icns`` into ``target``. Returns the name, or None.
 
     Without ``CFBundleIconFile`` and this file beside it, the Dock and
-    Launchpad draw the generic executable tile — which is what every macOS
-    install through 1.3.3 got. The artwork is the same mark the Windows
+    Launchpad draw the generic executable tile — which is what earlier
+    installs got. The artwork is the same mark the Windows
     ``.ico`` carries, inset to Apple's icon grid (the rounded body is 824 of
     1024) so it does not sit visibly larger than its neighbours in the Dock.
 
@@ -1621,8 +1638,11 @@ def gui_cmd(
                 _start_watcher(None)
                 return
             owned.append(proc)
-            _brand_windows_taskbar(stop_event)
+            # Watcher first: closing the window must always stop the server,
+            # and the brander is cosmetics — it never gets to stand in front
+            # of the lifeline.
             _start_watcher(proc)
+            _brand_windows_taskbar(stop_event)
 
         def _after_open() -> None:
             # Splash hand-off: only a real app window has a page that will hold

@@ -15,6 +15,7 @@ import functools
 import importlib
 import io
 import os
+import plistlib
 import re
 import shutil
 import socket
@@ -1686,7 +1687,7 @@ def test_make_shortcut_darwin_bundle_carries_the_icon(
 ) -> None:
     # Without both halves — the .icns inside Resources AND the plist key
     # naming it — the Dock and Launchpad draw the generic executable tile,
-    # which is what every macOS install through 1.3.3 got.
+    # which is what earlier installs got.
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
@@ -1821,6 +1822,81 @@ def test_make_shortcut_darwin_leaves_a_foreign_bundle_alone(
     )
     assert not (system_apps / "litman.app" / "Contents" / "MacOS").exists()
     assert "Finder" not in result.output
+
+
+def _seed_binary_plist_bundle(system_apps: Path) -> Path:
+    """A foreign litman.app whose Info.plist is binary — Xcode's default, so
+    the realistic foreign bundle. Returns the plist path."""
+    foreign_plist = system_apps / "litman.app" / "Contents" / "Info.plist"
+    foreign_plist.parent.mkdir(parents=True)
+    with foreign_plist.open("wb") as fh:
+        plistlib.dump(
+            {"CFBundleIdentifier": "com.example.imposter"},
+            fh,
+            fmt=plistlib.FMT_BINARY,
+        )
+    # The fixture must reproduce the crash input: a binary plist a text read
+    # dies on (UnicodeDecodeError is a ValueError, which no OSError guard
+    # catches), or this test proves nothing.
+    with pytest.raises(UnicodeDecodeError):
+        foreign_plist.read_text(encoding="utf-8")
+    return foreign_plist
+
+
+def test_make_shortcut_darwin_survives_a_binary_plist_foreign_bundle(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Same verdict as the text-plist imposter above — not ours, not touched,
+    # user home takes over — but the probe must reach it without crashing on
+    # bytes it cannot decode.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = _seed_binary_plist_bundle(system_apps)
+    original = foreign_plist.read_bytes()
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    stub = tmp_path / "Applications" / "litman.app" / "Contents" / "MacOS" / "litman"
+    assert stub.is_file()
+    assert foreign_plist.read_bytes() == original
+    assert not (system_apps / "litman.app" / "Contents" / "MacOS").exists()
+
+
+def test_remove_shortcut_darwin_spares_a_binary_plist_foreign_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    # Uninstall sweeps both bundle homes; the binary-plist stranger must
+    # neither crash the sweep nor be taken down by it.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = _seed_binary_plist_bundle(system_apps)
+
+    assert gui.remove_shortcut() is None
+    assert foreign_plist.exists()
+
+
+def test_shortcut_path_darwin_never_answers_with_a_foreign_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    # The occupied-slot fallback: /Applications takes writes but a stranger's
+    # litman.app sits on the path. Answering with it would put that app in
+    # uninstall's removal preview and make setup call the step already done —
+    # the user home is the only honest answer (where _create_shortcut_darwin
+    # would install too).
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = system_apps / "litman.app" / "Contents" / "Info.plist"
+    foreign_plist.parent.mkdir(parents=True)
+    foreign_plist.write_text("<string>com.example.imposter</string>", encoding="utf-8")
+
+    assert shortcut_path() == tmp_path / "Applications" / "litman.app"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX /bin/sh")
