@@ -36,5 +36,11 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
 
-      - name: Test
-        run: pytest -q
+      # tests/bench drives the benchmark harness against real papers, and
+      # .gitignore keeps those PDFs out of the repo on copyright grounds. A
+      # fresh checkout therefore cannot have them, so the bench suite fails
+      # here for a reason that says nothing about the code under test. The
+      # exclusion is named in the step title so every run declares what it
+      # did not cover.
+      - name: Test (excludes tests/bench — its fixture PDFs cannot be committed)
+        run: pytest -q --ignore=tests/bench
