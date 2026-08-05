@@ -53,6 +53,15 @@ from litman.core.presence import PresenceTracker
 from litman.core import locking
 
 
+# The REAL host, captured at import — before any test can fake it. Half this
+# file runs under ``monkeypatch.setattr(sys, "platform", ...)``, so reading
+# ``sys.platform`` inside a test body answers the fake, not the box the paths
+# actually come from. Anything below that has to know where pathlib is really
+# standing must use this, never sys.platform. (``@pytest.mark.skipif`` is
+# fine either way: marks are evaluated at collection, before fixtures run.)
+_REAL_WIN32 = sys.platform == "win32"
+
+
 def _slashed(p: str) -> str:
     """``p`` with forward slashes, so a path assertion reads the same anywhere.
 
@@ -71,8 +80,12 @@ def _host_abs(posix_path: str) -> str:
     ``sys.platform`` has been set to. On Windows a leading slash is
     drive-relative, so a ``/opt/...`` stub comes back as ``D:\\opt\\...`` and
     no literal can match it. Anchoring at ``C:`` keeps the round-trip exact.
+
+    ``_REAL_WIN32``, not ``sys.platform``: every caller below runs inside a
+    faked-darwin test, so reading the live value here answered "darwin" on a
+    Windows box and handed back the POSIX literal again.
     """
-    if sys.platform == "win32":
+    if _REAL_WIN32:
         return str(Path("C:/" + posix_path.lstrip("/")).resolve())
     return posix_path
 
@@ -1755,10 +1768,11 @@ def test_make_shortcut_darwin_builds_app_bundle(
     app = tmp_path / "Applications" / "litman.app"
     stub = app / "Contents" / "MacOS" / "litman"
     assert stub.is_file()
-    if sys.platform != "win32":
+    if not _REAL_WIN32:
         # NTFS has no exec bit — chmod cannot set it and stat never reports
         # it — so this half is asserted on the arm that can hold it. Every
-        # other assertion in this test still runs on Windows.
+        # other assertion in this test still runs on Windows. Keyed on the
+        # real host: this test fakes darwin, so sys.platform lies here.
         assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
     stub_text = stub.read_text(encoding="utf-8")
     # Marked and exec'd: the env prefix tells the launched process it wears
