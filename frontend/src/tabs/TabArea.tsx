@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Tab } from '../types'
 import PdfView from '../pdf/PdfView'
@@ -45,6 +45,9 @@ const DRAG_THRESHOLD = 4
 /** Strip-edge band (px) that auto-scrolls the overflowing strip mid-drag. */
 const EDGE_BAND = 24
 const EDGE_SCROLL_STEP = 8
+/** How long a displaced tab takes to slide into its new slot, and how long the
+ * carried tab takes to settle on release. */
+const SLIDE_MS = 160
 
 export default function TabArea({
   tabs,
@@ -85,9 +88,11 @@ export default function TabArea({
     el: HTMLElement
     startX: number
     lastX: number
+    /** Where inside the tab the press landed, so it stays under the cursor. */
+    grabDX: number
     started: boolean
   } | null>(null)
-  // Visual-only mirror of dragRef.started (dims the dragged tab).
+  // Visual-only mirror of dragRef.started (lifts the dragged tab).
   const [dragKey, setDragKey] = useState<string | null>(null)
   // Eat the click that follows a completed drag (cleared on the next tick —
   // engines differ on whether that click even reaches the label button).
@@ -95,6 +100,35 @@ export default function TabArea({
   // Edge auto-scroll: direction (-1/0/+1) + the live rAF loop id.
   const scrollDirRef = useRef(0)
   const rafRef = useRef(0)
+  // Layout x of every tab captured JUST BEFORE a reorder, so the slide
+  // animation below knows where each one came from (FLIP).
+  const prevSlotsRef = useRef<Map<string, number> | null>(null)
+
+  // Layout position of a tab, in viewport x. Read off offsetLeft rather than
+  // getBoundingClientRect BECAUSE the drag and the slide animation both paint
+  // transforms on these elements: a rect would report where a tab currently
+  // LOOKS, and both the swap test and the FLIP measurement need where it
+  // actually SITS. offsetLeft is layout-only, so transforms cannot skew it.
+  const slotLeft = (el: HTMLElement, strip: HTMLElement, stripLeft: number) =>
+    stripLeft - strip.scrollLeft + (el.offsetLeft - strip.offsetLeft)
+
+  // Put the dragged tab under the cursor. Re-derived from its CURRENT slot on
+  // every call, so a reorder or an auto-scroll step never makes it jump: the
+  // slot moved, the offset shrinks by the same amount, the pixels stay put.
+  const paintDrag = (clientX: number) => {
+    const drag = dragRef.current
+    const strip = stripRef.current
+    if (!drag || !drag.started || !strip) return
+    const r = strip.getBoundingClientRect()
+    const home = slotLeft(drag.el, strip, r.left)
+    const wanted = clientX - drag.grabDX
+    // Keep it inside the strip: the strip clips, so an unclamped tab would
+    // slide out of sight instead of pinning at the edge like a browser's.
+    const tx =
+      Math.max(r.left, Math.min(r.right - drag.el.offsetWidth, wanted)) - home
+    drag.el.style.transition = 'none'
+    drag.el.style.transform = `translateX(${tx}px)`
+  }
 
   // The swap check reads `tabs`/`onReorder` from the CURRENT render (a ref
   // reassigned every render, App.tsx's mdDraftsRef idiom) so the rAF loop and
@@ -107,17 +141,57 @@ export default function TabArea({
     const els = Array.from(strip.querySelectorAll<HTMLElement>('[data-tabkey]'))
     const from = tabs.findIndex((t) => t.key === drag.key)
     if (from === -1 || els.length !== tabs.length) return
+    const stripLeft = strip.getBoundingClientRect().left
     // Insertion index = how many OTHER tabs sit with their midpoint left of the
-    // pointer. Stable at boundaries: after a swap the two thresholds differ by
-    // the dragged tab's own width, a built-in hysteresis (no flapping).
+    // dragged tab's own leading edge. Stable at boundaries: after a swap the
+    // two thresholds differ by a tab's width, a built-in hysteresis.
+    const lead = x - drag.grabDX + drag.el.offsetWidth / 2
     let to = 0
     els.forEach((el, i) => {
       if (i === from) return
-      const r = el.getBoundingClientRect()
-      if (r.left + r.width / 2 < x) to++
+      if (slotLeft(el, strip, stripLeft) + el.offsetWidth / 2 < lead) to++
     })
-    if (to !== from) onReorder(from, to)
+    if (to === from) return
+    const slots = new Map<string, number>()
+    for (const el of els) slots.set(el.dataset.tabkey!, el.offsetLeft)
+    prevSlotsRef.current = slots
+    onReorder(from, to)
   }
+
+  // FLIP: a reorder relocates tabs instantly, so put each displaced one back
+  // where it was and let it transition home. Without this the swap is a jump
+  // cut and the drag reads as "nothing is happening, then everything moved".
+  // Runs before paint, so the inverted position is never seen.
+  useLayoutEffect(() => {
+    const prev = prevSlotsRef.current
+    prevSlotsRef.current = null
+    const strip = stripRef.current
+    if (!prev || !strip) return
+    const dragged = dragRef.current?.key
+    const moved: HTMLElement[] = []
+    for (const el of strip.querySelectorAll<HTMLElement>('[data-tabkey]')) {
+      const key = el.dataset.tabkey!
+      if (key === dragged) continue
+      const before = prev.get(key)
+      if (before === undefined) continue
+      const delta = before - el.offsetLeft
+      if (Math.abs(delta) < 1) continue
+      el.style.transition = 'none'
+      el.style.transform = `translateX(${delta}px)`
+      moved.push(el)
+    }
+    // The dragged tab's slot just changed under it — re-pin it to the cursor in
+    // this same frame, or it flashes one frame at the old offset.
+    if (dragRef.current) paintDrag(dragRef.current.lastX)
+    if (moved.length === 0) return
+    const id = requestAnimationFrame(() => {
+      for (const el of moved) {
+        el.style.transition = `transform ${SLIDE_MS}ms cubic-bezier(0.2, 0, 0, 1)`
+        el.style.transform = ''
+      }
+    })
+    return () => cancelAnimationFrame(id)
+  }, [tabs])
 
   const stopAutoScroll = () => {
     scrollDirRef.current = 0
@@ -134,6 +208,14 @@ export default function TabArea({
       } catch {
         /* already released */
       }
+      // Settle into the slot instead of snapping — the tab is mid-air, and a
+      // teleport on release undoes the "I am carrying this" impression.
+      const el = drag.el
+      el.style.transition = `transform ${SLIDE_MS}ms cubic-bezier(0.2, 0, 0, 1)`
+      el.style.transform = ''
+      window.setTimeout(() => {
+        el.style.transition = ''
+      }, SLIDE_MS + 40)
       suppressClickRef.current = true
       setTimeout(() => {
         suppressClickRef.current = false
@@ -160,6 +242,7 @@ export default function TabArea({
       drag.el.setPointerCapture(drag.pointerId)
       setDragKey(drag.key)
     }
+    paintDrag(e.clientX)
     swapCheckRef.current(e.clientX)
     // Near a strip edge, run an rAF scroll loop so a tab can travel beyond the
     // visible region (the crowded strip is the whole point of reordering).
@@ -179,8 +262,9 @@ export default function TabArea({
               return
             }
             s.scrollLeft += scrollDirRef.current * EDGE_SCROLL_STEP
-            // Tabs slide under a stationary pointer while we scroll; re-run
-            // the swap check so the order tracks without a wiggle.
+            // Tabs slide under a stationary pointer while we scroll; re-pin the
+            // carried tab and re-run the swap check so the order tracks.
+            paintDrag(d.lastX)
             swapCheckRef.current(d.lastX)
             rafRef.current = requestAnimationFrame(tick)
           }
@@ -236,6 +320,7 @@ export default function TabArea({
         )}
         {tabs.map((t) => {
           const isActive = t.key === activeKey
+          const isDragging = dragKey === t.key
           return (
             <div
               key={t.key}
@@ -250,14 +335,22 @@ export default function TabArea({
                   el: e.currentTarget,
                   startX: e.clientX,
                   lastX: e.clientX,
+                  grabDX: e.clientX - e.currentTarget.getBoundingClientRect().left,
                   started: false,
                 }
               }}
-              className={`group flex shrink-0 animate-grow-in items-center gap-2 rounded-t-lg border border-b-0 px-3 py-1.5 text-sm transition-colors ${
-                isActive
-                  ? 'border-stone-200 bg-white text-stone-900'
-                  : 'border-transparent text-stone-500 hover:bg-stone-200/70'
-              } ${dragKey === t.key ? 'opacity-70' : ''}`}
+              // A carried tab reads as picked UP, not merely marked: it goes
+              // white and casts a shadow over its neighbours (the strip clips,
+              // so the lift is horizontal — a raised tab would be cut off).
+              // transition-colors is dropped while carried, since the transform
+              // is written per frame and must not be animated.
+              className={`group flex shrink-0 animate-grow-in items-center gap-2 rounded-t-lg border border-b-0 px-3 py-1.5 text-sm ${
+                isDragging
+                  ? 'relative z-10 cursor-grabbing border-stone-300 bg-white text-stone-900 shadow-lg shadow-stone-900/20'
+                  : isActive
+                    ? 'border-stone-200 bg-white text-stone-900 transition-colors'
+                    : 'border-transparent text-stone-500 transition-colors hover:bg-stone-200/70'
+              }`}
             >
               <button
                 onClick={() => {
