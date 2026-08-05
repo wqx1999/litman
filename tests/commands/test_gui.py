@@ -1664,9 +1664,18 @@ def test_make_shortcut_darwin_builds_app_bundle(
     stub = app / "Contents" / "MacOS" / "litman"
     assert stub.is_file()
     assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
+    stub_text = stub.read_text(encoding="utf-8")
+    # Marked and exec'd: the env prefix tells the launched process it wears
+    # the bundle's identity; exec is what hands that identity over.
     assert (
-        f'exec "{fake_lit_on_path}" gui --window'
-        in stub.read_text(encoding="utf-8")
+        f'LITMAN_DARWIN_APP_LAUNCH=1 exec "{fake_lit_on_path}" gui --window'
+        in stub_text
+    )
+    # Every exec line carries the marker — the no-log fallback line included.
+    assert (
+        stub_text.count("exec ")
+        == stub_text.count("LITMAN_DARWIN_APP_LAUNCH=1 exec ")
+        == 2
     )
     plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
     assert "CFBundleExecutable" in plist
@@ -1823,7 +1832,16 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
     # log is the only evidence a failed launch ever leaves; and a log that
     # cannot be opened must cost the diagnostic, never the launch itself.
     lit = tmp_path / "fake lit"  # space: the quoting is what is under test
-    lit.write_text('#!/bin/sh\necho "argv: $*"\necho oops >&2\n', encoding="utf-8")
+    # The mark line proves the assignment prefix really rides into the
+    # exec'd program's environment — on both stub branches: the logged one
+    # here and the no-log fallback below.
+    lit.write_text(
+        "#!/bin/sh\n"
+        'echo "argv: $*"\n'
+        'echo "mark: ${LITMAN_DARWIN_APP_LAUNCH:-unset}"\n'
+        "echo oops >&2\n",
+        encoding="utf-8",
+    )
     lit.chmod(0o755)
     stub = tmp_path / "stub.sh"
     stub.write_text(
@@ -1842,7 +1860,7 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
     assert done.returncode == 0
     assert done.stdout == "", "a logged launch must print nothing to the console"
     log = home / "Library" / "Logs" / "litman" / "litman.log"
-    assert log.read_text(encoding="utf-8") == "argv: gui --window\noops\n"
+    assert log.read_text(encoding="utf-8") == "argv: gui --window\nmark: 1\noops\n"
 
     # Second run truncates: the log records the last launch, it does not grow.
     subprocess.run(
@@ -1853,8 +1871,8 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
     )
     assert log.read_text(encoding="utf-8").count("argv:") == 1
 
-    # A home the log cannot be created under: same launch, output falls back
-    # to the console instead of taking the app down with it.
+    # A home the log cannot be created under: same launch (marker included),
+    # output falls back to the console instead of taking the app down with it.
     blocked = tmp_path / "blocked"
     blocked.write_text("not a directory", encoding="utf-8")
     done = subprocess.run(
@@ -1864,7 +1882,7 @@ def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
         text=True,
     )
     assert done.returncode == 0
-    assert done.stdout == "argv: gui --window\n"
+    assert done.stdout == "argv: gui --window\nmark: 1\n"
 
 
 # ---------------------------------------------------------------------------
@@ -2323,6 +2341,9 @@ def test_gui_window_darwin_selects_the_native_shell(
     # in-app update.
     opened, procs = gui_harness
     vault, _pid = vault_with_paper
+    # A bundle launch that succeeds natively must never respawn itself: the
+    # `procs == []` below covers the marker path too.
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
     monkeypatch.setattr(
         shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
     )
@@ -2398,9 +2419,11 @@ def test_gui_window_darwin_shell_failure_falls_back_to_the_browser_unchanged(
     # the Chromium route runs byte-for-byte as it always did, announced by
     # one dim line. The break is planted below gui's own seam (in
     # load_webview), so the catch inside the real _load_mac_shell is what
-    # this drives — not the belt-and-braces try around it.
+    # this drives — not the belt-and-braces try around it. No app-launch
+    # marker: this is the terminal shape, which serves in place.
     opened, procs = gui_harness
     vault, _pid = vault_with_paper
+    monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: None)
     binary = (
@@ -2450,6 +2473,7 @@ def test_gui_window_darwin_window_layer_failure_falls_back_to_the_browser(
     # server runs under the browser route.
     opened, procs = gui_harness
     vault, _pid = vault_with_paper
+    monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
     monkeypatch.setattr(gui, "_load_mac_shell", lambda: object())
     monkeypatch.setattr(_mac_shell, "run_shell", lambda *a, **k: False)
     monkeypatch.setattr(
@@ -2465,6 +2489,159 @@ def test_gui_window_darwin_window_layer_failure_falls_back_to_the_browser(
     (proc,) = procs
     assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
     assert opened == []
+
+
+def test_shed_darwin_app_identity_without_marker_is_a_noop(monkeypatch) -> None:
+    # A terminal launch has no bundle identity to shed: no marker, no spawn.
+    monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("no marker means no respawn")
+
+    monkeypatch.setattr(subprocess, "Popen", _boom)
+    assert gui._shed_darwin_app_identity() is False
+
+
+def test_shed_darwin_app_identity_survives_an_unresolvable_lit(
+    monkeypatch,
+) -> None:
+    # No `lit` to respawn is no reason to serve nothing: report False so the
+    # caller serves in place with the residual identity risk.
+    from litman.exceptions import LitmanError
+
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+
+    def _no_lit():
+        raise LitmanError("no lit anywhere")
+
+    monkeypatch.setattr(gui, "_resolve_lit_executable", _no_lit)
+    assert gui._shed_darwin_app_identity() is False
+
+
+def test_gui_window_darwin_bundle_fallback_respawns_without_identity(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # M3 plan B: a bundle launch (stub marker in env) whose native shell is
+    # unavailable must not serve a browser window while wearing litman.app's
+    # identity — that is the double-click deadlock shape. It hands the launch
+    # to a detached, marker-stripped child and exits.
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+    )
+    spawned: list[tuple[list, dict]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda argv, **kw: (spawned.append((list(argv), kw)), _FakeProc(argv))[1],
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    ((argv, kwargs),) = spawned
+    assert argv == ["/opt/bin/lit", "gui", "--window"]
+    assert kwargs["start_new_session"] is True
+    # The stripped marker is the recursion gate: the child, falling back
+    # again, serves in place.
+    assert "LITMAN_DARWIN_APP_LAUNCH" not in kwargs["env"]
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran is False  # the parent serves nothing...
+    assert opened == []  # ...and opens nothing
+    assert "relaunching in the browser" in result.output
+    assert "falling back to the browser" not in result.output
+
+
+def test_gui_window_darwin_bundle_fallback_after_window_failure_respawns(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # Same hand-off from the other fallback door: pywebview loaded but the
+    # window layer failed before the server ran (run_shell → False).
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: object())
+    monkeypatch.setattr(_mac_shell, "run_shell", lambda *a, **k: False)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+    )
+    spawned: list[tuple[list, dict]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda argv, **kw: (spawned.append((list(argv), kw)), _FakeProc(argv))[1],
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    ((argv, kwargs),) = spawned
+    assert argv == ["/opt/bin/lit", "gui", "--window"]
+    assert kwargs["start_new_session"] is True
+    assert "LITMAN_DARWIN_APP_LAUNCH" not in kwargs["env"]
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran is False
+    assert opened == []
+
+
+def test_gui_window_darwin_respawn_failure_serves_in_place(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # The child could not be spawned: serving with the residual identity
+    # risk beats serving nothing, so the launch stays here and takes the
+    # ordinary in-place browser route.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/opt/bin/lit" if name == "lit" else None
+    )
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+
+    def _popen(argv, **kw):
+        if list(argv)[1:3] == ["gui", "--window"]:  # the respawn attempt
+            raise OSError("spawn failed")
+        proc = _FakeProc(argv)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert "falling back to the browser" in result.output
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran  # the launch stayed here and served
+    (proc,) = procs
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert opened == []
+
+
+def test_gui_window_off_darwin_never_reads_the_app_launch_marker(
+    monkeypatch, gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # The marker is a darwin-bundle contract; on any other platform a stray
+    # variable in the environment must not so much as be consulted.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+
+    def _boom():
+        raise AssertionError("the marker must never be consulted off darwin")
+
+    monkeypatch.setattr(gui, "_shed_darwin_app_identity", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(procs) == 1  # the ordinary browser window launch
 
 
 def test_gui_window_linux_argv_is_unchanged_by_the_native_shell(

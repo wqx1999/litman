@@ -881,6 +881,49 @@ def _load_mac_shell() -> Any | None:
         return None
 
 
+# Set (to "1") by both exec lines of _DARWIN_STUB, so a process can tell a
+# bundle launch — one wearing litman.app's Launch Services identity — from a
+# terminal `lit gui --window`, which has no identity to speak of.
+_DARWIN_APP_LAUNCH_ENV = "LITMAN_DARWIN_APP_LAUNCH"
+
+
+def _shed_darwin_app_identity() -> bool:
+    """Hand a bundle launch that lost its window to an identity-less child.
+
+    Only reached when the native shell could not put up a window. A bundle
+    launch that then serves a *browser* window keeps litman.app's Launch
+    Services identity on a process with no window of its own — the exact
+    configuration in which a second double-click became an activation
+    request nothing could answer, bouncing the Dock icon until macOS called
+    litman unresponsive. So the fallback re-launches itself as a detached
+    child with the marker stripped and lets this process exit: Launch
+    Services sees an app that started and finished (every double-click runs
+    the stub afresh), while the child serves the browser window as a plain
+    process. The stripped marker is also the recursion gate — a child that
+    falls back again finds no marker and serves in place.
+
+    Returns True when the launch was handed off (the caller just returns).
+    False keeps the launch here: a terminal launch has no identity to shed,
+    and a child that cannot be spawned is no reason to serve nothing —
+    running with the residual identity risk beats not running.
+    """
+    if not os.environ.get(_DARWIN_APP_LAUNCH_ENV):
+        return False
+    env = dict(os.environ)
+    env.pop(_DARWIN_APP_LAUNCH_ENV, None)
+    try:
+        # Fixed argv, because the marker only ever comes from the stub and
+        # this is the stub's exact launch shape (no --library/--port to lose).
+        subprocess.Popen(
+            [_resolve_lit_executable(), "gui", "--window"],
+            env=env,
+            start_new_session=True,
+        )
+    except (OSError, LitmanError):
+        return False
+    return True
+
+
 def _windows_desktop_dir() -> Path:
     """The folder the shell actually shows as Desktop.
 
@@ -1173,13 +1216,20 @@ _DARWIN_LOG_DIR = "$HOME/Library/Logs/litman"
 # without a window once deadlocked second launches (an activation request
 # arrived at a process that could answer nothing); now the process really
 # owns a window and an event loop, so a reopen has somewhere to land.
-_DARWIN_STUB = """\
+#
+# Both exec lines carry _DARWIN_APP_LAUNCH_ENV (an assignment prefix rides
+# into the exec'd program's environment), so the launched process knows it
+# wears the bundle's identity. That matters exactly once: a browser-route
+# fallback must not keep that identity on a windowless server (see
+# _shed_darwin_app_identity) — and a terminal launch, which never comes
+# through here, must not shed one it never had.
+_DARWIN_STUB = f"""\
 #!/bin/sh
-LOG_DIR="{log_dir}"
+LOG_DIR="{{log_dir}}"
 if mkdir -p "$LOG_DIR" 2>/dev/null && : >"$LOG_DIR/litman.log" 2>/dev/null; then
-    exec "{lit}" gui --window >"$LOG_DIR/litman.log" 2>&1
+    {_DARWIN_APP_LAUNCH_ENV}=1 exec "{{lit}}" gui --window >"$LOG_DIR/litman.log" 2>&1
 fi
-exec "{lit}" gui --window
+{_DARWIN_APP_LAUNCH_ENV}=1 exec "{{lit}}" gui --window
 """
 
 
@@ -1451,6 +1501,12 @@ def gui_cmd(
                 return
             # False: the window layer failed before the server ever ran, so
             # the launch is still ours to make good on below.
+        if _shed_darwin_app_identity():
+            console.print(
+                "[dim]Native window unavailable; relaunching in the "
+                "browser.[/]"
+            )
+            return
         console.print(
             "[dim]Native window unavailable; falling back to the browser.[/]"
         )
