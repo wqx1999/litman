@@ -461,7 +461,11 @@ def test_open_xdg_open_headless_exits_2(
     )
     assert result.exit_code == 2
     assert "No graphical display" in result.output
-    assert "paper.pdf" in result.output
+    # Unfolded: the message wraps at the terminal width, and a macOS tmp path
+    # (/private/var/folders/df/djsx…) is long enough to split "paper.pdf"
+    # across two lines. The contract is that the path is shown, not where the
+    # renderer chose to break it.
+    assert "paper.pdf" in result.output.replace("\n", "")
     assert "Opened" not in result.output
     # No process was forked.
     assert recorder.calls == []

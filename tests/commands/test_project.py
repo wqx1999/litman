@@ -501,7 +501,9 @@ def test_project_rm_of_an_empty_project_says_no_papers_are_affected(
     assert result.exit_code == 0, result.output
     assert "0 paper(s)" in result.output
     assert "TAXONOMY.md and lit-config.yaml" in result.output
-    assert str(proj_dir) in result.output
+    # Unfolded — see test_open.py: the renderer's line breaks are not part of
+    # the contract, and a macOS tmp path is long enough to trigger them.
+    assert str(proj_dir) in result.output.replace("\n", "")
     assert _taxonomy_projects(vault) == []
     assert _config_projects(vault) == {}
 

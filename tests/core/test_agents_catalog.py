@@ -194,6 +194,11 @@ def test_desktop_launch_detects_agents_under_user_bin_dirs(
     repeated rechecks must not keep appending duplicate entries.
     """
     monkeypatch.setattr(sys, "platform", "linux")
+    # The probe appends any system bin dir that EXISTS on the host, so on a
+    # macOS box /opt/homebrew/bin lands in the merged PATH and this Linux
+    # scenario stops being a Linux scenario. Empty the seam so the assertion
+    # describes the faked platform rather than the real one.
+    monkeypatch.setattr(agents, "_POSIX_SYSTEM_BIN_DIRS", ())
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
     local_bin = tmp_path / ".local" / "bin"

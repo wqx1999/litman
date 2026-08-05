@@ -9,6 +9,7 @@ can never launch its TUI.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -740,6 +741,11 @@ def test_setup_step5_prompt_names_underlying_command_and_declines(
     assert "shortcut (declined)" in result.output
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="the .desktop file is the Linux shortcut; macOS builds an .app "
+    "bundle and Windows a .lnk, each covered by its own test_make_shortcut_*",
+)
 def test_setup_step5_accept_creates_shortcut(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
