@@ -24,11 +24,13 @@ conveniences.
 - **Preview a note before you save it.** Notes and discussion now have a
   **Preview** button next to Save: it renders the draft you are writing —
   headings, lists, links to other papers and all — and **Edit** takes you back
-  to the text with every character still there. It sits where **Cancel** used
-  to, which is the point: cancelling only ever did one thing, throw the draft
-  away. Abandoning an edit is still possible — close the tab and answer "Don't
-  save", the same question an unsaved PDF asks — but nothing inside the editor
-  can lose your work any more. `Ctrl+S` saves from either view.
+  to the text with every character still there. Flipping between the two keeps
+  your place in both: the cursor where you left it in the text, and the spot
+  you were reading in the preview. It sits where **Cancel** used to, which is
+  the point: cancelling only ever did one thing, throw the draft away.
+  Abandoning an edit is still possible — close the tab and answer "Don't save",
+  the same question an unsaved PDF asks — but nothing inside the editor can
+  lose your work any more. `Ctrl+S` saves from either view.
 - **The shortcut list mentions undo.** `Ctrl+Z` and `Ctrl+Y` have always worked
   on annotations without being written down anywhere. `?` now lists them,
   together with the part that is easy to trip over: they work while an
