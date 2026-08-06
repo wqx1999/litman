@@ -150,6 +150,11 @@ export default function MdView({
   const [previewing, setPreviewing] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // [selectionStart, selectionEnd] parked while a preview is up; null otherwise.
+  // A tuple, not a bare number: an array is always truthy, so a caret sitting at
+  // offset 0 restores like any other. A `number | null` ref would read 0 as
+  // "nothing stored" and silently jump to the end of the document instead.
+  const caretRef = useRef<[number, number] | null>(null)
 
   // Edit mode + the draft now come from App (controlled): a present draftEntry
   // means this tab is mid-edit. The draft survives this view's unmount because
@@ -373,14 +378,23 @@ export default function MdView({
       onEndEdit(tabKey)
       return
     }
+    // Where the caret was when the preview took the textarea away. Preview is
+    // for "check how this section renders, then carry on writing", and coming
+    // back to the end of a long document breaks exactly that loop.
+    const ta = textareaRef.current
+    caretRef.current = ta ? [ta.selectionStart, ta.selectionEnd] : null
     setPreviewing(true)
   }, [draft, savedText, onEndEdit, tabKey])
 
   // `previewing` only means anything inside a session. Clear it whenever one
   // ends by any route (a save here, or App dropping the draft), so the next
-  // double-click opens the textarea instead of a stale preview.
+  // double-click opens the textarea instead of a stale preview — and drop the
+  // remembered caret with it, or it would be restored into the NEXT document.
   useEffect(() => {
-    if (!editing) setPreviewing(false)
+    if (!editing) {
+      setPreviewing(false)
+      caretRef.current = null
+    }
   }, [editing])
 
   // Cmd/Ctrl+S saves the SESSION, not the textarea. Bound on the window (capture
@@ -406,15 +420,19 @@ export default function MdView({
     return () => window.removeEventListener('keydown', onKey, { capture: true })
   }, [editing, save])
 
-  // Focus the textarea when edit mode opens, cursor at the end. Also runs on the
-  // way back from a preview, which remounts the textarea without `editing` ever
-  // changing — without the preview dep the box would come back unfocused.
+  // Focus the textarea when edit mode opens, cursor at the end — or back where
+  // it was if a preview is what took it away. Also runs on the way back from a
+  // preview, which remounts the textarea without `editing` ever changing:
+  // without the preview dep the box would come back unfocused.
   useEffect(() => {
     if (!editing || previewingDraft) return
     const ta = textareaRef.current
     if (!ta) return
+    const at = caretRef.current
     ta.focus()
-    ta.setSelectionRange(ta.value.length, ta.value.length)
+    if (at) ta.setSelectionRange(at[0], at[1])
+    else ta.setSelectionRange(ta.value.length, ta.value.length)
+    caretRef.current = null
   }, [editing, previewingDraft])
 
   const missing = loaded && text === null

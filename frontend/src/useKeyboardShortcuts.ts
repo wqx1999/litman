@@ -93,13 +93,14 @@ export function isEditingTarget(el: EventTarget | null): boolean {
 
 /** Does this event carry a Tier-0 Cmd/Ctrl combo the app already owns elsewhere
  * (save / PDF zoom / search focus)? Those have their own listeners (PdfView's
- * capture-phase ⌘S + ⌘-zoom, the search box ⌘K), so the global dispatcher must
- * let them propagate untouched — it neither handles nor preventDefaults them.
+ * and MdView's capture-phase ⌘S, PdfView's ⌘-zoom, the search box ⌘K), so the
+ * global dispatcher must let them propagate untouched — it neither handles nor
+ * preventDefaults them.
  * `e.code` is used for the letter (S/K) so a composed key can't slip past. */
 function isReservedModifierCombo(e: KeyboardEvent): boolean {
   // Except Ctrl+Backquote (handled before this helper for agent management),
-  // Cmd/Ctrl combos belong to the browser / existing Tier-0 listeners:
-  // PdfView's ⌘S + ⌘-zoom and the search box's ⌘K.
+  // Cmd/Ctrl combos belong to the browser / existing Tier-0 listeners: ⌘S from
+  // whichever view owns the active tab, PdfView's ⌘-zoom, the search box's ⌘K.
   return e.metaKey || e.ctrlKey
 }
 
