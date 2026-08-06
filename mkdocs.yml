@@ -37,6 +37,18 @@ theme:
         icon: material/weather-sunny
         name: Switch to light mode
 
+extra:
+  # The logo and the site name are the way back out to the landing page.
+  # Without this they point at /docs/, which only redirects to the page the
+  # reader is already on.
+  homepage: https://litman.dev/
+
+# Sits at the foot of every page, so the way home is reachable from the
+# bottom of a long one too. Absolute paths, like the logo above.
+copyright: >
+  <a href="/">litman.dev</a> &middot;
+  <a href="/docs/license/">MIT</a>
+
 extra_css:
   - stylesheets/litman.css
 
@@ -67,3 +79,4 @@ nav:
   - Tutorial: 5-tutorial.md
   - Agent model benchmark: 6-agent-benchmark.md
   - Changelog: changelog.md
+  - License: license.md
