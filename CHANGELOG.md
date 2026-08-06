@@ -545,8 +545,9 @@ conveniences.
 - `lit uninstall` now also removes the desktop shortcut, the machine-level
   preferences, and the browser profile the app window uses.
 - A shorter README. The agent model benchmark moved to
-  [docs/6-agent-benchmark.md](docs/6-agent-benchmark.md) and the usage caveats to
-  [docs/0-readme.md](docs/0-readme.md); the install instructions lead with the
+  [the agent model benchmark](https://litman.dev/docs/6-agent-benchmark/) and the
+  usage caveats to [the docs home](https://litman.dev/docs/0-readme/); the
+  install instructions lead with the
   one-line installer, and the pipx, source-install, update and uninstall routes
   are folded away.
 - The Chinese README is gone. The documentation is English only.

@@ -1,0 +1,113 @@
+/* Give the docs the landing page's face.
+ *
+ * The values below are lifted verbatim from landing/index.html's `:root`, so
+ * the two halves of litman.dev agree on colour, type and rhythm. Change one,
+ * change the other. */
+
+/* The landing page's monospace, served from the site root — one copy for the
+ * whole site rather than a second one under /docs/. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --md-text-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "SF Pro Text", "Helvetica Neue", system-ui, "Segoe UI", sans-serif;
+  --md-code-font-family: "JetBrains Mono", ui-monospace, "SF Mono",
+    SFMono-Regular, Menlo, monospace;
+}
+
+/* Light — white page, ink text, iOS blue for anything clickable. The header
+ * is white too: a coloured bar would read as a different site from the
+ * landing page it sits under. */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: #1c1c1e;
+  --md-default-fg-color--light: #6e6e73;
+  --md-default-fg-color--lighter: #a1a1a6;
+  --md-default-fg-color--lightest: rgba(0, 0, 0, 0.09);
+
+  --md-primary-fg-color: #ffffff;
+  --md-primary-fg-color--light: #ffffff;
+  --md-primary-fg-color--dark: #f5f5f7;
+  --md-primary-bg-color: #1c1c1e;
+  --md-primary-bg-color--light: #6e6e73;
+
+  --md-accent-fg-color: #007aff;
+  --md-typeset-a-color: #007aff;
+
+  --md-code-bg-color: #f5f5f7;
+  --md-code-fg-color: #1c1c1e;
+  --md-typeset-table-color: rgba(0, 0, 0, 0.09);
+}
+
+/* Dark — the landing page's true black, not material's default slate blue. */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #000000;
+  --md-default-fg-color: #f5f5f7;
+  --md-default-fg-color--light: #98989d;
+  --md-default-fg-color--lighter: #6e6e73;
+  --md-default-fg-color--lightest: rgba(255, 255, 255, 0.11);
+
+  --md-primary-fg-color: #000000;
+  --md-primary-fg-color--light: #141416;
+  --md-primary-fg-color--dark: #000000;
+  --md-primary-bg-color: #f5f5f7;
+  --md-primary-bg-color--light: #98989d;
+
+  --md-accent-fg-color: #0a84ff;
+  --md-typeset-a-color: #0a84ff;
+
+  --md-code-bg-color: #141416;
+  --md-code-fg-color: #f5f5f7;
+  --md-typeset-table-color: rgba(255, 255, 255, 0.11);
+}
+
+/* The mark's dark half disappears against a black header; assets/ ships the
+ * inverted pair for exactly this. */
+[data-md-color-scheme="slate"] .md-logo img {
+  content: url("/assets/mark-dark.svg");
+}
+
+/* A hairline under the header instead of material's drop shadow — the same
+ * rule the landing page draws between its sections. */
+.md-header {
+  box-shadow: none;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+/* Material tints the search field against a coloured header; ours is white,
+ * so it comes out as a heavy grey slab. Make it the landing page's panel
+ * instead — a quiet, rounded field. */
+.md-search__form,
+.md-search__form:hover {
+  background-color: var(--md-code-bg-color);
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.md-search__input,
+.md-search__input::placeholder,
+.md-search__icon {
+  color: var(--md-default-fg-color--light);
+}
+
+/* Tighter, flatter code blocks: the landing page's panel grey, no border. */
+.md-typeset pre > code,
+.md-typeset code {
+  border-radius: 8px;
+}
+
+/* Headings track the landing page's weight, which is heavier than material's
+ * default and reads as the same voice. */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--md-default-fg-color);
+}
