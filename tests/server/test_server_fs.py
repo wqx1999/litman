@@ -14,6 +14,7 @@ Guarded with ``importorskip`` so the suite still collects without fastapi
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -123,12 +124,72 @@ def test_a3_anchors_only_existing(
 
     resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
     assert resp.status_code == 200
-    anchors = {a["label"]: a["path"] for a in resp.json()["anchors"]}
+    # Places only. On Windows every drive root is appended as a second,
+    # ``kind="drive"`` group — that is this route's job there and A3b pins it
+    # exactly; mixing the two groups made this assertion host-dependent.
+    anchors = {
+        a["label"]: a["path"]
+        for a in resp.json()["anchors"]
+        if a["kind"] == "place"
+    }
 
     # Home always present; Desktop present; the two absent ones are excluded.
     assert set(anchors) == {"Home", "Desktop"}
     assert Path(anchors["Home"]).resolve() == tmp_path.resolve()
     assert Path(anchors["Desktop"]).resolve() == (tmp_path / "Desktop").resolve()
+
+
+# ---------------------------------------------------------------------------
+# A3b — anchors: Windows drive roots become chips after the home locations.
+#       ``os.listdrives`` exists only on Windows, so the production branch is
+#       gated on hasattr — injecting the function on POSIX (raising=False)
+#       drives the REAL branch end-to-end through the HTTP route. The os
+#       module OBJECT is patched (not a dotted string), so the patch cannot
+#       miss the reference routes_read already holds.
+# ---------------------------------------------------------------------------
+def test_a3b_windows_drive_anchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        os, "listdrives", lambda: ["C:\\", "D:\\"], raising=False
+    )
+
+    resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
+    assert resp.status_code == 200
+    anchors = [(a["kind"], a["label"], a["path"]) for a in resp.json()["anchors"]]
+
+    # Order matters: home locations first, then the drives, exactly as
+    # listdrives reports them. Label drops the trailing separator ("C:"),
+    # path keeps it ("C:\\" — a bare "C:" means "cwd on C:" on Windows).
+    # ``kind`` is what the picker splits on to draw drives as a segmented
+    # control rather than another row of place chips, so pin it here: losing it
+    # silently merges the two groups back into one pile in the GUI.
+    assert anchors[0][:2] == ("place", "Home")
+    assert anchors[1:] == [
+        ("drive", "C:", "C:\\"),
+        ("drive", "D:", "D:\\"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# A3c — anchors: a failing listdrives degrades to no drive chips, never a 500.
+# ---------------------------------------------------------------------------
+def test_a3c_listdrives_failure_degrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    def boom() -> list[str]:
+        raise OSError("drive table unavailable")
+
+    monkeypatch.setattr(os, "listdrives", boom, raising=False)
+
+    resp = _client().get("/api/fs/list", params={"path": str(tmp_path)})
+    assert resp.status_code == 200
+    assert [(a["kind"], a["label"]) for a in resp.json()["anchors"]] == [
+        ("place", "Home")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +244,13 @@ def test_a5_file_not_dir_400(tmp_path: Path) -> None:
 # A6 — PermissionError listing children → 200 + denied, not a 500
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses directory permission bits; chmod 000 would not deny",
+    (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "Same on Windows for a second reason: chmod only flips the read-only "
+        "attribute and never applies to a directory, so nothing is denied "
+        "and there is no degrade path left to observe."
+    ),
 )
 def test_a6_permission_denied_degrades_not_500(tmp_path: Path) -> None:
     locked = tmp_path / "locked"
@@ -333,8 +399,13 @@ def test_m5_file_name_conflict_400(tmp_path: Path) -> None:
 # M6 — no write permission on parent → friendly error status, never a 500
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses directory permission bits; chmod 000 would not deny",
+    (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "Same on Windows for a second reason: chmod only flips the read-only "
+        "attribute and never applies to a directory, so nothing is denied "
+        "and there is no degrade path left to observe."
+    ),
 )
 def test_m6_permission_denied_not_500(tmp_path: Path) -> None:
     locked = tmp_path / "locked"
@@ -371,8 +442,13 @@ def test_m7_reachable_without_active_vault(tmp_path: Path) -> None:
 #      stat() raise PermissionError → an unhandled 500.
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses directory permission bits; chmod 000 would not deny",
+    (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "Same on Windows for a second reason: chmod only flips the read-only "
+        "attribute and never applies to a directory, so nothing is denied "
+        "and there is no degrade path left to observe."
+    ),
 )
 def test_m8_locked_ancestor_not_500(tmp_path: Path) -> None:
     locked = tmp_path / "locked"

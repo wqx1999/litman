@@ -37,6 +37,7 @@ from litman.core.vault_registry import (
     VaultRegistry,
     save_registry,
 )
+from litman.core.portable_link import is_portable_link
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +100,7 @@ def _linked_vault(tmp_path: Path) -> tuple[Path, Path]:
     _make_paper(vault, "p1", projects=["pepforge"])
     rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink() and link.exists()
+    assert is_portable_link(link) and link.exists()
     return vault, project_dir
 
 
@@ -217,7 +218,7 @@ def test_check_flags_dangling_code_bridge(tmp_path: Path) -> None:
     code_hub.mkdir(exist_ok=True)  # rebuild_all already made the hub
     ghost = code_hub / "ghostrepo"
     ghost.symlink_to("../nowhere/repo")
-    assert ghost.is_symlink() and not ghost.exists()
+    assert is_portable_link(ghost) and not ghost.exists()
 
     issues = check_project_bridge_dangling(vault, [])
     assert len(issues) == 1
@@ -300,7 +301,7 @@ def test_bridge_drift_tty_yes_rebuilds(
     _drift.check_and_prompt_bridge_drift()
 
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (moved / "papers" / "p1").resolve()
     out = capsys.readouterr().out
     assert "points at nothing" in out  # n=1 → singular verb
@@ -323,7 +324,7 @@ def test_bridge_drift_tty_no_keeps(
     _drift.check_and_prompt_bridge_drift()
 
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink() and not link.exists()  # still dangling
+    assert is_portable_link(link) and not link.exists()  # still dangling
     assert "Kept for now" in capsys.readouterr().out
 
 
@@ -343,7 +344,7 @@ def test_bridge_drift_non_tty_warns_no_mutation(
     _drift.check_and_prompt_bridge_drift()
 
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink() and not link.exists()
+    assert is_portable_link(link) and not link.exists()
     err = capsys.readouterr().err
     assert "pepforge" in err
     assert "health-check --fix" in err

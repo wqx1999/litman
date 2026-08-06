@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in litman does not work / 报告一个故障
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        例:装完之后双击桌面图标,窗口闪一下就消失了;
+        在终端里敲 lit gui 也是一样,没有报错。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install litman?
+      options:
+        - install.sh (macOS / Linux one-liner)
+        - install.ps1 (Windows one-liner)
+        - install-cn.sh / install-cn.ps1 (mainland China mirrors)
+        - pipx install litman
+        - uv tool install litman
+        - From a clone (pip install -e .)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version and OS version
+      description: >
+        Output of `lit --version`, plus your OS version. If `lit` will not run
+        at all, just say so — that is useful information by itself.
+      placeholder: "lit, version 1.3.4 — Windows 11 23H2 / macOS 14.5 / Ubuntu 24.04"
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. lit add paper.pdf
+        2. lit gui
+        3. 点开第二篇论文
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: The full message, not just the last line. Formatting is automatic.
+      render: shell
+
+  - type: textarea
+    id: health
+    attributes:
+      label: Vault check (only if the problem is about your data)
+      description: >
+        If papers, fields, or projects look wrong in your vault, paste the
+        output of `lit health-check`. Skip this for install or startup problems.
+      render: shell

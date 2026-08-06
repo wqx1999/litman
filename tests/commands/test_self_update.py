@@ -105,7 +105,14 @@ def _wire_dispatch(
 
     Returns the list the mocked ``subprocess.run`` appends each invoked command
     to (the upgrade + the post-verify ``lit --version``).
+
+    Pins the in-process (non-win32) arm, because that is the arm every caller
+    of this helper is about: on win32 the upgrade is handed to a detached
+    helper and ``subprocess.run`` is never reached, so on a Windows host these
+    tests were asserting against a branch that had not run. The two win32
+    tests re-pin the platform *after* calling this, which still wins.
     """
+    monkeypatch.setattr(su.sys, "platform", "linux")
     _no_editable(monkeypatch)
     monkeypatch.setattr(su.shutil, "which", _fake_which({"uv", "pipx"}))
 
@@ -148,6 +155,7 @@ def test_pipx_branch_runs_pipx_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_uv_preferred_over_pipx(monkeypatch: pytest.MonkeyPatch) -> None:
     """When BOTH list litman, uv is chosen (probe order)."""
+    monkeypatch.setattr(su.sys, "platform", "linux")  # in-process arm; see _wire_dispatch
     _no_editable(monkeypatch)
     monkeypatch.setattr(su.shutil, "which", _fake_which({"uv", "pipx"}))
     monkeypatch.setattr(

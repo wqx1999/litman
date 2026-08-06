@@ -13,7 +13,11 @@ upward to the next free port (Jupyter model) and the actual port is printed.
 
 When the session has a display, the URL also opens in the user's browser
 (``--no-browser`` suppresses it; ``--window`` opens a Chromium ``--app=``
-window instead of a tab). Headless sessions never attempt a browser launch —
+window instead of a tab). On macOS ``--window`` prefers a WKWebView window
+owned by this very process (:mod:`litman.commands._mac_shell`) — the Dock
+then badges it as litman, and no browser needs to exist — quietly falling
+back to the Chromium window when pywebview cannot come up. Headless sessions
+never attempt a browser launch —
 ``webbrowser`` on a display-less Linux box can drag up a text-mode browser,
 which is worse than the printed URL. ``--make-shortcut`` writes a desktop
 entry that runs ``lit gui --window`` and exits without starting the server
@@ -125,6 +129,33 @@ _CHROMIUM_CANDIDATES = (
     "brave-browser",
 )
 
+# macOS ships browsers as .app bundles and puts nothing on PATH, so the tuple
+# above almost never fires there — these bundle names are the real lookup, and
+# a name missing from them makes an installed browser invisible. Kept in step
+# with _CHROMIUM_CANDIDATES on purpose: a browser Linux finds has no reason to
+# be a plain tab on macOS.
+#
+# Every entry must honour --app and --user-data-dir. A browser that ignores
+# them is worse than the tab fallback, because it would cost both the
+# standalone window and the shutdown gate that waits on our own instance —
+# which is why the heavily reskinned Chromium derivatives are not here.
+#
+# Each name is both the bundle and the executable inside it
+# (Chromium.app/Contents/MacOS/Chromium); a browser that broke that symmetry
+# would need its own entry shape.
+_DARWIN_APP_CANDIDATES = (
+    "Google Chrome",
+    "Microsoft Edge",
+    "Chromium",
+    "Brave Browser",
+)
+
+# Every reach into /Applications goes through this name, never the literal:
+# a test pretending to be darwin must not probe — or, on a Mac host, write
+# into — the real folder. A literal reads as green on Linux and then answers
+# with the host's own browsers on a Mac, which is a test that proves nothing.
+_DARWIN_SYSTEM_APPS = Path("/Applications")
+
 
 def display_available() -> bool:
     """True when this session can show a browser window.
@@ -137,6 +168,13 @@ def display_available() -> bool:
         return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
+
+# The identity an X11 desktop matches against StartupWMClass in
+# litman.desktop. Passed via --class AND written into the .desktop file —
+# the two must stay one constant: --class alone regroups the window under a
+# name no .desktop file claims (falling back to the 16px tab favicon, worse
+# than today), StartupWMClass alone never matches "Chromium-browser".
+_LINUX_WM_CLASS = "litman"
 
 _BROWSER_PROFILE_DIRNAME = "browser-profile"
 # Under ~/snap/<snap>/common/ the profile sits among that snap's own data, so
@@ -354,7 +392,7 @@ def _app_window_argv(url: str) -> list[str] | None:
 
 def _app_window_flags(url: str, browser_exe: str) -> list[str]:
     """The ``--app=`` flag set for ``browser_exe``. See :func:`_app_window_argv`."""
-    return [
+    flags = [
         f"--app={url}",
         f"--user-data-dir={browser_profile_dir(browser_exe)}",
         "--no-first-run",
@@ -366,6 +404,20 @@ def _app_window_flags(url: str, browser_exe: str) -> list[str]:
         # session _purge_stale_browser_session has already emptied.
         "--hide-crash-restore-bubble",
     ]
+    if sys.platform not in ("win32", "darwin"):
+        # Without this the window's WM_CLASS is the browser's own
+        # ("Chromium-browser"), so the taskbar files it as a browser window.
+        # Windows groups by AppUserModelID and macOS by owning bundle, so the
+        # flag has nothing to do there.
+        flags.append(f"--class={_LINUX_WM_CLASS}")
+        if os.environ.get("DISPLAY"):
+            # Native-Wayland Chromium ignores --class (its app_id stays the
+            # browser's own — measured on Ubuntu 24.04 / chromium snap 150),
+            # so WM_CLASS only works through XWayland. $DISPLAY guards the
+            # rare XWayland-less compositor, where forcing x11 would mean no
+            # window at all instead of a wrongly-badged one.
+            flags.append("--ozone-platform=x11")
+    return flags
 
 
 def _find_chromium() -> str | None:
@@ -383,11 +435,11 @@ def _find_chromium() -> str | None:
         if exe:
             return exe
     if sys.platform == "darwin":
-        # Chrome/Edge on macOS are .app bundles, not on PATH. Run the binary
-        # inside the bundle rather than `open -na`: `open` asks Launch Services
-        # to start the app and returns immediately, so it never owns the window.
-        for app in ("Google Chrome", "Microsoft Edge"):
-            for root in (Path("/Applications"), Path.home() / "Applications"):
+        # Run the binary inside the bundle rather than `open -na`: `open` asks
+        # Launch Services to start the app and returns immediately, so it never
+        # owns the window. See _DARWIN_APP_CANDIDATES for the name list.
+        for app in _DARWIN_APP_CANDIDATES:
+            for root in (_DARWIN_SYSTEM_APPS, Path.home() / "Applications"):
                 binary = root / f"{app}.app" / "Contents" / "MacOS" / app
                 if binary.exists():
                     return str(binary)
@@ -594,6 +646,7 @@ def _open_when_ready(
     ready_timeout: float = READY_TIMEOUT,
     ready_poll: float = READY_POLL,
     after_open: Callable[[], None] | None = None,
+    give_up: Callable[[], bool] | None = None,
 ) -> None:
     """Open the browser the instant the server is listening — no fixed guess.
 
@@ -609,12 +662,21 @@ def _open_when_ready(
     the one-``ready_poll``-wide window where the event lands between the break
     and the open. ``after_open`` runs once, right after the open, for the
     splash hand-off (wait for the page to paint, then close the splash).
+
+    ``give_up`` is polled alongside ``started``: True means readiness is
+    never coming — the mac shell hands in "the server thread died" — so stop
+    waiting now rather than sit out the timeout. The open still runs, same
+    as the timeout backstop; the caller's callback is what decides what
+    opening means against a server that never came up (the shell swaps in
+    its error page instead of a URL).
     """
     deadline = time.monotonic() + ready_timeout
     while True:
         if stop_event.is_set():
             return
         if getattr(server, "started", False):
+            break
+        if give_up is not None and give_up():
             break
         if time.monotonic() >= deadline:
             break
@@ -773,6 +835,106 @@ def _warn_console_shortcut() -> None:
     )
 
 
+def _brand_windows_taskbar(stop_event: threading.Event) -> threading.Thread | None:
+    """Give the app window litman's taskbar face (win32 only), off-thread.
+
+    The --app window already sits in a taskbar group of its own (Chromium
+    derives its AppUserModelID from our URL), but the group wears the
+    browser's icon and name — those come from relaunch properties Chromium
+    writes onto the window, and rewriting them after the window appears is
+    the fix. Mechanism and measurements: :mod:`litman.commands._win_taskbar`.
+
+    Best effort in both directions: daemon thread, and any failure leaves
+    the browser's face in place rather than touching the launch.
+    """
+    if sys.platform != "win32":
+        return None
+
+    def worker() -> None:
+        try:
+            from litman.commands import _win_taskbar
+
+            relaunch = subprocess.list2cmdline(
+                [_shortcut_executable(), "gui", "--window"]
+            )
+            _win_taskbar.adopt_window(
+                str(_icon_path("litman.ico")),
+                relaunch,
+                give_up=stop_event.is_set,
+            )
+        except Exception:
+            pass
+
+    # The worker swallows its own failures, but running out of threads fails
+    # the start() itself — same best-effort verdict: no icon, never no window.
+    try:
+        thread = threading.Thread(target=worker, daemon=True, name="litman-taskbar")
+        thread.start()
+    except Exception:
+        return None
+    return thread
+
+
+def _load_mac_shell() -> Any | None:
+    """The pywebview module for the macOS native shell, or None.
+
+    The one seam ``gui_cmd`` reaches the shell through, and the surface the
+    tests fake a webview (or its absence) behind. None — a missing pywebview,
+    or anything else going wrong in the probe — sends the launch down the
+    Chromium route exactly as it always ran, so falling back is the one path
+    that needs no new trust.
+    """
+    try:
+        from litman.commands import _mac_shell
+
+        return _mac_shell.load_webview()
+    except Exception:
+        return None
+
+
+# Set (to "1") by both exec lines of _DARWIN_STUB, so a process can tell a
+# bundle launch — one wearing litman.app's Launch Services identity — from a
+# terminal `lit gui --window`, which has no identity to speak of.
+_DARWIN_APP_LAUNCH_ENV = "LITMAN_DARWIN_APP_LAUNCH"
+
+
+def _shed_darwin_app_identity() -> bool:
+    """Hand a bundle launch that lost its window to an identity-less child.
+
+    Only reached when the native shell could not put up a window. A bundle
+    launch that then serves a *browser* window keeps litman.app's Launch
+    Services identity on a process with no window of its own — the exact
+    configuration in which a second double-click became an activation
+    request nothing could answer, bouncing the Dock icon until macOS called
+    litman unresponsive. So the fallback re-launches itself as a detached
+    child with the marker stripped and lets this process exit: Launch
+    Services sees an app that started and finished (every double-click runs
+    the stub afresh), while the child serves the browser window as a plain
+    process. The stripped marker is also the recursion gate — a child that
+    falls back again finds no marker and serves in place.
+
+    Returns True when the launch was handed off (the caller just returns).
+    False keeps the launch here: a terminal launch has no identity to shed,
+    and a child that cannot be spawned is no reason to serve nothing —
+    running with the residual identity risk beats not running.
+    """
+    if not os.environ.get(_DARWIN_APP_LAUNCH_ENV):
+        return False
+    env = dict(os.environ)
+    env.pop(_DARWIN_APP_LAUNCH_ENV, None)
+    try:
+        # Fixed argv, because the marker only ever comes from the stub and
+        # this is the stub's exact launch shape (no --library/--port to lose).
+        subprocess.Popen(
+            [_resolve_lit_executable(), "gui", "--window"],
+            env=env,
+            start_new_session=True,
+        )
+    except (OSError, LitmanError):
+        return False
+    return True
+
+
 def _windows_desktop_dir() -> Path:
     """The folder the shell actually shows as Desktop.
 
@@ -801,20 +963,82 @@ def _windows_desktop_dir() -> Path:
     return Path(userprofile) / "Desktop"
 
 
+def _darwin_bundle_locations() -> tuple[Path, Path]:
+    """The (system, user) homes for litman.app, in preference order.
+
+    ``/Applications`` first because Finder's sidebar "Applications" is
+    hardwired to it — a bundle in ``~/Applications`` is invisible from the
+    one place users look. On a stock Mac the folder is admin-group writable,
+    so preferring it costs no escalation.
+    """
+    return (
+        _DARWIN_SYSTEM_APPS / "litman.app",
+        Path.home() / "Applications" / "litman.app",
+    )
+
+
+def _is_litman_bundle(bundle: Path) -> bool:
+    """True when the bundle is ours — the guard every delete goes through.
+
+    ``/Applications`` is shared territory: nothing there is removed,
+    rewritten or migrated away from unless its Info.plist says litman.
+    Every bundle this code ever wrote carries the identifier as literal
+    ASCII text, so probing bytes is enough — and a foreign bundle's plist
+    is usually binary (Xcode's default), which a text read would die on.
+    """
+    try:
+        plist = (bundle / "Contents" / "Info.plist").read_bytes()
+    except OSError:
+        return False
+    return b"io.github.litman" in plist
+
+
+def _dir_accepts_writes(directory: Path) -> bool:
+    """Probe by writing, not by ``os.access``: a non-admin account, MDM
+    management and TCC each veto in their own way, and only a real write
+    trips them all."""
+    if not directory.is_dir():
+        return False
+    probe = directory / f".litman-write-probe-{os.getpid()}"
+    try:
+        probe.touch()
+    except OSError:
+        return False
+    with contextlib.suppress(OSError):
+        probe.unlink()
+    return True
+
+
 def shortcut_path() -> Path:
     """Where the desktop shortcut lives on this platform.
 
     Windows lands on the actual Desktop (``%USERPROFILE%\\Desktop``) so the
     icon is visible the moment the installer finishes — the install script
     creates it, and a fresh install is meant to be started by double-clicking
-    it, not by running ``lit setup``. macOS uses ``~/Applications`` and Linux
-    the applications menu, each platform's own launcher home (a ``.desktop``
-    file on the Linux Desktop would need a manual "trust" step).
+    it, not by running ``lit setup``. macOS prefers ``/Applications`` (see
+    :func:`_darwin_bundle_locations`), falling back to ``~/Applications``
+    when it cannot write there or when a foreign litman.app holds the slot —
+    but an existing install of ours in either home wins over preference,
+    because uninstall's removal preview and setup's
+    skip-this-step probe both ask this function where the shortcut *is*, and
+    answering with the preferred home would silently overlook the other.
+    Linux uses the applications menu (a ``.desktop`` file on the Desktop
+    would need a manual "trust" step).
     """
     if sys.platform == "win32":
         return _windows_desktop_dir() / "litman.lnk"
     if sys.platform == "darwin":
-        return Path.home() / "Applications" / "litman.app"
+        system, user = _darwin_bundle_locations()
+        for bundle in (system, user):
+            if bundle.exists() and _is_litman_bundle(bundle):
+                return bundle
+        # The system slot held by a foreign litman.app is not ours to answer
+        # with: uninstall would preview a stranger's app for deletion, and
+        # setup would call the step done and never create anything. The user
+        # home takes over — the same verdict _create_shortcut_darwin reaches.
+        if system.exists():
+            return user
+        return system if _dir_accepts_writes(_DARWIN_SYSTEM_APPS) else user
     data_home = os.environ.get("XDG_DATA_HOME") or str(
         Path.home() / ".local" / "share"
     )
@@ -826,15 +1050,66 @@ def create_shortcut() -> tuple[Path, bool]:
 
     Idempotent: an existing shortcut is overwritten, never an error.
     """
+    lit = _shortcut_executable()
+    if sys.platform == "darwin":
+        return _create_shortcut_darwin(lit)
     target = shortcut_path()
     existed = target.exists()
-    lit = _shortcut_executable()
     if sys.platform == "win32":
         _write_shortcut_win32(target, lit)
-    elif sys.platform == "darwin":
-        _write_shortcut_darwin(target, lit)
     else:
         _write_shortcut_linux(target, lit)
+    return target, existed
+
+
+def _create_shortcut_darwin(lit: str) -> tuple[Path, bool]:
+    """Write litman.app into the preferred home and leave exactly one copy.
+
+    One copy, because a bundle in each home is how a stale stub outlives an
+    upgrade: ``--make-shortcut`` rewrites wherever :func:`shortcut_path`
+    points, and a second bundle elsewhere keeps launching yesterday's code
+    (it happened — a hand-moved bundle in /Applications survived a whole
+    day). Whichever home gets written, a litman bundle in the other is
+    removed.
+
+    Never escalates. A POSIX write into /Applications without permission is
+    a flat EACCES — no password prompt exists on this path; only Finder's
+    drag has one. So the fallback names the drag as the way over and leaves
+    escalating to the program entitled to it.
+    """
+    system, user = _darwin_bundle_locations()
+    system_preexisted = system.exists()
+    existed = system_preexisted or user.exists()
+    if system_preexisted:
+        # In-place refresh of our own install; a foreign litman.app is not
+        # ours to touch, so the user home takes over (without the drag hint —
+        # dragging onto a stranger's bundle is no way out).
+        target = system if _is_litman_bundle(system) else user
+        say_drag = False
+    elif _dir_accepts_writes(_DARWIN_SYSTEM_APPS):
+        target, say_drag = system, False
+    else:
+        target, say_drag = user, _DARWIN_SYSTEM_APPS.is_dir()
+    try:
+        _write_shortcut_darwin(target, lit)
+    except OSError:
+        if target == user:
+            raise
+        # The probe passed but the bundle write failed (a raced permission
+        # change, a per-bundle veto): clean up the partial copy and fall
+        # back rather than die half-installed.
+        if not system_preexisted:
+            shutil.rmtree(system, ignore_errors=True)
+        target, say_drag = user, _DARWIN_SYSTEM_APPS.is_dir()
+        _write_shortcut_darwin(target, lit)
+    other = user if target == system else system
+    if other.exists() and _is_litman_bundle(other):
+        shutil.rmtree(other, ignore_errors=True)
+    if say_drag:
+        console.print(
+            "Installed to ~/Applications (no write access to /Applications). "
+            "To move it: drag litman.app there in Finder."
+        )
     return target, existed
 
 
@@ -842,14 +1117,27 @@ def remove_shortcut() -> Path | None:
     """Delete the desktop shortcut if present. Counterpart to
     :func:`create_shortcut`, used by ``lit uninstall``.
 
-    Returns the path removed, or ``None`` when there was nothing there. The
-    macOS artifact is a ``.app`` bundle (a directory) so it is removed
-    recursively; the Linux ``.desktop`` and Windows ``.lnk`` are single files.
+    Returns the path removed, or ``None`` when there was nothing there.
+    macOS sweeps both bundle homes — uninstall is a one-shot exit,
+    completeness wins — though only bundles :func:`_is_litman_bundle`
+    vouches for; the first one actually removed is the return value. The
+    Linux ``.desktop`` and Windows ``.lnk`` are single files.
     """
+    if sys.platform == "darwin":
+        removed: Path | None = None
+        for bundle in _darwin_bundle_locations():
+            if bundle.exists() and _is_litman_bundle(bundle):
+                shutil.rmtree(bundle, ignore_errors=True)
+                # Re-check rather than trust the call (the same verdict
+                # remove_browser_profile reaches): reporting a bundle gone
+                # while it still launches is worse than admitting the miss.
+                if removed is None and not bundle.exists():
+                    removed = bundle
+        return removed
     target = shortcut_path()
     if not target.exists():
         return None
-    if target.is_dir():  # macOS .app bundle
+    if target.is_dir():  # a bundle handed in by a patched shortcut_path
         shutil.rmtree(target, ignore_errors=True)
     else:
         target.unlink()
@@ -865,6 +1153,7 @@ def _write_shortcut_linux(target: Path, lit: str) -> None:
         "Comment=Personal literature vault\n"
         f'Exec="{lit}" gui --window\n'
         f"Icon={_icon_path('litman.png')}\n"
+        f"StartupWMClass={_LINUX_WM_CLASS}\n"
         "Terminal=false\n"
         "Categories=Office;Science;\n",
         encoding="utf-8",
@@ -923,11 +1212,78 @@ def _write_shortcut_win32(target: Path, lit: str) -> None:
         ) from e
 
 
+# platformdirs' user_log_dir on macOS, spelled in shell because the stub below
+# runs before any Python does.
+_DARWIN_LOG_DIR = "$HOME/Library/Logs/litman"
+
+# Launched from Finder / Launchpad / the Dock, the bundle has no console, so
+# without a log a launch that failed and a launch that is merely slow look
+# exactly alike — nothing on screen either way until the browser window shows
+# up. The console-less Windows launcher keeps litw.log for the same reason.
+# Truncated per launch rather than appended, so it never grows.
+#
+# The bare `exec` on the last line is the fallback, and it is load-bearing: a
+# redirection onto a path the shell cannot open aborts the script, which would
+# turn an unwritable log directory into an app that does not start at all. The
+# log is a diagnostic; it never gets a vote on whether litman runs.
+#
+# `exec` itself is load-bearing too: Launch Services identifies the running
+# app by the process it started from the bundle, so exec hands litman.app's
+# identity to the server process — which is what lets the WKWebView window
+# that process opens wear litman's Dock tile (see _mac_shell). Identity
+# without a window once deadlocked second launches (an activation request
+# arrived at a process that could answer nothing); now the process really
+# owns a window and an event loop, so a reopen has somewhere to land.
+#
+# Both exec lines carry _DARWIN_APP_LAUNCH_ENV (an assignment prefix rides
+# into the exec'd program's environment), so the launched process knows it
+# wears the bundle's identity. That matters exactly once: a browser-route
+# fallback must not keep that identity on a windowless server (see
+# _shed_darwin_app_identity) — and a terminal launch, which never comes
+# through here, must not shed one it never had.
+_DARWIN_STUB = f"""\
+#!/bin/sh
+LOG_DIR="{{log_dir}}"
+if mkdir -p "$LOG_DIR" 2>/dev/null && : >"$LOG_DIR/litman.log" 2>/dev/null; then
+    {_DARWIN_APP_LAUNCH_ENV}=1 exec "{{lit}}" gui --window >"$LOG_DIR/litman.log" 2>&1
+fi
+{_DARWIN_APP_LAUNCH_ENV}=1 exec "{{lit}}" gui --window
+"""
+
+
+def _install_darwin_icon(target: Path) -> str | None:
+    """Copy the bundled ``.icns`` into ``target``. Returns the name, or None.
+
+    Without ``CFBundleIconFile`` and this file beside it, the Dock and
+    Launchpad draw the generic executable tile — which is what earlier
+    installs got. The artwork is the same mark the Windows
+    ``.ico`` carries, inset to Apple's icon grid (the rounded body is 824 of
+    1024) so it does not sit visibly larger than its neighbours in the Dock.
+
+    Best effort by design: an install missing the asset still deserves a
+    working launcher, so a failed copy drops the plist key rather than the
+    shortcut.
+    """
+    source = _icon_path("litman.icns")
+    dest = target / "Contents" / "Resources" / source.name
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, dest)
+    except OSError:
+        return None
+    return source.name
+
+
 def _write_shortcut_darwin(target: Path, lit: str) -> None:
-    # Minimal .app bundle: Info.plist + an executable shell stub. No .icns
-    # pipeline in v1 — the bundle works without a custom icon.
+    """Write the ``~/Applications/litman.app`` launcher bundle.
+
+    A minimal bundle — Info.plist, an icon, and an executable shell stub that
+    runs ``lit gui --window``. See :data:`_DARWIN_STUB` for why the stub logs
+    and :func:`_install_darwin_icon` for the icon.
+    """
     macos_dir = target / "Contents" / "MacOS"
     macos_dir.mkdir(parents=True, exist_ok=True)
+    icon = _install_darwin_icon(target)
     (target / "Contents" / "Info.plist").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -938,13 +1294,27 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
         "  <key>CFBundleIdentifier</key><string>io.github.litman</string>\n"
         "  <key>CFBundleExecutable</key><string>litman</string>\n"
         "  <key>CFBundlePackageType</key><string>APPL</string>\n"
-        "</dict>\n"
+        + (
+            f"  <key>CFBundleIconFile</key><string>{icon}</string>\n"
+            if icon
+            else ""
+        )
+        + "</dict>\n"
         "</plist>\n",
         encoding="utf-8",
     )
     stub = macos_dir / "litman"
-    stub.write_text(f'#!/bin/sh\nexec "{lit}" gui --window\n', encoding="utf-8")
+    stub.write_text(
+        _DARWIN_STUB.format(lit=lit, log_dir=_DARWIN_LOG_DIR), encoding="utf-8"
+    )
     stub.chmod(0o755)
+    # Finder and the Dock cache a bundle's icon; the cache is keyed on the
+    # bundle and dropped when its modification date moves. Rewriting the files
+    # *inside* Contents/ does not move the .app's own date, so an install that
+    # already showed the generic tile would keep showing it. Best effort — a
+    # refused utime costs an icon, not the shortcut.
+    with contextlib.suppress(OSError):
+        os.utime(target)
 
 
 @click.command("gui")
@@ -965,7 +1335,7 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
     "--window",
     is_flag=True,
     help=(
-        "Open in a Chrome/Edge app window (no address bar) instead of a "
+        "Open in a standalone app window (no address bar) instead of a "
         "browser tab."
     ),
 )
@@ -1024,6 +1394,15 @@ def gui_cmd(
         and not no_browser
         and display_available()
         and _launched_without_console()
+        # Not macOS. Aqua's Tk ignores overrideredirect, so instead of a
+        # floating mark the splash comes up as an ordinary titled window —
+        # traffic lights, Tk's default "tk" in the title bar, its own Dock tile
+        # and the menu bar to itself. It reads as litman's main window right up
+        # until it vanishes and the real one appears somewhere else, which is
+        # worse than no splash at all. The feedback it exists to give is already
+        # there anyway: Launch Services bounces the Dock icon while the bundle
+        # starts, which is exactly what a Windows .lnk does not do.
+        and sys.platform != "darwin"
     )
     if want_splash:
         with contextlib.suppress(Exception):
@@ -1117,6 +1496,38 @@ def gui_cmd(
         # leave the relaunch recipe unset — one-click update then refuses with
         # its manual hint instead of arming a restart that cannot work.
         pass
+
+    # macOS --window: prefer a window this process owns. The Dock badges a
+    # window with the owning process's bundle, so a WKWebView here wears
+    # litman's own face (the .app stub exec'd us) where the Chromium --app
+    # window wore the browser's — and no browser needs to be installed at
+    # all. Anything short of a working pywebview falls back to the Chromium
+    # route below, byte-for-byte the launch it always was.
+    if window and sys.platform == "darwin":
+        try:
+            shell = _load_mac_shell()
+        except Exception:
+            # Belt and braces: the seam already swallows its own failures —
+            # this catch only survives a broken (or test-patched) seam
+            # object itself.
+            shell = None
+        if shell is not None:
+            console.print("[dim]Close the window to stop the server.[/]")
+            from litman.commands import _mac_shell
+
+            if _mac_shell.run_shell(shell, server, url, app.state.presence):
+                return
+            # False: the window layer failed before the server ever ran, so
+            # the launch is still ours to make good on below.
+        if _shed_darwin_app_identity():
+            console.print(
+                "[dim]Native window unavailable; relaunching in the "
+                "browser.[/]"
+            )
+            return
+        console.print(
+            "[dim]Native window unavailable; falling back to the browser.[/]"
+        )
 
     # Signals the readiness poller to stand down: set in `finally` so a server
     # that raised before it ever listened never gets a browser opened onto it.
@@ -1228,7 +1639,11 @@ def gui_cmd(
                 _start_watcher(None)
                 return
             owned.append(proc)
+            # Watcher first: closing the window must always stop the server,
+            # and the brander is cosmetics — it never gets to stand in front
+            # of the lifeline.
             _start_watcher(proc)
+            _brand_windows_taskbar(stop_event)
 
         def _after_open() -> None:
             # Splash hand-off: only a real app window has a page that will hold

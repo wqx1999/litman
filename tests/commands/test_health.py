@@ -20,6 +20,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.commands.health import _CATEGORY_PREVIEW
 from litman.core import viewer as viewer_mod
+from litman.core.locking import unlock_truth_file
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     INBOX_STALE_DAYS,
@@ -44,6 +45,8 @@ from litman.core.checks import (
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -374,7 +377,7 @@ def test_index_vs_disk_vanished_id_is_error(vault: Path) -> None:
     # Manual rm of the paper dir, INDEX not rebuilt.
     import shutil
 
-    shutil.rmtree(vault / "papers" / "2024_Foo_Bar")
+    locking.rmtree(vault / "papers" / "2024_Foo_Bar")
     issues = check_index_vs_disk(vault, [])
     vanished = [i for i in issues if i.severity == "error"]
     assert len(vanished) == 1
@@ -617,7 +620,7 @@ def test_project_bridge_dangling_moved_vault_reported_and_fixed(
     moved = tmp_path / "moved_vault"
     vault.rename(moved)
     link = proj / "litman_reflib" / "2024_Foo_Bar"
-    assert link.is_symlink() and not link.exists()  # dangling, name intact
+    assert is_portable_link(link) and not link.exists()  # dangling, name intact
 
     issues = check_project_bridge_dangling(moved, [])
     assert len(issues) == 1
@@ -632,7 +635,7 @@ def test_project_bridge_dangling_moved_vault_reported_and_fixed(
     assert "points at nothing" in flat  # n=1 → singular verb
 
     runner.invoke(cli, ["health-check", "--fix", "--library", str(moved)])
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (moved / "papers" / "2024_Foo_Bar").resolve()
     assert check_project_bridge_dangling(moved, []) == []
 
@@ -908,6 +911,10 @@ def test_taxonomy_drift_unregistered_value(vault: Path) -> None:
 
 
 def test_taxonomy_drift_missing_taxonomy_file(vault: Path) -> None:
+    # TAXONOMY.md is a locked TRUTH file, and Windows refuses os.unlink on a
+    # read-only one (WinError 5). Clearing the bit through litman's own helper
+    # is what every production deletion path does.
+    unlock_truth_file(vault / "TAXONOMY.md")
     (vault / "TAXONOMY.md").unlink()
     issues = check_taxonomy_drift(vault, [])
     assert len(issues) == 1
@@ -2274,13 +2281,20 @@ def test_health_check_unregistered_library_does_not_refresh(
 
 
 def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fake the OS boundary, not litman's helpers — every layer above runs real."""
+    """Fake the OS boundary, not litman's helpers — every layer above runs real.
+
+    BOTH mechanisms have to go. Poisoning only ``Path.symlink_to`` left the
+    Windows junction constructor untouched, so the probe still said "links
+    work" and the linkless-drive scenario quietly stopped being linkless.
+    """
+    from litman.core import portable_link
     from litman.core.portable_link import reset_link_probe_cache
 
-    def boom(self: Path, target: Any, target_is_directory: bool = False) -> None:
+    def boom(*_a: Any, **_k: Any) -> None:
         raise OSError(1, "Operation not permitted")
 
     monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
     reset_link_probe_cache()
 
 
@@ -2309,7 +2323,12 @@ def _linkless_vault(
     from litman.core.project_link import add_project
     from litman.core.taxonomy import add_taxonomy_values
 
-    monkeypatch.setattr(viewer_mod.sys, "platform", "darwin")  # quiet pdf_viewer
+    # Patch the probe, not sys.platform: ``viewer_mod.sys`` IS the global sys
+    # module, so faking "darwin" there also sent core.atomic._fsync_dir down
+    # its POSIX arm on a Windows host, where os.O_DIRECTORY does not exist.
+    # checks.py imports this function at call time, so the module attribute is
+    # the seam. Windows would answer its own sentinel here anyway.
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
 
     proj = tmp_path / "myproj"
     proj.mkdir()
@@ -2429,7 +2448,7 @@ def test_vault_can_link_but_project_drive_cannot(
 
     # Tear the project's bridge away; the vault's views stay intact.
     for child in (proj / "litman_reflib").iterdir():
-        if child.is_symlink():
+        if is_portable_link(child):
             child.unlink()
 
     # The project's missing bridge is suppressed (that drive cannot make it)...

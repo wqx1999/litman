@@ -11,6 +11,7 @@ lines as extractable text. Used by the M20 code-URL scanner tests and the
 from __future__ import annotations
 
 import io
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -176,6 +177,78 @@ def fake_junction(
         return path
 
     return _plant
+
+
+@pytest.fixture(autouse=True)
+def _isolate_machine_config_roots(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin every OS config-dir ROOT at tmp, so no test can reach the real box.
+
+    ``_isolate_registry`` below pins ``$LITMAN_REGISTRY_DIR``, but 13 test
+    modules deliberately ``delenv`` it — they exercise the *default* resolution
+    and redirect ``$HOME`` instead. That holds on POSIX and is inert on
+    Windows: ``Path.home()`` reads ``%USERPROFILE%`` and platformdirs reads
+    ``%LOCALAPPDATA%``, so all 13 fell through to the machine-level
+    ``C:\\Users\\<user>\\AppData\\Local\\litman`` — ONE registry shared by the
+    whole session. Tests then saw each other's vaults ("already registered"),
+    and a plain ``pytest`` run rewrote the real user's registry.
+
+    Pinning the roots makes the fallback safe whichever override a test drops.
+
+    ``XDG_*`` / ``CURSOR_CONFIG_DIR`` are cleared rather than pinned so the
+    POSIX defaults (``$HOME/.config``, ``~/.cursor``) resolve under whatever
+    tmp home is in force. Left set, ``lit install-skill --agent cursor`` writes
+    to the developer's real ``~/.config/cursor/cli-config.json`` — which it did
+    on every box where ``$XDG_CONFIG_HOME`` happens to be exported.
+    """
+    # Deliberately NOT under the test's own ``tmp_path``: several tests assert
+    # a directory they were handed is empty ("the probe left nothing behind",
+    # "the profile wrote nothing else"), and a home planted inside it would
+    # read as litter the test is hunting for.
+    home = tmp_path_factory.mktemp("machine-home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for var in (
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "CURSOR_CONFIG_DIR",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    # Pinning env vars is not enough on Windows, and this is the whole reason
+    # 35 registry failures survived the first attempt at this fixture:
+    #
+    #   * ``Path.home()`` reads %USERPROFILE%, never $HOME — so the 29 modules
+    #     that redirect $HOME (the suite's established convention) redirect
+    #     nothing there.
+    #   * platformdirs asks the OS through ctypes (``SHGetFolderPathW``) and
+    #     ignores %LOCALAPPDATA% entirely, so no env var can move it.
+    #
+    # ``registry_path``'s docstring promises "tests that monkeypatch HOME see
+    # the redirected location". That promise held on POSIX only. Redirecting
+    # the two functions themselves makes it true everywhere — and both read
+    # the environment at CALL time, so a module fixture that re-points $HOME
+    # after this one still wins.
+    monkeypatch.setattr(
+        Path, "home", classmethod(lambda cls: Path(os.environ["HOME"]))
+    )
+    # config and cache must stay DISTINCT: the browser profile lives under the
+    # cache dir precisely so it is not inside the config dir, and a test pins
+    # that separation.
+    for mod, attr, sub in (
+        ("litman.core.vault_registry", "user_config_dir", ".config"),
+        ("litman.core.agent_prefs", "user_config_dir", ".config"),
+        ("litman.core.ui_state", "user_config_dir", ".config"),
+        ("litman.commands.gui", "user_cache_dir", ".cache"),
+    ):
+        monkeypatch.setattr(
+            f"{mod}.{attr}",
+            lambda app, *a, _sub=sub, **k: str(
+                Path(os.environ["HOME"]) / _sub / app
+            ),
+        )
 
 
 @pytest.fixture(autouse=True)

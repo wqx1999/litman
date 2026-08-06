@@ -15,6 +15,7 @@ import functools
 import importlib
 import io
 import os
+import plistlib
 import re
 import shutil
 import socket
@@ -31,7 +32,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman import cli
-from litman.commands import gui
+from litman.commands import _mac_shell, gui
 from litman.commands.gui import (
     _DEFAULT_PORT,
     _app_window_argv,
@@ -49,6 +50,66 @@ from litman.commands.gui import (
     shortcut_path,
 )
 from litman.core.presence import PresenceTracker
+from litman.core import locking
+
+
+# The REAL host, captured at import — before any test can fake it. Half this
+# file runs under ``monkeypatch.setattr(sys, "platform", ...)``, so reading
+# ``sys.platform`` inside a test body answers the fake, not the box the paths
+# actually come from. Anything below that has to know where pathlib is really
+# standing must use this, never sys.platform. (``@pytest.mark.skipif`` is
+# fine either way: marks are evaluated at collection, before fixtures run.)
+_REAL_WIN32 = sys.platform == "win32"
+
+
+def _slashed(p: str) -> str:
+    """``p`` with forward slashes, so a path assertion reads the same anywhere.
+
+    The separator is not part of any contract these tests are about — the
+    branch taken is. ``monkeypatch.setattr(sys, "platform", ...)`` moves the
+    branch but not ``pathlib``, which always speaks the real host's flavour.
+    """
+    return str(p).replace(os.sep, "/")
+
+
+def _host_abs(posix_path: str) -> str:
+    """``posix_path`` made absolute on the *real* host, not the faked one.
+
+    ``_resolve_lit_executable`` runs whatever ``shutil.which`` returns through
+    ``Path(...).resolve()``, and that is real-OS pathlib no matter what
+    ``sys.platform`` has been set to. On Windows a leading slash is
+    drive-relative, so a ``/opt/...`` stub comes back as ``D:\\opt\\...`` and
+    no literal can match it. Anchoring at ``C:`` keeps the round-trip exact.
+
+    ``_REAL_WIN32``, not ``sys.platform``: every caller below runs inside a
+    faked-darwin test, so reading the live value here answered "darwin" on a
+    Windows box and handed back the POSIX literal again.
+    """
+    if _REAL_WIN32:
+        return str(Path("C:/" + posix_path.lstrip("/")).resolve())
+    return posix_path
+
+
+@pytest.fixture(autouse=True)
+def _no_real_native_window(request, monkeypatch) -> None:
+    """Keep a faked platform from opening a real macOS window.
+
+    A test that sets ``sys.platform`` to "darwin" and runs ``gui_cmd --window``
+    reaches the native shell for real when the host *is* a Mac: pywebview
+    imports, a window opens over whatever the developer is doing, and the run
+    blocks until someone closes it. On Linux the same test falls straight
+    through to the browser, so the trap is invisible where the suite usually
+    runs — and this repo has no CI to run it anywhere else. Neutralise the
+    loader by default; a test that means to drive the shell patches
+    ``load_webview`` itself, which lands after this and wins. The three tests
+    whose subject *is* the loader carry ``real_webview_loader`` — without the
+    opt-out this fixture would answer for them, and the two expecting ``None``
+    would keep passing while proving nothing.
+    """
+    if "real_webview_loader" in request.keywords:
+        return
+    monkeypatch.setattr(_mac_shell, "load_webview", lambda: None)
+
 
 # ---------------------------------------------------------------------------
 # A1(a) — importing the CLI must not pull fastapi into the process
@@ -1239,6 +1300,10 @@ def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Every darwin browser-lookup test redirects _DARWIN_SYSTEM_APPS as well:
+    # HOME alone leaves the system folder real, so on a Mac host the answer
+    # comes from whatever browsers that machine happens to have installed.
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
     binary = (
         tmp_path
         / "Applications"
@@ -1257,6 +1322,91 @@ def test_app_window_argv_darwin_runs_the_bundle_binary(monkeypatch, tmp_path):
     assert "open" not in argv
 
 
+def test_app_window_argv_darwin_finds_every_bundle_it_lists(monkeypatch, tmp_path):
+    # macOS puts no browser binary on PATH, so _DARWIN_APP_CANDIDATES *is* the
+    # lookup — a name that fails to resolve silently demotes an installed
+    # browser to a plain tab. Each name goes through the real resolver rather
+    # than being asserted against the tuple, which would only restate the source.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
+    apps = tmp_path / "Applications"
+
+    # The list is a capability promise, so pin it: a name quietly dropped here
+    # is a browser that stops working with nothing else noticing.
+    assert set(gui._DARWIN_APP_CANDIDATES) == {
+        "Google Chrome",
+        "Microsoft Edge",
+        "Chromium",
+        "Brave Browser",
+    }
+
+    for app in gui._DARWIN_APP_CANDIDATES:
+        binary = apps / f"{app}.app" / "Contents" / "MacOS" / app
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+
+        argv = _app_window_argv("http://127.0.0.1:8765")
+
+        assert argv is not None, f"{app} is installed but yielded no app window"
+        assert argv[0] == str(binary)
+        locking.rmtree(apps)
+
+
+def test_app_window_argv_darwin_prefers_chrome_to_the_forks(monkeypatch, tmp_path):
+    # Tuple order is preference order. A machine carrying both Chrome and a fork
+    # must get Chrome — the forks are the fallback, not a coin flip on whatever
+    # the filesystem hands back first.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
+    for app in ("Brave Browser", "Chromium", "Google Chrome"):
+        binary = tmp_path / "Applications" / f"{app}.app" / "Contents" / "MacOS" / app
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert _slashed(argv[0]).endswith(
+        "Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
+
+
+def test_app_window_argv_darwin_searches_the_system_folder_first(
+    monkeypatch, tmp_path
+):
+    # /Applications is where a Mac browser actually lands, and it is searched
+    # ahead of ~/Applications. Every other test here seeds only HOME, so all of
+    # them would stay green if the system folder fell out of the search.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    tail = Path("Google Chrome.app") / "Contents" / "MacOS" / "Google Chrome"
+    for root in (system_apps, home / "Applications"):
+        (root / tail).parent.mkdir(parents=True)
+        (root / tail).touch()
+
+    argv = _app_window_argv("http://127.0.0.1:8765")
+
+    assert argv is not None
+    assert argv[0] == str(system_apps / tail)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX-only premise, and unfakeable here: refresh_path's non-win32 arm "
+        "joins PATH with ':', which is also the drive separator — a real "
+        "Windows bin dir cannot survive that round-trip. Windows reads its "
+        "PATH from the registry instead (refresh_path's other arm)."
+    ),
+)
 def test_app_window_argv_reaches_a_browser_the_session_path_omits(
     monkeypatch, tmp_path
 ):
@@ -1293,7 +1443,7 @@ def test_app_window_argv_reaches_a_browser_the_session_path_omits(
 def fake_lit_on_path(monkeypatch):
     """Pin `lit` resolution to a fixed path (with a space, to prove quoting)
     so shortcut content is deterministic regardless of the test host PATH."""
-    fake = "/opt/lit tools/bin/lit"
+    fake = _host_abs("/opt/lit tools/bin/lit")
     monkeypatch.setattr(
         shutil, "which", lambda name: fake if name == "lit" else None
     )
@@ -1327,6 +1477,163 @@ def test_make_shortcut_linux_writes_desktop_file(
     result2 = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
     assert result2.exit_code == 0, result2.output
     assert "updated" in result2.output
+
+
+def test_app_window_flags_carry_the_wm_class_only_on_linux(monkeypatch) -> None:
+    # X11 matches the window's WM_CLASS against StartupWMClass in
+    # litman.desktop; Windows groups by AppUserModelID and macOS by owning
+    # bundle, so --class would be noise there at best.
+    url = "http://127.0.0.1:8765"
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert f"--class={gui._LINUX_WM_CLASS}" in gui._app_window_flags(
+        url, "/usr/bin/chromium"
+    )
+    for platform in ("win32", "darwin"):
+        monkeypatch.setattr(sys, "platform", platform)
+        flags = gui._app_window_flags(url, "/usr/bin/chromium")
+        assert not [f for f in flags if f.startswith("--class")]
+
+
+def test_app_window_flags_force_x11_only_when_xwayland_is_reachable(
+    monkeypatch,
+) -> None:
+    # Native-Wayland Chromium ignores --class, so the WM_CLASS fix only
+    # works through XWayland; without $DISPLAY forcing x11 would trade a
+    # wrongly-badged window for none at all.
+    url = "http://127.0.0.1:8765"
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert "--ozone-platform=x11" in gui._app_window_flags(url, "/usr/bin/chromium")
+
+    monkeypatch.delenv("DISPLAY")
+    assert "--ozone-platform=x11" not in gui._app_window_flags(
+        url, "/usr/bin/chromium"
+    )
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    for platform in ("win32", "darwin"):
+        monkeypatch.setattr(sys, "platform", platform)
+        flags = gui._app_window_flags(url, "/usr/bin/chromium")
+        assert not [f for f in flags if f.startswith("--ozone-platform")]
+
+
+def test_make_shortcut_linux_wm_class_matches_the_window_flag(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # One test through both production chains: the .desktop's StartupWMClass
+    # and the window's --class must be the same string or the taskbar match
+    # silently breaks — only --class regroups the window under a name no
+    # .desktop claims (falling back to the 16px tab favicon), only
+    # StartupWMClass never matches the browser's own class. Either half
+    # alone is worse than neither.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+    content = (tmp_path / "share" / "applications" / "litman.desktop").read_text(
+        encoding="utf-8"
+    )
+    wm_class = [
+        line.removeprefix("StartupWMClass=")
+        for line in content.splitlines()
+        if line.startswith("StartupWMClass=")
+    ]
+
+    flags = gui._app_window_flags("http://127.0.0.1:8765", "/usr/bin/chromium")
+    class_values = [
+        f.removeprefix("--class=") for f in flags if f.startswith("--class=")
+    ]
+
+    assert wm_class == class_values == ["litman"]
+
+
+# ---------------------------------------------------------------------------
+# win32 taskbar branding (task-launcher-identity Part D)
+# ---------------------------------------------------------------------------
+
+
+def test_gui_window_starts_the_taskbar_brander(
+    gui_harness, chromium_on_path, vault_with_paper, monkeypatch
+) -> None:
+    # The relaunch properties die with the window, so every --window launch
+    # that spawned a browser must arm the brander (a no-op off win32) and
+    # hand it the stop event that ends its polling on shutdown.
+    handed: list[threading.Event] = []
+    monkeypatch.setattr(
+        gui, "_brand_windows_taskbar", lambda ev: handed.append(ev)
+    )
+    vault, _pid = vault_with_paper
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(handed) == 1
+    assert isinstance(handed[0], threading.Event)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts the off-win32 arm; on win32 branding is the real behaviour",
+)
+def test_brand_windows_taskbar_is_a_no_op_off_win32(monkeypatch) -> None:
+    from litman.commands import _win_taskbar
+
+    calls: list[object] = []
+    monkeypatch.setattr(_win_taskbar, "adopt_window", lambda *a, **k: calls.append(a))
+
+    assert gui._brand_windows_taskbar(threading.Event()) is None
+    assert calls == []
+
+
+def test_brand_windows_taskbar_hands_the_worker_its_pieces(monkeypatch) -> None:
+    from litman.commands import _win_taskbar
+
+    calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(
+        _win_taskbar,
+        "adopt_window",
+        lambda *a, **k: calls.append((a, k)) or True,
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gui, "_shortcut_executable", lambda: r"C:\tools\litw.exe")
+    stop = threading.Event()
+
+    thread = gui._brand_windows_taskbar(stop)
+    assert thread is not None
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    (args, kwargs), = calls
+    icon, relaunch = args
+    assert icon.endswith("litman.ico")
+    # The same command the pinned button will run: pinning a branded group
+    # snapshots RelaunchCommand, so it must bring litman back, not the
+    # browser.
+    assert relaunch == r"C:\tools\litw.exe gui --window"
+    # A bound method compares by behavior, not identity: the worker's
+    # give_up must track this launch's stop event.
+    assert kwargs["give_up"]() is False
+    stop.set()
+    assert kwargs["give_up"]() is True
+
+
+def test_brand_windows_taskbar_contains_a_failing_worker(monkeypatch) -> None:
+    # Cosmetic best-effort: a raise anywhere in the worker dies quietly in
+    # its own thread and takes nothing of the launch with it.
+    from litman.commands import _win_taskbar
+
+    def boom(*a, **k):
+        raise RuntimeError("no shell here")
+
+    monkeypatch.setattr(_win_taskbar, "adopt_window", boom)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(gui, "_shortcut_executable", lambda: "litw")
+
+    thread = gui._brand_windows_taskbar(threading.Event())
+    assert thread is not None
+    thread.join(timeout=5)
+    assert not thread.is_alive()
 
 
 def test_shortcut_path_win32_is_on_desktop(monkeypatch, tmp_path) -> None:
@@ -1451,6 +1758,9 @@ def test_make_shortcut_darwin_builds_app_bundle(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Every darwin shortcut test redirects _DARWIN_SYSTEM_APPS: unpatched, the
+    # code would probe — or on a Mac host, write into — the real /Applications.
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
 
     result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
     assert result.exit_code == 0, result.output
@@ -1458,13 +1768,1218 @@ def test_make_shortcut_darwin_builds_app_bundle(
     app = tmp_path / "Applications" / "litman.app"
     stub = app / "Contents" / "MacOS" / "litman"
     assert stub.is_file()
-    assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
+    if not _REAL_WIN32:
+        # NTFS has no exec bit — chmod cannot set it and stat never reports
+        # it — so this half is asserted on the arm that can hold it. Every
+        # other assertion in this test still runs on Windows. Keyed on the
+        # real host: this test fakes darwin, so sys.platform lies here.
+        assert stub.stat().st_mode & 0o111, "launcher stub must be executable"
+    stub_text = stub.read_text(encoding="utf-8")
+    # Marked and exec'd: the env prefix tells the launched process it wears
+    # the bundle's identity; exec is what hands that identity over.
     assert (
-        f'exec "{fake_lit_on_path}" gui --window'
-        in stub.read_text(encoding="utf-8")
+        f'LITMAN_DARWIN_APP_LAUNCH=1 exec "{fake_lit_on_path}" gui --window'
+        in stub_text
+    )
+    # Every exec line carries the marker — the no-log fallback line included.
+    assert (
+        stub_text.count("exec ")
+        == stub_text.count("LITMAN_DARWIN_APP_LAUNCH=1 exec ")
+        == 2
     )
     plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
     assert "CFBundleExecutable" in plist
+
+
+def test_make_shortcut_darwin_bundle_carries_the_icon(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Without both halves — the .icns inside Resources AND the plist key
+    # naming it — the Dock and Launchpad draw the generic executable tile,
+    # which is what earlier installs got.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
+
+    assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
+
+    app = tmp_path / "Applications" / "litman.app"
+    icns = app / "Contents" / "Resources" / "litman.icns"
+    assert icns.is_file()
+    assert icns.read_bytes()[:4] == b"icns", "must be a real icon file"
+    plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
+    assert "<key>CFBundleIconFile</key><string>litman.icns</string>" in plist
+
+
+def test_make_shortcut_darwin_survives_a_missing_icon_asset(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # An install whose package data lost the .icns still deserves a working
+    # launcher: the key drops out rather than the shortcut. Asserting the key
+    # is *absent* matters as much as the file — a plist naming an icon that
+    # is not there is a bundle macOS reports as broken.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
+    monkeypatch.setattr(
+        "litman.commands.gui._icon_path", lambda name: tmp_path / "gone" / name
+    )
+
+    assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
+
+    app = tmp_path / "Applications" / "litman.app"
+    assert (app / "Contents" / "MacOS" / "litman").is_file()
+    assert not (app / "Contents" / "Resources" / "litman.icns").exists()
+    plist = (app / "Contents" / "Info.plist").read_text(encoding="utf-8")
+    assert "CFBundleIconFile" not in plist
+
+
+def test_make_shortcut_darwin_prefers_system_applications(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Finder's sidebar "Applications" is hardwired to /Applications; a bundle
+    # in ~/Applications is invisible from the one place users look. When the
+    # system folder takes writes the bundle belongs there — and the Finder-drag
+    # hint must not print, or it would be shouting on every run.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    system_apps.mkdir()
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    assert (system_apps / "litman.app" / "Contents" / "MacOS" / "litman").is_file()
+    assert not (tmp_path / "Applications" / "litman.app").exists()
+    assert "Finder" not in result.output
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores directory permission bits",
+)
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the unwritable dir is built with mkdir(mode=0o500); Windows ignores "
+        "the mode, and the CI account is admin, so the write succeeds and "
+        "there is no rejection left to fall back from"
+    ),
+)
+def test_make_shortcut_darwin_falls_back_when_system_apps_reject_writes(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Writability is probed by writing, not os.access: non-admin accounts, MDM
+    # and TCC each veto in their own way. The fallback names the Finder drag as
+    # the way over — Finder has an escalation channel, a CLI must not — and
+    # still exits 0: a shortcut in ~/Applications is an install, not an error.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    system_apps.mkdir(mode=0o500)
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    stub = tmp_path / "Applications" / "litman.app" / "Contents" / "MacOS" / "litman"
+    assert stub.is_file()
+    assert not (system_apps / "litman.app").exists()
+    assert "no write access" in result.output
+    assert "Finder" in result.output
+
+
+def test_make_shortcut_darwin_migrates_the_user_home_bundle(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # One copy, ever: a bundle left behind in ~/Applications is how a stale
+    # stub outlives an upgrade — --make-shortcut refreshes the preferred home
+    # while yesterday's copy keeps launching yesterday's code.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    assert CliRunner().invoke(gui_cmd, ["--make-shortcut"]).exit_code == 0
+    user_bundle = tmp_path / "Applications" / "litman.app"
+    assert user_bundle.is_dir()
+
+    system_apps.mkdir()  # today the system home takes writes
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    assert (system_apps / "litman.app" / "Contents" / "MacOS" / "litman").is_file()
+    assert not user_bundle.exists()
+    # The (path, existed) contract sees through the move: an install was
+    # already present, so this is an update, not a first run.
+    assert "updated" in result.output
+
+
+def test_make_shortcut_darwin_leaves_a_foreign_bundle_alone(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # /Applications is shared territory: a litman.app whose Info.plist is not
+    # ours is never rewritten, migrated or deleted — the user home takes over,
+    # without the drag hint (dragging onto a stranger's bundle is no way out).
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = system_apps / "litman.app" / "Contents" / "Info.plist"
+    foreign_plist.parent.mkdir(parents=True)
+    foreign_plist.write_text("<string>com.example.imposter</string>", encoding="utf-8")
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    stub = tmp_path / "Applications" / "litman.app" / "Contents" / "MacOS" / "litman"
+    assert stub.is_file()
+    assert foreign_plist.read_text(encoding="utf-8") == (
+        "<string>com.example.imposter</string>"
+    )
+    assert not (system_apps / "litman.app" / "Contents" / "MacOS").exists()
+    assert "Finder" not in result.output
+
+
+def _seed_binary_plist_bundle(system_apps: Path) -> Path:
+    """A foreign litman.app whose Info.plist is binary — Xcode's default, so
+    the realistic foreign bundle. Returns the plist path."""
+    foreign_plist = system_apps / "litman.app" / "Contents" / "Info.plist"
+    foreign_plist.parent.mkdir(parents=True)
+    with foreign_plist.open("wb") as fh:
+        plistlib.dump(
+            {"CFBundleIdentifier": "com.example.imposter"},
+            fh,
+            fmt=plistlib.FMT_BINARY,
+        )
+    # The fixture must reproduce the crash input: a binary plist a text read
+    # dies on (UnicodeDecodeError is a ValueError, which no OSError guard
+    # catches), or this test proves nothing.
+    with pytest.raises(UnicodeDecodeError):
+        foreign_plist.read_text(encoding="utf-8")
+    return foreign_plist
+
+
+def test_make_shortcut_darwin_survives_a_binary_plist_foreign_bundle(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # Same verdict as the text-plist imposter above — not ours, not touched,
+    # user home takes over — but the probe must reach it without crashing on
+    # bytes it cannot decode.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = _seed_binary_plist_bundle(system_apps)
+    original = foreign_plist.read_bytes()
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+    assert result.exit_code == 0, result.output
+
+    stub = tmp_path / "Applications" / "litman.app" / "Contents" / "MacOS" / "litman"
+    assert stub.is_file()
+    assert foreign_plist.read_bytes() == original
+    assert not (system_apps / "litman.app" / "Contents" / "MacOS").exists()
+
+
+def test_remove_shortcut_darwin_spares_a_binary_plist_foreign_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    # Uninstall sweeps both bundle homes; the binary-plist stranger must
+    # neither crash the sweep nor be taken down by it.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = _seed_binary_plist_bundle(system_apps)
+
+    assert gui.remove_shortcut() is None
+    assert foreign_plist.exists()
+
+
+def test_shortcut_path_darwin_never_answers_with_a_foreign_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    # The occupied-slot fallback: /Applications takes writes but a stranger's
+    # litman.app sits on the path. Answering with it would put that app in
+    # uninstall's removal preview and make setup call the step already done —
+    # the user home is the only honest answer (where _create_shortcut_darwin
+    # would install too).
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    system_apps = tmp_path / "system-apps"
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", system_apps)
+    foreign_plist = system_apps / "litman.app" / "Contents" / "Info.plist"
+    foreign_plist.parent.mkdir(parents=True)
+    foreign_plist.write_text("<string>com.example.imposter</string>", encoding="utf-8")
+
+    assert shortcut_path() == tmp_path / "Applications" / "litman.app"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX /bin/sh")
+def test_darwin_stub_logs_the_launch_and_runs_anyway_without_a_log(
+    monkeypatch, tmp_path
+) -> None:
+    # The stub is the one piece of this bundle no test host can be macOS for,
+    # but it is plain POSIX sh — so run it. Finder gives it no console, so the
+    # log is the only evidence a failed launch ever leaves; and a log that
+    # cannot be opened must cost the diagnostic, never the launch itself.
+    lit = tmp_path / "fake lit"  # space: the quoting is what is under test
+    # The mark line proves the assignment prefix really rides into the
+    # exec'd program's environment — on both stub branches: the logged one
+    # here and the no-log fallback below.
+    lit.write_text(
+        "#!/bin/sh\n"
+        'echo "argv: $*"\n'
+        'echo "mark: ${LITMAN_DARWIN_APP_LAUNCH:-unset}"\n'
+        "echo oops >&2\n",
+        encoding="utf-8",
+    )
+    lit.chmod(0o755)
+    stub = tmp_path / "stub.sh"
+    stub.write_text(
+        gui._DARWIN_STUB.format(lit=lit, log_dir=gui._DARWIN_LOG_DIR),
+        encoding="utf-8",
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    done = subprocess.run(
+        ["/bin/sh", str(stub)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0
+    assert done.stdout == "", "a logged launch must print nothing to the console"
+    log = home / "Library" / "Logs" / "litman" / "litman.log"
+    assert log.read_text(encoding="utf-8") == "argv: gui --window\nmark: 1\noops\n"
+
+    # Second run truncates: the log records the last launch, it does not grow.
+    subprocess.run(
+        ["/bin/sh", str(stub)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+    )
+    assert log.read_text(encoding="utf-8").count("argv:") == 1
+
+    # A home the log cannot be created under: same launch (marker included),
+    # output falls back to the console instead of taking the app down with it.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    done = subprocess.run(
+        ["/bin/sh", str(stub)],
+        env={**os.environ, "HOME": str(blocked)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0
+    assert done.stdout == "argv: gui --window\nmark: 1\n"
+
+
+# ---------------------------------------------------------------------------
+# macOS native shell (task-mac-native-shell): darwin --window owns its window
+# ---------------------------------------------------------------------------
+
+
+class _ShellEvent:
+    """pywebview's ``window.events.closed += handler`` shape."""
+
+    def __init__(self) -> None:
+        self.handlers: list = []
+
+    def __iadd__(self, handler) -> _ShellEvent:
+        self.handlers.append(handler)
+        return self
+
+
+class _ShellWindow:
+    def __init__(self, title: str, html: str | None, **kw) -> None:
+        self.title = title
+        self.created_html = html
+        self.kw = kw
+        self.ops: list[tuple[str, str]] = []
+        self.events = SimpleNamespace(closed=_ShellEvent())
+        self.destroyed = threading.Event()
+
+    def load_url(self, url: str) -> None:
+        self.ops.append(("load_url", url))
+
+    def load_html(self, html: str) -> None:
+        self.ops.append(("load_html", html))
+
+    def close(self) -> None:
+        for handler in list(self.events.closed.handlers):
+            handler()
+
+    def destroy(self) -> None:
+        # pywebview's destroy fires the closed event and, as the last
+        # window, ends the GUI loop.
+        self.destroyed.set()
+        self.close()
+
+
+class _ShellWebview:
+    """pywebview module stand-in driven through the injection seam.
+
+    ``script`` plays the GUI loop: it receives ``(self, drive)`` and decides
+    when the readiness driver runs and when the window closes. pywebview runs
+    the ``start()`` func on a thread of its own; running it synchronously
+    here makes every sequence assertion exact. The default script is the
+    happy path — the loop comes up, then the user closes the window."""
+
+    def __init__(self, script=None) -> None:
+        self.settings: dict[str, object] = {}
+        self.windows: list[_ShellWindow] = []
+        self.script = script
+
+    def create_window(self, title, url=None, html=None, **kw) -> _ShellWindow:
+        window = _ShellWindow(title, html, **kw)
+        self.windows.append(window)
+        return window
+
+    def start(self, func=None, args=None, **kw) -> None:
+        def drive() -> None:
+            if func is not None:
+                func(*(args or ()))
+
+        if self.script is None:
+            drive()
+            self.windows[0].close()
+        else:
+            self.script(self, drive)
+
+
+class _ShellServer:
+    """uvicorn.Server stand-in for run_shell: ``run()`` parks on whatever
+    thread it was given until ``should_exit``, like the real loop's 100ms
+    poll — so the join in run_shell's tail is actually exercised."""
+
+    def __init__(self, started: bool = True) -> None:
+        self.started = started
+        self.should_exit = False
+        self.force_exit = False
+        self.ran_on: threading.Thread | None = None
+
+    def run(self) -> None:
+        self.ran_on = threading.current_thread()
+        while not self.should_exit:
+            time.sleep(0.005)
+
+
+@pytest.fixture
+def quiet_mac_gate(monkeypatch):
+    """run_shell arms the browser route's presence gate on a daemon thread as
+    its backup exit signal; park it so no test leaves a 180s poller behind."""
+    monkeypatch.setattr(
+        gui, "_stop_server_when_window_closes", lambda *a, **k: None
+    )
+
+
+@pytest.fixture
+def fake_darwin(monkeypatch):
+    """Pretend to be macOS without tripping the darwin-only stdlib imports.
+
+    urllib.request imports the mac-only ``_scproxy`` C module at module level
+    whenever ``sys.platform`` reads "darwin" — so on a Linux host it must be
+    imported (and cached) while the platform is still honest, or the first
+    server import under the fake platform dies on it."""
+    import urllib.request  # noqa: F401  (imported for the cache side effect)
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+
+def test_load_mac_shell_returns_the_loaded_webview(monkeypatch) -> None:
+    sentinel = object()
+    monkeypatch.setattr(_mac_shell, "load_webview", lambda: sentinel)
+    assert gui._load_mac_shell() is sentinel
+
+
+def test_load_mac_shell_swallows_a_broken_probe(monkeypatch) -> None:
+    # AC-S2's contract at the seam: any blow-up inside the probe reads as
+    # "no native window here", never as a failed launch.
+    def _boom():
+        raise ImportError("pyobjc fell over")
+
+    monkeypatch.setattr(_mac_shell, "load_webview", _boom)
+    assert gui._load_mac_shell() is None
+
+
+@pytest.mark.real_webview_loader
+def test_mac_shell_load_webview_none_without_pywebview(monkeypatch) -> None:
+    # The Linux/Windows shape of every install, and the macOS shape of a
+    # broken one: no webview importable.
+    real_import = builtins.__import__
+
+    def _no_webview(name, *args, **kwargs):
+        if name == "webview" or name.startswith("webview."):
+            raise ImportError("No module named 'webview'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_webview)
+    assert _mac_shell.load_webview() is None
+
+
+@pytest.mark.real_webview_loader
+def test_mac_shell_load_webview_returns_the_module(monkeypatch) -> None:
+    fake = SimpleNamespace(settings={})
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    assert _mac_shell.load_webview() is fake
+
+
+def test_mac_shell_pages_are_self_contained() -> None:
+    # These pages exist precisely when the server can serve nothing, so they
+    # may reference nothing over the network; the book mark rides inline.
+    for html in (_mac_shell._loading_html(), _mac_shell._error_html()):
+        assert "http://" not in html and "https://" not in html
+        assert "data:image/png;base64," in html
+        # These two pages are the only thing here that follows the OS
+        # appearance — the app itself has its own toggle. Lose the dark half
+        # and a white slab flashes in a dark Mac's face on every launch, with
+        # nothing else in the suite to notice.
+        assert "@media (prefers-color-scheme: dark)" in html
+    assert "Starting litman" in _mac_shell._loading_html()
+    # One verdict + one way out, on budget.
+    assert "didn't start" in _mac_shell._error_html()
+    assert "Close this window" in _mac_shell._error_html()
+
+
+def test_mac_shell_close_callback_stops_the_server(quiet_mac_gate) -> None:
+    # AC-S3: the closed event is the main exit signal — should_exit flips
+    # the moment the window goes, inside the GUI loop, not merely when
+    # run_shell unwinds afterwards.
+    server = _ShellServer()
+    seen: list[tuple[str, bool]] = []
+
+    def script(fake, drive):
+        drive()
+        seen.append(("before close", server.should_exit))
+        fake.windows[0].close()
+        seen.append(("after close", server.should_exit))
+
+    _mac_shell.run_shell(
+        _ShellWebview(script), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert seen == [("before close", False), ("after close", True)]
+
+
+def test_mac_shell_runs_the_server_off_the_main_thread(quiet_mac_gate) -> None:
+    # Cocoa owns the main thread, so uvicorn moves off it — where it skips
+    # signal-handler installation on its own. run_shell's tail joins the
+    # server thread, so ran_on is settled by the time this reads it.
+    server = _ShellServer()
+
+    _mac_shell.run_shell(
+        _ShellWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert server.ran_on is not None
+    assert server.ran_on is not threading.main_thread()
+
+
+def test_mac_shell_window_opens_on_loading_and_swaps_to_the_app(
+    quiet_mac_gate,
+) -> None:
+    # Loading → load_url ordering: the window is born on the inline loading
+    # page (WKWebView would otherwise sit plain white until uvicorn listens)
+    # and swaps to the served app exactly once, on readiness.
+    server = _ShellServer(started=True)
+    url = "http://127.0.0.1:8765"
+    fake = _ShellWebview()
+
+    _mac_shell.run_shell(fake, server, url, PresenceTracker())
+
+    (window,) = fake.windows
+    assert window.title == "litman"
+    assert window.created_html == _mac_shell._loading_html()
+    assert window.ops == [("load_url", url)]
+
+
+def test_mac_shell_swaps_to_the_error_page_when_the_server_never_starts(
+    quiet_mac_gate,
+) -> None:
+    # WKWebView paints plain white against a dead server — no free browser
+    # error page exists inside the shell, so run_shell owes the user one.
+    server = _ShellServer(started=False)  # never listens; run() still parks
+    fake = _ShellWebview()
+
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=0.05,
+        ready_poll=0.01,
+    )
+
+    (window,) = fake.windows
+    assert window.ops == [("load_html", _mac_shell._error_html())]
+
+
+def test_mac_shell_close_during_startup_skips_the_swap(quiet_mac_gate) -> None:
+    # The user closes the loading window before the server is up: the closed
+    # callback stands the readiness poller down, so neither the URL nor the
+    # error page is loaded into a corpse — and the server is asked to exit.
+    server = _ShellServer(started=False)
+
+    def script(fake, drive):
+        fake.windows[0].close()  # closed before the loop's driver ran
+        drive()
+
+    fake = _ShellWebview(script)
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=5.0,
+        ready_poll=0.01,
+    )
+
+    assert fake.windows[0].ops == []
+    assert server.should_exit is True
+
+
+def test_mac_shell_enables_downloads(quiet_mac_gate) -> None:
+    # pywebview refuses downloads by default, and the vault hands out PDFs.
+    fake = _ShellWebview()
+
+    _mac_shell.run_shell(
+        fake, _ShellServer(), "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert fake.settings == {"ALLOW_DOWNLOADS": True}
+
+
+def test_mac_shell_arms_the_presence_gate_as_backup(monkeypatch) -> None:
+    # The backup exit signal: the same page gate the browser route runs, with
+    # no process to poll — a window that dies without its closed event still
+    # stops the server.
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        gui,
+        "_stop_server_when_window_closes",
+        lambda proc, server, presence, **kw: calls.append(
+            (proc, server, presence)
+        ),
+    )
+    server = _ShellServer()
+    tracker = PresenceTracker()
+
+    _mac_shell.run_shell(
+        _ShellWebview(), server, "http://127.0.0.1:8765", tracker
+    )
+
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert calls == [(None, server, tracker)]
+
+
+def test_mac_shell_forces_a_server_that_ignores_the_ask(
+    quiet_mac_gate, monkeypatch
+) -> None:
+    # The compressed escalation ladder: ask (should_exit), insist
+    # (force_exit) — and the daemon flag on the server thread is the "leave"
+    # stage, so a wedged uvicorn cannot hold the closed window's process open.
+    monkeypatch.setattr(gui, "FORCE_EXIT_AFTER", 0.1)
+    monkeypatch.setattr(gui, "HARD_EXIT_AFTER", 0.3)
+
+    class _WedgedServer(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+            while not self.force_exit:
+                time.sleep(0.005)
+
+    server = _WedgedServer()
+    _mac_shell.run_shell(
+        _ShellWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert server.force_exit is True
+
+
+def test_mac_shell_closes_the_window_when_the_server_stops(
+    quiet_mac_gate,
+) -> None:
+    # Self-update (POST /api/self-update) and the presence gate both stop
+    # the server from inside the process. The shell must then take the
+    # window down too — a dead SPA in a live window, whose process the
+    # relaunch would double, is what the browser route's `finally`
+    # terminate prevents.
+    class _StopsItself(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+            # Returns at once: stopped from inside, not by the window.
+
+    server = _StopsItself(started=True)
+
+    def script(fake, drive):
+        drive()
+        # The GUI loop parks until something destroys the window.
+        assert fake.windows[0].destroyed.wait(timeout=5)
+
+    fake = _ShellWebview(script)
+    assert (
+        _mac_shell.run_shell(fake, server, "http://127.0.0.1:8765", PresenceTracker())
+        is True
+    )
+    assert fake.windows[0].destroyed.is_set(), "server stopped, window stayed"
+
+
+def test_mac_shell_leaves_the_error_page_up_when_the_server_never_started(
+    quiet_mac_gate,
+) -> None:
+    # The reaper's guard rail: a server that never listened has its verdict
+    # on screen — the window is the only place that verdict lives, so it
+    # must not be taken down with the corpse.
+    class _DiesAtStartup(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+            # Dies without ever listening; started stays False.
+
+    server = _DiesAtStartup(started=False)
+
+    def script(fake, drive):
+        drive()  # dead server thread → error page, at once
+        time.sleep(0.3)  # plenty of time for a wrong destroy to land
+        fake.windows[0].close()  # the user reads the verdict and closes
+
+    fake = _ShellWebview(script)
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=30.0,
+        ready_poll=0.01,
+    )
+
+    (window,) = fake.windows
+    assert window.ops == [("load_html", _mac_shell._error_html())]
+    assert not window.destroyed.is_set()
+
+
+def test_mac_shell_error_page_short_circuits_on_a_dead_server_thread(
+    quiet_mac_gate,
+) -> None:
+    # AC-S10 side of the readiness poll: a server thread that died before
+    # listening has no readiness coming, so the spinner must give way to the
+    # error page at once, not after the full timeout.
+    class _DiesAtStartup(_ShellServer):
+        def run(self) -> None:
+            self.ran_on = threading.current_thread()
+
+    server = _DiesAtStartup(started=False)
+    fake = _ShellWebview()
+    started_at = time.monotonic()
+
+    _mac_shell.run_shell(
+        fake,
+        server,
+        "http://127.0.0.1:8765",
+        PresenceTracker(),
+        ready_timeout=30.0,
+        ready_poll=0.01,
+    )
+
+    elapsed = time.monotonic() - started_at
+    (window,) = fake.windows
+    assert window.ops == [("load_html", _mac_shell._error_html())]
+    assert elapsed < 5.0, f"error page waited out the timeout ({elapsed:.1f}s)"
+
+
+def test_mac_shell_window_failure_before_the_server_falls_back() -> None:
+    # A window layer that fails with the server not yet running must report
+    # the launch unconsumed (False) and leave the server untouched — the
+    # caller still owns it and the browser route can make good on it.
+    class _NoWindowWebview(_ShellWebview):
+        def create_window(self, *a, **kw):
+            raise RuntimeError("no WindowServer on this box")
+
+    server = _ShellServer()
+
+    ran = _mac_shell.run_shell(
+        _NoWindowWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert ran is False
+    assert server.ran_on is None  # the server never ran...
+    assert server.should_exit is False  # ...and was never asked to stop
+
+
+def test_mac_shell_start_failure_still_collects_the_server(
+    quiet_mac_gate,
+) -> None:
+    # The late failure point: the GUI loop itself refuses to run, after the
+    # server thread is already up. run_shell owns the cleanup — server
+    # stopped and collected — and reports the launch consumed (True: there
+    # is nothing left to fall back onto).
+    class _NoLoopWebview(_ShellWebview):
+        def start(self, func=None, args=None, **kw) -> None:
+            raise RuntimeError("cocoa refused the loop")
+
+    server = _ShellServer()  # parks until should_exit
+
+    ran = _mac_shell.run_shell(
+        _NoLoopWebview(), server, "http://127.0.0.1:8765", PresenceTracker()
+    )
+
+    assert ran is True
+    assert server.should_exit is True
+    assert server.ran_on is not None  # it really ran — and was collected
+
+
+def test_gui_window_darwin_selects_the_native_shell(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # AC-S1 (darwin arm): darwin + --window hands the launch to the native
+    # runner — no browser process, no tab — and the self-update relaunch
+    # recipe stays the shortcut one, so double-click semantics survive an
+    # in-app update.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    # A bundle launch that succeeds natively must never respawn itself: the
+    # `procs == []` below covers the marker path too.
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
+    )
+    shell = object()
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: shell)
+    runs: list[tuple] = []
+    monkeypatch.setattr(
+        # True: the session ran under the shell — gui_cmd must simply return.
+        _mac_shell,
+        "run_shell",
+        lambda *a, **k: (runs.append((a, k)), True)[1],
+    )
+    import litman.server as server_mod
+
+    real_create_app = server_mod.create_app
+    apps: list = []
+
+    def _spy_create_app(vault_arg):
+        application = real_create_app(vault_arg)
+        apps.append(application)
+        return application
+
+    monkeypatch.setattr(server_mod, "create_app", _spy_create_app)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    ((args, kwargs),) = runs
+    assert kwargs == {}
+    passed_webview, passed_server, passed_url, passed_presence = args
+    assert passed_webview is shell
+    (fake_server,) = _FakeServer.instances
+    assert passed_server is fake_server
+    assert passed_url == _served_url(result.output)
+    (application,) = apps
+    assert passed_presence is application.state.presence
+    # run_shell owns server.run; gui_cmd must not fall through and run it too.
+    assert fake_server.ran is False
+    assert procs == [] and opened == []  # no browser of any kind
+    # AC-S2 reverse: a working shell prints no fallback line.
+    assert "Native window unavailable" not in result.output
+    assert "Close the window to stop the server" in result.output
+    assert application.state.self_update_relaunch == [
+        _host_abs("/opt/bin/lit"),
+        "gui",
+        "--window",
+    ]
+
+
+def test_gui_darwin_tab_mode_never_goes_native(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # Plain `lit gui` keeps the tab contract on macOS too: the shell is for
+    # --window only.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
+    def _boom():
+        raise AssertionError("tab mode must never probe the mac shell")
+
+    monkeypatch.setattr(gui, "_load_mac_shell", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert opened == [_served_url(result.output)] and procs == []
+
+
+def test_gui_window_darwin_shell_failure_falls_back_to_the_browser_unchanged(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper, tmp_path
+) -> None:
+    # AC-S2: a probe that blows up (ImportError included) must cost nothing —
+    # the Chromium route runs byte-for-byte as it always did, announced by
+    # one dim line. The break is planted below gui's own seam (in
+    # load_webview), so the catch inside the real _load_mac_shell is what
+    # this drives — not the belt-and-braces try around it. No app-launch
+    # marker: this is the terminal shape, which serves in place.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(gui, "_DARWIN_SYSTEM_APPS", tmp_path / "no-system-apps")
+    binary = (
+        tmp_path
+        / "Applications"
+        / "Google Chrome.app"
+        / "Contents"
+        / "MacOS"
+        / "Google Chrome"
+    )
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+
+    def _boom():
+        raise ImportError("no pywebview on this box")
+
+    monkeypatch.setattr(_mac_shell, "load_webview", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert "Native window unavailable" in result.output  # the one dim line
+    url = _served_url(result.output)
+    profile = (
+        Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "browser-profile"
+    )
+    (proc,) = procs
+    assert proc.argv == [
+        str(binary),
+        f"--app={url}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
+        "--hide-crash-restore-bubble",
+    ]
+    assert opened == []
+
+
+def test_gui_window_darwin_window_layer_failure_falls_back_to_the_browser(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # The late twin of the test above: pywebview imported fine, but the
+    # window layer failed before the server ever ran (run_shell → False).
+    # The launch is still gui_cmd's to make good on — same dim line, and the
+    # server runs under the browser route.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: object())
+    monkeypatch.setattr(_mac_shell, "run_shell", lambda *a, **k: False)
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert "Native window unavailable" in result.output
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran  # gui_cmd still ran the server itself
+    (proc,) = procs
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert opened == []
+
+
+def test_shed_darwin_app_identity_without_marker_is_a_noop(monkeypatch) -> None:
+    # A terminal launch has no bundle identity to shed: no marker, no spawn.
+    monkeypatch.delenv("LITMAN_DARWIN_APP_LAUNCH", raising=False)
+
+    def _boom(*a, **k):
+        raise AssertionError("no marker means no respawn")
+
+    monkeypatch.setattr(subprocess, "Popen", _boom)
+    assert gui._shed_darwin_app_identity() is False
+
+
+def test_shed_darwin_app_identity_survives_an_unresolvable_lit(
+    monkeypatch,
+) -> None:
+    # No `lit` to respawn is no reason to serve nothing: report False so the
+    # caller serves in place with the residual identity risk.
+    from litman.exceptions import LitmanError
+
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+
+    def _no_lit():
+        raise LitmanError("no lit anywhere")
+
+    monkeypatch.setattr(gui, "_resolve_lit_executable", _no_lit)
+    assert gui._shed_darwin_app_identity() is False
+
+
+def test_gui_window_darwin_bundle_fallback_respawns_without_identity(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # M3 plan B: a bundle launch (stub marker in env) whose native shell is
+    # unavailable must not serve a browser window while wearing litman.app's
+    # identity — that is the double-click deadlock shape. It hands the launch
+    # to a detached, marker-stripped child and exits.
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
+    )
+    spawned: list[tuple[list, dict]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda argv, **kw: (spawned.append((list(argv), kw)), _FakeProc(argv))[1],
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    ((argv, kwargs),) = spawned
+    assert argv == [_host_abs("/opt/bin/lit"), "gui", "--window"]
+    assert kwargs["start_new_session"] is True
+    # The stripped marker is the recursion gate: the child, falling back
+    # again, serves in place.
+    assert "LITMAN_DARWIN_APP_LAUNCH" not in kwargs["env"]
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran is False  # the parent serves nothing...
+    assert opened == []  # ...and opens nothing
+    assert "relaunching in the browser" in result.output
+    assert "falling back to the browser" not in result.output
+
+
+def test_gui_window_darwin_bundle_fallback_after_window_failure_respawns(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # Same hand-off from the other fallback door: pywebview loaded but the
+    # window layer failed before the server ran (run_shell → False).
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: object())
+    monkeypatch.setattr(_mac_shell, "run_shell", lambda *a, **k: False)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
+    )
+    spawned: list[tuple[list, dict]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda argv, **kw: (spawned.append((list(argv), kw)), _FakeProc(argv))[1],
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    ((argv, kwargs),) = spawned
+    assert argv == [_host_abs("/opt/bin/lit"), "gui", "--window"]
+    assert kwargs["start_new_session"] is True
+    assert "LITMAN_DARWIN_APP_LAUNCH" not in kwargs["env"]
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran is False
+    assert opened == []
+
+
+def test_gui_window_darwin_respawn_failure_serves_in_place(
+    monkeypatch, gui_harness, fake_darwin, vault_with_paper
+) -> None:
+    # The child could not be spawned: serving with the residual identity
+    # risk beats serving nothing, so the launch stays here and takes the
+    # ordinary in-place browser route.
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: _host_abs("/opt/bin/lit") if name == "lit" else None
+    )
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+
+    def _popen(argv, **kw):
+        if list(argv)[1:3] == ["gui", "--window"]:  # the respawn attempt
+            raise OSError("spawn failed")
+        proc = _FakeProc(argv)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert "falling back to the browser" in result.output
+    (fake_server,) = _FakeServer.instances
+    assert fake_server.ran  # the launch stayed here and served
+    (proc,) = procs
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert opened == []
+
+
+def test_gui_window_off_darwin_never_reads_the_app_launch_marker(
+    monkeypatch, gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # The marker is a darwin-bundle contract; on any other platform a stray
+    # variable in the environment must not so much as be consulted.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("LITMAN_DARWIN_APP_LAUNCH", "1")
+
+    def _boom():
+        raise AssertionError("the marker must never be consulted off darwin")
+
+    monkeypatch.setattr(gui, "_shed_darwin_app_identity", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert len(procs) == 1  # the ordinary browser window launch
+
+
+def test_gui_window_linux_argv_is_unchanged_by_the_native_shell(
+    monkeypatch, gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    # AC-S1 (Linux arm): the native shell is darwin-only — never probed here —
+    # and the spawned window's argv is byte-for-byte the pre-shell recipe.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+
+    def _boom():
+        raise AssertionError("the mac shell must never be probed off darwin")
+
+    monkeypatch.setattr(gui, "_load_mac_shell", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    url = _served_url(result.output)
+    profile = (
+        Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "browser-profile"
+    )
+    (proc,) = procs
+    assert proc.argv == [
+        "/usr/bin/google-chrome",
+        f"--app={url}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
+        "--hide-crash-restore-bubble",
+        "--class=litman",
+        "--ozone-platform=x11",
+    ]
+
+
+def test_gui_window_win32_argv_is_unchanged_by_the_native_shell(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # AC-S1 (Windows arm): same guarantee as the Linux one, minus the two
+    # Linux-only flags.
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "C:\\browsers\\google-chrome"
+        if name == "google-chrome"
+        else None,
+    )
+
+    def _boom():
+        raise AssertionError("the mac shell must never be probed off darwin")
+
+    monkeypatch.setattr(gui, "_load_mac_shell", _boom)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    url = _served_url(result.output)
+    profile = (
+        Path(os.environ["LITMAN_REGISTRY_DIR"]).expanduser() / "browser-profile"
+    )
+    (proc,) = procs
+    assert proc.argv == [
+        "C:\\browsers\\google-chrome",
+        f"--app={url}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-features=Translate",
+        "--disable-sync",
+        "--hide-crash-restore-bubble",
+    ]
+
+
+@pytest.mark.real_webview_loader
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="the real WKWebView shell needs macOS"
+)
+def test_mac_shell_real_default_end_to_end() -> None:
+    # AC-S5, the inject-seam red line: the shipped default through the real
+    # seam — real pywebview import, real window, real close, server really
+    # gone. No fakes anywhere.
+    import uvicorn
+
+    from litman.server import create_app
+
+    webview = gui._load_mac_shell()
+    assert webview is not None, "pywebview must be installed on the mac host"
+
+    port = _find_free_port(_DEFAULT_PORT)
+    application = create_app(None)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            application, host="127.0.0.1", port=port, log_level="warning"
+        )
+    )
+
+    failures: list[str] = []
+
+    def _close_once_up() -> None:
+        import contextlib
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if getattr(server, "started", False) and webview.windows:
+                time.sleep(1.0)  # let the readiness swap land in the window
+                webview.windows[0].destroy()
+                return
+            time.sleep(0.05)
+        # A silent return here would leave run_shell parked in the GUI loop
+        # forever: record the failure, then force everything down so the
+        # main thread comes back and the assertion below can fire.
+        failures.append("server/window never came up within 15s")
+        server.should_exit = True
+        for window in list(webview.windows):
+            with contextlib.suppress(Exception):
+                window.destroy()
+
+    threading.Thread(target=_close_once_up, daemon=True).start()
+    _mac_shell.run_shell(
+        webview, server, f"http://127.0.0.1:{port}", application.state.presence
+    )
+
+    assert failures == []
+    assert server.started is True  # it really served
+    assert server.should_exit is True  # and was really asked to stop
+    # ...and really stopped: no live listener holds the port. SO_REUSEADDR,
+    # because the shell's real HTTP traffic leaves TIME_WAIT pairs a bare
+    # bind trips over on BSD — while a socket still LISTENing would refuse
+    # this bind regardless, which is the property under test.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
 
 
 # ---------------------------------------------------------------------------
@@ -1475,10 +2990,39 @@ def test_make_shortcut_darwin_builds_app_bundle(
 def test_bundled_icons_resolve_via_importlib_resources() -> None:
     from importlib.resources import files
 
-    for name in ("litman.png", "litman.ico"):
+    for name in ("litman.png", "litman.ico", "litman.icns"):
         icon = files("litman").joinpath("assets", "icons", name)
         assert icon.is_file(), f"missing bundled icon {name}"
         assert len(icon.read_bytes()) > 0
+
+
+def test_bundled_icns_carries_the_sizes_macos_draws() -> None:
+    # The .icns is a build-time artifact no test host here can regenerate (it
+    # is rendered from assets/icon.svg), so what a test can still do is refuse
+    # a replacement that is not a real icon file or that dropped the sizes the
+    # Dock and Retina Launchpad ask for. A truncated or single-size .icns is
+    # accepted by nothing on macOS and shows as the generic tile again.
+    import struct
+    from importlib.resources import files
+
+    raw = files("litman").joinpath("assets", "icons", "litman.icns").read_bytes()
+    assert raw[:4] == b"icns"
+    declared = struct.unpack(">I", raw[4:8])[0]
+    assert declared == len(raw), "declared length must match the file"
+
+    chunks, offset = {}, 8
+    while offset < declared:
+        kind = raw[offset : offset + 4].decode("latin1")
+        length = struct.unpack(">I", raw[offset + 4 : offset + 8])[0]
+        assert 8 < length <= declared - offset, f"bad chunk length for {kind}"
+        chunks[kind] = raw[offset + 8 : offset + length]
+        offset += length
+    assert offset == declared, "chunk lengths must tile the file exactly"
+
+    # ic07/ic08/ic09 are 128/256/512; ic13/ic14 the Retina Dock pair.
+    for kind in ("ic07", "ic08", "ic09", "ic13", "ic14"):
+        assert kind in chunks, f"missing {kind}"
+        assert chunks[kind][:8] == b"\x89PNG\r\n\x1a\n", f"{kind} is not a PNG"
 
 
 # ===========================================================================
@@ -1525,6 +3069,21 @@ def test_open_when_ready_timeout_backstop_opens_anyway() -> None:
         ready_timeout=0.05, ready_poll=0.01,
     )
     assert calls == [1]
+
+
+def test_open_when_ready_gives_up_early_when_told() -> None:
+    # The mac shell's probe: a server thread that died has no readiness
+    # coming, so the poll must break to the open decision at once instead of
+    # sitting out the timeout (the caller's callback shows the error page).
+    server = _StartFlag(started=False)
+    calls: list[int] = []
+    started_at = time.monotonic()
+    _open_when_ready(
+        server, lambda: calls.append(1), threading.Event(),
+        ready_timeout=30.0, ready_poll=0.01, give_up=lambda: True,
+    )
+    assert calls == [1]  # opened (the callback decides what that means)
+    assert time.monotonic() - started_at < 5.0
 
 
 def test_open_when_ready_skips_open_when_already_stopped() -> None:
@@ -1760,6 +3319,26 @@ def test_want_splash_true_for_consoleless_window_with_display(
     assert result.exit_code == 0, result.output
     assert _splash_launched(splash_gui.argvs)
     assert len(splash_gui.splashes) == 1
+
+
+def test_want_splash_false_on_macos(monkeypatch, splash_gui, vault_with_paper) -> None:
+    # Same conditions as the test above — the ones that DO launch a splash —
+    # differing only in the platform. Aqua's Tk ignores overrideredirect, so the
+    # splash arrives as an ordinary titled window (Tk's default "tk" in the
+    # title bar, traffic lights, its own Dock tile) that impersonates litman's
+    # main window until it vanishes. Launch Services already bounces the Dock
+    # icon, which is the feedback the splash exists to provide.
+    vault, _pid = vault_with_paper
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    # Subject first: this is the assertion the guard exists for, and it must be
+    # the one that fails when the guard goes away.
+    assert not _splash_launched(splash_gui.argvs)
+    assert result.exit_code == 0, result.output
 
 
 def test_want_splash_false_in_a_terminal_window(

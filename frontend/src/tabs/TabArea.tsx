@@ -1,3 +1,5 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Tab } from '../types'
 import PdfView from '../pdf/PdfView'
 import type { PdfHandle } from '../pdf/PdfView'
@@ -9,6 +11,12 @@ interface Props {
   activeKey: string | null
   onActivate: (key: string) => void
   onClose: (key: string) => void
+  /** Move the tab at index `from` to index `to` (pointer-drag reorder). */
+  onReorder: (from: number, to: number) => void
+  /** Close every tab except the ACTIVE one (not the one under the cursor —
+   * the strip menu is bar-level, so it acts the same wherever it is invoked). */
+  onCloseOthers: () => void
+  onCloseAll: () => void
   onOpenPaper: (id: string) => void
   /** Register/unregister a PDF tab's flush handle for the close-time prompt. */
   onRegisterPdf: (key: string, handle: PdfHandle | null) => void
@@ -31,11 +39,24 @@ interface Props {
   onMdSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
 }
 
+/** Pixels of horizontal travel before a press becomes a drag. Below this a
+ * press-and-release is a plain click (tab activation). */
+const DRAG_THRESHOLD = 4
+/** Strip-edge band (px) that auto-scrolls the overflowing strip mid-drag. */
+const EDGE_BAND = 24
+const EDGE_SCROLL_STEP = 8
+/** How long a displaced tab takes to slide into its new slot, and how long the
+ * carried tab takes to settle on release. */
+const SLIDE_MS = 160
+
 export default function TabArea({
   tabs,
   activeKey,
   onActivate,
   onClose,
+  onReorder,
+  onCloseOthers,
+  onCloseAll,
   onOpenPaper,
   onRegisterPdf,
   onNotify,
@@ -49,9 +70,276 @@ export default function TabArea({
 }: Props) {
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
+  const stripRef = useRef<HTMLDivElement | null>(null)
+
+  // --- Pointer-drag reorder -----------------------------------------------
+  // Deliberately NOT HTML5 drag-and-drop: that path is unscriptable for the
+  // E2E (see AuthorRows), shows an OS ghost image, and would rub against the
+  // window-level file-drop listeners. Pointer events behave the same in
+  // Chromium and WKWebView, and a real drag only begins past a small travel
+  // threshold so plain clicks keep their native path (capturing on pointerdown
+  // would retarget the ensuing click away from the label button — WebKit and
+  // Chromium disagree on the details, so we never capture before the
+  // threshold).
+  const dragRef = useRef<{
+    key: string
+    pointerId: number
+    /** The origin tab element — capture target once the threshold is passed. */
+    el: HTMLElement
+    startX: number
+    lastX: number
+    /** Where inside the tab the press landed, so it stays under the cursor. */
+    grabDX: number
+    started: boolean
+  } | null>(null)
+  // Visual-only mirror of dragRef.started (lifts the dragged tab).
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  // Eat the click that follows a completed drag (cleared on the next tick —
+  // engines differ on whether that click even reaches the label button).
+  const suppressClickRef = useRef(false)
+  // Edge auto-scroll: direction (-1/0/+1) + the live rAF loop id.
+  const scrollDirRef = useRef(0)
+  const rafRef = useRef(0)
+  // Layout x of every tab captured JUST BEFORE a reorder, so the slide
+  // animation below knows where each one came from (FLIP).
+  const prevSlotsRef = useRef<Map<string, number> | null>(null)
+  // Tears down the current drag's window listeners (see onTabPointerDown).
+  const detachRef = useRef<(() => void) | null>(null)
+
+  // Layout position of a tab, in viewport x. Read off offsetLeft rather than
+  // getBoundingClientRect BECAUSE the drag and the slide animation both paint
+  // transforms on these elements: a rect would report where a tab currently
+  // LOOKS, and both the swap test and the FLIP measurement need where it
+  // actually SITS. offsetLeft is layout-only, so transforms cannot skew it.
+  const slotLeft = (el: HTMLElement, strip: HTMLElement, stripLeft: number) =>
+    stripLeft - strip.scrollLeft + (el.offsetLeft - strip.offsetLeft)
+
+  // Put the dragged tab under the cursor. Re-derived from its CURRENT slot on
+  // every call, so a reorder or an auto-scroll step never makes it jump: the
+  // slot moved, the offset shrinks by the same amount, the pixels stay put.
+  const paintDrag = (clientX: number) => {
+    const drag = dragRef.current
+    const strip = stripRef.current
+    if (!drag || !drag.started || !strip) return
+    const r = strip.getBoundingClientRect()
+    const home = slotLeft(drag.el, strip, r.left)
+    const wanted = clientX - drag.grabDX
+    // Keep it inside the strip: the strip clips, so an unclamped tab would
+    // slide out of sight instead of pinning at the edge like a browser's.
+    const tx =
+      Math.max(r.left, Math.min(r.right - drag.el.offsetWidth, wanted)) - home
+    drag.el.style.transition = 'none'
+    drag.el.style.transform = `translateX(${tx}px)`
+  }
+
+  // The swap check reads `tabs`/`onReorder` from the CURRENT render (a ref
+  // reassigned every render, App.tsx's mdDraftsRef idiom) so the rAF loop and
+  // stale pointermove closures never reorder against an outdated tab list.
+  const swapCheckRef = useRef<(x: number) => void>(() => {})
+  swapCheckRef.current = (x: number) => {
+    const drag = dragRef.current
+    const strip = stripRef.current
+    if (!drag || !drag.started || !strip) return
+    const els = Array.from(strip.querySelectorAll<HTMLElement>('[data-tabkey]'))
+    const from = tabs.findIndex((t) => t.key === drag.key)
+    if (from === -1 || els.length !== tabs.length) return
+    const stripLeft = strip.getBoundingClientRect().left
+    // Insertion index = how many OTHER tabs have their midpoint behind the
+    // dragged tab's LEADING edge — its right edge for neighbours on the right,
+    // its left edge for those on the left. Comparing centre-to-centre instead
+    // (the obvious formula) makes you drag a whole tab's width before anything
+    // trades places, which reads as a dead strip; against the leading edge it
+    // is half that, like a browser. Still hysteretic: after a swap the two
+    // thresholds sit a tab-width apart, so a jittering hand cannot flap it.
+    const leftEdge = x - drag.grabDX
+    const rightEdge = leftEdge + drag.el.offsetWidth
+    let to = 0
+    els.forEach((el, i) => {
+      if (i === from) return
+      const centre = slotLeft(el, strip, stripLeft) + el.offsetWidth / 2
+      if (i < from ? centre < leftEdge : centre < rightEdge) to++
+    })
+    if (to === from) return
+    const slots = new Map<string, number>()
+    for (const el of els) slots.set(el.dataset.tabkey!, el.offsetLeft)
+    prevSlotsRef.current = slots
+    onReorder(from, to)
+  }
+
+  // FLIP: a reorder relocates tabs instantly, so put each displaced one back
+  // where it was and let it transition home. Without this the swap is a jump
+  // cut and the drag reads as "nothing is happening, then everything moved".
+  // Runs before paint, so the inverted position is never seen.
+  useLayoutEffect(() => {
+    const prev = prevSlotsRef.current
+    prevSlotsRef.current = null
+    const strip = stripRef.current
+    if (!prev || !strip) return
+    const dragged = dragRef.current?.key
+    const moved: HTMLElement[] = []
+    for (const el of strip.querySelectorAll<HTMLElement>('[data-tabkey]')) {
+      const key = el.dataset.tabkey!
+      if (key === dragged) continue
+      const before = prev.get(key)
+      if (before === undefined) continue
+      const delta = before - el.offsetLeft
+      if (Math.abs(delta) < 1) continue
+      el.style.transition = 'none'
+      el.style.transform = `translateX(${delta}px)`
+      moved.push(el)
+    }
+    // The dragged tab's slot just changed under it — re-pin it to the cursor in
+    // this same frame, or it flashes one frame at the old offset.
+    if (dragRef.current) paintDrag(dragRef.current.lastX)
+    if (moved.length === 0) return
+    const id = requestAnimationFrame(() => {
+      for (const el of moved) {
+        el.style.transition = `transform ${SLIDE_MS}ms cubic-bezier(0.2, 0, 0, 1)`
+        el.style.transform = ''
+      }
+    })
+    return () => cancelAnimationFrame(id)
+  }, [tabs])
+
+  const stopAutoScroll = () => {
+    scrollDirRef.current = 0
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = 0
+  }
+
+  const endDrag = () => {
+    detachRef.current?.()
+    detachRef.current = null
+    const drag = dragRef.current
+    if (!drag) return
+    if (drag.started) {
+      try {
+        drag.el.releasePointerCapture(drag.pointerId)
+      } catch {
+        /* already released */
+      }
+      // Settle into the slot instead of snapping — the tab is mid-air, and a
+      // teleport on release undoes the "I am carrying this" impression.
+      const el = drag.el
+      el.style.transition = `transform ${SLIDE_MS}ms cubic-bezier(0.2, 0, 0, 1)`
+      el.style.transform = ''
+      window.setTimeout(() => {
+        el.style.transition = ''
+      }, SLIDE_MS + 40)
+      suppressClickRef.current = true
+      setTimeout(() => {
+        suppressClickRef.current = false
+      }, 0)
+    }
+    dragRef.current = null
+    setDragKey(null)
+    stopAutoScroll()
+  }
+
+  // Reassigned every render and reached through the ref, so the per-drag
+  // window listener below always runs the current render's logic.
+  const moveRef = useRef<(e: PointerEvent) => void>(() => {})
+  moveRef.current = (e: PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag) return
+    // 🔴 Do NOT demand e.pointerId === drag.pointerId here. One physical
+    // cursor can arrive as TWO pointer streams: a Wayland VM (libinput
+    // exposing the emulated absolute device as a tablet tool) reports the
+    // press as mouse/id=1 but every move as pen/id=2/buttons=0 — an id match
+    // discards each move and the strip reads as simply undraggable
+    // (2026-08-05, wangq's ubuntu-demo box, DevTools trace). Desktops have
+    // one hover cursor, so accept any hover-capable pointer's moves and keep
+    // only touch out (touch must stay native scroll).
+    if (e.pointerType === 'touch') return
+    // Self-heal for a press whose release we never heard (pointerup outside
+    // the window, pre-capture): a buttonless move from the PRESSING pointer
+    // means the button is up. Only that pointer may say so — the pen half of
+    // a split stream reports buttons=0 while dragging, legitimately — and
+    // only before capture, after which pointerup delivery is guaranteed.
+    if (!drag.started && e.pointerId === drag.pointerId && e.buttons === 0) {
+      endDrag()
+      return
+    }
+    drag.lastX = e.clientX
+    if (!drag.started) {
+      if (Math.abs(e.clientX - drag.startX) < DRAG_THRESHOLD) return
+      drag.started = true
+      try {
+        drag.el.setPointerCapture(drag.pointerId)
+      } catch {
+        /* capture only extends the drag beyond the window edge — the window
+           listeners carry it regardless, so a refusal is survivable */
+      }
+      setDragKey(drag.key)
+    }
+    paintDrag(e.clientX)
+    swapCheckRef.current(e.clientX)
+    // Near a strip edge, run an rAF scroll loop so a tab can travel beyond the
+    // visible region (the crowded strip is the whole point of reordering).
+    const strip = stripRef.current
+    if (strip && strip.scrollWidth > strip.clientWidth) {
+      const r = strip.getBoundingClientRect()
+      const dir =
+        e.clientX < r.left + EDGE_BAND ? -1 : e.clientX > r.right - EDGE_BAND ? 1 : 0
+      if (dir !== scrollDirRef.current) {
+        scrollDirRef.current = dir
+        if (dir !== 0 && !rafRef.current) {
+          const tick = () => {
+            const s = stripRef.current
+            const d = dragRef.current
+            if (!s || !d || !d.started || scrollDirRef.current === 0) {
+              rafRef.current = 0
+              return
+            }
+            s.scrollLeft += scrollDirRef.current * EDGE_SCROLL_STEP
+            // Tabs slide under a stationary pointer while we scroll; re-pin the
+            // carried tab and re-run the swap check so the order tracks.
+            paintDrag(d.lastX)
+            swapCheckRef.current(d.lastX)
+            rafRef.current = requestAnimationFrame(tick)
+          }
+          rafRef.current = requestAnimationFrame(tick)
+        }
+      }
+    }
+  }
+
+  // --- Bar-level context menu (Close other / Close all) --------------------
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+
+  // Close on Escape. Capture phase + stopPropagation so the global shortcut
+  // dispatcher (and a PDF tool's own Esc) never sees the keypress that was
+  // aimed at this menu.
+  useEffect(() => {
+    if (!menu) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setMenu(null)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [menu])
+
+  const menuItem =
+    'block w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-stone-700 transition-colors enabled:hover:bg-stone-100 disabled:opacity-40'
+
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-white">
-      <div className="flex items-stretch gap-1 overflow-x-auto border-b border-stone-200 bg-stone-100 px-2 pt-1.5">
+      <div
+        ref={stripRef}
+        onContextMenu={(e) => {
+          // With no tabs there is nothing to close — leave the native menu be.
+          if (tabs.length === 0) return
+          e.preventDefault()
+          setMenu({
+            x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)),
+            y: e.clientY + 2,
+          })
+        }}
+        className="flex select-none items-stretch gap-1 overflow-x-auto border-b border-stone-200 bg-stone-100 px-2 pt-1.5"
+      >
         {tabs.length === 0 && (
           <div className="px-2 py-2 text-xs text-stone-400">
             Open a paper from the list.
@@ -59,19 +347,66 @@ export default function TabArea({
         )}
         {tabs.map((t) => {
           const isActive = t.key === activeKey
+          const isDragging = dragKey === t.key
           return (
             <div
               key={t.key}
-              className={`group flex shrink-0 animate-grow-in items-center gap-2 rounded-t-lg border border-b-0 px-3 py-1.5 text-sm transition-colors ${
-                isActive
-                  ? 'border-stone-200 bg-white text-stone-900'
-                  : 'border-transparent text-stone-500 hover:bg-stone-200/70'
+              data-tabkey={t.key}
+              onPointerDown={(e) => {
+                if (e.button !== 0 || e.pointerType === 'touch') return
+                // The × keeps its plain click; a press there never drags.
+                if ((e.target as HTMLElement).closest('[data-tab-close]')) return
+                dragRef.current = {
+                  key: t.key,
+                  pointerId: e.pointerId,
+                  el: e.currentTarget,
+                  startX: e.clientX,
+                  lastX: e.clientX,
+                  grabDX: e.clientX - e.currentTarget.getBoundingClientRect().left,
+                  started: false,
+                }
+                // 🔴 These listeners go on the WINDOW, not on the strip. The
+                // strip is ~33px tall and pointer capture is only taken once
+                // the 4px threshold is crossed, so a hand that drifts a little
+                // vertically leaves the strip before the drag has begun — its
+                // pointermove then goes to whatever is underneath and the drag
+                // never starts at all. That is not a rare edge: it is what a
+                // real drag looks like, and it made the strip feel dead.
+                const move = (ev: PointerEvent) => moveRef.current(ev)
+                const up = () => endDrag()
+                window.addEventListener('pointermove', move)
+                window.addEventListener('pointerup', up)
+                window.addEventListener('pointercancel', up)
+                detachRef.current = () => {
+                  window.removeEventListener('pointermove', move)
+                  window.removeEventListener('pointerup', up)
+                  window.removeEventListener('pointercancel', up)
+                }
+              }}
+              // A carried tab reads as picked UP, not merely marked: it goes
+              // white and casts a shadow over its neighbours (the strip clips,
+              // so the lift is horizontal — a raised tab would be cut off).
+              // transition-colors is dropped while carried, since the transform
+              // is written per frame and must not be animated.
+              className={`group flex shrink-0 animate-grow-in items-center gap-2 rounded-t-lg border border-b-0 px-3 py-1.5 text-sm ${
+                isDragging
+                  ? 'relative z-10 cursor-grabbing border-stone-300 bg-white text-stone-900 shadow-lg shadow-stone-900/20'
+                  : isActive
+                    ? 'border-stone-200 bg-white text-stone-900 transition-colors'
+                    : 'border-transparent text-stone-500 transition-colors hover:bg-stone-200/70'
               }`}
             >
-              <button onClick={() => onActivate(t.key)} className="max-w-48 truncate">
+              <button
+                onClick={() => {
+                  if (suppressClickRef.current) return // that was a drag, not a click
+                  onActivate(t.key)
+                }}
+                className="max-w-48 truncate"
+              >
                 {t.label}
               </button>
               <button
+                data-tab-close
                 onClick={() => onClose(t.key)}
                 title="Close tab"
                 className={`rounded p-0.5 leading-none text-stone-400 transition-colors hover:bg-stone-300 hover:text-stone-700 ${
@@ -84,6 +419,45 @@ export default function TabArea({
           )
         })}
       </div>
+
+      {menu &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50"
+            onPointerDown={() => setMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              setMenu(null)
+            }}
+          >
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              style={{ left: menu.x, top: menu.y }}
+              className="fixed min-w-44 animate-grow-in rounded-xl border border-stone-200 bg-white p-1 shadow-lg shadow-stone-900/5"
+            >
+              <button
+                onClick={() => {
+                  setMenu(null)
+                  onCloseOthers()
+                }}
+                disabled={tabs.length < 2}
+                className={menuItem}
+              >
+                Close other tabs
+              </button>
+              <button
+                onClick={() => {
+                  setMenu(null)
+                  onCloseAll()
+                }}
+                className={menuItem}
+              >
+                Close all tabs
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <div className="min-h-0 flex-1">
         {active === null && (

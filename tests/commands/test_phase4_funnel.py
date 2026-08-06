@@ -25,6 +25,7 @@ from litman.cli import cli
 from litman.core import checks, correctors
 from litman.core.library import create_vault
 from litman.core.views import load_index_ids
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 _FAKE_PDF_BYTES = b"%PDF-1.4\n% fake content for tests\n%%EOF\n"
@@ -567,7 +568,7 @@ def test_modify_add_project_tag_builds_project_side(
     )
     assert result.exit_code == 0, result.output
 
-    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_A")
     refs = (_reflib(proj_dir) / "REFERENCES.md").read_text(encoding="utf-8")
     assert "2024_A" in refs
 
@@ -587,7 +588,7 @@ def test_modify_rm_project_tag_clears_project_side(
         cli,
         ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
     )
-    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_A")
 
     result = runner.invoke(
         cli,
@@ -614,7 +615,7 @@ def test_rename_project_linked_paper_rebuilds_project_side(
         cli,
         ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
     )
-    assert (_reflib(proj_dir) / "2024_A").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_A")
 
     result = runner.invoke(
         cli,
@@ -623,7 +624,7 @@ def test_rename_project_linked_paper_rebuilds_project_side(
     assert result.exit_code == 0, result.output
 
     assert not (_reflib(proj_dir) / "2024_A").exists()
-    assert (_reflib(proj_dir) / "2024_B").is_symlink()
+    assert is_portable_link(_reflib(proj_dir) / "2024_B")
     refs = (_reflib(proj_dir) / "REFERENCES.md").read_text(encoding="utf-8")
     assert "2024_B" in refs
 
@@ -645,7 +646,7 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
         ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
     )
     link = _reflib(proj_dir) / "2024_A"
-    assert link.is_symlink()
+    assert is_portable_link(link)
 
     # Simulate drift: the symlink is gone but membership TRUTH remains.
     link.unlink()
@@ -653,20 +654,43 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
 
     result = runner.invoke(cli, ["refresh-views", "--library", str(vault)])
     assert result.exit_code == 0, result.output
-    assert link.is_symlink()
+    assert is_portable_link(link)
 
 
 def test_rebuild_views_neutralizes_dotdot_tag(vault: Path) -> None:
     # Review A3: a tag value ".." must not make views/by-topic/.. resolve to
-    # views/ itself — _safe_name neutralizes it to a single, non-traversing
-    # path segment ("_..").
+    # views/ itself — _safe_name turns it into a single, non-traversing path
+    # segment. The trailing "_" is the second half of that: Windows strips a
+    # component's trailing dots, so "_.." reached disk as "_." while the
+    # junction constructor still looked for the literal name and dropped the
+    # link. One name on every platform, so this asserts unconditionally.
     from litman.core.document import list_papers
     from litman.core.views import rebuild_views
 
     _write_paper(vault, "2024_A", topics=[".."])
     rebuild_views(vault, list_papers(vault))
 
-    assert (vault / "views" / "by-topic" / "_..").is_dir()
-    assert (vault / "views" / "by-topic" / "_.." / "2024_A").is_symlink()
-    # The symlink did NOT escape up into views/ (the pre-fix ".." bucket).
+    bucket = vault / "views" / "by-topic" / "_.._"
+    assert bucket.is_dir()
+    assert is_portable_link(bucket / "2024_A")
+    # The link did NOT escape up into views/ (the pre-fix ".." bucket).
     assert not (vault / "views" / "2024_A").exists()
+
+
+def test_view_bucket_never_ends_in_a_dot_or_space(vault: Path) -> None:
+    """Any tag ending in "." or " " still gets a bucket Windows can address.
+
+    Such a component is not storable under that name there: the Win32 layer
+    strips the trailing character, the \\\\?\\ layer does not, and the two stop
+    agreeing about what the directory is called.
+    """
+    from litman.core.document import list_papers
+    from litman.core.views import rebuild_views
+
+    _write_paper(vault, "2024_B", topics=["Fig.", "et al. ", "..."])
+    rebuild_views(vault, list_papers(vault))
+
+    buckets = sorted(d.name for d in (vault / "views" / "by-topic").iterdir())
+    assert buckets == ["..._", "Fig._", "et al._"]
+    for name in buckets:
+        assert is_portable_link(vault / "views" / "by-topic" / name / "2024_B")

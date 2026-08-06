@@ -18,6 +18,7 @@ junction syscalls can only run on a Windows host (see the skipif tests there).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,13 +46,25 @@ def _clear_probe_cache() -> Any:
     reset_link_probe_cache()
 
 
-def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make this process look like a vault on a FAT32 / exFAT drive."""
+# What a working drive answers on this host. The probe asks for a junction on
+# Windows and a symlink everywhere else, so a bare "symlink" expectation
+# describes the developer's box rather than the contract.
+_NATIVE = "junction" if sys.platform == "win32" else "symlink"
 
-    def boom(self: Path, target: Any, target_is_directory: bool = False) -> None:
+
+def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make this process look like a vault on a FAT32 / exFAT drive.
+
+    BOTH mechanisms have to go. Poisoning only ``Path.symlink_to`` left the
+    Windows probe free to make a junction, so every "this drive cannot hold
+    links" test quietly asserted against "links work fine" there.
+    """
+
+    def boom(*_a: Any, **_k: Any) -> None:
         raise OSError(1, "Operation not permitted")
 
     monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
 
 
 # --------------------------------------------------------------------------
@@ -59,6 +72,10 @@ def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the POSIX arm; Windows is covered by the junction tests below",
+)
 def test_mechanism_is_symlink_on_posix(tmp_path: Path) -> None:
     assert link_mechanism(tmp_path) == "symlink"
     assert links_supported(tmp_path) is True
@@ -74,7 +91,7 @@ def test_mechanism_none_when_the_os_refuses(
 
 def test_probe_leaves_nothing_behind(tmp_path: Path) -> None:
     """A probe that littered would seed exactly the dangling links we hunt."""
-    assert link_mechanism(tmp_path) == "symlink"
+    assert link_mechanism(tmp_path) == _NATIVE
     assert list(tmp_path.iterdir()) == []
 
 
@@ -91,17 +108,31 @@ def test_probe_is_cached_per_directory(
 ) -> None:
     """One probe per directory per process — the server must not pay it per request."""
     calls: list[Path] = []
-    real = Path.symlink_to
 
-    def counting(self: Path, target: Any, target_is_directory: bool = False) -> None:
-        calls.append(self)
-        return real(self, target, target_is_directory)
+    # Count whichever mechanism this host actually probes with — on Windows
+    # Path.symlink_to is never reached, so counting it would assert 0 == 1.
+    if sys.platform == "win32":
+        real_junction = portable_link._create_junction
 
-    monkeypatch.setattr(Path, "symlink_to", counting)
+        def counting_junction(link: Path, target: Path) -> None:
+            calls.append(link)
+            return real_junction(link, target)
 
-    assert link_mechanism(tmp_path) == "symlink"
-    assert link_mechanism(tmp_path) == "symlink"
-    assert link_mechanism(tmp_path) == "symlink"
+        monkeypatch.setattr(portable_link, "_create_junction", counting_junction)
+    else:
+        real = Path.symlink_to
+
+        def counting(
+            self: Path, target: Any, target_is_directory: bool = False
+        ) -> None:
+            calls.append(self)
+            return real(self, target, target_is_directory)
+
+        monkeypatch.setattr(Path, "symlink_to", counting)
+
+    assert link_mechanism(tmp_path) == _NATIVE
+    assert link_mechanism(tmp_path) == _NATIVE
+    assert link_mechanism(tmp_path) == _NATIVE
     assert len(calls) == 1
 
 
@@ -115,7 +146,7 @@ def test_probe_is_per_directory_not_per_process(tmp_path: Path) -> None:
     a = tmp_path / "a"
     a.mkdir()
     b = tmp_path / "b"  # never created — an unwritable/absent dir reads as none
-    assert link_mechanism(a) == "symlink"
+    assert link_mechanism(a) == _NATIVE
     assert link_mechanism(b) == "none"
 
 
@@ -145,6 +176,12 @@ def test_win32_mechanism_is_junction_via_the_seam(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="its premise is that _create_junction cannot work here; on a real "
+    "Windows kernel it can, and the drive-refuses case is "
+    "test_mechanism_none_when_the_os_refuses",
+)
 def test_win32_mechanism_on_a_host_without_junctions_is_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

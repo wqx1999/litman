@@ -25,6 +25,7 @@ from litman.core.vault_registry import (
     registry_path,
     save_registry,
 )
+from litman.core.portable_link import is_portable_link
 
 
 # ---------------------------------------------------------------------------
@@ -601,7 +602,7 @@ def test_project_drift_tty_heal_rebuilds_at_new_path(
     _write_config_with_project(vault, "pepforge", old_dir)
     _make_paper(vault, "p1", projects=["pepforge"])
     rebuild_all_project_links(vault, {"pepforge": str(old_dir)})
-    assert (old_dir / "litman_reflib" / "p1").is_symlink()
+    assert is_portable_link(old_dir / "litman_reflib" / "p1")
 
     # Simulate "user moved the directory": rename it on disk. The config still
     # points at old_dir, which no longer exists.
@@ -620,7 +621,7 @@ def test_project_drift_tty_heal_rebuilds_at_new_path(
 
     # litman_reflib rebuilt at the NEW location.
     new_link = new_dir / "litman_reflib" / "p1"
-    assert new_link.is_symlink()
+    assert is_portable_link(new_link)
     assert new_link.resolve() == (vault / "papers" / "p1").resolve()
     refs = new_dir / "litman_reflib" / "REFERENCES.md"
     assert refs.is_file()
@@ -662,8 +663,8 @@ def test_project_drift_tty_heal_multiple_projects_one_run(
     rebuild_all_project_links(
         vault, {"alpha": str(alpha_old), "beta": str(beta_old)}
     )
-    assert (alpha_old / "litman_reflib" / "pa").is_symlink()
-    assert (beta_old / "litman_reflib" / "pb").is_symlink()
+    assert is_portable_link(alpha_old / "litman_reflib" / "pa")
+    assert is_portable_link(beta_old / "litman_reflib" / "pb")
 
     # Both directories "moved".
     alpha_new = tmp_path / "alpha_new"
@@ -690,8 +691,8 @@ def test_project_drift_tty_heal_multiple_projects_one_run(
     # BOTH litman_reflib rebuilt at their new locations in the single pass.
     alpha_link = alpha_new / "litman_reflib" / "pa"
     beta_link = beta_new / "litman_reflib" / "pb"
-    assert alpha_link.is_symlink()
-    assert beta_link.is_symlink()
+    assert is_portable_link(alpha_link)
+    assert is_portable_link(beta_link)
     assert alpha_link.resolve() == (vault / "papers" / "pa").resolve()
     assert beta_link.resolve() == (vault / "papers" / "pb").resolve()
 
@@ -748,7 +749,7 @@ def test_project_drift_tty_heal_preserves_code_symlink(
         y.dump(meta, f)
 
     rebuild_all_project_links(vault, {"pepforge": str(old_dir)})
-    assert (old_dir / "litman_code" / repo_name).is_symlink()
+    assert is_portable_link(old_dir / "litman_code" / repo_name)
 
     # Project dir moves; config still points at old_dir.
     new_dir = tmp_path / "proj_new"
@@ -764,7 +765,7 @@ def test_project_drift_tty_heal_preserves_code_symlink(
 
     # Code half of the clone↔link dual rebuilt at the new location.
     code_link = new_dir / "litman_code" / repo_name
-    assert code_link.is_symlink()
+    assert is_portable_link(code_link)
     assert code_link.resolve() == (vault / "codes" / repo_name / "repo").resolve()
 
 

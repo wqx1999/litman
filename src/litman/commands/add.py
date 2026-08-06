@@ -321,10 +321,15 @@ def _apply_add(
             # be to put a number in. A download year passes every check
             # downstream and surfaces years later as a wrong date in an
             # exported citation, so say outright that guessing is not the fix.
+            # `source_label` is bounded — a DOI or a file basename, never an
+            # absolute path — so the fixed half's measured 139 characters plus
+            # a real label hold the 200 ceiling on every path. The DOI landing
+            # page as a second place to look lives in lit-library/SKILL.md,
+            # where the rationale belongs; `lit add` always has the PDF in
+            # hand, so page 1 always answers.
             raise IDError(
-                f"Metadata from {source_label} has no year, and the year is "
-                "part of the paper id. Take it from page 1 or the DOI landing "
-                "page — not the download year. If there is none at all, pass "
+                f"Metadata from {source_label} has no year, which the paper id "
+                "needs. Take it from page 1 — not the download year — or pass "
                 "--id <year>_<Family>_<Keyword>."
             )
         family_raw = first_author_family(parsed["authors"])
@@ -603,10 +608,13 @@ def add_cmd(
         parsed = parse_crossref(raw)
         doi_for_dedup = parsed.get("doi") or doi
 
+    # Basename, not the path: the error budget (one verdict + one way out,
+    # 200 characters) cannot absorb an unbounded absolute path, and the agent
+    # that fed the file knows which file it fed.
     source_label = (
         f"DOI {doi!r}" if doi is not None
         else "LLM JSON (stdin)" if from_stdin
-        else f"LLM JSON {str(from_llm_json)!r}"
+        else f"LLM JSON {Path(from_llm_json).name!r}"
     )
 
     # Everything from the DOI precheck to the mv-semantics unlink lives in

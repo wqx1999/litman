@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/wqx1999/litman/blob/main/docs/0-readme.md
+    about: Commands, concepts, and the tutorial — check here first.

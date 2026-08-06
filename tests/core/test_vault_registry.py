@@ -34,6 +34,7 @@ from litman.core.vault_registry import (
     set_vault_path,
 )
 from litman.exceptions import LibraryNotFoundError, VaultRegistryError
+from litman.core import locking
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,10 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # Windows has no $HOME: Path.home() and Path.expanduser() read
+    # %USERPROFILE%, so redirecting only HOME left "~" pointing at the
+    # session-wide fake this suite's conftest pins.
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("LITMAN_REGISTRY_DIR", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return home
@@ -336,7 +341,7 @@ def test_ensure_name_registrable_dead_entry_points_at_set_path(
     import shutil
 
     reg = add_vault(VaultRegistry(), "main", vault_a)
-    shutil.rmtree(vault_a)  # the folder moved / was deleted behind litman's back
+    locking.rmtree(vault_a)  # the folder moved / was deleted behind litman's back
     with pytest.raises(VaultRegistryError) as exc:
         ensure_name_registrable(reg, "main")
     msg = str(exc.value)
@@ -775,7 +780,7 @@ def test_find_vault_registry_active_stale_raises(
     save_registry(add_vault(VaultRegistry(), "main", vault_a))
     # Simulate the directory disappearing.
     import shutil
-    shutil.rmtree(vault_a)
+    locking.rmtree(vault_a)
     import os
     os.chdir(fake_home)
     try:

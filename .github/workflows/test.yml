@@ -1,0 +1,49 @@
+name: tests
+
+on:
+  push:
+    branches: [main, 'dev/**', 'feat/**']
+    paths-ignore:
+      - '**.md'
+      - 'dev_docs/**'
+  workflow_dispatch:
+
+# A branch only needs its newest run. Pushing three times in a row shouldn't
+# leave two stale suites burning runners and mailing dead failures.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      # The whole point is a per-platform verdict, so a red macOS must not
+      # cancel the Windows job before it reports.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # The suite runs in minutes; anything near this is a hang, not a slow run.
+    timeout-minutes: 30
+
+    steps:
+      # Pinned past the Node 20 runtime: runners default to Node 24 since June
+      # 2026 and drop Node 20 entirely in the autumn, at which point an action
+      # still declaring it stops running rather than merely warning.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # tests/bench drives the benchmark harness against real papers, and
+      # .gitignore keeps those PDFs out of the repo on copyright grounds. A
+      # fresh checkout therefore cannot have them, so the bench suite fails
+      # here for a reason that says nothing about the code under test. The
+      # exclusion is named in the step title so every run declares what it
+      # did not cover.
+      - name: Test (excludes tests/bench — its fixture PDFs cannot be committed)
+        run: pytest -q --ignore=tests/bench

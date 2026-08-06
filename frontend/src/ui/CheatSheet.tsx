@@ -98,7 +98,7 @@ const SECTIONS: Section[] = [
   },
   {
     title: 'Tabs',
-    note: 'Switch the open document tabs.',
+    note: 'Drag a tab to reorder. Right-click the bar to close many.',
     rows: [
       { chords: [[',']], action: 'Previous tab' },
       { chords: [['.']], action: 'Next tab' },

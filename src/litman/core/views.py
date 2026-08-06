@@ -130,7 +130,17 @@ def _safe_name(value: str) -> str:
     # views/by-X/ or views/ itself. Prefix them (and the empty string) so the
     # result is always a single, non-traversing path segment.
     if name in ("", ".", ".."):
-        return "_" + name
+        name = "_" + name
+    # Windows silently strips trailing dots (and spaces) off a path component,
+    # so a tag like "Fig." reaches disk as "Fig" — while the junction
+    # constructor addresses the same link through a \\?\ prefix that skips
+    # that normalization and then cannot find the bucket that was just made.
+    # The link is dropped and the user is told their filesystem cannot hold
+    # folder links, which blames the drive for what is really a name. One
+    # trailing "_" makes the segment survive both spellings, and it is applied
+    # on every platform so a vault carried between them keeps one layout.
+    if name.endswith((".", " ")):
+        name += "_"
     return name
 
 

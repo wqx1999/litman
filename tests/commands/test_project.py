@@ -21,6 +21,7 @@ from litman.core.config import load_config
 from litman.core.library import create_vault
 from litman.core.taxonomy import parse_taxonomy
 from litman.exceptions import TaxonomyError
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -366,7 +367,7 @@ def test_project_set_path_happy(
     assert result.exit_code == 0, result.output
     assert _config_projects(vault) == {"p": str(b)}
     # Non-interactive: no prompt possible, so the manual hint survives here.
-    assert "lit link --rebuild-all" in result.output
+    assert "lit link --rebuild-all" in result.output.replace("\n", "")
 
 
 def test_project_set_path_interactive_rebuilds_links_with_one_enter(
@@ -401,7 +402,7 @@ def test_project_set_path_interactive_rebuilds_links_with_one_enter(
     )
 
     assert result.exit_code == 0, result.output
-    assert (b / "litman_reflib" / "2024_P_One").is_symlink()
+    assert is_portable_link(b / "litman_reflib" / "2024_P_One")
     assert "lit link --rebuild-all" not in result.output
 
 
@@ -500,7 +501,9 @@ def test_project_rm_of_an_empty_project_says_no_papers_are_affected(
     assert result.exit_code == 0, result.output
     assert "0 paper(s)" in result.output
     assert "TAXONOMY.md and lit-config.yaml" in result.output
-    assert str(proj_dir) in result.output
+    # Unfolded — see test_open.py: the renderer's line breaks are not part of
+    # the contract, and a macOS tmp path is long enough to trigger them.
+    assert str(proj_dir) in result.output.replace("\n", "")
     assert _taxonomy_projects(vault) == []
     assert _config_projects(vault) == {}
 

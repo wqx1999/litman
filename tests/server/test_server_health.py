@@ -39,6 +39,7 @@ from litman.core.vault_registry import (
 )
 from litman.core.views import write_index
 from litman.server import create_app
+from litman.core import locking
 
 _yaml = YAML(typ="safe")
 
@@ -138,7 +139,7 @@ def test_health_reports_index_vs_disk_drift(vault: Path) -> None:
     write_index(vault, list_papers(vault))
 
     # INDEX still lists 2024_Bar, but its directory is gone.
-    shutil.rmtree(vault / "papers" / "2024_Bar")
+    locking.rmtree(vault / "papers" / "2024_Bar")
 
     resp = _client(vault).get("/api/health")
     assert resp.status_code == 200
@@ -174,7 +175,7 @@ def test_health_is_read_only_no_truth_or_registry_writes(vault: Path) -> None:
     _write_paper(vault, "2024_Foo")
     _write_paper(vault, "2024_Bar")
     write_index(vault, list_papers(vault))
-    shutil.rmtree(vault / "papers" / "2024_Bar")  # a live drift to exercise
+    locking.rmtree(vault / "papers" / "2024_Bar")  # a live drift to exercise
 
     # Register the vault so the per-machine registry file exists to snapshot.
     reg = load_registry()

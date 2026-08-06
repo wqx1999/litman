@@ -27,6 +27,7 @@ from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES, list_trash
 from litman.exceptions import PaperNotFoundError
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -176,7 +177,7 @@ def test_rm_rebuilds_views(vault: Path) -> None:
     _write_paper(vault, "2024_Other", topics=["alpha"])
     runner = CliRunner()
     runner.invoke(cli, ["refresh-views", "--library", str(vault)])
-    assert (vault / "views/by-topic/alpha/2024_Foo_Bar").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/alpha/2024_Foo_Bar")
 
     result = runner.invoke(
         cli, ["rm", "2024_Foo_Bar", "--yes", "--library", str(vault)]
@@ -185,7 +186,7 @@ def test_rm_rebuilds_views(vault: Path) -> None:
     # Stale symlink for the deleted paper is gone.
     assert not (vault / "views/by-topic/alpha/2024_Foo_Bar").exists()
     # The other paper's symlink is still there.
-    assert (vault / "views/by-topic/alpha/2024_Other").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/alpha/2024_Other")
 
 
 def test_rm_does_not_touch_unrelated_papers(vault: Path) -> None:
@@ -294,7 +295,7 @@ def test_rm_refuse_is_zero_mutation(
     assert (vault / "codes" / "SoloLib").is_dir()
     assert _read_repo_meta(vault, "SoloLib")["papers"] == repo_meta_before["papers"]
     # Project: symlink + REFERENCES untouched.
-    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "2024_Target")
     assert (project_dir / "litman_reflib" / "REFERENCES.md").read_text() == refs_before
     # No log row written.
     assert not (vault / ".deletion-log.jsonl").exists()
@@ -451,7 +452,7 @@ def test_rm_cascade_project_symlink_and_references(
         cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
     )
     assert link_res.exit_code == 0, link_res.output
-    assert (project_dir / "litman_reflib" / "2024_Target").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "2024_Target")
     refs_before = (project_dir / "litman_reflib" / "REFERENCES.md").read_text()
     assert "2024_Target" in refs_before
 

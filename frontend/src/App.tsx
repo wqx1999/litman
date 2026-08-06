@@ -477,6 +477,11 @@ export default function App() {
   // save is in flight.
   const [pendingClose, setPendingClose] = useState<string | null>(null)
   const [savingClose, setSavingClose] = useState(false)
+  // Dirty tabs still waiting behind pendingClose during a batch close (the tab
+  // strip's Close other / Close all). Each SaveDialog decision advances the
+  // queue; Cancel (or a failed save) abandons it. A ref, not state: the queue
+  // never renders — pendingClose is what drives the dialog.
+  const closeQueueRef = useRef<string[]>([])
 
   // Paper id awaiting a soft-delete decision (drives RemovePaperConfirm), and
   // whether the `lit rm` DELETE is in flight.
@@ -1265,6 +1270,83 @@ export default function App() {
     [removeTab, mdTabDirty],
   )
 
+  // Reorder the tab strip (pointer drag in TabArea). Pure array move — the key
+  // stays stable, so the active tab and any lifted drafts are untouched.
+  const reorderTab = useCallback((from: number, to: number) => {
+    setTabs((prev) => {
+      if (from === to || from < 0 || to < 0 || from >= prev.length || to >= prev.length)
+        return prev
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }, [])
+
+  // Batch removeTab: one pass over tabs/drafts, one active re-point (same rule
+  // as removeTab — fall back to the last surviving tab). Used by the strip's
+  // Close other / Close all for the tabs that need no save prompt.
+  const removeTabs = useCallback((keys: ReadonlySet<string>) => {
+    setTabs((prev) => {
+      const next = prev.filter((t) => !keys.has(t.key))
+      setActiveTab((cur) =>
+        cur !== null && keys.has(cur)
+          ? next.length
+            ? next[next.length - 1].key
+            : null
+          : cur,
+      )
+      return next
+    })
+    setMdDrafts((prev) => {
+      if (![...prev.keys()].some((k) => keys.has(k))) return prev
+      const next = new Map(prev)
+      for (const k of keys) next.delete(k)
+      return next
+    })
+  }, [])
+
+  // Close a set of tabs at once: clean ones go immediately, dirty ones queue
+  // behind the SAME per-tab SaveDialog the single × uses (Save / Don't save /
+  // Cancel each — no new batch-save path, and no silent loss). Only the active
+  // PDF tab can hold dirty annotations (a switch-away flushes, PdfView), but
+  // several md drafts may be dirty at once — hence a queue, not a single key.
+  const closeMany = useCallback(
+    (keys: string[]) => {
+      const dirty = keys.filter(
+        (k) => handlesRef.current.get(k)?.isDirty() || mdTabDirty(k),
+      )
+      const clean = new Set(keys.filter((k) => !dirty.includes(k)))
+      if (clean.size) removeTabs(clean)
+      if (dirty.length) {
+        closeQueueRef.current = dirty.slice(1)
+        setPendingClose(dirty[0])
+      }
+    },
+    [mdTabDirty, removeTabs],
+  )
+
+  // Close-others keeps the tab being READ (the active one), not the tab under
+  // the cursor — wangq's call, diverging from the browser convention on
+  // purpose: the menu means the same thing wherever on the strip you invoke it,
+  // and the page you are reading never vanishes. (To keep a background tab:
+  // activate it first.)
+  const closeOtherTabs = useCallback(() => {
+    closeMany(tabs.filter((t) => t.key !== activeTab).map((t) => t.key))
+  }, [tabs, activeTab, closeMany])
+
+  const closeAllTabs = useCallback(() => {
+    closeMany(tabs.map((t) => t.key))
+  }, [tabs, closeMany])
+
+  // After a SaveDialog decision lands, surface the next queued dirty tab (batch
+  // close), or retire the dialog.
+  const advanceCloseQueue = useCallback(() => {
+    const [next, ...rest] = closeQueueRef.current
+    closeQueueRef.current = rest
+    setPendingClose(next ?? null)
+  }, [])
+
   // SaveDialog actions for the tab pending a close decision. The tab may be a
   // PDF tab (flush via its registered handle) or an md tab (PUT the lifted draft
   // directly — the md tab need not be mounted, so App owns the write).
@@ -1286,24 +1368,32 @@ export default function App() {
       console.error('Failed to save before closing tab:', err)
       // The write failed — keep the tab open and the draft intact rather than
       // closing and silently losing the edit. Mirrors PDF flush keeping dirty.
+      // A batch close stops here too: whatever queued behind this tab stays
+      // open (fail-stop, same as Cancel).
+      closeQueueRef.current = []
       setSavingClose(false)
       setPendingClose(null)
       return
     }
     setSavingClose(false)
-    setPendingClose(null)
     removeTab(key)
-  }, [pendingClose, removeTab, tabs, bumpDocMtime])
+    advanceCloseQueue()
+  }, [pendingClose, removeTab, tabs, bumpDocMtime, advanceCloseQueue])
 
   const confirmDiscard = useCallback(() => {
     const key = pendingClose
     if (!key) return
     handlesRef.current.get(key)?.discard()
-    setPendingClose(null)
     removeTab(key) // also drops the md draft entry
-  }, [pendingClose, removeTab])
+    advanceCloseQueue()
+  }, [pendingClose, removeTab, advanceCloseQueue])
 
-  const cancelClose = useCallback(() => setPendingClose(null), [])
+  // Cancel keeps this tab AND abandons the rest of a batch-close queue —
+  // already-closed clean tabs stay closed, nothing further is asked.
+  const cancelClose = useCallback(() => {
+    closeQueueRef.current = []
+    setPendingClose(null)
+  }, [])
 
   const cancelRemove = useCallback(() => {
     if (!removing) setPendingRemove(null)
@@ -2058,6 +2148,9 @@ export default function App() {
               activeKey={activeTab}
               onActivate={activateTab}
               onClose={closeTab}
+              onReorder={reorderTab}
+              onCloseOthers={closeOtherTabs}
+              onCloseAll={closeAllTabs}
               onOpenPaper={openWikilink}
               onRegisterPdf={registerPdf}
               onNotify={notify}

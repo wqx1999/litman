@@ -119,6 +119,15 @@ def test_linux_no_terminal_found_returns_false(
     assert popen_calls == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the cwd here is a real host path, and the darwin arm escapes "
+        "backslashes for AppleScript (script.replace('\\\\', '\\\\\\\\')). "
+        "A macOS path never has any, so on Windows the fixture, not the code, "
+        "is what the assertion ends up describing."
+    ),
+)
 def test_darwin_osascript_quotes_the_cwd(
     monkeypatch: pytest.MonkeyPatch,
     popen_calls: list[tuple[list[str], object]],

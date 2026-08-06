@@ -18,7 +18,18 @@ We then assert on the recorded argv which branch the script took.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
+
+# install.sh is the POSIX one-line installer, driven here through `sh` with
+# `#!/bin/sh` stubs on PATH. Windows installs via pipx/uv directly and never
+# runs this file; under git-bash the stub shims resolve inconsistently, so a
+# green result there would mean nothing.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only installer; Windows has its own path"
+)
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / "install.sh"
 

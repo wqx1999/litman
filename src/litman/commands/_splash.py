@@ -29,8 +29,12 @@ The key is pure white and the bundled marks are clamped so no opaque pixel is
 exactly ``#ffffff`` — the tile can't be punched through, the fully-transparent
 corners composite to white and drop out, and the anti-aliased corner fringe
 blends to ~#fdfdfd, invisible against the near-white tile. Where the platform
-has no color-key transparency (older Linux/macOS), the white shows as a small
-backing square — a graceful, rare fallback (the splash is Windows-shortcut-led).
+has no color-key transparency (older Linux), the white shows as a small backing
+square — a graceful, rare fallback (the splash is Windows-shortcut-led).
+
+Not macOS: ``gui.py`` never starts this process there. Aqua's Tk ignores
+``overrideredirect``, so the splash comes up as an ordinary titled window that
+impersonates litman's main one. See the ``want_splash`` guard for the rest.
 
 Stdlib + tkinter only. It must stay import-light — the parent Popens it before
 importing uvicorn — so it imports nothing from litman beyond the tiny top-level

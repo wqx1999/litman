@@ -57,6 +57,7 @@ from litman.core.sync import (
     write_sync_to_config,
 )
 from litman.exceptions import SyncError
+from litman.core import locking
 
 _yaml_safe = YAML(typ="safe")
 
@@ -594,7 +595,7 @@ def test_push_deletes_remote_file_removed_locally(
     assert (fake_rclone_env / "papers" / "p1" / "summary.md").is_file()
 
     # Remove the paper locally and push again.
-    shutil.rmtree(vault / "papers" / "p1")
+    locking.rmtree(vault / "papers" / "p1")
     push(vault, target)
     assert not (fake_rclone_env / "papers" / "p1").exists()
 
@@ -608,7 +609,7 @@ def test_pull_restores_vault_from_remote(
     push(vault, target)
 
     # Simulate cross-machine: drop the paper locally and pull it back.
-    shutil.rmtree(vault / "papers" / "p1")
+    locking.rmtree(vault / "papers" / "p1")
     assert not (vault / "papers" / "p1").exists()
 
     pull(vault, target)
@@ -824,7 +825,7 @@ def test_cli_sync_pull_restores(
     vault, target = configured_vault
     _seed_paper(vault, "p1", body="payload\n")
     push(vault, target)
-    shutil.rmtree(vault / "papers" / "p1")
+    locking.rmtree(vault / "papers" / "p1")
 
     runner = CliRunner()
     result = runner.invoke(cli, ["sync", "pull", "--library", str(vault)])
@@ -1334,7 +1335,7 @@ def test_cli_sync_pull_dry_run_does_not_modify(
     _seed_paper(vault, "p1", body="local\n")
     push(vault, target)
     # Remove the local copy then pull --dry-run.
-    shutil.rmtree(vault / "papers" / "p1")
+    locking.rmtree(vault / "papers" / "p1")
     runner = CliRunner()
     result = runner.invoke(
         cli, ["sync", "pull", "--dry-run", "--library", str(vault)]
@@ -1358,7 +1359,7 @@ def test_cli_sync_pull_exclude_repos_propagates(
     push(vault, target)
     assert (fake_rclone_env / "codes" / "MyRepo" / "repo" / "code.py").is_file()
     # Wipe local codes/, then pull --exclude-repos.
-    shutil.rmtree(vault / "codes" / "MyRepo")
+    locking.rmtree(vault / "codes" / "MyRepo")
     runner = CliRunner()
     result = runner.invoke(
         cli,

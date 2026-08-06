@@ -659,14 +659,42 @@ def _fs_anchors() -> list[dict[str, str]]:
 
     Home is always present; Desktop / Documents / Downloads are listed only
     when they exist as directories (a headless HPC account often has none of
-    the three — the picker then shows just Home).
+    the three — the picker then shows just Home). On Windows, every drive root
+    follows: without those chips the picker is trapped on the home drive — a
+    drive is not a subdirectory of anything so ``D:\\`` never appears in the
+    folder list, and ``parent`` ends at ``C:\\`` (there is no "This PC" above a
+    drive root), leaving the editable address bar as the only way out. POSIX
+    needs no equivalent: mounts are ordinary directories under the single root.
+
+    ``kind`` splits the two groups for the picker, which draws places as
+    labelled chips and drives as one compact segmented control. The server
+    already knows which is which; having the client re-derive it from the shape
+    of the label would be guesswork about a fact we hold.
     """
     home = Path.home()
-    anchors = [{"label": "Home", "path": str(home)}]
+    anchors = [{"kind": "place", "label": "Home", "path": str(home)}]
     for label in ("Desktop", "Documents", "Downloads"):
         candidate = home / label
         if candidate.is_dir():
-            anchors.append({"label": label, "path": str(candidate)})
+            anchors.append({"kind": "place", "label": label, "path": str(candidate)})
+    # ``os.listdrives`` exists only on Windows (3.12+), so the hasattr gate IS
+    # the platform check — and the seam the POSIX tests inject through. It
+    # reads the drive table without touching media; deliberately NO is_dir()
+    # probe per drive, because this runs on every picker navigation and
+    # stat'ing a disconnected network mapping can hang for seconds. A dead
+    # drive chip just 400s into the picker's existing inline-error path.
+    if hasattr(os, "listdrives"):
+        try:
+            for drive in os.listdrives():
+                # "C:\\" → chip label "C:"; the path keeps the separator (a
+                # bare "C:" means "cwd on C:" to Windows, not the root).
+                anchors.append(
+                    {"kind": "drive", "label": drive.rstrip("\\/"), "path": drive}
+                )
+        except OSError:
+            # Documented failure mode of listdrives — degrade to today's
+            # anchors rather than 500ing every listing.
+            pass
     return anchors
 
 

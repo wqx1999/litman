@@ -10,6 +10,15 @@ import pytest
 
 from litman.core import agent_permissions
 
+# What `lit` needs approved on the *running* host. Windows gets the PowerShell
+# twin as well, because that is the shell Claude Code drives there — see
+# install_claude_lit_permission. The win32-only arm is pinned separately by
+# test_claude_adds_powershell_rule_on_windows below; these are the host-native
+# expectations.
+_LIT_ALLOW = ["Bash(lit *)"] + (
+    ["PowerShell(lit *)"] if sys.platform == "win32" else []
+)
+
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -39,7 +48,7 @@ def test_claude_merges_allow_rule_and_is_idempotent(_home: Path) -> None:
     assert second["mode"] == "unchanged"
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["theme"] == "dark"
-    assert data["permissions"]["allow"] == ["Bash(git *)", "Bash(lit *)"]
+    assert data["permissions"]["allow"] == ["Bash(git *)", *_LIT_ALLOW]
 
 
 @pytest.mark.no_skills_isolation
@@ -68,7 +77,7 @@ def test_claude_honours_explicit_config_dir(
 
     assert result["path"] == config_dir / "settings.json"
     data = json.loads(result["path"].read_text(encoding="utf-8"))
-    assert data["permissions"]["allow"] == ["Bash(lit *)"]
+    assert data["permissions"]["allow"] == _LIT_ALLOW
 
 
 @pytest.mark.no_skills_isolation

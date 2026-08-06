@@ -7,6 +7,7 @@ spawn a GUI. The platform-detection branch is exercised by monkeypatching
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,14 @@ from litman.core.viewer import (
     resolve_paper_id,
 )
 from litman.exceptions import AmbiguousPaperIdError, PaperNotFoundError
+
+
+def _slashed(p: str) -> str:
+    """The path with forward slashes, so a suffix assertion reads the same
+    everywhere. The viewer is handed a native path; which separator that path
+    carries is the OS's business, not part of the contract being tested.
+    """
+    return str(p).replace(os.sep, "/")
 
 
 def _write_paper(
@@ -337,7 +346,7 @@ def test_open_exact_id_launches_viewer(
     assert result.exit_code == 0, result.output
     assert len(darwin_popen.calls) == 1
     assert darwin_popen.calls[0][0] == "open"
-    assert darwin_popen.calls[0][1].endswith(
+    assert _slashed(darwin_popen.calls[0][1]).endswith(
         "/papers/2024_Smith_Foo/paper.pdf"
     )
     assert "Opened" in result.output
@@ -352,7 +361,7 @@ def test_open_substring_match_works(
         cli, ["open", "Jones", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
-    assert darwin_popen.calls[0][1].endswith(
+    assert _slashed(darwin_popen.calls[0][1]).endswith(
         "/papers/2024_Jones_Bar/paper.pdf"
     )
 
@@ -461,7 +470,11 @@ def test_open_xdg_open_headless_exits_2(
     )
     assert result.exit_code == 2
     assert "No graphical display" in result.output
-    assert "paper.pdf" in result.output
+    # Unfolded: the message wraps at the terminal width, and a macOS tmp path
+    # (/private/var/folders/df/djsx…) is long enough to split "paper.pdf"
+    # across two lines. The contract is that the path is shown, not where the
+    # renderer chose to break it.
+    assert "paper.pdf" in result.output.replace("\n", "")
     assert "Opened" not in result.output
     # No process was forked.
     assert recorder.calls == []
@@ -501,7 +514,7 @@ def test_open_via_env_var(
     runner = CliRunner()
     result = runner.invoke(cli, ["open", "2024_Smith_Foo"])
     assert result.exit_code == 0, result.output
-    assert darwin_popen.calls[0][1].endswith(
+    assert _slashed(darwin_popen.calls[0][1]).endswith(
         "/papers/2024_Smith_Foo/paper.pdf"
     )
 
@@ -537,7 +550,7 @@ def test_open_paper_doi_resolves(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert darwin_popen.calls[0][1].endswith(
+    assert _slashed(darwin_popen.calls[0][1]).endswith(
         "/papers/2025_Doe_Test/paper.pdf"
     )
 

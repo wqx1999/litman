@@ -900,8 +900,12 @@ export interface FsEntry {
 }
 
 /** A standard one-click location (Home / Desktop / Documents / Downloads) — only
- * the ones that exist on the server are returned. */
+ * the ones that exist on the server are returned. `kind` is `'place'` for those,
+ * or `'drive'` for a Windows drive root (`label` "C:", `path` "C:\\"); the picker
+ * draws the two groups differently, so it reads this rather than pattern-matching
+ * the label. */
 export interface FsAnchor {
+  kind: 'place' | 'drive'
   label: string
   path: string
 }

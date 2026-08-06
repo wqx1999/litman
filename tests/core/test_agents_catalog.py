@@ -182,6 +182,15 @@ def test_windows_recheck_reads_new_registry_path_and_is_idempotent(
     ]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX-only premise and unfakeable here: refresh_path's non-win32 arm "
+        "joins PATH with ':', which is also the drive separator, so a real "
+        "Windows bin dir cannot survive the round-trip this test inspects. "
+        "Windows reads its PATH from the registry (the other arm)."
+    ),
+)
 def test_desktop_launch_detects_agents_under_user_bin_dirs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -194,6 +203,11 @@ def test_desktop_launch_detects_agents_under_user_bin_dirs(
     repeated rechecks must not keep appending duplicate entries.
     """
     monkeypatch.setattr(sys, "platform", "linux")
+    # The probe appends any system bin dir that EXISTS on the host, so on a
+    # macOS box /opt/homebrew/bin lands in the merged PATH and this Linux
+    # scenario stops being a Linux scenario. Empty the seam so the assertion
+    # describes the faked platform rather than the real one.
+    monkeypatch.setattr(agents, "_POSIX_SYSTEM_BIN_DIRS", ())
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
     local_bin = tmp_path / ".local" / "bin"
@@ -228,6 +242,15 @@ def test_probe_bin_dirs_are_read_live_not_cached(
     assert agents._posix_probe_bin_dirs() == [str(opencode_bin)]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX-only premise and unfakeable here: refresh_path's non-win32 arm "
+        "joins PATH with ':', which is also the drive separator, so a real "
+        "Windows bin dir cannot survive the round-trip this test inspects. "
+        "Windows reads its PATH from the registry (the other arm)."
+    ),
+)
 def test_dock_launch_on_macos_reaches_the_homebrew_prefix(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

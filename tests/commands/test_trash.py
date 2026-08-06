@@ -27,6 +27,7 @@ from litman.core.trash import (
     move_to_trash,
 )
 from litman.exceptions import TrashError
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -213,7 +214,7 @@ def test_trash_restore_refreshes_index(vault: Path) -> None:
     ids = [p["id"] for p in payload["papers"]]
     assert "2024_Foo" in ids
     # views rebuilt: by-topic/alpha/2024_Foo symlink is back.
-    assert (vault / "views/by-topic/alpha/2024_Foo").is_symlink()
+    assert is_portable_link(vault / "views/by-topic/alpha/2024_Foo")
 
 
 def test_trash_restore_refuses_when_active_collision(vault: Path) -> None:

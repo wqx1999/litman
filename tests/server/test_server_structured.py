@@ -42,6 +42,8 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.server import create_app
+from litman.core.portable_link import is_portable_link
+from litman.core import locking
 
 _yaml = YAML(typ="safe")
 
@@ -618,7 +620,7 @@ def test_post_project_links_paper_writes_backend_and_reprojects_index(
     # … DERIVED projection recomputed to match …
     assert _index_paper(vault, paper_id)["projects"] == ["pepforge"]
     # … and the project-side side effects ran (symlink + REFERENCES.md).
-    assert (project_dir / "litman_reflib" / paper_id).is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / paper_id)
     assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
 
@@ -1040,7 +1042,7 @@ def test_delete_project_cascades_and_keeps_dir(
     # Link the paper so the cascade has something to untag + symlinks to tear down.
     client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
     assert _meta(vault, paper_id)["projects"] == ["pepforge"]
-    assert (project_dir / "litman_reflib" / paper_id).is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / paper_id)
     assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
     resp = client.delete("/api/projects/pepforge")
@@ -1432,7 +1434,7 @@ def test_put_active_vault_missing_path_refused_400(tmp_path: Path) -> None:
 
     v1, v2 = _two_registered_vaults(tmp_path)
     app = create_app(v1)
-    shutil.rmtree(v2)  # vault two moved / deleted out from under the registry
+    locking.rmtree(v2)  # vault two moved / deleted out from under the registry
 
     resp = TestClient(app).put("/api/vaults/active", json={"name": "two"})
     assert resp.status_code == 400

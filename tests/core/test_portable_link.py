@@ -10,6 +10,7 @@ contract is verified without needing an exFAT drive.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,17 +36,50 @@ def _reset_warning(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _refuse_links(monkeypatch: pytest.MonkeyPatch, errno: int = 13) -> None:
+    """Make BOTH link mechanisms fail, as an exFAT drive would.
+
+    Poisoning only ``Path.symlink_to`` leaves the Windows arm free to make a
+    junction, so every degrade test silently exercised the success path there.
+    """
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(errno, "Permission denied (mocked)")
+
+    monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
+
+
+def _dir_with(tmp_path: Path, name: str, body: str) -> Path:
+    """A directory target carrying one readable file.
+
+    Every link litman makes points at a paper DIRECTORY, and a Windows
+    junction can only point at a directory in the first place — so a
+    file-to-file link tests a shape the product never builds and the platform
+    cannot express. Linking dirs keeps these tests portable AND closer to
+    what production does.
+    """
+    d = tmp_path / name
+    d.mkdir(parents=True)
+    (d / "f.txt").write_text(body, encoding="utf-8")
+    return d
+
+
 def test_make_portable_link_creates_link(tmp_path: Path) -> None:
-    target = tmp_path / "target.txt"
-    target.write_text("hi", encoding="utf-8")
-    link = tmp_path / "link.txt"
+    target = _dir_with(tmp_path, "target", "hi")
+    link = tmp_path / "link"
 
     ok = make_portable_link(link, target)
     assert ok is True
-    assert link.is_symlink()
-    assert link.read_text(encoding="utf-8") == "hi"
+    assert is_portable_link(link)
+    assert (link / "f.txt").read_text(encoding="utf-8") == "hi"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a junction stores an absolute target by construction (ADR-005 "
+    "accepts that); relative storage is the symlink arm's property",
+)
 def test_make_portable_link_stores_relative_target(tmp_path: Path) -> None:
     """The stored target must be relative — preserves cross-machine cp -r."""
     target = tmp_path / "subdir" / "target.txt"
@@ -62,45 +96,41 @@ def test_make_portable_link_stores_relative_target(tmp_path: Path) -> None:
 
 
 def test_make_portable_link_creates_missing_parent(tmp_path: Path) -> None:
-    target = tmp_path / "target.txt"
-    target.write_text("ok", encoding="utf-8")
-    link = tmp_path / "deep" / "nested" / "link.txt"
+    target = _dir_with(tmp_path, "target", "ok")
+    link = tmp_path / "deep" / "nested" / "link"
     assert not link.parent.exists()
 
     ok = make_portable_link(link, target)
     assert ok is True
-    assert link.is_symlink()
+    assert is_portable_link(link)
 
 
 def test_make_portable_link_overwrites_existing_symlink(
     tmp_path: Path,
 ) -> None:
     """Upsert semantics: stale link is replaced, not stacked."""
-    target1 = tmp_path / "t1.txt"
-    target2 = tmp_path / "t2.txt"
-    target1.write_text("one", encoding="utf-8")
-    target2.write_text("two", encoding="utf-8")
-    link = tmp_path / "link.txt"
+    target1 = _dir_with(tmp_path, "t1", "one")
+    target2 = _dir_with(tmp_path, "t2", "two")
+    link = tmp_path / "link"
 
     make_portable_link(link, target1)
-    assert link.read_text(encoding="utf-8") == "one"
+    assert (link / "f.txt").read_text(encoding="utf-8") == "one"
     make_portable_link(link, target2)
-    assert link.read_text(encoding="utf-8") == "two"
+    assert (link / "f.txt").read_text(encoding="utf-8") == "two"
 
 
 def test_make_portable_link_overwrites_existing_regular_file(
     tmp_path: Path,
 ) -> None:
     """If a real file sits at link_path, it is removed first."""
-    target = tmp_path / "target.txt"
-    target.write_text("from-link", encoding="utf-8")
-    link = tmp_path / "link.txt"
+    target = _dir_with(tmp_path, "target", "from-link")
+    link = tmp_path / "link"
     link.write_text("stale-real-file", encoding="utf-8")
 
     ok = make_portable_link(link, target)
     assert ok is True
-    assert link.is_symlink()
-    assert link.read_text(encoding="utf-8") == "from-link"
+    assert is_portable_link(link)
+    assert (link / "f.txt").read_text(encoding="utf-8") == "from-link"
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +139,10 @@ def test_make_portable_link_overwrites_existing_regular_file(
 
 
 def test_remove_link_if_present_removes_symlink(tmp_path: Path) -> None:
-    target = tmp_path / "target.txt"
-    target.write_text("x", encoding="utf-8")
-    link = tmp_path / "link.txt"
+    target = _dir_with(tmp_path, "target", "x")
+    link = tmp_path / "link"
     make_portable_link(link, target)
-    assert link.is_symlink()
+    assert is_portable_link(link)
 
     assert remove_link_if_present(link) is True
     assert not link.exists()
@@ -145,19 +174,15 @@ def test_make_portable_link_degrades_on_oserror(
 ) -> None:
     """When the filesystem refuses symlinks, we warn once and return False.
     Caller still gets a clean return value — no exception propagates."""
-    target = tmp_path / "target.txt"
-    target.write_text("x", encoding="utf-8")
-    link = tmp_path / "link.txt"
-
-    def fake_symlink_to(self: Path, _target: str | Path, **_kw: object) -> None:
-        raise OSError(13, "Permission denied (mocked)")
+    target = _dir_with(tmp_path, "target", "x")
+    link = tmp_path / "link"
 
     # Force the warning console to write to a deterministic buffer.
     # Reading capsys directly is fragile with Rich; instead replace the
     # module-level Console with one that goes to stderr but isn't captured
     # — we verify the return value here, and verify the warning was emitted
     # in a separate test via a custom Console.
-    monkeypatch.setattr(Path, "symlink_to", fake_symlink_to)
+    _refuse_links(monkeypatch)
 
     ok = make_portable_link(link, target)
     assert ok is False
@@ -174,13 +199,8 @@ def test_degraded_warning_emits_once_per_process(
     couple the test to Rich's word-wrapping (which would split the hint
     text across lines and break substring matching).
     """
-    target = tmp_path / "target.txt"
-    target.write_text("x", encoding="utf-8")
-
-    def fake_symlink_to(self: Path, _target: str | Path, **_kw: object) -> None:
-        raise OSError(13, "boom")
-
-    monkeypatch.setattr(Path, "symlink_to", fake_symlink_to)
+    target = _dir_with(tmp_path, "target", "x")
+    _refuse_links(monkeypatch)
 
     print_calls: list[tuple[object, ...]] = []
 
@@ -204,13 +224,8 @@ def test_warning_state_resets_for_isolated_tests(
 ) -> None:
     """``reset_warning_state()`` re-arms the latch so a fresh test
     observes a fresh first emission."""
-    target = tmp_path / "target.txt"
-    target.write_text("x", encoding="utf-8")
-
-    def fake_symlink_to(self: Path, _target: str | Path, **_kw: object) -> None:
-        raise OSError(13, "boom")
-
-    monkeypatch.setattr(Path, "symlink_to", fake_symlink_to)
+    target = _dir_with(tmp_path, "target", "x")
+    _refuse_links(monkeypatch)
 
     print_calls: list[tuple[object, ...]] = []
 
@@ -284,6 +299,11 @@ def test_win32_junction_failure_degrades_not_raises(
     assert make_portable_link(tmp_path / "entry", target) is False
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="asserts the POSIX-host behaviour of _create_junction; on a real "
+    "Windows kernel it succeeds, which is the point of the junction arm",
+)
 def test_create_junction_off_windows_raises_oserror(tmp_path: Path) -> None:
     """The real ``_create_junction`` on a POSIX host must surface ``OSError``
     (no ``_winapi``, no ``cmd``) — the one exception type the degrade path

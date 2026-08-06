@@ -28,6 +28,7 @@ from litman.core.project_link import (
     add_project,
     link_paper_to_project,
 )
+from litman.core.portable_link import is_portable_link
 
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
@@ -116,14 +117,14 @@ def test_bind_after_link_materializes_code_symlink(
     _make_paper(vault, "p1")
     # 1) Link the paper — at this moment it has no code-clones.
     link_paper_to_project(vault, "p1", "pepforge", registry)
-    assert (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "p1")
     assert not _code_link(project_dir, "MyRepo").exists()
     # 2) Bind the repo AFTER the link. The symlink must appear now (the bug:
     #    it never did until `lit link --rebuild-all`).
     _make_repo(vault, "MyRepo")
     assert bind_paper_to_repo(vault, "p1", "MyRepo") is True
     link = _code_link(project_dir, "MyRepo")
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (vault / "codes" / "MyRepo" / "repo").resolve()
 
 
@@ -134,7 +135,7 @@ def test_bind_before_link_still_works(vault: Path, project_dir: Path) -> None:
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
     link_paper_to_project(vault, "p1", "pepforge", registry)
-    assert _code_link(project_dir, "MyRepo").is_symlink()
+    assert is_portable_link(_code_link(project_dir, "MyRepo"))
 
 
 def test_bind_paper_in_multiple_projects(
@@ -150,8 +151,8 @@ def test_bind_paper_in_multiple_projects(
     _make_paper(vault, "p1", projects=["a", "b"])
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
-    assert _code_link(pa, "MyRepo").is_symlink()
-    assert _code_link(pb, "MyRepo").is_symlink()
+    assert is_portable_link(_code_link(pa, "MyRepo"))
+    assert is_portable_link(_code_link(pb, "MyRepo"))
 
 
 def test_bind_paper_with_no_project_is_noop(
@@ -177,7 +178,7 @@ def test_bind_noop_self_heals_missing_symlink(
     _code_link(project_dir, "MyRepo").unlink()
     # A second bind is a metadata no-op but must restore the symlink.
     assert bind_paper_to_repo(vault, "p1", "MyRepo") is False
-    assert _code_link(project_dir, "MyRepo").is_symlink()
+    assert is_portable_link(_code_link(project_dir, "MyRepo"))
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +193,7 @@ def test_unbind_removes_orphaned_code_symlink(
     _make_paper(vault, "p1", projects=["pepforge"])
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
-    assert _code_link(project_dir, "MyRepo").is_symlink()
+    assert is_portable_link(_code_link(project_dir, "MyRepo"))
     unbind_paper_from_repo(vault, "p1", "MyRepo")
     assert not _code_link(project_dir, "MyRepo").exists()
 
@@ -207,10 +208,10 @@ def test_unbind_keeps_symlink_shared_by_another_paper(
     _make_repo(vault, "SharedRepo")
     bind_paper_to_repo(vault, "p1", "SharedRepo")
     bind_paper_to_repo(vault, "p2", "SharedRepo")
-    assert _code_link(project_dir, "SharedRepo").is_symlink()
+    assert is_portable_link(_code_link(project_dir, "SharedRepo"))
     unbind_paper_from_repo(vault, "p1", "SharedRepo")
     # p2 still binds it → symlink stays.
-    assert _code_link(project_dir, "SharedRepo").is_symlink()
+    assert is_portable_link(_code_link(project_dir, "SharedRepo"))
 
 
 def test_cascade_unbind_all_removes_code_symlink(
@@ -223,7 +224,7 @@ def test_cascade_unbind_all_removes_code_symlink(
     _make_repo(vault, "SharedRepo")
     bind_paper_to_repo(vault, "p1", "SharedRepo")
     bind_paper_to_repo(vault, "p2", "SharedRepo")
-    assert _code_link(project_dir, "SharedRepo").is_symlink()
+    assert is_portable_link(_code_link(project_dir, "SharedRepo"))
     affected = unbind_repo_from_all_papers(vault, "SharedRepo")
     assert set(affected) == {"p1", "p2"}
     assert not _code_link(project_dir, "SharedRepo").exists()
@@ -308,7 +309,7 @@ def test_reconcile_repoints_dangling_expected_link(
     code_dir.mkdir(parents=True, exist_ok=True)
     link = code_dir / "alphafold"
     link.symlink_to("../nowhere/alphafold")
-    assert link.is_symlink() and not link.exists()
+    assert is_portable_link(link) and not link.exists()
 
     result = reconcile_project_code_links(
         vault, "pepforge", project_dir, list_papers(vault)
@@ -335,11 +336,11 @@ def test_reconcile_removes_dangling_orphan_link(
     code_dir.mkdir(parents=True, exist_ok=True)
     ghost = code_dir / "ghostrepo"
     ghost.symlink_to("../nowhere/ghostrepo")
-    assert ghost.is_symlink() and not ghost.exists()
+    assert is_portable_link(ghost) and not ghost.exists()
 
     result = reconcile_project_code_links(
         vault, "pepforge", project_dir, list_papers(vault)
     )
 
     assert result["removed"] == ["ghostrepo"]
-    assert not ghost.is_symlink()
+    assert not is_portable_link(ghost)

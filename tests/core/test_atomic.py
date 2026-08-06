@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -102,10 +103,48 @@ def test_staged_write_rollback_does_not_create_new_targets(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_staged_write_rejects_absolute_path(vault: Path) -> None:
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "/etc/passwd",          # rooted, no drive: Windows calls this RELATIVE
+        "C:/evil.txt",          # drive + root
+        "C:evil.txt",           # bare drive, no root
+        "//server/share/evil",  # UNC
+        "..",
+        "../escape.txt",
+        "papers/../../escape.txt",
+        "papers\\..\\..\\escape.txt",  # backslash traversal
+    ],
+)
+def test_staged_write_rejects_anything_that_is_not_plainly_relative(
+    vault: Path, escape: str
+) -> None:
+    """Every shape, on every platform — the guard reads both path flavours.
+
+    Split by host it would prove almost nothing: "/etc/passwd" is absolute to
+    POSIX but relative to Windows (no drive letter), which is exactly how it
+    used to reach C:\\etc\\passwd there while this suite stayed green on Linux.
+    """
     with pytest.raises(ValueError, match="relative"):
         with staged_write(vault) as stage:
-            stage.write_text("/etc/passwd", "evil")
+            stage.write_text(escape, "evil")
+
+
+def test_staged_write_accepts_the_shapes_litman_actually_writes(
+    vault: Path,
+) -> None:
+    """Reverse of the above: the guard must not have become a wall.
+
+    Without this, tightening the check to reject everything would pass the
+    rejection test set and break every write command.
+    """
+    with staged_write(vault) as stage:
+        stage.write_text("INDEX.json", "{}")
+        stage.write_text("papers/2024_Foo_Bar/metadata.yaml", "id: x")
+    assert (vault / "INDEX.json").read_text(encoding="utf-8") == "{}"
+    assert (
+        vault / "papers" / "2024_Foo_Bar" / "metadata.yaml"
+    ).read_text(encoding="utf-8") == "id: x"
 
 
 def test_staged_write_rejects_parent_traversal(vault: Path) -> None:

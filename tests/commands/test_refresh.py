@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from litman.core.views import (
     render_index,
     write_index,
 )
+from litman.core.portable_link import is_portable_link
 
 
 _yaml = YAML(typ="safe")
@@ -191,13 +193,17 @@ def test_rebuild_views_creates_relative_symlinks(tmp_path: Path) -> None:
 
     # Symlinks resolve to the actual paper directory.
     link = vault / "views" / "by-topic" / "alpha" / "2024_Foo_Bar"
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (vault / "papers" / "2024_Foo_Bar").resolve()
 
     # Symlink target is RELATIVE, not absolute (cross-machine portability).
-    raw = os.readlink(link)
-    assert not os.path.isabs(raw)
-    assert raw == "../../../papers/2024_Foo_Bar"
+    # A junction records an absolute target by construction (ADR-005 accepts
+    # that), so this half is asserted on the arm that can hold it; every
+    # assertion above still runs on Windows.
+    if sys.platform != "win32":
+        raw = os.readlink(link)
+        assert not os.path.isabs(raw)
+        assert raw == "../../../papers/2024_Foo_Bar"
 
 
 def test_rebuild_views_empty_lists_create_no_symlinks(tmp_path: Path) -> None:
@@ -214,15 +220,21 @@ def test_rebuild_views_empty_lists_create_no_symlinks(tmp_path: Path) -> None:
 
 def test_rebuild_views_clears_stale_entries(tmp_path: Path) -> None:
     vault = create_vault(tmp_path)
+    # The link target has to exist before the link can be made: Windows uses a
+    # junction, and ``_winapi.CreateJunction`` refuses a target that isn't
+    # there (portable_link.py's own note: "always true at litman's call
+    # sites"). A symlink would happily dangle, which is why leaving this out
+    # went unnoticed on POSIX.
+    _write_paper(vault, "p1", topics=["alpha"], status="inbox")
     # First: paper with topic alpha
     papers_v1 = [{"id": "p1", "topics": ["alpha"], "status": "inbox"}]
     rebuild_views(vault, papers_v1)
-    assert (vault / "views" / "by-topic" / "alpha" / "p1").is_symlink()
+    assert is_portable_link(vault / "views" / "by-topic" / "alpha" / "p1")
 
     # Second: same paper, topic changed to beta
     papers_v2 = [{"id": "p1", "topics": ["beta"], "status": "inbox"}]
     rebuild_views(vault, papers_v2)
-    assert (vault / "views" / "by-topic" / "beta" / "p1").is_symlink()
+    assert is_portable_link(vault / "views" / "by-topic" / "beta" / "p1")
     # alpha bucket should be gone
     assert not (vault / "views" / "by-topic" / "alpha").exists()
 
@@ -308,9 +320,9 @@ def test_lit_refresh_views_with_paper(tmp_path: Path) -> None:
     assert "transformer" in p["methods"]
 
     # Symlinks
-    assert (vault / "views" / "by-topic" / "alpha" / "2024_Test_Paper").is_symlink()
-    assert (vault / "views" / "by-project" / "pepforge" / "2024_Test_Paper").is_symlink()
-    assert (vault / "views" / "by-status" / "inbox" / "2024_Test_Paper").is_symlink()
+    assert is_portable_link(vault / "views" / "by-topic" / "alpha" / "2024_Test_Paper")
+    assert is_portable_link(vault / "views" / "by-project" / "pepforge" / "2024_Test_Paper")
+    assert is_portable_link(vault / "views" / "by-status" / "inbox" / "2024_Test_Paper")
 
 
 def test_lit_refresh_views_help() -> None:

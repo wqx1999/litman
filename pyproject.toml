@@ -45,6 +45,11 @@ dependencies = [
     "platformdirs>=4.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    # macOS native shell for `lit gui --window`: a WKWebView owned by the
+    # litman process itself, so the Dock badges the window as litman and no
+    # browser install is needed. Pulls the pyobjc runtime along (~33MB in a
+    # venv); other platforms are untouched by the marker.
+    "pywebview>=6.2 ; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -139,4 +144,5 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "no_skills_isolation: opt out of the autouse skills-dir isolation; the test must redirect $HOME itself before touching any skill probe/install",
+    "real_webview_loader: opt out of the autouse native-window guard; the test drives the real load_webview itself",
 ]

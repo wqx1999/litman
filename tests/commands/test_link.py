@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from litman.core.project_link import (
     unlink_paper_from_project,
 )
 from litman.exceptions import PaperNotFoundError
+from litman.core.portable_link import is_portable_link
 
 _yaml_safe = YAML(typ="safe")
 _yaml = YAML()
@@ -118,10 +120,14 @@ def test_link_adds_to_projects_and_symlinks(vault: Path, project_dir: Path) -> N
     meta = _read_paper_meta(vault, "p1")
     assert meta["projects"] == ["pepforge"]
     link = project_dir / "litman_reflib" / "p1"
-    assert link.is_symlink()
+    assert is_portable_link(link)
     assert link.resolve() == (vault / "papers" / "p1").resolve()
-    # Symlink stores a RELATIVE path (M0 invariant).
-    assert not Path(_resolve_symlink_relative(link)).is_absolute()
+    # Symlink stores a RELATIVE path (M0 invariant). A junction cannot: it
+    # records an absolute target by construction (ADR-005 accepts that), so
+    # the invariant is asserted on the arm able to hold it. Everything above
+    # this line still runs on Windows.
+    if sys.platform != "win32":
+        assert not Path(_resolve_symlink_relative(link)).is_absolute()
 
 
 def test_link_idempotent_no_metadata_change(vault: Path, project_dir: Path) -> None:
@@ -132,7 +138,7 @@ def test_link_idempotent_no_metadata_change(vault: Path, project_dir: Path) -> N
     assert result["added_to_projects"] is False
     assert result["metadata_changed"] is False
     # Symlink still created (defensive — self-heal partial state).
-    assert (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "p1")
 
 
 def test_link_dedups_projects(vault: Path, project_dir: Path) -> None:
@@ -211,7 +217,7 @@ def test_link_creates_code_symlinks_when_repo_present(
     )
     assert result["code_links"] == ["MyRepo"]
     code_link = project_dir / "litman_code" / "MyRepo"
-    assert code_link.is_symlink()
+    assert is_portable_link(code_link)
     assert code_link.resolve() == (vault / "codes" / "MyRepo" / "repo").resolve()
 
 
@@ -297,7 +303,7 @@ def test_unlink_removes_from_projects_and_symlink(
     assert result["paper_link_removed"] is True
     meta = _read_paper_meta(vault, "p1")
     assert meta["projects"] == []
-    assert not (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert not is_portable_link(project_dir / "litman_reflib" / "p1")
 
 
 def test_unlink_drops_relevance_by_default(vault: Path, project_dir: Path) -> None:
@@ -339,11 +345,11 @@ def test_unlink_keeps_shared_code_symlink(vault: Path, project_dir: Path) -> Non
     registry = {"pepforge": str(project_dir)}
     link_paper_to_project(vault, "p1", "pepforge", registry)
     link_paper_to_project(vault, "p2", "pepforge", registry)
-    assert (project_dir / "litman_code" / "SharedRepo").is_symlink()
+    assert is_portable_link(project_dir / "litman_code" / "SharedRepo")
 
     result = unlink_paper_from_project(vault, "p1", "pepforge", registry)
     # Symlink stays because p2 still uses SharedRepo under pepforge.
-    assert (project_dir / "litman_code" / "SharedRepo").is_symlink()
+    assert is_portable_link(project_dir / "litman_code" / "SharedRepo")
     assert result["code_links_removed"] == []
     assert len(result["code_links_kept"]) == 1
 
@@ -355,7 +361,7 @@ def test_unlink_removes_exclusive_code_symlink(
     _make_paper(vault, "p1", code_clones=["SoloRepo"])
     registry = {"pepforge": str(project_dir)}
     link_paper_to_project(vault, "p1", "pepforge", registry)
-    assert (project_dir / "litman_code" / "SoloRepo").is_symlink()
+    assert is_portable_link(project_dir / "litman_code" / "SoloRepo")
 
     result = unlink_paper_from_project(vault, "p1", "pepforge", registry)
     assert not (project_dir / "litman_code" / "SoloRepo").exists()
@@ -404,8 +410,8 @@ def test_rebuild_all_creates_links_for_each_tagged_paper(
     results = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert results["pepforge"]["status"] == "rebuilt"
     assert results["pepforge"]["n_paper_links"] == 2
-    assert (project_dir / "litman_reflib" / "p1").is_symlink()
-    assert (project_dir / "litman_reflib" / "p2").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "p1")
+    assert is_portable_link(project_dir / "litman_reflib" / "p2")
     assert not (project_dir / "litman_reflib" / "p3").exists()
 
 
@@ -418,7 +424,7 @@ def test_rebuild_all_wipes_stale_symlinks(vault: Path, project_dir: Path) -> Non
 
     rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert not stale.exists()
-    assert (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "p1")
 
 
 def test_rebuild_all_preserves_references_md_during_wipe(
@@ -454,7 +460,7 @@ def test_rebuild_all_recreates_code_symlinks(
     _make_paper(vault, "p1", projects=["pepforge"], code_clones=["MyRepo"])
     results = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert results["pepforge"]["n_code_links"] == 1
-    assert (project_dir / "litman_code" / "MyRepo").is_symlink()
+    assert is_portable_link(project_dir / "litman_code" / "MyRepo")
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +485,7 @@ def test_cli_link_happy_path(vault: Path, project_dir: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Linked" in result.output
-    assert (project_dir / "litman_reflib" / "p1").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "p1")
 
 
 def test_cli_link_with_relevance(vault: Path, project_dir: Path) -> None:
@@ -536,8 +542,8 @@ def test_cli_link_rebuild_all(vault: Path, project_dir: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "pepforge" in result.output
     assert "2 paper link" in result.output
-    assert (project_dir / "litman_reflib" / "p1").is_symlink()
-    assert (project_dir / "litman_reflib" / "p2").is_symlink()
+    assert is_portable_link(project_dir / "litman_reflib" / "p1")
+    assert is_portable_link(project_dir / "litman_reflib" / "p2")
 
 
 def test_cli_link_rebuild_all_no_projects(vault: Path) -> None:

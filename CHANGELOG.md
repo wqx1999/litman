@@ -7,6 +7,58 @@ breaks something you relied on, a minor release opens a new way of working with
 litman, and a patch release is everything else — fixes, new controls, and
 conveniences.
 
+## Unreleased
+
+### Added
+
+- **On macOS, litman's window is now litman's own.** Double-clicking litman
+  opens a WKWebView window that belongs to litman itself: the Dock shows
+  litman's book mark instead of a browser's, Cmd-Tab and Force Quit list
+  litman, a second double-click brings the window forward instead of bouncing
+  the icon, and closing the window stops the server as before. WebKit ships
+  with macOS, so the standalone window no longer needs Chrome — a fresh Mac
+  gets it out of the box. The window opens on a small loading page and swaps
+  to litman the moment the server is ready; if the server ever stops first
+  (an update, say), the window closes with it rather than lingering as a dead
+  page. Windows and Linux keep the browser-held window they already had.
+- **Reorder your tabs, and close them in bulk.** Drag a tab along the strip to
+  put it where you want it; the strip scrolls itself when you drag past its
+  edge, so a crowded row is no obstacle. Right-click the tab strip for "Close
+  other tabs" (everything but the one you are reading) and "Close all tabs" —
+  a tab with unsaved notes or annotations still asks before it goes.
+
+### Fixed
+
+- **The taskbar shows litman, not the browser.** On Windows the litman
+  window's taskbar button wore Edge's icon and name, and pinning it pinned a
+  bare browser; the button now wears litman's mark, reads "litman", and a
+  pinned button launches litman. On Linux the window filed itself under
+  Chromium in the dock; window and launcher entry now identify as litman —
+  on Wayland sessions too.
+- **macOS installs where you look.** `lit gui --make-shortcut` now places
+  litman in /Applications, where the Finder sidebar actually shows it,
+  falling back to ~/Applications only when /Applications is not writable —
+  and it migrates the bundle it may have left in the old spot.
+- **The macOS app looks and behaves like one.** The bundle now carries
+  litman's icon (it used to show the generic one), each launch is logged to
+  `~/Library/Logs/litman/litman.log` so a failed start finally leaves a
+  trace, Chromium and Brave are recognized alongside Chrome and Edge, and
+  the stray Tk splash window that flashed at launch is gone.
+- **The Windows folder picker knows your drives.** Browse… dialogs list each
+  real drive as its own cell in a segmented control beside the Home/Desktop
+  shortcuts, with the drive you are on highlighted — and announced as such to
+  a screen reader, which now says the group is a drive list and which drive
+  you are in.
+- **The "no year" import error fits on a line.** It now meets the same
+  one-verdict-one-way-out budget as the other import errors, instead of
+  running past it when a DOI or file path was attached.
+- **On Windows, a tag ending in a period gets its browsing folder.** A topic
+  or method named "Fig." built its folder under `views/by-topic/` but never
+  the shortcut inside it — and litman blamed the drive, reporting that the
+  filesystem could not hold folder links and suggesting you move the library
+  off a USB stick. The tag name was the problem, not the disk, and such names
+  are now stored in a form Windows keeps.
+
 ## 1.3.3 — 2026-08-02
 
 ### Added

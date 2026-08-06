@@ -33,6 +33,7 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.core.vault_registry import VaultRegistry
+from litman.core import locking
 
 _yaml = YAML()
 
@@ -264,7 +265,7 @@ def test_cross_vault_registered_but_directory_gone(
 
     # Now drop vault_b from disk (simulate unmount / accidental rm).
     import shutil
-    shutil.rmtree(vault_b)
+    locking.rmtree(vault_b)
 
     issues = check_dangling_wikilinks(vault_a, list_papers(vault_a))
     assert len(issues) == 1
