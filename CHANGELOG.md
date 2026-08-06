@@ -7,6 +7,25 @@ breaks something you relied on, a minor release opens a new way of working with
 litman, and a patch release is everything else — fixes, new controls, and
 conveniences.
 
+## Unreleased
+
+### Fixed
+
+- **The window keeps up with the work happening outside it.** A paper added,
+  retagged or promoted from the terminal — or a paper's notes rewritten by an
+  agent — now appears in the open window within a few seconds, without you
+  touching anything. Until now litman only re-read your library when its window
+  regained focus, so an agent filing papers while you watched looked exactly
+  like nothing happening. The refresh button and `R` still force a re-read on
+  demand, a note you are in the middle of writing is never overwritten by one of
+  these refreshes, and a window you have switched away from goes quiet until you
+  come back to it.
+- **The paper list no longer stays filtered after a search.** Picking a result
+  from the search box now clears the box, so the list goes straight back to your
+  whole library instead of holding the last query until you deleted its text by
+  hand. `Esc` clears the box too, and a ✕ sits in it whenever there is something
+  to clear.
+
 ## 1.3.4 — 2026-08-06
 
 ### Added
