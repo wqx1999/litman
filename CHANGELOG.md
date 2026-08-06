@@ -21,6 +21,18 @@ conveniences.
   to click if you would rather not use the keyboard. The trail is remembered for
   as long as the window is open, including across switching to another tab and
   back, and nothing is written into the PDF.
+- **Preview a note before you save it.** Notes and discussion now have a
+  **Preview** button next to Save: it renders the draft you are writing —
+  headings, lists, links to other papers and all — and **Edit** takes you back
+  to the text with every character still there. It sits where **Cancel** used
+  to, which is the point: cancelling only ever did one thing, throw the draft
+  away. Abandoning an edit is still possible — close the tab and answer "Don't
+  save", the same question an unsaved PDF asks — but nothing inside the editor
+  can lose your work any more. `Ctrl+S` saves from either view.
+- **The shortcut list mentions undo.** `Ctrl+Z` and `Ctrl+Y` have always worked
+  on annotations without being written down anywhere. `?` now lists them,
+  together with the part that is easy to trip over: they work while an
+  annotation tool is on, not in Cursor.
 
 ### Fixed
 
@@ -63,6 +75,10 @@ conveniences.
   toolbar back to Cursor.
 - **The annotation popover is dark in dark mode.** It stayed a white card around
   a dark text box.
+- **`Escape` no longer throws away a note you are writing.** In the notes and
+  discussion editor it discarded everything since your last save — no
+  confirmation, nothing to undo, one keystroke. It does nothing there now.
+  (`Escape` still clears the search box and puts a PDF back to Cursor.)
 
 ## 1.3.4 — 2026-08-06
 

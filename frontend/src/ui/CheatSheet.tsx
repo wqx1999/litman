@@ -108,13 +108,19 @@ const SECTIONS: Section[] = [
   },
   {
     title: 'PDF tools',
-    note: 'Only while a PDF tab is active. Tools switch freely in any order.',
+    // Third sentence: undo comes from pdf.js and only runs while an annotation
+    // tool is on — it is inert in Cursor. Stating that is the whole point of
+    // listing it: pressed in Cursor it does nothing, and a row without the
+    // precondition would read as a broken shortcut.
+    note: 'Only while a PDF tab is active. Tools switch freely in any order. Undo needs a tool on — not Cursor.',
     rows: [
       { chords: [['V'], ['Esc']], action: 'Cursor (select / exit tool)', scope: 'PDF' },
       { chords: [['Esc']], action: 'Save the note and close it', scope: 'Note' },
       { chords: [['H']], action: 'Highlight', scope: 'PDF' },
       { chords: [['T']], action: 'Text note', scope: 'PDF' },
       { chords: [['D']], action: 'Draw (ink)', scope: 'PDF' },
+      { chords: [['Ctrl', 'Z']], action: 'Undo the last annotation change', scope: 'Tool' },
+      { chords: [['Ctrl', 'Y']], action: 'Redo it', scope: 'Tool' },
       { chords: [['Alt', '←']], action: 'Back to where you jumped from', scope: 'PDF' },
       { chords: [['Alt', '→']], action: 'Forward again', scope: 'PDF' },
     ],
