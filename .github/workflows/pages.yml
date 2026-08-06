@@ -18,6 +18,8 @@ on:
       - 'docs/**'
       - 'assets/**'
       - 'CHANGELOG.md'
+      # Pulled into docs/license.md by pymdownx.snippets, so it is a site input.
+      - 'LICENSE'
       - 'mkdocs.yml'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
