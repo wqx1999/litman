@@ -24,6 +24,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from litman.core.config import CONFIG_FILENAME
+from litman.core.locking import lock_truth_file, unlock_truth_file
 from litman.server import create_app
 
 
@@ -39,15 +40,28 @@ def _token(client: TestClient) -> str:
     return version
 
 
-def _bump_mtime(path: Path, *, by: float = 10.0) -> None:
+def _bump_mtime(path: Path, *, by: float = 10.0, truth_locked: bool = False) -> None:
     """Push a path's mtime forward without sleeping.
 
     Every "did the token move" test needs a change the filesystem's timestamp
-    granularity cannot swallow; a rewrite inside the same clock tick may leave
-    st_mtime_ns untouched, which would make these tests flaky rather than wrong.
+    granularity cannot swallow. Rewriting the file instead would make these
+    tests platform-dependent rather than wrong: the Windows system clock ticks
+    about every 15ms, so two writes inside one test can share an mtime and the
+    token legitimately would not move.
+
+    ``truth_locked`` for the read-only TRUTH files (``TAXONOMY.md`` — see
+    core/locking.py). POSIX lets the owner set times on a 0o444 file, but
+    Windows read-only is a file *attribute*, so do what the production write
+    path does and unlock around the change rather than bet on the platform.
     """
-    st = os.stat(path)
-    os.utime(path, (st.st_atime + by, st.st_mtime + by))
+    if truth_locked:
+        unlock_truth_file(path)
+    try:
+        st = os.stat(path)
+        os.utime(path, (st.st_atime + by, st.st_mtime + by))
+    finally:
+        if truth_locked:
+            lock_truth_file(path)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +133,7 @@ def test_taxonomy_change_moves_the_token(
     vault, _ = vault_with_paper
     client = _client(vault)
     before = _token(client)
-    _bump_mtime(vault / "TAXONOMY.md")
+    _bump_mtime(vault / "TAXONOMY.md", truth_locked=True)
     assert _token(client) != before
 
 
@@ -180,20 +194,39 @@ def test_new_paper_directory_moves_the_token(
     assert _token(client) != before
 
 
-def test_trash_activity_moves_the_token(vault_with_paper: tuple[Path, str]) -> None:
-    """The .trash directory's own mtime flips when an entry lands in it, so a
-    `lit rm` in the terminal reaches the GUI's trash view."""
+def test_first_trashed_paper_moves_the_token(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A vault's first `lit rm` creates .trash, and absent → present always
+    moves the token, on every filesystem."""
     vault, _ = vault_with_paper
     client = _client(vault)
     before = _token(client)
-    trash = vault / ".trash"
-    trash.mkdir()
+    (vault / ".trash").mkdir()
     assert _token(client) != before
 
-    # An entry moving in flips it again (directory mtime, no content read).
-    after_create = _token(client)
-    (trash / "2024_Foo_Bar__20260806").mkdir()
-    assert _token(client) != after_create
+
+def test_token_tracks_the_trash_directorys_mtime(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """...and once .trash exists, its mtime is what carries later trash/restore
+    activity — the OS bumps a directory's mtime when an entry is added or
+    removed from it.
+
+    Driven with an explicit utime rather than by really creating an entry: two
+    mkdirs inside one test can land in the same clock tick (Windows ticks about
+    every 15ms), which would make this red for a reason that has nothing to do
+    with the endpoint. The real-world margin is far wider — the poll compares
+    tokens seconds apart — and trash/restore also re-derive INDEX.json, which
+    is a second, independent reason the token moves for those operations.
+    """
+    vault, _ = vault_with_paper
+    trash = vault / ".trash"
+    trash.mkdir()
+    client = _client(vault)
+    before = _token(client)
+    _bump_mtime(trash)
+    assert _token(client) != before
 
 
 def test_registry_change_moves_the_token(

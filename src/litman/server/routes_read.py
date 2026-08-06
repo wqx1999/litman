@@ -332,10 +332,20 @@ def _fingerprint(path: Path) -> str:
     Absent is a legitimate state (no .trash yet, a paper without notes.md), and
     it has to be *distinguishable* from any present state — creating the file
     must move the token.
+
+    Never raises: this runs on a timer, and a path the OS refuses to stat (a
+    permission, a name the platform rejects, a disconnected network drive)
+    reads as "not there" rather than turning the whole poll into a 500.
+
+    Resolution follows the filesystem's. On NTFS/ext4/APFS that is far finer
+    than the seconds between two polls; on FAT32 (a vault on a USB stick) mtime
+    is bucketed to 2s, so two edits inside one bucket that also leave the size
+    unchanged look like one. The next edit moves it again, and the window is a
+    fraction of the poll interval — worth knowing, not worth engineering around.
     """
     try:
         st = os.stat(path)
-    except OSError:
+    except (OSError, ValueError):
         return "-"
     return f"{st.st_mtime_ns}:{st.st_size}"
 
