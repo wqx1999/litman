@@ -6,7 +6,7 @@
 </picture>
 
 <p>
-<a href="https://wqx1999.github.io/litman/"><img src="https://img.shields.io/badge/website-litman-D97757?logo=github&logoColor=white" alt="Website"/></a>
+<a href="https://litman.dev"><img src="https://img.shields.io/badge/website-litman-D97757?logo=github&logoColor=white" alt="Website"/></a>
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
 <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
 <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
@@ -87,7 +87,7 @@ whatever you already pay for. **Start with Claude Code.**
 
 Every write is validated, so a weaker model just needs more turns — it never
 corrupts the library. Scores and method:
-[agent model benchmark](https://github.com/wqx1999/litman/blob/main/docs/6-agent-benchmark.md).
+[agent model benchmark](https://litman.dev/docs/6-agent-benchmark/).
 
 ## Update and uninstall
 
@@ -104,7 +104,7 @@ installed litman, uv or pipx. It prints `current → latest` and asks once.
 litman asks PyPI for the newest version number once a day, and mentions it when
 yours is older; `lit hello` tells you every time you ask.
 `LITMAN_NO_UPDATE_CHECK=1` switches all of it off —
-[what it checks](https://github.com/wqx1999/litman/blob/main/docs/4-commands.md#lit-self-update).
+[what it checks](https://litman.dev/docs/4-commands/#lit-self-update).
 
 </details>
 
@@ -126,20 +126,18 @@ touched by any of this; delete that directory by hand if you want the data gone.
 
 ## Documentation
 
-Full documentation lives under
-[`docs/`](https://github.com/wqx1999/litman/tree/main/docs). New to litman? The
-[tutorial](https://github.com/wqx1999/litman/blob/main/docs/5-tutorial.md)
-covers about 80% of everyday use.
+Full documentation lives at [litman.dev/docs](https://litman.dev/docs/). New to
+litman? The [tutorial](https://litman.dev/docs/5-tutorial/) covers about 80% of
+everyday use.
 
-| Topic | File |
-|---|---|
-| Start here — docs map | [docs/0-readme.md](https://github.com/wqx1999/litman/blob/main/docs/0-readme.md) |
-| Design philosophy | [docs/1-philosophy.md](https://github.com/wqx1999/litman/blob/main/docs/1-philosophy.md) |
-| Four-layer architecture | [docs/2-architecture.md](https://github.com/wqx1999/litman/blob/main/docs/2-architecture.md) |
-| Concepts and field reference | [docs/3-concepts.md](https://github.com/wqx1999/litman/blob/main/docs/3-concepts.md) |
-| Command reference | [docs/4-commands.md](https://github.com/wqx1999/litman/blob/main/docs/4-commands.md) |
-| Tutorial | [docs/5-tutorial.md](https://github.com/wqx1999/litman/blob/main/docs/5-tutorial.md) |
-| Agent model benchmark | [docs/6-agent-benchmark.md](https://github.com/wqx1999/litman/blob/main/docs/6-agent-benchmark.md) |
+- [Start here — docs map](https://litman.dev/docs/0-readme/)
+- [Design philosophy](https://litman.dev/docs/1-philosophy/)
+- [Four-layer architecture](https://litman.dev/docs/2-architecture/)
+- [Concepts and field reference](https://litman.dev/docs/3-concepts/)
+- [Command reference](https://litman.dev/docs/4-commands/)
+- [Tutorial](https://litman.dev/docs/5-tutorial/)
+- [Agent model benchmark](https://litman.dev/docs/6-agent-benchmark/)
+- [Changelog](https://litman.dev/docs/changelog/)
 
 ## Acknowledgments
 

@@ -1,6 +1,6 @@
 site_name: litman
 site_description: Keep every paper you read on your own computer, and let an AI assistant do the filing.
-site_url: https://litman.readthedocs.io        # placeholder — update on first deploy
+site_url: https://litman.dev/docs/
 repo_url: https://github.com/wqx1999/litman
 repo_name: wqx1999/litman
 edit_uri: edit/main/docs/
@@ -9,6 +9,12 @@ docs_dir: docs
 
 theme:
   name: material
+  logo: /assets/mark.svg
+  favicon: /img/favicon.png
+  # The landing page's own faces: the system UI stack and JetBrains Mono,
+  # both wired up in stylesheets/litman.css. Left as `false` so the build
+  # never reaches for Google Fonts.
+  font: false
   features:
     - navigation.instant
     - navigation.tracking
@@ -17,17 +23,22 @@ theme:
     - content.code.copy
     - search.suggest
     - search.highlight
+  # Follows the reader's system setting, like the landing page does, and the
+  # toggle overrides it from there.
   palette:
-    - scheme: default
-      primary: blue grey
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
-    - scheme: slate
-      primary: blue grey
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
+
+extra_css:
+  - stylesheets/litman.css
 
 markdown_extensions:
   - admonition
@@ -41,7 +52,11 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.superfences
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  # base_path reaches the repo root so changelog.md can pull in CHANGELOG.md,
+  # which lives there because GitHub and PyPI both expect it there.
+  - pymdownx.snippets:
+      base_path: ['.']
+      check_paths: true
 
 nav:
   - Home: 0-readme.md
@@ -51,3 +66,4 @@ nav:
   - Commands: 4-commands.md
   - Tutorial: 5-tutorial.md
   - Agent model benchmark: 6-agent-benchmark.md
+  - Changelog: changelog.md
