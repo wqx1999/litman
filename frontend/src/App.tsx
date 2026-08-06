@@ -14,6 +14,7 @@ import {
   fetchTrash,
   fetchSearch,
   fetchVaults,
+  fetchVaultVersion,
   fetchVersion,
   fetchWhatsNew,
   markWhatsNewSeen,
@@ -70,6 +71,13 @@ import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
+
+// How often the live-refresh poll asks the server for its change token, while
+// this page is visible. The target is "an agent's write shows up before you
+// wonder whether it worked", not milliseconds — and every tick that finds no
+// change still costs a request line in the launcher's log file, so this stays
+// on the slow side of the ≤5s the spec asks for.
+const VAULT_POLL_MS = 4000
 
 // Link advisory, dismissed for good. localStorage (not the server) because
 // this is a per-person "yes, I know" — nothing about the library changed, and a
@@ -1107,6 +1115,67 @@ export default function App() {
     }
   }, [doResync])
 
+  // Live refresh — an agent (or a CLI in another window) writes while this page
+  // stays focused. The focus/visibility path above cannot see that: focus never
+  // leaves, so nothing fires and the UI sits on stale truth until the user hits
+  // the refresh button. So poll — but poll a TOKEN, not the data: `doResync` is
+  // seven requests and a full re-render, which is unacceptable on a timer, while
+  // `/api/vault-version` is stat-only and answers a few dozen bytes. The sweep
+  // runs only when the token actually moved, so an idle library costs one small
+  // GET per interval and nothing else (and reusing `doResync` means the
+  // activity-log diff still runs on exactly one path — red line #3 holds).
+  //
+  // Held in a ref so the effect below never tears down its interval when
+  // `doResync` is rebuilt — it depends on listMode/selectedId, which change
+  // constantly while browsing, and a restarted interval could postpone the poll
+  // indefinitely.
+  const doResyncRef = useRef(doResync)
+  doResyncRef.current = doResync
+  // The last token seen, tagged with the vault it came from: tokens from two
+  // different libraries are not comparable, and a vault switch must not read as
+  // "the vault changed".
+  const vaultVersionRef = useRef<{ served: string | null; version: string } | null>(
+    null,
+  )
+  useEffect(() => {
+    // No vault to poll (welcome page — the endpoint is vault-gated and would
+    // 409), or a banner is up: while either banner shows, the 5s recovery sweep
+    // below owns the retry, and a second driver would double every sweep.
+    if (!served) return
+    if (disconnected || vaultGone) return
+    let stopped = false
+    const tick = async () => {
+      // Hidden tab / minimized window: don't poll at all, and forget the token
+      // — `visibilitychange` already sweeps on the way back, so the next tick
+      // must SEED rather than diff, or becoming visible would sweep twice.
+      if (document.visibilityState !== 'visible') {
+        vaultVersionRef.current = null
+        return
+      }
+      try {
+        const { version } = await fetchVaultVersion()
+        if (stopped) return
+        const seen = vaultVersionRef.current
+        vaultVersionRef.current = { served, version }
+        if (seen && seen.served === served && seen.version !== version) {
+          lastResyncRef.current = Date.now()
+          void doResyncRef.current()
+        }
+      } catch {
+        // Silent by design: a failed poll degrades to exactly today's behaviour
+        // (resync on focus / the refresh button). It must never raise the
+        // disconnected banner — that would turn a blip into a red banner over a
+        // page the user is not even touching.
+      }
+    }
+    void tick()
+    const t = setInterval(() => void tick(), VAULT_POLL_MS)
+    return () => {
+      stopped = true
+      clearInterval(t)
+    }
+  }, [served, disconnected, vaultGone])
+
   // While either banner is up, re-run the sweep every 5s so recovery is automatic
   // (banner clears, data refreshes) without waiting for a focus switch or a
   // manual refresh. The interval exists only while a banner is up: a successful
@@ -1175,7 +1244,15 @@ export default function App() {
 
   // Route a picked search result by where it matched: an id/title hit opens the
   // paper PDF; a notes/discussion hit opens that doc and scrolls to / highlights
-  // the matched query (captured now, since `search` may be edited afterwards).
+  // the matched query (captured now, since `search` is cleared right below).
+  //
+  // Picking a row ENDS the search: the query is dropped so the middle list snaps
+  // back to the whole library. Landing on a paper is the goal of a quick-jump —
+  // leaving the query behind left the list narrowed with no visible cause, and
+  // the only way out was hand-deleting the box's text. Browsing the full match
+  // set is still served: that is what the middle list shows *while* the query
+  // stands (the dropdown's "+N more in the list" row), and clicking a row THERE
+  // goes through selectPaper, which never touched `search` and still doesn't.
   const onSearchSelect = useCallback(
     (c: Candidate) => {
       if (c.scope === 'notes' || c.scope === 'discussion') {
@@ -1184,6 +1261,7 @@ export default function App() {
       } else {
         openPdf(c.id)
       }
+      setSearch('')
     },
     [openDoc, openPdf, search],
   )

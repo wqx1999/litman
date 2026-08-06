@@ -94,6 +94,7 @@ const SECTIONS: Section[] = [
       { chords: [['P']], action: 'Pin / unpin the selected paper' },
       { chords: [['Enter']], action: 'Open the selected paper' },
       { chords: [['/']], action: 'Focus search' },
+      { chords: [['Esc']], action: 'Clear search', scope: 'Search' },
     ],
   },
   {

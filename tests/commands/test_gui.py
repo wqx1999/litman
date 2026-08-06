@@ -14,6 +14,7 @@ import builtins
 import functools
 import importlib
 import io
+import logging
 import os
 import plistlib
 import re
@@ -3622,3 +3623,84 @@ def test_warn_console_shortcut_silent_when_litw_is_used(
     )
     gui._warn_console_shortcut()
     assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# Access-log filter for the live-refresh poll (task-gui-live-refresh)
+# ---------------------------------------------------------------------------
+
+
+def _access_record(path: str, status: int = 200) -> logging.LogRecord:
+    """A uvicorn access record, built the way uvicorn builds it — the filter
+    reads `record.args`, so a hand-formatted message would not exercise it."""
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1", "GET", path, "1.1", status),
+        exc_info=None,
+    )
+
+
+def test_poll_access_lines_are_dropped() -> None:
+    """A 4s poll would otherwise write ~900 lines an hour into the launcher's
+    log file, burying whatever someone opened it to find."""
+    f = gui._DropPolledAccessLines()
+    assert f.filter(_access_record("/api/vault-version")) is False
+
+
+def test_every_other_access_line_survives() -> None:
+    """The filter must be surgical: it is not a licence to quieten the log."""
+    f = gui._DropPolledAccessLines()
+    for path in ("/api/papers", "/api/doc-mtimes", "/", "/api/vault-versions"):
+        assert f.filter(_access_record(path)) is True, path
+
+
+def test_poll_line_with_a_query_string_is_still_dropped() -> None:
+    f = gui._DropPolledAccessLines()
+    assert f.filter(_access_record("/api/vault-version?x=1")) is False
+
+
+def test_a_path_merely_mentioning_the_route_survives() -> None:
+    """Matched on the path component only — a query string that names the
+    route belongs to some OTHER request, and dropping it would hide it."""
+    f = gui._DropPolledAccessLines()
+    assert f.filter(_access_record("/api/papers?q=/api/vault-version")) is True
+
+
+def test_non_access_records_always_survive() -> None:
+    """Startup lines, tracebacks, anything without uvicorn's arg tuple: a
+    filter must never be the reason a diagnostic went missing."""
+    f = gui._DropPolledAccessLines()
+    plain = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="something broke at /api/vault-version",
+        args=(),
+        exc_info=None,
+    )
+    assert f.filter(plain) is True
+
+
+def test_installing_the_filter_is_idempotent() -> None:
+    """`lit gui` twice in one process (tests, embedding) must not stack it."""
+    logger = logging.getLogger("uvicorn.access")
+    before = list(logger.filters)
+    try:
+        gui._quiet_polled_access_lines()
+        gui._quiet_polled_access_lines()
+        installed = [
+            f for f in logger.filters if isinstance(f, gui._DropPolledAccessLines)
+        ]
+        assert len(installed) == 1
+        # And it is live on the real logger, not just constructible.
+        # (Logger.filter answers with the record itself when it passes, so
+        # compare truthiness, not identity with True.)
+        assert not logger.filter(_access_record("/api/vault-version"))
+        assert logger.filter(_access_record("/api/papers"))
+    finally:
+        logger.filters = before

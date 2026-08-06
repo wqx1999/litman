@@ -236,6 +236,14 @@ export function fetchDocMtimes(): Promise<DocMtimes> {
   return getJSON<DocMtimes>('/api/doc-mtimes')
 }
 
+/** An opaque token that changes iff the vault changed on disk (stat-only, a few
+ * dozen bytes). The live-refresh poll compares it against the last one it saw
+ * and runs the real 7-request resync sweep ONLY when they differ — which is why
+ * this must never be treated as anything but an equality check. */
+export function fetchVaultVersion(): Promise<{ version: string }> {
+  return getJSON<{ version: string }>('/api/vault-version')
+}
+
 /** The status/priority/type whitelists (+ allowsNone) backing the cockpit
  * dropdowns. Sourced from the server, never hard-coded here. */
 export function fetchFixedEnums(): Promise<FixedEnums> {
