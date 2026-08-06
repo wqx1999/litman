@@ -70,8 +70,10 @@ lit = "litman.cli:main"
 [project.gui-scripts]
 litw = "litman.cli:main"
 
+# Homepage is where a reader who has never heard of litman should land, which is
+# the site, not the source tree. Repository is the separate link for the source.
 [project.urls]
-Homepage = "https://github.com/wqx1999/litman"
+Homepage = "https://litman.dev/"
 Repository = "https://github.com/wqx1999/litman"
 Documentation = "https://litman.dev/docs/"
 Changelog = "https://litman.dev/docs/changelog/"
