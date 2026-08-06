@@ -478,7 +478,14 @@ export default function MdView({
           // otherwise the close prompt later comes as a surprise.
           <div className="flex items-center gap-2">
             {previewingDraft && draft !== savedText && (
-              <span className="font-mono text-xs font-normal text-amber-600 dark:text-amber-400">
+              // amber-700, a step darker than the amber-600 used for status text
+              // elsewhere: measured on the light header strip that is 4.58:1,
+              // where amber-600 came out 2.91:1 — under the 4.5:1 floor. This
+              // label's whole job is to be noticed, which earns the one step of
+              // divergence. Dark mode already cleared it (9.88:1) and is
+              // unchanged; note it was the LIGHT side that was short, not the
+              // dark variant added for it.
+              <span className="font-mono text-xs font-normal text-amber-700 dark:text-amber-400">
                 Unsaved draft — previewing
               </span>
             )}
