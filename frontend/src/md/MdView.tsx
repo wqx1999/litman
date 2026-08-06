@@ -155,6 +155,12 @@ export default function MdView({
   // offset 0 restores like any other. A `number | null` ref would read 0 as
   // "nothing stored" and silently jump to the end of the document instead.
   const caretRef = useRef<[number, number] | null>(null)
+  // Where the preview was scrolled to. Deliberately NOT mdScrollPositions: that
+  // map is the READING position, restored when the tab is next opened, and a
+  // draft is a different document once it diverges from the file. Keeping them
+  // apart is what lets a second Preview return to the passage being checked
+  // without a draft scroll deciding where the tab reopens.
+  const previewScrollRef = useRef(0)
 
   // Edit mode + the draft now come from App (controlled): a present draftEntry
   // means this tab is mid-edit. The draft survives this view's unmount because
@@ -260,6 +266,17 @@ export default function MdView({
     const saved = tabKey ? mdScrollPositions.get(tabKey) : undefined
     if (saved) el.scrollTop = saved
   }, [loaded, text, editing, highlightQuery, tabKey])
+
+  // The preview's own scroll restore. The effect above cannot serve this: it is
+  // once-per-mount and skipped while editing, whereas the preview mounts and
+  // unmounts repeatedly inside one session (Edit ⇄ Preview), and without this
+  // every trip back lands at the top of the document.
+  useLayoutEffect(() => {
+    if (!previewingDraft) return
+    const el = contentRef.current
+    if (!el) return
+    el.scrollTop = previewScrollRef.current
+  }, [previewingDraft])
 
   // After the markdown renders, mark every occurrence of the search query and
   // scroll the first into view (a search hit opened this doc). Runs again when
@@ -389,11 +406,13 @@ export default function MdView({
   // `previewing` only means anything inside a session. Clear it whenever one
   // ends by any route (a save here, or App dropping the draft), so the next
   // double-click opens the textarea instead of a stale preview — and drop the
-  // remembered caret with it, or it would be restored into the NEXT document.
+  // caret and scroll with it, or they would be restored into the NEXT session's
+  // document, which may be a different length entirely.
   useEffect(() => {
     if (!editing) {
       setPreviewing(false)
       caretRef.current = null
+      previewScrollRef.current = 0
     }
   }, [editing])
 
@@ -543,8 +562,12 @@ export default function MdView({
           onClick={handleClick}
           onDoubleClick={enterEdit}
           onScroll={(e) => {
-            // Remember the reading position for this tab so a switch returns here.
-            if (tabKey) mdScrollPositions.set(tabKey, e.currentTarget.scrollTop)
+            const top = e.currentTarget.scrollTop
+            // A preview scroll is a position in the DRAFT, so it goes to the
+            // draft's own ref. Only a scroll of the file itself updates the
+            // reading position this tab reopens at.
+            if (previewingDraft) previewScrollRef.current = top
+            else if (tabKey) mdScrollPositions.set(tabKey, top)
           }}
           dangerouslySetInnerHTML={{ __html: html }}
         />
