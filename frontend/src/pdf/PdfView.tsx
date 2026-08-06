@@ -13,7 +13,18 @@ import 'pdfjs-dist/web/pdf_viewer.css'
 import './pdf-editor-overrides.css'
 import { CommentManager } from './comment-manager'
 import ParamSwatches, { type ParamType } from './ParamSwatches'
+import JumpBackPill from './JumpBackPill'
+import {
+  historyFor,
+  peekBack,
+  recordJump,
+  stepBack,
+  stepForward,
+  type ViewHistory,
+  type ViewPos,
+} from './view-history'
 import { pdfUrl, putPdfAnnotations } from '../api'
+import { isEditingTarget } from '../useKeyboardShortcuts'
 
 // pdf.js needs its worker registered once, before any document is parsed. The
 // `?url` import gives vite the hashed worker path under assets/ at build time.
@@ -33,6 +44,39 @@ const wrappedManagers = new WeakSet<object>()
 // mirroring the app's other session-only state (the activity log); also resumes
 // the position when the same paper is reopened later in the session.
 const viewPositions = new Map<string, { scrollTop: number; scale: number }>()
+
+// The seam that makes "jump back" possible: pdf.js's link service is the ONLY
+// route a document-internal jump takes (the annotation layer's internal-link
+// <a> calls goToDestination; goToPage is the by-number entry point), so
+// subclassing it records the pre-jump position for exactly the navigations a
+// reader would want to undo — and nothing else.
+//
+// Deliberately NOT wrapped: `scrollPageIntoView`, the substrate every scroll
+// goes through (load-time position restore, internal relayout), which would
+// record non-navigations as jumps. External links never arrive here either —
+// `externalLinkTarget: BLANK` sends them to a new window — so the interception
+// is exactly "moved somewhere else inside this document".
+//
+// The hook runs BEFORE super: goToDestination is async, and the position has to
+// be read while the viewer is still where the user left it.
+class NavigatingLinkService extends PDFLinkService {
+  onNavigate: (() => void) | null = null
+
+  override async goToDestination(
+    dest: Parameters<PDFLinkService['goToDestination']>[0],
+  ): Promise<void> {
+    this.onNavigate?.()
+    await super.goToDestination(dest)
+  }
+
+  override goToPage(val: Parameters<PDFLinkService['goToPage']>[0]): void {
+    this.onNavigate?.()
+    super.goToPage(val)
+  }
+}
+
+// How long the pill stays expanded after a jump before collapsing to a bare ←.
+const PILL_EXPANDED_MS = 4000
 
 // The PDF-tool modes the keyboard shortcuts can switch to, mirroring EditMode
 // below. Exposed on the handle so the global shortcut dispatcher (V/H/T/D/Esc)
@@ -258,6 +302,10 @@ export default function PdfView({
   // A ref so the high-frequency mouseover handler can short-circuit re-entry on
   // the same annotation without a state read.
   const hoverIdRef = useRef<string | null>(null)
+  // Stable indirection for the link service's pre-jump hook: the service is
+  // built inside the load effect, which must not re-run when the handler's
+  // closure changes (same pattern as commitNoteRef above).
+  const onNavigateRef = useRef<() => void>(() => {})
 
   const [error, setError] = useState<string | null>(null)
   const [pageCount, setPageCount] = useState(0)
@@ -279,6 +327,18 @@ export default function PdfView({
   const [savedFlash, setSavedFlash] = useState(false)
   // The selected highlight/ink's note text, edited inline in the popover.
   const [noteDraft, setNoteDraft] = useState('')
+  // Page the jump-back pill offers to return to; null hides the pill (nothing
+  // to go back to). Derived from the back stack, never from a jump directly.
+  const [backPage, setBackPage] = useState<number | null>(null)
+  // The pill shows its label right after a jump, then collapses to a bare ←.
+  // A monotonic nonce, NOT a boolean (0 = collapsed): jumping again while the
+  // pill is still expanded has to restart its window, and setting a boolean to
+  // `true` a second time is a same-value update React bails out of — the
+  // collapse effect would not re-run, so the first jump's timer would survive
+  // and snap the second pill shut moments after it appeared. Chained citations
+  // are precisely the case this feature exists for.
+  const [pillNonce, setPillNonce] = useState(0)
+  const pillExpanded = pillNonce > 0
   // The hovered annotation's note (read-only tooltip). ax/ay/atop are the
   // annotation's left / bottom / top relative to the PDF wrapper; the layout
   // effect measures the tooltip and clamps it inside the wrapper.
@@ -350,6 +410,82 @@ export default function PdfView({
     },
     [applyScale],
   )
+
+  // --- Jump back (Acrobat's "previous view") --------------------------------
+  // This tab's back/forward stacks. They live outside the component (keyed by
+  // tab), so the trail survives the unmount a tab switch causes.
+  //
+  // Resolved once into a ref rather than a useMemo: for a keyed tab either would
+  // do (the map hands back the same object), but the trash preview passes no tab
+  // key and gets a fresh detached history per call — and React documents that it
+  // MAY drop a memoized value, which would silently reset that preview's trail
+  // mid-mount. A ref is a hard guarantee. Safe because tabKey cannot change
+  // without a remount: TabArea passes `key={active.key} tabKey={active.key}`.
+  const historyRef = useRef<ViewHistory | null>(null)
+  if (historyRef.current === null) historyRef.current = historyFor(tabKey)
+  const history = historyRef.current
+
+  // Where the reader is right now. scrollTop is in SCALED pixels, so the zoom it
+  // was measured at travels with it (same contract as viewPositions).
+  const currentPos = useCallback(
+    (): ViewPos => ({
+      scrollTop: containerRef.current?.scrollTop ?? 0,
+      scale: scaleRef.current,
+      page: viewerRef.current?.currentPageNumber ?? 1,
+    }),
+    [],
+  )
+
+  // Put the reader back at a remembered position. Scale FIRST: scrollTop is in
+  // scaled pixels, and pdf.js's currentScale setter re-anchors the scroll
+  // position itself, so setting the offset first would just be overwritten. The
+  // zoom goes through applyScale (never viewer.currentScale directly) so the
+  // toolbar's % box tracks it. The rAF re-assert mirrors applyOffset's
+  // set-then-confirm shape, covering a relayout that lands right after us.
+  const restorePos = useCallback(
+    (pos: ViewPos) => {
+      const container = containerRef.current
+      if (!container) return
+      applyScale(pos.scale)
+      container.scrollTop = pos.scrollTop
+      requestAnimationFrame(() => {
+        const el = containerRef.current
+        if (el) el.scrollTop = pos.scrollTop
+      })
+    },
+    [applyScale],
+  )
+
+  // Re-derive the pill. `peekBack` resolves against the CURRENT position through
+  // the same skip the key uses, so the pill can never offer a step that would do
+  // nothing. Called after every stack mutation (the stacks are plain arrays —
+  // nothing else can notice they changed) and on scroll, since the answer
+  // depends on where the reader is. Idempotent: an unchanged page number is a
+  // same-value setState React drops, so the scroll path costs no re-render.
+  const syncPill = useCallback(() => {
+    setBackPage(peekBack(history, currentPos())?.page ?? null)
+  }, [history, currentPos])
+
+  const goBack = useCallback(() => {
+    const target = stepBack(history, currentPos())
+    if (target) restorePos(target)
+    syncPill()
+  }, [history, currentPos, restorePos, syncPill])
+
+  const goForward = useCallback(() => {
+    const target = stepForward(history, currentPos())
+    if (target) restorePos(target)
+    syncPill()
+  }, [history, currentPos, restorePos, syncPill])
+
+  // Record where a document-internal jump is leaving from, then surface the way
+  // back. Installed on the link service (via onNavigateRef) inside the load
+  // effect; it runs before pdf.js moves the viewer.
+  onNavigateRef.current = () => {
+    recordJump(history, currentPos())
+    syncPill()
+    setPillNonce((n) => n + 1)
+  }
 
   // Set an annotation-editor parameter (colour / size / thickness). pdf.js v5
   // has no PDFViewer setter for this — the UIManager subscribes to this event
@@ -520,6 +656,26 @@ export default function PdfView({
     return () => clearTimeout(t)
   }, [savedFlash])
 
+  // Collapse the jump-back pill to a bare ← once it has been read. Keyed on the
+  // nonce, so each jump gets its own full window instead of inheriting the
+  // previous one's remaining time. Cleared on unmount (and on every re-expansion)
+  // so a tab switch can't fire it into a dead view.
+  useEffect(() => {
+    if (pillNonce === 0) return
+    const t = setTimeout(() => setPillNonce(0), PILL_EXPANDED_MS)
+    return () => clearTimeout(t)
+  }, [pillNonce])
+
+  // The stacks outlive this component, so on mount seed the pill from whatever
+  // trail this tab already has — collapsed, not expanded: returning to a tab is
+  // not a fresh jump. `history` never changes identity (see the ref above), so
+  // this runs once. The scroll listener re-derives it as the restored reading
+  // position lands.
+  useEffect(() => {
+    syncPill()
+    setPillNonce(0)
+  }, [history, syncPill])
+
   // Register this view's flush handle with the parent so closing the tab can
   // prompt Save / Don't save instead of writing silently. Skipped in read-only
   // (trash) mode: there is no write path, so no flush handle to expose.
@@ -575,10 +731,15 @@ export default function PdfView({
     // SPA away (the app window IS the application — losing it kills the UI).
     // Internal destinations (outline / in-document anchors) are unaffected.
     // externalLinkRel already defaults to noopener noreferrer nofollow.
-    const linkService = new PDFLinkService({
+    //
+    // The subclass records the pre-jump reading position on every internal
+    // destination so Alt+← can come back; BLANK is what keeps that honest, since
+    // an external link is opened by the browser and never reaches the override.
+    const linkService = new NavigatingLinkService({
       eventBus,
       externalLinkTarget: LinkTarget.BLANK,
     })
+    linkService.onNavigate = () => onNavigateRef.current()
     // Supplies pdf.js's comment contract; its presence switches FreeText off the
     // legacy "render my text as a hover popup" path. We capture notes inline, so
     // its dialog is never invoked (openDialog returns undefined).
@@ -942,6 +1103,42 @@ export default function PdfView({
     return () => window.removeEventListener('keydown', onKey)
   }, [zoomBy, resetZoom])
 
+  // Alt+← / Alt+→ walk the view history (Acrobat's "previous view"). Available
+  // read-only too — navigating a trashed preview writes nothing.
+  //
+  // 🔴 preventDefault is UNCONDITIONAL, including when the stack is empty. On
+  // Windows/Linux Alt+←/→ is the browser's Back/Forward, and this SPA has no
+  // router: letting one through navigates away from the app entirely and the UI
+  // is gone. Do NOT "simplify" this into an early return when there is nothing
+  // to go back to — a mistyped shortcut would then kill the window.
+  //
+  // Capture phase + stopPropagation also keeps it clear of pdf.js's editor
+  // UIManager, which binds plain/Ctrl/Shift arrows to nudge a selected
+  // annotation. It has no Alt variant today, and this listener runs first
+  // regardless, so the two can never fight over the same chord.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+      if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return
+      // Never hijack a text field: on macOS ⌥← / ⌥→ move the caret by word, and
+      // stealing that would wreck typing in the search box / % box / a note.
+      //
+      // This return is deliberately BEFORE the preventDefault above it in
+      // priority, and that costs us something: on Windows/Linux, Alt+← inside a
+      // text field still reaches the browser and goes Back. That risk exists
+      // today, predates this feature, and the spec accepts it — protecting the
+      // window is not worth breaking word-navigation on macOS, where the chord
+      // belongs to the text field. Do NOT "fix" this by preventDefaulting first.
+      if (isEditingTarget(e.target)) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.code === 'ArrowLeft') goBack()
+      else goForward()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [goBack, goForward])
+
   // ⌘/Ctrl+S saves annotations into the PDF instead of the browser's "save page".
   // Bound in the CAPTURE phase so it beats both the browser default AND pdf.js's
   // editor-level ctrl+s (which only commits the active editor) — saveNow's
@@ -1092,11 +1289,17 @@ export default function PdfView({
   // off a detaching node is less reliable) keeps the latest offset in the map.
   // The current zoom is stored alongside (scrollTop is scaled pixels), so a zoom
   // — which itself shifts scrollTop and fires this — is captured too.
+  //
+  // The jump-back pill is re-derived here as well: what Alt+← would do depends
+  // on where the reader currently IS, so scrolling onto (or off) the spot a jump
+  // came from changes the answer. This is also what fills the pill in after a
+  // load-time position restore, which finishes long after mount.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const onScroll = () => {
       clearHover()
+      syncPill()
       if (tabKey && !restoringRef.current) {
         viewPositions.set(tabKey, {
           scrollTop: el.scrollTop,
@@ -1106,7 +1309,7 @@ export default function PdfView({
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [clearHover, tabKey])
+  }, [clearHover, tabKey, syncPill])
 
   const saveLabel = saving ? 'Saving…' : savedFlash && !dirty ? 'Saved ✓' : 'Save'
 
@@ -1261,6 +1464,23 @@ export default function PdfView({
         <div ref={containerRef} className="absolute inset-0 overflow-auto p-6">
           <div ref={viewerElRef} className="pdfViewer" />
         </div>
+
+        {/* The way back from a citation jump. Lives INSIDE this `isolate`
+            wrapper (like the popover) so its z-index stays contained and can't
+            paint over the TopBar's search dropdown. Held until the pages exist,
+            so it can never offer a position the viewer cannot honour yet. */}
+        {backPage !== null && pageCount > 0 && (
+          <div
+            style={{ zIndex: 100001 }}
+            className="absolute bottom-4 left-1/2 -translate-x-1/2"
+          >
+            <JumpBackPill
+              page={backPage}
+              expanded={pillExpanded}
+              onClick={goBack}
+            />
+          </div>
+        )}
 
         {/* Floating editor popover, anchored next to the selected annotation by
             the rAF loop above. zIndex sits above pdf.js's .selectedEditor

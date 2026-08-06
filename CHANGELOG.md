@@ -9,6 +9,19 @@ conveniences.
 
 ## Unreleased
 
+### Added
+
+- **Following a citation no longer strands you.** Clicking a reference in a PDF
+  used to be a one-way trip: the reader jumped to the bibliography and finding
+  your way back meant scrolling until you recognised the page. `Alt+←` now
+  returns you to the exact spot — same place on the page, same zoom — and
+  `Alt+→` goes forward again, however many links deep you went. A small pill
+  floats at the bottom of the page after a jump showing where back leads
+  (`← Back to p.7`); it shrinks to a plain arrow after a moment, and it is there
+  to click if you would rather not use the keyboard. The trail is remembered for
+  as long as the window is open, including across switching to another tab and
+  back, and nothing is written into the PDF.
+
 ### Fixed
 
 - **The window keeps up with the work happening outside it.** A paper added,

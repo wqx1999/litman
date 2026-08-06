@@ -114,6 +114,8 @@ const SECTIONS: Section[] = [
       { chords: [['H']], action: 'Highlight', scope: 'PDF' },
       { chords: [['T']], action: 'Text note', scope: 'PDF' },
       { chords: [['D']], action: 'Draw (ink)', scope: 'PDF' },
+      { chords: [['Alt', '←']], action: 'Back to where you jumped from', scope: 'PDF' },
+      { chords: [['Alt', '→']], action: 'Forward again', scope: 'PDF' },
     ],
   },
   {
