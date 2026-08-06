@@ -45,9 +45,11 @@ export const modalBackdropProps = {
   },
 }
 
-/** Focus a dialog card on mount so its own `onKeyDown` can hear Escape.
+/** Keep a dialog card focused, so its own `onKeyDown` can hear Escape.
  *
  * Spread onto the card element: `<div {...useModalCardFocus()} onKeyDown={…}>`.
+ * A card that opens nested dialogs passes whether one is showing —
+ * `useModalCardFocus(childOpen)` — and gets re-focused when the last one goes.
  *
  * 🔴 Writing `onKeyDown={e => e.key === 'Escape' && onClose()}` on a card does
  * NOT mean Escape closes it. React key events start at the focused element, so
@@ -58,18 +60,33 @@ export const modalBackdropProps = {
  * the dialog ends up with no keyboard exit at all. That is invisible to any
  * test that drives the UI with a mouse, and this app has shipped it twice.
  *
+ * 🔴 Focusing the card ONCE is not enough either, which is the third shape of
+ * the same bug. Open a nested dialog (Vaults → Register) and focus moves into
+ * its input; close that dialog and React unmounts the input, dropping focus to
+ * <body> — outside the card. The outer dialog is now in exactly the state above
+ * (no listener anywhere) and its Escape is dead, while the mouse still works
+ * fine, so it looks like nothing is wrong. Cancelling the nested dialog is not
+ * the only way in: submitting it successfully unmounts it just the same.
+ *
  * A dialog whose natural first action is typing should focus its input instead
  * (see AddPaper) — same goal, better landing spot. This hook is for panels and
  * confirms with no obvious first field: `tabIndex={-1}` makes the card itself
  * focusable without adding it to the tab order.
  */
-export function useModalCardFocus<T extends HTMLElement = HTMLDivElement>(): {
+export function useModalCardFocus<T extends HTMLElement = HTMLDivElement>(
+  childOpen = false,
+): {
   ref: React.RefObject<T | null>
   tabIndex: number
 } {
   const ref = useRef<T>(null)
+  // Fires on mount (nothing nested is open yet) and on every later edge back to
+  // "nothing nested is open" — never while a nested dialog holds the focus it
+  // wants. Callers that pass nothing keep the original mount-only behaviour. If
+  // the card is unmounting alongside its child, the ref is null and this is a
+  // no-op.
   useEffect(() => {
-    ref.current?.focus()
-  }, [])
+    if (!childOpen) ref.current?.focus()
+  }, [childOpen])
   return { ref, tabIndex: -1 }
 }

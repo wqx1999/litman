@@ -889,9 +889,6 @@ function ProjectManager({
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
-  // Focus the card on mount so Escape reaches the handler below — this is a
-  // blocking dialog, so nothing else is listening (see useModalCardFocus).
-  const cardFocus = useModalCardFocus()
   // The project awaiting delete confirmation, being renamed, or having its path
   // re-pointed; the new-project dialog toggle; and whether a write is in flight
   // (all gate the list controls).
@@ -900,6 +897,15 @@ function ProjectManager({
   const [pendingSetPath, setPendingSetPath] = useState<ProjectEntry | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // Is one of the nested dialogs on screen? Deliberately WITHOUT `busy`: a write
+  // finishing is no reason to grab focus back.
+  const childOpen =
+    pendingDelete != null || pendingRename != null || pendingSetPath != null || showNew
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening — and again whenever a nested
+  // dialog closes, which drops focus to <body> (see useModalCardFocus).
+  const cardFocus = useModalCardFocus(childOpen)
 
   // Papers linked to a project, off the loaded INDEX (no round-trip).
   function countFor(name: string): number {
@@ -956,12 +962,7 @@ function ProjectManager({
   }
 
   const sorted = projects.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked =
-    busy ||
-    pendingDelete != null ||
-    pendingRename != null ||
-    pendingSetPath != null ||
-    showNew
+  const blocked = busy || childOpen
 
   return createPortal(
     <div
@@ -1500,15 +1501,21 @@ function VaultManager({
   onRelocateVault: (name: string, path: string) => Promise<void>
   onClose: () => void
 }) {
-  // Focus the card on mount so Escape reaches the handler below — this is a
-  // blocking dialog, so nothing else is listening (see useModalCardFocus).
-  const cardFocus = useModalCardFocus()
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
   // The missing vault whose new home the user is locating (Locate → path input).
   const [pendingLocate, setPendingLocate] = useState<VaultEntry | null>(null)
   const [showRegister, setShowRegister] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // Is one of the nested dialogs on screen? Deliberately WITHOUT `busy`: a write
+  // finishing is no reason to grab focus back.
+  const childOpen =
+    pendingUnregister != null || pendingLocate != null || showRegister || showCreate
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening — and again whenever a nested
+  // dialog closes, which drops focus to <body> (see useModalCardFocus).
+  const cardFocus = useModalCardFocus(childOpen)
 
   async function doUnregister(name: string) {
     setBusy(true)
@@ -1522,12 +1529,7 @@ function VaultManager({
 
   const entries = vaults?.vaults ?? []
   const sorted = entries.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked =
-    busy ||
-    pendingUnregister != null ||
-    pendingLocate != null ||
-    showRegister ||
-    showCreate
+  const blocked = busy || childOpen
 
   return createPortal(
     <div

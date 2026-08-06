@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
-import { AnnotationEditorType, AnnotationEditorParamsType } from 'pdfjs-dist'
+import {
+  AnnotationEditorType,
+  AnnotationEditorParamsType,
+  AnnotationEditorUIManager,
+} from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+import { TextLayer } from 'pdfjs-dist'
 import { EventBus, LinkTarget, PDFLinkService, PDFViewer } from 'pdfjs-dist/web/pdf_viewer.mjs'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 // pdf_viewer ships the text / annotation / annotation-editor layer CSS; import
@@ -30,9 +35,100 @@ import { isEditingTarget } from '../useKeyboardShortcuts'
 // `?url` import gives vite the hashed worker path under assets/ at build time.
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
-// UIManagers whose `addCommands` we've wrapped for dirty-tracking (see captureUI).
-// A WeakSet so a destroyed document's manager is GC'd without leaking here.
-const wrappedManagers = new WeakSet<object>()
+// Send pdf.js's text layer to the metric-only faces declared in
+// pdf-editor-overrides.css, so the blue selection band's geometry is a number
+// we chose rather than whatever font the OS resolves `serif` to. See that file
+// for the reasoning and the 🔴 about highlight coordinates.
+//
+// 🔴 `.set()`, never `TextLayer.fontFamilyMap = new Map(…)`. The map is a
+// `shadow()`-installed static, i.e. `writable: false`, so assigning to it does
+// nothing at all and reports no error — the override then looks like it simply
+// doesn't work, which cost this investigation a full round.
+//
+// Each value keeps the generic name behind ours: if not one `local()` source
+// resolves on some machine, the face is unusable and the geometry falls back to
+// pdf.js's stock behaviour rather than to something unpredictable. (pdf.js's
+// own entries prepend `Calibri, ` / `Lucida Console, ` on Windows+Firefox to
+// get better-behaved metrics; overriding the metrics outright supersedes that.)
+TextLayer.fontFamilyMap.set('serif', "'litman-tl-serif', serif")
+TextLayer.fontFamilyMap.set('sans-serif', "'litman-tl-sans', sans-serif")
+TextLayer.fontFamilyMap.set('monospace', "'litman-tl-mono', monospace")
+
+// 🔴 Those faces must be ACTIVE before the first text layer renders. pdf.js
+// measures a family's ascent ratio once and caches it under the family string
+// for the life of the page (`#ascentCache`), while `local()` fonts activate
+// asynchronously — so a first render that beats the activation pins the
+// fallback's ratio forever and the override silently does nothing, with exactly
+// the same symptom as the writable:false trap above. Awaited before the
+// document is handed to the viewer; local fonts, so the wait is immaterial.
+let textLayerFonts: Promise<unknown> | null = null
+function textLayerFontsReady(): Promise<unknown> {
+  textLayerFonts ??= Promise.all([
+    document.fonts.load("16px 'litman-tl-serif'"),
+    document.fonts.load("16px 'litman-tl-sans'"),
+    document.fonts.load("16px 'litman-tl-mono'"),
+  ]).catch(() => undefined)
+  return textLayerFonts
+}
+
+// Every "the annotations just changed" signal pdf.js offers, funnelled into one
+// callback per UIManager (registered in captureUI; it re-derives the dirty
+// state). It takes five methods, in two groups:
+//
+//   addCommands / undo / redo   the CONTENT of an annotation changed — a move,
+//                               a recolour, a note, a text edit. undo and redo
+//                               do not go through addCommands: undoing just
+//                               runs the undo fn the command already carries.
+//   addToAnnotationStorage      an annotation joined the set that gets embedded
+//   removeEditor                …or left it
+//
+// 🔴 Both groups are needed, and it is not obvious why until you watch the
+// order: drawing a highlight fires addCommands FIRST and only then puts the
+// editor into the annotationStorage, so a recompute hooked to commands alone
+// hashes an empty document, concludes "nothing to save", and leaves the Save
+// button greyed out over a highlight that is plainly on screen.
+//
+// The callback is deferred to a microtask (and coalesced) so it runs once, on
+// the settled state, after a gesture has finished firing all of the above —
+// rather than several times on half-applied states.
+//
+// 🔴 Patched on the PROTOTYPE, at import time, rather than on each instance.
+// pdf.js's keyboard table captures `AnnotationEditorUIManager.prototype.undo`
+// BY VALUE (`[["ctrl+z", "mac+meta+z"], proto.undo, …]`) and invokes it as
+// `callback.bind(self)()`, so an instance-level `ui.undo = …` wrapper is never
+// consulted: Ctrl+Z would slip past unseen and leave Save lit over a document
+// that had just been undone back to its saved state. That table is built lazily
+// on the first keydown (via `shadow()`), which is exactly why the patch has to
+// be installed at import time — before any key is pressed, so our wrapper is
+// what gets captured.
+//
+// WeakMaps/Sets so a destroyed document's manager is GC'd without leaking here.
+const managerListeners = new WeakMap<object, () => void>()
+const managerPending = new WeakSet<object>()
+const uiManagerProto = AnnotationEditorUIManager.prototype as unknown as Record<
+  string,
+  (...args: unknown[]) => unknown
+>
+for (const method of [
+  'addCommands',
+  'undo',
+  'redo',
+  'addToAnnotationStorage',
+  'removeEditor',
+]) {
+  const orig = uiManagerProto[method]
+  uiManagerProto[method] = function (this: object, ...args: unknown[]) {
+    const result = orig.apply(this, args)
+    if (managerListeners.has(this) && !managerPending.has(this)) {
+      managerPending.add(this)
+      queueMicrotask(() => {
+        managerPending.delete(this)
+        managerListeners.get(this)?.()
+      })
+    }
+    return result
+  }
+}
 
 // Per-tab reading position (scroll offset + zoom), kept for the session so that
 // switching away from a PDF tab and back returns to where you were reading
@@ -198,6 +294,15 @@ type EditorUIManager = {
   delete(): void
   commitOrRemove(): void
   addCommands(params: EditorCommand): void
+  // Drop the current selection (and tear down pdf.js's comment popup). Used by
+  // the note textarea's Escape exit.
+  unselectAll(): void
+  // pdf.js's undo/redo entry points. We wrap them alongside addCommands: undo
+  // does NOT go through addCommands (it just runs the command stack's stored
+  // undo fn), so without wrapping, an edit undone back to the original state
+  // would leave the Save button lit forever.
+  undo(): void
+  redo(): void
   // Look up an editor instance by its DOM id (= editor.div.id, prefix
   // `pdfjs_internal_editor_`; pdf.mjs sets `div.setAttribute("id", this.id)`).
   // Used to read a hovered annotation's note for the read-only hover tooltip —
@@ -247,9 +352,11 @@ function TrashIcon() {
  * `doc.saveDocument()`. The user saves explicitly (Save button / ⌘-Ctrl+S) with
  * visible state; the parent also intercepts tab close to prompt Save / Don't save
  * (via the registered PdfHandle), and a best-effort flush runs on plain unmount
- * (tab switch) unless `discard()` suppressed it. `dirtyRef` (driven by the wrapped
- * `addCommands`, cleared on save) gates every flush so an untouched / already-saved
- * PDF is never re-written. */
+ * (tab switch) unless `discard()` suppressed it. Every flush is gated on the
+ * document's annotation hash differing from the last one written (see
+ * `isDirtyDoc`), so an untouched, already-saved, or edited-then-undone PDF is
+ * never re-written — and every write goes through `runQueued`, so two can never
+ * be in the air at once. */
 export default function PdfView({
   paperId,
   tabKey,
@@ -279,9 +386,13 @@ export default function PdfView({
   // possibly-stale prop.
   const paperIdRef = useRef(paperId)
   paperIdRef.current = paperId
-  // Set true by the wrapped addCommands on any edit; cleared after a save lands.
-  // The single source of truth for "has unsaved annotation edits".
-  const dirtyRef = useRef(false)
+  // The annotation-content hash as of the last write that landed — or, for an
+  // untouched document, as of load. "Has unsaved edits" is a comparison against
+  // this, never a flag; see isDirtyDoc.
+  const savedHashRef = useRef('')
+  // The write currently in the air (embed → PUT → bookkeep), or null. Every
+  // write queues behind it so two can never overlap; see runQueued.
+  const inflightRef = useRef<Promise<void> | null>(null)
   // Set by discard(): the unmount teardown must not save when the user chose
   // "Don't save" at the close prompt.
   const discardRef = useRef(false)
@@ -606,26 +717,94 @@ export default function PdfView({
   }, [commitNote])
   commitPendingRef.current = commitPending
 
+  // "Are there unsaved annotation edits?" — asked of the document's contents,
+  // not tracked as a flag. `annotationStorage.serializable.hash` is pdf.js's own
+  // MurmurHash over every annotation this session has touched (an untouched one
+  // hashes to ""), so an edit that is deleted, or undone, back to the saved
+  // state hashes back to it too and the document reads clean again. A monotone
+  // "something happened" flag never can: draw-then-erase used to leave the Save
+  // button lit and the close prompt asking about edits that no longer existed.
+  //
+  // Takes the document explicitly because the unmount path has already nulled
+  // docRef by the time it needs to ask.
+  const isDirtyDoc = useCallback(
+    (doc: PDFDocumentProxy | null) =>
+      !!doc && doc.annotationStorage.serializable.hash !== savedHashRef.current,
+    [],
+  )
+
+  // Re-derive the Save button from the document. Registered per UIManager (see
+  // captureUI) so every pdf.js mutation runs it, and called again once a write
+  // lands — where it stays honest about edits made DURING that write.
+  const syncDirty = useCallback(() => {
+    setDirty(isDirtyDoc(docRef.current))
+  }, [isDirtyDoc])
+
+  // Run a write with at most one in the air.
+  //
+  // The race this closes: hit Save, then switch tabs before the PUT comes back.
+  // savedHashRef is only bookkept once a write lands, so for the whole flight
+  // the document still reads dirty — and the unmount path fired a SECOND
+  // saveDocument + PUT of the very same bytes.
+  //
+  // Later callers QUEUE behind the in-flight write and re-check the hash when
+  // their turn comes (writeAnnotations does that itself); they do not skip.
+  // Skipping would be wrong in the one case that matters — if the in-flight
+  // write FAILS, the queued caller is the retry, and dropping it drops the
+  // user's annotations. `then(task, task)` chains for the same reason: a
+  // rejected predecessor must not cancel its successor.
+  const runQueued = useCallback((task: () => Promise<void>): Promise<void> => {
+    const prev = inflightRef.current ?? Promise.resolve()
+    const next = prev.then(task, task)
+    inflightRef.current = next
+    const clear = () => {
+      if (inflightRef.current === next) inflightRef.current = null
+    }
+    // Also the rejection handler, so a failed write counts as handled even when
+    // the caller (the unmount path) never awaits it.
+    next.then(clear, clear)
+    return next
+  }, [])
+
+  // The one write path: snapshot the hash, embed, PUT, then bookkeep
+  // (invariant #16). Always go through runQueued.
+  const writeAnnotations = useCallback(
+    async (doc: PDFDocumentProxy, id: string) => {
+      // Read the hash HERE, not at call time: a caller that waited its turn in
+      // the queue often finds the write it meant to make already done.
+      const hash = doc.annotationStorage.serializable.hash
+      if (hash === savedHashRef.current) return
+      const bytes = await doc.saveDocument()
+      await putPdfAnnotations(id, bytes)
+      // Bookkeep ONLY after the write lands. If saveDocument()/PUT throws,
+      // savedHashRef stays behind, the document still reads dirty, and a later
+      // save retries instead of silently dropping the edit.
+      savedHashRef.current = hash
+      syncDirty()
+    },
+    [syncDirty],
+  )
+
   // Embed pending edits into the PDF and overwrite paper.pdf (invariant #16).
   // Stable callback (reads refs) so the registration effect does not churn. Used
   // by the close-prompt (parent awaits) and wrapped by saveNow for the toolbar.
   const flush = useCallback(async () => {
+    // 🔴 commitPending MUST stay first: an in-progress FreeText or an unfinished
+    // Ink stroke is not in the annotationStorage yet, so neither the hash nor
+    // saveDocument() can see it. No dirty guard here — writeAnnotations re-reads
+    // the hash after commitPending has had its say, and a clean document costs
+    // one already-resolved promise.
     commitPending()
     const doc = docRef.current
     const id = paperIdRef.current
-    if (!dirtyRef.current || !doc) return
-    const bytes = await doc.saveDocument()
-    await putPdfAnnotations(id, bytes)
-    // Clear ONLY after the write lands. If saveDocument()/PUT throws, dirtyRef
-    // stays true so a later save retries instead of silently dropping the edit.
-    dirtyRef.current = false
-    setDirty(false)
-  }, [commitPending])
+    if (!doc) return
+    await runQueued(() => writeAnnotations(doc, id))
+  }, [commitPending, runQueued, writeAnnotations])
 
   // Explicit user save (Save button / ⌘-Ctrl+S): flush with visible state +
   // a brief "Saved ✓" confirmation. savingRef guards a double-fire.
   const saveNow = useCallback(async () => {
-    if (savingRef.current || !dirtyRef.current) return
+    if (savingRef.current || !isDirtyDoc(docRef.current)) return
     savingRef.current = true
     setSaving(true)
     try {
@@ -637,7 +816,7 @@ export default function PdfView({
       savingRef.current = false
       setSaving(false)
     }
-  }, [flush])
+  }, [flush, isDirtyDoc])
 
   // Hide the read-only hover-note tooltip. Defined up here (not with the other
   // hover logic below) so the wheel-zoom effect can list it as a dep without a
@@ -682,11 +861,15 @@ export default function PdfView({
   useEffect(() => {
     if (readOnly || !onRegister || !tabKey) return
     onRegister(tabKey, {
-      isDirty: () => dirtyRef.current,
+      isDirty: () => isDirtyDoc(docRef.current),
       flush,
       discard: () => {
         discardRef.current = true
-        dirtyRef.current = false
+        // "Don't save" means forget the edits, and the predicate is a comparison
+        // against this snapshot — so adopt the document as it stands as the
+        // saved state. (discardRef still suppresses the unmount flush; the two
+        // are belt and braces, and the flag is what survives a later edit.)
+        savedHashRef.current = docRef.current?.annotationStorage.serializable.hash ?? ''
         setDirty(false)
       },
       // Drive the active tool from the global V/H/T/D/Esc shortcuts through the
@@ -695,7 +878,7 @@ export default function PdfView({
       setEditMode: (mode) => selectMode(mode),
     })
     return () => onRegister(tabKey, null)
-  }, [tabKey, onRegister, flush, selectMode, readOnly])
+  }, [tabKey, onRegister, flush, selectMode, readOnly, isDirtyDoc])
 
   // Build the viewer and load the document when the paper changes.
   useEffect(() => {
@@ -721,7 +904,12 @@ export default function PdfView({
     setDirty(false)
     setSaving(false)
     setSavedFlash(false)
-    dirtyRef.current = false
+    savedHashRef.current = ''
+    // A write for the PREVIOUS document may still be in the air; it carries its
+    // own doc + paper id and finishes on its own. Dropping the reference here
+    // just gives the incoming document a fresh queue (the identity check in
+    // runQueued's `clear` keeps the old one from clobbering this).
+    inflightRef.current = null
     discardRef.current = false
     lastNoteEditorRef.current = null
 
@@ -767,24 +955,16 @@ export default function PdfView({
     linkService.setViewer(viewer)
     viewerRef.current = viewer
 
-    // Capture the UIManager and, once per manager, wrap `addCommands` so EVERY
-    // annotation mutation (create / move / recolour / delete / note) flips dirty.
-    // Selection changes do NOT go through addCommands, so dirty stays put when the
-    // user merely clicks around — and stays clean after a save even though pdf.js
-    // keeps the (still-undoable) command on its stack. This is the only reliable
-    // "edited since last save" signal pdf.js exposes.
+    // Capture the UIManager and subscribe to its mutations, so EVERY annotation
+    // change (create / move / recolour / delete / note / undo / redo) re-derives
+    // the Save button from the document's contents. Selection changes make no
+    // mutation, so nothing moves when the user merely clicks around — and a
+    // saved document reads clean even though pdf.js keeps the (still-undoable)
+    // commands on its stack. See managerListeners for where the hooks live.
     const captureUI = (ui?: EditorUIManager) => {
       if (!ui) return
       uiManagerRef.current = ui
-      if (!wrappedManagers.has(ui)) {
-        wrappedManagers.add(ui)
-        const orig = ui.addCommands.bind(ui)
-        ui.addCommands = (params: EditorCommand) => {
-          dirtyRef.current = true
-          setDirty(true)
-          return orig(params)
-        }
-      }
+      managerListeners.set(ui, syncDirty)
     }
 
     // Load the selected editor's note into the popover textarea when the selection
@@ -955,13 +1135,17 @@ export default function PdfView({
       // and the page paints blank ("Dependent image isn't ready yet").
       wasmUrl: new URL('wasm/', document.baseURI).href,
     })
-    loadingTask.promise
-      .then((doc) => {
+    Promise.all([loadingTask.promise, textLayerFontsReady()])
+      .then(([doc]) => {
         if (cancelled) {
           void doc.destroy()
           return
         }
         docRef.current = doc
+        // Baseline for the dirty comparison. Read it rather than assuming "":
+        // whatever this document hashes to at rest is what "no unsaved edits"
+        // means for it.
+        savedHashRef.current = doc.annotationStorage.serializable.hash
         setPageCount(doc.numPages)
         viewer.setDocument(doc)
         linkService.setDocument(doc)
@@ -995,8 +1179,8 @@ export default function PdfView({
 
       // Finalize any in-progress editor (and flush a pending inline note) so the
       // flush below embeds it. Events are already detached, so the resulting
-      // state dispatch won't setState on the unmounting view; the wrapped
-      // addCommands still flips dirtyRef (a ref) so the save below picks it up.
+      // state dispatch won't setState on the unmounting view; the commit lands
+      // in the annotationStorage, which is where the save below reads from.
       commitPendingRef.current()
       // Capture the UIManager before the ref is nulled — teardown destroys it to
       // drop its leaked document-level listeners (see teardown comment).
@@ -1043,22 +1227,29 @@ export default function PdfView({
       }
 
       // Best-effort flush on plain unmount (tab switch). When the user closed the
-      // tab the parent already ran flush()/discard() before removing it, so dirty
-      // is false here (or discard suppresses the save) and this is a no-op
-      // teardown. The deliberate save path is the explicit Save button / prompt.
+      // tab the parent already ran flush()/discard() before removing it, so the
+      // document reads clean here (or discard suppressed the save) and this is a
+      // no-op teardown. The deliberate save path is the Save button / prompt.
       //
-      // Read-only (trash) mode never writes: no editor mode (NONE), so dirtyRef
-      // can't flip — but gate explicitly so no putPdfAnnotations call is even
-      // reachable against the trash entry_name (red line ④).
-      if (!readOnly && dirtyRef.current && !discardRef.current && doc) {
-        dirtyRef.current = false
-        doc
-          .saveDocument()
-          .then((bytes) => putPdfAnnotations(id, bytes))
+      // Read-only (trash) mode never writes: no editor mode (NONE), so nothing
+      // can make it dirty — but gate explicitly so no putPdfAnnotations call is
+      // even reachable against the trash entry_name (red line ④).
+      //
+      // Going through runQueued is what stops this from writing a second time
+      // right after an explicit Save: if that save is still in the air, this one
+      // waits for it, then finds its hash already banked and returns without a
+      // PUT — while still deferring teardown until the first write has landed.
+      if (!readOnly && !discardRef.current && doc && isDirtyDoc(doc)) {
+        runQueued(() => writeAnnotations(doc, id))
           .catch((err: unknown) => {
             console.error('Failed to embed PDF annotations:', err)
           })
           .finally(teardown)
+      } else if (inflightRef.current) {
+        // Nothing left to write, but a save IS still in the air — e.g. Save,
+        // then Ctrl+Z back to the saved state, then switch tabs. Teardown kills
+        // the worker saveDocument() runs on, so it has to wait for that one too.
+        inflightRef.current.catch(() => {}).finally(teardown)
       } else {
         teardown()
       }
@@ -1493,7 +1684,12 @@ export default function PdfView({
             style={{ visibility: 'hidden', zIndex: 100001 }}
             onPointerDown={(e) => e.stopPropagation()}
             onPointerUp={(e) => e.stopPropagation()}
-            className="absolute flex flex-col gap-2 rounded-xl border border-stone-200 bg-white/95 p-2.5 shadow-xl shadow-stone-900/10 backdrop-blur-sm"
+            // `bg-stone-50/95`, not `bg-white/95`: dark mode works by inverting the
+            // stone ramp (index.css redefines --color-stone-* under .dark), and the
+            // one compensating rule for literal white (`.dark .bg-white`) matches
+            // the bare class only — `bg-white/95` compiles to `.bg-white\/95` and
+            // slips past it, leaving a white card around a dark textarea.
+            className="absolute flex flex-col gap-2 rounded-xl border border-stone-200 bg-stone-50/95 p-2.5 shadow-xl shadow-stone-900/10 backdrop-blur-sm"
           >
             <ParamSwatches
               type={selectedType}
@@ -1514,7 +1710,25 @@ export default function PdfView({
                 // text-field guard only exempts <input>, so a Delete meant to fix
                 // a typo here would wipe the highlight/ink. Stopping propagation
                 // (its listener is on `window`, bubble phase) prevents that.
-                onKeyDown={(e) => e.stopPropagation()}
+                //
+                // Escape is the note's way out, and it still gets swallowed —
+                // "an exit" is not the same as "let it bubble". We do the two
+                // steps ourselves, IN THIS ORDER: commit first, then unselect.
+                // Unselecting unmounts this textarea, and React does not fire
+                // onBlur on unmount, so `onBlur={commitNote}` would never run —
+                // Escape would close the note and take the just-typed text with
+                // it, which is precisely the behaviour being fixed. (Letting it
+                // reach pdf.js's own Escape→unselectAll is the same trap, plus
+                // that path only runs outside NONE mode.) A second Escape, now
+                // that focus has left the textarea, reaches the global
+                // dispatcher and returns the toolbar to Cursor.
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Escape') {
+                    commitNote()
+                    uiManagerRef.current?.unselectAll()
+                  }
+                }}
                 rows={2}
                 placeholder="Add a note…"
                 className="w-52 resize-none rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800 placeholder:text-stone-400 focus:border-accent-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent-400"

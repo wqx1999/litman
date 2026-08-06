@@ -111,6 +111,7 @@ const SECTIONS: Section[] = [
     note: 'Only while a PDF tab is active. Tools switch freely in any order.',
     rows: [
       { chords: [['V'], ['Esc']], action: 'Cursor (select / exit tool)', scope: 'PDF' },
+      { chords: [['Esc']], action: 'Save the note and close it', scope: 'Note' },
       { chords: [['H']], action: 'Highlight', scope: 'PDF' },
       { chords: [['T']], action: 'Text note', scope: 'PDF' },
       { chords: [['D']], action: 'Draw (ink)', scope: 'PDF' },

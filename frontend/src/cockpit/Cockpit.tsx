@@ -544,17 +544,21 @@ function ManageDialog({
   onRename: (old: string, next: string) => Promise<void>
   onClose: () => void
 }) {
-  // Focus the card on mount so Escape reaches the handler below — this is a
-  // blocking dialog, so nothing else is listening (see useModalCardFocus).
-  const cardFocus = useModalCardFocus()
   // The value awaiting delete confirmation, or being renamed (null = list view).
   const [pending, setPending] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
+  // Is one of the nested dialogs on screen? Deliberately WITHOUT `busy`: a write
+  // finishing is no reason to grab focus back.
+  const childOpen = pending != null || renaming != null
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening — and again whenever a nested
+  // dialog closes, which drops focus to <body> (see useModalCardFocus).
+  const cardFocus = useModalCardFocus(childOpen)
   const sorted = vocabulary.slice().sort((a, b) => a.localeCompare(b))
   // While a delete confirm or rename dialog is open (or a write is in flight),
   // gate the list's controls so a keyboard-tab onto a row behind the nested
   // dialog can't swap the target out from under it.
-  const blocked = busy || pending != null || renaming != null
+  const blocked = busy || childOpen
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"

@@ -38,6 +38,31 @@ conveniences.
   whole library instead of holding the last query until you deleted its text by
   hand. `Esc` clears the box too, and a ✕ sits in it whenever there is something
   to clear.
+- **Selecting text in a PDF lines up with the text.** The blue band used to sit
+  low — cutting across the tops of the letters while leaving an empty strip
+  under them — and drifted further off the line the further down the page you
+  read, until near the bottom it was most of a line out. Both are fixed: a
+  selection now brackets the line it is on, at the top of the page and at the
+  bottom, at any zoom. Highlights you make from a selection follow the same
+  rectangles, so new ones sit about a point higher on the page than ones saved
+  by earlier versions.
+- **"Unsaved annotations" now means there are some.** Draw a highlight and erase
+  it, or undo it with `Ctrl+Z`, and the Save button used to stay lit and closing
+  the tab still asked whether to save — over a document that was back exactly
+  where it started. litman now compares the annotations themselves, so undoing
+  or deleting your way back to the saved state is recognised as saved. Saving
+  and immediately switching tabs also writes the PDF once now, not twice.
+- **Escape works on the dialog underneath.** Opening a dialog from inside
+  another one — Vaults → Register existing, Projects → New project, a rename in
+  a field's Manage list — used to leave the outer dialog deaf to `Escape` once
+  the inner one closed, whether you cancelled it or completed it; only the mouse
+  could get you out. Escape now closes it as it should.
+- **Escape leaves an annotation's note, and keeps what you typed.** The note box
+  in the annotation popover had no keyboard exit at all: `Escape` did nothing.
+  It now saves the note and closes the popover, and a second `Escape` puts the
+  toolbar back to Cursor.
+- **The annotation popover is dark in dark mode.** It stayed a white card around
+  a dark text box.
 
 ## 1.3.4 — 2026-08-06
 
