@@ -3,3 +3,6 @@ contact_links:
   - name: Documentation
     url: https://litman.dev/docs/
     about: Commands, concepts, and the tutorial — check here first.
+  - name: Email
+    url: mailto:contact@litman.dev
+    about: No GitHub account, or something you would rather not post in public.

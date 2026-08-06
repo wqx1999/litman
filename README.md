@@ -165,9 +165,16 @@ Cloud sync runs on [rclone](https://rclone.org/), installed separately.
 
 The litman wordmark is adapted from [Nunito](https://fonts.google.com/specimen/Nunito).
 
+## Contact
+
+[Issues](https://github.com/wqx1999/litman/issues) are the fastest route for a bug
+or a feature request. For anything else, or if you are not on GitHub:
+<contact@litman.dev>. Security problems go to the same address, privately — see
+[SECURITY.md](https://github.com/wqx1999/litman/blob/main/SECURITY.md).
+
 ## License
 
-MIT. See [`LICENSE`](https://github.com/wqx1999/litman/blob/main/LICENSE).
+MIT. See [`LICENSE`](https://litman.dev/docs/license/).
 
 ---
 
