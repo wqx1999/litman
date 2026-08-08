@@ -13,6 +13,12 @@ export interface ShortcutDeps {
    * its own Esc handler, so we deliberately do NOT handle Esc here in that case. */
   anyModalOpen: boolean
 
+  /** anyModalOpen minus trash mode: true only when a real dialog CARD is up.
+   * A card owns Escape (its own onKeyDown closes it) and never calls
+   * preventDefault, so the dispatcher swallows the key on the card's behalf —
+   * see the Escape branch of the anyModalOpen guard for why that matters. */
+  modalCardOpen: boolean
+
   // --- Tier 1: display + panels (global, focus-guarded) -------------------
   toggleFocus: () => void
   toggleDark: () => void
@@ -125,6 +131,7 @@ function isReservedModifierCombo(e: KeyboardEvent): boolean {
 export function useKeyboardShortcuts(deps: ShortcutDeps): void {
   const {
     anyModalOpen,
+    modalCardOpen,
     toggleFocus,
     toggleDark,
     toggleLeft,
@@ -154,7 +161,28 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // Modal + focus guards apply to both plain launch and Ctrl+~ management.
       // Handle the one app-owned Ctrl chord before the general reserved-combo
       // return; all other Cmd/Ctrl combinations remain untouched.
-      if (anyModalOpen) return
+      if (anyModalOpen) {
+        // A dialog card is up and owns Escape, but none of the cards call
+        // preventDefault — they just run onCancel/onClose. Swallow the key here
+        // on their behalf, because an UNCONSUMED Escape reaches the host: on
+        // macOS AppKit reads it as "leave fullscreen", so dismissing a dialog
+        // also dropped the window out of fullscreen (two actions, one key).
+        //
+        // Safe to do after the fact: this is a `document` BUBBLE listener, and
+        // React's synthetic handlers are attached to the root container (and to
+        // each portal container), both of which sit below document — so the
+        // card's own onKeyDown has already run and closed it by the time we get
+        // here. The flag is still true in this closure: React schedules passive
+        // effects on a later task, so the listener has not been rebound yet.
+        //
+        // Narrow to modalCardOpen: trash mode is a view with no Escape of its
+        // own, and swallowing the key there would just make Escape dead.
+        // isComposing is excluded — mid-IME, Escape belongs to the input method.
+        if (modalCardOpen && e.key === 'Escape' && !e.isComposing) {
+          e.preventDefault()
+        }
+        return
+      }
       const editing = isEditingTarget(e.target)
       if (
         !editing &&
@@ -371,6 +399,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [
     anyModalOpen,
+    modalCardOpen,
     toggleFocus,
     toggleDark,
     toggleLeft,

@@ -110,6 +110,12 @@ export default function DirectoryPicker({
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
       e.stopPropagation()
+      // Also consume it: stopPropagation alone leaves the key unhandled as far
+      // as the host is concerned, and on macOS an unconsumed Escape makes AppKit
+      // leave fullscreen. This listener is capture-phase, so it is the only
+      // place that can do it for the picker — the dispatcher's own Escape
+      // swallow (see useKeyboardShortcuts) never runs once we stop propagation.
+      if (!e.isComposing) e.preventDefault()
       if (creatingRef.current) {
         setNewName(null)
         return

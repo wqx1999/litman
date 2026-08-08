@@ -1969,7 +1969,11 @@ export default function App() {
   // cheat sheet is deliberately EXCLUDED — it is a non-blocking overlay the
   // dispatcher owns (so `?`/Esc keep toggling it). While anyModalOpen, the
   // dispatcher suppresses every global shortcut and lets the modal own its keys.
-  const anyModalOpen =
+  // Every real dialog CARD. Split out of anyModalOpen (which adds trashMode)
+  // because a card OWNS Escape — its own onKeyDown closes it — whereas trash
+  // mode is a view, not a dialog, and has no Escape of its own. The dispatcher
+  // needs the narrow one to know when to swallow the key; see its Escape guard.
+  const modalCardOpen =
     pendingClose !== null ||
     pendingRemove !== null ||
     pendingVault !== null ||
@@ -1979,7 +1983,10 @@ export default function App() {
     vaultManagerOpen ||
     agentPanelOpen ||
     // The Add-paper confirm dialog owns a text input + its own Esc.
-    addUpload !== null ||
+    addUpload !== null
+
+  const anyModalOpen =
+    modalCardOpen ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -2021,6 +2028,7 @@ export default function App() {
 
   useKeyboardShortcuts({
     anyModalOpen,
+    modalCardOpen,
     toggleFocus,
     toggleDark,
     toggleLeft,
