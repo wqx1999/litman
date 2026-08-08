@@ -81,6 +81,24 @@ conveniences.
   discussion editor it discarded everything since your last save — no
   confirmation, nothing to undo, one keystroke. It does nothing there now.
   (`Escape` still clears the search box and puts a PDF back to Cursor.)
+- **On macOS, closing a dialog no longer drops you out of full screen.** With
+  the window in full screen, `Escape` on an open dialog did two things at once:
+  it dismissed the dialog and left full screen with it, so getting back meant
+  reaching for the green button. Only some dialogs behaved that way, which made
+  it look random. `Escape` now closes the dialog and nothing else. With no
+  dialog open it still leaves full screen, the way any other Mac window does.
+- **A missing library or project folder can now be pointed at its new home —
+  or removed — right from the prompt.** When litman notices that a registered
+  library, or a project a paper is linked to, is no longer where it was
+  recorded, it asks about it on your next command. That question used to offer
+  half the answers: for a library, only "remove the registration", so a library
+  you had merely moved had to be re-registered by hand afterwards; for a
+  project, only "type the new path", so a project you had genuinely finished
+  with kept asking forever unless you went and found the right command. Both
+  now take the same three answers — the new path, `rm`, or Enter to skip — and
+  Enter never destroys anything. `rm` hands you to `lit vault remove` /
+  `lit project rm` with their usual warning and confirmation, and a library is
+  asked about one at a time so each can get its own answer.
 
 ## 1.3.4 — 2026-08-06
 

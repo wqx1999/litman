@@ -19,18 +19,34 @@ project paths to prune / heal (the ``Issue`` records carry only messages, not
 the registry entries / project map the mutation needs). The single 0.5s budget
 (spec §7) caps the worst case.
 
-Behavior contract (preserved byte-for-byte across the de-dup):
+Behavior contract — **both external drifts offer the same three answers**, one
+entry at a time: enter a new path / ``rm`` / blank to skip. Blank is the default
+everywhere, so pressing Enter is always the conservative answer.
 
-* Registry drift — TTY asks ``[Y/n]`` (default Y) and prunes dangling entries
-  on Y. Non-TTY prints one stderr warning and does not block / mutate.
-* Project drift — non-destructive default: TTY prompts for a NEW path (blank =
-  skip), never offers removal (``lit project rm`` stays the explicit cascade).
-  Non-TTY prints one stderr warning, zero mutation.
+* Registry drift — a new path re-points the registration (``lit vault
+  set-path``'s backend, which validates the target is a real vault); ``rm``
+  routes to ``lit vault remove``; blank skips.
+* Project drift — a new path heals the binding and rebuilds the derived
+  ``litman_reflib/`` + ``REFERENCES.md``; ``rm`` routes to ``lit project rm``;
+  blank skips.
 
-Saying N / blank keeps the drift; the next ``lit *`` invocation will prompt
-again — we deliberately do NOT add an ``acknowledged_missing`` persistent
-ignore flag, because that would train a lazy ``N`` reflex into permanent drift
-(see ``feedback_surface_drift_eagerly.md`` for the anti-pattern list).
+Non-TTY for either: one stderr warning naming both remedies, zero mutation,
+never blocks automation on a prompt.
+
+``rm`` only ROUTES — the destructive work, its warning block and its own
+confirmation all stay inside ``lit project rm`` / ``lit vault remove``, so there
+is exactly one implementation of each cascade to audit.
+
+Saying blank keeps the drift; the next ``lit *`` invocation will prompt again —
+we deliberately do NOT add an ``acknowledged_missing`` persistent ignore flag,
+because that would train a lazy skip reflex into permanent drift (see
+``feedback_surface_drift_eagerly.md`` for the anti-pattern list).
+
+History: registry drift used to be a single batched ``Remove ...? [Y/n]``
+defaulting to **Y**, and the project prompt deliberately offered no removal at
+all. Both were unified into the three-answer shape above (wangq, 2026-08-08 —
+see ``dev_docs/todo/archive/task-drift-prompt-answers.md``). ADR-014's rule
+"destruction is never the default" still holds: blank/Enter skips in both.
 """
 
 from __future__ import annotations
@@ -47,8 +63,6 @@ from litman.core.vault_registry import (
     VaultRegistryError,
     find_active,
     load_registry,
-    remove_vault,
-    save_registry,
 )
 
 
@@ -105,10 +119,61 @@ def _exists_bounded(
     return result
 
 
+# The keyword that means "remove this" in BOTH drift prompts. Matched
+# case-insensitively after strip.
+#
+# Known + accepted collision: a directory whose relative name is literally "rm"
+# cannot be given as the new path here. The prompt wants a path that resolves,
+# and a bare relative "rm" was never a usable answer to it — spelling it
+# "./rm" still works.
+_REMOVE_KEYWORD = "rm"
+
+
+def _ask_drift_answer(question: str) -> tuple[str, str]:
+    """Ask the shared three-answer drift question; classify the reply.
+
+    Both external drifts (a moved vault registration, a moved project binding)
+    offer the identical answer set, so nobody has to remember which prompt takes
+    what: a new path, ``rm``, or blank. Blank is the default in both, which keeps
+    ADR-014's rule that destruction is never what Enter does.
+
+    Returns:
+        ``("skip", "")``, ``("remove", "")`` or ``("relocate", <raw reply>)``.
+    """
+    reply = click.prompt(question, default="", show_default=False).strip()
+    if not reply:
+        return ("skip", "")
+    if reply.lower() == _REMOVE_KEYWORD:
+        return ("remove", "")
+    return ("relocate", reply)
+
+
+def _route_removal(run: Callable[[], None], console: Console) -> None:
+    """Hand off to a real ``lit ... rm`` command; absorb a declined confirmation.
+
+    The cascade, its warning block and its confirmation all stay inside that
+    command, so each destructive path has exactly one implementation to audit
+    (``feedback_guard_granularity.md``) — this only calls it.
+
+    Declining must not kill the command the user actually typed: this prompt
+    fired on the way INTO ``lit list``, not on its own. ``lit vault remove``
+    signals a decline by raising ``click.Abort`` (``confirm(abort=True)``),
+    while ``lit project rm`` just returns after printing its own note.
+
+    Deliberately returns nothing: the two commands report a decline differently,
+    so "did it actually remove?" cannot be answered honestly from here. Callers
+    that need post-state must re-read it from disk instead of inferring.
+    """
+    try:
+        run()
+    except click.Abort:
+        console.print("[dim]Kept. You'll be reminded again next time.[/]")
+
+
 def check_and_prompt_registry_drift(
     stdin_is_tty: Callable[[], bool] | None = None,
 ) -> None:
-    """Surface dangling vault registrations and offer one-Enter cleanup.
+    """Surface dangling vault registrations and offer the three drift answers.
 
     Behavior:
 
@@ -117,12 +182,15 @@ def check_and_prompt_registry_drift(
       duplicate that diagnostic here).
     * Computes dangling entries (path no longer exists).
     * If none, returns silently — the common path must add zero noise.
-    * TTY → prints the list + ``Remove now? [Y/n]`` (default Y). On Y, drops
-      each entry and saves the registry. On N, prints a one-line "kept; will
-      ask again next time" note.
-    * Non-TTY → emits a single stderr warning listing the names + the
-      ``lit vault remove`` command to run, and returns. Never blocks
-      automation on an interactive prompt.
+    * TTY → one prompt PER dangling entry: a new path re-points the
+      registration through ``lit vault set-path``'s validated backend, ``rm``
+      routes to ``lit vault remove`` (its own y/N), blank skips. Enter = skip.
+    * Non-TTY → emits a single stderr warning listing the names + both
+      remedies, and returns. Never blocks automation on an interactive prompt.
+
+    A new path that is not a real vault prints the registry layer's own error
+    and leaves the drift untouched, so the next command asks again rather than
+    silently pointing the registry somewhere wrong.
 
     Args:
         stdin_is_tty: Indirection so tests can force either branch without
@@ -177,35 +245,64 @@ def check_and_prompt_registry_drift(
         err.print(
             f"[yellow]warning:[/] vault registry has {len(dangling)} dangling "
             f"registration(s): {joined}. Run "
-            f"[bold]lit vault remove <name>[/] to clean up.",
+            f"[bold]lit vault set-path <name> <new-path>[/] to fix "
+            f"(or [bold]lit vault remove <name>[/] to unregister).",
             soft_wrap=True,
         )
         return
 
-    # TTY path.
+    # TTY path — one three-answer prompt per entry, mirroring project drift.
+    # Was a single batched ``Remove ...? [Y/n]`` defaulting to Y; unified with
+    # the project prompt so both offer new-path / rm / blank and Enter is the
+    # conservative answer in both (see the module docstring's History note).
     console = Console()
-    console.print()  # blank line before, separating from prior output
-    console.print(
-        f"[yellow]⚠[/]  Found {len(dangling)} dangling vault "
-        f"registration(s) (path no longer exists):"
-    )
+    from litman.commands.vault import vault_remove_cmd
+    from litman.core.vault_registry import apply_vault_set_path
+
     for entry in dangling:
-        console.print(f"    [bold]{entry.name}[/] → {entry.path}")
-    if click.confirm(
-        "Remove these stale entries from the registry now?",
-        default=True,
-    ):
-        current = reg
-        for entry in dangling:
-            current = remove_vault(current, entry.name)
-        save_registry(current)
+        console.print()  # blank line before, separating from prior output
+        # soft_wrap on every line that embeds a path: an 80-col hard wrap splits
+        # it mid-string, which breaks a reader's copy-paste and any substring
+        # assertion under a long tmp path (see the non-TTY warnings above).
         console.print(
-            f"[green]Removed {len(dangling)} dangling registration(s).[/]\n"
+            f"[yellow]⚠[/]  Vault [bold]{entry.name}[/] directory not found "
+            f"(was {entry.path}).",
+            soft_wrap=True,
         )
-    else:
+        kind, reply = _ask_drift_answer(
+            "    Moved? Enter the new path, 'rm' to unregister, "
+            "or blank to skip"
+        )
+        if kind == "skip":
+            console.print(
+                "[dim]Skipped. You'll be reminded again next time.[/]"
+            )
+            continue
+        if kind == "remove":
+            _route_removal(
+                lambda name=entry.name: vault_remove_cmd.callback(  # type: ignore[misc]
+                    name=name, yes=False
+                ),
+                console,
+            )
+            continue
+        # Re-point. The whole validated write path already exists as
+        # ``lit vault set-path``'s backend: it requires an existing directory
+        # holding a lit-config.yaml, and touches only that entry's path
+        # (is_active / provenance / last_health_check_at are preserved).
+        try:
+            updated = apply_vault_set_path(entry.name, reply)
+        except VaultRegistryError as exc:
+            console.print(f"[red]error:[/] {exc}", soft_wrap=True)
+            console.print(
+                "[dim]Left as-is. You'll be reminded again next time.[/]"
+            )
+            continue
         console.print(
-            "[dim]Kept for now. You'll be reminded again next time.[/]\n"
+            f"[green]✓ Updated[/] {entry.name} → {updated.path}",
+            soft_wrap=True,
         )
+    console.print()
 
 
 def check_and_prompt_project_drift(
@@ -230,18 +327,22 @@ def check_and_prompt_project_drift(
       registry-drift segment; we don't double-report).
     * Probe each project dir with a bounded stat. Only a definite ``False``
       counts as drift; ``None`` (timeout / unknown) is skipped silently.
-    * Default action is NON-destructive (ADR-014): unlike registry drift (a
-      lossless prune defaulting to Y), a missing project dir is more likely a
-      not-yet-mounted / other-machine situation, and ``lit project rm`` is an
-      irreversible cascade. So the TTY prompt only offers "enter a new path to
-      fix" or "blank = skip". Removal stays with ``lit project rm``.
-    * TTY → prompt per missing project sequentially. A non-empty new path runs
-      the set-path mutation (config-only, via staged_write) then rebuilds ALL
-      projects' links + refs so the litman_reflib at the new location is
-      recreated. Blank = skip (no persistent ignore flag, per the M28
-      surface-eagerly principle).
-    * Non-TTY → one stderr warning listing the missing projects + the
-      ``lit project set-path`` hint, zero mutation.
+    * Enter is NON-destructive (ADR-014): a missing project dir is more likely a
+      not-yet-mounted / other-machine situation than a real deletion, and
+      ``lit project rm`` is an irreversible cascade — so blank = skip, and
+      removal has to be asked for by name.
+    * TTY → prompt per missing project sequentially, with the same three answers
+      as registry drift. A new path runs the set-path mutation (config-only, via
+      staged_write) then rebuilds ALL projects' links + refs so the
+      litman_reflib at the new location is recreated. ``rm`` routes to
+      ``lit project rm`` (its own warning block + y/N). Blank = skip — no
+      persistent ignore flag, per the M28 surface-eagerly principle.
+    * Non-TTY → one stderr warning listing the missing projects + both
+      remedies, zero mutation.
+
+    Removal used to be deliberately absent here. It was added when both prompts
+    were unified (wangq, 2026-08-08); Enter still never destroys, which is the
+    part ADR-014 actually fixes.
 
     Args:
         stdin_is_tty: TTY probe indirection (tests force either branch).
@@ -311,6 +412,7 @@ def check_and_prompt_project_drift(
 
     console = Console()
     healed: dict[str, str] = {}
+    removal_attempted = False
     for name in missing:
         old = projects[name]
         console.print()
@@ -318,18 +420,51 @@ def check_and_prompt_project_drift(
             f"[yellow]⚠[/]  Project [bold]{name}[/] directory not found "
             f"(was {old})."
         )
-        new_path = click.prompt(
-            "    Moved? Enter the new path to fix, or leave blank to skip",
-            default="",
-            show_default=False,
-        ).strip()
-        if not new_path:
+        kind, reply = _ask_drift_answer(
+            "    Moved? Enter the new path, 'rm' to delete the project, "
+            "or blank to skip"
+        )
+        if kind == "skip":
             console.print("[dim]Skipped. You'll be reminded again next time.[/]")
             continue
-        healed[name] = str(Path(new_path).expanduser())
+        if kind == "remove":
+            # Routed, never reimplemented: `lit project rm` owns the warning
+            # block listing what the cascade destroys (papers untagged, plus
+            # litman_reflib/ + REFERENCES.md, which live OUTSIDE the vault where
+            # the trash does not reach) and its own y/N.
+            from litman.commands.project import project_rm_cmd
+
+            removal_attempted = True
+            _route_removal(
+                lambda n=name: project_rm_cmd.callback(  # type: ignore[misc]
+                    name=n, yes=False, library=None, vault_name=None
+                ),
+                console,
+            )
+            continue
+        healed[name] = str(Path(reply).expanduser())
 
     if not healed:
         return
+
+    # 🔴 A removal in the loop above rewrote lit-config.yaml, so `projects` —
+    # read BEFORE the loop — is now stale, and writing it back would RESURRECT
+    # the project just deleted. Re-read from disk first. Cheap, and correct
+    # whether the removal went through or was declined (which _route_removal
+    # deliberately cannot tell us apart).
+    if removal_attempted:
+        try:
+            projects = dict(load_config_fn(vault).projects)  # type: ignore[union-attr]
+        except Exception:
+            # Config unreadable right after a mutation: do not guess at a write.
+            console.print(
+                "[dim]Could not re-read the config after the removal; the "
+                "remaining paths were left alone.[/]"
+            )
+            return
+        healed = {n: p for n, p in healed.items() if n in projects}
+        if not healed:
+            return
 
     # Apply all heals in one config mutation, then rebuild from the updated
     # map. set-path is config-only (papers store project NAMES, not paths), so

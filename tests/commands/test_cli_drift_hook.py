@@ -76,14 +76,17 @@ def _add_missing_project(vault: Path, tmp_path: Path) -> None:
 def test_lit_list_triggers_drift_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Running ``lit list`` with a TTY-forced drift hook prunes the dangling
-    entry before list executes — proves the root-group hook is wired into
-    every non-skipped subcommand."""
+    """Running ``lit list`` with a TTY-forced drift hook unregisters the
+    dangling entry before list executes — proves the root-group hook is wired
+    into every non-skipped subcommand."""
     _seed_dangling_plus_active(tmp_path)
 
     # CliRunner is non-TTY by default. Force the drift probe to True so we
-    # exercise the prompt branch, then auto-answer Y.
+    # exercise the prompt branch, then answer 'rm' + accept the routed
+    # `lit vault remove` confirmation. (Blank/Enter would SKIP — see
+    # test_registry_drift_enter_skips_instead_of_deleting.)
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: "rm")
     monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
 
     runner = CliRunner()
@@ -91,14 +94,15 @@ def test_lit_list_triggers_drift_prompt(
 
     # ``lit list`` itself runs cleanly on the real (active) vault.
     assert result.exit_code == 0, result.output
-    # And the dangling entry has been pruned by the hook.
+    # And the dangling entry is gone, removed by the hook.
     remaining = load_registry().vaults
     assert [v.name for v in remaining] == ["real"]
-    # Positive output assertion: the TTY-yes branch's "Removed N dangling"
-    # rendering must have reached the user. Without this we would only know
-    # the registry mutated, not that the user saw why.
-    assert "dangling" in result.output.lower()
-    assert "Removed" in result.output
+    # Positive output assertion: the user must have SEEN why, not just had the
+    # registry mutate under them. ASCII-only fragments — the same stream also
+    # carries Rich's ⚠/✓, and asserting on those is an encoding bet on the
+    # Windows console.
+    assert "directory not found" in result.output
+    assert "Unregistered" in result.output
 
 
 def test_lit_help_skips_drift_prompt(tmp_path: Path) -> None:
