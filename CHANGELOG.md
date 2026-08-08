@@ -85,8 +85,9 @@ conveniences.
   the window in full screen, `Escape` on an open dialog did two things at once:
   it dismissed the dialog and left full screen with it, so getting back meant
   reaching for the green button. Only some dialogs behaved that way, which made
-  it look random. `Escape` now closes the dialog and nothing else. With no
-  dialog open it still leaves full screen, the way any other Mac window does.
+  it look random. `Escape` now closes the dialog — or the tab's right-click menu
+  — and nothing else. With no dialog open it still leaves full screen, the way
+  any other Mac window does.
 - **A missing library or project folder can now be pointed at its new home —
   or removed — right from the prompt.** When litman notices that a registered
   library, or a project a paper is linked to, is no longer where it was

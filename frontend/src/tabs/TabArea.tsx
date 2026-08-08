@@ -315,6 +315,13 @@ export default function TabArea({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
+        // stopPropagation alone only ends DOM propagation — the key is still
+        // unhandled as far as the host is concerned, and an unconsumed Escape
+        // is what macOS AppKit reads as "leave fullscreen". Because this
+        // listener stops the key here, the dispatcher's swallow never runs, so
+        // consuming it is this handler's own job. Mid-IME the key belongs to
+        // the input method.
+        if (!e.isComposing) e.preventDefault()
         setMenu(null)
       }
     }
