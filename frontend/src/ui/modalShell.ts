@@ -45,28 +45,24 @@ export const modalBackdropProps = {
   },
 }
 
-/** Keep a dialog card focused, so its own `onKeyDown` can hear Escape.
+/** Keep a dialog card focused, so the keyboard lands inside it.
  *
- * Spread onto the card element: `<div {...useModalCardFocus()} onKeyDown={…}>`.
- * A card that opens nested dialogs passes whether one is showing —
+ * Spread onto the card element: `<div {...useModalCardFocus()}>`. A card that
+ * opens nested dialogs passes whether one is showing —
  * `useModalCardFocus(childOpen)` — and gets re-focused when the last one goes.
  *
- * 🔴 Writing `onKeyDown={e => e.key === 'Escape' && onClose()}` on a card does
- * NOT mean Escape closes it. React key events start at the focused element, so
- * a card whose dialog was opened by clicking a toolbar button — focus still on
- * that button, outside the card — never receives one. Blocking dialogs (the
- * ones counted in `anyModalOpen`) are the dangerous case: they silence the
- * global shortcut dispatcher, so the card's handler is the ONLY listener, and
- * the dialog ends up with no keyboard exit at all. That is invisible to any
- * test that drives the UI with a mouse, and this app has shipped it twice.
+ * ⚠️ Escape no longer depends on this. Dialogs claim Escape through the layer
+ * stack (ui/escapeStack), which listens on the window and does not care where
+ * focus is. What this hook is still for is the rest of the keyboard: Tab order
+ * starting inside the card rather than back at the page behind it, and screen
+ * readers landing on the dialog they just opened.
  *
- * 🔴 Focusing the card ONCE is not enough either, which is the third shape of
- * the same bug. Open a nested dialog (Vaults → Register) and focus moves into
- * its input; close that dialog and React unmounts the input, dropping focus to
- * <body> — outside the card. The outer dialog is now in exactly the state above
- * (no listener anywhere) and its Escape is dead, while the mouse still works
- * fine, so it looks like nothing is wrong. Cancelling the nested dialog is not
- * the only way in: submitting it successfully unmounts it just the same.
+ * 🔴 It used to be the thing Escape rode on, and getting it wrong cost this app
+ * three shipped bugs — a card whose dialog was opened from a toolbar button
+ * never saw the key (focus was still on the button), and closing a nested dialog
+ * dropped focus to <body>, killing the outer dialog's only keyboard exit. Kept
+ * here as the reason not to "simplify" the childOpen re-focus away: the failure
+ * mode is invisible to any test that drives the UI with a mouse.
  *
  * A dialog whose natural first action is typing should focus its input instead
  * (see AddPaper) — same goal, better landing spot. This hook is for panels and

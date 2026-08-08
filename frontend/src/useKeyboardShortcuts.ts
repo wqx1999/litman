@@ -13,12 +13,6 @@ export interface ShortcutDeps {
    * its own Esc handler, so we deliberately do NOT handle Esc here in that case. */
   anyModalOpen: boolean
 
-  /** anyModalOpen minus trash mode: true only when a real dialog CARD is up.
-   * A card owns Escape (its own onKeyDown closes it) and never calls
-   * preventDefault, so the dispatcher swallows the key on the card's behalf —
-   * see the Escape branch of the anyModalOpen guard for why that matters. */
-  modalCardOpen: boolean
-
   // --- Tier 1: display + panels (global, focus-guarded) -------------------
   toggleFocus: () => void
   toggleDark: () => void
@@ -56,15 +50,10 @@ export interface ShortcutDeps {
   manageAgents: (() => void) | null
 
   // --- Cheat sheet (`?`) ---------------------------------------------------
-  cheatSheetOpen: boolean
+  // Only the OPEN half lives here. Closing it is Escape, which the cheat sheet
+  // claims as a layer of its own (ui/escapeStack) — as does What's New, which is
+  // why this dispatcher no longer knows about either one's state.
   toggleCheatSheet: () => void
-  closeCheatSheet: () => void
-
-  // --- "What's new" card ---------------------------------------------------
-  // Same non-blocking-overlay treatment as the cheat sheet: this dispatcher
-  // owns its Esc (the in-card handler only covers focus inside the card).
-  whatsNewOpen: boolean
-  closeWhatsNew: () => void
 
   // --- Tier 1: PDF tools (only when a PDF tab is active) -------------------
   /** True when the active center tab is a PDF tab. PDF-tool keys only fire then. */
@@ -131,7 +120,6 @@ function isReservedModifierCombo(e: KeyboardEvent): boolean {
 export function useKeyboardShortcuts(deps: ShortcutDeps): void {
   const {
     anyModalOpen,
-    modalCardOpen,
     toggleFocus,
     toggleDark,
     toggleLeft,
@@ -144,11 +132,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     togglePinSelected,
     openAgent,
     manageAgents,
-    cheatSheetOpen,
     toggleCheatSheet,
-    closeCheatSheet,
-    whatsNewOpen,
-    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,
@@ -161,28 +145,11 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // Modal + focus guards apply to both plain launch and Ctrl+~ management.
       // Handle the one app-owned Ctrl chord before the general reserved-combo
       // return; all other Cmd/Ctrl combinations remain untouched.
-      if (anyModalOpen) {
-        // A dialog card is up and owns Escape, but none of the cards call
-        // preventDefault — they just run onCancel/onClose. Swallow the key here
-        // on their behalf, because an UNCONSUMED Escape reaches the host: on
-        // macOS AppKit reads it as "leave fullscreen", so dismissing a dialog
-        // also dropped the window out of fullscreen (two actions, one key).
-        //
-        // Safe to do after the fact: this is a `document` BUBBLE listener, and
-        // React's synthetic handlers are attached to the root container (and to
-        // each portal container), both of which sit below document — so the
-        // card's own onKeyDown has already run and closed it by the time we get
-        // here. The flag is still true in this closure: React schedules passive
-        // effects on a later task, so the listener has not been rebound yet.
-        //
-        // Narrow to modalCardOpen: trash mode is a view with no Escape of its
-        // own, and swallowing the key there would just make Escape dead.
-        // isComposing is excluded — mid-IME, Escape belongs to the input method.
-        if (modalCardOpen && e.key === 'Escape' && !e.isComposing) {
-          e.preventDefault()
-        }
-        return
-      }
+      // Escape never gets this far while a dialog is up: the layer stack claims
+      // it at window capture and stops propagation there (ui/escapeStack). This
+      // guard is about the OTHER shortcuts — a modal must not have ⌥-writes and
+      // `?` firing behind it.
+      if (anyModalOpen) return
       const editing = isEditingTarget(e.target)
       if (
         !editing &&
@@ -208,23 +175,14 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
         return
       }
 
-      // --- Esc — close the cheat sheet first, else exit the PDF tool -------
-      // The cheat sheet (rendered when open) is not in anyModalOpen's "block
-      // shortcuts" set — it is a non-blocking overlay this dispatcher owns — so
-      // Esc reaches here. Esc is allowed even while editing: leaving a text
-      // field via Esc should still drop a tool / close the sheet, matching the
-      // PDF Cursor key (`V`/`Esc`).
+      // --- Esc — exit the PDF tool ----------------------------------------
+      // Only reached with the layer stack EMPTY: every dismissible overlay,
+      // including the cheat sheet and What's New, claims Escape at window
+      // capture and never lets it through (ui/escapeStack). What is left here is
+      // the mode-dependent use — dropping a PDF annotation tool back to Cursor —
+      // which is why it cannot be a layer. Allowed even while editing: leaving a
+      // text field via Esc should still drop the tool, matching `V`/`Esc`.
       if (e.key === 'Escape') {
-        if (whatsNewOpen) {
-          e.preventDefault()
-          closeWhatsNew()
-          return
-        }
-        if (cheatSheetOpen) {
-          e.preventDefault()
-          closeCheatSheet()
-          return
-        }
         if (pdfActive && !editing) {
           const handle = getPdfHandle()
           if (handle) {
@@ -399,7 +357,6 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [
     anyModalOpen,
-    modalCardOpen,
     toggleFocus,
     toggleDark,
     toggleLeft,
@@ -412,11 +369,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     togglePinSelected,
     openAgent,
     manageAgents,
-    cheatSheetOpen,
     toggleCheatSheet,
-    closeCheatSheet,
-    whatsNewOpen,
-    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,

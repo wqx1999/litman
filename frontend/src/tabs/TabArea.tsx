@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Tab } from '../types'
 import PdfView from '../pdf/PdfView'
 import type { PdfHandle } from '../pdf/PdfView'
 import MdView from '../md/MdView'
 import type { MdDraft } from '../md/MdView'
+import { useEscapeLayer } from '../ui/escapeStack'
 
 interface Props {
   tabs: Tab[]
@@ -307,27 +308,10 @@ export default function TabArea({
   // --- Bar-level context menu (Close other / Close all) --------------------
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
-  // Close on Escape. Capture phase + stopPropagation so the global shortcut
-  // dispatcher (and a PDF tool's own Esc) never sees the keypress that was
-  // aimed at this menu.
-  useEffect(() => {
-    if (!menu) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        // stopPropagation alone only ends DOM propagation — the key is still
-        // unhandled as far as the host is concerned, and an unconsumed Escape
-        // is what macOS AppKit reads as "leave fullscreen". Because this
-        // listener stops the key here, the dispatcher's swallow never runs, so
-        // consuming it is this handler's own job. Mid-IME the key belongs to
-        // the input method.
-        if (!e.isComposing) e.preventDefault()
-        setMenu(null)
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [menu])
+  // Close on Escape through the shared layer stack, which consumes the key so
+  // neither the global dispatcher, a PDF tool's own Esc, nor the host sees the
+  // keypress that was aimed at this menu.
+  useEscapeLayer(menu != null, () => setMenu(null))
 
   const menuItem =
     'block w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-stone-700 transition-colors enabled:hover:bg-stone-100 disabled:opacity-40'

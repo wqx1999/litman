@@ -1965,15 +1965,14 @@ export default function App() {
 
   // A blocking surface is up when a SaveDialog / SwitchVaultDialog is pending, a
   // cockpit confirm/panel is open, or a TopBar manager (Projects / observability
-  // / vault) is open. The
-  // cheat sheet is deliberately EXCLUDED — it is a non-blocking overlay the
-  // dispatcher owns (so `?`/Esc keep toggling it). While anyModalOpen, the
+  // / vault) is open. The cheat sheet is deliberately EXCLUDED — it is a
+  // non-blocking overlay (so `?` keeps toggling it). While anyModalOpen, the
   // dispatcher suppresses every global shortcut and lets the modal own its keys.
-  // Every real dialog CARD. Split out of anyModalOpen (which adds trashMode)
-  // because a card OWNS Escape — its own onKeyDown closes it — whereas trash
-  // mode is a view, not a dialog, and has no Escape of its own. The dispatcher
-  // needs the narrow one to know when to swallow the key; see its Escape guard.
-  const modalCardOpen =
+  //
+  // This is about the OTHER shortcuts only. Escape is not routed through here at
+  // all: every dismissible overlay claims it as a layer (ui/escapeStack), which
+  // is what replaced the separate narrower flag this used to compute.
+  const anyModalOpen =
     pendingClose !== null ||
     pendingRemove !== null ||
     pendingVault !== null ||
@@ -1983,10 +1982,7 @@ export default function App() {
     vaultManagerOpen ||
     agentPanelOpen ||
     // The Add-paper confirm dialog owns a text input + its own Esc.
-    addUpload !== null
-
-  const anyModalOpen =
-    modalCardOpen ||
+    addUpload !== null ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -2028,7 +2024,6 @@ export default function App() {
 
   useKeyboardShortcuts({
     anyModalOpen,
-    modalCardOpen,
     toggleFocus,
     toggleDark,
     toggleLeft,
@@ -2041,11 +2036,7 @@ export default function App() {
     togglePinSelected,
     openAgent,
     manageAgents,
-    cheatSheetOpen,
     toggleCheatSheet,
-    closeCheatSheet,
-    whatsNewOpen: whatsNew !== null,
-    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,

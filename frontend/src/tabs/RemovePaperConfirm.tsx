@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchRmPreview, type RmPreview } from '../api'
+import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
 /** Default-No confirm for soft-deleting a paper from the tab's trash icon.
@@ -29,6 +30,11 @@ export default function RemovePaperConfirm({
 }) {
   const [preview, setPreview] = useState<RmPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Mid-delete the layer stays registered with no handler: Escape must not
+  // dismiss this dialog while the write is in flight, and must not fall through
+  // to whatever is underneath either (ui/escapeStack).
+  useEscapeLayer(true, busy ? null : onCancel)
 
   // Fetch the cascade on mount (and whenever the target changes). The `alive`
   // guard drops a late response if the dialog closed first.
@@ -74,9 +80,6 @@ export default function RemovePaperConfirm({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !busy) onCancel()
-        }}
         role="dialog"
         aria-label="Remove paper from library"
         className="w-[26rem] max-w-[92vw] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"

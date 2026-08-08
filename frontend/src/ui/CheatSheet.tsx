@@ -1,4 +1,5 @@
 import { createPortal } from 'react-dom'
+import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps } from './modalShell'
 
 /** The keyboard-shortcut cheat sheet (Phase 4, `?` toggles it).
@@ -6,10 +7,9 @@ import { modalBackdropProps } from './modalShell'
  * A read-only overlay listing the three-tier scheme defined in task-web-gui.md
  * §2.3. Mirrors the macOS-style modal shell shared across the app (backdrop +
  * grow-in card); Esc and the Done button close it, a click outside does not
- * (ui/modalShell — the rule is app-wide). The Esc handling lives in the global
- * dispatcher, which closes the sheet first — see useKeyboardShortcuts; the
- * in-card Escape here is a belt-and-braces close for when focus is inside the
- * card. Pure presentation — no shortcut logic.
+ * (ui/modalShell — the rule is app-wide). Esc arrives through the shared layer
+ * stack (ui/escapeStack), so it closes the sheet wherever focus happens to be.
+ * Pure presentation — no shortcut logic.
  *
  * Portaled to document.body so its `fixed inset-0` resolves against the viewport
  * regardless of any backdrop-filter ancestor (same reasoning as Toast /
@@ -151,6 +151,7 @@ const SECTIONS: Section[] = [
 ]
 
 export default function CheatSheet({ onClose }: { onClose: () => void }) {
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -158,9 +159,6 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
         role="dialog"
         aria-label="Keyboard shortcuts"
         className="max-h-[85vh] w-[52rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"
