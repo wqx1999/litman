@@ -29,7 +29,7 @@ from __future__ import annotations
 import io
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 import click
@@ -395,6 +395,22 @@ def project_set_path_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _reflib_removal_line(project_dir: PurePath) -> str:
+    """The "Delete ..." bullet in ``lit project rm``'s warning block.
+
+    Split out of the command so a test can render it against a
+    ``PureWindowsPath`` from any platform. The separator between the
+    project directory and ``litman_reflib`` used to be a literal ``/``
+    appended to ``str(project_dir)``, which reads correctly on POSIX and
+    mixes separators on Windows — in the one block a user reads to decide
+    whether to let a destructive command proceed.
+    """
+    return (
+        f"  • Delete {escape(str(project_dir / LITERATURE_SUBDIR))} "
+        f"links + {REFERENCES_FILENAME}"
+    )
+
+
 @project_group.command("rm")
 @click.argument("name")
 @click.option(
@@ -474,10 +490,7 @@ def project_rm_cmd(
         "  • Remove from TAXONOMY.md and lit-config.yaml"
     )
     if project_dir is not None:
-        warning_lines.append(
-            f"  • Delete {escape(str(project_dir))}/"
-            f"{LITERATURE_SUBDIR}/ links + {REFERENCES_FILENAME}"
-        )
+        warning_lines.append(_reflib_removal_line(project_dir))
     if not _confirm_destructive(warning_lines, yes=yes):
         console.print("[dim]Aborted. Nothing changed.[/]")
         return
