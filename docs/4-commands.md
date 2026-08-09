@@ -49,6 +49,22 @@ directory), otherwise the platform config dir: `~/.config/litman/` on
 Linux / WSL, `~/Library/Application Support/litman/` on macOS,
 `%LOCALAPPDATA%\litman\litman\` on Windows.
 
+**When a folder has moved.** Before any command runs, `lit` checks that every
+registered vault directory and every project directory is still where it was
+recorded. If one is not, you are asked about it — one folder at a time, each
+with its own answer:
+
+| Answer | What happens |
+|---|---|
+| the new path | The registration is re-pointed there, the same as `lit vault set-path` / `lit project set-path`. A vault path must hold a `lit-config.yaml`; a wrong path is refused and nothing changes. |
+| `rm` | Hands you to `lit vault remove` / `lit project rm`, which show their own warning and ask `y/N` before anything goes. |
+| Enter | Skip. Nothing changes and you are asked again next time. |
+
+Enter never removes anything, so holding Enter through the questions is always
+safe. Off a terminal — a script, a CI job, an agent — nothing is asked: a
+warning names the folder and the command that fixes it, and the command you
+typed carries on.
+
 ---
 
 ## 1. Setup & vaults
@@ -99,6 +115,7 @@ lit vault add <name> <path> [--import-from "..."] [--use]
 lit vault use <name>
 lit vault list [--format json]
 lit vault info <name>
+lit vault set-path <name> <new-path>
 lit vault remove <name> [-y]
 ```
 
@@ -108,6 +125,7 @@ lit vault remove <name> [-y]
 | `use <name>` | Switch the active vault. |
 | `list` | Show every registered vault; the active one is marked `✓`, with path, paper count, and provenance. `--format json` emits one object per vault. |
 | `info <name>` | Show one vault's path, paper count, on-disk size, provenance, and active flag. |
+| `set-path <name> <new-path>` | Re-point `<name>` at a vault you have moved. The new path must already hold a `lit-config.yaml`. The name, the active flag, and the provenance note are kept. |
 | `remove <name>` | Unregister `<name>`. The directory itself is **not** deleted. |
 
 `lit vault add` flags: `--import-from <text>` (free-form provenance note for a

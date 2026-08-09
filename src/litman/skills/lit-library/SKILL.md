@@ -53,7 +53,7 @@ The chain is **bidirectional**: lit-reading hands writes *in* (A2), and lit-libr
 
 ## A3. Scope discipline — SOP vs maintenance, reversibility, active-vault confinement
 
-**(1) SOP vs maintenance.** Operation Routing below covers high-frequency literature actions — ingest, tag, link, bind code, export, govern vocab, restore. Low-frequency vault-maintenance (`lit sync`, `lit vault use`, `lit config`, `lit refresh-views`, `lit init`, `lit install-skill`, `lit vault {add,info,remove}`, `lit code update`/`restore-all`) has **no SOP** — fall through to `lit <cmd> --help`.
+**(1) SOP vs maintenance.** Operation Routing below covers high-frequency literature actions — ingest, tag, link, bind code, export, govern vocab, restore. Low-frequency vault-maintenance (`lit sync`, `lit vault use`, `lit config`, `lit refresh-views`, `lit init`, `lit install-skill`, `lit vault {add,info,set-path,remove}`, `lit code update`/`restore-all`) has **no SOP** — fall through to `lit <cmd> --help`.
 
 - **Read vs write within the no-SOP set.** Pure-read no-SOP commands (`lit code list`, `lit vault info`, `lit vault list`, `lit config show`) stay **Tier 1: just run and report**.
 - **"Teach, don't do" applies only to no-SOP writes / maintenance.** Run `lit <cmd> --help`, surface the command, let the user run it. Execute it yourself only when the user explicitly asks. **Never guess a flag or invent a command from memory.**
