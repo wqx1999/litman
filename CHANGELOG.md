@@ -77,12 +77,12 @@ conveniences.
   where it started. litman now compares the annotations themselves, so undoing
   or deleting your way back to the saved state is recognised as saved. Saving
   and immediately switching tabs also writes the PDF once now, not twice.
-- **Escape works on the dialog underneath.** Opening a dialog from inside
+- **`Escape` works on the dialog underneath.** Opening a dialog from inside
   another one — Vaults → Register existing, Projects → New project, a rename in
   a field's Manage list — used to leave the outer dialog deaf to `Escape` once
   the inner one closed, whether you cancelled it or completed it; only the mouse
-  could get you out. Escape now closes it as it should.
-- **Escape leaves an annotation's note, and keeps what you typed.** The note box
+  could get you out. `Escape` now closes it as it should.
+- **`Escape` leaves an annotation's note, and keeps what you typed.** The note box
   in the annotation popover had no keyboard exit at all: `Escape` did nothing.
   It now saves the note and closes the popover, and a second `Escape` puts the
   toolbar back to Cursor.
