@@ -9,6 +9,17 @@ conveniences.
 
 ## Unreleased
 
+### Changed
+
+- **litman is now under the GNU Affero General Public License, version 3 or
+  later.** It was MIT through 1.3.4. For using litman nothing changes: install
+  it, read with it, script it, use it at work or on paid research, no
+  permission needed and no fee. What changes is what happens to a modified
+  copy — if you alter litman and then pass it on, whether by shipping a build
+  or by running it somewhere other people can reach over a network, the source
+  of your version has to be available under the same licence. Every release up
+  to and including 1.3.4 stays MIT; that grant is not withdrawn.
+
 ### Added
 
 - **Following a citation no longer strands you.** Clicking a reference in a PDF

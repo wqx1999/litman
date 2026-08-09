@@ -47,7 +47,7 @@ extra:
 # bottom of a long one too. Absolute paths, like the logo above.
 copyright: >
   <a href="/">litman.dev</a> &middot;
-  <a href="/docs/license/">MIT</a>
+  <a href="/docs/license/">AGPL-3.0</a>
 
 extra_css:
   - stylesheets/litman.css

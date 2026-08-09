@@ -9,7 +9,7 @@
 <a href="https://litman.dev"><img src="https://img.shields.io/badge/website-litman-D97757?logo=github&logoColor=white" alt="Website"/></a>
 <a href="https://pypi.org/project/litman/"><img src="https://img.shields.io/pypi/v/litman?logo=pypi&logoColor=white" alt="PyPI version"/></a>
 <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
-<img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"/>
+<img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License: AGPL-3.0"/>
 <img src="https://img.shields.io/badge/AI--native-agentic%20tool-D97757" alt="AI-native: agentic tool"/>
 </p>
 
@@ -174,7 +174,16 @@ or a feature request. For anything else, or if you are not on GitHub:
 
 ## License
 
-MIT. See [`LICENSE`](https://litman.dev/docs/license/).
+Copyright (C) 2026 Qingxin Wang.
+
+litman is free software under the **GNU Affero General Public License, version 3
+or later** — see [`LICENSE`](https://litman.dev/docs/license/). Use it for
+anything, including commercially. If you modify litman and pass it on — shipping
+a build, or running it where other people can reach it over a network — the
+modified source has to be available under the same licence.
+
+Up to and including 1.3.4, litman was released under the MIT licence; those
+versions stay MIT.
 
 ---
 
