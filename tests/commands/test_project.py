@@ -895,3 +895,65 @@ def test_project_rename_relevance_orphan_without_projects_key_no_crash(
     meta = _meta(vault, "2024_A")
     assert "relevance-pepforge" not in meta
     assert meta.get("relevance-pepcodec") == "high"
+
+
+# ---------------------------------------------------------------------------
+# rm: the warning block's path separator
+# ---------------------------------------------------------------------------
+
+
+def test_reflib_removal_line_uses_one_separator_style() -> None:
+    """The `Delete ...` bullet must not mix `\\` and `/` on Windows.
+
+    Rendered against a PureWindowsPath so the assertion is meaningful on
+    any platform: on POSIX the old hard-coded `/` was indistinguishable
+    from correct output, so a same-platform test could not fail.
+    """
+    from pathlib import PureWindowsPath
+
+    from litman.commands.project import _reflib_removal_line
+
+    line = _reflib_removal_line(PureWindowsPath(r"C:\Users\wang\proj-binder"))
+
+    assert r"C:\Users\wang\proj-binder\litman_reflib" in line
+    assert "/" not in line
+
+
+def test_reflib_removal_line_posix_unchanged() -> None:
+    """The POSIX rendering — what the three manual-test stations saw."""
+    from pathlib import PurePosixPath
+
+    from litman.commands.project import _reflib_removal_line
+
+    line = _reflib_removal_line(PurePosixPath("/home/wang/proj-binder"))
+
+    assert "/home/wang/proj-binder/litman_reflib" in line
+    assert "\\" not in line
+
+
+def test_project_rm_warning_block_names_the_reflib_dir(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bullet is really in the block a user answers `Continue?` on."""
+    from litman.core import confirm as confirm_mod
+
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--library", str(vault)],
+        input="N\n",
+    )
+
+    assert "Removing will:" in result.output
+    # Rich hard-wraps a long path at the console width, so compare against
+    # the unwrapped text — the separator, not the layout, is the subject.
+    unwrapped = result.output.replace("\n", "")
+    assert str(proj_dir / "litman_reflib") in unwrapped
+    assert "Nothing changed" in result.output

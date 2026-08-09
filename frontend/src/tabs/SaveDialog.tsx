@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
 interface Props {
@@ -36,14 +37,14 @@ export default function SaveDialog({
   title = 'Save annotations?',
   bodyNoun = 'unsaved annotations',
 }: Props) {
+  useEscapeLayer(true, onCancel)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-      else if (e.key === 'Enter') onSave()
+      if (e.key === 'Enter') onSave()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel, onSave])
+  }, [onSave])
 
   return (
     <div

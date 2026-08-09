@@ -19,6 +19,13 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.5
+
+- The window refreshes itself automatically.
+- Follow a citation, then Alt+← back to where you were.
+- Preview a note before you save it.
+- litman is now AGPL-3.0.
+
 ## 1.3.4
 
 - On a Mac, litman opens in its own window.

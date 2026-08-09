@@ -115,9 +115,28 @@ export default function SearchBox({
     setOpen(false)
   }
 
+  /** Drop the query AND the dropdown, keeping focus so the next keystroke starts
+   * a fresh search. This is the *whole* exit from search: the query also filters
+   * the middle list, so text left behind leaves the library narrowed with no
+   * other sign of why — and in focus mode the bar holding this box auto-hides,
+   * so there is no sign at all. */
+  const clear = () => {
+    onChange('')
+    setOpen(false)
+    inputRef.current?.focus()
+  }
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
-      setOpen(false)
+      // Esc clears — one key puts the middle list back to the whole library.
+      // Already empty ⇒ nothing to clear, so it steps out of the box instead
+      // (the second Esc of a two-Esc exit).
+      e.preventDefault()
+      if (value !== '') clear()
+      else {
+        setOpen(false)
+        inputRef.current?.blur()
+      }
       return
     }
     if (!panelOpen || shown.length === 0) return
@@ -147,25 +166,43 @@ export default function SearchBox({
         }
       }}
     >
-      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400">
-        ⌕
-      </span>
-      <input
-        ref={inputRef}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKeyDown}
-        placeholder="Search id, title, notes, discussion…"
-        role="combobox"
-        aria-expanded={panelOpen}
-        aria-controls="search-listbox"
-        autoComplete="off"
-        className="w-full max-w-md rounded-lg border border-stone-300 bg-white py-1.5 pl-8 pr-3 text-sm text-stone-800 shadow-sm transition placeholder:text-stone-400 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/25"
-      />
+      {/* Inner shell carries the width cap so the clear button can sit on the
+          input's own right edge (the outer box is flex-1 and wider). */}
+      <div className="relative w-full max-w-md">
+        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400">
+          ⌕
+        </span>
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => {
+            onChange(e.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder="Search id, title, notes, discussion…"
+          role="combobox"
+          aria-expanded={panelOpen}
+          aria-controls="search-listbox"
+          autoComplete="off"
+          className="w-full rounded-lg border border-stone-300 bg-white py-1.5 pl-8 pr-8 text-sm text-stone-800 shadow-sm transition placeholder:text-stone-400 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/25"
+        />
+        {value !== '' && (
+          <button
+            type="button"
+            // Keep input focus (the box's onBlur would close the panel first,
+            // and the caret should stay put for the next query).
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={clear}
+            aria-label="Clear search"
+            title="Clear search (Esc)"
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1 text-sm leading-none text-stone-400 transition-colors hover:text-stone-700"
+          >
+            ✕
+          </button>
+        )}
+      </div>
 
       {panelOpen && (
         <div

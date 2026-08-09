@@ -1,3 +1,4 @@
+import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
 /** Confirm switching the active vault (3c-2).
@@ -26,6 +27,9 @@ export default function SwitchVaultDialog({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  // No `switching` guard, matching the Escape this replaces — the refactor is
+  // behaviour-preserving, and the button gating is a separate question.
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -33,9 +37,6 @@ export default function SwitchVaultDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">

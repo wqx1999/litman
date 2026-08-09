@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Keep every paper you read on your own computer, and let an AI assistant do the filing."
 readme = "README.md"
 requires-python = ">=3.12"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [
     { name = "Qingxin Wang", email = "contact@litman.dev" },

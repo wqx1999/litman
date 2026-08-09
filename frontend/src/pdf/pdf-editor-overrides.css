@@ -42,6 +42,83 @@
   display: none !important;
 }
 
+/* Put pdf.js's page box back on content-box sizing.
+ *
+ * pdf.js sizes `.page` to the rendered page's exact pixel dimensions and then
+ * puts a 9px transparent border around it for the page shadow — written against
+ * the CSS default, content-box. Tailwind's preflight sets `box-sizing:
+ * border-box` on every element, so those 18px come OUT of the page instead: the
+ * canvas, sized `width/height: 100%` of the wrapper, shrinks to the content box
+ * (e.g. 1695×2199) while the text layer, which pdf.js sizes in explicit pixels,
+ * stays at the full 1713×2217. The picture of the page is then about 1% smaller
+ * than the invisible text sitting on top of it.
+ *
+ * What that looks like: the selection band starts a touch low at the top of a
+ * page and slides further under the line the further down you read, until near
+ * the bottom it is offset by most of a line. It reads as a text-layer bug and is
+ * really a box-model one — and it is invisible to any pdf.js test page, because
+ * the mismatch only exists where Tailwind's reset meets pdf.js's stylesheet.
+ * Scoped to `.pdfViewer .page` so nothing else loses the app-wide default. */
+.pdfViewer .page {
+  box-sizing: content-box;
+}
+
+/* Pin the geometry of the invisible text layer — i.e. where the blue selection
+ * band sits relative to the letters it is selecting.
+ *
+ * pdf.js places every text span at `baseline − ratio × fontSize` and gives it a
+ * 1em-tall line box, where `ratio = fontBoundingBoxAscent / (ascent + descent)`
+ * as the BROWSER reports it. It asks about a GENERIC family (`serif` /
+ * `sans-serif` / `monospace`), never the PDF's real font, so that ratio is
+ * really a property of whatever the OS happens to resolve those names to: on
+ * this machine `sans-serif` answers 0.80 and `serif` answers 0.667, and 0.667
+ * puts the band's top edge through the ascenders while leaving a third of an em
+ * of empty blue under the baseline. Not a rendering bug — just a number nobody
+ * chose, and it differs per machine, so "looks fine here" proves nothing.
+ *
+ * These three faces exist ONLY to answer that question with a number we picked.
+ * `src: local(...)` borrows glyphs from whatever real font is installed (the
+ * glyphs never show — the text layer is transparent; pdf.js rescales each span
+ * to the PDF's own width regardless), while the metric overrides fix the ascent
+ * and descent the browser reports. `PdfView.tsx` points pdf.js's generic names
+ * at them via `TextLayer.fontFamilyMap`.
+ *
+ * The numbers: descent is what sets the slack below the baseline, and it can
+ * only shrink so far — the band's bottom edge still has to cover a descender
+ * (the tail of g/p/y runs to about 0.21em), so ~0.25em is the floor, not the
+ * ~0.15em the eye would like. Ascent is then 1 − descent (only their ratio is
+ * read). See dev_docs/todo/.../task-dogfood-fixes-1.3.5.md §3 for the sweep.
+ *
+ * 🔴 Changing these MOVES THE HIGHLIGHT COORDINATES WE WRITE INTO paper.pdf.
+ * pdf.js builds a new highlight's boxes from these very selection rectangles
+ * (`getSelectionBoxes`), so this is invariant #16 territory, not a CSS tweak:
+ * re-measure the saved coordinates before and after, and expect highlights made
+ * by older versions to sit a couple of pixels off from new ones. */
+@font-face {
+  font-family: 'litman-tl-serif';
+  src: local('Times New Roman'), local('Liberation Serif'), local('Nimbus Roman'),
+    local('DejaVu Serif'), local('FreeSerif'), local('Georgia');
+  ascent-override: 75%;
+  descent-override: 25%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'litman-tl-sans';
+  src: local('Arial'), local('Liberation Sans'), local('Nimbus Sans'),
+    local('DejaVu Sans'), local('FreeSans'), local('Helvetica');
+  ascent-override: 75%;
+  descent-override: 25%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'litman-tl-mono';
+  src: local('Courier New'), local('Liberation Mono'), local('Nimbus Mono PS'),
+    local('DejaVu Sans Mono'), local('FreeMono'), local('Courier');
+  ascent-override: 75%;
+  descent-override: 25%;
+  line-gap-override: 0%;
+}
+
 /* (Removed) Stale-tool-cursor reset for POPUP select mode.
  *
  * An earlier build mapped our "Cursor" tool to pdf.js's POPUP editor mode, whose

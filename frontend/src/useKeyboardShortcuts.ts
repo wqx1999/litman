@@ -50,15 +50,10 @@ export interface ShortcutDeps {
   manageAgents: (() => void) | null
 
   // --- Cheat sheet (`?`) ---------------------------------------------------
-  cheatSheetOpen: boolean
+  // Only the OPEN half lives here. Closing it is Escape, which the cheat sheet
+  // claims as a layer of its own (ui/escapeStack) — as does What's New, which is
+  // why this dispatcher no longer knows about either one's state.
   toggleCheatSheet: () => void
-  closeCheatSheet: () => void
-
-  // --- "What's new" card ---------------------------------------------------
-  // Same non-blocking-overlay treatment as the cheat sheet: this dispatcher
-  // owns its Esc (the in-card handler only covers focus inside the card).
-  whatsNewOpen: boolean
-  closeWhatsNew: () => void
 
   // --- Tier 1: PDF tools (only when a PDF tab is active) -------------------
   /** True when the active center tab is a PDF tab. PDF-tool keys only fire then. */
@@ -93,13 +88,14 @@ export function isEditingTarget(el: EventTarget | null): boolean {
 
 /** Does this event carry a Tier-0 Cmd/Ctrl combo the app already owns elsewhere
  * (save / PDF zoom / search focus)? Those have their own listeners (PdfView's
- * capture-phase ⌘S + ⌘-zoom, the search box ⌘K), so the global dispatcher must
- * let them propagate untouched — it neither handles nor preventDefaults them.
+ * and MdView's capture-phase ⌘S, PdfView's ⌘-zoom, the search box ⌘K), so the
+ * global dispatcher must let them propagate untouched — it neither handles nor
+ * preventDefaults them.
  * `e.code` is used for the letter (S/K) so a composed key can't slip past. */
 function isReservedModifierCombo(e: KeyboardEvent): boolean {
   // Except Ctrl+Backquote (handled before this helper for agent management),
-  // Cmd/Ctrl combos belong to the browser / existing Tier-0 listeners:
-  // PdfView's ⌘S + ⌘-zoom and the search box's ⌘K.
+  // Cmd/Ctrl combos belong to the browser / existing Tier-0 listeners: ⌘S from
+  // whichever view owns the active tab, PdfView's ⌘-zoom, the search box's ⌘K.
   return e.metaKey || e.ctrlKey
 }
 
@@ -136,11 +132,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     togglePinSelected,
     openAgent,
     manageAgents,
-    cheatSheetOpen,
     toggleCheatSheet,
-    closeCheatSheet,
-    whatsNewOpen,
-    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,
@@ -153,6 +145,10 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // Modal + focus guards apply to both plain launch and Ctrl+~ management.
       // Handle the one app-owned Ctrl chord before the general reserved-combo
       // return; all other Cmd/Ctrl combinations remain untouched.
+      // Escape never gets this far while a dialog is up: the layer stack claims
+      // it at window capture and stops propagation there (ui/escapeStack). This
+      // guard is about the OTHER shortcuts — a modal must not have ⌥-writes and
+      // `?` firing behind it.
       if (anyModalOpen) return
       const editing = isEditingTarget(e.target)
       if (
@@ -179,23 +175,14 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
         return
       }
 
-      // --- Esc — close the cheat sheet first, else exit the PDF tool -------
-      // The cheat sheet (rendered when open) is not in anyModalOpen's "block
-      // shortcuts" set — it is a non-blocking overlay this dispatcher owns — so
-      // Esc reaches here. Esc is allowed even while editing: leaving a text
-      // field via Esc should still drop a tool / close the sheet, matching the
-      // PDF Cursor key (`V`/`Esc`).
+      // --- Esc — exit the PDF tool ----------------------------------------
+      // Only reached with the layer stack EMPTY: every dismissible overlay,
+      // including the cheat sheet and What's New, claims Escape at window
+      // capture and never lets it through (ui/escapeStack). What is left here is
+      // the mode-dependent use — dropping a PDF annotation tool back to Cursor —
+      // which is why it cannot be a layer. Allowed even while editing: leaving a
+      // text field via Esc should still drop the tool, matching `V`/`Esc`.
       if (e.key === 'Escape') {
-        if (whatsNewOpen) {
-          e.preventDefault()
-          closeWhatsNew()
-          return
-        }
-        if (cheatSheetOpen) {
-          e.preventDefault()
-          closeCheatSheet()
-          return
-        }
         if (pdfActive && !editing) {
           const handle = getPdfHandle()
           if (handle) {
@@ -382,11 +369,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     togglePinSelected,
     openAgent,
     manageAgents,
-    cheatSheetOpen,
     toggleCheatSheet,
-    closeCheatSheet,
-    whatsNewOpen,
-    closeWhatsNew,
     pdfActive,
     getPdfHandle,
     selectedId,

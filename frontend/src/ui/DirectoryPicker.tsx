@@ -12,6 +12,7 @@ import {
   PencilIcon,
   PlusIcon,
 } from './icons'
+import { useEscapeLayer } from './escapeStack'
 import { breadcrumbs } from './path'
 import { modalBackdropProps } from './modalShell'
 
@@ -29,8 +30,9 @@ export type PickerMode = 'existing-dir' | 'vault-dir' | 'parent-dir'
  * tunnel (a browser's native file picker can never hand back an absolute path).
  *
  * Layering (spec §3.2): portaled to document.body at z-[70] so it sits above its
- * parent dialog (z-[60]). All clicks stopPropagation and Escape stopPropagation +
- * closes only the picker, so dismissing it never closes the dialog underneath.
+ * parent dialog (z-[60]). All clicks stopPropagation, and Escape arrives through
+ * the shared layer stack (ui/escapeStack), which hands the key to the topmost
+ * layer only — so dismissing the picker never closes the dialog underneath.
  * Selecting a folder fills the field and closes the picker, leaving the dialog
  * open. It lists subdirectories, never files. Its only write is the "＋ New
  * folder" button (existing-dir / parent-dir), which POSTs to /api/fs/mkdir.
@@ -103,27 +105,23 @@ export default function DirectoryPicker({
   // Escape, from any focus state, with the sub-input layering the spec's red
   // line requires: a live new-folder name box or an address edit box swallows
   // Esc to cancel ITSELF, leaving the picker (and the dialog under it) open;
-  // only with no active sub-input does Esc close the picker. A capture-phase
-  // document listener runs before React's handlers and stopPropagation()s, so
-  // the Escape also never reaches the parent dialog's onKeyDown.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return
-      e.stopPropagation()
-      if (creatingRef.current) {
-        setNewName(null)
-        return
-      }
-      if (editingRef.current) {
-        setEditingAddress(false)
-        setAddress(pathRef.current) // discard a half-typed path
-        return
-      }
-      onCancel()
+  // only with no active sub-input does Esc close the picker. Those sub-inputs
+  // are states of THIS layer rather than layers of their own, which is why the
+  // branching lives in one handler here; the layer stack (ui/escapeStack) is
+  // what guarantees the key never reaches the dialog underneath, and consumes
+  // it so the host never sees it either.
+  useEscapeLayer(true, () => {
+    if (creatingRef.current) {
+      setNewName(null)
+      return
     }
-    document.addEventListener('keydown', onKey, true)
-    return () => document.removeEventListener('keydown', onKey, true)
-  }, [onCancel])
+    if (editingRef.current) {
+      setEditingAddress(false)
+      setAddress(pathRef.current) // discard a half-typed path
+      return
+    }
+    onCancel()
+  })
 
   // A user navigation (anchor / row / breadcrumb / address paste / up): keep the
   // current listing on failure and surface the backend detail inline — a bad

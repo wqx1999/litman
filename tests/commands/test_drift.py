@@ -77,30 +77,168 @@ def _seed_two_entries_one_dangling(tmp_path: Path) -> tuple[Path, Path]:
 # ---------------------------------------------------------------------------
 
 
-def test_drift_prompt_tty_yes_prunes(
+def _answer(
+    monkeypatch: pytest.MonkeyPatch, *replies: str
+) -> list[str]:
+    """Feed the drift prompt a fixed reply sequence; return the questions asked.
+
+    Patches the ``click`` MODULE OBJECT (not a dotted string), so it reaches
+    every call site that resolves ``click.prompt`` at call time.
+    """
+    asked: list[str] = []
+    it = iter(replies)
+
+    def fake_prompt(text: str, **kwargs: object) -> str:
+        asked.append(text)
+        return next(it)
+
+    monkeypatch.setattr(click, "prompt", fake_prompt)
+    return asked
+
+
+def test_registry_drift_enter_skips_instead_of_deleting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """🔴 The one behaviour CHANGE of the prompt unification, pinned.
+
+    This prompt used to be a batched ``Remove ...? [Y/n]`` defaulting to **Y**,
+    so a bare Enter DELETED the registration. It is now the three-answer shape
+    shared with project drift, where blank = skip. Anyone "simplifying" this
+    back to a confirm has to delete this test to do it.
+    """
     _seed_two_entries_one_dangling(tmp_path)
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
-    monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
-
-    _drift.check_and_prompt_registry_drift()
-
-    remaining = load_registry().vaults
-    assert [v.name for v in remaining] == ["real"]
-
-
-def test_drift_prompt_tty_no_keeps(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _seed_two_entries_one_dangling(tmp_path)
-    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
-    monkeypatch.setattr(click, "confirm", lambda *a, **kw: False)
+    _answer(monkeypatch, "")
 
     _drift.check_and_prompt_registry_drift()
 
     remaining = load_registry().vaults
     assert sorted(v.name for v in remaining) == ["ghost", "real"]
+
+
+def test_registry_drift_rm_routes_to_vault_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'rm' unregisters — through ``lit vault remove``'s OWN confirmation.
+
+    The message text is asserted because routing is the point: the drift prompt
+    must not carry a second, hand-written copy of that warning
+    (``feedback_guard_granularity.md``).
+    """
+    _seed_two_entries_one_dangling(tmp_path)
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    _answer(monkeypatch, "rm")
+    seen: list[str] = []
+
+    def fake_confirm(msg: str, **kwargs: object) -> bool:
+        seen.append(msg)
+        return True
+
+    monkeypatch.setattr(click, "confirm", fake_confirm)
+
+    _drift.check_and_prompt_registry_drift()
+
+    assert [v.name for v in load_registry().vaults] == ["real"]
+    assert len(seen) == 1
+    assert "Unregister vault 'ghost'" in seen[0]
+    assert "unchanged" in seen[0]  # the command's own "path ... unchanged"
+
+
+def test_registry_drift_rm_declined_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Declining the routed removal keeps the registry AND the user's command.
+
+    ``lit vault remove`` signals a decline by raising ``click.Abort``
+    (``confirm(abort=True)``). That must not propagate: this prompt fired on the
+    way into whatever the user actually typed.
+    """
+    _seed_two_entries_one_dangling(tmp_path)
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    _answer(monkeypatch, "rm")
+
+    def abort(*_a: object, **_kw: object) -> bool:
+        raise click.Abort()
+
+    monkeypatch.setattr(click, "confirm", abort)
+
+    _drift.check_and_prompt_registry_drift()  # must NOT raise
+
+    assert sorted(v.name for v in load_registry().vaults) == ["ghost", "real"]
+
+
+def test_registry_drift_relocate_repoints_only_that_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new path re-points the registration — the answer that was missing here.
+
+    The capability already existed as ``lit vault set-path``; only this prompt
+    never offered it.
+    """
+    real, _ghost = _seed_two_entries_one_dangling(tmp_path)
+    # create_vault(parent, name) resolves the parent, so `moved` is already the
+    # absolute+resolved path — which is what the registry stores. Comparing
+    # resolved-to-resolved on both sides keeps this green on macOS, where
+    # /tmp is a symlink to /private/tmp and a raw tmp_path never matches.
+    moved = create_vault(tmp_path, "moved")
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    _answer(monkeypatch, str(moved))
+
+    _drift.check_and_prompt_registry_drift()
+
+    by_name = {v.name: v for v in load_registry().vaults}
+    assert Path(by_name["ghost"].path).resolve() == moved.resolve()
+    assert by_name["ghost"].is_active is False  # preserved, not reset
+    assert Path(by_name["real"].path).resolve() == real.resolve()  # untouched
+    assert by_name["real"].is_active is True
+
+
+def test_registry_drift_relocate_to_non_vault_keeps_the_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A path that is not a vault must not be written into the registry.
+
+    Nothing is removed either: the drift stays, so the next command asks again.
+    """
+    _seed_two_entries_one_dangling(tmp_path)
+    not_a_vault = tmp_path / "empty"
+    not_a_vault.mkdir()
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    _answer(monkeypatch, str(not_a_vault))
+
+    _drift.check_and_prompt_registry_drift()
+
+    by_name = {v.name: v for v in load_registry().vaults}
+    assert sorted(by_name) == ["ghost", "real"]
+    assert Path(by_name["ghost"].path) == tmp_path / "ghost"  # unchanged
+    # ASCII-only fragment: Rich renders ⚠/✓ in this same stream, and asserting
+    # on those would be an encoding bet on the Windows console.
+    assert "no lit-config.yaml" in capsys.readouterr().out
+
+
+def test_registry_drift_asks_once_per_dangling_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-entry, not one batched question: two dangling entries → two prompts.
+
+    The batched form could not offer "it moved" at all, which is why it went.
+    """
+    save_registry(
+        VaultRegistry(
+            vaults=[
+                VaultEntry(name="g1", path=str(tmp_path / "g1"), is_active=False),
+                VaultEntry(name="g2", path=str(tmp_path / "g2"), is_active=False),
+            ]
+        )
+    )
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    asked = _answer(monkeypatch, "", "")
+
+    _drift.check_and_prompt_registry_drift()
+
+    assert len(asked) == 2
+    assert all("'rm'" in q and "blank to skip" in q for q in asked)
+    assert sorted(v.name for v in load_registry().vaults) == ["g1", "g2"]
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +427,8 @@ def test_registry_drift_none_status_no_prompt(
 def test_registry_drift_false_status_prompts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC2: a definite False still triggers the prune prompt (M28 behavior
-    preserved through the bounded-stat retrofit)."""
+    """AC2: a definite False still reaches the prompt (M28 behavior preserved
+    through the bounded-stat retrofit)."""
     real, ghost = _seed_two_entries_one_dangling(tmp_path)
     monkeypatch.setattr(
         _drift,
@@ -300,6 +438,7 @@ def test_registry_drift_false_status_prompts(
         },
     )
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    _answer(monkeypatch, "rm")
     monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
 
     _drift.check_and_prompt_registry_drift()
@@ -528,6 +667,120 @@ def test_project_drift_multiple_missing_sequential_prompts(
     )
 
     assert len(calls) == 2  # one prompt per missing project
+
+
+# ---------------------------------------------------------------------------
+# project drift — the 'rm' answer (added when both prompts were unified)
+#
+# These drive the REAL load_config default rather than injecting _FakeConfig:
+# the removal rewrites lit-config.yaml, so a faked loader would hide the very
+# staleness the third test exists to catch
+# (feedback_test_real_default_through_inject_seam.md).
+# ---------------------------------------------------------------------------
+
+
+def _accept_destructive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``lit project rm``'s own gate interactive-and-accepted.
+
+    ``core/confirm.py`` exposes ``_stdin_is_tty`` as a one-line seam precisely
+    for this; under pytest stdin is not a tty, so without it the gate raises
+    Abort before ever rendering its warning block — and the block is what these
+    tests assert on.
+    """
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
+
+
+def test_project_drift_rm_routes_to_project_rm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """'rm' deletes the project — through ``lit project rm``'s OWN warning block.
+
+    The block's wording is asserted because routing is the point: this prompt
+    must not carry a second, hand-written copy of the cascade warning
+    (``feedback_guard_granularity.md``).
+    """
+    vault = _seed_active_vault(tmp_path)
+    proj = tmp_path / "gone"
+    _write_config_with_project(vault, "pepforge", proj)
+
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: "rm")
+    _accept_destructive(monkeypatch)
+
+    _drift.check_and_prompt_project_drift(
+        stdin_is_tty=lambda: True,
+        exists_fn=_exists_map(**{str(proj): False}),
+    )
+
+    out = capsys.readouterr().out
+    assert "Removing will:" in out  # the command's own block, not ours
+    assert "Remove from TAXONOMY.md and lit-config.yaml" in out
+    from litman.core.config import load_config
+
+    assert "pepforge" not in load_config(vault).projects
+
+
+def test_project_drift_rm_declined_changes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Declining the routed cascade leaves config + drift exactly as they were."""
+    vault = _seed_active_vault(tmp_path)
+    proj = tmp_path / "gone"
+    _write_config_with_project(vault, "pepforge", proj)
+    config_before = (vault / "lit-config.yaml").read_bytes()
+
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: "rm")
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: False)
+
+    _drift.check_and_prompt_project_drift(
+        stdin_is_tty=lambda: True,
+        exists_fn=_exists_map(**{str(proj): False}),
+    )
+
+    assert (vault / "lit-config.yaml").read_bytes() == config_before
+
+
+def test_project_drift_rm_one_then_relocate_another_does_not_resurrect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 Removing one project and re-pointing another in the SAME run.
+
+    The heal applies all new paths in one config write built from the projects
+    map read BEFORE the prompt loop. A removal inside that loop rewrites
+    lit-config.yaml, so writing the pre-loop map back would RESURRECT the
+    project just deleted. The corrector re-reads the config after any removal;
+    this test is what keeps that re-read in place.
+    """
+    vault = _seed_active_vault(tmp_path)
+    doomed = tmp_path / "doomed"
+    moved = tmp_path / "moved_away"
+    new_home = tmp_path / "moved_new"
+    new_home.mkdir()
+    _write_config_with_projects(vault, {"alpha": doomed, "beta": moved})
+
+    replies = iter(["rm", str(new_home)])
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: next(replies))
+    _accept_destructive(monkeypatch)
+
+    _drift.check_and_prompt_project_drift(
+        stdin_is_tty=lambda: True,
+        exists_fn=_exists_map(**{str(doomed): False, str(moved): False}),
+    )
+
+    from litman.core.config import load_config
+
+    after = load_config(vault).projects
+    assert "alpha" not in after, "the removed project came back"
+    assert Path(after["beta"]).resolve() == new_home.resolve()
 
 
 # ---------------------------------------------------------------------------

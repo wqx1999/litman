@@ -30,6 +30,7 @@ import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
 import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
+import { useEscapeLayer } from '../ui/escapeStack'
 import {
   modalBackdropProps,
   useModalCardFocus,
@@ -889,9 +890,6 @@ function ProjectManager({
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
-  // Focus the card on mount so Escape reaches the handler below — this is a
-  // blocking dialog, so nothing else is listening (see useModalCardFocus).
-  const cardFocus = useModalCardFocus()
   // The project awaiting delete confirmation, being renamed, or having its path
   // re-pointed; the new-project dialog toggle; and whether a write is in flight
   // (all gate the list controls).
@@ -900,6 +898,15 @@ function ProjectManager({
   const [pendingSetPath, setPendingSetPath] = useState<ProjectEntry | null>(null)
   const [showNew, setShowNew] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // Is one of the nested dialogs on screen? Deliberately WITHOUT `busy`: a write
+  // finishing is no reason to grab focus back.
+  const childOpen =
+    pendingDelete != null || pendingRename != null || pendingSetPath != null || showNew
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening — and again whenever a nested
+  // dialog closes, which drops focus to <body> (see useModalCardFocus).
+  const cardFocus = useModalCardFocus(childOpen)
 
   // Papers linked to a project, off the loaded INDEX (no round-trip).
   function countFor(name: string): number {
@@ -956,13 +963,12 @@ function ProjectManager({
   }
 
   const sorted = projects.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked =
-    busy ||
-    pendingDelete != null ||
-    pendingRename != null ||
-    pendingSetPath != null ||
-    showNew
+  const blocked = busy || childOpen
 
+  // The four nested dialogs used to be hand-enumerated here so Escape would not
+  // close the panel out from under one of them — see VaultManager for why that
+  // is gone: each nested dialog is a layer above this one now (ui/escapeStack).
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -971,16 +977,6 @@ function ProjectManager({
       <div
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (
-            e.key === 'Escape' &&
-            !pendingDelete &&
-            !pendingRename &&
-            !pendingSetPath &&
-            !showNew
-          )
-            onClose()
-        }}
         className="flex max-h-[70vh] w-[28rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Projects</h2>
@@ -1147,6 +1143,7 @@ function DeleteProjectConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1154,9 +1151,6 @@ function DeleteProjectConfirm({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
@@ -1224,6 +1218,7 @@ function RenameProjectDialog({
     'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
     'disabled:opacity-50'
 
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1231,9 +1226,6 @@ function RenameProjectDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
@@ -1305,6 +1297,7 @@ function SetProjectPathDialog({
   const trimmed = path.trim()
   const canSubmit = trimmed.length > 0 && !busy
 
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1312,9 +1305,6 @@ function SetProjectPathDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
@@ -1405,6 +1395,7 @@ function NewProjectDialog({
     'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
     'disabled:opacity-50'
 
+  useEscapeLayer(true, onClose)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1412,9 +1403,6 @@ function NewProjectDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">New project</h2>
@@ -1500,15 +1488,21 @@ function VaultManager({
   onRelocateVault: (name: string, path: string) => Promise<void>
   onClose: () => void
 }) {
-  // Focus the card on mount so Escape reaches the handler below — this is a
-  // blocking dialog, so nothing else is listening (see useModalCardFocus).
-  const cardFocus = useModalCardFocus()
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
   // The missing vault whose new home the user is locating (Locate → path input).
   const [pendingLocate, setPendingLocate] = useState<VaultEntry | null>(null)
   const [showRegister, setShowRegister] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // Is one of the nested dialogs on screen? Deliberately WITHOUT `busy`: a write
+  // finishing is no reason to grab focus back.
+  const childOpen =
+    pendingUnregister != null || pendingLocate != null || showRegister || showCreate
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening — and again whenever a nested
+  // dialog closes, which drops focus to <body> (see useModalCardFocus).
+  const cardFocus = useModalCardFocus(childOpen)
 
   async function doUnregister(name: string) {
     setBusy(true)
@@ -1522,13 +1516,14 @@ function VaultManager({
 
   const entries = vaults?.vaults ?? []
   const sorted = entries.slice().sort((a, b) => a.name.localeCompare(b.name))
-  const blocked =
-    busy ||
-    pendingUnregister != null ||
-    pendingLocate != null ||
-    showRegister ||
-    showCreate
+  const blocked = busy || childOpen
 
+  // This panel used to hand-enumerate its four nested dialogs here so Escape
+  // would not close it out from under one of them. It no longer has to: each
+  // nested dialog registers a layer of its own above this one, and the stack
+  // only ever hands Escape to the top (ui/escapeStack). A fifth nested dialog
+  // needs no change here.
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1537,16 +1532,6 @@ function VaultManager({
       <div
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (
-            e.key === 'Escape' &&
-            !pendingUnregister &&
-            !pendingLocate &&
-            !showRegister &&
-            !showCreate
-          )
-            onClose()
-        }}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
@@ -1717,6 +1702,7 @@ function UnregisterVaultConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1724,9 +1710,6 @@ function UnregisterVaultConfirm({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
@@ -1802,6 +1785,9 @@ function LocateVaultDialog({
     }
   }
 
+  // Guarded like RegisterVaultDialog: this dialog is the error's only surface,
+  // so closing it mid-request would lose a late failure.
+  useEscapeLayer(true, busy ? null : onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1809,11 +1795,6 @@ function LocateVaultDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          // Guarded like RegisterVaultDialog: this dialog is the error's only
-          // surface, so closing it mid-request would lose a late failure.
-          if (e.key === 'Escape' && !busy) onCancel()
-        }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
@@ -1913,6 +1894,11 @@ function RegisterVaultDialog({
     'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
     'disabled:opacity-50'
 
+  // Guarded like Cancel: this dialog is the error's only surface, so closing it
+  // mid-request would lose a late failure (setError on an unmounted component is
+  // a no-op). The layer stays registered so Escape does not fall through to the
+  // panel underneath either.
+  useEscapeLayer(true, busy ? null : onClose)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1920,12 +1906,6 @@ function RegisterVaultDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          // Guarded like Cancel: this dialog is the error's
-          // only surface, so closing it mid-request would lose a late failure
-          // (setError on an unmounted component is a no-op).
-          if (e.key === 'Escape' && !busy) onClose()
-        }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
@@ -2084,6 +2064,10 @@ function CreateVaultDialog({
     'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
     'disabled:opacity-50'
 
+  // Same guard as RegisterVaultDialog, same reason: mid-write the layer holds
+  // Escape without acting on it, so the key neither dismisses this dialog nor
+  // reaches the panel underneath.
+  useEscapeLayer(true, busy ? null : onClose)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -2091,10 +2075,6 @@ function CreateVaultDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          // Same guard as RegisterVaultDialog, same reason.
-          if (e.key === 'Escape' && !busy) onClose()
-        }}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">New vault</h2>
@@ -2243,6 +2223,7 @@ function HealthPanel({
     }
   }
 
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -2251,9 +2232,6 @@ function HealthPanel({
       <div
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
         className="flex max-h-[70vh] w-[34rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <div className="flex items-center justify-between">
@@ -2378,6 +2356,7 @@ function ActivityLogPanel({
   const cardFocus = useModalCardFocus()
   // Newest-first without mutating the source buffer.
   const ordered = entries.slice().reverse()
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -2386,9 +2365,6 @@ function ActivityLogPanel({
       <div
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Activity log</h2>
@@ -2471,6 +2447,7 @@ function AgentPanel({
       .then(() => notify('Command copied', 'success'))
       .catch(() => notify('Copy failed — select the text and copy it', 'error'))
   }
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -2479,9 +2456,6 @@ function AgentPanel({
       <div
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
         className="w-[26rem] animate-grow-in focus:outline-none rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         {ui.kind === 'setup' ? (

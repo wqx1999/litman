@@ -9,6 +9,7 @@ ADR-017). The vault is read from ``request.app.state.vault`` (set by
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,8 @@ from litman.core.id import is_valid_id
 from litman.core.query import recency_key
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy
-from litman.core.vault_registry import find_active, load_registry
+from litman.core.trash import TRASH_DIRNAME
+from litman.core.vault_registry import find_active, load_registry, registry_path
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
     load_index_papers,
@@ -309,6 +311,84 @@ def get_doc_mtimes(request: Request) -> dict[str, dict[str, float | None]]:
             "discussion": _stat_mtime(paper_dir / "discussion.md"),
         }
     return out
+
+
+# The library-level files whose mtime+size answers "did anything structural
+# change?": INDEX.json covers every paper's metadata (it is re-derived by every
+# write command), TAXONOMY.md the controlled vocabulary, lit-config.yaml the
+# project map `GET /api/projects` reads, and the .trash DIRECTORY's own mtime
+# flips whenever an entry is moved in or out of it.
+_VAULT_VERSION_FILES = ("INDEX.json", "TAXONOMY.md", CONFIG_FILENAME, TRASH_DIRNAME)
+
+# Free-form docs an agent rewrites in place. These are the reason the token
+# cannot be four stats: nothing in INDEX.json moves when an agent overwrites
+# notes.md, and that is the motivating case for the whole mechanism.
+_VAULT_VERSION_DOCS = ("notes.md", "discussion.md")
+
+
+def _fingerprint(path: Path) -> str:
+    """``mtime_ns:size`` for one path, or ``-`` when it is absent/unreadable.
+
+    Absent is a legitimate state (no .trash yet, a paper without notes.md), and
+    it has to be *distinguishable* from any present state — creating the file
+    must move the token.
+
+    Never raises: this runs on a timer, and a path the OS refuses to stat (a
+    permission, a name the platform rejects, a disconnected network drive)
+    reads as "not there" rather than turning the whole poll into a 500.
+
+    Resolution follows the filesystem's. On NTFS/ext4/APFS that is far finer
+    than the seconds between two polls; on FAT32 (a vault on a USB stick) mtime
+    is bucketed to 2s, so two edits inside one bucket that also leave the size
+    unchanged look like one. The next edit moves it again, and the window is a
+    fraction of the poll interval — worth knowing, not worth engineering around.
+    """
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return "-"
+    return f"{st.st_mtime_ns}:{st.st_size}"
+
+
+@router.get("/vault-version")
+def get_vault_version(request: Request) -> dict[str, str]:
+    """An opaque token that changes iff the vault changed on disk.
+
+    PURE READ (invariant #16), and stat-only: it never opens a file. The webUI
+    polls this while its window is visible and only runs the real (7-request)
+    resync sweep when the token differs from the last one it saw — which is what
+    makes "an agent writes while you watch the GUI" update without the user
+    touching anything, at the cost of one cheap request per interval.
+
+    The token is a digest, not a structure: callers must treat it as opaque and
+    compare only for equality. Any of the inputs moving moves the digest.
+
+    Cost is O(papers) stats — the same walk ``GET /api/doc-mtimes`` already does
+    on every resync — plus five. No content is read and nothing is parsed, so a
+    poll is orders of magnitude cheaper than the sweep it guards.
+    """
+    vault = _vault(request)
+    digest = hashlib.blake2b(digest_size=12)
+
+    def feed(label: str, path: Path) -> None:
+        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8"))
+
+    for name in _VAULT_VERSION_FILES:
+        feed(name, vault / name)
+    # The registry lives outside the vault (per-user config dir) and drives the
+    # vault switcher, which the resync sweep re-pulls.
+    feed("registry", registry_path())
+
+    papers_dir = vault / "papers"
+    try:
+        entries = sorted(os.listdir(papers_dir))
+    except OSError:
+        entries = []
+    for paper_id in entries:
+        for doc in _VAULT_VERSION_DOCS:
+            feed(f"{paper_id}/{doc}", papers_dir / paper_id / doc)
+
+    return {"version": digest.hexdigest()}
 
 
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:

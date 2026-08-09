@@ -10,6 +10,7 @@ import {
   type IngestUploadResult,
 } from '../api'
 import AuthorRows from './AuthorRows'
+import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps } from './modalShell'
 import PaperIdField from './PaperIdField'
 import { isYearShape, YEAR_HINT } from './year'
@@ -242,6 +243,9 @@ export default function AddPaper({
   const dismiss = () => {
     if (busy !== 'add') onClose()
   }
+  // Registered even mid-add, when dismiss() declines: the dialog owns Escape
+  // whether or not it is willing to close (ui/escapeStack).
+  useEscapeLayer(true, dismiss)
 
   const authorLine = (authors: string[]): string => {
     if (authors.length === 0) return '(no authors)'
@@ -256,9 +260,6 @@ export default function AddPaper({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') dismiss()
-        }}
         role="dialog"
         aria-label="Add paper"
         className="max-h-[85vh] w-[28rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"

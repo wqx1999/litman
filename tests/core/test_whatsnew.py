@@ -10,6 +10,8 @@ packaged data file via importlib.resources, no injection — so bumping
 from __future__ import annotations
 
 import re
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -90,3 +92,17 @@ def test_bullets_for_unreadable_file_is_empty(monkeypatch: pytest.MonkeyPatch) -
 
 def test_changelog_url_is_https() -> None:
     assert CHANGELOG_URL.startswith("https://")
+
+
+def test_changelog_url_matches_pyproject() -> None:
+    """The popup's "Read more" and the packaging metadata name one page.
+
+    They drifted once already: the docs site went live, [project.urls] moved to
+    it, and this constant stayed on the GitHub blob view — so a user clicking
+    inside the app and a user clicking through PyPI landed in different places.
+    A comment saying "keep in sync" did not catch it; this does.
+    """
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with pyproject.open("rb") as fh:
+        urls = tomllib.load(fh)["project"]["urls"]
+    assert CHANGELOG_URL == urls["Changelog"]

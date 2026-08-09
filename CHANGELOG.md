@@ -7,6 +7,111 @@ breaks something you relied on, a minor release opens a new way of working with
 litman, and a patch release is everything else — fixes, new controls, and
 conveniences.
 
+## Unreleased
+
+### Changed
+
+- **litman is now under the GNU Affero General Public License, version 3 or
+  later.** It was MIT through 1.3.4. For using litman nothing changes: install
+  it, read with it, script it, use it at work or on paid research, no
+  permission needed and no fee. What changes is what happens to a modified
+  copy — if you alter litman and then pass it on, whether by shipping a build
+  or by running it somewhere other people can reach over a network, the source
+  of your version has to be available under the same licence. Every release up
+  to and including 1.3.4 stays MIT; that grant is not withdrawn.
+
+### Added
+
+- **Following a citation no longer strands you.** Clicking a reference in a PDF
+  used to be a one-way trip: the reader jumped to the bibliography and finding
+  your way back meant scrolling until you recognised the page. `Alt+←` now
+  returns you to the exact spot — same place on the page, same zoom — and
+  `Alt+→` goes forward again, however many links deep you went. A small pill
+  floats at the bottom of the page after a jump showing where back leads
+  (`← Back to p.7`); it shrinks to a plain arrow after a moment, and it is there
+  to click if you would rather not use the keyboard. The trail is remembered for
+  as long as the window is open, including across switching to another tab and
+  back, and nothing is written into the PDF.
+- **Preview a note before you save it.** Notes and discussion now have a
+  **Preview** button next to Save: it renders the draft you are writing —
+  headings, lists, links to other papers and all — and **Edit** takes you back
+  to the text with every character still there. Flipping between the two keeps
+  your place in both: the cursor where you left it in the text, and the spot
+  you were reading in the preview. It sits where **Cancel** used to, which is
+  the point: cancelling only ever did one thing, throw the draft away.
+  Abandoning an edit is still possible — close the tab and answer "Don't save",
+  the same question an unsaved PDF asks — but nothing inside the editor can
+  lose your work any more. `Ctrl+S` saves from either view.
+- **The shortcut list mentions undo.** `Ctrl+Z` and `Ctrl+Y` have always worked
+  on annotations without being written down anywhere. `?` now lists them,
+  together with the part that is easy to trip over: they work while an
+  annotation tool is on, not in Cursor.
+
+### Fixed
+
+- **The window keeps up with the work happening outside it.** A paper added,
+  retagged or promoted from the terminal — or a paper's notes rewritten by an
+  agent — now appears in the open window within a few seconds, without you
+  touching anything. Until now litman only re-read your library when its window
+  regained focus, so an agent filing papers while you watched looked exactly
+  like nothing happening. The refresh button and `R` still force a re-read on
+  demand, a note you are in the middle of writing is never overwritten by one of
+  these refreshes, and a window you have switched away from goes quiet until you
+  come back to it.
+- **The paper list no longer stays filtered after a search.** Picking a result
+  from the search box now clears the box, so the list goes straight back to your
+  whole library instead of holding the last query until you deleted its text by
+  hand. `Esc` clears the box too, and a ✕ sits in it whenever there is something
+  to clear.
+- **Selecting text in a PDF lines up with the text.** The blue band used to sit
+  low — cutting across the tops of the letters while leaving an empty strip
+  under them — and drifted further off the line the further down the page you
+  read, until near the bottom it was most of a line out. Both are fixed: a
+  selection now brackets the line it is on, at the top of the page and at the
+  bottom, at any zoom. Highlights you make from a selection follow the same
+  rectangles, so new ones sit about a point higher on the page than ones saved
+  by earlier versions.
+- **"Unsaved annotations" now means there are some.** Draw a highlight and erase
+  it, or undo it with `Ctrl+Z`, and the Save button used to stay lit and closing
+  the tab still asked whether to save — over a document that was back exactly
+  where it started. litman now compares the annotations themselves, so undoing
+  or deleting your way back to the saved state is recognised as saved. Saving
+  and immediately switching tabs also writes the PDF once now, not twice.
+- **`Escape` works on the dialog underneath.** Opening a dialog from inside
+  another one — Vaults → Register existing, Projects → New project, a rename in
+  a field's Manage list — used to leave the outer dialog deaf to `Escape` once
+  the inner one closed, whether you cancelled it or completed it; only the mouse
+  could get you out. `Escape` now closes it as it should.
+- **`Escape` leaves an annotation's note, and keeps what you typed.** The note box
+  in the annotation popover had no keyboard exit at all: `Escape` did nothing.
+  It now saves the note and closes the popover, and a second `Escape` puts the
+  toolbar back to Cursor.
+- **The annotation popover is dark in dark mode.** It stayed a white card around
+  a dark text box.
+- **`Escape` no longer throws away a note you are writing.** In the notes and
+  discussion editor it discarded everything since your last save — no
+  confirmation, nothing to undo, one keystroke. It does nothing there now.
+  (`Escape` still clears the search box and puts a PDF back to Cursor.)
+- **On macOS, closing a dialog no longer drops you out of full screen.** With
+  the window in full screen, `Escape` on an open dialog did two things at once:
+  it dismissed the dialog and left full screen with it, so getting back meant
+  reaching for the green button. Only some dialogs behaved that way, which made
+  it look random. `Escape` now closes the dialog — or the tab's right-click menu
+  — and nothing else. With no dialog open it still leaves full screen, the way
+  any other Mac window does.
+- **A missing library or project folder can now be pointed at its new home —
+  or removed — right from the prompt.** When litman notices that a registered
+  library, or a project a paper is linked to, is no longer where it was
+  recorded, it asks about it on your next command. That question used to offer
+  half the answers: for a library, only "remove the registration", so a library
+  you had merely moved had to be re-registered by hand afterwards; for a
+  project, only "type the new path", so a project you had genuinely finished
+  with kept asking forever unless you went and found the right command. Both
+  now take the same three answers — the new path, `rm`, or Enter to skip — and
+  Enter never destroys anything. `rm` hands you to `lit vault remove` /
+  `lit project rm` with their usual warning and confirmation, and a library is
+  asked about one at a time so each can get its own answer.
+
 ## 1.3.4 — 2026-08-06
 
 ### Added

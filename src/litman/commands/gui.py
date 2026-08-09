@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import contextlib
 import getpass
+import logging
 import os
 import shutil
 import socket
@@ -88,6 +89,53 @@ READY_POLL = 0.02
 # (SPLASH_TIMEOUT_MS) — two constants across two modules by design: the splash
 # process must stay import-light and cannot import this module.
 SPLASH_TIMEOUT = 25.0
+
+
+# The live-refresh change token, polled by every visible page every few seconds.
+# It is the one route whose access-log line carries no information: hundreds of
+# identical 200s per hour, in a log file that exists to explain a *failure*.
+_POLLED_PATHS = ("/api/vault-version",)
+
+
+class _DropPolledAccessLines(logging.Filter):
+    """Keep the uvicorn access log readable once the GUI polls on a timer.
+
+    Launched without a console (the .app / .exe shortcuts) litman redirects
+    stdout+stderr — uvicorn's access log included — into a per-launch log file.
+    A 4s poll writes ~900 lines an hour there, which would bury the handful of
+    lines someone opens that file to find. Dropping them costs nothing: the
+    route is a pure read whose only failure mode (the vault went away) the page
+    reports through the banner, not the log.
+
+    Matches on the log record's *arguments*, not the formatted string: uvicorn
+    passes ``(client_addr, method, full_path, http_version, status)``, so this
+    cannot be fooled by a path that merely mentions the route inside a query
+    string. Any record that does not look like an access record is kept —
+    filters must never be the reason a diagnostic went missing.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 3:
+            return True
+        path = args[2]
+        if not isinstance(path, str):
+            return True
+        return path.split("?", 1)[0] not in _POLLED_PATHS
+
+
+def _quiet_polled_access_lines() -> None:
+    """Install :class:`_DropPolledAccessLines` on uvicorn's access logger.
+
+    Call AFTER ``uvicorn.Config(...)`` — its constructor runs ``dictConfig``,
+    which re-points the logger's handlers; installing before would work today
+    (dictConfig leaves logger-level filters alone) but only by luck.
+    Idempotent, so a second ``lit gui`` in-process cannot stack filters.
+    """
+    logger = logging.getLogger("uvicorn.access")
+    if any(isinstance(f, _DropPolledAccessLines) for f in logger.filters):
+        return
+    logger.addFilter(_DropPolledAccessLines())
 
 
 def _find_free_port(start: int) -> int:
@@ -1475,6 +1523,9 @@ def gui_cmd(
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=actual_port)
     )
+    # Config() just (re)configured logging; silence the live-refresh poll's
+    # access lines now that the loggers are in their final shape.
+    _quiet_polled_access_lines()
     # One-click update (POST /api/self-update) needs three things only this
     # command knows: the uvicorn server (to schedule its own exit), the port
     # (the helper's relaunch race guard probes it), and how to bring THIS kind

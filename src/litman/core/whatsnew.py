@@ -16,9 +16,12 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-# The "Read more" target of the popup. Keep in sync with [project.urls]
-# Changelog in pyproject.toml.
-CHANGELOG_URL = "https://github.com/wqx1999/litman/blob/main/CHANGELOG.md"
+# The "Read more" target of the popup. Must equal [project.urls] Changelog in
+# pyproject.toml — ``test_changelog_url_matches_pyproject`` pins the two
+# together, because keeping it a comment alone did not work: when the docs site
+# went live the pyproject entry moved and this constant was left behind on the
+# GitHub blob view.
+CHANGELOG_URL = "https://litman.dev/docs/changelog/"
 
 
 def _parse(text: str, version: str) -> list[str]:

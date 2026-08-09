@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom'
 import type { WhatsNewInfo } from '../api'
+import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps } from './modalShell'
 
 /** The post-update "What's new" card.
@@ -23,6 +24,7 @@ export default function WhatsNew({
   info: WhatsNewInfo
   onClose: () => void
 }) {
+  useEscapeLayer(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -30,9 +32,6 @@ export default function WhatsNew({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onClose()
-        }}
         role="dialog"
         aria-label={`What's new in litman ${info.version}`}
         className="max-h-[85vh] w-[28rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"

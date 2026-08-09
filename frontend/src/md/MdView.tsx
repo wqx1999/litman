@@ -108,6 +108,11 @@ function renderMarkdown(src: string): string {
 
 /** Markdown view: render by default, double-click to edit, Cmd/Ctrl+S to save.
  *
+ * An open edit session has two shapes — the textarea, and a preview that renders
+ * the draft. Both keep the draft; the editor offers no way to throw it away.
+ * Discarding is one path only: close the tab and answer "Don't save" in the
+ * shared dialog, the same route a PDF tab's unsaved annotations take.
+ *
  * The edit session (draft text) is LIFTED to App (keyed per tab) so switching
  * tabs mid-edit — which unmounts this view (TabArea renders one tab) — does not
  * lose the in-progress edit, and so App can warn on page-unload / prompt on a
@@ -139,8 +144,23 @@ export default function MdView({
   // the original).
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Previewing the draft: the edit session is still open, but the rendered view
+  // is showing instead of the textarea. Only meaningful while editing — see
+  // `previewingDraft` below, which is the guarded form used everywhere.
+  const [previewing, setPreviewing] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // [selectionStart, selectionEnd] parked while a preview is up; null otherwise.
+  // A tuple, not a bare number: an array is always truthy, so a caret sitting at
+  // offset 0 restores like any other. A `number | null` ref would read 0 as
+  // "nothing stored" and silently jump to the end of the document instead.
+  const caretRef = useRef<[number, number] | null>(null)
+  // Where the preview was scrolled to. Deliberately NOT mdScrollPositions: that
+  // map is the READING position, restored when the tab is next opened, and a
+  // draft is a different document once it diverges from the file. Keeping them
+  // apart is what lets a second Preview return to the passage being checked
+  // without a draft scroll deciding where the tab reopens.
+  const previewScrollRef = useRef(0)
 
   // Edit mode + the draft now come from App (controlled): a present draftEntry
   // means this tab is mid-edit. The draft survives this view's unmount because
@@ -148,10 +168,18 @@ export default function MdView({
   // pinned false regardless of any stray draft.
   const editing = !readOnly && draftEntry !== undefined
   const draft = draftEntry?.draft ?? ''
+  const savedText = draftEntry?.savedText ?? ''
+  const previewingDraft = editing && previewing
 
+  // The render source: the DRAFT while previewing it, the on-disk text otherwise.
+  // Derived before the memo on purpose — outside preview this is `text` itself,
+  // so a keystroke (which changes `draft`, not `text`) cannot re-run marked +
+  // DOMPurify. Feeding `draft` straight into the memo deps would re-parse the
+  // whole document on every character typed.
+  const previewSrc = previewingDraft ? draft : text
   const html = useMemo(
-    () => (text === null ? '' : renderMarkdown(text)),
-    [text],
+    () => (previewSrc === null ? '' : renderMarkdown(previewSrc)),
+    [previewSrc],
   )
 
   useEffect(() => {
@@ -239,6 +267,17 @@ export default function MdView({
     if (saved) el.scrollTop = saved
   }, [loaded, text, editing, highlightQuery, tabKey])
 
+  // The preview's own scroll restore. The effect above cannot serve this: it is
+  // once-per-mount and skipped while editing, whereas the preview mounts and
+  // unmounts repeatedly inside one session (Edit ⇄ Preview), and without this
+  // every trip back lands at the top of the document.
+  useLayoutEffect(() => {
+    if (!previewingDraft) return
+    const el = contentRef.current
+    if (!el) return
+    el.scrollTop = previewScrollRef.current
+  }, [previewingDraft])
+
   // After the markdown renders, mark every occurrence of the search query and
   // scroll the first into view (a search hit opened this doc). Runs again when
   // the query or rendered html changes; unwraps prior marks first so re-jumping
@@ -296,6 +335,15 @@ export default function MdView({
   const enterEdit = useCallback(() => {
     // Read-only (trash) tabs never edit.
     if (readOnly) return
+    // Already mid-session (we are previewing the draft): just swap the preview
+    // back for the textarea. Re-seeding here would be destructive — onBeginEdit
+    // overwrites the draft with the on-disk text AND resets savedText, so the
+    // edit would be lost and the tab would additionally be marked clean, which
+    // silently disarms the close prompt.
+    if (editing) {
+      setPreviewing(false)
+      return
+    }
     // notes.md / discussion.md are create-or-overwrite, so editing is allowed
     // even when the file is absent (text === null) — a first edit starts blank
     // and the save creates the file. `lit add` scaffolds both, so absence now
@@ -304,7 +352,7 @@ export default function MdView({
     // textarea from its real content, not a transient null.
     if (!loaded) return
     onBeginEdit(tabKey, text ?? '')
-  }, [readOnly, loaded, text, onBeginEdit, tabKey])
+  }, [readOnly, editing, loaded, text, onBeginEdit, tabKey])
 
   const save = useCallback(async () => {
     if (saving) return
@@ -332,28 +380,79 @@ export default function MdView({
     }
   }, [doc, draft, paperId, saving, onNotify, onEndEdit, onSaved, tabKey])
 
-  const cancelEdit = useCallback(() => onEndEdit(tabKey), [onEndEdit, tabKey])
-
-  // Cmd/Ctrl+S saves, Esc cancels — only while editing, and only when the
-  // textarea has focus (it's the sole interactive element in edit mode).
-  function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault()
-      void save()
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      cancelEdit()
+  // Leave the textarea WITHOUT ending the edit session: the draft is kept and
+  // rendered, so this is a preview, not a discard. Nothing in the editor throws
+  // work away — the only route to that is closing the tab and answering "Don't
+  // save" in the shared dialog.
+  //
+  // An untouched draft is the exception: previewing it would show exactly what
+  // was already on screen, so the session just ends. That exit must stay free of
+  // a write — saving an unchanged file would bump its mtime, register as an
+  // external change on the next resync, and (for notes) re-insert the server's
+  // wikilink reminder, all for an edit the user never made.
+  const showPreview = useCallback(() => {
+    if (draft === savedText) {
+      onEndEdit(tabKey)
+      return
     }
-  }
+    // Where the caret was when the preview took the textarea away. Preview is
+    // for "check how this section renders, then carry on writing", and coming
+    // back to the end of a long document breaks exactly that loop.
+    const ta = textareaRef.current
+    caretRef.current = ta ? [ta.selectionStart, ta.selectionEnd] : null
+    setPreviewing(true)
+  }, [draft, savedText, onEndEdit, tabKey])
 
-  // Focus the textarea when edit mode opens, cursor at the end.
+  // `previewing` only means anything inside a session. Clear it whenever one
+  // ends by any route (a save here, or App dropping the draft), so the next
+  // double-click opens the textarea instead of a stale preview — and drop the
+  // caret and scroll with it, or they would be restored into the NEXT session's
+  // document, which may be a different length entirely.
+  useEffect(() => {
+    if (!editing) {
+      setPreviewing(false)
+      caretRef.current = null
+      previewScrollRef.current = 0
+    }
+  }, [editing])
+
+  // Cmd/Ctrl+S saves the SESSION, not the textarea. Bound on the window (capture
+  // phase, mirroring PdfView's ⌘S) rather than on the textarea's onKeyDown: the
+  // preview has no textarea, and the cheat sheet promises Ctrl+S saves the
+  // current tab whatever is on screen. Only the active tab is mounted, so this
+  // and PdfView's binding are never live at the same time.
+  //
+  // Esc is deliberately NOT bound. It used to discard the whole draft — a
+  // reflex key wired to an unrecoverable action. It now falls through to the
+  // global dispatcher, whose PDF branch is guarded by `!editing`, so inside the
+  // editor it does nothing beyond closing the cheat sheet / What's New.
   useEffect(() => {
     if (!editing) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault()
+        e.stopPropagation()
+        void save()
+      }
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [editing, save])
+
+  // Focus the textarea when edit mode opens, cursor at the end — or back where
+  // it was if a preview is what took it away. Also runs on the way back from a
+  // preview, which remounts the textarea without `editing` ever changing:
+  // without the preview dep the box would come back unfocused.
+  useEffect(() => {
+    if (!editing || previewingDraft) return
     const ta = textareaRef.current
     if (!ta) return
+    const at = caretRef.current
     ta.focus()
-    ta.setSelectionRange(ta.value.length, ta.value.length)
-  }, [editing])
+    if (at) ta.setSelectionRange(at[0], at[1])
+    else ta.setSelectionRange(ta.value.length, ta.value.length)
+    caretRef.current = null
+  }, [editing, previewingDraft])
 
   const missing = loaded && text === null
 
@@ -374,13 +473,28 @@ export default function MdView({
           </span>
         </div>
         {editing ? (
+          // Two shapes for one open session. Previewing looks just like the
+          // ordinary rendered view, so it has to SAY the draft is unsaved —
+          // otherwise the close prompt later comes as a surprise.
           <div className="flex items-center gap-2">
+            {previewingDraft && draft !== savedText && (
+              // amber-700, a step darker than the amber-600 used for status text
+              // elsewhere: measured on the light header strip that is 4.58:1,
+              // where amber-600 came out 2.91:1 — under the 4.5:1 floor. This
+              // label's whole job is to be noticed, which earns the one step of
+              // divergence. Dark mode already cleared it (9.88:1) and is
+              // unchanged; note it was the LIGHT side that was short, not the
+              // dark variant added for it.
+              <span className="font-mono text-xs font-normal text-amber-700 dark:text-amber-400">
+                Unsaved draft — previewing
+              </span>
+            )}
             <button
-              onClick={cancelEdit}
+              onClick={previewingDraft ? enterEdit : showPreview}
               disabled={saving}
               className="rounded-lg px-2.5 py-1 text-xs font-normal text-stone-600 transition-colors hover:bg-stone-200 disabled:opacity-40"
             >
-              Cancel
+              {previewingDraft ? 'Edit' : 'Preview'}
             </button>
             <button
               onClick={() => void save()}
@@ -404,17 +518,19 @@ export default function MdView({
           </span>
         )}
       </div>
-      {/* `editing` MUST be tested before `missing`: entering edit on an absent
-          file leaves `text` null (the draft lives in App, not `text`), so a
-          `missing`-first chain would keep the placeholder mounted and the
-          textarea would never appear — the Save/Cancel header would show
-          (driven by `editing`) while the body stayed un-editable. */}
-      {editing ? (
+      {/* An open session MUST be tested before `missing`, in BOTH of its shapes:
+          entering edit on an absent file leaves `text` null (the draft lives in
+          App, not `text`), so a `missing`-first chain would keep the placeholder
+          mounted while the header showed edit controls. The textarea half of
+          that was the e8d39d6 fix; `!previewingDraft` on the `missing` branch
+          below is the same bug for the preview half — without it, previewing the
+          first draft of a paper that has no notes.md yet shows "No notes.md"
+          instead of what was just written. */}
+      {editing && !previewingDraft ? (
         <textarea
           ref={textareaRef}
           value={draft}
           onChange={(e) => onDraftChange(tabKey, e.target.value)}
-          onKeyDown={onTextareaKeyDown}
           spellCheck={false}
           className="min-h-0 w-full flex-1 resize-none bg-white p-8 font-mono text-sm leading-relaxed text-stone-800 outline-none"
         />
@@ -433,7 +549,7 @@ export default function MdView({
             overwrites it.
           </p>
         </div>
-      ) : missing ? (
+      ) : missing && !previewingDraft ? (
         <div
           className={`flex-1 overflow-auto p-8 text-sm text-stone-400 ${
             readOnly ? '' : 'cursor-text'
@@ -453,8 +569,12 @@ export default function MdView({
           onClick={handleClick}
           onDoubleClick={enterEdit}
           onScroll={(e) => {
-            // Remember the reading position for this tab so a switch returns here.
-            if (tabKey) mdScrollPositions.set(tabKey, e.currentTarget.scrollTop)
+            const top = e.currentTarget.scrollTop
+            // A preview scroll is a position in the DRAFT, so it goes to the
+            // draft's own ref. Only a scroll of the file itself updates the
+            // reading position this tab reopens at.
+            if (previewingDraft) previewScrollRef.current = top
+            else if (tabKey) mdScrollPositions.set(tabKey, top)
           }}
           dangerouslySetInnerHTML={{ __html: html }}
         />

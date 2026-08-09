@@ -41,6 +41,7 @@ import {
 } from '../api'
 import type { MetadataWrite } from '../api'
 import AuthorRows from '../ui/AuthorRows'
+import { useEscapeLayer } from '../ui/escapeStack'
 import { isYearShape, YEAR_HINT } from '../ui/year'
 import {
   modalBackdropProps,
@@ -326,11 +327,11 @@ function TagPanel({
     .slice()
     .sort((a, b) => a.localeCompare(b))
 
+  // A popover rather than a modal card, but still a dismissible layer: it opens
+  // on top of the cockpit and Escape belongs to it while it is up.
+  useEscapeLayer(true, onClose)
   return (
     <div
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') onClose()
-      }}
       className="mt-1.5 rounded-lg border border-stone-200 bg-white p-1.5 shadow-md"
     >
       <input
@@ -544,17 +545,25 @@ function ManageDialog({
   onRename: (old: string, next: string) => Promise<void>
   onClose: () => void
 }) {
-  // Focus the card on mount so Escape reaches the handler below — this is a
-  // blocking dialog, so nothing else is listening (see useModalCardFocus).
-  const cardFocus = useModalCardFocus()
   // The value awaiting delete confirmation, or being renamed (null = list view).
   const [pending, setPending] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
+  // Is one of the nested dialogs on screen? Deliberately WITHOUT `busy`: a write
+  // finishing is no reason to grab focus back.
+  const childOpen = pending != null || renaming != null
+  // Focus the card on mount so Escape reaches the handler below — this is a
+  // blocking dialog, so nothing else is listening — and again whenever a nested
+  // dialog closes, which drops focus to <body> (see useModalCardFocus).
+  const cardFocus = useModalCardFocus(childOpen)
   const sorted = vocabulary.slice().sort((a, b) => a.localeCompare(b))
   // While a delete confirm or rename dialog is open (or a write is in flight),
   // gate the list's controls so a keyboard-tab onto a row behind the nested
   // dialog can't swap the target out from under it.
-  const blocked = busy || pending != null || renaming != null
+  const blocked = busy || childOpen
+  // The two nested dialogs used to be hand-enumerated here so Escape would not
+  // close this panel out from under one of them; each is a layer of its own now
+  // and the stack only ever hands the key to the top (ui/escapeStack).
+  useEscapeLayer(true, onClose)
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -563,9 +572,6 @@ function ManageDialog({
       <div
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !pending && !renaming) onClose()
-        }}
         className="flex max-h-[70vh] w-[24rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Manage {field}</h2>
@@ -684,6 +690,7 @@ function RenameValueDialog({
   const collides = trimmed !== value && existing.includes(trimmed)
   const canSubmit = trimmed.length > 0 && trimmed !== value && !collides && !busy
 
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -691,9 +698,6 @@ function RenameValueDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Rename “{value}”?</h2>
@@ -761,6 +765,7 @@ function DeleteValueConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -768,9 +773,6 @@ function DeleteValueConfirm({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Delete “{value}”?</h2>
@@ -946,6 +948,7 @@ function MetadataEditDialog({
     }
   }
 
+  useEscapeLayer(true, saving ? null : onClose)
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -953,9 +956,6 @@ function MetadataEditDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !saving) onClose()
-        }}
         className="flex max-h-[85vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Edit metadata</h2>
@@ -1048,6 +1048,7 @@ function UnreadConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1055,9 +1056,6 @@ function UnreadConfirm({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Mark as unread?</h2>
@@ -1110,6 +1108,7 @@ function DropConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  useEscapeLayer(true, onCancel)
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -1117,9 +1116,6 @@ function DropConfirm({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel()
-        }}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">Drop this paper?</h2>
