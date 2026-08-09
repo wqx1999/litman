@@ -7,7 +7,7 @@ breaks something you relied on, a minor release opens a new way of working with
 litman, and a patch release is everything else — fixes, new controls, and
 conveniences.
 
-## Unreleased
+## 1.3.5 — 2026-08-09
 
 ### Changed
 
