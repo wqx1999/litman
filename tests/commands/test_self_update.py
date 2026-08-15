@@ -16,6 +16,7 @@ and nothing is ever upgraded.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 
 import pytest
 from click.testing import CliRunner
@@ -27,6 +28,10 @@ from litman.exceptions import SelfUpdateError
 
 def _no_editable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(su, "_is_editable_install", lambda: False)
+    # Stated explicitly rather than left to the ambient install: CI installs
+    # litman editable, where `_install_origin` happens to answer None anyway.
+    # A `pip install .` box would otherwise turn every test below red at once.
+    monkeypatch.setattr(su, "_install_origin", lambda: None)
 
 
 def _fake_which(present: set[str]):
@@ -38,6 +43,142 @@ def _fake_which(present: set[str]):
 
 def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+# ---------------------------------------------------------------------------
+# where this litman came from (task-self-update-source-guard A1-A4)
+# ---------------------------------------------------------------------------
+#
+# PEP 610 writes direct_url.json for anything installed from a direct URL and
+# never for anything resolved from an index, so its shape is the whole basis
+# for "can this install be upgraded to a release at all".
+
+
+def _fake_distribution(
+    read_text: Callable[[str], str | None],
+) -> Callable[[str], object]:
+    """Stand in for ``importlib.metadata.distribution`` with one metadata file."""
+
+    class _Dist:
+        def read_text(self, name: str) -> str | None:
+            return read_text(name)
+
+    return lambda name: _Dist()
+
+
+def _unreadable(_name: str) -> str:
+    raise OSError("distribution metadata is unreadable")
+
+
+def test_install_origin_reads_git_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A git install names the ref it is pinned to — that ref is exactly what
+    stops resolving once a release branch is deleted."""
+    monkeypatch.setattr(
+        su,
+        "_direct_url",
+        lambda: {
+            "url": "https://github.com/wqx1999/litman",
+            "vcs_info": {
+                "vcs": "git",
+                "requested_revision": "dev/1.3.5",
+                "commit_id": "b1ed0a4c0ffee1234567890abcdef1234567890a",
+            },
+        },
+    )
+    origin = su._install_origin()
+    assert origin is not None
+    assert "git" in origin
+    assert "dev/1.3.5" in origin
+
+    # Pinned at a bare commit: no branch or tag name to quote, so the short hash.
+    monkeypatch.setattr(
+        su,
+        "_direct_url",
+        lambda: {
+            "url": "https://github.com/wqx1999/litman",
+            "vcs_info": {"vcs": "git", "commit_id": "b1ed0a4c0ffee1234"},
+        },
+    )
+    assert su._install_origin() == "git (b1ed0a4)"
+
+    # Neither a revision nor a commit: the vcs name alone, no empty parentheses.
+    monkeypatch.setattr(su, "_direct_url", lambda: {"vcs_info": {"vcs": "git"}})
+    assert su._install_origin() == "git"
+
+
+def test_install_origin_none_for_editable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Editable is not reported as an origin: it has its own branch upstream of
+    this one, with its own hint."""
+    monkeypatch.setattr(
+        su,
+        "_direct_url",
+        lambda: {"dir_info": {"editable": True}, "url": "file:///src/litman"},
+    )
+    assert su._install_origin() is None
+    assert su._is_editable_install() is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"url": "file:///w/litman-1.3.5.whl", "archive_info": {"hash": "sha256=beef"}},
+        {"url": "file:///w/litman", "dir_info": {}},
+        {"url": "file:///w/litman"},  # unrecognized, but still not from an index
+    ],
+)
+def test_install_origin_reports_local_file(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]
+) -> None:
+    monkeypatch.setattr(su, "_direct_url", lambda: payload)
+    assert su._install_origin() == "a local file"
+
+
+@pytest.mark.parametrize(
+    "read_text",
+    [
+        lambda _name: None,  # the distribution carries no such file
+        lambda _name: "",  # present but empty
+        lambda _name: "{ not json",  # present but unparsable
+        lambda _name: "[]",  # parsable, but not an object
+        _unreadable,  # the metadata cannot be read at all
+    ],
+)
+def test_missing_direct_url_leaves_editable_probe_unchanged(
+    monkeypatch: pytest.MonkeyPatch, read_text: Callable[[str], str | None]
+) -> None:
+    """No usable ``direct_url.json`` is what an index install looks like: no
+    origin to report, and the editable probe answers exactly as it did before
+    the two readers were split apart."""
+    monkeypatch.setattr("importlib.metadata.distribution", _fake_distribution(read_text))
+    assert su._direct_url() is None
+    assert su._is_editable_install() is False
+    assert su._install_origin() is None
+
+
+@pytest.mark.parametrize("raw", ['{"dir_info": "x"}', '{"dir_info": null}'])
+def test_malformed_dir_info_never_escapes_the_editable_probe(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """A ``dir_info`` that is not an object has to stay a quiet False.
+
+    These are the only two payload shapes where the probe could have changed
+    meaning: ``.get("editable")`` on a str / None raises ``AttributeError``,
+    which the probe's own ``except Exception`` used to swallow. That ``try``
+    now sits one level down in ``_direct_url``, so the probe has to be total by
+    itself — simplify it back to a bare ``.get("dir_info", {}).get(...)`` and
+    ``lit self-update`` dies with a traceback on exactly these payloads, with
+    nothing else in the suite noticing.
+
+    Driven through the real ``_direct_url`` seam, since the divergence would be
+    in how the two readers split the work between them.
+    """
+    monkeypatch.setattr(
+        "importlib.metadata.distribution", _fake_distribution(lambda _name: raw)
+    )
+    assert su._direct_url() is not None  # the payload IS readable; dir_info is junk
+    assert su._is_editable_install() is False
+    # Still installed from a direct URL, so still refused rather than promised.
+    assert su._install_origin() == "a local file"
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +229,112 @@ def test_tool_present_but_not_managing_litman(monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 0, result.output
     assert "not installed via uv or pipx" in result.output
     assert ran == []
+
+
+def _wire_owned_by(
+    monkeypatch: pytest.MonkeyPatch, *, installer: str, origin: str
+) -> dict[str, list[object]]:
+    """Wire a litman that ``installer`` owns and ``origin`` describes.
+
+    Captures everything the refusal has to prevent: the in-process upgrade, the
+    detached helper, and the PyPI version lookup that makes the promise. No
+    platform is faked — the refusal lands ahead of every platform branch, so
+    this drives the same code on all three.
+    """
+    monkeypatch.setattr(su, "_is_editable_install", lambda: False)
+    monkeypatch.setattr(su, "_install_origin", lambda: origin)
+    monkeypatch.setattr(su.shutil, "which", _fake_which({installer}))
+    monkeypatch.setattr(
+        su, "_run_capture", lambda cmd, **kw: _completed(stdout="litman 1.1.0\n")
+    )
+    monkeypatch.setattr(su.launcher_stubs, "repair_default", lambda: [])
+
+    seen: dict[str, list[object]] = {"ran": [], "spawned": [], "fetched": []}
+    monkeypatch.setattr(
+        su.subprocess, "run", lambda cmd, **kw: seen["ran"].append(cmd) or _completed()
+    )
+    monkeypatch.setattr(
+        su.self_update_helper,
+        "write_and_spawn_helper",
+        lambda **kw: seen["spawned"].append(kw),
+    )
+    monkeypatch.setattr(
+        su.update_check,
+        "_fetch_latest_version",
+        lambda **kw: seen["fetched"].append(1) or "9.9.9",
+    )
+    return seen
+
+
+def test_git_install_refuses_before_promising(monkeypatch: pytest.MonkeyPatch) -> None:
+    """uv re-resolves the git ref it recorded, never the release the version
+    check reads off PyPI — so say that up front instead of announcing an
+    upgrade and failing where only a log file can see it."""
+    seen = _wire_owned_by(monkeypatch, installer="uv", origin="git (dev/1.3.5)")
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    # Rich hard-wraps to the console width, so compare on normalised spacing.
+    said = " ".join(result.output.split())
+    assert "installed from git (dev/1.3.5), not from a release" in said
+    # The way out is its own sentence on its own line, not an aside tacked to
+    # the verdict — one judgement, one exit, per the message budget.
+    assert "not from a release. Reinstall it:" in said
+    assert "uv tool uninstall litman && uv tool install litman" in said
+
+    # The promise is not made, rather than made and broken: no version was
+    # fetched, so no `current X -> Y` line could be printed.
+    assert seen["fetched"] == []
+    assert "current" not in said
+    assert "9.9.9" not in said
+
+    # And nothing was started — not here, and not after this process exits.
+    assert seen["ran"] == []
+    assert seen["spawned"] == []
+
+
+def test_pipx_install_gets_the_pipx_reinstall_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The way out has to be runnable on the machine reading it: the command
+    names the installer that actually owns this litman."""
+    seen = _wire_owned_by(monkeypatch, installer="pipx", origin="a local file")
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.output.split())
+    assert "installed from a local file, not from a release" in said
+    assert "pipx uninstall litman && pipx install litman" in said
+    assert "uv tool" not in said
+    assert seen["ran"] == []
+    assert seen["spawned"] == []
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "hg (feat/[wip])",  # a balanced span: Rich eats it, the name loses a word
+        "hg (x[/])",  # an unbalanced close: Rich raises MarkupError
+    ],
+)
+def test_a_bracketed_revision_is_not_read_as_markup(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    """The revision comes out of the distribution's own metadata, and this is
+    the first place that data reaches the console.
+
+    Rich would take a bracket in it for a style span — the name silently loses
+    a piece, or the command dies on a MarkupError, which would be a traceback
+    in place of the very message this guard exists to print. Git refnames
+    cannot carry a bracket, but hg / bzr / svn revisions can.
+    """
+    seen = _wire_owned_by(monkeypatch, installer="uv", origin=origin)
+
+    result = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.output.split())
+    assert f"installed from {origin}, not from a release" in said
+    assert seen["ran"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,10 @@ The probe order and their guards:
 3. ``pipx list`` mentions litman → ``pipx upgrade litman``.
 4. Otherwise → reject with a manual hint (pip-bare / conda), or, when neither
    ``uv`` nor ``pipx`` is on PATH at all, an error naming the manual command.
+5. Owned by uv or pipx, but installed from a direct URL (git / a local file)
+   instead of an index → reject with the reinstall commands. The installer
+   re-resolves the source it recorded, so it would never reach the release
+   the version check is about to advertise.
 
 Every probe subprocess is timeout-wrapped so a wedged tool can never hang the
 command.
@@ -59,6 +63,18 @@ _UPGRADE_CMDS = {
     "pipx": ["pipx", "upgrade", "litman"],
 }
 
+# Printed, never executed — a shell one-liner reads as something to copy,
+# which is the whole point: this process cannot uninstall itself.
+_REINSTALL_CMDS = {
+    "uv": "uv tool uninstall litman && uv tool install litman",
+    "pipx": "pipx uninstall litman && pipx install litman",
+}
+
+_NON_RELEASE_HINT = (
+    "litman was installed from {origin}, not from a release.\n"
+    "Reinstall it:  {command}"
+)
+
 _EDITABLE_HINT = (
     "litman is running from an editable (development) install.\n"
     "Upgrade it the way you set it up — e.g. `git pull` in the source tree."
@@ -86,17 +102,57 @@ def _run_capture(cmd: list[str], *, timeout: float) -> subprocess.CompletedProce
         return None
 
 
-def _is_editable_install() -> bool:
-    """True when the litman distribution is an editable (PEP 660) install."""
+def _direct_url() -> dict[str, object] | None:
+    """The distribution's PEP 610 ``direct_url.json``, or ``None``.
+
+    PEP 610 requires this file for anything installed from a direct URL (git,
+    a local wheel, an editable tree) and forbids it for anything resolved from
+    an index by name — so its absence *is* the "came from PyPI or a mirror"
+    signal. Unreadable / unparsable metadata reads as absent: a probe that
+    cannot answer must not block an upgrade that would have worked.
+    """
     try:
         import importlib.metadata as importlib_metadata
 
         raw = importlib_metadata.distribution("litman").read_text("direct_url.json")
         if not raw:
-            return False
-        return bool(json.loads(raw).get("dir_info", {}).get("editable"))
+            return None
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
     except Exception:
-        return False
+        return None
+
+
+def _is_editable_install() -> bool:
+    """True when the litman distribution is an editable (PEP 660) install."""
+    dir_info = (_direct_url() or {}).get("dir_info")
+    return bool(isinstance(dir_info, dict) and dir_info.get("editable"))
+
+
+def _install_origin() -> str | None:
+    """Where this litman came from, phrased for a message — or ``None``.
+
+    ``None`` means it was resolved from an index (PyPI or a mirror), the one
+    shape ``uv tool upgrade`` / ``pipx upgrade`` can actually move forward: the
+    installer re-resolves whatever source it recorded, so a git-installed
+    litman upgrades against that git ref, not against the release the version
+    check just advertised. Editable installs answer ``None`` here too — they
+    have their own branch and their own hint.
+    """
+    payload = _direct_url()
+    if payload is None:
+        return None
+    dir_info = payload.get("dir_info")
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
+        return None
+    vcs_info = payload.get("vcs_info")
+    if isinstance(vcs_info, dict):
+        vcs = str(vcs_info.get("vcs") or "a repository")
+        revision = vcs_info.get("requested_revision") or str(
+            vcs_info.get("commit_id") or ""
+        )[:7]
+        return f"{vcs} ({revision})" if revision else vcs
+    return "a local file"
 
 
 def _installer_lists_litman(binary: str, list_cmd: list[str]) -> bool:
@@ -178,6 +234,21 @@ def self_update_cmd(yes: bool) -> None:
         if shutil.which("uv") is None and shutil.which("pipx") is None:
             raise SelfUpdateError(_NO_TOOL_MSG)
         console.print(_MANUAL_HINT)
+        return
+
+    # Before the version check, because that is where the promise is made: the
+    # advertised release comes from PyPI, while the upgrade would re-resolve
+    # the source this copy was installed from. Installer is non-None here.
+    origin = _install_origin()
+    if origin is not None:
+        # markup=False: the origin carries a revision string out of the
+        # distribution's own metadata, and Rich would read a bracket in it as a
+        # style span — swallowing part of the name, or aborting on an unbalanced
+        # one. This hint has no markup of its own to lose.
+        console.print(
+            _NON_RELEASE_HINT.format(origin=origin, command=_REINSTALL_CMDS[installer]),
+            markup=False,
+        )
         return
 
     latest = update_check._fetch_latest_version()

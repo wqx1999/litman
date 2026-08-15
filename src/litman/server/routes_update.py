@@ -10,8 +10,9 @@ user has already said yes.
 
 Refusals mirror ``lit self-update`` exactly (same probes, same red line: never
 ``pip install --upgrade`` into the running interpreter): an editable/dev
-install or an install owned by neither uv nor pipx gets a 409 whose ``detail``
-is the human hint the SPA shows verbatim.
+install, an install owned by neither uv nor pipx, or one that came from a
+direct URL (git / a local file) instead of a release gets a 409 whose
+``detail`` is the human hint the SPA shows verbatim.
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ _NO_INSTALLER_DETAIL = (
     "litman was not installed via uv or pipx, so it cannot update itself. "
     "Upgrade with the tool you used, e.g. `pip install --upgrade litman`."
 )
+_NON_RELEASE_DETAIL = (
+    "This litman was installed from {origin}, not from a release — reinstall "
+    "it with `{command}`."
+)
 _NO_SESSION_DETAIL = (
     "This server was not started by `lit gui`, so there is no session to "
     "bring back after an update. Run `lit self-update` instead."
@@ -52,8 +57,10 @@ def start_self_update(request: Request) -> dict[str, object]:
     each), and FastAPI runs sync handlers on the threadpool.
     """
     from litman.commands.self_update import (
+        _REINSTALL_CMDS,
         _UPGRADE_CMDS,
         _detect_installer,
+        _install_origin,
         _is_editable_install,
     )
     from litman.core import launcher_stubs, self_update_helper
@@ -63,6 +70,18 @@ def start_self_update(request: Request) -> dict[str, object]:
     installer = _detect_installer()
     if installer is None:
         raise HTTPException(status_code=409, detail=_NO_INSTALLER_DETAIL)
+
+    # Ahead of the session check: a source the installer cannot upgrade past is
+    # the more specific reason, and refusing here keeps the window open — the
+    # spawn below would close it for an upgrade that was never going to land.
+    origin = _install_origin()
+    if origin is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=_NON_RELEASE_DETAIL.format(
+                origin=origin, command=_REINSTALL_CMDS[installer]
+            ),
+        )
 
     relaunch = getattr(request.app.state, "self_update_relaunch", None)
     if not relaunch:

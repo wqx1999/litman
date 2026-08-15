@@ -13,6 +13,7 @@ run reports it once via ``GET /api/version``) runs through the REAL lifespan
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +26,22 @@ from fastapi.testclient import TestClient
 from litman.core import self_update_helper
 from litman.core.library import create_vault
 from litman.core.update_check import OPT_OUT_ENV
-from litman.server import create_app
+from litman.server import create_app, routes_update
 
 
 @pytest.fixture(autouse=True)
 def _not_editable(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dev tree IS an editable install — neutralize the probe by default
-    so each test states its own installer situation explicitly."""
+    so each test states its own installer situation explicitly.
+
+    Same for the origin probe: CI installs litman editable, where it answers
+    ``None`` anyway, and leaving the suite to depend on how the box happens to
+    be installed is how a `pip install .` runner turns everything below red."""
     monkeypatch.setattr(
         "litman.commands.self_update._is_editable_install", lambda: False
+    )
+    monkeypatch.setattr(
+        "litman.commands.self_update._install_origin", lambda: None
     )
 
 
@@ -71,6 +79,50 @@ def test_unknown_installer_is_refused(
     resp = client.post("/api/self-update")
     assert resp.status_code == 409
     assert "pip install --upgrade litman" in resp.json()["detail"]
+
+
+def test_git_install_is_refused_without_closing_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv would re-resolve the git ref it recorded, not the release the badge
+    advertises. Refusing costs the user a click; going ahead costs them the
+    session — the server bows out, the window closes, and it comes back with
+    nothing upgraded. So: 409, no helper, and nobody sets ``should_exit``."""
+    monkeypatch.setattr("litman.commands.self_update._detect_installer", lambda: "uv")
+    monkeypatch.setattr(
+        "litman.commands.self_update._install_origin", lambda: "git (dev/1.3.5)"
+    )
+    spawns: list[dict[str, Any]] = []
+
+    def fake_spawn(**kwargs: Any) -> Path:
+        spawns.append(kwargs)
+        return tmp_path / "helper.sh"
+
+    monkeypatch.setattr(self_update_helper, "write_and_spawn_helper", fake_spawn)
+    # Patched on the module object, not by dotted string: an earlier test
+    # purges ``litman.server*`` from sys.modules, and a fresh copy's delay is
+    # not the one a leaked exit thread would be sleeping on.
+    monkeypatch.setattr(routes_update, "EXIT_DELAY_S", 0.0)
+
+    client = _client(tmp_path)
+    _arm_session(client, ["lit", "gui", "--window"])  # a session there to lose
+
+    class _FakeServer:
+        should_exit = False
+
+    fake_server = _FakeServer()
+    client.app.state.uvicorn_server = fake_server  # type: ignore[attr-defined]
+
+    resp = client.post("/api/self-update")
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "not from a release" in detail
+    assert "uv tool uninstall litman && uv tool install litman" in detail
+
+    assert spawns == []
+    # Zero exit delay, so a thread that had been started would have fired by now.
+    time.sleep(0.1)
+    assert fake_server.should_exit is False
 
 
 def test_no_gui_session_is_refused(

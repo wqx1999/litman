@@ -7,6 +7,18 @@ breaks something you relied on, a minor release opens a new way of working with
 litman, and a patch release is everything else — fixes, new controls, and
 conveniences.
 
+## Unreleased
+
+### Fixed
+
+- **An update that cannot work no longer pretends it can.** If you installed
+  litman straight from its git repository instead of from a release, `lit
+  self-update` and the app's update button used to announce a new version and
+  then fail out of sight — the reason buried in a log file, or the window
+  closing and coming back with nothing changed. Both now tell you up front that
+  this copy did not come from a release, and hand you the two commands that
+  reinstall it.
+
 ## 1.3.5 — 2026-08-09
 
 ### Changed
