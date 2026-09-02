@@ -284,6 +284,12 @@ const PARAM = AnnotationEditorParamsType
 // for FreeText.
 const NOTEABLE_ANNOTATIONS = ['highlightAnnotation', 'inkAnnotation']
 
+// pdf.js's editor-div id: its AnnotationEditorPrefix followed by a number.
+// Anchored, so the fake annotation container pdf.js parks in the annotation
+// layer for an uncommitted editor (whose id merely CONTAINS this one) can't
+// pass for the editor itself.
+const EDITOR_ID = /^pdfjs_internal_editor_\d+$/
+
 // The slivers of pdf.js's editor we touch on the SELECTED annotation. `comment`
 // is asymmetric (getter returns an object, setter takes a string / null), and
 // `canAddComment` is true for highlight + ink, false for FreeText (a text
@@ -1550,10 +1556,38 @@ export default function PdfView({
           '.annotationLayer section[data-annotation-id]',
         )
         if (section && showNoteForAnnotation(section)) return
+        // A note added in THIS session is still an editor, and Cursor mode
+        // switches the editor layer's pointer events off wholesale, so neither
+        // route above can reach it. Borrow pdf.js's own way of hit-testing its
+        // disabled layer (the same one behind double-click-to-edit): flip
+        // `.getElements` on, ask the browser what is under the pointer, flip it
+        // back — one synchronous block, so no other task can ever observe the
+        // class and nothing is left on the DOM. Cursor mode only; the other
+        // three tools enable the layer themselves. pdf.js hides the layer
+        // outright when it holds no editors, which is also what keeps this
+        // forced hit-test off the common path of simply reading a document.
+        if (editMode === 'none') {
+          const layer = m.target
+            .closest<HTMLElement>('.page')
+            ?.querySelector<HTMLElement>('.annotationEditorLayer')
+          if (layer && !layer.hidden) {
+            layer.classList.toggle('getElements', true)
+            const under = document.elementsFromPoint(m.x, m.y)
+            layer.classList.toggle('getElements', false)
+            // pdf.js's own guard: if the topmost hit is outside the layer,
+            // something else (our popover, the pill) owns this pixel.
+            const hit = layer.contains(under[0])
+              ? under.find(
+                  (el): el is HTMLElement => el instanceof HTMLElement && EDITOR_ID.test(el.id),
+                )
+              : undefined
+            if (hit && showNoteForEditor(hit)) return
+          }
+        }
         clearHover()
       })
     },
-    [clearHover, showNoteForAnnotation, showNoteForEditor],
+    [clearHover, editMode, showNoteForAnnotation, showNoteForEditor],
   )
 
   // A frame queued by the last mousemove must not fire into a torn-down view.
