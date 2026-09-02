@@ -275,6 +275,15 @@ const HIGHLIGHT_COLORS =
 
 const PARAM = AnnotationEditorParamsType
 
+// The annotation-layer classes of the two types that can carry a note — the
+// saved-annotation twin of `canNoteFor` below. A saved FreeText must NOT match:
+// `commentText` falls back to the annotation's own contents, so a text
+// annotation would surface the words already on screen as if they were a note.
+// That is precisely the duplicate hover popup our CommentManager exists to
+// suppress, and pdf.js states the rule itself by setting `canAddComment = false`
+// for FreeText.
+const NOTEABLE_ANNOTATIONS = ['highlightAnnotation', 'inkAnnotation']
+
 // The slivers of pdf.js's editor we touch on the SELECTED annotation. `comment`
 // is asymmetric (getter returns an object, setter takes a string / null), and
 // `canAddComment` is true for highlight + ink, false for FreeText (a text
@@ -283,6 +292,21 @@ interface SelectedEditor {
   canAddComment?: boolean
   get comment(): { text: string | null } | null
   set comment(value: string | null)
+}
+// A SAVED annotation is not an editor: all a hover hands us is the
+// `data-annotation-id` on its `<section>`, and the note text lives in pdf.js's
+// objects, never in the DOM. `commentText` resolves it from the annotation's own
+// data (AnnotationElement in pdf.mjs). Both hops are declared `any` in
+// pdfjs-dist, so model the slivers we touch.
+interface EditableAnnotation {
+  commentText?: string
+}
+interface AnnotatedPageView {
+  annotationLayer?: {
+    annotationLayer?: {
+      getEditableAnnotation(id: string): EditableAnnotation | undefined
+    } | null
+  } | null
 }
 // Opaque handle for a pdf.js editor — we only hand it straight back to
 // `setSelected`, never read its fields, so an unnamed object type is enough.
@@ -1466,6 +1490,38 @@ export default function PdfView({
     [anchorNote],
   )
 
+  /** Note of a saved annotation, keyed by the `data-annotation-id` its
+   *  `<section>` carries. The lookup order mirrors pdf.js's own `commentData`
+   *  getter and is not interchangeable: re-typing a reopened annotation's note
+   *  under a tool files the change under the EDITOR's id, so the element's
+   *  `commentText` still reports what is on disk. pdf.js does park that editor
+   *  in the annotation storage under the ANNOTATION's id, so when one is there
+   *  it owns the answer outright — including when the answer is now "no note",
+   *  which is how deleting a note this session stops resurrecting the old one. */
+  const showNoteForAnnotation = useCallback(
+    (section: HTMLElement): boolean => {
+      const id = section.dataset.annotationId
+      if (!id) return false
+      if (!NOTEABLE_ANNOTATIONS.some((cls) => section.classList.contains(cls))) return false
+      if (id === hoverIdRef.current) return true // already showing this one
+      const stored = docRef.current?.annotationStorage.getEditor(id) as SelectedEditor | null
+      let text = stored?.comment?.text?.trim()
+      if (!stored) {
+        const pageNumber = Number(section.closest<HTMLElement>('.page')?.dataset.pageNumber)
+        const view = viewerRef.current?.getPageView(pageNumber - 1) as
+          | AnnotatedPageView
+          | undefined
+        text = view?.annotationLayer?.annotationLayer
+          ?.getEditableAnnotation(id)
+          ?.commentText?.trim()
+      }
+      if (!text) return false
+      anchorNote(section, text, id)
+      return true
+    },
+    [anchorNote],
+  )
+
   const handlePdfMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       moveRef.current = {
@@ -1482,15 +1538,22 @@ export default function PdfView({
         // Mid-drag (a text selection, or dragging an annotation): leave the
         // tooltip alone rather than flickering it against the gesture.
         if (m.buttons !== 0) return
+        // Routes are tried in order and the first one that finds a note wins;
+        // the tooltip is cleared only when none of them does.
         const div = m.target.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]')
-        if (div) {
-          if (!showNoteForEditor(div)) clearHover()
-          return
-        }
+        if (div && showNoteForEditor(div)) return
+        // Once a note has been written into paper.pdf, reopening puts the
+        // annotation in the ANNOTATION layer, not the editor layer — and that
+        // layer keeps its pointer events in every mode (it is what makes links
+        // clickable), so plain delegation reaches it.
+        const section = m.target.closest<HTMLElement>(
+          '.annotationLayer section[data-annotation-id]',
+        )
+        if (section && showNoteForAnnotation(section)) return
         clearHover()
       })
     },
-    [clearHover, showNoteForEditor],
+    [clearHover, showNoteForAnnotation, showNoteForEditor],
   )
 
   // A frame queued by the last mousemove must not fire into a torn-down view.
