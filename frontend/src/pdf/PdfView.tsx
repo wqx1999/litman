@@ -1461,6 +1461,25 @@ export default function PdfView({
   // read-only tooltip (no click needed), Adobe-style. One mousemove handler is
   // the single hover source, coalesced to one pass per frame, and it makes
   // exactly one show-or-clear decision each time.
+  //
+  // Where a note is READ from depends only on where the annotation currently
+  // lives, never on the active tool — the point of the whole arrangement is that
+  // reading works in Cursor mode, which is the mode you read in. Three routes,
+  // first hit wins:
+  //
+  //   1. an editor div, by delegation — how it works under any tool, since a
+  //      tool enables the editor layer and rebuilds saved annotations into it;
+  //   2. a saved annotation's `<section>`, also by delegation — the annotation
+  //      layer keeps its pointer events in every mode;
+  //   3. a hit-test through the editor layer, for annotations made THIS session
+  //      that no tool has enabled — Cursor mode switches that layer's pointer
+  //      events off so route 1 cannot see them.
+  //
+  // pdf.js's own hover wiring is not one of them and cannot be: saveDocument
+  // always writes a /Popup ref, and with one present renderCommentButton hangs
+  // its pointerenter/leave on an `.annotationCommentButton` that
+  // pdf-editor-overrides.css sets `display:none` — a hidden button receives no
+  // pointer events, so `commentManager.toggleCommentPopup` is never called.
 
   /** Park the tooltip under `el`. `key` identifies what is being shown so a
    *  re-entry on the same thing is a no-op; coordinates are wrapper-relative

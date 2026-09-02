@@ -87,7 +87,17 @@ export class CommentManager {
 
   // --- Sidebar / native-popup surface: we render neither, so these are no-ops.
   //     Declared param-less so TS strict (noUnusedParameters) is satisfied while
-  //     still accepting pdf.js's extra call arguments (JS ignores them). ---
+  //     still accepting pdf.js's extra call arguments (JS ignores them).
+  //
+  //     `toggleCommentPopup` stays empty on purpose, and reading a note does not
+  //     go through it. pdf.js would call it from a commented annotation's hover
+  //     listeners — but it only attaches those to the annotation's body when the
+  //     annotation has NO /Popup ref, and saveDocument() always writes one. So
+  //     every note litman has saved takes the other branch, where the listeners
+  //     land on an `.annotationCommentButton` that pdf-editor-overrides.css
+  //     hides; a `display:none` button gets no pointer events, and this method
+  //     is never reached. Reading is PdfView's handlePdfMove instead, which
+  //     hovers the annotation directly. ---
   setSidebarUiManager(): void {}
   showSidebar(): void {}
   hideSidebar(): void {}
