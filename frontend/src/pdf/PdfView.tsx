@@ -410,9 +410,21 @@ export default function PdfView({
   // Guards saveNow against a double-fire (button click racing ⌘/Ctrl+S).
   const savingRef = useRef(false)
   // The id of the annotation the hover tooltip currently shows (null = hidden).
-  // A ref so the high-frequency mouseover handler can short-circuit re-entry on
-  // the same annotation without a state read.
+  // A ref so the high-frequency mousemove handler can short-circuit re-entry on
+  // the same annotation without a state read. The key is an editor div's id or a
+  // saved annotation's data-annotation-id — disjoint namespaces, so one plain
+  // string still answers "is this the same thing I am already showing?".
   const hoverIdRef = useRef<string | null>(null)
+  // The latest pointer sample, and the frame that is waiting to consume it.
+  // mousemove fires far more often than the tooltip can meaningfully change and
+  // the probe below forces a hit-test, so hover detection runs once per frame.
+  const moveRef = useRef<{
+    x: number
+    y: number
+    target: HTMLElement
+    buttons: number
+  } | null>(null)
+  const moveRafRef = useRef(0)
   // Stable indirection for the link service's pre-jump hook: the service is
   // built inside the load effect, which must not re-run when the handler's
   // closure changes (same pattern as commitNoteRef above).
@@ -1416,42 +1428,73 @@ export default function PdfView({
 
   // --- Hover note tooltip ---------------------------------------------------
   // Hovering a commented highlight / ink annotation surfaces its note in a
-  // read-only tooltip (no click needed), Adobe-style. We detect the hovered
-  // annotation by event delegation on the wrapper: every editor's div carries
-  // id `pdfjs_internal_editor_<n>` (= the UIManager's #allEditors key), so
-  // `getEditor(div.id).comment` reads the note. A SELECTED annotation
-  // (`.selectedEditor`) is skipped — the editable popover already shows its note.
-  const handlePdfHover = useCallback(
+  // read-only tooltip (no click needed), Adobe-style. One mousemove handler is
+  // the single hover source, coalesced to one pass per frame, and it makes
+  // exactly one show-or-clear decision each time.
+
+  /** Park the tooltip under `el`. `key` identifies what is being shown so a
+   *  re-entry on the same thing is a no-op; coordinates are wrapper-relative
+   *  and the layout effect below clamps them. */
+  const anchorNote = useCallback((el: HTMLElement, text: string, key: string) => {
+    const wrap = pdfWrapRef.current
+    if (!wrap) return
+    const wr = wrap.getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    hoverIdRef.current = key
+    setHoverNote({
+      text,
+      ax: r.left - wr.left,
+      ay: r.bottom - wr.top,
+      atop: r.top - wr.top,
+    })
+  }, [])
+
+  /** Note of a live editor: its div carries id `pdfjs_internal_editor_<n>` (=
+   *  the UIManager's #allEditors key), so `getEditor(div.id).comment` reads it.
+   *  False = nothing to show (no note, or a FreeText, whose text IS the
+   *  annotation), and the caller clears. A SELECTED editor is skipped — the
+   *  editable popover already shows its note. */
+  const showNoteForEditor = useCallback(
+    (div: HTMLElement): boolean => {
+      if (div.classList.contains('selectedEditor')) return false
+      if (div.id === hoverIdRef.current) return true // already showing this one
+      const text = uiManagerRef.current?.getEditor?.(div.id)?.comment?.text?.trim()
+      if (!text) return false
+      anchorNote(div, text, div.id)
+      return true
+    },
+    [anchorNote],
+  )
+
+  const handlePdfMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      const target = e.target as HTMLElement
-      const div = target.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]')
-      if (!div || div.classList.contains('selectedEditor')) {
-        clearHover()
-        return
+      moveRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        target: e.target as HTMLElement,
+        buttons: e.buttons,
       }
-      if (div.id === hoverIdRef.current) return // already showing this one
-      const ed = uiManagerRef.current?.getEditor?.(div.id)
-      const text = ed?.comment?.text?.trim()
-      if (!text) {
-        // No note (or a FreeText, whose text is the annotation itself) → nothing
-        // to surface; drop any tooltip left over from a neighbouring annotation.
+      if (moveRafRef.current) return
+      moveRafRef.current = requestAnimationFrame(() => {
+        moveRafRef.current = 0
+        const m = moveRef.current
+        if (!m) return
+        // Mid-drag (a text selection, or dragging an annotation): leave the
+        // tooltip alone rather than flickering it against the gesture.
+        if (m.buttons !== 0) return
+        const div = m.target.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]')
+        if (div) {
+          if (!showNoteForEditor(div)) clearHover()
+          return
+        }
         clearHover()
-        return
-      }
-      const wrap = pdfWrapRef.current
-      if (!wrap) return
-      const wr = wrap.getBoundingClientRect()
-      const dr = div.getBoundingClientRect()
-      hoverIdRef.current = div.id
-      setHoverNote({
-        text,
-        ax: dr.left - wr.left,
-        ay: dr.bottom - wr.top,
-        atop: dr.top - wr.top,
       })
     },
-    [clearHover],
+    [clearHover, showNoteForEditor],
   )
+
+  // A frame queued by the last mousemove must not fire into a torn-down view.
+  useEffect(() => () => cancelAnimationFrame(moveRafRef.current), [])
 
   // Measure the tooltip and clamp it inside the wrapper (below the annotation,
   // flipped above if it would overflow the bottom). useLayoutEffect so the
@@ -1638,7 +1681,7 @@ export default function PdfView({
           stay contained and can't paint over the TopBar's search dropdown. */}
       <div
         ref={pdfWrapRef}
-        onMouseOver={handlePdfHover}
+        onMouseMove={handlePdfMove}
         onMouseLeave={clearHover}
         className="relative isolate min-h-0 flex-1 bg-stone-200"
       >
