@@ -36,15 +36,18 @@
  * via saveDocument(). READING a note is entirely ours too: PdfView's
  * handlePdfMove anchors a lightweight tooltip to whatever the pointer is over.
  *
- * 🔴 Hiding the button is not merely cosmetic — it decides that. pdf.js only
- * attaches its own hover listeners to an annotation's body when the annotation
- * has no /Popup ref; saveDocument() always writes one, so on reload
- * renderCommentButton takes its other branch and hangs pointerenter/leave on
- * the `.annotationCommentButton` below, which this rule makes `display:none`.
- * A hidden button never receives a pointer event, so pdf.js's hover path is
- * dead and `CommentManager.toggleCommentPopup` is never called. Un-hiding the
- * button to "restore" that path would put pdf.js's unshipped-icon chrome back
- * on every commented annotation; PdfView does the reading instead. */
+ * 🔴 Hiding the button is not merely cosmetic — for the notes we save it is
+ * what settles that. pdf.js wires its hover listeners onto an annotation's own
+ * body only when the annotation has no /Popup ref, and saveDocument() writes one
+ * for every commented highlight / ink; those therefore take
+ * renderCommentButton's other branch, which hangs pointerenter/leave on the
+ * `.annotationCommentButton` below — and a `display:none` button never receives
+ * a pointer event. (An annotation with popup data but NO /Popup ref, a saved
+ * FreeText being the everyday case, does keep the live listeners and does call
+ * `CommentManager.toggleCommentPopup`; that call is ignored on purpose — see
+ * comment-manager.ts.) Un-hiding the button to "restore" pdf.js's path would put
+ * its unshipped-icon chrome back on every commented annotation; PdfView does the
+ * reading instead. */
 .annotationCommentButton,
 .commentPopup {
   display: none !important;

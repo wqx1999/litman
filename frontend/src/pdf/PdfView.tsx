@@ -275,20 +275,34 @@ const HIGHLIGHT_COLORS =
 
 const PARAM = AnnotationEditorParamsType
 
-// The annotation-layer classes of the two types that can carry a note — the
+// The annotation-layer CLASS NAMES of the two types that can carry a note — the
 // saved-annotation twin of `canNoteFor` below. A saved FreeText must NOT match:
 // `commentText` falls back to the annotation's own contents, so a text
 // annotation would surface the words already on screen as if they were a note.
 // That is precisely the duplicate hover popup our CommentManager exists to
 // suppress, and pdf.js states the rule itself by setting `canAddComment = false`
 // for FreeText.
-const NOTEABLE_ANNOTATIONS = ['highlightAnnotation', 'inkAnnotation']
+const NOTEABLE_ANNOTATION_CLASSES = ['highlightAnnotation', 'inkAnnotation']
 
-// pdf.js's editor-div id: its AnnotationEditorPrefix followed by a number.
-// Anchored, so the fake annotation container pdf.js parks in the annotation
-// layer for an uncommitted editor (whose id merely CONTAINS this one) can't
-// pass for the editor itself.
-const EDITOR_ID = /^pdfjs_internal_editor_\d+$/
+// pdf.js's editor-div id: its AnnotationEditorPrefix followed by a number, and
+// nothing else. Anchored at BOTH ends, because two neighbours in the DOM are
+// only a prefix match away: FreeText's inner contenteditable is `<editor id>
+// -editor`, and the placeholder pdf.js parks in the annotation layer for an
+// uncommitted editor has an id that merely CONTAINS this one.
+const EDITOR_ID_RE = /^pdfjs_internal_editor_\d+$/
+
+/** The editor div a hovered node belongs to. A prefix-selector `closest` can
+ *  stop on FreeText's inner `-editor` child — an id the UIManager has never
+ *  heard of — so keep climbing until the id is exactly an editor's. Both hover
+ *  routes go through this, so neither can drift from the other's idea of what
+ *  counts as an editor. */
+function closestEditor(node: HTMLElement): HTMLElement | null {
+  let el = node.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]')
+  while (el && !EDITOR_ID_RE.test(el.id)) {
+    el = el.parentElement?.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]') ?? null
+  }
+  return el
+}
 
 // The slivers of pdf.js's editor we touch on the SELECTED annotation. `comment`
 // is asymmetric (getter returns an object, setter takes a string / null), and
@@ -864,6 +878,15 @@ export default function PdfView({
   // hover logic below) so the wheel-zoom effect can list it as a dep without a
   // temporal-dead-zone error on a later const.
   const clearHover = useCallback(() => {
+    // Drop whatever frame the last mousemove queued. Whoever is clearing —
+    // scroll, zoom, the pointer leaving the wrapper — has the final say, and a
+    // frame scheduled before that would re-decide from a sample taken earlier.
+    // Unconditional hardening rather than a fix: a stranded tooltip was never
+    // reproduced. It makes "one show-or-clear decision per frame" true by
+    // construction instead of by argument.
+    cancelAnimationFrame(moveRafRef.current)
+    moveRafRef.current = 0
+    moveRef.current = null
     if (hoverIdRef.current !== null) {
       hoverIdRef.current = null
       setHoverNote(null)
@@ -1475,11 +1498,15 @@ export default function PdfView({
   //      that no tool has enabled — Cursor mode switches that layer's pointer
   //      events off so route 1 cannot see them.
   //
-  // pdf.js's own hover wiring is not one of them and cannot be: saveDocument
-  // always writes a /Popup ref, and with one present renderCommentButton hangs
-  // its pointerenter/leave on an `.annotationCommentButton` that
-  // pdf-editor-overrides.css sets `display:none` — a hidden button receives no
-  // pointer events, so `commentManager.toggleCommentPopup` is never called.
+  // pdf.js's own hover wiring is none of these. For a note WE saved it cannot
+  // be: saveDocument() gives a commented highlight / ink a /Popup ref, and with
+  // one present renderCommentButton hangs its pointerenter/leave on an
+  // `.annotationCommentButton` that pdf-editor-overrides.css sets
+  // `display:none`, which never receives a pointer event. Annotations that have
+  // popup data but NO /Popup ref keep pdf.js's listeners on their own body (a
+  // saved FreeText is the everyday case) and really do call
+  // `commentManager.toggleCommentPopup` — which ignores them deliberately; see
+  // comment-manager.ts for why honouring it would re-show a FreeText's body.
 
   /** Park the tooltip under `el`. `key` identifies what is being shown so a
    *  re-entry on the same thing is a no-op; coordinates are wrapper-relative
@@ -1527,7 +1554,8 @@ export default function PdfView({
     (section: HTMLElement): boolean => {
       const id = section.dataset.annotationId
       if (!id) return false
-      if (!NOTEABLE_ANNOTATIONS.some((cls) => section.classList.contains(cls))) return false
+      if (!NOTEABLE_ANNOTATION_CLASSES.some((cls) => section.classList.contains(cls)))
+        return false
       if (id === hoverIdRef.current) return true // already showing this one
       const stored = docRef.current?.annotationStorage.getEditor(id) as SelectedEditor | null
       let text = stored?.comment?.text?.trim()
@@ -1560,12 +1588,19 @@ export default function PdfView({
         moveRafRef.current = 0
         const m = moveRef.current
         if (!m) return
-        // Mid-drag (a text selection, or dragging an annotation): leave the
-        // tooltip alone rather than flickering it against the gesture.
-        if (m.buttons !== 0) return
+        // Mid-drag — selecting the text under a highlight, or moving an
+        // annotation. Get out of the way: a note parked over the words being
+        // selected is noise, and the reader is not asking for it. Clearing at
+        // the start of the gesture cannot flicker (there is nothing to re-show
+        // until the button comes back up), and returning early also keeps the
+        // hit-test below out of an in-flight selection.
+        if (m.buttons !== 0) {
+          clearHover()
+          return
+        }
         // Routes are tried in order and the first one that finds a note wins;
         // the tooltip is cleared only when none of them does.
-        const div = m.target.closest<HTMLElement>('[id^="pdfjs_internal_editor_"]')
+        const div = closestEditor(m.target)
         if (div && showNoteForEditor(div)) return
         // Once a note has been written into paper.pdf, reopening puts the
         // annotation in the ANNOTATION layer, not the editor layer — and that
@@ -1590,14 +1625,22 @@ export default function PdfView({
             .closest<HTMLElement>('.page')
             ?.querySelector<HTMLElement>('.annotationEditorLayer')
           if (layer && !layer.hidden) {
+            // try/finally, not two statements in a row: "the class is never
+            // left behind" is a red line, and it should hold because of the
+            // structure, not because exactly one non-throwing call happens to
+            // sit in between today.
+            let under: Element[]
             layer.classList.toggle('getElements', true)
-            const under = document.elementsFromPoint(m.x, m.y)
-            layer.classList.toggle('getElements', false)
+            try {
+              under = document.elementsFromPoint(m.x, m.y)
+            } finally {
+              layer.classList.toggle('getElements', false)
+            }
             // pdf.js's own guard: if the topmost hit is outside the layer,
             // something else (our popover, the pill) owns this pixel.
             const hit = layer.contains(under[0])
               ? under.find(
-                  (el): el is HTMLElement => el instanceof HTMLElement && EDITOR_ID.test(el.id),
+                  (el): el is HTMLElement => el instanceof HTMLElement && EDITOR_ID_RE.test(el.id),
                 )
               : undefined
             if (hit && showNoteForEditor(hit)) return
@@ -1610,7 +1653,15 @@ export default function PdfView({
   )
 
   // A frame queued by the last mousemove must not fire into a torn-down view.
-  useEffect(() => () => cancelAnimationFrame(moveRafRef.current), [])
+  // Zero the handle too, so the `if (moveRafRef.current) return` guard above is
+  // never looking at a cancelled id.
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(moveRafRef.current)
+      moveRafRef.current = 0
+    },
+    [],
+  )
 
   // Measure the tooltip and clamp it inside the wrapper (below the annotation,
   // flipped above if it would overflow the bottom). useLayoutEffect so the

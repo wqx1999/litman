@@ -89,15 +89,28 @@ export class CommentManager {
   //     Declared param-less so TS strict (noUnusedParameters) is satisfied while
   //     still accepting pdf.js's extra call arguments (JS ignores them).
   //
-  //     `toggleCommentPopup` stays empty on purpose, and reading a note does not
-  //     go through it. pdf.js would call it from a commented annotation's hover
-  //     listeners — but it only attaches those to the annotation's body when the
-  //     annotation has NO /Popup ref, and saveDocument() always writes one. So
-  //     every note litman has saved takes the other branch, where the listeners
-  //     land on an `.annotationCommentButton` that pdf-editor-overrides.css
-  //     hides; a `display:none` button gets no pointer events, and this method
-  //     is never reached. Reading is PdfView's handlePdfMove instead, which
-  //     hovers the annotation directly. ---
+  //     `toggleCommentPopup` stays empty on purpose. pdf.js reaches it from
+  //     several places; each one is either already dead or deliberately dropped:
+  //
+  //       - a note WE saved on a highlight / ink. saveDocument() gives it a
+  //         /Popup ref, and PopupElement.renderCommentButton only wires the
+  //         annotation's own body when there is NO such ref — so these take the
+  //         other branch, onto an `.annotationCommentButton` that
+  //         pdf-editor-overrides.css hides. A `display:none` button never gets a
+  //         pointer event, so for our own notes the call really never arrives.
+  //       - an annotation with popup DATA but no /Popup ref — a saved FreeText
+  //         is the everyday case — DOES keep the live listeners (its body gets
+  //         `.popupTriggerArea`), so hovering one calls this method for real.
+  //         Honouring it would show `popup.comment`, which for a FreeText
+  //         resolves to the annotation's own body: the words already on screen,
+  //         drawn a second time. That is the duplicate popup this manager exists
+  //         to suppress.
+  //       - UIManager.toggleComment — dragging a commented editor, or toggling
+  //         the selected one. Our floating popover already shows that editor's
+  //         note, so there is nothing left to say.
+  //
+  //     Reading is PdfView's handlePdfMove instead: it hovers the annotation
+  //     directly and only offers a note for the two types that can carry one. ---
   setSidebarUiManager(): void {}
   showSidebar(): void {}
   hideSidebar(): void {}
