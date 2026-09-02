@@ -19,6 +19,15 @@ conveniences.
   all. The check repeats when you open the panel and when the vault changes; it
   does not repeat every time you focus the window or refresh the list.
 
+- **A note on a highlight now shows wherever you hover it.** Writing a note on a
+  highlight or a drawing left it readable only while the Highlight, Text or Draw
+  tool was selected. In Cursor — the tool you actually read in — hovering that
+  same annotation showed nothing, whether you had just written the note or were
+  coming back to it days later. Hovering now surfaces the note in every tool, and
+  it steps out of the way while you drag to select text. Annotations without a
+  note still show nothing, and one you have open for editing keeps its note in
+  the editing panel rather than also floating it as a tooltip.
+
 - **An update that cannot work no longer pretends it can.** If you installed
   litman straight from its git repository instead of from a release, `lit
   self-update` and the app's update button used to announce a new version and
