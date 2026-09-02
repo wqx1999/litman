@@ -592,7 +592,7 @@ export function postSelfUpdate(): Promise<{ status: string; installer: string }>
 }
 
 /** What this host can do. Cheap enough to call on page load — unlike
- * `/api/health`, which is Tier-2 and only runs when the user opens the panel.
+ * `/api/health`, which is Tier-2 and waits for the first idle after boot.
  *
  * `links` is which folder-link mechanism works in the served vault: 'symlink'
  * (POSIX) and 'junction' (Windows) are both fully-functional silent states.
@@ -613,8 +613,9 @@ export function fetchCapabilities(): Promise<Capabilities> {
 
 /** Run every health-check probe and return the flat findings list — the pure-read
  * mirror of `lit health-check` (the GET never re-locks / fixes / stamps the
- * registry). On demand only (Tier-2: reads all metadata server-side), so the
- * caller fetches this when the user opens the health panel, never on page load. */
+ * registry). Tier-2 (reads all metadata server-side), so the caller fetches it
+ * once after first paint (idle-deferred), to fill the shield badge, and again
+ * on every panel open — never on focus / resync. */
 export function fetchHealth(): Promise<HealthIssue[]> {
   return getJSON<HealthIssue[]>('/api/health')
 }

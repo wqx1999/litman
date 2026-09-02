@@ -11,6 +11,14 @@ conveniences.
 
 ### Fixed
 
+- **The health badge no longer waits to be clicked.** The shield in the toolbar
+  showed nothing until you opened its panel, so a library problem could sit
+  there unseen for as long as you never thought to look. litman now runs the
+  check by itself once the window has finished drawing, and the shield carries
+  the count from then on. A library with nothing wrong still shows no badge at
+  all. The check repeats when you open the panel and when the vault changes; it
+  does not repeat every time you focus the window or refresh the list.
+
 - **An update that cannot work no longer pretends it can.** If you installed
   litman straight from its git repository instead of from a release, `lit
   self-update` and the app's update button used to announce a new version and

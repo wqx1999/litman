@@ -729,8 +729,9 @@ export default function App() {
         }, 3000)
       })
       .catch(() => {})
-    // Link-capability advisory: cheap (one cached probe server-side) so it
-    // can run on load, unlike the Tier-2 health panel. Best-effort — a failure
+    // Link-capability advisory: cheap (one cached probe server-side) so it runs
+    // inline with the rest of the boot fetches — unlike the Tier-2 health check,
+    // which also runs on load now but waits for idle. Best-effort — a failure
     // just leaves the notice off; it must never block or error the boot path.
     if (localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
       fetchCapabilities()

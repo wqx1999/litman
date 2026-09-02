@@ -227,22 +227,98 @@ export default function TopBar({
   // closes the other. Opening the log also clears the unread dot.
   const [panel, setPanel] = useState<null | 'log' | 'health'>(null)
   // Health result lifted above the panel so the shield's count badge survives a
-  // panel close (`null` = never run yet → no badge). On-demand only: runHealth
-  // fires when the panel opens, never on mount (run_all_checks is Tier-2).
+  // panel close. `null` = no result for the CURRENT vault yet → no badge (the
+  // effect below resets it on a switch, so it is not only "never run"). Two
+  // things fill it: one run deferred to idle after boot (the effect below — a
+  // GUI-only user never clicks the shield, so the badge used to be permanently
+  // empty for them), and the existing re-run on every panel open. Nothing else
+  // re-runs it: not focus, not resync, no timer (run_all_checks is Tier-2).
   const [healthIssues, setHealthIssues] = useState<HealthIssue[] | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
   const [healthError, setHealthError] = useState<string | null>(null)
 
-  const runHealth = () => {
+  // Two independent knobs — kept separate on purpose, so a future foreground
+  // caller can disown a stale run and still be told when it fails:
+  //   `isStale` — drop a result whose caller has moved on (the boot run hands
+  //     in its `cancelled` flag), so vault A's answer never writes into vault B.
+  //   `silent`  — never surface a FAILURE. Only the boot run, which nobody
+  //     asked for, sets this. The panel renders `error` INSTEAD of the issue
+  //     list, so a background 500 landing on an open panel would wipe out the
+  //     report the user is reading. A silent run still fills the badge on
+  //     success; its failure leaves the badge as it was.
+  // Clearing a stale error at the start of every run is always right, so that
+  // one write is ungated. The panel's own calls pass nothing and are unchanged.
+  //
+  // `.finally` is deliberately gated too, even though that leaves a disowned
+  // run's `healthLoading` true: the alternative is worse — a stale run clearing
+  // the flag while the NEW vault's run is still in flight, i.e. a panel that
+  // says it is done when it is not. The gated version always self-heals,
+  // because the only thing that disowns a run (a vault change) is immediately
+  // followed by a fresh run that sets the flag and clears it. Do not "fix" it.
+  const runHealth = (opts?: { isStale?: () => boolean; silent?: boolean }) => {
+    const isStale = opts?.isStale
+    if (isStale?.()) return
     setHealthLoading(true)
     setHealthError(null)
     fetchHealth()
-      .then(setHealthIssues)
-      .catch((err) =>
-        setHealthError(err instanceof Error ? err.message : String(err)),
-      )
-      .finally(() => setHealthLoading(false))
+      .then((issues) => {
+        if (isStale?.()) return
+        setHealthIssues(issues)
+      })
+      .catch((err) => {
+        if (opts?.silent || isStale?.()) return
+        setHealthError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (isStale?.()) return
+        setHealthLoading(false)
+      })
   }
+
+  // Boot-time run, deferred: fills the shield badge with no click. Idle-
+  // scheduled (plain 300ms timer where requestIdleCallback is missing — Safari
+  // only got it in 16.4) so it never competes with first paint. What that
+  // guarantees is "past first paint", NOT "after every startup fetch": the
+  // {timeout: 1500} fires unconditionally, so on a slow boot the health request
+  // can overlap the tail of the startup burst. The timeout stays anyway — on a
+  // page that never goes idle, dropping it would mean a badge that never fills,
+  // which is the worse failure. Keyed on the SERVED VAULT rather than
+  // [] because TopBar is NOT remounted across a vault switch (no `key`, no
+  // reload, and App's `served` gate goes truthy → truthy so React reconciles in
+  // place): with an empty dep array, vault A's badge would sit on vault B. It
+  // is `served`, not `active`, for the reason types.ts gives — `active` is the
+  // REGISTRY's active name and is null whenever the served vault was found any
+  // other way (`lit gui --library`, $LIT_LIBRARY, cwd-walk), which would leave
+  // those users with a permanently empty badge. The cleanup also disowns a
+  // check scheduled or in flight when the user switches away.
+  //
+  // Dropping the previous result BEFORE scheduling is what keeps the badge
+  // honest across a switch: otherwise vault A's count sits on vault B for the
+  // whole idle wait, and if B's check then fails silently it would sit there
+  // for good — the very thing this effect's per-vault key exists to prevent.
+  // The error goes with it for the same reason: A's failure message is not
+  // about B, and waiting for B's own run to clear it leaves it readable in the
+  // panel for the whole idle wait. On first mount both are no-ops (already
+  // null).
+  useEffect(() => {
+    if (!vaults?.served) return
+    setHealthIssues(null)
+    setHealthError(null)
+    let cancelled = false
+    const go = () => runHealth({ isStale: () => cancelled, silent: true })
+    const idle = (window as any).requestIdleCallback as
+      | undefined
+      | ((cb: () => void, o?: { timeout: number }) => number)
+    const handle = idle ? idle(go, { timeout: 1500 }) : window.setTimeout(go, 300)
+    return () => {
+      cancelled = true
+      if (idle) (window as any).cancelIdleCallback?.(handle)
+      else window.clearTimeout(handle)
+    }
+    // runHealth is re-created every render but only touches stable setters + a
+    // module fetch; listing it would re-scan the library on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaults?.served])
 
   const openLog = () => {
     setPanel('log')
@@ -263,8 +339,10 @@ export default function TopBar({
   const [agentBusy, setAgentBusy] = useState(false)
   // Machine-global onboarding status — the red-dot source. Fetched once when the
   // TopBar mounts, which only happens while a vault is served (App gates the
-  // whole view on `served`), so this mirrors App's served-gated seed, NOT the
-  // on-demand Health fetch: the dot must be known on load, before any click.
+  // whole view on `served`), so this mirrors App's served-gated seed: the dot
+  // must be known on load, before any click. Unlike the health run above it is
+  // neither idle-deferred nor per-vault — the status is machine-global and one
+  // cheap read, so it goes out with the rest of the boot fetches.
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   useEffect(() => {
     fetchAgentStatus()
@@ -778,7 +856,7 @@ export default function TopBar({
           issues={healthIssues}
           loading={healthLoading}
           error={healthError}
-          onRerun={runHealth}
+          onRerun={() => runHealth()}
           onClose={closePanel}
         />
       )}

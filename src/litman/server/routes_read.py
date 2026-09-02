@@ -225,8 +225,8 @@ def get_capabilities(request: Request) -> dict[str, Any]:
 
     Cheap enough for the frontend to call on page load, which is the whole
     reason it is not folded into ``GET /health``: that endpoint is Tier-2 (it
-    reads every ``metadata.yaml``) and is deliberately fetched only when the
-    user opens the health panel. But a GUI-only user needs to be TOLD, at boot,
+    reads every ``metadata.yaml``) and is deliberately deferred to the first
+    idle after first paint. But a GUI-only user needs to be TOLD, at boot,
     why ``views/`` is empty and why the shortcuts never appeared in their
     project folders — the CLI's stderr warning goes nowhere, because the desktop
     shortcut launches the console-less ``litw`` entry point.
@@ -265,7 +265,8 @@ def get_health(request: Request) -> list[dict[str, Any]]:
     registry. Those are the write side effects of the CLI ``health_check_cmd``;
     the GET surfaces findings only. Repair still goes through
     ``lit health-check --fix``. Tier-2 cost (reads every ``metadata.yaml`` via
-    ``list_papers``), so the frontend runs it on demand, never on page load.
+    ``list_papers``), so the SPA runs it once after first paint (idle-deferred)
+    and on every panel open — never on focus / resync.
     """
     vault = _vault(request)
     papers = list_papers(vault)
