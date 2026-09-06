@@ -359,9 +359,21 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
     range of each ``priority-<project>`` key that replaces it, where ``None``
     is legal ("linked, not graded yet" — ADR-025 decision 5).
 
-    A paper in no project gets a different retired-field message: its grade
-    has nowhere to go and ``--fix`` will drop it, which is the only place that
-    loss is disclosed (see :data:`AUTO_FIXABLE_CATEGORIES`).
+    The retired-field finding has THREE wordings, because only one of them is
+    a warning and it has to stand out from the other two:
+
+    * linked → the grade moves onto each project link, nothing is lost;
+    * in no project, WITH a value → the grade has nowhere to go and ``--fix``
+      drops it. The only place that loss is disclosed
+      (see :data:`AUTO_FIXABLE_CATEGORIES`), so it must not be diluted;
+    * in no project, with no value → also nothing to lose. ``lit add`` wrote
+      ``priority: null`` for every unread paper, so this is the COMMON case,
+      not an edge one; telling those papers their value will be dropped both
+      lies and buries the papers that really do lose one.
+
+    "Has a value" is ``is not None`` — deliberately the same test
+    ``ripple.migrate_retired_priority`` uses to decide whether to copy
+    anything, so the warning and the behaviour cannot disagree.
     """
     out: list[Issue] = []
     for p in papers:
@@ -385,10 +397,10 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
         for field, replacement in _RETIRED_FIELDS.items():
             if field not in p:
                 continue
+            message = f"field {field!r} was retired; use {replacement}"
             if p.get("projects"):
-                message = f"field {field!r} was retired; use {replacement}"
                 hint = "`lit health-check --fix` migrates it in one step"
-            else:
+            elif p.get(field) is not None:
                 message = (
                     f"field {field!r} was retired and this paper is in no "
                     "project, so its value is dropped"
@@ -397,6 +409,8 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                     "`lit health-check --fix` drops it; `lit link` it to a "
                     "project first to keep the grade"
                 )
+            else:
+                hint = "`lit health-check --fix` clears it — this one is unset"
             out.append(
                 Issue(
                     category="retired_priority",

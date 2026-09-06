@@ -191,34 +191,120 @@ def test_schema_per_project_priority_out_of_range(vault: Path) -> None:
     assert schema[0].severity == "error"
 
 
+def _retired_findings(vault: Path) -> dict[str, Any]:
+    return {
+        i.paper_id: i
+        for i in check_schema(vault, list_papers(vault))
+        if i.category == "retired_priority"
+    }
+
+
 def test_schema_retired_priority_discloses_the_lossy_case(vault: Path) -> None:
-    """A paper in NO project loses its grade to `--fix`, and that is the only
-    place the loss is disclosed — the report folds each category after five
-    entries, so "the user saw the list first" is not an argument that holds.
+    """Three cases, and only ONE of them is a warning.
+
+    The loss is disclosed here and nowhere else — the report folds each
+    category after five entries, so "the user saw the list first" is not an
+    argument that holds. That makes dilution the failure mode to guard: a
+    paper with `priority: null` and no projects loses nothing, and `lit add`
+    wrote exactly that for every unread paper, so warning about those buries
+    the few that really do lose a grade.
     """
     _write_paper(vault, "2024_Linked_Paper", projects=["pep"])
     _append_metadata(vault, "2024_Linked_Paper", "priority: A\n")
     _write_paper(vault, "2024_Loose_Paper", projects=[])
     _append_metadata(vault, "2024_Loose_Paper", "priority: A\n")
+    # The common case: added, never triaged, never linked.
+    _write_paper(vault, "2024_Unset_Paper", projects=[])
+    _append_metadata(vault, "2024_Unset_Paper", "priority:\n")
 
-    found = {
-        i.paper_id: i
-        for i in check_schema(vault, list_papers(vault))
-        if i.category == "retired_priority"
+    found = _retired_findings(vault)
+    assert set(found) == {
+        "2024_Linked_Paper",
+        "2024_Loose_Paper",
+        "2024_Unset_Paper",
     }
-    assert set(found) == {"2024_Linked_Paper", "2024_Loose_Paper"}
+    linked = found["2024_Linked_Paper"]
+    loose = found["2024_Loose_Paper"]
+    unset = found["2024_Unset_Paper"]
 
-    linked, loose = found["2024_Linked_Paper"], found["2024_Loose_Paper"]
-    assert linked.message != loose.message, "the lossy case must read differently"
-    assert "dropped" in loose.message and "no \nproject" not in loose.message
+    # Only the genuinely lossy paper says anything is dropped.
+    assert "dropped" in loose.message
     assert "in no project" in loose.message
-    assert "dropped" not in linked.message
-    # One verdict + one way out, and the way out is the one that keeps the
+    # One verdict + one way out, and the way out is the one that KEEPS the
     # grade (link it first), not just the one that deletes it.
     assert "lit link" in (loose.hint or "")
-    for issue in (linked, loose):
+
+    for issue in (linked, unset):
+        assert "dropped" not in issue.message, issue.message
+        assert "keep the grade" not in (issue.hint or ""), issue.hint
+        assert issue.message != loose.message, "the warning must stand out"
+
+    for issue in (linked, loose, unset):
         assert len(issue.message) < 120, issue.message
         assert len(issue.hint or "") < 120, issue.hint
+
+
+def test_schema_retired_priority_does_not_warn_an_unset_field(
+    vault: Path,
+) -> None:
+    """The regression this exists for. `lit add` wrote `priority: null`, so on
+    a real library most untriaged papers are in this state — 8 of 18 on the
+    demo vault. Telling them their value will be dropped is false, and it
+    drowns the papers that lose a real grade."""
+    _write_paper(vault, "2024_Unset_Paper", projects=[])
+    _append_metadata(vault, "2024_Unset_Paper", "priority:\n")
+
+    issue = _retired_findings(vault)["2024_Unset_Paper"]
+    assert "dropped" not in issue.message
+    assert "no project" not in issue.message
+    assert "keep the grade" not in (issue.hint or "")
+    # Still an error, still fixable in one Enter — only the wording changes.
+    assert issue.severity == "error"
+    assert "--fix" in (issue.hint or "")
+
+
+def test_schema_retired_priority_still_warns_a_real_loss(vault: Path) -> None:
+    """The paired control. Without it, a build that never warns at all would
+    satisfy the test above."""
+    _write_paper(vault, "2024_Loose_Paper", projects=[])
+    _append_metadata(vault, "2024_Loose_Paper", "priority: C\n")
+
+    issue = _retired_findings(vault)["2024_Loose_Paper"]
+    assert "dropped" in issue.message
+    assert "keep the grade" in (issue.hint or "")
+
+
+def test_schema_retired_priority_warning_tracks_the_migration(
+    vault: Path,
+) -> None:
+    """The warning and the behaviour must not disagree: a paper is told it
+    loses something exactly when `migrate_retired_priority` would drop a value
+    without copying it anywhere."""
+    from litman.core.ripple import migrate_retired_priority
+
+    for name, projects, line in (
+        ("2024_Linked_Graded", ["pep"], "priority: A\n"),
+        ("2024_Linked_Unset", ["pep"], "priority:\n"),
+        ("2024_Loose_Graded", [], "priority: C\n"),
+        ("2024_Loose_Unset", [], "priority:\n"),
+    ):
+        _write_paper(vault, name, projects=projects)
+        _append_metadata(vault, name, line)
+
+    warned = {
+        pid for pid, i in _retired_findings(vault).items() if "dropped" in i.message
+    }
+    before = {p["id"]: dict(p) for p in list_papers(vault)}
+    migrate_retired_priority(vault)
+    after = {p["id"]: dict(p) for p in list_papers(vault)}
+
+    lost = {
+        pid
+        for pid, old in before.items()
+        if old.get("priority") is not None
+        and not any(k.startswith("priority-") for k in after[pid])
+    }
+    assert warned == lost == {"2024_Loose_Graded"}
 
 
 def test_schema_per_project_priority_in_range_is_clean(vault: Path) -> None:
