@@ -45,6 +45,10 @@ def _make_paper(
     projects: list[str] | None = None,
     **extra: Any,
 ) -> Path:
+    # The grade is a property of the LINK now (ADR-025), so one `priority=`
+    # kwarg lands on every project the paper belongs to — which is exactly the
+    # shape `lit health-check --fix` produces from the retired global field.
+    # Tests that need DIFFERENT grades per project pass the keys via **extra.
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -54,7 +58,6 @@ def _make_paper(
         "year": year,
         "doi": f"10.test/{paper_id}",
         "status": "inbox",
-        "priority": priority,
         "type": "research",
         "projects": projects or [],
         "topics": [],
@@ -62,6 +65,11 @@ def _make_paper(
         "code-clones": [],
         "created-at": "2026-05-11T10:00:00+02:00",
         "updated-at": "2026-05-11T10:00:00+02:00",
+        **{
+            f"priority-{project}": priority
+            for project in (projects or [])
+            if priority is not None
+        },
         **extra,
     }
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:

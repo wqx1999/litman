@@ -39,7 +39,8 @@ def vault(tmp_path: Path) -> Path:
     v = create_vault(tmp_path)
     _seed_paper(
         v, "2023_Pandi_Cellfree",
-        year=2023, type="research", status="inbox", priority="B",
+        year=2023, type="research", status="inbox",
+        **{"priority-PepForge": "B"},
         topics=["AMP-prediction", "deep-learning"],
         methods=["transformer"],
         projects=["PepForge"],
@@ -48,7 +49,8 @@ def vault(tmp_path: Path) -> Path:
     )
     _seed_paper(
         v, "2024_Smith_BERT",
-        year=2024, type="review", status="deep-read", priority="A",
+        year=2024, type="review", status="deep-read",
+        **{"priority-PepCodec": "A"},
         topics=["NLP", "transformer"],
         methods=["BERT-style"],
         projects=["PepCodec"],
@@ -57,7 +59,10 @@ def vault(tmp_path: Path) -> Path:
     )
     _seed_paper(
         v, "2024_Doe_GNN",
-        year=2024, type="research", status="skim", priority="C",
+        year=2024, type="research", status="skim",
+        # Different grades in the two projects: this is the paper that makes
+        # `--project` narrowing observable (ADR-025 decision 8).
+        **{"priority-PepForge": "C", "priority-PepCodec": "A"},
         topics=["GNN"],
         methods=["GNN"],
         projects=["PepForge", "PepCodec"],
@@ -131,10 +136,34 @@ def test_list_status_filter(vault: Path) -> None:
 
 
 def test_list_priority_filter(vault: Path) -> None:
+    """No --project: any project's grade qualifies (ADR-025 decision 8)."""
     result = _invoke(vault, "--priority", "C")
     assert result.exit_code == 0
-    assert "2024_Doe_GNN" in result.output
+    assert "2024_Doe_GNN" in result.output   # C for PepForge
     assert "1 of 3" in result.output
+
+
+def test_list_priority_filter_is_or_across_projects(vault: Path) -> None:
+    """Doe is a C for PepForge and an A for PepCodec, so it answers to both
+    when no project narrows the question."""
+    for grade in ("A", "C"):
+        result = _invoke(vault, "--priority", grade)
+        assert "2024_Doe_GNN" in result.output, grade
+
+
+def test_list_priority_narrowed_by_project(vault: Path) -> None:
+    """With --project, only that project's grade counts — the whole point of
+    making the grade a property of the link."""
+    forge_c = _invoke(vault, "--project", "PepForge", "--priority", "C")
+    assert "2024_Doe_GNN" in forge_c.output
+
+    forge_a = _invoke(vault, "--project", "PepForge", "--priority", "A")
+    assert "2024_Doe_GNN" not in forge_a.output   # it is an A, but not here
+    assert "No papers match" in forge_a.output
+
+    codec_a = _invoke(vault, "--project", "PepCodec", "--priority", "A")
+    assert "2024_Doe_GNN" in codec_a.output
+    assert "2024_Smith_BERT" in codec_a.output
 
 
 # ---------------------------------------------------------------------------

@@ -328,16 +328,19 @@ def test_taxonomy_rename_stale_index_falls_back(seeded, count_scans) -> None:
     _assert_equals_full_rebuild(vault, proj_dirs)
 
 
-def test_ripple_refuses_papers_with_relevance_probes(seeded) -> None:
+def test_ripple_refuses_papers_with_project_key_probes(seeded) -> None:
+    """The stray-key probe reads relevance-<x> AND priority-<x> off every
+    paper; an INDEX projection carries neither, so combining the two must stay
+    a hard error rather than a silently incomplete cascade."""
     vault, _ = seeded
-    with pytest.raises(ValueError, match="rename_relevance"):
+    with pytest.raises(ValueError, match="rename_project_keys"):
         _ripple_replacements(
             vault, "projects", {"alpha": "gamma"},
-            rename_relevance=True, papers=[],
+            rename_project_keys=True, papers=[],
         )
-    with pytest.raises(ValueError, match="drop_relevance"):
+    with pytest.raises(ValueError, match="drop_project_keys"):
         _ripple_removals(
-            vault, "projects", "alpha", drop_relevance=True, papers=[]
+            vault, "projects", "alpha", drop_project_keys=True, papers=[]
         )
 
 

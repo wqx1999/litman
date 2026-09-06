@@ -200,6 +200,21 @@ def _references(tmp_path: Path, project: str) -> str:
     ).read_text(encoding="utf-8")
 
 
+def _set_keys(vault: Path, paper_id: str, keys: dict[str, str]) -> None:
+    """Set metadata keys on a fixture paper, through the TRUTH lock."""
+    from litman.core.locking import lock_truth_file, unlock_truth_file
+
+    path = vault / "papers" / paper_id / "metadata.yaml"
+    lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
+    kept = [ln for ln in lines if ln.split(":")[0] not in keys]
+    unlock_truth_file(path)
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.writelines(kept)
+        for key, value in keys.items():
+            fh.write(f"{key}: {value}\n")
+    lock_truth_file(path)
+
+
 def _assert_completed(result: Any) -> None:
     """The command ran to the end rather than crashing.
 
@@ -356,19 +371,7 @@ def test_m3_updated_at_is_not_bumped(vault: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# M-4 is only PARTIALLY covered here, deliberately.
-#
-# The spec's M-4 is "REFERENCES.md 重建后分组与迁移前完全一致" — the priority
-# GROUPING must survive the migration. It cannot yet: `_group_by_priority`
-# (core/project_refs.py) still reads the retired paper-level key, so after
-# `--fix` every paper falls into the "Unprioritized" bucket. Switching that
-# renderer to `priority-<project>` is milestone 3.2, and the grouping
-# assertion belongs with it.
-#
-# What IS asserted below is the half this milestone owns: the reference lists
-# are rebuilt by the migration, and rebuilt from FULL metadata. Writing a
-# grouping assertion that passes today would mean weakening it to something
-# 3.2 must then re-tighten, which is worse than an explicit gap.
+# M-4 — the grouping a user already had must survive the upgrade
 # ---------------------------------------------------------------------------
 
 
@@ -399,6 +402,92 @@ def test_references_are_rebuilt_from_full_metadata(
         assert "the tokenizer we copied" in text
     for text in (before_second, after_second):
         assert "same trick, other target" in text
+
+
+def _reference_groups(tmp_path: Path, project: str) -> dict[str, list[str]]:
+    """Parse REFERENCES.md into ``{"Priority A": [id, ...], ...}``."""
+    groups: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in _references(tmp_path, project).splitlines():
+        if line.startswith("## "):
+            current = line[3:].split(" (")[0]
+            groups[current] = []
+        elif current is not None and "[[" in line:
+            groups[current].append(line.split("[[")[1].split("]]")[0])
+    return groups
+
+
+def _groups_from_the_retired_field(project: str) -> dict[str, list[str]]:
+    """The grouping 1.3.5 rendered, computed from the fixture's OLD global
+    values — i.e. what the user's REFERENCES.md looked like before upgrading.
+
+    Built from the fixture table rather than by running the old renderer,
+    because the old renderer is gone. Order within a bucket is the renderer's:
+    year descending, then id ascending.
+    """
+    groups: dict[str, list[str]] = {}
+    for paper_id, _status, priority, projects, _extra in _FIXTURE:
+        if project not in projects:
+            continue
+        # 2024_Dunn_Latent was already graded C for pepcodec by hand, and
+        # setdefault must not have overwritten it with the retired A.
+        grade = (
+            "C"
+            if paper_id == "2024_Dunn_Latent" and project == _MAIN
+            else priority
+        )
+        label = f"Priority {grade}" if grade else "Unprioritized"
+        groups.setdefault(label, []).append(paper_id)
+    for ids in groups.values():
+        ids.sort(key=lambda pid: (-int(pid[:4]), pid))
+    return groups
+
+
+def test_m4_reference_grouping_survives_the_migration(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The spec's M-4: after `--fix`, each project's REFERENCES.md groups the
+    papers exactly as the retired global field used to, because the migration
+    copied that value onto the link the file is about.
+
+    This is what makes the upgrade invisible to the user: they open the same
+    file afterwards and nothing moved.
+    """
+    migrate_retired_priority(vault)
+
+    for project in (_MAIN, _SECOND):
+        assert _reference_groups(tmp_path, project) == (
+            _groups_from_the_retired_field(project)
+        ), project
+
+    # The expectation is not trivially empty — it really does contain graded
+    # buckets, so an all-"Unprioritized" renderer could not satisfy it.
+    assert "Priority A" in _groups_from_the_retired_field(_MAIN)
+
+
+def test_ac3_one_paper_sits_in_different_groups_in_two_projects(
+    vault: Path, tmp_path: Path
+) -> None:
+    """AC-3, the whole point of the refactor: the grade belongs to the LINK.
+
+    The same paper is a core reference for one project and background for the
+    other, and each project's REFERENCES.md says so. Under the retired global
+    field this was structurally impossible — both files sorted identically.
+    """
+    paper_id = "2024_Chen_Codebook"
+    migrate_retired_priority(vault)
+    # It came out of the migration as an A for both (one global value copied
+    # onto both links); regrade it for the second project only.
+    _set_keys(vault, paper_id, {f"priority-{_SECOND}": "C"})
+    reconcile_derived(vault, project_refs=True)
+
+    main_groups = _reference_groups(tmp_path, _MAIN)
+    second_groups = _reference_groups(tmp_path, _SECOND)
+
+    assert paper_id in main_groups["Priority A"]
+    assert paper_id in second_groups["Priority C"]
+    assert paper_id not in main_groups.get("Priority C", [])
+    assert paper_id not in second_groups.get("Priority A", [])
 
 
 # ---------------------------------------------------------------------------

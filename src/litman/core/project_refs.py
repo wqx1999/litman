@@ -3,12 +3,15 @@
 For each project registered in ``lit-config.yaml``'s ``projects`` map,
 this module emits ``<project_dir>/litman_reflib/REFERENCES.md`` listing
 every paper whose metadata ``projects`` field contains the project name.
-The file is grouped by priority (A → B → C → unprioritized) and within
-each group sorted by year descending then by id alphabetically.
+The file is grouped by that project's grade — ``priority-<project>``
+(A → B → C → ungraded) — and within each group sorted by year descending
+then by id alphabetically. The grade is per project by design (ADR-025):
+one paper can be an A for one project and a C for another, and the two
+REFERENCES.md files show it in different groups.
 
 Single-truth source: each paper's ``metadata.yaml`` holds the authoritative
-``projects`` list AND the per-project relevance annotation
-(``relevance-<project>:``). REFERENCES.md is derived; never edit it by
+``projects`` list AND both per-project annotations (``relevance-<project>:``
+and ``priority-<project>:``). REFERENCES.md is derived; never edit it by
 hand (the AUTO-GENERATED banner says so).
 
 Wiki-links (``[[<id>]]``) are used instead of markdown filesystem paths
@@ -137,15 +140,20 @@ def _papers_for_project(papers: list[dict[str, Any]], project: str) -> list[dict
 
 
 def _group_by_priority(
-    papers: list[dict[str, Any]],
+    papers: list[dict[str, Any]], project: str
 ) -> dict[str | None, list[dict[str, Any]]]:
-    """Bucket papers by ``priority``. Unknown / missing → ``None`` bucket.
+    """Bucket papers by ``priority-<project>``. Unknown / missing → ``None``.
+
+    Takes the project because the grade is a property of the LINK, not of the
+    paper (ADR-025): the same paper lands in a different bucket in each
+    project's file. Reads full metadata — the variable-length key is not in
+    the INDEX projection.
 
     Within each bucket, sort by year descending then by id ascending.
     """
     buckets: dict[str | None, list[dict[str, Any]]] = {}
     for p in papers:
-        pr = p.get("priority")
+        pr = p.get(f"priority-{project}")
         key = pr if pr in _PRIORITY_ORDER else None
         buckets.setdefault(key, []).append(p)
     for key, group in buckets.items():
@@ -200,7 +208,7 @@ def render_references_md(
     if papers is None:
         papers = list_papers(vault)
     matched = _papers_for_project(papers, project)
-    buckets = _group_by_priority(matched)
+    buckets = _group_by_priority(matched, project)
 
     lines: list[str] = []
     lines.append(
@@ -222,7 +230,8 @@ def render_references_md(
 
     lines.append(
         f"**{n} paper{'s' if n != 1 else ''}** "
-        "(sorted by priority, then by year descending)."
+        f"(sorted by this project's priority-{project}, "
+        "then by year descending)."
     )
     lines.append("")
 

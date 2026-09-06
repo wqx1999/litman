@@ -143,7 +143,9 @@ def test_taxonomy_json_lists_every_dict(vault: Path) -> None:
         "count": 1,
         "values": ["docking"],
     }
-    assert next(r for r in rows if r["dict"] == "priority")["kind"] == "fixed"
+    assert next(r for r in rows if r["dict"] == "status")["kind"] == "fixed"
+    # `priority` was retired (ADR-025), so it is not enumerable at all.
+    assert all(r["dict"] != "priority" for r in rows)
 
 
 def test_taxonomy_json_for_one_dict_keeps_the_same_row_shape(vault: Path) -> None:

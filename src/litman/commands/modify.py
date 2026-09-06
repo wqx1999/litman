@@ -681,8 +681,9 @@ def _apply_modify(
     # projection base (task-write-perf) and only projects_changed (which
     # rebuilds every registered project via reconcile) still pays a scan.
     refs_fields_changed = any(
-        key in {"priority", "title", "authors", "year"}
+        key in {"title", "authors", "year"}
         or key.startswith("relevance-")
+        or key.startswith("priority-")
         for key, _, _ in diffs
     )
     member_projects = metadata.get("projects") or []

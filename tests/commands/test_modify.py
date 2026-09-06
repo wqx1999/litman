@@ -654,7 +654,9 @@ def test_modify_refreshes_index_json(
     assert payload["n_papers"] == 1
     p = payload["papers"][0]
     assert p["id"] == paper_id
-    assert p["priority"] == "A"
+    # `priority` left the projection with ADR-025 (the key is per project and
+    # variable-length, so it can never live in a fixed column set).
+    assert "priority" not in p
     assert p["topics"] == ["peptide"]
 
 

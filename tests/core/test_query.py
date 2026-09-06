@@ -56,7 +56,7 @@ def test_list_field_missing_or_none_is_miss_no_raise() -> None:
 
 
 # ---------------------------------------------------------------------------
-# matches_filters — scalar enum fields (status / priority / type)
+# matches_filters — scalar enum fields (status / type)
 # ---------------------------------------------------------------------------
 
 
@@ -68,8 +68,83 @@ def test_scalar_or_within_field() -> None:
 
 def test_scalar_none_value_does_not_match_named_token() -> None:
     # str(None or "") == "" so a None scalar never matches a real token.
-    assert matches_filters({"priority": None}, {"priority": ["A"]}) is False
+    assert matches_filters({"status": None}, {"status": ["skim"]}) is False
     assert matches_filters({}, {"type": ["research"]}) is False
+
+
+# ---------------------------------------------------------------------------
+# matches_filters — priority is per project (ADR-025 decision 8)
+# ---------------------------------------------------------------------------
+
+
+def _graded(**grades: str) -> dict[str, object]:
+    return {"projects": list(grades), **{f"priority-{k}": v for k, v in grades.items()}}
+
+
+def test_priority_without_a_project_matches_any_project_grade() -> None:
+    """No `--project` to narrow by, so ANY project's grade qualifies (OR).
+
+    A paper the user graded A for one project and C for another IS an "A
+    paper" to the question "show me my A papers".
+    """
+    paper = _graded(pepforge="C", pepcodec="A")
+    assert matches_filters(paper, {"priority": ["A"]}) is True
+    assert matches_filters(paper, {"priority": ["C"]}) is True
+    assert matches_filters(paper, {"priority": ["B"]}) is False
+
+
+def test_priority_with_one_project_reads_only_that_projects_grade() -> None:
+    """`--project P --priority A` asks what the paper is worth TO P. A grade
+    earned in some other project must not let it through."""
+    paper = _graded(pepforge="C", pepcodec="A")
+    assert (
+        matches_filters(paper, {"project": ["pepcodec"], "priority": ["A"]}) is True
+    )
+    assert (
+        matches_filters(paper, {"project": ["pepforge"], "priority": ["A"]}) is False
+    )
+    assert (
+        matches_filters(paper, {"project": ["pepforge"], "priority": ["C"]}) is True
+    )
+
+
+def test_priority_with_several_projects_falls_back_to_the_or_semantics() -> None:
+    """`--project a,b` names no single project to narrow by, so the OR branch
+    applies — narrowing to "whichever of the two" would be a third semantics
+    nobody asked for."""
+    paper = _graded(pepforge="C", pepcodec="A")
+    assert (
+        matches_filters(
+            paper, {"project": ["pepforge", "pepcodec"], "priority": ["A"]}
+        )
+        is True
+    )
+
+
+def test_priority_never_splits_a_hyphenated_project_name() -> None:
+    """Project names contain hyphens (`binder-design`), so the key is the
+    prefix plus the WHOLE name — matched by stripping, never by splitting."""
+    paper = _graded(**{"binder-design": "A"})
+    assert matches_filters(paper, {"priority": ["A"]}) is True
+    assert (
+        matches_filters(paper, {"project": ["binder-design"], "priority": ["A"]})
+        is True
+    )
+    assert (
+        matches_filters(paper, {"project": ["binder"], "priority": ["A"]}) is False
+    )
+
+
+def test_ungraded_and_retired_keys_never_match_a_named_grade() -> None:
+    # Linked but ungraded: the key is absent (or null) -> no match.
+    assert matches_filters({"projects": ["pep"]}, {"priority": ["A"]}) is False
+    assert (
+        matches_filters({"projects": ["pep"], "priority-pep": None}, {"priority": ["A"]})
+        is False
+    )
+    # The RETIRED paper-level field is not a per-project key and must not be
+    # read as one — otherwise the retirement would be cosmetic.
+    assert matches_filters({"priority": "A"}, {"priority": ["A"]}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +206,8 @@ def test_backward_compat_single_element_list() -> None:
     paper = {
         "topics": ["x", "y"],
         "status": "skim",
-        "priority": "A",
+        "projects": ["pepforge"],
+        "priority-pepforge": "A",
         "type": "research",
         "year": 2023,
         "authors": ["Jane Smith"],

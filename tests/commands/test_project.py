@@ -17,7 +17,9 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import checks
 from litman.core.config import load_config
+from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.taxonomy import parse_taxonomy
 from litman.exceptions import TaxonomyError
@@ -63,6 +65,18 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     yaml.default_flow_style = False
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(payload, f)
+
+
+def _append_keys(vault: Path, paper_id: str, keys: dict[str, str]) -> None:
+    """Append raw YAML keys to a fixture paper's metadata.yaml.
+
+    For the per-project annotations ``_write_paper`` does not model — the
+    variable-length ``priority-<project>`` / ``relevance-<project>`` keys.
+    """
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    with meta.open("a", encoding="utf-8") as f:
+        for key, value in keys.items():
+            f.write(f"{key}: {value}\n")
 
 
 def _write_relevance_orphan(vault: Path, paper_id: str, project: str) -> None:
@@ -893,6 +907,91 @@ def test_project_rename_relevance_orphan_without_projects_key_no_crash(
     meta = _meta(vault, "2024_A")
     assert "relevance-pepforge" not in meta
     assert meta.get("relevance-pepcodec") == "high"
+
+
+# ---------------------------------------------------------------------------
+# The grade cascades with the project (ADR-025): rename carries it, rm drops it
+# ---------------------------------------------------------------------------
+
+
+def test_project_rename_carries_the_priority_grade(
+    vault: Path, proj_dir: Path
+) -> None:
+    """`priority-<old>` must follow the rename exactly as `relevance-<old>`
+    does — otherwise `lit project rename` strands the very orphan
+    `check_priority_orphan` then reports."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _append_keys(
+        vault, "2024_A", {"priority-pepforge": "A", "relevance-pepforge": "core"}
+    )
+
+    result = runner.invoke(
+        cli,
+        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    meta = _meta(vault, "2024_A")
+    assert meta["projects"] == ["pepcodec"]
+    assert "priority-pepforge" not in meta
+    assert meta["priority-pepcodec"] == "A"          # value preserved
+    assert meta["relevance-pepcodec"] == "core"      # unchanged behavior
+    assert checks.check_priority_orphan(vault, list_papers(vault)) == []
+
+
+def test_project_rm_drops_the_priority_grade(
+    vault: Path, proj_dir: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _append_keys(
+        vault, "2024_A", {"priority-pepforge": "A", "relevance-pepforge": "core"}
+    )
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    meta = _meta(vault, "2024_A")
+    assert meta["projects"] == []
+    assert "priority-pepforge" not in meta
+    assert "relevance-pepforge" not in meta
+    assert checks.check_priority_orphan(vault, list_papers(vault)) == []
+
+
+def test_project_rm_drops_a_stray_grade_with_no_membership(
+    vault: Path, proj_dir: Path
+) -> None:
+    """Same hand-edit orphan the relevance twin above covers: a `priority-<x>`
+    whose membership was already gone must not survive `project rm x`."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=[])
+    _append_keys(vault, "2024_A", {"priority-pepforge": "B"})
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "priority-pepforge" not in _meta(vault, "2024_A")
 
 
 # ---------------------------------------------------------------------------

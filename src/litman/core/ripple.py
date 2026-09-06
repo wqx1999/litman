@@ -51,6 +51,24 @@ _yaml = ThreadLocalYAML(
 )
 
 
+def _project_key_prefixes() -> tuple[str, ...]:
+    """Prefixes of the per-project annotations that ride on ``projects``.
+
+    ``relevance-<project>`` (authored prose) and ``priority-<project>`` (the
+    A/B/C grade, ADR-025). Both are keyed by project name, so both must follow
+    a ``lit project rename`` and vanish on a ``lit project rm`` — otherwise
+    ``check_relevance_orphan`` / ``check_priority_orphan`` flag what the
+    command itself stranded.
+
+    Resolved lazily: ``core.checks`` imports THIS module back (the retired-
+    field migration behind ``apply_autofix``), so a module-level import would
+    close a load-time cycle.
+    """
+    from litman.core.checks import PROJECT_PRIORITY_PREFIX
+
+    return ("relevance-", PROJECT_PRIORITY_PREFIX)
+
+
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
     buf = io.StringIO()
     _yaml.dump(data, buf)
@@ -62,19 +80,20 @@ def _ripple_replacements(
     field: str,
     replacements: dict[str, str],
     *,
-    rename_relevance: bool = False,
+    rename_project_keys: bool = False,
     papers: list[dict[str, Any]] | None = None,
 ) -> tuple[int, list[tuple[str, str]], list[dict[str, Any]]]:
     """Apply ``replacements`` to ``field`` of every paper that references any source.
 
-    ``rename_relevance`` is set by ``lit project rename`` (M30 Phase 4 /
-    verification task 2): when a project is renamed, the paired
-    ``relevance-<old>`` annotation must be carried over to ``relevance-<new>``
-    (value preserved) so it is not left orphaned (which ``check_relevance_orphan``
-    would otherwise flag from the normal command path). The relevance key is
+    ``rename_project_keys`` is set by ``lit project rename`` (M30 Phase 4 /
+    verification task 2): when a project is renamed, BOTH paired annotations —
+    ``relevance-<old>`` and ``priority-<old>`` (:func:`_project_key_prefixes`)
+    — are carried over to the new name with their values preserved, so neither
+    is left orphaned (which ``check_relevance_orphan`` / ``check_priority_orphan``
+    would otherwise flag from the normal command path). These keys are
     project-specific, so this only applies when ``field == "projects"``;
     taxonomy callers (topics/methods/data) leave it ``False``. A paper whose
-    membership did not change but which carries a stray ``relevance-<old>`` key
+    membership did not change but which carries a stray ``<prefix><old>`` key
     (a hand-edit orphan) is still remapped here so a rename does not strand it.
 
     Returns:
@@ -89,25 +108,30 @@ def _ripple_replacements(
     ``papers`` lets a caller hand in an already-loaded list (INDEX
     projections via ``views.papers_for_index`` — the membership fields
     topics/methods/data/projects are all projected; task-write-perf).
-    FORBIDDEN with ``rename_relevance``: the stray relevance-key probe
-    reads ``relevance-<old>`` off every paper, which the projection does
-    not carry — that path must keep the full-metadata scan.
+    FORBIDDEN with ``rename_project_keys``: the stray-key probe reads
+    ``relevance-<old>`` / ``priority-<old>`` off every paper, and the
+    projection carries neither — that path must keep the full-metadata scan.
     """
     if papers is None:
         papers = list_papers(vault)
-    elif rename_relevance:
+    elif rename_project_keys:
         raise ValueError(
-            "papers= must not be combined with rename_relevance: the stray "
-            "relevance-key probe needs full metadata, not INDEX projections."
+            "papers= must not be combined with rename_project_keys: the stray "
+            "relevance-/priority-key probe needs full metadata, not INDEX "
+            "projections."
         )
     staged: list[tuple[str, str]] = []
     n_changed = 0
     sources = set(replacements.keys())
     now = now_iso()
-    # relevance keys to carry over: relevance-<old> → relevance-<new>.
-    relevance_renames = (
-        {f"relevance-{old}": f"relevance-{new}" for old, new in replacements.items()}
-        if rename_relevance
+    # Per-project keys to carry over: <prefix><old> → <prefix><new>.
+    project_key_renames = (
+        {
+            f"{prefix}{old}": f"{prefix}{new}"
+            for prefix in _project_key_prefixes()
+            for old, new in replacements.items()
+        }
+        if rename_project_keys
         else {}
     )
 
@@ -121,17 +145,17 @@ def _ripple_replacements(
             continue
         values = paper.get(field) or []
         # A paper is touched if its `field` references a source OR it carries a
-        # relevance key that must be remapped (the latter handles a stray
-        # relevance-<old> whose membership was already gone — never strand it).
-        has_relevance_key = any(k in (paper or {}) for k in relevance_renames)
-        if not (sources & set(values)) and not has_relevance_key:
+        # per-project key that must be remapped (the latter handles a stray
+        # <prefix><old> whose membership was already gone — never strand it).
+        has_project_key = any(k in (paper or {}) for k in project_key_renames)
+        if not (sources & set(values)) and not has_project_key:
             continue
         meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
         rt_metadata = load_yaml_or_raise(meta_path, _yaml)
         if rt_metadata is None:
             continue
         changed = replace_value_in_field(rt_metadata, field, replacements)
-        for old_key, new_key in relevance_renames.items():
+        for old_key, new_key in project_key_renames.items():
             if old_key in rt_metadata:
                 # Preserve the value; insert the new key, drop the old one.
                 rt_metadata[new_key] = rt_metadata[old_key]
@@ -148,8 +172,8 @@ def _ripple_replacements(
             )
             # Also mutate the safe-loaded copy so the INDEX render reflects
             # the change without a re-read. Use get-or-[] (mirroring :738):
-            # a schema-less paper may carry a stray relevance-<proj> key and
-            # be touched via relevance_renames while never having a `projects`
+            # a schema-less paper may carry a stray <prefix><proj> key and
+            # be touched via project_key_renames while never having a `projects`
             # key, so a direct subscript would KeyError.
             paper[field] = list(rt_metadata.get(field) or [])
             paper["updated-at"] = now
@@ -163,7 +187,7 @@ def _ripple_removals(
     field: str,
     value: str,
     *,
-    drop_relevance: bool = False,
+    drop_project_keys: bool = False,
     papers: list[dict[str, Any]] | None = None,
 ) -> tuple[int, list[tuple[str, str]], list[dict[str, Any]]]:
     """Drop ``value`` from ``field`` of every paper that references it.
@@ -174,32 +198,37 @@ def _ripple_removals(
     replacement-only semantics — a removal is a structurally different
     operation (the value disappears, it is not substituted).
 
-    ``drop_relevance`` is set by ``lit project rm`` (M30 Phase 4 / verification
-    task 2): when a project is removed, the paired ``relevance-<value>``
-    annotation on each cascaded paper is dropped alongside the ``projects``
-    membership, so the field is not left orphaned (which ``check_relevance_orphan``
-    would otherwise flag from the normal command path). The relevance key is
-    project-specific, so this is only meaningful when ``field == "projects"``;
-    taxonomy callers (topics/methods/data) leave it ``False``.
+    ``drop_project_keys`` is set by ``lit project rm`` (M30 Phase 4 /
+    verification task 2): when a project is removed, BOTH paired annotations —
+    ``relevance-<value>`` and ``priority-<value>``
+    (:func:`_project_key_prefixes`) — are dropped from each cascaded paper
+    alongside the ``projects`` membership, so neither is left orphaned (which
+    ``check_relevance_orphan`` / ``check_priority_orphan`` would otherwise flag
+    from the normal command path). These keys are project-specific, so this is
+    only meaningful when ``field == "projects"``; taxonomy callers
+    (topics/methods/data) leave it ``False``.
 
     Returns the same shape as :func:`_ripple_replacements`:
         (n_changed, staged_writes, all_papers_with_changes_applied)
 
     ``papers`` mirrors :func:`_ripple_replacements`: an already-loaded list
     (INDEX projections suffice for membership), FORBIDDEN with
-    ``drop_relevance`` for the same stray-relevance-probe reason.
+    ``drop_project_keys`` for the same stray-key-probe reason.
     """
     if papers is None:
         papers = list_papers(vault)
-    elif drop_relevance:
+    elif drop_project_keys:
         raise ValueError(
-            "papers= must not be combined with drop_relevance: the stray "
-            "relevance-key probe needs full metadata, not INDEX projections."
+            "papers= must not be combined with drop_project_keys: the stray "
+            "relevance-/priority-key probe needs full metadata, not INDEX "
+            "projections."
         )
     staged: list[tuple[str, str]] = []
     n_changed = 0
     now = now_iso()
-    relevance_key = f"relevance-{value}"
+    project_keys = tuple(
+        f"{prefix}{value}" for prefix in _project_key_prefixes()
+    )
 
     for paper in papers:
         paper_id = paper.get("id")
@@ -208,13 +237,15 @@ def _ripple_removals(
         values = paper.get(field) or []
         is_member = value in values
         # A paper is touched if it is a member OR (only on the project-rm path)
-        # it carries a stray ``relevance-<value>`` whose membership was already
+        # it carries a stray ``<prefix><value>`` whose membership was already
         # gone (a hand-edit orphan). The second clause mirrors
-        # _ripple_replacements' has_relevance_key guard so ``lit project rm X``
-        # is symmetric with ``lit project rename``: after rm, no
-        # ``relevance-<X>`` survives anywhere (W1).
-        has_stray_relevance = drop_relevance and relevance_key in (paper or {})
-        if not is_member and not has_stray_relevance:
+        # _ripple_replacements' has_project_key guard so ``lit project rm X``
+        # is symmetric with ``lit project rename``: after rm, neither
+        # ``relevance-<X>`` nor ``priority-<X>`` survives anywhere (W1).
+        has_stray_project_key = drop_project_keys and any(
+            k in (paper or {}) for k in project_keys
+        )
+        if not is_member and not has_stray_project_key:
             continue
         meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
         rt_metadata = load_yaml_or_raise(meta_path, _yaml)
@@ -232,10 +263,12 @@ def _ripple_removals(
         if value in current:
             rt_metadata[field] = [v for v in current if v != value]
             changed = True
-        if drop_relevance and relevance_key in rt_metadata:
-            del rt_metadata[relevance_key]
-            paper.pop(relevance_key, None)
-            changed = True
+        if drop_project_keys:
+            for key in project_keys:
+                if key in rt_metadata:
+                    del rt_metadata[key]
+                    paper.pop(key, None)
+                    changed = True
         if not changed:
             continue
         rt_metadata["updated-at"] = now
@@ -245,7 +278,7 @@ def _ripple_removals(
                 _dump_yaml_to_string(rt_metadata),
             )
         )
-        # get-or-[] (mirroring :738): a stray relevance-<proj> drop touches a
+        # get-or-[] (mirroring :738): a stray <prefix><proj> drop touches a
         # paper that may have no `projects` key, so a direct subscript would
         # KeyError.
         paper[field] = list(rt_metadata.get(field) or [])

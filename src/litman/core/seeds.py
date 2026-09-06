@@ -56,12 +56,6 @@ in existing metadata files.
 - skim
 - inbox
 - dropped
-
-## priority (fixed enum, not extensible)
-
-- A
-- B
-- C
 """
 
 

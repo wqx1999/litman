@@ -679,8 +679,9 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     path). A project is a controlled ``projects`` value with a lit-config.yaml
     path binding, so removal updates BOTH truth sources (TAXONOMY.md's
     ``## projects`` section and the config map) plus every referencing paper's
-    metadata.yaml — including the paired ``relevance-<name>`` annotation
-    (``drop_relevance=True``) so no orphan is stranded — in one atomic
+    metadata.yaml — including the paired ``relevance-<name>`` /
+    ``priority-<name>`` annotations (``drop_project_keys=True``) so no orphan
+    is stranded — in one atomic
     staged_write. INDEX + views are then rebuilt through the shared
     ``reconcile_derived`` funnel.
 
@@ -741,7 +742,7 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     new_config_text = _dump_yaml_to_string(as_dict)
 
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
-        vault, _PROJECTS_DICT, name, drop_relevance=True
+        vault, _PROJECTS_DICT, name, drop_project_keys=True
     )
     fresh_index = render_index(all_papers, now_iso())
 
@@ -799,7 +800,8 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     rename updates BOTH truth sources (TAXONOMY.md's ``## projects`` section and
     lit-config.yaml's ``projects:`` map key — carrying the path over unchanged
     under the new key), every referencing paper's ``projects`` field, and the
-    paired ``relevance-<name>`` annotation (``rename_relevance=True``), all in one
+    paired ``relevance-<name>`` / ``priority-<name>`` annotations
+    (``rename_project_keys=True``), all in one
     atomic staged_write. INDEX + views/by-project/ + every project's symlinks +
     REFERENCES.md are then rebuilt through the shared ``reconcile_derived`` funnel
     (``project_refs=True`` — a rename touches the project side). Semantics-
@@ -860,7 +862,7 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     new_config_text = _dump_yaml_to_string(as_dict)
 
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, _PROJECTS_DICT, {old: new}, rename_relevance=True
+        vault, _PROJECTS_DICT, {old: new}, rename_project_keys=True
     )
     fresh_index = render_index(all_papers, now_iso())
 

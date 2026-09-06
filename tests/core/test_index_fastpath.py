@@ -73,6 +73,80 @@ def _fresh_vault(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# The fast path may change the cost, never the answer
+# ---------------------------------------------------------------------------
+
+
+def _graded_vault(tmp_path: Path) -> Path:
+    """A reconciled vault whose papers are graded PER PROJECT (ADR-025)."""
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2023_One_Alpha",
+        year=2023, status="inbox", type="research",
+        topics=["peptide"], projects=["PepForge"],
+        authors=["One, A."], title="Alpha",
+        **{"priority-PepForge": "A"},
+    )
+    _seed_paper(
+        v, "2024_Two_Beta",
+        year=2024, status="deep-read", type="research",
+        topics=["peptide"], projects=["PepForge"],
+        authors=["Two, B."], title="Beta",
+        **{"priority-PepForge": "C"},
+    )
+    reconcile_derived(v, project_refs=False)
+    return v
+
+
+def _list_output(vault: Path, *args: str) -> str:
+    from click.testing import CliRunner
+
+    from litman.cli import cli
+
+    result = CliRunner().invoke(cli, ["list", "--library", str(vault), *args])
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_priority_filter_is_identical_with_and_without_the_index(
+    tmp_path: Path,
+) -> None:
+    """``--priority`` must take the scan, because the projection cannot answer it.
+
+    The grade lives in ``priority-<project>`` keys, which are variable-width
+    and deliberately outside ``INDEX_PAPER_FIELDS`` (ADR-025). Served from the
+    projection the filter matched nothing and ``lit list`` reported "No papers
+    match" — a wrong answer, not a slow one, and the one failure mode this
+    file exists to forbid. 3.1's migration rewrites INDEX, so a freshly
+    migrated vault was always in the broken state.
+    """
+    v = _graded_vault(tmp_path)
+    assert load_index_papers(v) is not None, "fixture must have a FRESH index"
+
+    # Control: with no --priority the two paths already agree, so a failure
+    # below points at the filter and not at this harness.
+    moved_index = tmp_path / "moved-INDEX.json"
+
+    fast_plain = _list_output(v, "--project", "PepForge")
+    fast_filtered = _list_output(v, "--priority", "A")
+    fast_narrowed = _list_output(v, "--project", "PepForge", "--priority", "A")
+
+    shutil.move(str(v / "INDEX.json"), str(moved_index))          # force the scan
+    assert load_index_papers(v) is None
+    scan_plain = _list_output(v, "--project", "PepForge")
+    scan_filtered = _list_output(v, "--priority", "A")
+    scan_narrowed = _list_output(v, "--project", "PepForge", "--priority", "A")
+
+    assert fast_plain == scan_plain, "control failed: the harness itself diverges"
+    assert fast_filtered == scan_filtered
+    assert fast_narrowed == scan_narrowed
+    # Not vacuous: the filter really does select a strict subset.
+    assert "2023_One_Alpha" in scan_filtered
+    assert "2024_Two_Beta" not in scan_filtered
+    assert scan_filtered != scan_plain
+
+
+# ---------------------------------------------------------------------------
 # load_index_papers — freshness probes
 # ---------------------------------------------------------------------------
 

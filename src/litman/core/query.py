@@ -50,10 +50,14 @@ _LIST_FILTERS: tuple[tuple[str, str], ...] = (
 # compare as a string so "2023,2024" works.
 _SCALAR_FILTERS: tuple[tuple[str, str], ...] = (
     ("status", "status"),
-    ("priority", "priority"),
     ("type", "type"),
     ("year", "year"),
 )
+
+# ``priority`` is NOT in the table above: it is no longer one field but a
+# family of per-project keys (``priority-<project>``, ADR-025), so it needs
+# the dedicated branch in :func:`matches_filters` rather than a field lookup.
+PRIORITY_PREFIX = "priority-"
 
 
 def matches_filters(
@@ -71,8 +75,10 @@ def matches_filters(
 
     - topic / method / project / data: the paper's list field intersects the
       wanted tokens (any token, exact value).
-    - status / priority / type: ``str(paper value or "")`` is in the wanted
-      tokens.
+    - status / type: ``str(paper value or "")`` is in the wanted tokens.
+    - priority: per project (ADR-025 decision 8). With a single ``project``
+      filter, ONLY that project's grade is consulted; otherwise ANY
+      ``priority-<project>`` key matching is enough (OR across projects).
     - year: paper year is not None AND ``str(paper year)`` is in the wanted
       tokens.
     - author: any author entry *contains* any wanted token (case-insensitive
@@ -98,6 +104,29 @@ def matches_filters(
             return False
         if str(paper_value or "") not in wanted:
             return False
+
+    wanted_priorities = filters.get("priority")
+    if wanted_priorities is not None:
+        wanted_projects = filters.get("project")
+        if wanted_projects is not None and len(wanted_projects) == 1:
+            # Narrowed to one project: ask only what this paper is worth TO
+            # that project. Anything else would let a paper qualify on a
+            # grade earned somewhere the user did not ask about.
+            grade = paper.get(f"{PRIORITY_PREFIX}{wanted_projects[0]}")
+            if str(grade or "") not in wanted_priorities:
+                return False
+        else:
+            # No single project to narrow by (none given, or several) — match
+            # if the paper carries the grade for ANY project. Keys are found
+            # by prefix and never split on "-": project names contain hyphens
+            # (``binder-design``), so the suffix is one whole name.
+            grades = {
+                str(value or "")
+                for key, value in paper.items()
+                if isinstance(key, str) and key.startswith(PRIORITY_PREFIX)
+            }
+            if not (grades & set(wanted_priorities)):
+                return False
 
     wanted_authors = filters.get("author")
     if wanted_authors is not None:

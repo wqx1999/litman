@@ -8,9 +8,11 @@ Two classes of dictionaries:
 
 * **User-extensible**: ``projects``, ``topics``, ``methods``, ``data`` —
   modifiable by ``lit taxonomy {add, rename, merge, rm}``.
-* **Fixed enums**: ``type``, ``status``, ``priority`` — read-only here;
-  changes require a code release because the application logic enums
-  must change in lockstep.
+* **Fixed enums**: ``type``, ``status`` — read-only here; changes require
+  a code release because the application logic enums must change in
+  lockstep. (``priority`` was one until ADR-025 retired it; an existing
+  vault's ``## priority`` section is simply not a known dict any more, and
+  is left where it is — see :func:`parse_taxonomy`.)
 
 The rewriter is surgical: it replaces only the body of one section and
 leaves the rest of the file (preamble paragraph, other sections, fixed-
@@ -38,7 +40,7 @@ from litman.core.views import (
 from litman.exceptions import TaxonomyError
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
-FIXED_DICTS: tuple[str, ...] = ("type", "status", "priority")
+FIXED_DICTS: tuple[str, ...] = ("type", "status")
 ALL_DICTS: tuple[str, ...] = USER_DICTS + FIXED_DICTS
 
 # Each user dict drives the like-named list field on metadata.yaml.
@@ -236,7 +238,7 @@ def validate_user_dict(dict_name: str) -> None:
     if dict_name in FIXED_DICTS:
         raise TaxonomyError(
             f"Cannot modify fixed-enum dict {dict_name!r}. "
-            "Fixed enums (type, status, priority) require a code release "
+            f"Fixed enums ({', '.join(FIXED_DICTS)}) require a code release "
             "because the app's enum lists must change in lockstep."
         )
     if dict_name not in USER_DICTS:

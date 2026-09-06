@@ -223,17 +223,21 @@ def list_cmd(
     respectively. --limit N keeps the first N after filtering + sorting.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    # INDEX fast path: every filter, both output formats and both sorts read
+    # INDEX fast path: most filters, both output formats and both sorts read
     # only projection fields, so the verified INDEX.json serves them in one
     # JSON read instead of a per-paper YAML scan (the documented agent
-    # contract). One query needs a field the projection does not carry —
-    # created-at (--added-since) — and takes the scan, as does any vault whose
-    # INDEX is missing, stale or older-schema (load_index_papers → None; drift
-    # surfacing stays owned by the Tier-1 hook and lit health-check). Both
-    # sources yield the same id-ascending order and, via project_paper,
-    # byte-identical output.
+    # contract). TWO queries need fields the projection does not carry and so
+    # take the scan — created-at (--added-since), and --priority, whose
+    # per-project `priority-<project>` keys are variable-width and therefore
+    # deliberately outside a fixed column set (ADR-025). So does any vault
+    # whose INDEX is missing, stale or older-schema (load_index_papers → None;
+    # drift surfacing stays owned by the Tier-1 hook and lit health-check).
+    # Both sources yield the same id-ascending order and, via project_paper,
+    # byte-identical output — the fast path may change the cost, never the
+    # answer, and serving --priority from the projection silently answered
+    # "no papers match".
     all_papers: list[dict[str, Any]] | None = None
-    if added_since is None:
+    if added_since is None and priority is None:
         all_papers = load_index_papers(vault)
     if all_papers is None:
         all_papers = list_papers(vault)
