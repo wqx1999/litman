@@ -28,12 +28,12 @@ Classify every action before you take it.
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
 | 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, `lit cite`, scan a PDF, query INDEX via `lit list --format json`, `lit project list`, `lit code list`, `lit trash list`, `lit taxonomy list`, `lit vault list` (all five take `--format json`), `lit health-check` |
-| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority=A`, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit modify --set-author "…"` *(ordered author rewrite)*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=` |
+| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority-<P>=A` *(only for a project the paper is linked to)*, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit modify --set-author "…"` *(ordered author rewrite)*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (confirm — [A]/[B]), **`lit rename <old> <new>`** *(paper id — cascades into other papers' ref lists, every `[[id]]` in notes, project links; see [A]'s standalone-rename rule)*, `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
 
 The CLI hard-rejects unregistered controlled-vocabulary values, so your job is to **not invent values**.
 
-**Execution ownership.** lit-library runs every Tier-2 write inline — it owns the write surface. lit-reading runs single-paper *evaluation stamps* inline (`lit read`/`promote`/`skim`/`drop`/`revisit`, `lit modify --set priority=` / `--set type=`) and chains to lit-library for everything else.
+**Execution ownership.** lit-library runs every Tier-2 write inline — it owns the write surface. lit-reading runs single-paper *evaluation stamps* inline (`lit read`/`promote`/`skim`/`drop`/`revisit`, `lit modify --set priority-<P>=` / `--set type=`) and chains to lit-library for everything else.
 
 ## A2. Chain hand-off contract
 
@@ -159,7 +159,7 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
 5. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. Run this as **two separate messages — never bundle them**:
 
    - **5a — STOP and confirm the source.** Report ONLY the derived `id` and the `title`, then **stop and wait** for the user to confirm the source metadata is right. Surface only id + title — do not self-judge title correctness. Do **NOT** attach the code-candidate table, a status offer, or anything else to this message. This is a hard gate: the next move waits on the user's word.
-   - **5b — after the user confirms, in a fresh message:** if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]). A single CLI-only candidate **still goes through the [C.1] three-state table** — no shortcut. If both are empty, stop here. Do **NOT** proactively enumerate tag / project / status / priority offers (SOP-1).
+   - **5b — after the user confirms, in a fresh message:** if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]). A single CLI-only candidate **still goes through the [C.1] three-state table** — no shortcut. If both are empty, stop here. Do **NOT** proactively enumerate tag / project / status / grade offers (SOP-1).
 
    **Post-ingest curation is lit-reading's, not yours.** Status verdict (`deep-read` / `skim` / `dropped`), `read-date`, and the metadata completeness self-check all live in **lit-reading B10** — lit-library deliberately does not run them after add (SOP-1). If, right after confirming, the user starts reading or evaluating the paper ("读完了" / "这篇一般" / "done with this" / "what does it say about X"), **hand off to lit-reading** (see A2-out) — do not stop dead and do not absorb the reading verdict here.
 
@@ -291,7 +291,8 @@ Before unbinding, read the repo's `papers:` reverse list with `lit code list --f
 ```bash
 lit list                                     # full vault
 lit list --topic transformer --year 2023,2024 # filter (comma = OR; no range syntax)
-lit list --status deep-read --priority A     # by personal evaluation
+lit list --status deep-read --priority A     # graded A by ANY of its projects
+lit list --project pepforge --priority A      # graded A by pepforge specifically
 lit list --project pepforge --format json    # papers bound to a project
 lit show Pandi                               # fuzzy: unique substring of id
 lit show 2023_Pandi_Cell-free                # exact id also works
@@ -344,7 +345,7 @@ After the user registers, **re-run `lit taxonomy list <dict> --format json`** an
 
 `projects` / `topics` / `methods` / `data` are **controlled vocabularies**. `lit modify --add-tag <dict>=<value>` HARD-REJECTS an unregistered value (no `--register` escape hatch). `projects` has its own group `lit project {add,list,rename,set-path,rm}` ([H]); **`lit taxonomy {add,rename,rm} projects` is hard-deprecated** — it errors and redirects. (`lit taxonomy list projects` still works.) Never hand-edit `lit-config.yaml`'s `projects:` map.
 
-**Not register-first checked**: schemaless scalar fields (`read-date`, `doi`, `year`, custom scalars), reference fields (`authors`, `related`, `contradicts`, `extends`), fixed enums (`type`, `status`, `priority`). `--rm-tag` is never register-checked. (`code-clones` is not a tag target at all — modify rejects it; bind/unbind via `lit code link` / `lit code unlink`.)
+**Not register-first checked**: schemaless scalar fields (`read-date`, `doi`, `year`, custom scalars), reference fields (`authors`, `related`, `contradicts`, `extends`), fixed enums (`type`, `status`), per-project grades (`priority-<project>`, A/B/C). `--rm-tag` is never register-checked. (`code-clones` is not a tag target at all — modify rejects it; bind/unbind via `lit code link` / `lit code unlink`.)
 
 ### Sugar commands — prefer over `lit modify --set` for known semantic fields
 
@@ -356,7 +357,7 @@ lit promote <id>                    # status = deep-read  (does NOT also stamp r
 lit skim <id>                       # status = skim
 ```
 
-Same-day repeats are no-ops. For `priority` or an arbitrary scalar, fall back to `lit modify <id> --set priority=A`.
+Same-day repeats are no-ops. For a per-project grade or an arbitrary scalar, fall back to `lit modify <id> --set priority-<project>=A` (the paper must already be linked to that project; `lit link <id> --project <P> --priority A` does both at once).
 
 ### Apply a knowledge-graph edge (inbound from lit-reading B7)
 
@@ -378,11 +379,11 @@ The user expresses *intent*; you translate it to `lit export` flags.
 |---|---|
 | "给我导出一个 bib" / "导出文献库" / names no project | `lit export --all -o refs.bib` — no project scope ⇒ `--all` is the default; just run it (do not ask) |
 | "导出和 pepforge 有关的文献到这里" | `lit export --project pepforge` (defaults to `./refs.bib`) |
-| "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` |
+| "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` *(A for any project; add `--project <P>` to mean A for that one)* |
 | "给 PepCodec 准备 bib" | `lit export --project pepcodec` (canonicalize the project token first — Flow B / [H]) |
 | "更新一下 refs.bib" | infer current project → `lit export --project <inferred>`; if not inferrable, `lit export --all` (do not ask) |
 
-Flags: `--project` XOR `--all` (exactly one required), `-o/--output` (default `./refs.bib`), `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` (comma-separated; within one flag OR, across flags AND), `--force`, `--vault`. Cite keys equal paper ids — output drops into `\cite{<paper-id>}` directly. Re-running on the same file is the supported update path.
+Flags: `--project` XOR `--all` (exactly one required), `-o/--output` (default `./refs.bib`), `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` (comma-separated; within one flag OR, across flags AND; `--priority` is per project — any project's grade unless `--project` narrows it), `--force`, `--vault`. Cite keys equal paper ids — output drops into `\cite{<paper-id>}` directly. Re-running on the same file is the supported update path.
 
 Four hard rules:
 

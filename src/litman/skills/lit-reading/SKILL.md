@@ -37,10 +37,10 @@ Classify every action before you take it.
 | Tier | Operation class | Behavior | Examples |
 |---|---|---|---|
 | 1 | **Read** | Just do it, don't ask | `lit list` (incl. `--title` / `--limit` / `--format json`), `lit show` (incl. `--format json` for the full field set), `lit search` (notes/discussion content), `lit related` (knowledge-graph neighbours), `lit cite` (paste-ready ACS citation), scan a PDF, `lit vault list`, `lit code list`, `lit trash list`, `lit project list`, `lit taxonomy list` (all five take `--format json`), `lit health-check`. All retrieval is high-autonomy and freely composable (`search` → `show --format json` → `related`). |
-| 2 | **Write, reversible, single-paper** | Do it, then report | the evaluation stamps `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit`, and `lit modify --set priority=` |
+| 2 | **Write, reversible, single-paper** | Do it, then report | the evaluation stamps `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit`, and `lit modify --set priority-<P>=` |
 | 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add` (ingest), `lit code add` (git clone), `lit taxonomy add` / `lit project add`, `lit taxonomy merge`/`rename`/`rm` + `lit project rename`/`rm` (governance) |
 
-**Execution ownership — what lit-reading runs INLINE.** The single-paper evaluation stamps that ARE the reading verdict: `lit read`, `lit promote` / `lit skim` / `lit drop`, `lit revisit`, `lit modify --set priority=`, and `lit modify --set type=`. (`type` and `priority` are both single-paper, reversible, fixed-enum verdict stamps surfaced together in the B10 self-check — same inline posture. Controlled-vocabulary tags, edges, and project links still chain to lit-library.)
+**Execution ownership — what lit-reading runs INLINE.** The single-paper evaluation stamps that ARE the reading verdict: `lit read`, `lit promote` / `lit skim` / `lit drop`, `lit revisit`, `lit modify --set priority-<P>=`, and `lit modify --set type=`. (`type` and the per-project grade are both single-paper, reversible, A/B/C-or-enum verdict stamps surfaced together in the B10 self-check — same inline posture. Controlled-vocabulary tags, edges, and project links still chain to lit-library.)
 
 **Every other Tier-2 write CHAINS to lit-library** (A2):
 - `lit modify --add-tag topics/methods/data=` (controlled vocabulary)
@@ -114,7 +114,7 @@ Triggers: "继续读" / "接着上次" / "上次读到哪了" / "我在读哪篇
 
 1. **Retrieve (one CLI call):** `lit list --unread --sort recent --format json`. The CLI returns rows already filtered to unread + ordered by recency. **Do NOT re-sort or re-filter.** Take the top rows.
 2. **Client-side prune `dropped`:** rows carry `status`. `--unread` doesn't exclude by status, so a paper dropped-by-title (never read, `read-date` empty) can still appear. Drop those rows. **Keep `skim`** (a skimmed paper with no `read-date` may be one the user means to return to and deep-read).
-3. **Present top 3–5 (present-and-user-picks):** id + title + `status`/`priority`, "most-recently-touched first". **Honesty constraint:** recency is a *proxy*, not a tracked "you were reading X" — phrase it "your most-recently-touched unfinished papers, probably where you left off", **never** "you were reading X". If the top guess is wrong, the user picks another.
+3. **Present top 3–5 (present-and-user-picks):** id + title + `status`, "most-recently-touched first". **Honesty constraint:** recency is a *proxy*, not a tracked "you were reading X" — phrase it "your most-recently-touched unfinished papers, probably where you left off", **never** "you were reading X". If the top guess is wrong, the user picks another.
 4. **User picks → suggest `lit open <id>`** (suggest, don't run — see B14, unless the user says "open it"), then **resume at Phase 2** for the chosen paper.
 5. **Empty result `[]`:** distinguish honestly — "nothing is marked unfinished (every paper has a `read-date`)" vs. "your library has no papers yet" (a plain `lit list` tells you which).
 
@@ -122,7 +122,7 @@ If a surfaced paper is `status: deep-read` yet appears here (deep-read but `read
 
 ### Locate-by-cue (the user names a paper)
 
-**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / authors / year / type / priority / status / topics / projects / methods / data / doi / read-date / updated-at; for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
+**Rule:** there is a CLI flag for every recall cue — use it, never `grep`/`cat` the vault. The INDEX projection carries id / title / authors / year / type / status / topics / projects / methods / data / doi / read-date / updated-at (13 fields; the per-project `relevance-<project>` and `priority-<project>` are NOT in it — their names vary per project); for anything beyond it (full field set, free-form notes) there is a dedicated command (`lit show --format json`, `lit search`). Pick the command that matches the cue:
 
 | Cue | Command |
 |---|---|
@@ -281,21 +281,21 @@ When a reading discussion reaches a **natural close** (the user signals "done" /
    | `topics` / `methods` / `data` | offer top 3-5 plausible **registered** values with a one-line why each ("topics: `amp` — the focus throughout §2; `cell-free-bio` — Pandi's substrate; `deep-learning` — the discriminator model"); never invent unregistered values | lit-library [E] Flow A — propose **only** from registered values |
    | `related` / `extends` / `contradicts` | offer specific paper id candidates from the vault with a one-line why each ("extends `[[2022_X_AMPGen]]` — same CFB + AMP combo") | the edge workflow above (propose, user confirms) |
    | `relevance-<project>` (linked but blank) | offer a one-sentence draft for the user to accept/refine ("relevance-pepforge: 'cell-free 方向的 baseline 对照'") | lit-library [H] `lit modify --set relevance-<project>=…` |
-   | `priority` | offer all 3 values with the agent's lean ("A/B/C — I lean B: method is new but the dataset is borrowed") | **inline** `lit modify --set priority=` |
-   | `type` | offer top 2-3 plausible enum values with a one-line why each ("`review` — surveys 80+ AMP models, no new experiments; `research` — proposes a new CFB pipeline; I lean review") | **inline** `lit modify --set type=` (same posture as priority) |
+   | `priority-<project>` (linked but ungraded) | ask **once per linked project**, offering all 3 values with the agent's lean ("for pepforge: A/B/C — I lean B: method is new but the dataset is borrowed"). The same paper can be an A for one project and a C for another, so do not reuse one answer across projects. **Skip entirely when the paper is in no project** — there is nothing for a grade to be about | **inline** `lit modify --set priority-<P>=` |
+   | `type` | offer top 2-3 plausible enum values with a one-line why each ("`review` — surveys 80+ AMP models, no new experiments; `research` — proposes a new CFB pipeline; I lean review") | **inline** `lit modify --set type=` (same posture as the grade) |
 
    Each spawned write follows its own branch's tier and the propose-first discipline — **never invent a controlled value, never fill a field the user did not endorse.**
 
    **Three ground rules for every self-check propose:**
 
-   1. **Batch all gaps into one turn.** When the scan finds N empty curation fields, list them all in one message, group them sensibly (e.g. "before we close: priority? type? topics? — feel free to answer them together"), and let the user reply in one go. Do **NOT** serialize ("priority?" → wait → "type?" → wait …). Acceptable: one message presenting all gaps; user answers in one reply; you commit them in back-to-back writes.
+   1. **Batch all gaps into one turn.** When the scan finds N empty curation fields, list them all in one message, group them sensibly (e.g. "before we close: type? topics? and how much does this matter to pepforge? — feel free to answer them together"), and let the user reply in one go. Do **NOT** serialize ("priority?" → wait → "type?" → wait …). Acceptable: one message presenting all gaps; user answers in one reply; you commit them in back-to-back writes.
 
    2. **Candidate list, never blank prompt.** For every gap, present **2-5 candidate values with a one-line rationale per candidate**, plus the agent's own lean ("I lean X because …"). The user picks one, edits one, writes their own, or says "skip". Forbidden patterns:
-      - "What's the priority?" → blank prompt, forces the user to recall the enum
+      - "What's the priority for pepforge?" → blank prompt, forces the user to recall the enum
       - "Is this a review?" → yes/no on a single guess, no escape if the guess is wrong
       The rationale must come from the discussion / abstract / notes already in context — never invent a justification from training-set memory of the paper.
 
-   3. **`status=dropped` short-circuits the self-check.** When the verdict is `drop`, run **only**: (a) the one-line drop reason in `notes.md`, (b) the `lit drop` stamp, (c) the `lit read` stamp. Skip every other self-check row (no `topics` / `methods` / `projects` / `priority` / `type` / edges / `relevance-` prompts). Exception: if the user volunteers a priority during reading ("this is firmly C"), accept and commit; but do not *propose* it.
+   3. **`status=dropped` short-circuits the self-check.** When the verdict is `drop`, run **only**: (a) the one-line drop reason in `notes.md`, (b) the `lit drop` stamp, (c) the `lit read` stamp. Skip every other self-check row (no `topics` / `methods` / `projects` / `priority-<project>` / `type` / edges / `relevance-` prompts). Exception: if the user volunteers a grade during reading ("this is firmly C for pepforge"), accept and commit; but do not *propose* it.
 
 **Never *infer*** — the status verdict, `read-date` stamp, and every write the self-check spawns all wait on the user's word. "The user's word" **includes a depth they volunteered** in the close signal (step 2): honoring a stated "读得挺细的" → `deep-read` executes their judgment, it is not auto-deriving one. What stays forbidden is the agent **inventing** a verdict the user never gave. The status + `read-date` writes are Tier 2 lit-reading runs **inline**. The self-check's accepted vocab/edge/link offers are the writes that **chain** to lit-library.
 
@@ -313,7 +313,7 @@ At a natural moment (using the existing staleness check, introduce no new mechan
 
 1. Surface each paper's **`lit list --status inbox --format json` projection row** — title, year, type, and any existing topics / methods / projects. Triage is metadata-level (litman does not persist an abstract).
 2. The **user decides** skim / deep-read / drop → run the B10 status change inline.
-3. The B10 metadata self-check (product 4) **rides along, scoped to the projection row** (not a Phase-2 full load): the self-check here reads only the gaps **visible in the projection row** (`projects` / `topics` / `methods` / `data` / `priority` / `type`) — still **no CLI call**. The edge fields (`related` / `extends` / `contradicts`) and `relevance-<project>` are **not** in the projection, so those gaps are deferred to an actual read.
+3. The B10 metadata self-check (product 4) **rides along, scoped to the projection row** (not a Phase-2 full load): the self-check here reads only the gaps **visible in the projection row** (`projects` / `topics` / `methods` / `data` / `type`) — still **no CLI call**. The edge fields (`related` / `extends` / `contradicts`) and both per-project fields (`relevance-<project>`, `priority-<project>`) are **not** in the projection, so those gaps are deferred to an actual read.
 
 **This is NOT batch ingest** — litman forbids batch *ingest* decisions; this is triage of *already-ingested* papers, each still individually human-judged.
 
@@ -358,7 +358,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit taxonomy list [<dict>] [--format json]` | the registered vocabulary (all four dicts, or one) — the Phase 2 session load | 1 (read) |
 | `lit health-check [--fix] [--all]` | translate the report + propose per-finding remedies (B12); categories fold past the first few findings, `--all` prints every one; `--fix` = bulk derived-artifact repair, run only on the user's nod. Bulk filler-metadata / filler-id repair is lit-library [K] | 1 (read); `--fix` 2 |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
-| `lit modify --set priority=` / `lit modify --set type=` | the priority / type verdicts — fixed-enum evaluation stamps lit-reading owns (B10) | 2 (inline) |
+| `lit modify --set priority-<P>=` / `lit modify --set type=` | the per-project grade / type verdicts — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit open <id>` | suggest by default; run only on explicit request (B14) | — |
 
 **Chains to lit-library** (do NOT run here): `lit add` / `lit code add` / `lit code link` (ingest/clone), `lit modify --add-tag topics/methods/data=` (controlled-vocab tagging), `lit modify --add-tag extends/related/contradicts=` (edges), `lit link --project` / `lit modify --set relevance-<P>=` (project binding), `lit trash restore` (restore), `lit taxonomy merge/rename/rm` / `lit project rename/rm` (governance). When the discussion produces such a write, end the read phase and chain: "let me chain to lit-library to run `lit modify <id> --add-tag …`".

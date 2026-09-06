@@ -261,7 +261,9 @@ List papers, optionally filtered. Filters are AND-combined across flags; within
 one flag, comma-separated values are OR-combined. Multi-valued fields
 (`topics` / `methods` / `projects` / `data`) match by list intersection;
 `--author` / `--title` use case-insensitive substring; `--year` / `--type` /
-`--status` / `--priority` match exact values.
+`--status` match exact values. `--priority` is per project: on its own it
+matches a paper graded so by **any** of its projects; with a single `--project`
+it matches only that project's grade.
 
 ```
 lit list
@@ -276,7 +278,7 @@ lit list --topic transformer --format json
 | `--year <v>` | Publication year. |
 | `--type <v>` | Paper type (research / review / position / ...). |
 | `--status <v>` | Status (deep-read / skim / inbox / dropped). |
-| `--priority <v>` | Priority (A / B / C). |
+| `--priority <v>` | Priority (A / B / C), per project — see above. Adding a single `--project` also adds a `Priority(<project>)` column to the table. |
 | `--topic <v>` | Match papers whose `topics` list contains the value. |
 | `--method <v>` | Match against the `methods` list. |
 | `--project <v>` | Match against the `projects` list. |
@@ -539,12 +541,13 @@ lit link --rebuild-all
 | `--paper-doi <doi>` | Look the paper up by DOI. Mutually exclusive with the positional id and `--rebuild-all`. |
 | `--project <name>` | Project name (must be registered in `lit-config.yaml`). |
 | `--relevance <text>` | Set the `relevance-<project>` field in one shot. Otherwise left untouched. |
+| `--priority <A\|B\|C>` | Grade the paper for this project (`priority-<project>`) in one shot. Otherwise the link is left ungraded. |
 | `--rebuild-all` | Cross-machine recovery: rebuild every project's links + `REFERENCES.md` from each paper's `projects` field. Skips `<id>` / `--project`. |
 
 ### `lit unlink`
 
 Reverse a link: drop the `projects` tag, the folder link, the `REFERENCES.md` entry,
-and (by default) the `relevance-<project>` field. Code links under the project
+the `priority-<project>` grade, and (by default) the `relevance-<project>` field. Code links under the project
 are removed only if no other linked paper there still references the same repo.
 
 ```
@@ -556,7 +559,7 @@ lit unlink <id> --project <name> --keep-relevance
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. |
 | `--project <name>` | Project to unlink from. **Required.** |
-| `--keep-relevance` | Preserve the `relevance-<project>` field. Default drops it (the value is echoed in the summary). |
+| `--keep-relevance` | Preserve the `relevance-<project>` field. Default drops it (the value is echoed in the summary). There is no equivalent for the grade: it always goes with the link. |
 
 ### `lit project`
 
@@ -654,7 +657,7 @@ lit taxonomy rm <dict> <value> [-y]
 | `rm <dict> <value>` | Remove a value, cascading the removal to every referencing paper. Lists them and prompts `y/N`; `-y` skips. With zero referencing papers it removes straight away — nothing cascades, and re-adding the value undoes it. |
 
 `projects` is not managed here — use `lit project` (it carries an on-disk path).
-The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
+The two fixed-enum dicts (`type`, `status`) are read-only through
 `lit taxonomy` and require a code release to extend. Never hand-edit
 `TAXONOMY.md` to rename or remove a value. See [3-concepts.md](3-concepts.md) §1.3.
 
@@ -776,7 +779,7 @@ lit export --all --topic transformer --author wang
 | `--project <name>` | Export every paper linked to the project. Mutually exclusive with `--all`. |
 | `--all` | Export every paper in the vault. |
 | `-o`, `--output <file>` | Output path. Default `./refs.bib`. |
-| `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). |
+| `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). `--priority` is per project, exactly as in `lit list`. |
 | `--force` | Overwrite a target file even without the litman sentinel (typically a hand-edited `.bib`). |
 | `--format [bibtex]` | Output format. Only `bibtex` is implemented. |
 
