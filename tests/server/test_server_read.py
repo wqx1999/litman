@@ -461,22 +461,22 @@ def smartlist_vault(
     }
     _seed_paper(
         vault, ids["unread_skim"],
-        title="Skim Paper", year=2023, status="skim", priority="C",
+        title="Skim Paper", year=2023, status="skim",
         **{"read-date": None, "updated-at": "'2026-05-01T10:00:00+02:00'"},
     )
     _seed_paper(
         vault, ids["read_deep"],
-        title="Read Paper", year=2022, status="deep-read", priority="A",
+        title="Read Paper", year=2022, status="deep-read",
         **{"read-date": "2026-05-20", "updated-at": "'2026-05-20T10:00:00+02:00'"},
     )
     _seed_paper(
         vault, ids["dropped"],
-        title="Dropped Paper", year=2021, status="dropped", priority="C",
+        title="Dropped Paper", year=2021, status="dropped",
         **{"read-date": None, "updated-at": "'2026-05-10T10:00:00+02:00'"},
     )
     _seed_paper(
         vault, ids["dropped_read"],
-        title="Dropped Read Paper", year=2019, status="dropped", priority="C",
+        title="Dropped Read Paper", year=2019, status="dropped",
         **{"read-date": "2026-05-25", "updated-at": "'2026-05-25T10:00:00+02:00'"},
     )
     write_index(vault, list_papers(vault))

@@ -59,7 +59,7 @@ def _fresh_vault(tmp_path: Path) -> Path:
     v = create_vault(tmp_path)
     _seed_paper(
         v, "2023_One_Alpha",
-        year=2023, status="inbox", priority="B",
+        year=2023, status="inbox",
         topics=["peptide", "deep-learning"], methods=["transformer"],
         projects=["PepForge"], authors=["One, A."], title="Alpha",
     )

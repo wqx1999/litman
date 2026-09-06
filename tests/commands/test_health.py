@@ -87,7 +87,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "deep-read"),
-        "priority": fields.get("priority", "B"),
         "read-date": fields.get("read_date"),
         "last-revisited": fields.get("last_revisited"),
         "related": fields.get("related", []),
@@ -117,6 +116,19 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         (paper_dir / "discussion.md").write_text(
             discussion_scaffold(paper_id), encoding="utf-8"
         )
+
+
+def _append_metadata(vault: Path, paper_id: str, yaml_text: str) -> None:
+    """Append raw YAML lines to a fixture paper's metadata.yaml.
+
+    For keys ``_write_paper`` deliberately does not model: the RETIRED
+    paper-level ``priority`` and the variable ``priority-<project>`` keys that
+    replaced it (ADR-025). Appending keeps the fixture honest — a real vault
+    grew these keys the same way, at the end of the file.
+    """
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    with meta.open("a", encoding="utf-8") as f:
+        f.write(yaml_text)
 
 
 @pytest.fixture
@@ -153,10 +165,68 @@ def test_schema_invalid_status_value(vault: Path) -> None:
     )
 
 
-def test_schema_invalid_priority(vault: Path) -> None:
-    _write_paper(vault, "2024_Foo_Bar", priority="X")
+def test_schema_retired_priority_field(vault: Path) -> None:
+    """A surviving paper-level `priority` is an error whatever its value —
+    the trigger is the key, not the letter (ADR-025)."""
+    _write_paper(vault, "2024_Foo_Bar", projects=["pep"])
+    _append_metadata(vault, "2024_Foo_Bar", "priority: A\n")
     issues = check_schema(vault, list_papers(vault))
-    assert any(i.category == "schema" and "'priority'" in i.message for i in issues)
+    retired = [i for i in issues if i.category == "retired_priority"]
+    assert len(retired) == 1
+    assert retired[0].severity == "error"
+    assert retired[0].paper_id == "2024_Foo_Bar"
+    assert "retired" in retired[0].message
+    assert "priority-<project>" in retired[0].message
+    assert "--fix" in (retired[0].hint or "")
+
+
+def test_schema_per_project_priority_out_of_range(vault: Path) -> None:
+    """Only the junk value is an error. A null `priority-<other>` is the legal
+    "linked, not graded yet" state (ADR-025 decision 5) and stays silent."""
+    _write_paper(vault, "2024_Foo_Bar", projects=["pep", "other"])
+    _append_metadata(vault, "2024_Foo_Bar", "priority-pep: Z\npriority-other:\n")
+    issues = check_schema(vault, list_papers(vault))
+    schema = [i for i in issues if i.category == "schema"]
+    assert [i.message.split("'")[1] for i in schema] == ["priority-pep"]
+    assert schema[0].severity == "error"
+
+
+def test_schema_retired_priority_discloses_the_lossy_case(vault: Path) -> None:
+    """A paper in NO project loses its grade to `--fix`, and that is the only
+    place the loss is disclosed — the report folds each category after five
+    entries, so "the user saw the list first" is not an argument that holds.
+    """
+    _write_paper(vault, "2024_Linked_Paper", projects=["pep"])
+    _append_metadata(vault, "2024_Linked_Paper", "priority: A\n")
+    _write_paper(vault, "2024_Loose_Paper", projects=[])
+    _append_metadata(vault, "2024_Loose_Paper", "priority: A\n")
+
+    found = {
+        i.paper_id: i
+        for i in check_schema(vault, list_papers(vault))
+        if i.category == "retired_priority"
+    }
+    assert set(found) == {"2024_Linked_Paper", "2024_Loose_Paper"}
+
+    linked, loose = found["2024_Linked_Paper"], found["2024_Loose_Paper"]
+    assert linked.message != loose.message, "the lossy case must read differently"
+    assert "dropped" in loose.message and "no \nproject" not in loose.message
+    assert "in no project" in loose.message
+    assert "dropped" not in linked.message
+    # One verdict + one way out, and the way out is the one that keeps the
+    # grade (link it first), not just the one that deletes it.
+    assert "lit link" in (loose.hint or "")
+    for issue in (linked, loose):
+        assert len(issue.message) < 120, issue.message
+        assert len(issue.hint or "") < 120, issue.hint
+
+
+def test_schema_per_project_priority_in_range_is_clean(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar", projects=["binder-design"])
+    # A hyphenated project name is the normal case — the key is never split
+    # on "-", the prefix is stripped.
+    _append_metadata(vault, "2024_Foo_Bar", "priority-binder-design: A\n")
+    assert check_schema(vault, list_papers(vault)) == []
 
 
 def test_schema_clean_with_consistent_dates(vault: Path) -> None:
@@ -546,6 +616,68 @@ def test_relevance_orphan_detected_report_only(vault: Path) -> None:
     assert issues[0].severity == "warning"  # report-only, never auto-delete
     assert issues[0].paper_id == "2024_Foo_Bar"
     assert "relevance-pep" in issues[0].message
+
+
+# --- priority_orphan (ADR-025) ----------------------------------------------
+
+
+def test_priority_orphan_clean(vault: Path) -> None:
+    from litman.core.checks import check_priority_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    # Hyphenated project name: the key is the prefix + the WHOLE name.
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects:\n  - binder-design\n"
+        "priority-binder-design: A\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    assert check_priority_orphan(vault, list_papers(vault)) == []
+
+
+def test_priority_orphan_detected_report_only(vault: Path) -> None:
+    from litman.core.checks import check_priority_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    # priority-pep present but projects does NOT contain pep -> orphan.
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects: []\npriority-pep: B\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    issues = check_priority_orphan(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "priority_orphan"
+    assert issues[0].severity == "warning"  # report-only, never auto-deleted
+    assert issues[0].paper_id == "2024_Foo_Bar"
+    assert "priority-pep" in issues[0].message
+    assert "lit unlink" in (issues[0].hint or "")
+
+
+def test_priority_and_relevance_orphans_stay_separate_categories(
+    vault: Path,
+) -> None:
+    """One shared body, two findings: the repair prose differs (authored text
+    vs one letter), so they must not collapse into one category."""
+    from litman.core.checks import check_priority_orphan, check_relevance_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects: []\n"
+        "priority-pep: B\nrelevance-pep: stale note\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    papers = list_papers(vault)
+    assert [i.category for i in check_priority_orphan(vault, papers)] == [
+        "priority_orphan"
+    ]
+    rel = check_relevance_orphan(vault, papers)
+    assert [i.category for i in rel] == ["relevance_orphan"]
+    assert "never auto-deleted" in (rel[0].hint or "")
 
 
 # --- project_references (M30 #3) --------------------------------------------
@@ -1736,6 +1868,7 @@ def test_auto_fixable_categories_constant() -> None:
             "orphan_trash_sidecar",
             "discussion_scaffold",
             "skill_drift",
+            "retired_priority",
         }
     )
 

@@ -139,7 +139,6 @@ def _build_metadata(
         "type": None,
         # === personal evaluation layer ===
         "status": "inbox",
-        "priority": None,
         "read-date": None,
         "last-revisited": None,
         # === relations layer ===

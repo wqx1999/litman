@@ -118,8 +118,7 @@ def _seed_second_paper(vault: Path, paper_id: str, doi: str) -> None:
         "methods: []\n"
         "data: []\n"
         "type: research\n"
-        "status: inbox\n"
-        "priority: B\n",
+        "status: inbox\n",
         encoding="utf-8",
     )
 
@@ -344,7 +343,7 @@ def test_modify_set_on_list_field_rejected(
 
 @pytest.mark.parametrize(
     "spec",
-    ["status=foo", "type=bogus", "priority=Z", "priority=1"],
+    ["status=foo", "type=bogus"],
 )
 def test_modify_set_rejects_invalid_fixed_enum(
     vault_with_paper: tuple[Path, str], spec: str
@@ -363,11 +362,11 @@ def test_modify_set_rejects_invalid_fixed_enum(
     assert _read_meta(vault, paper_id)["status"] == "inbox"
 
 
-@pytest.mark.parametrize("field", ["priority", "type"])
+@pytest.mark.parametrize("field", ["type"])
 def test_modify_set_optional_enum_may_be_unset(
     vault_with_paper: tuple[Path, str], field: str
 ) -> None:
-    # priority / type are "not yet evaluated" until the user fills them, so
+    # type is "not yet evaluated" until the user fills it, so
     # --set field= (empty → None) is legal (M29).
     vault, paper_id = vault_with_paper
     runner = CliRunner()
@@ -933,7 +932,6 @@ def _write_relation_paper(vault: Path, paper_id: str) -> None:
         "data: []\n"
         "type: research\n"
         "status: inbox\n"
-        "priority: B\n"
         "read-date:\n"
         "last-revisited:\n"
         "related: []\n"

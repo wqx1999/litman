@@ -53,7 +53,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "inbox"),
-        "priority": fields.get("priority", "B"),
         "read-date": None,
         "last-revisited": None,
         "related": fields.get("related", []),

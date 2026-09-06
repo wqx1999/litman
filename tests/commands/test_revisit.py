@@ -37,7 +37,6 @@ def vault_with_paper(tmp_path: Path) -> tuple[Path, str]:
         "data: []\n"
         "type: research\n"
         "status: inbox\n"
-        "priority: B\n"
         "read-date: '2026-05-01'\n"
         "last-revisited:\n"
         "related: []\n"

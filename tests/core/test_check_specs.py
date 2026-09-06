@@ -44,6 +44,7 @@ _EXPECTED_CATEGORIES = (
     "dangling_refs",
     "dangling_wikilinks",
     "relevance_orphan",
+    "priority_orphan",
     "taxonomy_drift",
     "project_config_consistency",
     "config_unreadable",
@@ -60,7 +61,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 27
+    assert len(_CHECK_REGISTRY) == 28
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -95,16 +96,19 @@ def test_every_spec_fn_has_check_signature() -> None:
 
 
 def test_auto_fixable_categories_unchanged() -> None:
-    """``--fix`` stays the additive/lossless set: the two Phase-1 validity
-    cleanups, the discussion scaffold, and the skill re-copy (the installed
-    skill dir is a deploy artifact of the package; refreshing it never
-    touches files the user added). Broadening to klass-A regen is separate."""
+    """``--fix``'s validity set: the two Phase-1 cleanups, the discussion
+    scaffold, the skill re-copy (the installed skill dir is a deploy artifact;
+    refreshing it never touches files the user added), and the retired-field
+    migration — the one member that is NOT lossless, admitted on the argument
+    recorded beside the constant (ADR-025). Broadening to klass-A regen is
+    separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
         {
             "stale_staging",
             "orphan_trash_sidecar",
             "discussion_scaffold",
             "skill_drift",
+            "retired_priority",
         }
     )
 

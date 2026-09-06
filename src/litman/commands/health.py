@@ -90,6 +90,7 @@ _SEVERITY_STYLE = {
 # get a header here too — fall back to the raw category name otherwise.
 _CATEGORY_HEADERS: dict[str, str] = {
     "schema": "Schema (required fields + fixed enums)",
+    "retired_priority": "Retired field (paper-level priority)",
     "placeholder_metadata": "Filler metadata (title / authors hold a placeholder)",
     "placeholder_id": "Filler inside a paper id (folder name, wikilink, cite key)",
     "weak_id_keyword": "Uninformative id keyword (and a title that cannot fix it)",
@@ -108,6 +109,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",
+    "priority_orphan": "Orphan priority-<project> grades",
     "taxonomy_drift": "Taxonomy drift (unregistered values)",
     "project_config_consistency": (
         "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"
@@ -212,8 +214,9 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     default=False,
     help=(
         "Auto-regenerate all derived (klass-A) artifacts (lossless recompute "
-        "from metadata) plus clean stale staging dirs / orphan trash sidecars "
-        "and refresh stale installed agent skills. "
+        "from metadata) plus clean stale staging dirs / orphan trash sidecars, "
+        "refresh stale installed agent skills, and migrate the retired "
+        "paper-level `priority` onto priority-<project>. "
         "Registry / project / taxonomy / code-clone drift stays report-only "
         "(it needs a per-case decision; --fix never picks a side)."
     ),
@@ -342,14 +345,17 @@ def _refresh_active_health_check_timestamp(vault: Path) -> None:
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, int]:
     """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
 
-    Two correction paths, both lossless (ADR-015):
+    Two correction paths (ADR-015):
 
     * **klass-A regen** — any klass-A category present (derived↔truth drift)
       triggers a single full ``regen`` (drop INDEX.json + views, recompute from
-      metadata). Reported under each fired klass-A category for transparency.
-    * **legacy validity** — ``stale_staging`` roll-back/forward and
+      metadata). Lossless. Reported under each fired klass-A category for
+      transparency.
+    * **validity** — ``stale_staging`` roll-back/forward and
       ``orphan_trash_sidecar`` removal stay routed through
-      :func:`apply_autofix`, unchanged.
+      :func:`apply_autofix`, unchanged, alongside the scaffold / skill / retired
+      -field arms it has grown since. All lossless except the retired-field
+      migration; see ``checks.AUTO_FIXABLE_CATEGORIES`` for why that one is in.
 
     klass-B drift (registry / project / taxonomy / code-clone) is never fixed
     here — it needs a per-case user decision (the Tier-1 ``resolve`` prompt or

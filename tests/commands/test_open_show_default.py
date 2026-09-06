@@ -47,7 +47,6 @@ def vault(tmp_path: Path) -> Path:
             "year: 2024\n"
             "type: research\n"
             "status: inbox\n"
-            "priority: B\n"
             "topics: []\n"
             "methods: []\n"
             "data: []\n"

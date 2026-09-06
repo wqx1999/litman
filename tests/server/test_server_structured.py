@@ -7,7 +7,7 @@ write path:
 * ``PUT  /api/paper/{id}/metadata`` → ``_apply_modify`` (set / addTag / rmTag)
 * ``POST /api/paper/{id}/read``     → ``apply_read`` (idempotent first-read)
 * ``POST /api/paper/{id}/revisit``  → ``apply_revisit`` (presupposes a read)
-* ``GET  /api/fixed-enums``         → status/priority/type whitelists
+* ``GET  /api/fixed-enums``         → status/type whitelists
 
 The A4 assertion is "the backend actually ran": after a write we read both
 ``metadata.yaml`` (TRUTH) AND ``INDEX.json`` (DERIVED) and assert the index was
@@ -78,7 +78,7 @@ def _register_topic(vault: Path, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PUT /metadata — set (status/priority/type dropdowns)
+# PUT /metadata — set (status/type dropdowns)
 # ---------------------------------------------------------------------------
 
 
@@ -102,18 +102,18 @@ def test_put_metadata_set_status_writes_backend_and_reprojects_index(
     assert _index_paper(vault, paper_id)["status"] == "deep-read"
 
 
-def test_put_metadata_unset_priority(vault_with_paper: tuple[Path, str]) -> None:
-    """An empty value unsets an optional fixed enum to null (priority/type)."""
+def test_put_metadata_unset_type(vault_with_paper: tuple[Path, str]) -> None:
+    """An empty value unsets an optional fixed enum to null (type)."""
     vault, paper_id = vault_with_paper
-    assert _meta(vault, paper_id)["priority"] == "B"  # fixture default
+    assert _meta(vault, paper_id)["type"] == "research"  # fixture default
 
     resp = _client(vault).put(
-        f"/api/paper/{paper_id}/metadata", json={"set": {"priority": ""}}
+        f"/api/paper/{paper_id}/metadata", json={"set": {"type": ""}}
     )
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "changed": True}
-    assert _meta(vault, paper_id)["priority"] is None
-    assert _index_paper(vault, paper_id)["priority"] is None
+    assert _meta(vault, paper_id)["type"] is None
+    assert _index_paper(vault, paper_id)["type"] is None
 
 
 def test_put_metadata_set_same_value_is_noop(
@@ -155,7 +155,7 @@ def test_put_metadata_unset_required_status_400(
     vault_with_paper: tuple[Path, str],
 ) -> None:
     """Unsetting a REQUIRED fixed enum (status) is rejected — an empty value may
-    only clear the optional enums (priority/type). The backend's required-field
+    only clear the optional enums (type). The backend's required-field
     guard is enforced through the endpoint, not bypassed; status untouched."""
     vault, paper_id = vault_with_paper
     before = _meta(vault, paper_id)["status"]
@@ -558,15 +558,15 @@ def test_get_fixed_enums(vault_with_paper: tuple[Path, str]) -> None:
     resp = _client(vault).get("/api/fixed-enums")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"status", "priority", "type"}
+    # `priority` is gone: retired from the schema (ADR-025), and this route is
+    # the reason all_fixed_enums must be derived from the table, not indexed.
+    assert set(body) == {"status", "type"}
 
     # status: required (no unset), curation-lifecycle order.
     assert body["status"]["allowsNone"] is False
     assert body["status"]["values"] == ["inbox", "skim", "deep-read", "dropped"]
 
-    # priority / type: optional (offer an unset), sorted values.
-    assert body["priority"]["allowsNone"] is True
-    assert body["priority"]["values"] == ["A", "B", "C"]
+    # type: optional (offer an unset), sorted values.
     assert body["type"]["allowsNone"] is True
     assert "research" in body["type"]["values"]
     assert body["type"]["values"] == sorted(body["type"]["values"])
@@ -886,7 +886,6 @@ def _seed_second_paper(vault: Path, paper_id: str) -> None:
         "data: []\n"
         "type: research\n"
         "status: inbox\n"
-        "priority: B\n"
         "read-date:\n"
         "last-revisited:\n"
         "related: []\n"

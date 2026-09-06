@@ -9,6 +9,12 @@ TAXONOMY.md. These two helpers compute that cascade:
   one-to-one, merge many-to-one).
 * :func:`_ripple_removals` — drop a value entirely (the deletion path).
 
+A third, unrelated helper lives here for the same reason (it needs the same
+round-trip YAML machinery and the same "rewrite many metadata.yaml in one
+staged commit" shape): :func:`migrate_retired_priority`, the permanent
+``lit health-check --fix`` migration off the retired paper-level ``priority``
+field (ADR-025).
+
 Both return ``(n_changed, staged_writes, all_papers_with_changes_applied)``
 so the caller can hand the staged writes to :func:`staged_write` and
 re-render INDEX.json from the in-memory paper list without a re-read.
@@ -28,9 +34,13 @@ import io
 from pathlib import Path
 from typing import Any
 
+from ruamel.yaml import YAMLError
+
+from litman.core.atomic import _make_op_id, staged_write
 from litman.core.dates import now_iso
-from litman.core.document import list_papers, load_yaml_or_raise
+from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
 from litman.core.taxonomy import replace_value_in_field
+from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
@@ -243,3 +253,140 @@ def _ripple_removals(
         n_changed += 1
 
     return n_changed, staged, papers
+
+
+def migrate_retired_priority(vault: Path) -> int:
+    """Move every paper-level ``priority`` onto its per-project keys. Returns n.
+
+    The permanent ``lit health-check --fix`` migration behind the
+    ``retired_priority`` finding (``core/checks.py``, ADR-025). Per paper
+    holding the retired key:
+
+    * a graded paper copies its letter onto ``priority-<project>`` for every
+      project it is linked to — via ``setdefault``, so a grade the user (or an
+      earlier run) already set for that project is NEVER overwritten;
+    * ``priority: null`` (what ``lit add`` used to write for an unread paper)
+      copies nothing: the migration drops the key instead of inventing a
+      ``priority-<project>: null`` for a paper nobody has graded;
+    * a paper in no project keeps nothing — there is no project for the grade
+      to be "about" (ADR-025 decision 6, and the reason this is the one lossy
+      ``--fix`` arm; ``check_schema`` gives those papers a message that says
+      so before ``--fix`` is typed).
+
+    Then the retired key is deleted. Idempotent by construction: the second run
+    finds no ``priority`` key, stages nothing, and returns 0.
+
+    **Keyed by FOLDER, never by the declared ``id``.** ``id`` is an ordinary
+    metadata field: nothing enforces that it is unique or that it matches its
+    directory, and the vault is an rclone target (invariant #9) where a sync
+    conflict can leave two folders declaring one id. Resolving the path
+    through ``id`` wrote one folder twice, left the other still holding the
+    retired key, over-reported the count, and made the *second* ``--fix``
+    raise ``KeyError`` — which is not a ``LitmanError``, so it escaped the CLI
+    handler as a traceback. The returned count is therefore a count of FILES
+    rewritten.
+
+    ``updated-at`` is deliberately NOT bumped. A migration is not a user edit —
+    the audit stamp answers "when did I last change this paper", and moving a
+    value the tool itself retired is not an answer to that. It is also what
+    makes the before/after files comparable line by line. This is a property of
+    this function, not an option on the shared writers: the other 26 assignment
+    sites bump unconditionally and must keep doing so.
+
+    All the rewritten ``metadata.yaml`` files plus ``INDEX.json`` go into ONE
+    :func:`staged_write` (mirroring ``project_link.remove_project``), so a crash
+    mid-migration leaves the vault either wholly migrated or wholly untouched —
+    and TRUTH files are chmod read-only on Windows, which only the staged path
+    handles. The post-commit ``reconcile_derived`` re-reads FULL metadata from
+    disk: ``retired_priority`` rides the validity-fix path, and
+    ``commands/health.py`` only regens for klass-A findings, so this call is the
+    migration's own reconciliation rather than a duplicate of one.
+
+    Papers this cannot migrate are left exactly as they are, never guessed at:
+    an unreadable metadata.yaml (owned by ``check_paper_dir_validity``) and a
+    non-list ``projects`` (a hand-edit; metadata is schema-less by invariant
+    #7). Neither is a silent skip in the invariant-#14 sense — the paper keeps
+    the retired key, so ``check_schema`` reports it again on the re-run
+    ``health-check`` does right after ``--fix``.
+    """
+    # Local imports: core.checks imports THIS module back (apply_autofix's
+    # retired_priority arm) and core.correctors imports core.checks, so
+    # keeping both lazy means neither direction is a module-load edge.
+    # Mirrors the lazy reconcile import in core/project_link.py.
+    from litman.core.checks import PROJECT_PRIORITY_PREFIX
+    from litman.core.correctors import reconcile_derived
+
+    papers_dir = vault / "papers"
+    if not papers_dir.is_dir():
+        return 0
+
+    # Enumerated here rather than through list_papers because the folder name
+    # is the identity and that function does not report it. The tolerance
+    # below mirrors it exactly, for the reason recorded there.
+    index_papers: list[dict[str, Any]] = []
+    staged: list[tuple[str, str]] = []
+    n_changed = 0
+
+    for paper_dir in sorted(papers_dir.iterdir()):
+        if not paper_dir.is_dir():
+            continue
+        meta_path = paper_dir / "metadata.yaml"
+        if not meta_path.is_file():
+            continue
+        try:
+            paper = read_metadata(meta_path)
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if not isinstance(paper, dict) or not paper:
+            continue
+        index_papers.append(paper)
+
+        if "priority" not in paper:
+            continue
+        rt_metadata = load_yaml_or_raise(meta_path, _yaml)
+        if not isinstance(rt_metadata, dict) or "priority" not in rt_metadata:
+            continue
+        projects = rt_metadata.get("projects")
+        if projects is not None and not isinstance(projects, list):
+            # `projects: pepcodec` (a hand-edit) would iterate CHARACTER by
+            # character into priority-p, priority-e, ... and no check could
+            # catch it afterwards: check_priority_orphan matches each letter
+            # against set("pepcodec"), which contains them all. Refuse the
+            # paper, mirroring _ripple_removals' scalar guard.
+            continue
+
+        grade = rt_metadata.get("priority")
+        if grade is not None:
+            for project in projects or []:
+                key = f"{PROJECT_PRIORITY_PREFIX}{project}"
+                rt_metadata.setdefault(key, grade)
+                paper[key] = rt_metadata[key]
+        rt_metadata.pop("priority", None)
+        paper.pop("priority", None)
+        staged.append(
+            (
+                f"papers/{paper_dir.name}/metadata.yaml",
+                _dump_yaml_to_string(rt_metadata),
+            )
+        )
+        n_changed += 1
+
+    if not n_changed:
+        return 0
+
+    fresh_index = render_index(index_papers, now_iso())
+    # A generated op id, not a fixed one: a staging dir that recovery could not
+    # resolve is preserved as evidence, and a fixed name would then make every
+    # later --fix die on FileExistsError.
+    with staged_write(
+        vault, op_id=_make_op_id("migrate-retired-priority")
+    ) as stage:
+        for relpath, content in staged:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", fresh_index)
+
+    # papers=None on purpose: REFERENCES.md renders relevance-<project> (and
+    # groups by the grade), which an INDEX projection does not carry — handing
+    # one in would silently rewrite every project's reference list without it.
+    reconcile_derived(vault, project_refs=True)
+    return n_changed

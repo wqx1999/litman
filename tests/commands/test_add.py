@@ -206,7 +206,9 @@ def test_add_writes_metadata_yaml_correctly(
     assert metadata["type"] is None
     # Default evaluation
     assert metadata["status"] == "inbox"
-    assert metadata["priority"] is None
+    # `priority` was retired (ADR-025): a fresh paper must not carry the key
+    # at all, or every `lit add` would plant a schema error.
+    assert "priority" not in metadata
     # Default relations
     assert metadata["related"] == []
     # Code-binding layer (M3 will populate via `lit code add`)

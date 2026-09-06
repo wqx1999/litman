@@ -71,7 +71,6 @@ def _write_paper(vault: Path, paper_id: str, **extra: Any) -> None:
         "data": [],
         "type": "research",
         "status": "inbox",
-        "priority": "B",
         "related": [],
         "contradicts": [],
         "extends": [],
