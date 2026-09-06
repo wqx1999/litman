@@ -8,7 +8,6 @@ export type ListMode = 'all' | 'reading' | 'recent-read'
  * single-select top dropdown (a scope), not a multi-select facet group. */
 export type FacetKey =
   | 'status'
-  | 'priority'
   | 'type'
   | 'topics'
   | 'methods'
@@ -22,7 +21,6 @@ export type Filters = Record<FacetKey, Set<string>>
 export function emptyFilters(): Filters {
   return {
     status: new Set(),
-    priority: new Set(),
     type: new Set(),
     topics: new Set(),
     methods: new Set(),
@@ -94,9 +92,14 @@ interface Dimension {
   order?: readonly string[]
 }
 
-// Status / priority / type are fixed enums (core/checks.py:_FIXED_ENUM_VALUES);
-// pin their value order to the enum sequence rather than alphabetizing. Topics /
-// methods / data are free controlled-vocabulary lists → alphabetical.
+// Status / type are fixed enums (core/checks.py:_FIXED_ENUM_VALUES); pin their
+// value order to the enum sequence rather than alphabetizing. Topics / methods /
+// data are free controlled-vocabulary lists → alphabetical.
+//
+// There is deliberately no Priority facet. The grade is per project (ADR-025),
+// so a project-less "Priority: A" group would have to OR across projects and
+// then mean something different from the same word in the cockpit. Filtering by
+// grade stays a CLI query (`lit list --priority A --project P`).
 const DIMENSIONS: readonly Dimension[] = [
   {
     key: 'status',
@@ -104,7 +107,6 @@ const DIMENSIONS: readonly Dimension[] = [
     kind: 'single',
     order: ['deep-read', 'skim', 'inbox', 'dropped'],
   },
-  { key: 'priority', label: 'Priority', kind: 'single', order: ['A', 'B', 'C'] },
   {
     key: 'type',
     label: 'Type',

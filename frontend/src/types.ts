@@ -15,7 +15,6 @@ export interface IndexPaper {
   authors: string[]
   year: number | null
   type: string | null
-  priority: string | null
   status: string | null
   topics: string[]
   projects: string[]
@@ -59,6 +58,12 @@ export interface PaperMeta extends IndexPaper {
    * codes/<name>/ is gone on disk, so the cockpit can mark them as missing.
    * Absent on the trash-inspector path (that endpoint does not annotate it). */
   'code-clones-missing'?: string[]
+  /** Per-project grade (ADR-025): `priority-<project>`, A/B/C, one key per
+   * project the paper is linked to. Absent = linked but not graded yet, which
+   * is a legal state — the link happens at ingest, the grade after reading.
+   * Variable-width, so it can never join the INDEX projection: only
+   * `GET /api/paper/{id}` serves it, and it passes it through untouched. */
+  [grade: `priority-${string}`]: string | null | undefined
 }
 
 /** The smart-list views the server computes (sorted by recency / read-date). */
@@ -98,22 +103,23 @@ export interface Taxonomy {
   data: string[]
   type: string[]
   status: string[]
-  priority: string[]
 }
 
 /** One fixed-enum field's dropdown options. `allowsNone` is true for the
- * optional enums (priority/type), which then offer an "— (unset)" choice;
- * status is required so it has none. */
+ * optional enums (type), which then offer an "— (unset)" choice; status is
+ * required so it has none. */
 export interface FixedEnumField {
   values: string[]
   allowsNone: boolean
 }
 
-/** The /api/fixed-enums payload: status/priority/type whitelists for the
- * cockpit dropdowns, sourced from core/checks (not hard-coded in the frontend). */
+/** The /api/fixed-enums payload: status/type whitelists for the cockpit
+ * dropdowns, sourced from core/checks (not hard-coded in the frontend).
+ * `priority` is NOT here: it was retired as a paper-level field (ADR-025) and
+ * its replacement is per project, so there is no project-less whitelist a
+ * dropdown could show. The grade arrives on PaperMeta instead. */
 export interface FixedEnums {
   status: FixedEnumField
-  priority: FixedEnumField
   type: FixedEnumField
 }
 

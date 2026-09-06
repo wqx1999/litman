@@ -244,7 +244,7 @@ export function fetchVaultVersion(): Promise<{ version: string }> {
   return getJSON<{ version: string }>('/api/vault-version')
 }
 
-/** The status/priority/type whitelists (+ allowsNone) backing the cockpit
+/** The status/type whitelists (+ allowsNone) backing the cockpit
  * dropdowns. Sourced from the server, never hard-coded here. */
 export function fetchFixedEnums(): Promise<FixedEnums> {
   return getJSON<FixedEnums>('/api/fixed-enums')
@@ -277,7 +277,7 @@ export function clearPins(): Promise<{ pins: string[] }> {
 }
 
 /** The body of a structured metadata write (one transaction). All optional;
- * `set` carries scalar fields (status/priority/type, and the edit dialog's
+ * `set` carries scalar fields (status/type, and the edit dialog's
  * title/year/journal/...), the tag maps carry topics/methods/data add/remove. */
 export interface MetadataWrite {
   set?: Record<string, string | null>
@@ -790,12 +790,16 @@ export function linkProject(
   id: string,
   project: string,
   relevance?: string,
+  priority?: string,
 ): Promise<{ ok: boolean }> {
-  return mutateJSON(
-    `/api/paper/${encodeURIComponent(id)}/project`,
-    'POST',
-    relevance ? { project, relevance } : { project },
-  )
+  const body: { project: string; relevance?: string; priority?: string } = { project }
+  if (relevance) body.relevance = relevance
+  // Grades the paper FOR THIS PROJECT in the same request, so the panel's
+  // "pick a letter on an unlinked row" gesture is ONE write rather than a link
+  // followed by a metadata PUT (ADR-025 decision 5). The A/B/C range is core's
+  // answer; a bad value comes back as the backend's raw 400 message.
+  if (priority) body.priority = priority
+  return mutateJSON(`/api/paper/${encodeURIComponent(id)}/project`, 'POST', body)
 }
 
 /** Unlink a paper from a project through the `lit unlink` backend. */
