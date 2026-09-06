@@ -471,8 +471,11 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
 
     The projection fields come through ``project_paper``, exactly as
     ``GET /api/papers`` serves them, and every other key in metadata.yaml —
-    ``relevance-<project>``, ``created-at``, the relation lists, any custom
-    field a user invented — is passed through untouched.
+    ``relevance-<project>``, ``priority-<project>``, ``created-at``, the
+    relation lists, any custom field a user invented — is passed through
+    untouched. The two per-project keys matter here because this is the ONLY
+    endpoint that serves them: both are variable-width, so neither can enter
+    the fixed INDEX projection that ``GET /api/papers`` returns.
 
     Why the projection is applied at all, when this endpoint's job is to
     return everything: metadata.yaml is schemaless (invariant #7), so a
@@ -635,14 +638,20 @@ def get_taxonomy(request: Request) -> dict[str, list[str]]:
 
 @router.get("/fixed-enums")
 def get_fixed_enums() -> dict[str, dict[str, Any]]:
-    """Whitelists for the status / priority / type cockpit dropdowns.
+    """Whitelists for the status / type cockpit dropdowns.
 
     Sourced from ``core.checks`` (the same table ``check_schema`` / ``lit modify
     --set`` validate against), never hard-coded in the frontend. Each field
     carries its allowed ``values`` in display order plus ``allowsNone`` — whether
-    the dropdown offers an "— (unset)" option (priority/type, M29; status's
-    unevaluated state is the explicit value ``inbox``, so it has none). Vault-
-    independent, so it takes no request state.
+    the dropdown offers an "— (unset)" option (type, M29; status's unevaluated
+    state is the explicit value ``inbox``, so it has none). Vault-independent,
+    so it takes no request state.
+
+    ``priority`` is deliberately absent: it was retired as a paper-level field
+    (ADR-025) and its replacement is per project, so there is no project-less
+    whitelist to hand a dropdown. The grade rides ``GET /api/paper/{id}`` as a
+    ``priority-<project>`` key instead. The body is derived from the enum
+    table rather than naming fields, so retiring one drops it here by itself.
     """
     enums = all_fixed_enums()
     return {

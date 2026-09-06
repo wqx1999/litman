@@ -1447,3 +1447,227 @@ def test_put_active_vault_empty_name_400(tmp_path: Path) -> None:
     v1, _v2 = _two_registered_vaults(tmp_path)
     resp = TestClient(create_app(v1)).put("/api/vaults/active", json={"name": ""})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# ADR-025 — the per-project grade over the API
+#
+# The theme of this block: the server adds NO validation of its own. Every
+# refusal below is core's, arriving verbatim, because the GUI must never open
+# a second write path (invariant #16). Each test therefore asserts the
+# message TEXT, not just the status code — a server-side reimplementation
+# would pass a 400-only assertion while drifting from what the CLI says.
+# ---------------------------------------------------------------------------
+
+
+def _linked_paper(vault: Path, paper_id: str, project_dir: Path) -> None:
+    _register_project(vault, "pepforge", project_dir)
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_put_metadata_retired_priority_is_400_with_the_cli_wording(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority": "A"}}
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "Cannot --set 'priority': retired" in detail
+    assert "priority-<project>" in detail
+    assert "priority" not in _meta(vault, paper_id)
+
+
+def test_put_metadata_priority_for_an_unlinked_project_is_400(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The membership refusal is core's (`_apply_set_op`), not a copy here."""
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-nosuch": "A"}}
+    )
+    assert resp.status_code == 400
+    assert "not linked to 'nosuch'" in resp.json()["detail"]
+    assert "priority-nosuch" not in _meta(vault, paper_id)
+
+
+def test_put_metadata_priority_out_of_range_is_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": "Q"}}
+    )
+    assert resp.status_code == 400
+    assert "Invalid priority-pepforge 'Q'" in resp.json()["detail"]
+
+
+def test_put_metadata_empty_priority_is_400_not_a_null_grade(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """`{"priority-P": ""}` is the shape the cockpit would send for an "unset"
+    dropdown entry. There is no such entry by design: absence is the ungraded
+    form, so the API must refuse to write a null rather than invent one."""
+    vault, paper_id = vault_with_paper
+    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": ""}}
+    )
+    assert resp.status_code == 400
+    assert "absent key" in resp.json()["detail"]
+    assert "priority-pepforge" not in _meta(vault, paper_id)
+
+
+def test_put_metadata_priority_for_a_linked_project_is_written(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": "B"}}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": True}
+    assert _meta(vault, paper_id)["priority-pepforge"] == "B"
+    # Not in the INDEX projection — variable-width keys never are (ADR-025).
+    assert "priority-pepforge" not in _index_paper(vault, paper_id)
+
+
+def test_post_project_links_and_grades_in_one_request(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Decision 5's gesture: picking a letter on an UNLINKED panel row is one
+    write, not a link followed by a metadata PUT."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "A"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    meta = _meta(vault, paper_id)
+    assert meta["projects"] == ["pepforge"]
+    assert meta["priority-pepforge"] == "A"
+
+
+def test_post_project_without_priority_links_ungraded(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 200, resp.text
+    meta = _meta(vault, paper_id)
+    assert meta["projects"] == ["pepforge"]
+    assert not any(k.startswith("priority") for k in meta)
+
+
+def test_post_project_out_of_range_priority_is_400_from_core(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Only the TYPE is checked in the handler; the A/B/C range is core's, so
+    the client sees exactly what `lit link --priority Q` prints."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "Q"},
+    )
+    assert resp.status_code == 400
+    assert "Invalid priority 'Q'" in resp.json()["detail"]
+    assert "A, B, C" in resp.json()["detail"]
+    # Refused whole: no half-made link left behind.
+    assert _meta(vault, paper_id)["projects"] == []
+
+
+def test_post_project_non_string_priority_is_400_at_the_boundary(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """The one check the handler DOES own, mirroring `relevance`: a non-string
+    would reach core as a type it cannot compare."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": 3},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "priority must be a string."
+
+
+def test_delete_project_link_drops_the_grade(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "A"},
+    )
+
+    resp = client.delete(f"/api/paper/{paper_id}/project/pepforge")
+    assert resp.status_code == 200, resp.text
+    meta = _meta(vault, paper_id)
+    assert meta["projects"] == []
+    assert "priority-pepforge" not in meta
+
+
+def test_get_paper_passes_the_grade_through_untouched(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """`GET /api/paper/{id}` is the ONLY endpoint that serves the grade: it is
+    variable-width, so it can never enter the INDEX projection `/api/papers`
+    returns. The cockpit reads it from here."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "C", "relevance": "core baseline"},
+    )
+
+    body = client.get(f"/api/paper/{paper_id}").json()
+    assert body["priority-pepforge"] == "C"
+    assert body["relevance-pepforge"] == "core baseline"
+    assert "priority" not in body
+    # Control: the same key is absent from the list projection.
+    listed = client.get("/api/papers").json()
+    rows = listed["papers"] if isinstance(listed, dict) else listed
+    row = next(r for r in rows if r["id"] == paper_id)
+    assert not any(k.startswith("priority") for k in row)
+
+
+def test_project_rm_and_rename_cascade_the_grade_over_the_api(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """The route docstrings claim both per-project keys cascade. 3.2 did that
+    work in core; this pins that the API paths inherit it rather than the
+    comments merely asserting it."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "A"},
+    )
+
+    assert client.put("/api/projects/pepforge", json={"new": "pepcodec"}).status_code == 200
+    meta = _meta(vault, paper_id)
+    assert "priority-pepforge" not in meta
+    assert meta["priority-pepcodec"] == "A"     # carried over, value preserved
+
+    assert client.delete("/api/projects/pepcodec").status_code == 200
+    assert "priority-pepcodec" not in _meta(vault, paper_id)
