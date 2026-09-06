@@ -652,3 +652,145 @@ def test_cli_unlink_accepts_fuzzy_substring(
     )
     assert result.exit_code == 0, result.output
     assert "Unlinked" in result.output
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: grade the paper FOR THIS PROJECT at link time
+# ---------------------------------------------------------------------------
+
+
+def test_link_with_priority_sets_the_per_project_grade(
+    vault: Path, project_dir: Path
+) -> None:
+    """The "link and grade in one gesture" path — the whole point of decision
+    5, which is also what the GUI panel row does."""
+    _make_paper(vault, "p1")
+    result = link_paper_to_project(
+        vault, "p1", "pepforge", {"pepforge": str(project_dir)}, priority="A"
+    )
+    assert result["set_priority"] is True
+    meta = _read_paper_meta(vault, "p1")
+    assert meta["projects"] == ["pepforge"]
+    assert meta["priority-pepforge"] == "A"
+
+
+def test_link_without_priority_leaves_the_link_ungraded(
+    vault: Path, project_dir: Path
+) -> None:
+    """Linked-but-ungraded is a LEGAL state (decision 5): a link happens at
+    ingest, a grade after reading. Absence is that state, not a null."""
+    _make_paper(vault, "p1")
+    result = link_paper_to_project(
+        vault, "p1", "pepforge", {"pepforge": str(project_dir)}
+    )
+    assert result["set_priority"] is False
+    assert "priority-pepforge" not in _read_paper_meta(vault, "p1")
+
+
+def test_link_priority_is_idempotent(vault: Path, project_dir: Path) -> None:
+    _make_paper(vault, "p1")
+    reg = {"pepforge": str(project_dir)}
+    link_paper_to_project(vault, "p1", "pepforge", reg, priority="A")
+    before = _read_paper_meta(vault, "p1")["updated-at"]
+
+    again = link_paper_to_project(vault, "p1", "pepforge", reg, priority="A")
+    assert again["set_priority"] is False
+    assert again["metadata_changed"] is False
+    assert _read_paper_meta(vault, "p1")["updated-at"] == before
+
+
+def test_link_priority_regrades_an_existing_link(
+    vault: Path, project_dir: Path
+) -> None:
+    """Same "set in one shot" semantics as --relevance: passing the flag
+    overwrites, omitting it leaves the field alone."""
+    _make_paper(vault, "p1")
+    reg = {"pepforge": str(project_dir)}
+    link_paper_to_project(vault, "p1", "pepforge", reg, priority="A")
+
+    result = link_paper_to_project(vault, "p1", "pepforge", reg, priority="C")
+    assert result["set_priority"] is True
+    assert _read_paper_meta(vault, "p1")["priority-pepforge"] == "C"
+
+    link_paper_to_project(vault, "p1", "pepforge", reg)  # flag omitted
+    assert _read_paper_meta(vault, "p1")["priority-pepforge"] == "C"
+
+
+def test_link_rejects_a_priority_outside_abc(
+    vault: Path, project_dir: Path
+) -> None:
+    """LinkError, not a Click UsageError: a bad metadata value must surface in
+    this repo's error shape (exit 1 + panel), like every other one."""
+    _make_paper(vault, "p1")
+    with pytest.raises(LinkError, match="Invalid priority"):
+        link_paper_to_project(
+            vault, "p1", "pepforge", {"pepforge": str(project_dir)}, priority="Q"
+        )
+    # Refused before anything was written.
+    assert "priority-pepforge" not in _read_paper_meta(vault, "p1")
+
+
+def test_link_cli_priority_flag_is_not_a_click_choice(
+    vault: Path, project_dir: Path
+) -> None:
+    """Exit 1 (LitmanError), not exit 2 (Click UsageError). Click validates
+    shapes it owns — formats, shell names; a metadata value is ours."""
+    _make_paper(vault, "p1")
+    _write_config_with_project(vault, "pepforge", project_dir)
+    result = CliRunner().invoke(
+        cli,
+        ["link", "p1", "--project", "pepforge", "--priority", "Q",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, LinkError)
+
+
+def test_link_cli_priority_flag_writes_and_echoes(
+    vault: Path, project_dir: Path
+) -> None:
+    _make_paper(vault, "p1")
+    _write_config_with_project(vault, "pepforge", project_dir)
+    result = CliRunner().invoke(
+        cli,
+        ["link", "p1", "--project", "pepforge", "--priority", "B",
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "priority-pepforge" in result.output
+    assert _read_paper_meta(vault, "p1")["priority-pepforge"] == "B"
+
+
+def test_unlink_always_drops_the_grade_even_with_keep_relevance(
+    vault: Path, project_dir: Path
+) -> None:
+    """Decision 15: no --keep-priority. Relevance is authored prose worth
+    offering to keep; a grade is one letter that means nothing without the
+    link it grades, so it goes regardless — including on the path that
+    explicitly spares relevance."""
+    _make_paper(vault, "p1")
+    reg = {"pepforge": str(project_dir)}
+    link_paper_to_project(
+        vault, "p1", "pepforge", reg, priority="A", relevance="core baseline"
+    )
+
+    result = unlink_paper_from_project(
+        vault, "p1", "pepforge", reg, purge_relevance=False
+    )
+    assert result["removed_priority"] is True
+    assert result["removed_priority_value"] == "A"
+    assert result["removed_relevance"] is False
+
+    meta = _read_paper_meta(vault, "p1")
+    assert "priority-pepforge" not in meta
+    assert meta["relevance-pepforge"] == "core baseline"   # spared, as asked
+
+
+def test_unlink_cli_has_no_keep_priority_flag(
+    vault: Path, project_dir: Path
+) -> None:
+    _make_paper(vault, "p1")
+    _write_config_with_project(vault, "pepforge", project_dir)
+    result = CliRunner().invoke(cli, ["unlink", "--help"])
+    assert "--keep-relevance" in result.output
+    assert "--keep-priority" not in result.output

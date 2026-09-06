@@ -15,7 +15,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
-from litman.core.locking import lock_truth_file
+from litman.core.locking import lock_truth_file, unlock_truth_file
 from litman.exceptions import (
     CorruptMetadataError,
     ModifyError,
@@ -29,6 +29,25 @@ _yaml = YAML(typ="safe")
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _link(vault: Path, paper_id: str, project: str) -> None:
+    """Put the paper in ``project`` by rewriting its metadata in place.
+
+    Not through `lit link` (which needs a registered project directory) nor
+    `--add-tag projects=` (which validates against TAXONOMY): these tests are
+    about the `--set priority-<project>` gate, and membership is only its
+    precondition. Goes through core.locking — metadata.yaml is TRUTH.
+    """
+    path = vault / "papers" / paper_id / "metadata.yaml"
+    text = path.read_text(encoding="utf-8")
+    assert "projects: []\n" in text, "fixture shape changed"
+    unlock_truth_file(path)
+    path.write_text(
+        text.replace("projects: []\n", f"projects:\n  - {project}\n"),
+        encoding="utf-8",
+    )
+    lock_truth_file(path)
 
 
 def _read_meta(vault: Path, paper_id: str) -> dict[str, Any]:
@@ -62,11 +81,11 @@ def test_modify_penetrates_locked_metadata(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+        ["modify", paper_id, "--set", "type=review", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
-    assert _read_meta(vault, paper_id)["priority"] == "A"
+    assert _read_meta(vault, paper_id)["type"] == "review"
     # Re-locked after the staged-write promote.
     assert not os.access(meta, os.W_OK)
 
@@ -76,12 +95,12 @@ def test_modify_set_scalar(vault_with_paper: tuple[Path, str]) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+        ["modify", paper_id, "--set", "type=review", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _read_meta(vault, paper_id)
-    assert meta["priority"] == "A"
+    assert meta["type"] == "review"
     # updated-at bumped past created-at.
     assert meta["updated-at"] != meta["created-at"]
 
@@ -256,7 +275,7 @@ def test_modify_set_multiple_in_one_invocation(
         cli,
         [
             "modify", paper_id,
-            "--set", "priority=A",
+            "--set", "type=review",
             "--set", "status=deep-read",
             "--set", "read-date=2026-04-28",
             "--library", str(vault),
@@ -265,7 +284,7 @@ def test_modify_set_multiple_in_one_invocation(
     assert result.exit_code == 0, result.output
 
     meta = _read_meta(vault, paper_id)
-    assert meta["priority"] == "A"
+    assert meta["type"] == "review"
     assert meta["status"] == "deep-read"
     assert meta["read-date"] == "2026-04-28"
 
@@ -495,7 +514,7 @@ def test_modify_add_tag_on_scalar_rejected(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--add-tag", "priority=A", "--library", str(vault)],
+        ["modify", paper_id, "--add-tag", "status=deep-read", "--library", str(vault)],
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, ModifyError)
@@ -571,7 +590,7 @@ def test_modify_rm_tag_on_scalar_rejected(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--rm-tag", "priority=B", "--library", str(vault)],
+        ["modify", paper_id, "--rm-tag", "status=inbox", "--library", str(vault)],
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, ModifyError)
@@ -620,7 +639,7 @@ def test_modify_bumps_updated_at(vault_with_paper: tuple[Path, str]) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+        ["modify", paper_id, "--set", "type=review", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
@@ -643,7 +662,7 @@ def test_modify_refreshes_index_json(
         cli,
         [
             "modify", paper_id,
-            "--set", "priority=A",
+            "--set", "type=review",
             "--add-tag", "topics=peptide",
             "--library", str(vault),
         ],
@@ -654,6 +673,7 @@ def test_modify_refreshes_index_json(
     assert payload["n_papers"] == 1
     p = payload["papers"][0]
     assert p["id"] == paper_id
+    assert p["type"] == "review"
     # `priority` left the projection with ADR-025 (the key is per project and
     # variable-length, so it can never live in a fixed column set).
     assert "priority" not in p
@@ -732,7 +752,7 @@ def test_modify_unknown_paper(vault_with_paper: tuple[Path, str]) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", "9999_Ghost", "--set", "priority=A", "--library", str(vault)],
+        ["modify", "9999_Ghost", "--set", "type=review", "--library", str(vault)],
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, PaperNotFoundError)
@@ -773,11 +793,11 @@ def test_modify_accepts_fuzzy_substring(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", "Foo", "--set", "priority=A", "--library", str(vault)],
+        ["modify", "Foo", "--set", "type=review", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     meta = _read_meta(vault, paper_id)
-    assert meta["priority"] == "A"
+    assert meta["type"] == "review"
 
 
 def test_modify_accepts_paper_doi(
@@ -793,14 +813,14 @@ def test_modify_accepts_paper_doi(
             "--paper-doi",
             "10.1/x",
             "--set",
-            "priority=A",
+            "type=review",
             "--library",
             str(vault),
         ],
     )
     assert result.exit_code == 0, result.output
     meta = _read_meta(vault, paper_id)
-    assert meta["priority"] == "A"
+    assert meta["type"] == "review"
 
 
 # ---------------------------------------------------------------------------
@@ -1305,7 +1325,7 @@ def test_modify_with_stale_index_falls_back_to_the_scan_and_heals(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--set", "priority=A", "--library", str(vault)],
+        ["modify", paper_id, "--set", "type=review", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
@@ -1630,3 +1650,163 @@ def test_set_author_updates_index(
         p for p in _read_index(vault)["papers"] if p["id"] == paper_id
     ]
     assert indexed["authors"] == ["Bar, Bob", "Foo, Alice"]
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: the retired field and its per-project replacement
+# ---------------------------------------------------------------------------
+
+
+def test_modify_set_retired_priority_is_refused(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Closes the hole retiring the field opened: `priority` left the fixed-enum
+    table, so without this gate `--set priority=Z` sailed through and landed a
+    schemaless scalar that nothing would ever read."""
+    vault, paper_id = vault_with_paper
+    runner = CliRunner()
+    for value in ("A", "Z", ""):
+        result = runner.invoke(
+            cli,
+            ["modify", paper_id, "--set", f"priority={value}",
+             "--library", str(vault)],
+        )
+        assert result.exit_code != 0, value
+        assert isinstance(result.exception, ModifyError)
+        msg = str(result.exception)
+        assert "retired" in msg
+        assert "priority-<project>" in msg
+        assert "priority" not in _read_meta(vault, paper_id)
+
+
+def test_modify_set_priority_for_a_project_the_paper_is_not_in_is_refused(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Decision 10: a grade is about a link, so there must be a link."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority-nosuch=A", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    msg = str(result.exception)
+    assert "not linked to 'nosuch'" in msg
+    assert f"lit link {paper_id} --project nosuch --priority A" in msg
+    assert "priority-nosuch" not in _read_meta(vault, paper_id)
+
+
+def test_modify_set_priority_membership_is_checked_before_the_value(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Both wrong: the useful answer is "you are not in that project", not
+    "'Q' is not A/B/C"."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority-nosuch=Q", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert "not linked to" in str(result.exception)
+    assert "Allowed values" not in str(result.exception)
+
+
+def test_modify_set_priority_out_of_range_is_refused(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, paper_id = vault_with_paper
+    _link(vault, paper_id, "pepforge")
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority-pepforge=Q", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert "Invalid priority-pepforge 'Q'" in str(result.exception)
+    assert "A, B, C" in str(result.exception)
+
+
+def test_modify_refuses_to_create_a_null_grade(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """Tolerate-don't-produce. `check_schema` ACCEPTS a present
+    `priority-<project>: null` so hand-edits and older data do not error (see
+    the companion test below), but absence is the canonical ungraded form and
+    no command creates a null."""
+    vault, paper_id = vault_with_paper
+    _link(vault, paper_id, "pepforge")
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority-pepforge=", "--library", str(vault)],
+    )
+    assert result.exit_code != 0
+    assert "absent key" in str(result.exception)
+    assert "priority-pepforge" not in _read_meta(vault, paper_id)
+
+
+def test_schema_tolerates_the_null_grade_modify_refuses_to_write(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """The other half of tolerate-don't-produce: a null that is already on
+    disk is NOT an error, so an old vault or a hand-edit never becomes an
+    unfixable schema failure that blocks `lit sync push`."""
+    from litman.core.checks import check_schema
+    from litman.core.document import list_papers
+    from litman.core.locking import lock_truth_file, unlock_truth_file
+
+    vault, paper_id = vault_with_paper
+    _link(vault, paper_id, "pepforge")
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    unlock_truth_file(meta)
+    with meta.open("a", encoding="utf-8") as f:
+        f.write("priority-pepforge:\n")
+    lock_truth_file(meta)
+
+    assert check_schema(vault, list_papers(vault)) == []
+
+
+def test_modify_set_priority_for_a_linked_project_is_accepted(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, paper_id = vault_with_paper
+    _link(vault, paper_id, "pepforge")
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "priority-pepforge=B", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["priority-pepforge"] == "B"
+
+
+def test_retired_field_refusal_never_preempts_the_older_gates(
+    vault_with_paper: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Order pin: FORBIDDEN_SET_FIELDS and LIST_FIELDS still answer first.
+
+    `priority` is neither, so the ordering is invisible today — which is
+    exactly why it needs pinning: the day a field is both retired AND
+    forbidden, the message the user has always seen must not silently change.
+    Simulated by retiring fields that are already gated. Patches the module
+    OBJECT that owns the table, not a string path — and `modify.py` reads it
+    through `retired_field_replacement()` rather than importing the private
+    dict, so patching it here is what the command actually consults.
+    """
+    from litman.core import checks as checks_mod
+
+    vault, paper_id = vault_with_paper
+    monkeypatch.setattr(
+        checks_mod,
+        "_RETIRED_FIELDS",
+        {"id": "x", "updated-at": "x", "topics": "x"},
+    )
+    runner = CliRunner()
+    for spec, expected in (
+        ("id=whatever", "lit rename"),
+        ("updated-at=2026-01-01T00:00:00+00:00", "machine-maintained"),
+        ("topics=whatever", "list field"),
+    ):
+        result = runner.invoke(
+            cli, ["modify", paper_id, "--set", spec, "--library", str(vault)]
+        )
+        assert result.exit_code != 0, spec
+        msg = str(result.exception)
+        assert expected in msg, (spec, msg)
+        assert "retired" not in msg, (spec, msg)

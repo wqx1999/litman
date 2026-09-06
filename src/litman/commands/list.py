@@ -64,8 +64,8 @@ def _format_cell(value: Any) -> str:
     """Render a metadata field for the list table.
 
     None becomes "-" (the M29 "not yet evaluated" sentinel for optional
-    fixed-enum fields like priority and type); everything else falls
-    through to ``str()``.
+    fixed-enum fields like type, and the ungraded state of a
+    ``priority-<project>`` link); everything else falls through to ``str()``.
     """
     return "-" if value is None else str(value)
 
@@ -117,7 +117,10 @@ def _as_date(raw: Any) -> date | None:
 )
 @click.option(
     "--priority",
-    help="Filter by priority (A/B/C). Comma-separated = OR (e.g. A,B).",
+    help="Filter by priority (A/B/C). Comma-separated = OR (e.g. A,B). "
+         "The grade is per project: without --project a paper matches if ANY "
+         "of its projects grades it so; with a single --project only that "
+         "project's grade counts.",
 )
 @click.option(
     "--topic",
@@ -218,7 +221,9 @@ def list_cmd(
     Filters are AND-combined; within one flag, comma-separated values are
     OR-combined. Multi-valued fields (topics/methods/projects/data) use list
     intersection; --author / --title use case-insensitive substring;
-    year/type/status/priority match by exact value. --read-since /
+    year/type/status match by exact value; --priority matches the paper's
+    grade for any of its projects, or only for the one named by --project.
+    --read-since /
     --added-since filter by a date lower-bound on read-date / created-at
     respectively. --limit N keeps the first N after filtering + sorting.
     """
@@ -229,15 +234,29 @@ def list_cmd(
     # contract). TWO queries need fields the projection does not carry and so
     # take the scan — created-at (--added-since), and --priority, whose
     # per-project `priority-<project>` keys are variable-width and therefore
-    # deliberately outside a fixed column set (ADR-025). So does any vault
+    # deliberately outside a fixed column set (ADR-025). The table's
+    # Priority(<project>) column reads those same keys, so a single --project
+    # in table format needs the scan too (--format json does not: it emits the
+    # projection, which has no such column). So does any vault
     # whose INDEX is missing, stale or older-schema (load_index_papers → None;
     # drift surfacing stays owned by the Tier-1 hook and lit health-check).
     # Both sources yield the same id-ascending order and, via project_paper,
     # byte-identical output — the fast path may change the cost, never the
     # answer, and serving --priority from the projection silently answered
     # "no papers match".
+    # A single --project names the one project the grade column is about;
+    # several (or none) leave it undefined, so no column is rendered.
+    project_tokens = split_csv(project)
+    graded_project = (
+        project_tokens[0]
+        if project_tokens is not None and len(project_tokens) == 1
+        else None
+    )
+    needs_per_project_grades = priority is not None or (
+        output_format == "table" and graded_project is not None
+    )
     all_papers: list[dict[str, Any]] | None = None
-    if added_since is None and priority is None:
+    if added_since is None and not needs_per_project_grades:
         all_papers = load_index_papers(vault)
     if all_papers is None:
         all_papers = list_papers(vault)
@@ -347,20 +366,26 @@ def list_cmd(
     table.add_column("year", justify="right")
     table.add_column("type")
     table.add_column("status")
-    table.add_column("pri", justify="center")
+    # The grade belongs to a paper-project LINK, so there is no project-less
+    # value to show: the column appears only when a single --project says
+    # which grade is meant (ADR-025).
+    if graded_project is not None:
+        table.add_column(f"Priority({graded_project})", justify="center")
     table.add_column("title", style="dim")
 
     for p in filtered:
         title = (p.get("title") or "").strip()
         if len(title) > _TITLE_MAX:
             title = title[: _TITLE_MAX - 1] + "…"
-        table.add_row(
+        cells = [
             _format_cell(p.get("id")),
             _format_cell(p.get("year")),
             _format_cell(p.get("type")),
             _format_cell(p.get("status")),
-            _format_cell(p.get("priority")),
-            title,
-        )
+        ]
+        if graded_project is not None:
+            cells.append(_format_cell(p.get(f"priority-{graded_project}")))
+        cells.append(title)
+        table.add_row(*cells)
 
     console.print(table)

@@ -271,6 +271,17 @@ def fixed_enum_values(field: str) -> frozenset[str] | None:
     return _FIXED_ENUM_VALUES.get(field)
 
 
+def retired_field_replacement(field: str) -> str | None:
+    """What replaced ``field``, or ``None`` if ``field`` is not retired.
+
+    Read-only accessor over the private ``_RETIRED_FIELDS`` table, for the
+    same reason :func:`fixed_enum_values` exists: the write commands
+    (``lit modify --set``) must refuse exactly what the read-side
+    ``check_schema`` reports, without reaching into this module's privates.
+    """
+    return _RETIRED_FIELDS.get(field)
+
+
 def fixed_enum_allows_none(field: str) -> bool:
     """Whether ``field`` is a fixed enum for which ``None`` ("not yet
     evaluated") is legal (``type``; M29). ``status`` is not — its

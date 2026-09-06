@@ -937,3 +937,115 @@ def test_list_added_since_still_scans(
     result = _invoke(vault, "--added-since", "2000-01-01", "--format", "json")
     assert result.exit_code == 0, result.output
     assert calls, "--added-since answered without reading created-at"
+
+
+# ---------------------------------------------------------------------------
+# ADR-025: the grade column exists only when a single --project says whose
+# ---------------------------------------------------------------------------
+
+
+def test_list_has_no_priority_column_without_a_project(vault: Path) -> None:
+    """There is no project-less grade to show, so there is no column — not an
+    always-empty one. (Between 3.1 and 3.3 it rendered as a column of "-".)"""
+    out = _invoke(vault).output
+    assert "Priority(" not in out
+    assert "pri" not in out
+
+
+def test_list_priority_column_names_the_project(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Rich wraps to the terminal width, and CliRunner's default 80 columns
+    # truncates the header this test is about. Widen the render, do not
+    # weaken the assertion.
+    monkeypatch.setenv("COLUMNS", "200")
+    out = _invoke(vault, "--project", "PepForge").output
+    assert "Priority(PepForge)" in out
+
+
+def test_list_priority_column_shows_that_projects_grade(vault: Path) -> None:
+    """Doe is a C for PepForge and an A for PepCodec; each listing shows the
+    grade for the project it was asked about."""
+    forge = _invoke(vault, "--project", "PepForge").output
+    codec = _invoke(vault, "--project", "PepCodec").output
+    doe_forge = next(ln for ln in forge.splitlines() if "2024_Doe_GNN" in ln)
+    doe_codec = next(ln for ln in codec.splitlines() if "2024_Doe_GNN" in ln)
+    assert " C " in doe_forge and " A " not in doe_forge
+    assert " A " in doe_codec and " C " not in doe_codec
+
+
+def test_list_no_priority_column_for_several_projects(vault: Path) -> None:
+    """Two projects name no single grade, so the column stays away rather than
+    silently picking one."""
+    out = _invoke(vault, "--project", "PepForge,PepCodec").output
+    assert "Priority(" not in out
+
+
+def test_list_ungraded_link_renders_as_a_dash(vault: Path) -> None:
+    _seed_paper(
+        vault, "2025_Zed_Ungraded",
+        year=2025, type="research", status="inbox",
+        projects=["PepForge"], authors=["Zed, Z."], title="Ungraded",
+    )
+    line = next(
+        ln
+        for ln in _invoke(vault, "--project", "PepForge").output.splitlines()
+        if "2025_Zed_Ungraded" in ln
+    )
+    assert " - " in line
+
+
+def test_list_json_never_grows_a_priority_column(vault: Path) -> None:
+    """--format json emits the INDEX projection, which has no per-project key;
+    asking for a project must not smuggle one in."""
+    import json as _json
+
+    out = _invoke(vault, "--project", "PepForge", "--format", "json").output
+    rows = _json.loads(out)
+    assert rows
+    for row in rows:
+        assert not any(k.startswith("priority") for k in row)
+
+
+# --- AC-4: the same filter semantics in list and export ---------------------
+
+
+def test_ac4_list_and_export_agree_on_priority_semantics(
+    vault: Path, tmp_path: Path
+) -> None:
+    """AC-4: `--priority` means the same thing in both commands because both
+    ride core.query.matches_filters — no second implementation to drift."""
+    from litman.core.document import list_papers
+    from litman.core.query import matches_filters
+
+    papers = list_papers(vault)
+    for filters, expected in (
+        ({"priority": ["A"], "project": None}, {"2024_Smith_BERT", "2024_Doe_GNN"}),
+        ({"priority": ["A"], "project": ["PepForge"]}, set()),
+        ({"priority": ["C"], "project": ["PepForge"]}, {"2024_Doe_GNN"}),
+    ):
+        got = {p["id"] for p in papers if matches_filters(p, filters)}
+        assert got == expected, filters
+
+        args = ["--priority", filters["priority"][0]]
+        if filters["project"]:
+            args += ["--project", filters["project"][0]]
+        listed = _invoke(vault, *args).output
+        for pid in expected:
+            assert pid in listed, (filters, pid)
+
+        target = tmp_path / f"refs-{abs(hash(str(filters)))}.bib"
+        runner = CliRunner()
+        # --all and --project are mutually exclusive in export; --project
+        # already scopes the selection, so it replaces --all.
+        scope = [] if filters["project"] else ["--all"]
+        exported = runner.invoke(
+            cli,
+            ["export", *scope, *args, "-o", str(target), "--library", str(vault)],
+        )
+        assert exported.exit_code == 0, exported.output
+        content = target.read_text(encoding="utf-8")
+        for pid in expected:
+            assert pid in content, (filters, pid)
+        for pid in {"2023_Pandi_Cellfree", "2024_Smith_BERT", "2024_Doe_GNN"} - expected:
+            assert pid not in content, (filters, pid)

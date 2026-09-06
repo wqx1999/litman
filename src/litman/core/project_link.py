@@ -330,6 +330,7 @@ def link_paper_to_project(
     registry: dict[str, str],
     *,
     relevance: str | None = None,
+    priority: str | None = None,
 ) -> dict[str, Any]:
     """Link a paper to a project (atomic metadata + symlinks + REFERENCES.md).
 
@@ -344,6 +345,11 @@ def link_paper_to_project(
              when ``relevance`` is ``None`` (the flag was omitted); the
              ``!= existing_relevance`` check is an idempotency guard, not a
              don't-clobber guard.
+           - Set ``priority-<project>`` the same way when an explicit
+             ``priority`` (A/B/C) is provided. This is the "link and grade in
+             one gesture" path (ADR-025 decision 5); omitting it leaves the
+             paper linked but ungraded, which is a legal state — a link
+             happens at ingest, a grade after reading.
            - Bump ``updated-at`` if anything actually changed.
         4. Re-render INDEX.json (in-memory splice on the modified copy).
         5. staged_write(metadata + INDEX.json).
@@ -355,9 +361,27 @@ def link_paper_to_project(
         A summary dict for the CLI to render.
 
     Raises:
-        LinkError: project unregistered or project_dir missing.
+        LinkError: project unregistered, project_dir missing, or ``priority``
+            outside A/B/C.
         PaperNotFoundError: paper id has no folder in the vault.
     """
+    # Local import: core.checks reaches back here through core.trash
+    # (checks -> trash -> project_link for CODE_SUBDIR), so a module-level
+    # import is a load-time cycle. Mirrors the lazy reconcile import below.
+    from litman.core.checks import (
+        PROJECT_PRIORITY_PREFIX,
+        PROJECT_PRIORITY_VALUES,
+    )
+
+    # Validated here, not with a click.Choice on the CLI flag: Click would
+    # raise UsageError (exit 2, its own formatting) for a metadata value,
+    # while every other bad metadata value in this codebase surfaces as a
+    # LitmanError (exit 1, Rich panel). One shape for one kind of mistake.
+    if priority is not None and priority not in PROJECT_PRIORITY_VALUES:
+        raise LinkError(
+            f"Invalid priority {priority!r}. Allowed values: "
+            f"{', '.join(sorted(PROJECT_PRIORITY_VALUES))}."
+        )
     project_dir = _resolve_project_dir(project, registry)
     paper_meta_path = vault / "papers" / paper_id / "metadata.yaml"
     if not paper_meta_path.is_file():
@@ -385,12 +409,18 @@ def link_paper_to_project(
     if set_relevance:
         metadata[relevance_key] = relevance
 
+    priority_key = f"{PROJECT_PRIORITY_PREFIX}{project}"
+    existing_priority = metadata.get(priority_key)
+    set_priority = priority is not None and priority != existing_priority
+    if set_priority:
+        metadata[priority_key] = priority
+
     code_clones = list(metadata.get("code-clones") or [])
 
-    # Idempotent on the metadata side: if nothing changed in projects or
-    # relevance, skip the staged write but still refresh symlinks +
-    # REFERENCES.md (cheap, defensive — handles partial state).
-    metadata_changed = added_to_projects or set_relevance
+    # Idempotent on the metadata side: if nothing changed in projects,
+    # relevance or priority, skip the staged write but still refresh symlinks
+    # + REFERENCES.md (cheap, defensive — handles partial state).
+    metadata_changed = added_to_projects or set_relevance or set_priority
 
     if metadata_changed:
         metadata["updated-at"] = now_iso()
@@ -460,6 +490,7 @@ def link_paper_to_project(
         "project_dir": project_dir,
         "added_to_projects": added_to_projects,
         "set_relevance": set_relevance,
+        "set_priority": set_priority,
         "metadata_changed": metadata_changed,
         "paper_link": paper_link_path,
         "code_links": code_links_created,
@@ -486,6 +517,10 @@ def unlink_paper_from_project(
         4. If ``purge_relevance`` (default), also drop the
            ``relevance-<project>`` field. The previous value is returned
            in the summary so the user sees what was removed.
+        4b. ALWAYS drop ``priority-<project>``. Unlike relevance there is no
+           opt-out: relevance is authored prose worth offering to keep, a
+           grade is one letter that means nothing without the link it grades
+           (ADR-025 decision 15). Its previous value is returned too.
         5. staged_write metadata + INDEX.json.
         6. Remove paper symlink under the project.
         7. For each repo in this paper's ``code-clones``, remove the
@@ -519,8 +554,20 @@ def unlink_paper_from_project(
     if removed_relevance:
         removed_relevance_value = metadata.pop(relevance_key)
 
+    # No purge_priority flag by design — see step 4b. Local import for the
+    # same checks -> trash -> project_link cycle as in link_paper_to_project.
+    from litman.core.checks import PROJECT_PRIORITY_PREFIX
+
+    priority_key = f"{PROJECT_PRIORITY_PREFIX}{project}"
+    removed_priority = priority_key in metadata
+    removed_priority_value: Any = None
+    if removed_priority:
+        removed_priority_value = metadata.pop(priority_key)
+
     code_clones = list(metadata.get("code-clones") or [])
-    metadata_changed = was_in_projects or removed_relevance
+    metadata_changed = (
+        was_in_projects or removed_relevance or removed_priority
+    )
 
     if metadata_changed:
         metadata["updated-at"] = now_iso()
@@ -592,6 +639,8 @@ def unlink_paper_from_project(
         "was_in_projects": was_in_projects,
         "removed_relevance": removed_relevance,
         "removed_relevance_value": removed_relevance_value,
+        "removed_priority": removed_priority,
+        "removed_priority_value": removed_priority_value,
         "metadata_changed": metadata_changed,
         "paper_link_removed": paper_link_removed,
         "code_links_removed": code_links_removed,

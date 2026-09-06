@@ -10,7 +10,7 @@ Operations within a single invocation apply in the order
 full reclassification:
 
     lit modify 2023_Pandi_Cell-free \\
-        --set priority=A --set status=deep-read \\
+        --set priority-pepforge=A --set status=deep-read \\
         --add-tag topics=peptide --add-tag methods=cell-free
 
 Multi-file atomicity (metadata.yaml + INDEX.json) goes through
@@ -33,7 +33,13 @@ from rich.markup import escape
 
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
-from litman.core.checks import fixed_enum_allows_none, fixed_enum_values
+from litman.core.checks import (
+    PROJECT_PRIORITY_PREFIX,
+    PROJECT_PRIORITY_VALUES,
+    fixed_enum_allows_none,
+    fixed_enum_values,
+    retired_field_replacement,
+)
 from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
@@ -154,7 +160,7 @@ def _parse_kv(spec: str, flag_name: str) -> tuple[str, str]:
     if "=" not in spec:
         raise ModifyError(
             f"{flag_name} expects KEY=VALUE, got {spec!r}. "
-            "Example: --set priority=A"
+            "Example: --set status=deep-read"
         )
     key, _, value = spec.partition("=")
     key = key.strip()
@@ -201,6 +207,41 @@ def _apply_set(
             f"--set on list field {key!r} would clobber it. "
             f"Use --add-tag {key}=<value> / --rm-tag {key}=<value> instead."
         )
+    # The retired paper-level field and its per-project replacement (ADR-025).
+    # Placed AFTER the two gates above so a field that is both forbidden and
+    # retired keeps its existing message, and BEFORE _coerce_scalar so the
+    # membership question is answered before the value question — "you are not
+    # in that project" is more useful than "'' is not A/B/C".
+    replacement = retired_field_replacement(key)
+    if replacement is not None:
+        raise ModifyError(
+            f"Cannot --set {key!r}: retired. Use --set {replacement}=A instead."
+        )
+    if key.startswith(PROJECT_PRIORITY_PREFIX):
+        graded_project = key[len(PROJECT_PRIORITY_PREFIX):]
+        if graded_project not in (metadata.get("projects") or []):
+            raise ModifyError(
+                f"Cannot --set {key!r}: not linked to {graded_project!r}. "
+                f"Link it first: lit link {paper_id} "
+                f"--project {graded_project} --priority A"
+            )
+        # Tolerate-don't-produce: check_schema ACCEPTS a present
+        # `priority-<project>: null` so hand-edits and older data do not
+        # error, but absence is the canonical ungraded form and no command
+        # creates a null. `--set priority-<P>=` coerces to None and is
+        # refused here for exactly that reason. Clearing a grade in place has
+        # no CLI path by design — dropping the grade is what `lit unlink` is.
+        graded_value = _coerce_scalar(raw_value)
+        if graded_value is None:
+            raise ModifyError(
+                f"Cannot unset {key!r}: an ungraded link is the absent key. "
+                f"Allowed values: {', '.join(sorted(PROJECT_PRIORITY_VALUES))}."
+            )
+        if graded_value not in PROJECT_PRIORITY_VALUES:
+            raise ModifyError(
+                f"Invalid {key} {graded_value!r}. Allowed values: "
+                f"{', '.join(sorted(PROJECT_PRIORITY_VALUES))}."
+            )
     before = metadata.get(key)
     after = _coerce_scalar(raw_value)
     # Fixed-enum gate (review F37): status / type / priority accept only their
