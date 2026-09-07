@@ -9,6 +9,13 @@ conveniences.
 
 ## Unreleased
 
+### Added
+
+- **Remove a relation from the GUI.** In the cockpit's Relations row, hover a
+  linked paper id and click the `×` beside it, then confirm. The paired reverse
+  link on the other paper is removed in the same step, exactly as
+  `lit modify --rm-tag` does.
+
 ### Changed
 
 - **Breaking: a paper's priority is now set per project.** The A/B/C grade used

@@ -1671,3 +1671,192 @@ def test_project_rm_and_rename_cascade_the_grade_over_the_api(
 
     assert client.delete("/api/projects/pepcodec").status_code == 200
     assert "priority-pepcodec" not in _meta(vault, paper_id)
+
+
+# ---------------------------------------------------------------------------
+# PUT /metadata — rmTag on relation fields (the Relations remove button)
+# ---------------------------------------------------------------------------
+# The GUI's relation removal adds NO server code: it reuses this endpoint's
+# rmTag, so the ADR-012 double-write happens inside `_apply_modify`'s single
+# staged_write. These pin the endpoint-level contract the button relies on —
+# both sides cleared in one transaction, a reverse field refused, and a repeat
+# reported as `changed: false` rather than an error.
+
+
+def _relate(client: TestClient, paper_id: str, field: str, other: str) -> None:
+    """Create a relation through the same endpoint the GUI adds with."""
+    resp = client.put(
+        f"/api/paper/{paper_id}/metadata", json={"addTag": {field: [other]}}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _meta_bytes(vault: Path, paper_id: str) -> bytes:
+    return (vault / "papers" / paper_id / "metadata.yaml").read_bytes()
+
+
+def _index_bytes(vault: Path) -> bytes:
+    return (vault / "INDEX.json").read_bytes()
+
+
+def _distinct_stamps(monkeypatch) -> None:
+    """Give every `_apply_modify` call its own second.
+
+    `now_iso` truncates to whole seconds, so an addTag and the rmTag that
+    follows it normally land on the SAME timestamp. That makes "both papers
+    share an updated-at" true by accident, and a test asserting it would pass
+    even if the opposite paper were never rewritten. With this clock the two
+    requests are distinguishable, so the assertion can say the sharper thing:
+    both papers carry the *removal's* stamp, not the *addition's*.
+
+    Patched on the module object rather than by dotted string. That is the
+    house rule for patching a module this test does not own: it binds to the
+    object the code under test actually calls, so it cannot be defeated by
+    whatever else the session did to sys.modules. The rule was written after a
+    real bite, but the bite was specific — tests/commands/test_gui.py drops
+    `fastapi*`, `litman.cli*` and `litman.server*` from sys.modules, so a
+    string patch aimed at one of THOSE lands on a dead object and silently
+    no-ops (green alone, red in the full suite). `litman.commands.modify` is
+    not in that set and would survive a string patch; the form below is used
+    because it is correct everywhere, not because this module is at risk.
+    """
+    from litman.commands import modify as modify_module
+
+    calls = [0]
+
+    def fake_now_iso() -> str:
+        calls[0] += 1
+        return f"2026-09-07T12:00:{calls[0]:02d}+02:00"
+
+    monkeypatch.setattr(modify_module, "now_iso", fake_now_iso)
+
+
+def test_put_metadata_rm_related_removes_both_sides(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """Removing a `related:` id clears the symmetric edge on both papers, in
+    one transaction — both carrying the REMOVAL's timestamp is the evidence."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "related", paper_b)
+    assert _meta(vault, paper_a)["related"] == [paper_b]
+    assert _meta(vault, paper_b)["related"] == [paper_a]
+    add_stamp = _meta(vault, paper_a)["updated-at"]
+
+    rm = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"related": [paper_b]}}
+    )
+    assert rm.status_code == 200, rm.text
+    assert rm.json() == {"ok": True, "changed": True}
+
+    meta_a = _meta(vault, paper_a)
+    meta_b = _meta(vault, paper_b)
+    assert meta_a["related"] == []
+    assert meta_b["related"] == []
+    # One staged_write → one timestamp for both sides. Control first: the clock
+    # really did move between the two requests, so the equality below cannot be
+    # satisfied by B still holding the timestamp the ADD gave it.
+    assert meta_a["updated-at"] != add_stamp
+    assert meta_b["updated-at"] == meta_a["updated-at"]
+
+
+def test_put_metadata_rm_extends_originating_on_other_paper_clears_reverse(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """The path a reverse row's remove button takes: standing on B and removing
+    `extended-by: A` must PUT to A's forward `extends`, because a reverse field
+    is not writable (see the 400 test below). Both sides end up clear."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "extends", paper_b)
+    assert _meta(vault, paper_b)["extended-by"] == [paper_a]
+    add_stamp = _meta(vault, paper_b)["updated-at"]
+
+    # User is looking at B and removes `extended-by: A`; the cockpit flips the
+    # originator and writes A's forward field with B's id.
+    rm = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"extends": [paper_b]}}
+    )
+    assert rm.status_code == 200, rm.text
+    assert rm.json() == {"ok": True, "changed": True}
+
+    meta_a = _meta(vault, paper_a)
+    meta_b = _meta(vault, paper_b)
+    assert meta_a["extends"] == []
+    assert meta_b["extended-by"] == []
+    # Same one-transaction evidence, with the clock control: B carries the
+    # removal's stamp, not the one the addition left on it.
+    assert meta_b["updated-at"] != add_stamp
+    assert meta_b["updated-at"] == meta_a["updated-at"]
+
+
+def test_put_metadata_rm_reverse_field_400(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """Naming the reverse field directly is refused (ADR-012: reverse edges are
+    maintained only by the paired write) and nothing is written — neither TRUTH
+    nor the derived INDEX. This is why the cockpit flips the originator instead
+    of removing in place; regressing that flip lands here."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    # Relation fields are not in the INDEX projection, so the only bytes a
+    # wrongly-accepted write could move in INDEX.json are its timestamps — and
+    # on the real second-granularity clock this request would share one with
+    # the addTag above, making the comparison below pass by collision.
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "extends", paper_b)
+    before_a = _meta_bytes(vault, paper_a)
+    before_b = _meta_bytes(vault, paper_b)
+    before_index = _index_bytes(vault)
+
+    resp = client.put(
+        f"/api/paper/{paper_b}/metadata",
+        json={"rmTag": {"extended-by": [paper_a]}},
+    )
+    assert resp.status_code == 400
+    assert "extended-by" in resp.json()["detail"]
+    assert _meta_bytes(vault, paper_a) == before_a
+    assert _meta_bytes(vault, paper_b) == before_b
+    assert _index_bytes(vault) == before_index
+
+
+def test_put_metadata_rm_relation_idempotent(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """A second removal of an edge another writer already dropped is
+    `changed: false`, HTTP 200 — not an error the GUI has to special-case."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    # Without a moving clock the repeat lands in the same second as the first
+    # removal, so the byte-compares below would hold even if the no-op
+    # short-circuit were gone and both files had been rewritten.
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "related", paper_b)
+    first = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"related": [paper_b]}}
+    )
+    assert first.json() == {"ok": True, "changed": True}
+    after_a = _meta_bytes(vault, paper_a)
+    after_b = _meta_bytes(vault, paper_b)
+
+    second = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"related": [paper_b]}}
+    )
+    assert second.status_code == 200, second.text
+    assert second.json() == {"ok": True, "changed": False}
+    assert _meta_bytes(vault, paper_a) == after_a
+    assert _meta_bytes(vault, paper_b) == after_b

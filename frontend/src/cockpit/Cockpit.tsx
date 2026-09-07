@@ -93,8 +93,9 @@ interface Props {
    * (Phase 4) drive curation through. Null on unmount. */
   onRegisterHandle?: (handle: CockpitHandle | null) => void
   /** Report whether any cockpit-owned modal (a Tags field panel, the Manage
-   * dictionary dialog, the Unread confirm, or the Drop confirm) is open, so the
-   * shortcut dispatcher's modal guard can suppress global keys while one is up. */
+   * dictionary dialog, the Unread confirm, the Drop confirm, or the relation-
+   * remove confirm) is open, so the shortcut dispatcher's modal guard can
+   * suppress global keys while one is up. */
   onModalState?: (open: boolean) => void
 }
 
@@ -980,14 +981,38 @@ function DeleteValueConfirm({
   )
 }
 
+/** The five relation fields the cockpit renders, in display order. */
+type RelField =
+  | 'related'
+  | 'extends'
+  | 'extended-by'
+  | 'contradicts'
+  | 'contradicted-by'
+
+/** Where a removal on a REVERSE row has to be sent. The backend refuses a write
+ * that names a reverse field (ADR-012: those edges exist only as the mirror of
+ * a forward write), so removing `extended-by: A` while standing on B means
+ * writing A's `extends` with B's id — one request, both sides cleared in the
+ * same transaction. `related` is symmetric and needs no flip. */
+const REVERSE_TO_FORWARD = {
+  'extended-by': 'extends',
+  'contradicted-by': 'contradicts',
+} as const
+
 function Relations({
   paper,
   onOpenPaper,
+  onRemove,
+  busy,
 }: {
   paper: PaperMeta
   onOpenPaper: (id: string) => void
+  /** Absent on the trash inspector: relations there are read-only. */
+  onRemove?: (rel: RelField, id: string) => void
+  /** A structured write is in flight — the × stops taking clicks. */
+  busy?: boolean
 }) {
-  const groups: Array<[string, string[] | undefined]> = [
+  const groups: Array<[RelField, string[] | undefined]> = [
     ['related', paper.related],
     ['extends', paper.extends],
     ['extended-by', paper['extended-by']],
@@ -1002,13 +1027,37 @@ function Relations({
         <div key={rel}>
           <span className="text-xs text-stone-500">{rel}: </span>
           {ids!.map((id) => (
-            <button
+            // The × is a SIBLING of the link, never nested inside it (buttons
+            // cannot nest), and it is always in the DOM — `opacity-0` rather
+            // than a conditional render keeps the box, so the id does not shift
+            // sideways on hover. A moving target is exactly how a click meant
+            // for the link lands on the delete.
+            <span
               key={id}
-              onClick={() => onOpenPaper(id)}
-              className="mr-1 text-xs text-accent-600 transition-colors hover:underline"
+              className="group/rel mr-1 inline-flex items-center gap-0.5"
             >
-              {id}
-            </button>
+              <button
+                onClick={() => onOpenPaper(id)}
+                className="text-xs text-accent-600 transition-colors hover:underline"
+              >
+                {id}
+              </button>
+              {onRemove && (
+                <button
+                  type="button"
+                  aria-label={`Remove ${rel} link to ${id}`}
+                  title="Remove link"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRemove(rel, id)
+                  }}
+                  className="px-0.5 text-xs leading-none text-stone-400 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/rel:opacity-100 disabled:opacity-0"
+                >
+                  ×
+                </button>
+              )}
+            </span>
           ))}
         </div>
       ))}
@@ -1321,6 +1370,70 @@ function DropConfirm({
   )
 }
 
+/** Default-No confirm for removing one relation from the Relations row.
+ *
+ * The × that opens this is the cockpit's first one-click delete reachable from
+ * the main panel — every other destructive action sits behind a panel the user
+ * had to open first — and it sits a few pixels from a navigation link, so the
+ * three guards below are structural, not styling:
+ *   · Cancel is autofocused, so Return on a confirm nobody meant to open cancels;
+ *   · `useEscapeLayer` closes AND consumes Esc (an unconsumed Esc reaches the
+ *     host, where macOS reads it as "leave fullscreen");
+ *   · the caller keeps `pendingRel` in `modalOpen`, so global shortcuts stay
+ *     suppressed while this is up.
+ * Confirming goes through the existing putMetadata rmTag path (invariant #16),
+ * which removes the paired edge on the other paper in the same transaction.
+ * Wording stays short deliberately: no "cannot be undone", because it can — one
+ * `lit modify --add-tag` puts the pair back. */
+function RelationRemoveConfirm({
+  rel,
+  id,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  rel: RelField
+  id: string
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  useEscapeLayer(true, onCancel)
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      {...modalBackdropProps}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Remove this link?</h2>
+        <p className="mt-1.5 font-mono text-xs leading-relaxed text-stone-600">
+          {rel} → {id}
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Curation cockpit with structured write controls (Phase 3b/3c/3d).
  *
  * Dropdowns (status/type), the collapsed Tags group (topics/methods/
@@ -1550,6 +1663,16 @@ function WriteCockpit({
   // drop is guarded (the Status dropdown drops without a prompt; the shortcut
   // needs the confirm). On confirm it calls the existing setEnum write path.
   const [showDrop, setShowDrop] = useState(false)
+  // The relation the user asked to remove, or null. `me` is the paper the ask
+  // was made ON, frozen at click time: the confirm can outlive the selection
+  // (the user clicks another paper in the left list with it up), and reading
+  // `paper.id` at confirm time would then delete the relation from whichever
+  // paper is showing now.
+  const [pendingRel, setPendingRel] = useState<{
+    me: string
+    rel: RelField
+    id: string
+  } | null>(null)
   // The currently-open pill in the Tags group (topics/methods/data/projects), or
   // null. One field at a time: opening one collapses the others (problem 1/3).
   const [openField, setOpenField] = useState<string | null>(null)
@@ -1574,6 +1697,7 @@ function WriteCockpit({
     if (citeWarnTimer.current) clearTimeout(citeWarnTimer.current)
     setShowUnread(false)
     setShowDrop(false)
+    setPendingRel(null)
     setOpenField(null)
     setManageField(null)
     setEditingMeta(false)
@@ -1656,6 +1780,31 @@ function WriteCockpit({
     if (!paper) return
     const id = paper.id
     runWrite(() => putMetadata(id, { rmTag: { [field]: [value] } }))
+  }
+
+  // Remove the confirmed relation through the same rmTag write path the tag
+  // chips use. The other paper's paired edge goes in the SAME transaction
+  // server-side (ADR-012), so this is one request, never "delete here then
+  // delete there". A reverse row flips the originator (see REVERSE_TO_FORWARD);
+  // everything else writes the field it is standing on.
+  function doRemoveRelation() {
+    if (!pendingRel) return
+    const { me, rel, id: other } = pendingRel
+    setPendingRel(null)
+    if (rel === 'extended-by' || rel === 'contradicted-by') {
+      // 🔴 The flip is load-bearing, and nothing in the frontend can catch its
+      // loss: "simplifying" this to putMetadata(me, {rmTag: {[rel]: [other]}})
+      // type-checks, builds, and leaves the whole Python suite green — it only
+      // shows up at runtime as a 400 toast. The contract it depends on is
+      // pinned server-side by
+      // tests/server/test_server_structured.py::test_put_metadata_rm_reverse_field_400,
+      // which is the test to read before touching this branch.
+      runWrite(() =>
+        putMetadata(other, { rmTag: { [REVERSE_TO_FORWARD[rel]]: [me] } }),
+      )
+    } else {
+      runWrite(() => putMetadata(me, { rmTag: { [rel]: [other] } }))
+    }
   }
 
   // Inline-create: register the new taxonomy value first (invariant #2), then
@@ -1816,9 +1965,15 @@ function WriteCockpit({
   }, [onRegisterHandle])
 
   // Report cockpit-owned modal state up so the shortcut dispatcher's modal guard
-  // suppresses global keys while a confirm / dictionary / tag panel is open.
+  // suppresses global keys while a confirm / dictionary / tag panel is open —
+  // including the relation-remove confirm, whose × is reachable straight from
+  // the panel, so a stray ⌥D under it would stack a second dialog.
   const modalOpen =
-    showUnread || showDrop || manageField != null || openField != null
+    showUnread ||
+    showDrop ||
+    pendingRel != null ||
+    manageField != null ||
+    openField != null
   useEffect(() => {
     onModalState(modalOpen)
   }, [modalOpen, onModalState])
@@ -2138,7 +2293,12 @@ function WriteCockpit({
               ]}
             />
             <Field label="Relations">
-              <Relations paper={paper} onOpenPaper={onOpenPaper} />
+              <Relations
+                paper={paper}
+                onOpenPaper={onOpenPaper}
+                onRemove={(rel, id) => setPendingRel({ me: paper.id, rel, id })}
+                busy={writing}
+              />
             </Field>
             <Field label="Code-clones">
               <CodeCloneChips
@@ -2168,6 +2328,16 @@ function WriteCockpit({
           busy={writing}
           onCancel={() => setShowDrop(false)}
           onConfirm={doDrop}
+        />
+      )}
+
+      {pendingRel && (
+        <RelationRemoveConfirm
+          rel={pendingRel.rel}
+          id={pendingRel.id}
+          busy={writing}
+          onCancel={() => setPendingRel(null)}
+          onConfirm={doRemoveRelation}
         />
       )}
 
