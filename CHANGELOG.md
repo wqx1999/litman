@@ -19,29 +19,20 @@ conveniences.
 ### Changed
 
 - **Breaking: a paper's priority is now set per project.** The A/B/C grade used
-  to belong to the paper, which meant one number had to stand for how much it
-  mattered everywhere at once. It now belongs to each project link instead, as
-  `priority-<project>`, so the same paper can be an A for one project and a C
-  for another — and each project's `REFERENCES.md` groups it accordingly. The
-  old paper-level `priority` field is retired.
-
-  `lit health-check --fix` migrates an existing library in one step: it copies
-  the old grade onto every project a paper is linked to and then drops the old
-  field. Run `lit health-check --all` first — it lists every paper it will
-  touch (without `--all` each category shows only its first five). **A
-  paper that belongs to no project loses its grade**, because there is nothing
-  left for the grade to be about; link it to a project first if you want to
-  keep it. Take a backup before migrating if that matters to you.
-
-  In day-to-day use: grade a paper when you link it, with
+  to belong to the paper, so one letter had to stand for how much it mattered
+  everywhere at once. It now belongs to each project link, as
+  `priority-<project>`, and each project's `REFERENCES.md` groups by its own
+  letters. Grade a paper as you link it with
   `lit link <id> --project <name> --priority A`, or later with
-  `lit modify <id> --set priority-<name>=A`. `lit modify --set priority=` is
-  refused and tells you the new form. `lit list --priority A` now finds papers
-  graded A by any of their projects; add `--project <name>` to mean "an A for
-  that project", which also adds a column showing it. `lit export` filters the
-  same way. In the web UI the grade moved out of the metadata panel and onto
-  each row of the Projects list, where picking a letter on a project you are
-  not linked to yet links and grades in one go.
+  `lit modify <id> --set priority-<name>=A`. `lit list --priority A` finds
+  papers graded A by any of their projects; `--project <name>` narrows it to
+  one, and `lit export` filters the same way. In the web UI the grade moved
+  onto each row of the Projects list.
+
+  `lit health-check --fix` migrates an existing library in one step. Run
+  `lit health-check --all` first to see every paper it will touch. **A paper
+  that belongs to no project loses its grade** — link it to a project first if
+  you want to keep it, and take a backup before migrating.
 
 ### Fixed
 
