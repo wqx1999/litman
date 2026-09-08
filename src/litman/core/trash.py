@@ -60,7 +60,7 @@ from litman.core.portable_link import (
     make_portable_link,
     remove_link_if_present,
 )
-from litman.core.project_link import CODE_SUBDIR
+from litman.core.project_link import CODE_SUBDIR, settle_hub_entry
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.views import (
@@ -533,19 +533,37 @@ def _rebuild_project_links(
         if not project_dir.is_dir():
             continue
 
-        make_portable_link(
-            project_dir / LITERATURE_SUBDIR / paper_id,
-            (vault / "papers" / paper_id).resolve(),
-        )
+        paper_link = project_dir / LITERATURE_SUBDIR / paper_id
+        paper_target = (vault / "papers" / paper_id).resolve()
+        if (
+            settle_hub_entry(
+                paper_link,
+                paper_target,
+                vault=vault,
+                project=project,
+                hub=LITERATURE_SUBDIR,
+            ).verdict
+            != "blocked"
+        ):
+            make_portable_link(paper_link, paper_target)
         for repo_name in code_clones:
             repo_target = (
                 vault / CODES_DIRNAME / repo_name / REPO_DIRNAME
             ).resolve()
             if not repo_target.exists():
                 continue
-            make_portable_link(
-                project_dir / CODE_SUBDIR / repo_name, repo_target
-            )
+            code_link = project_dir / CODE_SUBDIR / repo_name
+            if (
+                settle_hub_entry(
+                    code_link,
+                    repo_target,
+                    vault=vault,
+                    project=project,
+                    hub=CODE_SUBDIR,
+                ).verdict
+                != "blocked"
+            ):
+                make_portable_link(code_link, repo_target)
         try:
             write_references_md(vault, project, project_dir)
         except FileNotFoundError:

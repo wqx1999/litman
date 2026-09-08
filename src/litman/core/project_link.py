@@ -373,9 +373,21 @@ def reconcile_project_code_links(
 
     created: list[str] = []
     for repo_name, repo_target in expected.items():
-        if repo_name not in resolving and make_portable_link(
-            code_dir / repo_name, repo_target
+        if repo_name in resolving:
+            continue
+        link_path = code_dir / repo_name
+        if (
+            settle_hub_entry(
+                link_path,
+                repo_target,
+                vault=vault,
+                project=project,
+                hub=CODE_SUBDIR,
+            ).verdict
+            == "blocked"
         ):
+            continue
+        if make_portable_link(link_path, repo_target):
             created.append(repo_name)
     removed: list[str] = []
     for repo_name in on_disk - set(expected):
@@ -642,9 +654,18 @@ def link_paper_to_project(
     paper_link_path, code_link_paths = _project_link_paths(
         project_dir, paper_id, code_clones
     )
-    make_portable_link(
-        paper_link_path, (vault / "papers" / paper_id).resolve()
-    )
+    paper_target = (vault / "papers" / paper_id).resolve()
+    if (
+        settle_hub_entry(
+            paper_link_path,
+            paper_target,
+            vault=vault,
+            project=project,
+            hub=LITERATURE_SUBDIR,
+        ).verdict
+        != "blocked"
+    ):
+        make_portable_link(paper_link_path, paper_target)
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
     code_links_unsupported: list[str] = []
@@ -654,6 +675,19 @@ def link_paper_to_project(
             # Repo bound on paper side but not present locally — re-clone via
             # `lit code restore-all`, then `lit link --rebuild-all`.
             code_links_missing_repo.append(repo_name)
+            continue
+        if (
+            settle_hub_entry(
+                link_path,
+                repo_target,
+                vault=vault,
+                project=project,
+                hub=CODE_SUBDIR,
+            ).verdict
+            == "blocked"
+        ):
+            # Same end state as a refused link: the drive cannot hold one.
+            code_links_unsupported.append(repo_name)
             continue
         if make_portable_link(link_path, repo_target):
             code_links_created.append(repo_name)

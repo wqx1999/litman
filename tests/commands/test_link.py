@@ -794,3 +794,70 @@ def test_unlink_cli_has_no_keep_priority_flag(
     result = CliRunner().invoke(cli, ["unlink", "--help"])
     assert "--keep-relevance" in result.output
     assert "--keep-priority" not in result.output
+
+
+def test_cli_link_replaces_folder_copy_with_link(
+    vault: Path, project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project directory carried over from another machine holds a real
+    folder where the link belongs; `lit link` settles it instead of refusing."""
+    import shutil
+
+    import litman.core.portable_link as portable_link
+
+    _write_config_with_project(vault, "pepforge", project_dir)
+    paper_dir = _make_paper(vault, "p1", projects=["pepforge"])
+    link = project_dir / "litman_reflib" / "p1"
+    link.parent.mkdir(parents=True)
+    shutil.copytree(paper_dir, link)
+
+    said: list[str] = []
+
+    class _RecordingConsole:
+        def print(self, *args: object, **_kw: object) -> None:
+            said.append(" ".join(str(a) for a in args))
+
+    monkeypatch.setattr(portable_link, "_console", _RecordingConsole())
+    portable_link.reset_warning_state()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["link", "p1", "--project", "pepforge", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert is_portable_link(link)
+    assert (link / "metadata.yaml").is_file()
+    assert said == []
+    # The copy matched the vault, so nothing needed keeping.
+    assert not (vault / ".trash" / "replaced-folders").exists()
+
+
+def test_cli_link_keeps_a_folder_copy_that_differs(
+    vault: Path, project_dir: Path
+) -> None:
+    """The same position, but the copy carries a note nobody else has."""
+    import shutil
+
+    _write_config_with_project(vault, "pepforge", project_dir)
+    paper_dir = _make_paper(vault, "p1", projects=["pepforge"])
+    link = project_dir / "litman_reflib" / "p1"
+    link.parent.mkdir(parents=True)
+    shutil.copytree(paper_dir, link)
+    (link / "notes.md").write_text("only on the laptop\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["link", "p1", "--project", "pepforge", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert is_portable_link(link)
+    aside_root = (
+        vault / ".trash" / "replaced-folders" / "pepforge" / "litman_reflib"
+    )
+    kept = sorted(aside_root.iterdir())
+    assert len(kept) == 1
+    assert (kept[0] / "notes.md").read_text(encoding="utf-8") == (
+        "only on the laptop\n"
+    )

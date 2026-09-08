@@ -584,3 +584,44 @@ def test_trash_restore_simple_no_relations(vault: Path) -> None:
         e for e in (vault / TRASH_DIRNAME).iterdir() if e.is_dir()
     ]
     assert trash_dirs == []
+
+
+def test_restore_replaces_folder_copy_in_hub(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Restore rebuilds the project hubs, so it settles an expanded folder
+    sitting in the link position the same way every other rebuild does."""
+    project_dir = tmp_path / "myproj"
+    project_dir.mkdir()
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "projects: {}", f"projects:\n  myproj: {project_dir}"
+        ),
+        encoding="utf-8",
+    )
+    _write_paper(vault, "2024_Target", projects=["myproj"])
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
+    )
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+
+    stale = project_dir / "litman_reflib" / "2024_Target"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "notes.md").write_text("from the other machine\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert is_portable_link(stale)
+    aside_root = (
+        vault / TRASH_DIRNAME / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(aside_root.iterdir())
+    assert len(kept) == 1
+    assert (kept[0] / "notes.md").read_text(encoding="utf-8") == (
+        "from the other machine\n"
+    )
