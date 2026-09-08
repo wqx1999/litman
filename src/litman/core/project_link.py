@@ -26,17 +26,23 @@ the convenience links may be skipped (ADR-005).
 
 from __future__ import annotations
 
+import filecmp
 import io
+import os
+import shutil
+import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from litman.core.atomic import staged_write
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
+from litman.core.locking import rmtree
 from litman.core.portable_link import (
     is_portable_link,
+    links_supported,
     make_portable_link,
     remove_link_if_present,
 )
@@ -62,6 +68,18 @@ from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
 _PROJECTS_DICT = "projects"
 
 CODE_SUBDIR = "litman_code"
+
+# Container under <vault>/.trash/ for hub folders moved aside by
+# settle_hub_entry. Deliberately NOT shaped like a trash entry
+# ("<paper-id>-<UTC timestamp>"), so `lit trash list` / `lit trash restore`
+# skip it on the name rule alone — one recycle bin, one restore entity.
+REPLACED_FOLDERS_DIRNAME = "replaced-folders"
+
+# Files above this size compare on length alone. A vault entry that big is a
+# PDF; re-reading every byte of it on each health-check buys little, and the
+# only cost of a false "differs" verdict is that the folder is preserved in
+# .trash/ instead of deleted.
+_MAX_BYTE_COMPARE = 1024 * 1024
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -110,6 +128,156 @@ def _project_link_paths(
     paper_link = project_dir / LITERATURE_SUBDIR / paper_id
     code_links = [project_dir / CODE_SUBDIR / r for r in code_clones]
     return paper_link, code_links
+
+
+class HubSettlement(NamedTuple):
+    """What :func:`settle_hub_entry` did with one hub position."""
+
+    verdict: str           # 'clear' | 'replaced-copy' | 'moved-aside' | 'blocked'
+    moved_to: Path | None  # set iff verdict == 'moved-aside'
+
+
+def _tree_shape(root: Path) -> dict[tuple[str, ...], int | None] | None:
+    """Map every entry under ``root`` to its size, ``None`` for directories.
+
+    Keys are ``relative_to(root).parts`` tuples rather than joined strings so
+    the comparison never depends on the path separator. Links are skipped both
+    as entries and as descent targets — an expanded copy has none, and the
+    vault entry's own links (there are none today) would be a difference we
+    cannot judge. Any ``OSError`` collapses the whole answer to ``None``:
+    unreadable is not provably identical.
+    """
+    shape: dict[tuple[str, ...], int | None] = {}
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            here = Path(dirpath)
+            keep: list[str] = []
+            for name in dirnames:
+                if is_portable_link(here / name):
+                    continue
+                keep.append(name)
+                shape[(here / name).relative_to(root).parts] = None
+            dirnames[:] = keep
+            for name in filenames:
+                child = here / name
+                if is_portable_link(child):
+                    continue
+                shape[child.relative_to(root).parts] = child.stat().st_size
+    except OSError:
+        return None
+    return shape
+
+
+def _is_verbatim_copy(copy_dir: Path, target_dir: Path) -> bool:
+    """True when ``copy_dir`` holds exactly what ``target_dir`` holds.
+
+    Same relative-path set, same kind per path, same size per file, and — up to
+    :data:`_MAX_BYTE_COMPARE` — the same bytes.
+    """
+    if not copy_dir.is_dir() or not target_dir.is_dir():
+        return False
+    # filecmp memoises verdicts on (path, size, mtime). Two settlements landing
+    # inside one mtime tick — the same hub position twice in one test, one
+    # health-check over many projects — would otherwise reuse a stale answer.
+    filecmp.clear_cache()
+    left = _tree_shape(copy_dir)
+    right = _tree_shape(target_dir)
+    if left is None or right is None or left.keys() != right.keys():
+        return False
+    for rel, size in left.items():
+        if right[rel] != size:
+            return False
+        if size is None or size > _MAX_BYTE_COMPARE:
+            continue
+        try:
+            if not filecmp.cmp(
+                copy_dir.joinpath(*rel), target_dir.joinpath(*rel), shallow=False
+            ):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _move_aside(src: Path, dest_parent: Path, name: str) -> Path:
+    """Move ``src`` to ``dest_parent/name``, returning where it landed."""
+    dest_parent.mkdir(parents=True, exist_ok=True)
+    dest = dest_parent / name
+    if dest.exists():
+        # Sub-second collision on the same position; mirrors move_to_trash.
+        dest = dest_parent / f"{name}-{uuid.uuid4().hex[:4]}"
+    try:
+        src.rename(dest)
+    except OSError:
+        # Cross-device. NOT shutil.move: its own cross-device path finishes
+        # with a bare shutil.rmtree, which trips over the read-only
+        # metadata.yaml the copy inherited from the vault (ADR-005) — and
+        # "project on a different drive from the vault" is precisely the
+        # situation this whole code path exists for.
+        shutil.copytree(src, dest, symlinks=True)
+        rmtree(src)
+    return dest
+
+
+def settle_hub_entry(
+    link_path: Path,
+    target: Path | None,
+    *,
+    vault: Path,
+    project: str,
+    hub: str,
+) -> HubSettlement:
+    """Clear a project hub position so a link can take it.
+
+    Copying a project directory between machines (scp -r, WinSCP, unpacking a
+    tar, Explorer, cloud sync) expands every ``litman_reflib`` /
+    ``litman_code`` link into a real folder holding a full copy of the vault
+    entry. The link upsert then refuses to remove it — correctly, that is user
+    data — and the user is left deleting a dozen folders by hand. This settles
+    the position instead: a folder that matches the vault byte for byte is
+    redundant and goes; anything else is preserved under
+    ``<vault>/.trash/replaced-folders/<project>/<hub>/`` first. Unknown content
+    is never rmtree'd.
+
+    ``target`` is the vault entry the link should point at, or ``None`` when
+    there is none (paper deleted, clone never restored) — a folder with no
+    original can never be proven redundant, so it is preserved.
+
+    Returns:
+        ``('clear', None)`` — nothing in the way: position empty, already a
+        link, or a real file (which the upsert unlinks as it always has);
+        ``('blocked', None)`` — a real folder on a filesystem that cannot hold
+        links, left alone: deleting it there would take away the only
+        browsable copy and give back nothing;
+        ``('replaced-copy', None)`` — a redundant copy was deleted;
+        ``('moved-aside', dest)`` — the folder now lives at ``dest``.
+    """
+    # is_portable_link BEFORE is_dir: a junction answers is_dir() True, so the
+    # other order would file every healthy Windows link as a folder copy.
+    if is_portable_link(link_path) or not link_path.is_dir():
+        return HubSettlement("clear", None)
+    # Probe the PROJECT dir (link_path is <project_dir>/<hub>/<name>), not the
+    # hub: same key as check_project_references so both read one cached
+    # verdict, and the probe file never lands in the hub the rebuild is
+    # iterating over.
+    if not links_supported(link_path.parent.parent):
+        return HubSettlement("blocked", None)
+    if target is not None and _is_verbatim_copy(link_path, target):
+        # locking.rmtree, not shutil's: the copy carries the vault's read-only
+        # metadata.yaml / paper.pdf attributes, which stop a plain delete on
+        # Windows (ADR-005 dimension F).
+        rmtree(link_path)
+        return HubSettlement("replaced-copy", None)
+    # Local import: trash reaches back here for CODE_SUBDIR, so this edge can
+    # only run at call time. Mirrors the checks / correctors imports below.
+    from litman.core.trash import TRASH_DIRNAME, _utc_compact_now
+
+    dest = _move_aside(
+        link_path,
+        vault / TRASH_DIRNAME / REPLACED_FOLDERS_DIRNAME / project / hub,
+        f"{link_path.name}-{_utc_compact_now()}",
+    )
+    return HubSettlement("moved-aside", dest)
 
 
 def _papers_using_repo_in_project(
