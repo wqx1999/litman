@@ -36,6 +36,21 @@ conveniences.
 
 ### Fixed
 
+- **A project folder copied from another machine now repairs itself.** Copying a
+  project directory — over the network, onto a USB stick, out of a tar, through
+  cloud sync — turns every `litman_reflib/<id>` and `litman_code/<repo>`
+  shortcut into a real folder holding a full copy of the vault entry.
+  `lit health-check` used to call each of those shortcuts "missing" and `--fix`
+  then refused the folder with a permissions error per entry, leaving a dozen
+  directories to delete by hand. The check now says
+  `... is a folder copy, not a litman link (copied from another machine?)`, and
+  `--fix` clears them: a folder that matches the vault is replaced with the
+  shortcut, and one that differs — a note you wrote on the other machine — is
+  kept under `<vault>/.trash/replaced-folders/` and named in the output, so
+  nothing you wrote is thrown away. `lit link` and `lit trash restore` handle
+  the same folders the same way. On a drive that cannot hold shortcuts at all
+  (FAT32, exFAT, network shares) the copies are left exactly where they are.
+
 - **The health badge no longer waits to be clicked.** The shield in the toolbar
   showed nothing until you opened its panel, so a library problem could sit
   there unseen for as long as you never thought to look. litman now runs the
