@@ -816,6 +816,81 @@ def test_project_references_unreachable_dir_skipped(
     assert check_project_references(vault, list_papers(vault)) == []
 
 
+def _expand_link_to_copy(link: Path, source: Path) -> None:
+    """Do to one link what a copy tool does to a whole project directory."""
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    assert remove_link_if_present(link)
+    shutil.copytree(source, link)
+
+
+def test_folder_copy_reported_as_copy_not_missing(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The position is occupied, not empty. "missing" sent the user hunting
+    for something that was never lost — and ``--fix`` into a wall it could
+    not get past."""
+    from litman.core.checks import check_project_references
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)
+    link = proj / "litman_reflib" / "2024_Foo_Bar"
+    _expand_link_to_copy(link, vault / "papers" / "2024_Foo_Bar")
+
+    issues = check_project_references(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].category == "project_references"
+    assert issues[0].severity == "error"
+    assert issues[0].paper_id == "2024_Foo_Bar"
+    assert "is a folder copy, not a litman link" in issues[0].message
+    assert "missing" not in issues[0].message
+    assert issues[0].hint is not None and ".trash/" in issues[0].hint
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert "project_references" in result.output
+    assert is_portable_link(link)
+    assert check_project_references(vault, list_papers(vault)) == []
+
+
+def test_folder_copy_outside_membership_reported_as_stale(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A folder for a paper this project no longer holds. The ``extra`` arm
+    only ever counted links, so nothing saw it."""
+    from litman.core.checks import check_project_references
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)
+    orphan = proj / "litman_reflib" / "2019_Old_Paper"
+    orphan.mkdir()
+    (orphan / "notes.md").write_text("stale\n", encoding="utf-8")
+
+    issues = check_project_references(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].paper_id is None
+    assert "is a stale folder copy, not a litman link" in issues[0].message
+
+    runner = CliRunner()
+    runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+    assert not orphan.exists()
+    assert check_project_references(vault, list_papers(vault)) == []
+
+
 # --- project_bridge_dangling (#3's cheap arm) --------------------------------
 
 

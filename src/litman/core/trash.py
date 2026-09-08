@@ -112,6 +112,18 @@ def _dump_rt_to_string(data: dict[str, Any]) -> str:
 _ENTRY_NAME_RE = re.compile(r"^(.+?)-(\d{8}T\d{6}Z)(?:-[0-9a-f]{4})?$")
 
 
+def is_trash_entry_name(name: str) -> bool:
+    """True if ``name`` is a restorable trash entry, not something else.
+
+    ``.trash/`` also holds ``<entry>.meta.yaml`` sidecars and the
+    ``replaced-folders/`` container that :func:`settle_hub_entry` fills. Every
+    walk of the directory asks here so "what counts as an entry" keeps being
+    one rule in one place — a second spelling of it is how a recoverable
+    paper becomes un-listable but still deletable (review F19).
+    """
+    return _ENTRY_NAME_RE.match(name) is not None
+
+
 @dataclass
 class TrashEntry:
     """One row of `lit trash list` output."""
@@ -750,6 +762,11 @@ def empty_trash(vault: Path) -> int:
     the whole sweep midway, so the returned count reflects what was *actually*
     deleted rather than diverging from a confirmation prompt. A skipped entry
     stays in ``.trash/`` and is retried on the next ``lit trash empty``.
+
+    ``.trash/`` may also hold ``replaced-folders/`` — hub folders preserved by
+    ``lit health-check --fix``. One recycle bin, one way to empty it: the
+    container goes with everything else, but it is not an entry and is not
+    counted.
     """
     trash_root = _trash_dir(vault)
     if not trash_root.is_dir():
@@ -763,7 +780,11 @@ def empty_trash(vault: Path) -> int:
                 child.unlink()
             elif child.is_dir():
                 rmtree(child)
-                n += 1  # count only entry folders, never the sidecars
+                # Count only entry folders — never the sidecars, and never
+                # the replaced-folders/ container (emptied all the same, but
+                # it is not one of the entries the prompt counted).
+                if is_trash_entry_name(child.name):
+                    n += 1
         except OSError:
             continue
     return n

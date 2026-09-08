@@ -75,7 +75,11 @@ from litman.core.portable_link import (
 )
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
-from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
+from litman.core.trash import (
+    TRASH_DIRNAME,
+    TRASH_MAX_ENTRIES,
+    is_trash_entry_name,
+)
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError, VaultRegistryError
 
@@ -2002,6 +2006,34 @@ def check_project_path_exists(
     return out
 
 
+_FOLDER_COPY_HINT = (
+    "`lit health-check --fix` replaces it with a link; a copy that differs "
+    "from the vault is kept in .trash/"
+)
+
+
+def _folder_copy_issue(path: Path, paper_id: str | None, *, known: bool) -> Issue:
+    """A hub position holding a real folder where a litman link belongs.
+
+    Copy tools expand links, so this is what a project directory looks like
+    after it travels between machines. Reported as its own finding rather than
+    as "the link is missing": the position is occupied, and the old wording
+    sent the user looking for something that was never lost.
+    """
+    return Issue(
+        category="project_references",
+        severity="error",
+        paper_id=paper_id,
+        message=(
+            f"{path} is a folder copy, not a litman link "
+            "(copied from another machine?)"
+            if known
+            else f"{path} is a stale folder copy, not a litman link"
+        ),
+        hint=_FOLDER_COPY_HINT,
+    )
+
+
 def check_project_references(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -2126,10 +2158,15 @@ def check_project_references(
 
         # 2) litman_reflib/<id> link set vs membership.
         link_ids: set[str] = set()
+        foreign_dirs: set[str] = set()
         if reflib.is_dir():
             for entry in reflib.iterdir():
+                # is_portable_link first: a junction answers is_dir() True, so
+                # the other order files every Windows link as a folder copy.
                 if is_portable_link(entry):
                     link_ids.add(entry.name)
+                elif entry.is_dir():
+                    foreign_dirs.add(entry.name)
         for extra in sorted(link_ids - member_ids):
             out.append(
                 Issue(
@@ -2153,7 +2190,7 @@ def check_project_references(
         project_can_link = links_supported(project_dir)
 
         if project_can_link:
-            for missing in sorted(member_ids - link_ids):
+            for missing in sorted(member_ids - link_ids - foreign_dirs):
                 out.append(
                     Issue(
                         category="project_references",
@@ -2164,6 +2201,15 @@ def check_project_references(
                             f"link for {missing!r} but it is missing"
                         ),
                         hint="run `lit health-check --fix` to rebuild project links",
+                    )
+                )
+            for occupied in sorted(foreign_dirs):
+                known = occupied in member_ids
+                out.append(
+                    _folder_copy_issue(
+                        reflib / occupied,
+                        occupied if known else None,
+                        known=known,
                     )
                 )
 
@@ -2180,10 +2226,13 @@ def check_project_references(
                     expected_repos.add(str(repo_name))
         code_dir = project_dir / CODE_SUBDIR
         code_link_names: set[str] = set()
+        code_foreign_dirs: set[str] = set()
         if code_dir.is_dir():
             for entry in code_dir.iterdir():
                 if is_portable_link(entry):
                     code_link_names.add(entry.name)
+                elif entry.is_dir():
+                    code_foreign_dirs.add(entry.name)
         for extra in sorted(code_link_names - expected_repos):
             out.append(
                 Issue(
@@ -2198,7 +2247,9 @@ def check_project_references(
                 )
             )
         if project_can_link:
-            for missing in sorted(expected_repos - code_link_names):
+            for missing in sorted(
+                expected_repos - code_link_names - code_foreign_dirs
+            ):
                 out.append(
                     Issue(
                         category="project_references",
@@ -2209,6 +2260,14 @@ def check_project_references(
                             f"link for {missing!r} but it is missing"
                         ),
                         hint="run `lit health-check --fix` to rebuild project links",
+                    )
+                )
+            for occupied in sorted(code_foreign_dirs):
+                out.append(
+                    _folder_copy_issue(
+                        code_dir / occupied,
+                        None,
+                        known=occupied in expected_repos,
                     )
                 )
     return out
@@ -2851,7 +2910,11 @@ def check_trash_health(
     entry_dirs: dict[str, Path] = {}
     sidecars: dict[str, Path] = {}
     for child in trash_root.iterdir():
-        if child.is_dir():
+        # Filtered at the collection point rather than at the count: the
+        # replaced-folders/ container is a directory under .trash/ but is not
+        # an entry, and both readers below (orphan-sidecar membership, size
+        # warning) would otherwise each have to remember that.
+        if child.is_dir() and is_trash_entry_name(child.name):
             entry_dirs[child.name] = child
         elif child.is_file() and child.name.endswith(".meta.yaml"):
             entry_name = child.name[: -len(".meta.yaml")]

@@ -625,3 +625,52 @@ def test_trash_empty_dry_run_lists_full_entries(vault: Path) -> None:
     assert "more" not in result.output
     for i in range(12):
         assert f"2024_P{i:02d}" in result.output
+
+
+# ===========================================================================
+# .trash/replaced-folders/ — the hub folders `--fix` preserved
+# ===========================================================================
+
+
+def _plant_replaced_folder(vault: Path, project: str, name: str) -> Path:
+    """A folder settle_hub_entry moved out of a project hub."""
+    kept = (
+        vault
+        / TRASH_DIRNAME
+        / "replaced-folders"
+        / project
+        / "litman_reflib"
+        / f"{name}-20260908T093800Z"
+    )
+    kept.mkdir(parents=True)
+    (kept / "notes.md").write_text("from the other machine\n", encoding="utf-8")
+    return kept
+
+
+def test_trash_list_and_empty_ignore_replaced_folders(vault: Path) -> None:
+    """One recycle bin, one way to empty it — but the container is not an
+    entry: it never shows up in `lit trash list` and never inflates the count.
+    """
+    from litman.core.checks import check_trash_health
+    from litman.core.document import list_papers
+
+    _write_paper(vault, "2024_Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+    kept = _plant_replaced_folder(vault, "myproj", "2024_Bar")
+
+    assert [e.paper_id for e in list_trash(vault)] == ["2024_Foo"]
+    result = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "replaced-folders" not in result.output
+    # The container is a directory in .trash/, so an unfiltered walk would
+    # count it as an entry and pair it against the orphan-sidecar test.
+    assert check_trash_health(vault, list_papers(vault)) == []
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "1 entr" in result.output  # the paper, not the container
+    assert not kept.exists()
+    assert list((vault / TRASH_DIRNAME).iterdir()) == []
