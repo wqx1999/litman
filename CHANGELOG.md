@@ -53,6 +53,20 @@ conveniences.
   note still show nothing, and one you have open for editing keeps its note in
   the editing panel rather than also floating it as a tooltip.
 
+- **One folder can no longer be registered as two vaults.** `lit vault add`
+  checked that the name was free and that the folder held a library, but not
+  whether that folder was already registered — so one library could answer to
+  `main` and `clone` at once and turn up twice in `lit vault list`. Adding a
+  folder that is already registered now says so and names the vault it is:
+  `That folder is already registered as 'main'. Switch to it with: lit vault use
+  main`. `lit vault set-path` is refused the same way when the new path is
+  another vault's folder, and so are both actions in the web UI. The comparison
+  resolves `..` and symlinks, and where the filesystem itself treats `Vault` and
+  `VAULT` as one folder it catches that too, so a detour or a different spelling
+  of the same folder is refused like any other duplicate. Moving a vault and
+  pointing it at its new folder works as before. A duplicate already in your
+  registry is left alone — drop the spare with `lit vault remove <name>`.
+
 - **An update that cannot work no longer pretends it can.** If you installed
   litman straight from its git repository instead of from a release, `lit
   self-update` and the app's update button used to announce a new version and

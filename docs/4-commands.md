@@ -121,11 +121,11 @@ lit vault remove <name> [-y]
 
 | Subcommand | What it does |
 |---|---|
-| `add <name> <path>` | Register an *existing* vault directory (must already contain `lit-config.yaml`). Does not create a vault — use `lit init` for that. |
+| `add <name> <path>` | Register an *existing* vault directory (must already contain `lit-config.yaml`, and must not already be registered under another name). Does not create a vault — use `lit init` for that. |
 | `use <name>` | Switch the active vault. |
 | `list` | Show every registered vault; the active one is marked `✓`, with path, paper count, and provenance. `--format json` emits one object per vault. |
 | `info <name>` | Show one vault's path, paper count, on-disk size, provenance, and active flag. |
-| `set-path <name> <new-path>` | Re-point `<name>` at a vault you have moved. The new path must already hold a `lit-config.yaml`. The name, the active flag, and the provenance note are kept. |
+| `set-path <name> <new-path>` | Re-point `<name>` at a vault you have moved. The new path must already hold a `lit-config.yaml` and must not be another registered vault's folder. The name, the active flag, and the provenance note are kept. |
 | `remove <name>` | Unregister `<name>`. The directory itself is **not** deleted. |
 
 `lit vault add` flags: `--import-from <text>` (free-form provenance note for a

@@ -43,6 +43,17 @@ Design choices baked in:
 - **add_vault rejects paths that don't exist or lack lit-config.yaml.**
   No "register now, mount later" workflow — keeps the invariant clean
   that ``find_active()`` returns either ``None`` or a working vault.
+- **Path is unique across entries**: one folder must not answer to two
+  names. The two writers compare the resolved path strings and, when
+  those differ, the ``(st_dev, st_ino)`` identity of the two directories
+  — so a ``..`` detour, a symlink, a differently-cased spelling on a
+  case-insensitive filesystem and any other alias all land on the entry
+  that already holds the folder. Duplicates are not a data-safety
+  problem (every name reaches the same vault on disk) but
+  ``ui_state.vault_key()`` reverse-maps path → name and takes the
+  *first* match, so a duplicate makes pin storage depend on registry
+  order — remove the earlier entry and the pins "vanish" — and ``lit
+  vault list`` counts and scans the same vault twice.
 """
 
 from __future__ import annotations
@@ -386,6 +397,94 @@ def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
         )
 
 
+def _dir_identity(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` for ``path``, or ``None`` when it cannot answer.
+
+    ``None`` means "no identity available", never "some identity". Two
+    directories that both answer ``None`` must never be read as one, so callers
+    compare only when their own side is not ``None``. The two ``None`` cases:
+    a path that cannot be stat'ed (gone, unreadable, unmounted), and the
+    ``st_ino == 0`` some Windows volumes report for every file on them.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if st.st_ino == 0:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def ensure_path_registrable(
+    reg: VaultRegistry, path: Path | str, *, exclude_name: str | None = None
+) -> None:
+    """Raise ``VaultRegistryError`` if ``path`` is already registered in ``reg``.
+
+    The path-level counterpart to :func:`ensure_name_registrable`: one folder
+    must not answer to two names (see the module docstring for why duplicates
+    are harmful without being unsafe). Two comparisons, the second run only when
+    the first says "different":
+
+    1. **The resolved path strings.** ``expanduser().resolve()`` collapses
+       ``..`` segments and symlinks everywhere; on Windows it also restores the
+       folder's on-disk spelling, and ``os.path.normcase`` folds what is left
+       (on POSIX ``normcase`` is the identity function). ``resolve()`` is
+       non-strict, so neither side need exist — this is the only pass that can
+       still match a registered folder that is gone from disk.
+    2. **The directory identity** ``(st_dev, st_ino)``. This catches what
+       spelling cannot: a differently-cased path on a case-insensitive POSIX
+       filesystem (default macOS, where ``normcase`` is a no-op and
+       ``realpath`` does not fold case), a bind mount, a share mounted twice.
+       It needs both sides to exist; a side with no identity
+       (:func:`_dir_identity` returning ``None``) is never treated as a match.
+
+    On any filesystem that reports real inode numbers (POSIX-conforming ones,
+    NTFS, ReFS) two different directories cannot share ``(st_dev, st_ino)``, so
+    the second pass does not produce false rejections; some FUSE / SMB mounts
+    synthesize the number instead, which is what the ``st_ino == 0`` escape in
+    :func:`_dir_identity` concedes.
+
+    The per-entry probe is deliberately unbounded — unlike the drift hook's
+    budgeted stat (``_drift._exists_bounded``, ADR-014) this resolves and stats
+    every entry outright, so a registered path on a hung mount can block the
+    call.
+
+    Args:
+        reg: Registry to check the candidate against.
+        path: Candidate vault path (need not be resolved yet).
+        exclude_name: Entry to skip. :func:`set_vault_path` passes the name it is
+            re-pointing so an entry can always be re-pointed at its own path.
+
+    Raises:
+        VaultRegistryError: some other entry already holds this directory.
+    """
+    resolved = Path(path).expanduser().resolve()
+    candidate = os.path.normcase(str(resolved))
+    candidate_identity = _dir_identity(resolved)
+    for entry in reg.vaults:
+        if entry.name == exclude_name:
+            continue
+        try:
+            entry_path = Path(entry.path).expanduser().resolve()
+        except OSError:
+            # A stale entry whose path cannot even be resolved must not block a
+            # legitimate registration. Rare: resolve() swallows the errnos it
+            # treats as ignorable, so only the rest land here. Not the
+            # no-silent-skip rule of invariant #14 either — that governs drift
+            # *detection* layers, which must report "I could not check X";
+            # this is a write guard, and `lit vault list` still shows the entry
+            # (with a red "?" for its paper count, meaning unreachable).
+            continue
+        same = os.path.normcase(str(entry_path)) == candidate
+        if not same and candidate_identity is not None:
+            same = _dir_identity(entry_path) == candidate_identity
+        if same:
+            raise VaultRegistryError(
+                f"That folder is already registered as {entry.name!r}. "
+                f"Switch to it with: lit vault use {entry.name}"
+            )
+
+
 def add_vault(
     reg: VaultRegistry,
     name: str,
@@ -397,9 +496,10 @@ def add_vault(
 ) -> VaultRegistry:
     """Return a new registry with ``name`` added.
 
-    Validates name shape, name uniqueness, and that ``path`` resolves to
-    an existing directory containing a ``lit-config.yaml``. Behavioral
-    rules around the active flag:
+    Validates name shape, name uniqueness, that ``path`` resolves to an
+    existing directory containing a ``lit-config.yaml``, and that no other
+    entry already points at that same directory. Behavioral rules around
+    the active flag:
 
     - If the registry is currently empty, the new entry is forced active
       (a registry with no active entry is allowed but immediately
@@ -410,7 +510,8 @@ def add_vault(
 
     Raises:
         VaultRegistryError: invalid name shape, duplicate name, missing
-            directory, or directory not a vault (no lit-config.yaml).
+            directory, directory not a vault (no lit-config.yaml), or a
+            directory already registered under another name.
     """
     # Name-level checks (shape / duplicate / case-fold) live in the shared
     # helper so ``lit init`` can run them before creating the vault dir.
@@ -428,6 +529,9 @@ def add_vault(
             f"Cannot register {name!r}: {abs_path} has no lit-config.yaml. "
             "That directory is not a litman vault."
         )
+    # Checked last on purpose: the three errors above name a more specific
+    # problem with what the user typed.
+    ensure_path_registrable(reg, abs_path)
 
     auto_active = len(reg.vaults) == 0
     will_be_active = set_active or auto_active
@@ -534,15 +638,18 @@ def set_vault_path(
     "the library moved, here is its new home". This is that operation.
 
     ``new_path`` is validated exactly the way :func:`add_vault` validates a fresh
-    registration (the same two messages, adapted): it must resolve to an existing
+    registration (the same messages, adapted): it must resolve to an existing
     directory holding a ``lit-config.yaml``, so a relocate can only ever leave
-    the registry pointing at a real vault. Re-pointing to the current path is
-    allowed and still re-validates. Only that entry's ``path`` changes —
-    ``is_active``, provenance and ``last_health_check_at`` are preserved.
+    the registry pointing at a real vault, and it must not be some *other*
+    entry's path. This entry is excluded from that last check, so re-pointing to
+    the current path stays allowed and still re-validates. Only that entry's
+    ``path`` changes — ``is_active``, provenance and ``last_health_check_at``
+    are preserved.
 
     Raises:
         VaultRegistryError: ``name`` is not in the registry, or ``new_path`` is
-            not an existing directory, or that directory is not a litman vault.
+            not an existing directory, or that directory is not a litman vault,
+            or it is already registered under another name.
     """
     if not any(v.name == name for v in reg.vaults):
         raise VaultRegistryError(
@@ -561,6 +668,7 @@ def set_vault_path(
             f"Cannot re-point {name!r}: {abs_path} has no lit-config.yaml. "
             "That directory is not a litman vault."
         )
+    ensure_path_registrable(reg, abs_path, exclude_name=name)
     updated = [
         v.model_copy(update={"path": str(abs_path)}) if v.name == name else v
         for v in reg.vaults
@@ -580,7 +688,8 @@ def apply_vault_set_path(name: str, new_path: Path | str) -> VaultEntry:
 
     Raises:
         VaultRegistryError: ``name`` is not in the registry, or ``new_path`` is
-            not an existing directory, or that directory is not a litman vault.
+            not an existing directory, or that directory is not a litman vault,
+            or it is already registered under another name.
     """
     reg = load_registry()
     updated = set_vault_path(reg, name, new_path)

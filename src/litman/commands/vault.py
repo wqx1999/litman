@@ -189,7 +189,8 @@ def vault_add_cmd(
 
     The directory must already exist AND contain a lit-config.yaml
     (i.e. it must already be a litman vault, created by lit init or
-    obtained as a snapshot). lit vault add does NOT create a new
+    obtained as a snapshot), and it must not already be registered
+    under another name. lit vault add does NOT create a new
     vault; use lit init for that.
     """
     if imported_from is not None and imported_at is None:
@@ -274,9 +275,10 @@ def vault_set_path_cmd(name: str, new_path: Path) -> None:
 
     For when the vault directory was moved or renamed on disk and the registry's
     stored path went stale. NEW_PATH must already be a litman vault (an existing
-    directory containing a lit-config.yaml). This does NOT move any files — move
-    the folder yourself first, then run this to point the registry at its new
-    home. The active flag and provenance are left unchanged.
+    directory containing a lit-config.yaml) and must not be another registered
+    vault's directory. This does NOT move any files — move the folder yourself
+    first, then run this to point the registry at its new home. The active flag
+    and provenance are left unchanged.
     """
     entry = apply_vault_set_path(name, new_path)
     active_str = "active" if entry.is_active else "not active"

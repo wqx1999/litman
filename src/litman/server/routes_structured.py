@@ -851,8 +851,9 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     registry write goes through one path (invariant #16), exactly as this route's
     sibling ``PUT /vaults/active`` shares ``apply_vault_use`` with ``lit vault
     use``. The new path must already be a litman vault (an existing directory
-    holding a lit-config.yaml); an unknown name or a bad path surfaces as
-    VaultRegistryError → 400 with the core's verbatim message.
+    holding a lit-config.yaml) and must not be another registered vault's
+    directory; an unknown name or a bad path surfaces as VaultRegistryError →
+    400 with the core's verbatim message.
 
     REPOINT RULE: if the relocated vault is the one this server is SERVING
     (``app.state.vault`` — what the 410 guard checks), the running server is
@@ -978,8 +979,9 @@ async def post_vault(request: Request) -> dict[str, object]:
     for body parse + ``VaultRegistryError`` → 400 mapping, but is a PURE registry
     append: :func:`litman.core.vault_registry.add_vault` validates name shape /
     uniqueness / that ``path`` is an existing directory containing a
-    ``lit-config.yaml``, then :func:`save_registry` persists. The route NEVER
-    touches ``app.state.vault`` and NEVER changes the active vault — "set active
+    ``lit-config.yaml`` / that no other entry already holds that directory, then
+    :func:`save_registry` persists. The route NEVER touches ``app.state.vault``
+    and NEVER changes the active vault — "set active
     after registering" is the frontend reusing the existing ``switchVault`` flow
     (``PUT /api/vaults/active``), not a repoint baked in here. No second write
     path (invariant #16).
@@ -987,8 +989,9 @@ async def post_vault(request: Request) -> dict[str, object]:
     ``set_active`` / ``imported_from`` / ``imported_at`` are deliberately not
     accepted: provenance stays a CLI-only colleague-fork concern, and keeping the
     route active-agnostic guarantees zero ``app.state`` side effect. A bad name /
-    duplicate / non-existent dir / non-vault dir surfaces as VaultRegistryError →
-    400 with the core's verbatim message preserved as ``detail``.
+    duplicate name / non-existent dir / non-vault dir / already-registered dir
+    surfaces as VaultRegistryError → 400 with the core's verbatim message
+    preserved as ``detail``.
     """
     try:
         payload = await request.json()
@@ -1032,8 +1035,9 @@ async def create_vault_route(request: Request) -> dict[str, object]:
     RED LINE: only a filesystem ``parent_dir`` + optional ``name`` are accepted —
     never a command. ``parent_dir`` is ``expanduser``'d and must be an existing
     directory (a missing parent is a 400, never a silent multi-level ``mkdir``).
-    Any backend failure (parent missing, target non-empty, name clash) surfaces
-    as a 400 with the core's verbatim message preserved as ``detail``.
+    Any backend failure (parent missing, target non-empty, name clash, target
+    directory already registered) surfaces as a 400 with the core's verbatim
+    message preserved as ``detail``.
     """
     try:
         payload = await request.json()

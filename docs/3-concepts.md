@@ -510,7 +510,7 @@ The file holds a `vaults:` list. Each entry has these fields:
 | Field | Type | Written by | Notes |
 |---|---|---|---|
 | `name` | string | `lit vault add` / `lit init` | Unique handle. No `:` (reserved for cross-vault wikilinks), no leading hyphen, checked case-insensitively unique. |
-| `path` | string | `lit vault add` / `lit init` | Absolute path to the vault root. |
+| `path` | string | `lit vault add` / `lit init` | Absolute path to the vault root. Unique across entries — one folder cannot be registered under two names. |
 | `imported_from` | string or null | `lit vault add --import-from` | Free-form provenance for a forked vault. `null` for a locally created one. |
 | `imported_at` | string or null | `lit vault add` | ISO 8601 date the vault was registered. |
 | `is_active` | boolean | `lit vault use` / `lit init` | The default vault when no `--vault` / `--library` / `$LIT_LIBRARY` is given. |

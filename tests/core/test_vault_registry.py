@@ -9,6 +9,8 @@ registry on a dev machine.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from litman.core.vault_registry import (
     add_vault,
     apply_vault_set_path,
     ensure_name_registrable,
+    ensure_path_registrable,
     find_active,
     find_by_name,
     is_valid_vault_name,
@@ -80,6 +83,15 @@ def vault_b(tmp_path: Path) -> Path:
     parent = tmp_path / "parent_b"
     parent.mkdir()
     return create_vault(parent, name="vault_b")
+
+
+@pytest.fixture
+def vault_c(tmp_path: Path) -> Path:
+    """A third fresh vault — for re-point scenarios that need a real vault no
+    other registry entry already holds (paths are unique across entries)."""
+    parent = tmp_path / "parent_c"
+    parent.mkdir()
+    return create_vault(parent, name="vault_c")
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +373,194 @@ def test_ensure_name_registrable_live_entry_has_no_set_path_hint(
 
 
 # ---------------------------------------------------------------------------
+# ensure_path_registrable
+# ---------------------------------------------------------------------------
+
+
+def _install_exploding_resolve(
+    monkeypatch: pytest.MonkeyPatch, stored_path: str
+) -> None:
+    """Make ``Path.resolve`` raise ``OSError`` for exactly ``stored_path``.
+
+    Stands in for a registry entry pointing into an unreadable parent or a
+    dropped mount — the one input that reaches the guard's ``except OSError``.
+    """
+    real_resolve = Path.resolve
+
+    def exploding_resolve(self: Path, strict: bool = False) -> Path:
+        if str(self) == stored_path:
+            raise OSError("simulated unreadable parent")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", exploding_resolve)
+
+
+def _install_non_collapsing_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``Path.resolve`` absolutise without following symlinks or folding
+    case.
+
+    This is the shape of a filesystem where two spellings of one directory stay
+    two different strings all the way to the comparison — default macOS, which
+    this machine cannot provide. With the real ``resolve()`` the string pass
+    would collapse the alias itself and hide whether the identity pass works.
+    """
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda self, strict=False: Path(os.path.abspath(str(self))),
+    )
+
+
+def test_ensure_path_registrable_passes_for_a_novel_path(
+    vault_a: Path, vault_b: Path
+) -> None:
+    """A folder no entry holds raises nothing."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    ensure_path_registrable(reg, vault_b)
+
+
+def test_ensure_path_registrable_rejects_a_held_path(vault_a: Path) -> None:
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        ensure_path_registrable(reg, vault_a)
+
+
+def test_ensure_path_registrable_excludes_the_named_entry(vault_a: Path) -> None:
+    """``exclude_name`` is how set_vault_path lets an entry keep its own path."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    ensure_path_registrable(reg, vault_a, exclude_name="main")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Needs a POSIX symlink to stand in for the case-insensitive filesystem "
+        "this machine cannot provide."
+    ),
+)
+def test_ensure_path_registrable_catches_an_alias_the_strings_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The identity pass is what closes the default-macOS hole.
+
+    There ``os.path.normcase`` is the identity function and ``realpath`` does
+    not fold case, so two spellings of one directory arrive at the comparison as
+    two different strings and only ``(st_dev, st_ino)`` can tell they are one
+    folder. Simulated with a symlink plus a ``resolve()`` that does not follow
+    it, so the string pass provably cannot be the thing that fires.
+    """
+    real_parent = tmp_path / "parent_real"
+    real_parent.mkdir()
+    real = create_vault(real_parent, name="real")
+    other_parent = tmp_path / "parent_other"
+    other_parent.mkdir()
+    other = create_vault(other_parent, name="other")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    reg = VaultRegistry(
+        vaults=[VaultEntry(name="main", path=str(link), is_active=True)]
+    )
+    _install_non_collapsing_resolve(monkeypatch)
+
+    # The string pass is out of the picture: the two spellings stay different.
+    assert os.path.normcase(str(Path(str(link)).resolve())) != os.path.normcase(
+        str(Path(str(real)).resolve())
+    )
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        ensure_path_registrable(reg, real)
+
+    # Same-page positive control: with the SAME neutered resolve() in force, a
+    # genuinely different directory must still register. Without this line the
+    # assertion above cannot tell "the identity pass fired" from "the patch
+    # broke something".
+    ensure_path_registrable(reg, other)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "Only where the filesystem itself ignores case do two spellings name "
+        "one folder; on Linux they are two different directories."
+    ),
+)
+def test_ensure_path_registrable_folds_case_for_a_vanished_entry(
+    tmp_path: Path,
+) -> None:
+    """A stale entry still blocks re-registering its path, and here the case
+    fold is the only mechanism that can match it.
+
+    The folder is gone, so ``resolve(strict=False)`` keeps whatever spelling was
+    typed (nothing to canonicalise against) and ``stat()`` yields no identity —
+    delete ``os.path.normcase`` from the guard and this registration goes
+    through.
+    """
+    gone = tmp_path / "VAULT"  # deliberately never created
+    reg = VaultRegistry(
+        vaults=[VaultEntry(name="main", path=str(gone), is_active=True)]
+    )
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        ensure_path_registrable(reg, tmp_path / "vault")
+
+
+def test_ensure_path_registrable_does_not_pair_two_identity_less_paths(
+    tmp_path: Path,
+) -> None:
+    """Two directories that cannot answer for their identity are not therefore
+    the same directory.
+
+    Both sides are gone from disk, so ``stat()`` gives ``None`` for each; the
+    guard must fall back to the strings, which differ. Compare the two ``None``s
+    as equal instead and every unregistrable path collides with every other.
+    """
+    reg = VaultRegistry(
+        vaults=[
+            VaultEntry(name="main", path=str(tmp_path / "gone-a"), is_active=True)
+        ]
+    )
+    ensure_path_registrable(reg, tmp_path / "gone-b")
+
+
+def test_ensure_path_registrable_skips_an_unresolvable_entry(
+    vault_a: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale entry whose path cannot even be resolved must not block a
+    legitimate registration.
+
+    The entry is a ``..`` detour onto the candidate's own folder, so the skip is
+    the only thing standing between this call and a rejection — the control
+    assertion below runs the identical setup unpatched and gets refused.
+    """
+    detour = str(vault_a.parent / ".." / vault_a.parent.name / vault_a.name)
+    reg = VaultRegistry(
+        vaults=[VaultEntry(name="stale", path=detour, is_active=True)]
+    )
+    # Control: unpatched, that detour resolves onto the candidate → refused.
+    with pytest.raises(VaultRegistryError, match="already registered as 'stale'"):
+        ensure_path_registrable(reg, vault_a)
+
+    _install_exploding_resolve(monkeypatch, detour)
+    ensure_path_registrable(reg, vault_a)
+
+
+def test_ensure_path_registrable_keeps_scanning_past_an_unresolvable_entry(
+    vault_a: Path, vault_b: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unresolvable entry is skipped, not taken as the end of the scan: a
+    colliding entry positioned AFTER it is still found and named."""
+    detour = str(vault_b.parent / ".." / vault_b.parent.name / vault_b.name)
+    reg = VaultRegistry(
+        vaults=[
+            VaultEntry(name="stale", path=detour, is_active=True),
+            VaultEntry(name="live", path=str(vault_a)),
+        ]
+    )
+    _install_exploding_resolve(monkeypatch, detour)
+    with pytest.raises(VaultRegistryError, match="already registered as 'live'"):
+        ensure_path_registrable(reg, vault_a)
+
+
+# ---------------------------------------------------------------------------
 # add_vault
 # ---------------------------------------------------------------------------
 
@@ -432,6 +632,75 @@ def test_add_rejects_directory_without_lit_config(tmp_path: Path) -> None:
     plain.mkdir()
     with pytest.raises(VaultRegistryError, match="no lit-config.yaml"):
         add_vault(VaultRegistry(), "main", plain)
+
+
+def test_add_vault_rejects_a_path_already_registered(vault_a: Path) -> None:
+    """One folder must not answer to two names. The message names the entry
+    that already holds it and gives the one command that switches to it."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    with pytest.raises(VaultRegistryError) as exc:
+        add_vault(reg, "clone", vault_a)
+    msg = str(exc.value)
+    assert "already registered as 'main'" in msg
+    assert "lit vault use main" in msg
+
+
+def test_add_vault_rejects_a_dotdot_detour_to_a_registered_path(
+    vault_a: Path,
+) -> None:
+    """``<parent>/../<parent>/<vault>`` is the same folder — ``resolve()``
+    collapses the detour before the comparison."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    detour = vault_a.parent / ".." / vault_a.parent.name / vault_a.name
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        add_vault(reg, "clone", detour)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX symlink semantics; on Windows creating one needs elevation.",
+)
+def test_add_vault_rejects_a_symlink_to_a_registered_path(
+    vault_a: Path, tmp_path: Path
+) -> None:
+    """A symlink pointing at a registered vault resolves to it — same folder."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    link = tmp_path / "vault-link"
+    link.symlink_to(vault_a, target_is_directory=True)
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        add_vault(reg, "clone", link)
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "Case-folded path comparison only bites where the filesystem itself "
+        "ignores case; on Linux the upper-cased path is a different folder."
+    ),
+)
+def test_add_vault_rejects_a_case_variant_path(vault_a: Path) -> None:
+    """AC-4: on Windows the same folder in a different case is the same folder,
+    and registering it a second time is refused.
+
+    Behavioural only — it does not pin down *which* comparison fires. Windows
+    ``resolve()`` restores the folder's on-disk spelling, so both sides are
+    usually byte-identical before the case fold ever runs. The test that
+    isolates the fold is
+    ``test_ensure_path_registrable_folds_case_for_a_vanished_entry``.
+    """
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    upper = Path(str(vault_a).upper())
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        add_vault(reg, "clone", upper)
+
+
+def test_add_vault_accepts_a_distinct_path(vault_a: Path, vault_b: Path) -> None:
+    """Regression: the path guard only fires on a *duplicate* — two different
+    folders still register side by side."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    out = add_vault(reg, "second", vault_b)
+    assert [v.name for v in out.vaults] == ["main", "second"]
+    assert Path(find_by_name(out, "second").path) == vault_b.resolve()
 
 
 def test_add_provenance_fields_persist(
@@ -558,14 +827,16 @@ def test_set_vault_path_stores_absolute_resolved_path(
 
 
 def test_set_vault_path_only_touches_the_named_entry(
-    vault_a: Path, vault_b: Path
+    vault_a: Path, vault_b: Path, vault_c: Path
 ) -> None:
     reg = add_vault(VaultRegistry(), "main", vault_a)
     reg = add_vault(reg, "second", vault_b)
-    # Point "second" at vault_a's dir (a real vault) — "main" must be untouched.
-    out = set_vault_path(reg, "second", vault_a)
+    # Point "second" at a third real vault — "main" must be untouched. The
+    # target has to be a vault no other entry holds: paths are unique across
+    # entries, so re-pointing onto vault_a would be refused outright.
+    out = set_vault_path(reg, "second", vault_c)
     assert Path(find_by_name(out, "main").path) == vault_a.resolve()
-    assert Path(find_by_name(out, "second").path) == vault_a.resolve()
+    assert Path(find_by_name(out, "second").path) == vault_c.resolve()
 
 
 def test_set_vault_path_missing_name_raises(vault_a: Path) -> None:
@@ -597,6 +868,34 @@ def test_set_vault_path_noop_same_path_revalidates(vault_a: Path) -> None:
     """Re-pointing to the current path is allowed (still re-validates)."""
     reg = add_vault(VaultRegistry(), "main", vault_a)
     out = set_vault_path(reg, "main", vault_a)
+    assert Path(find_by_name(out, "main").path) == vault_a.resolve()
+
+
+def test_set_vault_path_rejects_another_entrys_path(
+    vault_a: Path, vault_b: Path
+) -> None:
+    """The second write door into the registry is guarded too: a relocate may
+    not park one entry on top of another's folder."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    reg = add_vault(reg, "second", vault_b)
+    with pytest.raises(VaultRegistryError) as exc:
+        set_vault_path(reg, "second", vault_a)
+    msg = str(exc.value)
+    assert "already registered as 'main'" in msg
+    assert "lit vault use main" in msg
+    # Refused before any write: "second" still points where it did.
+    assert Path(find_by_name(reg, "second").path) == vault_b.resolve()
+
+
+def test_set_vault_path_allows_repointing_to_its_own_path(
+    vault_a: Path, vault_b: Path
+) -> None:
+    """Status quo preserved: the entry being re-pointed is excluded from the
+    path check, so the no-op re-point survives even alongside a second entry."""
+    reg = add_vault(VaultRegistry(), "main", vault_a)
+    reg = add_vault(reg, "second", vault_b)
+    out = set_vault_path(reg, "second", vault_b)
+    assert Path(find_by_name(out, "second").path) == vault_b.resolve()
     assert Path(find_by_name(out, "main").path) == vault_a.resolve()
 
 

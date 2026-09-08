@@ -14,6 +14,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core.library import VAULT_SUBDIRS, create_vault
 from litman.core.vault_registry import add_vault, load_registry, save_registry
+from litman.core import locking
 from litman.exceptions import ParentNotFoundError, VaultExistsError
 
 
@@ -379,6 +380,43 @@ def test_init_case_fold_collision_aborts(tmp_path: Path) -> None:
     assert not (parent2 / "literature_vault").exists()
 
 
+def test_init_refuses_a_path_a_stale_entry_still_holds(tmp_path: Path) -> None:
+    """The path guard must fire BEFORE the vault directory is created.
+
+    Repro: the user deleted a registered vault's folder, then re-ran `lit init`
+    at the same place under a fresh registry name. The guard lives in
+    ``add_vault``, which runs after ``create_vault``, so without the pre-flight
+    in ``apply_init`` this left an unregistered vault on disk and the re-run
+    failed differently ("target non-empty") — a wedge only `lit vault remove`
+    could clear.
+
+    Asserted on the exception, not ``result.output``: only the *name* pre-flight
+    is wrapped into a ClickException, so this one propagates unprinted under
+    CliRunner.
+    """
+    from litman.exceptions import VaultRegistryError
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    gone = create_vault(parent, name="lib")
+    save_registry(add_vault(load_registry(), "main", gone))
+    locking.rmtree(gone)  # the user deleted the folder behind litman's back
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["init", str(parent), "--name", "lib", "--register-as", "fresh"]
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    msg = str(result.exception)
+    assert "already registered as 'main'" in msg
+    assert "lit vault use main" in msg
+    # The point of the fix: nothing was created, so re-running gives the same
+    # error rather than "target non-empty".
+    assert not (parent / "lib").exists()
+    assert [v.name for v in load_registry().vaults] == ["main"]
+
+
 def test_init_output_has_no_export_lit_library(tmp_path: Path) -> None:
     """Regression: the default init panel must not teach `export LIT_LIBRARY`."""
     parent = tmp_path / "parent"
@@ -410,6 +448,23 @@ def test_apply_init_creates_registers_and_marks_health(tmp_path: Path) -> None:
     persisted = find_by_name(load_registry(), "mylib")
     assert persisted is not None
     assert Path(persisted.path).resolve() == vault.resolve()
+
+
+def test_apply_init_registered_path_raises_before_creating(tmp_path: Path) -> None:
+    """The path pre-flight sits on the shared create+register core, so the GUI's
+    POST /api/vaults/create is covered by the same guard as the CLI."""
+    from litman.commands.init import apply_init
+    from litman.exceptions import VaultRegistryError
+
+    parent = tmp_path / "p"
+    parent.mkdir()
+    gone = create_vault(parent, name="lib")
+    save_registry(add_vault(load_registry(), "main", gone))
+    locking.rmtree(gone)
+
+    with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
+        apply_init(parent, "lib", register_as="fresh")
+    assert not (parent / "lib").exists()
 
 
 def test_apply_init_name_clash_raises_before_creating(tmp_path: Path) -> None:
