@@ -328,3 +328,53 @@ def test_lit_refresh_views_help() -> None:
     result = runner.invoke(cli, ["refresh-views", "--help"])
     assert result.exit_code == 0
     assert "Rebuild" in result.output or "rebuild" in result.output
+
+
+def test_refresh_views_says_what_it_did_with_a_folder_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A folder deleted or moved in the user's own project directory is never
+    silent, whichever command triggered the rebuild.
+
+    ``refresh-views`` reaches the same settle as ``health-check --fix``; before
+    this it moved a hand-written folder into .trash/ and printed nothing.
+    """
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    monkeypatch.setenv("COLUMNS", "400")
+    runner = CliRunner()
+    runner.invoke(cli, ["init", str(tmp_path)])
+    vault = tmp_path / "literature_vault"
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  myproj: {proj}\n",
+        encoding="utf-8",
+    )
+    for pid in ("2024_A_One", "2024_B_Two"):
+        _write_paper(vault, pid, title=pid, projects=["myproj"])
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+
+    for pid in ("2024_A_One", "2024_B_Two"):
+        link = proj / "litman_reflib" / pid
+        assert remove_link_if_present(link)
+        shutil.copytree(vault / "papers" / pid, link)
+    (proj / "litman_reflib" / "2024_B_Two" / "MY_NOTES.md").write_text(
+        "hand-written on the laptop\n", encoding="utf-8"
+    )
+
+    result = runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "replaced 1 folder copy with a link" in flat
+    assert "kept 1 folder that does not match the vault:" in flat
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "MY_NOTES.md").is_file()

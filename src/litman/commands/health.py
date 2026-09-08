@@ -30,6 +30,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
@@ -362,26 +363,12 @@ def _report_hub_settlements(applied: dict[str, Any]) -> None:
     is one rebuild, and the folders were never a separate finding.
     """
     replaced = applied.get("hub_replaced_copies")
-    if isinstance(replaced, int) and replaced > 0:
-        console.print(
-            "    [dim]replaced 1 folder copy with a link[/]"
-            if replaced == 1
-            else f"    [dim]replaced {replaced} folder copies with links[/]"
-        )
     kept = applied.get("hub_moved_aside")
-    if isinstance(kept, list) and kept:
-        if len(kept) == 1:
-            console.print(
-                "    [dim]kept 1 folder that differs from the vault: "
-                f"{escape(str(kept[0]))}[/]"
-            )
-        else:
-            console.print(
-                f"    [dim]kept {len(kept)} folders that differ from the "
-                "vault:[/]"
-            )
-            for path in kept:
-                console.print(f"      [dim]{escape(str(path))}[/]")
+    for line in hub_settlement_lines(
+        replaced if isinstance(replaced, int) else 0,
+        [str(p) for p in kept] if isinstance(kept, list) else [],
+    ):
+        console.print(f"    {line}")
 
 
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:

@@ -2007,8 +2007,8 @@ def check_project_path_exists(
 
 
 _FOLDER_COPY_HINT = (
-    "`lit health-check --fix` replaces it with a link; a copy that differs "
-    "from the vault is kept in .trash/"
+    "`lit health-check --fix` replaces it with a link; a copy that does not "
+    "match the vault is kept in .trash/"
 )
 
 

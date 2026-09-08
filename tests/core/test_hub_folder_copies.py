@@ -222,6 +222,10 @@ def test_settle_deletes_a_verbatim_copy(tmp_path: Path) -> None:
     hub = tmp_path / "proj" / "litman_reflib"
     hub.mkdir(parents=True)
     shutil.copytree(target, hub / "p1")
+    # A copy inherits the vault's read-only TRUTH files (ADR-005 dim F). On
+    # Windows a plain shutil.rmtree stops dead on one; locking.rmtree clears
+    # the bit and retries. No-op on POSIX, where deletion never consults it.
+    (hub / "p1" / "metadata.yaml").chmod(stat.S_IRUSR)
 
     out = settle_hub_entry(
         hub / "p1", target, vault=vault, project="p", hub="litman_reflib"
@@ -522,22 +526,36 @@ def test_copy_untouched_when_project_drive_cannot_link(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """AC-11: on a drive that cannot hold links the copy is the only browsable
-    thing there is. Leave it, and stop telling the user to delete it."""
+    thing there is. Leave it, and stop telling the user to delete it.
+
+    p2 is the positive control: its position is NOT obstructed, so the link is
+    still attempted there and the one legitimate "this filesystem cannot hold
+    folder links" warning fires. Without it, "no warning about the copy" would
+    be indistinguishable from "this test prints nothing at all". With it, the
+    count is what does the work: dropping the create loop's blocked-set guard
+    adds a second warning about the copy and this fails.
+    """
+    from litman.core import portable_link
     from litman.core.checks import check_project_references
     from litman.core.document import list_papers
-    from litman.core.portable_link import (
-        _LINK_MECHANISM,
-        reset_link_probe_cache,
-    )
+    from litman.core.portable_link import reset_link_probe_cache
 
-    vault, project_dir = _linked_project(tmp_path)
+    vault, project_dir = _linked_project(tmp_path, extra_papers=["p2"])
     link = project_dir / "litman_reflib" / "p1"
     copy = _expand_to_copy(link, vault / "papers" / "p1")
+    assert is_portable_link(project_dir / "litman_reflib" / "p2")
+
     said = _record_link_warnings(monkeypatch)
 
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(1, "Operation not permitted (mocked)")
+
+    # Poison the OS boundary, not litman's own helpers: the probe, the
+    # settle and the create loop all run for real against a drive that
+    # genuinely refuses both mechanisms.
+    monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
     reset_link_probe_cache()
-    _LINK_MECHANISM[str(vault)] = "symlink"
-    _LINK_MECHANISM[str(project_dir)] = "none"
 
     out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
 
@@ -546,8 +564,11 @@ def test_copy_untouched_when_project_drive_cannot_link(
     assert out["pepforge"]["n_replaced_copies"] == 0
     assert out["pepforge"]["n_moved_aside"] == 0
     assert not (vault / ".trash" / "replaced-folders").exists()
-    assert "could not replace existing entry" not in "\n".join(said)
+    assert len(said) == 1
+    assert "cannot hold folder links" in said[0]
+    assert str(copy) not in said[0]
     assert check_project_references(vault, list_papers(vault)) == []
+
 
 
 # --- a filesystem that refuses ----------------------------------------------
@@ -701,3 +722,46 @@ def test_unreadable_subtree_is_never_called_verbatim(tmp_path: Path) -> None:
     assert (out.moved_to / "sub" / "b.txt").read_text(encoding="utf-8") == (
         "mine — different\n"
     )
+
+
+def test_verbatim_copy_is_deleted_through_the_read_only_aware_rmtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The delete has to clear read-only bits on the way.
+
+    A copy carries the vault's read-only metadata.yaml / paper.pdf (ADR-005
+    dim F) and a plain ``shutil.rmtree`` stops dead on one — but only on
+    Windows, where the write bit governs deletion. POSIX would pass either
+    way, so the contract is pinned on the call itself: whatever reaches
+    shutil must carry the retry handler.
+    """
+    real_rmtree = shutil.rmtree
+    seen: list[dict[str, Any]] = []
+
+    def spy(path: Any, *args: Any, **kwargs: Any) -> None:
+        seen.append(kwargs)
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", spy)
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = tmp_path / "papers" / "p1"
+    target.mkdir(parents=True)
+    (target / "metadata.yaml").write_text("id: p1\n", encoding="utf-8")
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    real_copytree = shutil.copytree
+    real_copytree(target, hub / "p1")
+    (hub / "p1" / "metadata.yaml").chmod(stat.S_IRUSR)
+
+    out = settle_hub_entry(
+        hub / "p1", target, vault=vault, project="p", hub="litman_reflib"
+    )
+
+    assert out.verdict == "replaced-copy"
+    # Empty when the delete bypassed core.locking.rmtree (a module-level
+    # `from shutil import rmtree` binds past the spy); onexc missing when it
+    # called shutil directly.
+    assert seen, "the delete did not go through core.locking.rmtree"
+    assert seen[-1].get("onexc") is not None

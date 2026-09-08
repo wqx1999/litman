@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.commands._usage import reject_second_positional
 from litman.core.config import load_config
@@ -145,6 +146,13 @@ def link_cmd(
                     f"{info['n_code_links']} code link(s) "
                     f"({info['n_tagged']} paper(s) tagged)"
                 )
+                # A folder deleted or moved in the user's own project dir is
+                # never silent, whichever command triggered the rebuild.
+                for line in hub_settlement_lines(
+                    info.get("n_replaced_copies", 0),
+                    info.get("aside_paths", []),
+                ):
+                    console.print(f"  {line}")
             else:
                 console.print(
                     f"[yellow]○ {escape(proj)}: {status}[/] — "

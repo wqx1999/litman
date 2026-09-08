@@ -893,7 +893,7 @@ def test_fix_reports_replaced_and_kept_folder_counts(
     flat = " ".join(result.output.split())
 
     assert "replaced 2 folder copies with links" in flat
-    assert "kept 1 folder that differs from the vault:" in flat
+    assert "kept 1 folder that does not match the vault:" in flat
     kept_root = (
         vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
     )
