@@ -671,23 +671,40 @@ def test_add_vault_rejects_a_symlink_to_a_registered_path(
         add_vault(reg, "clone", link)
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32",
-    reason=(
-        "Case-folded path comparison only bites where the filesystem itself "
-        "ignores case; on Linux the upper-cased path is a different folder."
-    ),
-)
-def test_add_vault_rejects_a_case_variant_path(vault_a: Path) -> None:
-    """AC-4: on Windows the same folder in a different case is the same folder,
-    and registering it a second time is refused.
+def _fs_ignores_case(where: Path) -> bool:
+    """Whether ``where``'s filesystem treats two spellings as one folder.
 
-    Behavioural only — it does not pin down *which* comparison fires. Windows
-    ``resolve()`` restores the folder's on-disk spelling, so both sides are
-    usually byte-identical before the case fold ever runs. The test that
-    isolates the fold is
+    Probed, not inferred from ``sys.platform``: Windows and default macOS
+    ignore case, Linux and a case-sensitive APFS volume do not. Probing is what
+    lets the case tests run on the macOS CI runner instead of being skipped
+    there by a platform name that is not the thing that actually matters.
+    """
+    probe = where / "LitmanCaseProbe"
+    probe.mkdir()
+    try:
+        return (where / "LITMANCASEPROBE").is_dir()
+    finally:
+        probe.rmdir()
+
+
+def test_add_vault_rejects_a_case_variant_path(tmp_path: Path, vault_a: Path) -> None:
+    """AC-4: where the filesystem ignores case, the same folder in a different
+    case is the same folder, and registering it a second time is refused.
+
+    Behavioural only — it does not pin down *which* comparison fires, and the
+    two platforms get there differently. Windows ``resolve()`` restores the
+    folder's on-disk spelling, so both sides are usually byte-identical before
+    the case fold ever runs; on macOS neither ``resolve()`` nor ``normcase``
+    folds anything, so it is the ``(st_dev, st_ino)`` pass that catches it.
+    That difference is the reason this runs on both rather than on Windows
+    alone. The test that isolates the fold itself is
     ``test_ensure_path_registrable_folds_case_for_a_vanished_entry``.
     """
+    if not _fs_ignores_case(tmp_path):
+        pytest.skip(
+            "Only where the filesystem itself ignores case do two spellings "
+            "name one folder; here they are two different directories."
+        )
     reg = add_vault(VaultRegistry(), "main", vault_a)
     upper = Path(str(vault_a).upper())
     with pytest.raises(VaultRegistryError, match="already registered as 'main'"):
