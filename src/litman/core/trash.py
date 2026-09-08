@@ -60,7 +60,11 @@ from litman.core.portable_link import (
     make_portable_link,
     remove_link_if_present,
 )
-from litman.core.project_link import CODE_SUBDIR, settle_hub_entry
+from litman.core.project_link import (
+    CODE_SUBDIR,
+    REPLACED_FOLDERS_DIRNAME,
+    settle_hub_entry,
+)
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.views import (
@@ -284,6 +288,30 @@ def move_to_trash(
         raise
 
     return entry_path
+
+
+def count_replaced_folders(vault: Path) -> int:
+    """How many hub folders ``lit health-check --fix`` has preserved.
+
+    They live under ``.trash/replaced-folders/<project>/<hub>/`` and are NOT
+    trash entries: `lit trash list` and `lit trash restore` skip them on the
+    entry-name rule, because a folder that was in a link's way must never come
+    back to that position. `lit trash empty` still clears them — one recycle
+    bin, one way to empty it — so it needs to be able to see that there is
+    something to clear, even when no paper has been deleted.
+    """
+    root = _trash_dir(vault) / REPLACED_FOLDERS_DIRNAME
+    if not root.is_dir():
+        return 0
+    n = 0
+    for project_dir in root.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for hub_dir in project_dir.iterdir():
+            if not hub_dir.is_dir():
+                continue
+            n += sum(1 for child in hub_dir.iterdir() if child.is_dir())
+    return n
 
 
 def list_trash(vault: Path) -> list[TrashEntry]:

@@ -674,3 +674,52 @@ def test_trash_list_and_empty_ignore_replaced_folders(vault: Path) -> None:
     assert "1 entr" in result.output  # the paper, not the container
     assert not kept.exists()
     assert list((vault / TRASH_DIRNAME).iterdir()) == []
+
+
+def test_trash_empty_clears_replaced_folders_with_no_entries(vault: Path) -> None:
+    """The realistic case: `--fix` preserved a folder and no paper was ever
+    deleted. `empty` is the only command that can clear them, so it must not
+    report an empty trash while they are sitting there.
+    """
+    from litman.core.trash import count_replaced_folders
+
+    kept = _plant_replaced_folder(vault, "myproj", "2024_Bar")
+    assert count_replaced_folders(vault) == 1
+    assert list_trash(vault) == []
+
+    runner = CliRunner()
+    listed = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    assert listed.exit_code == 0, listed.output
+    assert "replaced-folders" not in listed.output
+    assert "2024_Bar" not in listed.output  # decision #8: never restorable
+
+    dry = runner.invoke(
+        cli, ["trash", "empty", "--dry-run", "--library", str(vault)]
+    )
+    assert dry.exit_code == 0, dry.output
+    assert "1 replaced project folder" in dry.output
+    assert kept.exists()  # dry-run deletes nothing
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "already empty" not in result.output
+    assert "1 replaced project folder removed" in result.output
+    assert not kept.exists()
+    assert list((vault / TRASH_DIRNAME).iterdir()) == []
+
+
+def test_count_replaced_folders_ignores_the_scaffolding(vault: Path) -> None:
+    """Only the leaf folders count — not the project / hub directories above
+    them, and not an empty container left behind by a failed move."""
+    from litman.core.trash import count_replaced_folders
+
+    assert count_replaced_folders(vault) == 0
+    (vault / TRASH_DIRNAME / "replaced-folders" / "myproj" / "litman_code").mkdir(
+        parents=True
+    )
+    assert count_replaced_folders(vault) == 0
+    _plant_replaced_folder(vault, "myproj", "2024_Bar")
+    _plant_replaced_folder(vault, "otherproj", "2024_Baz")
+    assert count_replaced_folders(vault) == 2

@@ -41,6 +41,7 @@ from litman.core.locking import rmtree
 from litman.core.trash import (
     RestoreResult,
     TrashEntry,
+    count_replaced_folders,
     empty_trash,
     list_trash,
     resolve_trash_entry,
@@ -329,6 +330,24 @@ def trash_restore_cmd(
 # ---------------------------------------------------------------------------
 
 
+def _empty_subject(n_entries: int, n_kept: int) -> str:
+    """Name what `lit trash empty` is about to remove.
+
+    Two kinds of thing live in ``.trash/``: deleted papers, which can be
+    restored, and folders `lit health-check --fix` moved out of a project hub,
+    which cannot. One phrase, used by the dry-run header, the confirmation and
+    the success line, so the three can never disagree about the count.
+    """
+    parts = []
+    if n_entries:
+        parts.append(f"{n_entries} entr{'y' if n_entries == 1 else 'ies'}")
+    if n_kept:
+        parts.append(
+            f"{n_kept} replaced project folder{'' if n_kept == 1 else 's'}"
+        )
+    return " + ".join(parts)
+
+
 @trash_group.command("empty")
 @click.option(
     "--yes",
@@ -360,14 +379,19 @@ def trash_empty_cmd(
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
-    if not entries:
+    # Folders `lit health-check --fix` moved out of a project hub. They are
+    # deliberately invisible to list / restore, so this is the only command
+    # that can clear them — it must not report an empty trash while they sit
+    # there (and, for a code hub, sync a whole repo checkout to the cloud).
+    n_kept = count_replaced_folders(vault)
+    if not entries and not n_kept:
         console.print("[dim](trash is already empty)[/]")
         return
 
     if dry_run:
         console.print(
             f"[bold]Would permanently delete[/] "
-            f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'} "
+            f"{_empty_subject(len(entries), n_kept)} "
             "[dim](dry-run)[/]"
         )
         for e in entries:
@@ -387,7 +411,7 @@ def trash_empty_cmd(
     # the warning block + a default-No prompt.
     warning_lines = [
         f"[bold yellow]About to permanently delete[/] "
-        f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'}:"
+        f"{_empty_subject(len(entries), n_kept)}:"
     ]
     for e in entries[:10]:
         warning_lines.append(
@@ -401,7 +425,10 @@ def trash_empty_cmd(
         return
 
     n = empty_trash(vault)
+    # Recounted, not assumed: empty_trash is best-effort per child, and the
+    # count it reports is what actually went. The folders answer the same way.
+    n_kept_removed = n_kept - count_replaced_folders(vault)
     console.print(
         f"[bold green]✓ Emptied[/] trash "
-        f"[dim]({n} entr{'y' if n == 1 else 'ies'} removed)[/]"
+        f"[dim]({_empty_subject(n, n_kept_removed)} removed)[/]"
     )
