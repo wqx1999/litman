@@ -362,6 +362,26 @@ def _warn_link_obstructed(link_path: Path, err: OSError) -> None:
     )
 
 
+def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
+    """Warn that a real folder in a link position could not be cleared.
+
+    Raised by ``project_link.settle_hub_entry`` when the filesystem refuses to
+    delete or move the folder — a child open in another program, a read-only
+    parent. The OS reason is kept here (unlike the real-folder message above,
+    where it only misdirected): "used by another process" is exactly what the
+    user has to act on.
+
+    Lives in this module rather than with its caller so every folder-link
+    warning goes through the one stderr console, and so a test that stubs
+    ``portable_link._console`` sees this one too.
+    """
+    _console.print(
+        f"[yellow]warning:[/] could not clear {path}: {err}.\n"
+        "[dim]    The link was not created. Close anything using that folder, "
+        "then re-run `lit health-check --fix`.[/]"
+    )
+
+
 def _warn_links_unsupported(link_path: Path, err: OSError) -> None:
     """Emit a once-per-process warning when folder links cannot be created.
 

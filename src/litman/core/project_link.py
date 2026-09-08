@@ -33,7 +33,7 @@ import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from litman.core.atomic import staged_write
 from litman.core.config import config_to_yaml_dict, load_config
@@ -45,6 +45,7 @@ from litman.core.portable_link import (
     links_supported,
     make_portable_link,
     remove_link_if_present,
+    warn_hub_entry_unmovable,
 )
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
@@ -130,11 +131,26 @@ def _project_link_paths(
     return paper_link, code_links
 
 
+HubVerdict = Literal[
+    "clear", "replaced-copy", "moved-aside", "blocked", "failed"
+]
+
+
 class HubSettlement(NamedTuple):
     """What :func:`settle_hub_entry` did with one hub position."""
 
-    verdict: str           # 'clear' | 'replaced-copy' | 'moved-aside' | 'blocked'
+    verdict: HubVerdict
     moved_to: Path | None  # set iff verdict == 'moved-aside'
+
+    @property
+    def position_occupied(self) -> bool:
+        """True when a real folder is still sitting there.
+
+        The caller must not attempt the link upsert: it would fail, and the
+        user has already been told why in the one case ('failed') where
+        something went wrong.
+        """
+        return self.verdict in ("blocked", "failed")
 
 
 def _tree_shape(root: Path) -> dict[tuple[str, ...], int | None] | None:
@@ -147,9 +163,18 @@ def _tree_shape(root: Path) -> dict[tuple[str, ...], int | None] | None:
     cannot judge. Any ``OSError`` collapses the whole answer to ``None``:
     unreadable is not provably identical.
     """
+
+    def _reraise(err: OSError) -> None:
+        # os.walk's default onerror SWALLOWS a failed scandir and yields the
+        # directory as empty. An unreadable subtree would then look equal to
+        # anything, and this answer decides whether a folder gets deleted.
+        raise err
+
     shape: dict[tuple[str, ...], int | None] = {}
     try:
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for dirpath, dirnames, filenames in os.walk(
+            root, onerror=_reraise, followlinks=False
+        ):
             here = Path(dirpath)
             keep: list[str] = []
             for name in dirnames:
@@ -218,8 +243,10 @@ def _move_aside(src: Path, dest_parent: Path, name: str) -> Path:
     """Move ``src`` to ``dest_parent/name``, returning where it landed."""
     dest_parent.mkdir(parents=True, exist_ok=True)
     dest = dest_parent / name
-    if dest.exists():
-        # Sub-second collision on the same position; mirrors move_to_trash.
+    # lexists, not exists: a broken symlink still occupies the name, and
+    # rename() would silently replace an empty directory. Loop rather than
+    # retry once — a four-hex suffix can collide too.
+    while os.path.lexists(dest):
         dest = dest_parent / f"{name}-{uuid.uuid4().hex[:4]}"
     try:
         src.rename(dest)
@@ -265,7 +292,10 @@ def settle_hub_entry(
         links, left alone: deleting it there would take away the only
         browsable copy and give back nothing;
         ``('replaced-copy', None)`` — a redundant copy was deleted;
-        ``('moved-aside', dest)`` — the folder now lives at ``dest``.
+        ``('moved-aside', dest)`` — the folder now lives at ``dest``;
+        ``('failed', None)`` — the filesystem refused to move or delete it
+        (a locked child, a read-only parent); warned about, left alone, and
+        the rest of the rebuild carries on.
     """
     # is_portable_link BEFORE is_dir: a junction answers is_dir() True, so the
     # other order would file every healthy Windows link as a folder copy.
@@ -278,20 +308,35 @@ def settle_hub_entry(
     if not links_supported(link_path.parent.parent):
         return HubSettlement("blocked", None)
     if target is not None and _is_verbatim_copy(link_path, target):
-        # locking.rmtree, not shutil's: the copy carries the vault's read-only
-        # metadata.yaml / paper.pdf attributes, which stop a plain delete on
-        # Windows (ADR-005 dimension F).
-        rmtree(link_path)
+        try:
+            # locking.rmtree, not shutil's: the copy carries the vault's
+            # read-only metadata.yaml / paper.pdf attributes, which stop a
+            # plain delete on Windows (ADR-005 dimension F).
+            rmtree(link_path)
+        except OSError as err:
+            warn_hub_entry_unmovable(link_path, err)
+            return HubSettlement("failed", None)
         return HubSettlement("replaced-copy", None)
     # Local import: trash reaches back here for CODE_SUBDIR, so this edge can
     # only run at call time. Mirrors the checks / correctors imports below.
     from litman.core.trash import TRASH_DIRNAME, _utc_compact_now
 
-    dest = _move_aside(
-        link_path,
-        vault / TRASH_DIRNAME / REPLACED_FOLDERS_DIRNAME / project / hub,
-        f"{link_path.name}-{_utc_compact_now()}",
-    )
+    try:
+        dest = _move_aside(
+            link_path,
+            vault / TRASH_DIRNAME / REPLACED_FOLDERS_DIRNAME / project / hub,
+            f"{link_path.name}-{_utc_compact_now()}",
+        )
+    except OSError as err:
+        # One locked child (a PDF open in a viewer, an indexer, antivirus)
+        # must cost this position only. Aborting would take the rest of the
+        # rebuild, every other project and every other --fix category with it
+        # — strictly worse than the warning-per-folder this replaced. Mirrors
+        # empty_trash / enforce_cap, which skip an unremovable entry the same
+        # way. A part-written destination may be left under .trash/; the
+        # source is only removed once the copy is complete, so nothing is lost.
+        warn_hub_entry_unmovable(link_path, err)
+        return HubSettlement("failed", None)
     return HubSettlement("moved-aside", dest)
 
 
@@ -376,16 +421,13 @@ def reconcile_project_code_links(
         if repo_name in resolving:
             continue
         link_path = code_dir / repo_name
-        if (
-            settle_hub_entry(
-                link_path,
-                repo_target,
-                vault=vault,
-                project=project,
-                hub=CODE_SUBDIR,
-            ).verdict
-            == "blocked"
-        ):
+        if settle_hub_entry(
+            link_path,
+            repo_target,
+            vault=vault,
+            project=project,
+            hub=CODE_SUBDIR,
+        ).position_occupied:
             continue
         if make_portable_link(link_path, repo_target):
             created.append(repo_name)
@@ -655,16 +697,13 @@ def link_paper_to_project(
         project_dir, paper_id, code_clones
     )
     paper_target = (vault / "papers" / paper_id).resolve()
-    if (
-        settle_hub_entry(
-            paper_link_path,
-            paper_target,
-            vault=vault,
-            project=project,
-            hub=LITERATURE_SUBDIR,
-        ).verdict
-        != "blocked"
-    ):
+    if not settle_hub_entry(
+        paper_link_path,
+        paper_target,
+        vault=vault,
+        project=project,
+        hub=LITERATURE_SUBDIR,
+    ).position_occupied:
         make_portable_link(paper_link_path, paper_target)
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
@@ -676,18 +715,21 @@ def link_paper_to_project(
             # `lit code restore-all`, then `lit link --rebuild-all`.
             code_links_missing_repo.append(repo_name)
             continue
-        if (
-            settle_hub_entry(
-                link_path,
-                repo_target,
-                vault=vault,
-                project=project,
-                hub=CODE_SUBDIR,
-            ).verdict
-            == "blocked"
-        ):
+        settled = settle_hub_entry(
+            link_path,
+            repo_target,
+            vault=vault,
+            project=project,
+            hub=CODE_SUBDIR,
+        )
+        if settled.verdict == "blocked":
             # Same end state as a refused link: the drive cannot hold one.
             code_links_unsupported.append(repo_name)
+            continue
+        if settled.verdict == "failed":
+            # NOT the unsupported bucket: that renders as "this drive cannot
+            # hold folder links", which would be a false diagnosis. The folder
+            # in the way has already been named on stderr.
             continue
         if make_portable_link(link_path, repo_target):
             code_links_created.append(repo_name)
@@ -1285,7 +1327,10 @@ def rebuild_all_project_links(
                     n_replaced_copies += 1
                 elif settled.verdict == "moved-aside":
                     aside_paths.append(str(settled.moved_to))
-                elif settled.verdict == "blocked":
+                elif settled.position_occupied:
+                    # Still a real folder here. Skipping the upsert keeps the
+                    # create loop from adding a second warning about a
+                    # position the user has already been told about.
                     blocked.add(child)
         # Preserve REFERENCES.md across the wipe — it lives in
         # litman_reflib/ alongside the symlinks but is content, not a link

@@ -931,6 +931,52 @@ def test_fix_reports_a_single_replacement_in_the_singular(
     assert "kept 1 folder" not in flat  # nothing differed, nothing preserved
 
 
+def test_one_unclearable_folder_does_not_abort_the_whole_fix(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked folder costs its own position, not the run.
+
+    Before this, an OSError from the settle escaped through regen into
+    ``health_check_cmd``, so the post-fix re-check, the summary and every
+    other klass-A category never ran — a stack trace where the old code had
+    printed one warning and finished.
+    """
+    import litman.core.project_link as project_link
+    from litman.core.correctors import regen
+    from litman.core.locking import rmtree as real_rmtree
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_A_One", projects=["myproj"], no_discussion=True)
+    _write_paper(vault, "2024_B_Two", projects=["myproj"], no_discussion=True)
+    regen(vault)
+    for pid in ("2024_A_One", "2024_B_Two"):
+        _expand_link_to_copy(proj / "litman_reflib" / pid, vault / "papers" / pid)
+
+    def flaky_rmtree(path: Path, **kwargs: Any) -> None:
+        if Path(path).name == "2024_A_One":
+            raise OSError(32, "used by another process (mocked)")
+        real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(project_link, "rmtree", flaky_rmtree)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    flat = " ".join(result.output.split())
+    assert "Summary:" in flat  # the run reached the end
+    assert "discussion_scaffold: cleaned 2 items" in flat  # other repairs ran
+    assert "replaced 1 folder copy with a link" in flat
+    stuck = proj / "litman_reflib" / "2024_A_One"
+    assert stuck.is_dir() and not is_portable_link(stuck)
+    assert (stuck / "metadata.yaml").is_file()
+    assert is_portable_link(proj / "litman_reflib" / "2024_B_Two")
+
+
 def test_folder_copy_outside_membership_reported_as_stale(
     vault: Path, tmp_path: Path
 ) -> None:

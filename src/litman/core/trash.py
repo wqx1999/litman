@@ -547,16 +547,13 @@ def _rebuild_project_links(
 
         paper_link = project_dir / LITERATURE_SUBDIR / paper_id
         paper_target = (vault / "papers" / paper_id).resolve()
-        if (
-            settle_hub_entry(
-                paper_link,
-                paper_target,
-                vault=vault,
-                project=project,
-                hub=LITERATURE_SUBDIR,
-            ).verdict
-            != "blocked"
-        ):
+        if not settle_hub_entry(
+            paper_link,
+            paper_target,
+            vault=vault,
+            project=project,
+            hub=LITERATURE_SUBDIR,
+        ).position_occupied:
             make_portable_link(paper_link, paper_target)
         for repo_name in code_clones:
             repo_target = (
@@ -565,16 +562,13 @@ def _rebuild_project_links(
             if not repo_target.exists():
                 continue
             code_link = project_dir / CODE_SUBDIR / repo_name
-            if (
-                settle_hub_entry(
-                    code_link,
-                    repo_target,
-                    vault=vault,
-                    project=project,
-                    hub=CODE_SUBDIR,
-                ).verdict
-                != "blocked"
-            ):
+            if not settle_hub_entry(
+                code_link,
+                repo_target,
+                vault=vault,
+                project=project,
+                hub=CODE_SUBDIR,
+            ).position_occupied:
                 make_portable_link(code_link, repo_target)
         try:
             write_references_md(vault, project, project_dir)

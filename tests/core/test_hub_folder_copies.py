@@ -3,8 +3,8 @@
 Copying a project directory between machines (scp -r, WinSCP, unpacking a
 tar, Explorer, cloud sync) expands every ``litman_reflib/<id>`` and
 ``litman_code/<repo>`` link into a real folder holding a full copy of the
-vault entry. Until 1.3.6 the rebuild refused the position, printed one
-``could not replace existing entry`` warning per folder, and left the user to
+vault entry. The rebuild used to refuse the position, print one
+``could not replace existing entry`` warning per folder, and leave the user to
 delete them by hand.
 
 Covered here: :func:`settle_hub_entry` on its own (verbatim copy, differing
@@ -14,12 +14,18 @@ same states end-to-end through ``rebuild_all_project_links``.
 
 from __future__ import annotations
 
+import os
+import shutil
+import stat
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import litman.core.project_link as project_link
 from litman.core.library import create_vault
+from litman.core.locking import rmtree as _real_rmtree
 from litman.core.portable_link import (
     is_portable_link,
     make_portable_link,
@@ -29,6 +35,13 @@ from litman.core.project_link import (
     HubSettlement,
     rebuild_all_project_links,
     settle_hub_entry,
+)
+
+# Permission bits only mean what these tests need them to mean on POSIX, and
+# only for a user who is not root. Captured once, at import (never by patching
+# a module's ``sys``).
+_NO_PERMISSION_TESTS = sys.platform == "win32" or (
+    hasattr(os, "geteuid") and os.geteuid() == 0
 )
 
 
@@ -100,8 +113,6 @@ def _expand_to_copy(link_path: Path, source: Path) -> Path:
     What every copy tool does to a project directory; done by hand so the test
     reproduces the state on a machine where links DO work.
     """
-    import shutil
-
     assert remove_link_if_present(link_path)
     shutil.copytree(source, link_path)
     assert not is_portable_link(link_path) and link_path.is_dir()
@@ -109,7 +120,10 @@ def _expand_to_copy(link_path: Path, source: Path) -> Path:
 
 
 def _linked_project(
-    tmp_path: Path, *, code_clones: list[str] | None = None
+    tmp_path: Path,
+    *,
+    code_clones: list[str] | None = None,
+    extra_papers: list[str] | None = None,
 ) -> tuple[Path, Path]:
     """A vault with one paper (optionally one repo) linked into one project."""
     parent = tmp_path / "vault_parent"
@@ -121,6 +135,8 @@ def _linked_project(
     for repo_name in code_clones or []:
         _make_clone(vault, repo_name)
     _make_paper(vault, "p1", projects=["pepforge"], code_clones=code_clones)
+    for pid in extra_papers or []:
+        _make_paper(vault, pid, projects=["pepforge"])
     rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
     assert is_portable_link(project_dir / "litman_reflib" / "p1")
     return vault, project_dir
@@ -197,8 +213,6 @@ def test_settle_leaves_a_junction_alone(
 
 
 def test_settle_deletes_a_verbatim_copy(tmp_path: Path) -> None:
-    import shutil
-
     vault = tmp_path / "vault"
     vault.mkdir()
     target = tmp_path / "papers" / "p1"
@@ -240,8 +254,6 @@ def test_settle_deletes_a_verbatim_copy(tmp_path: Path) -> None:
 def test_settle_moves_a_differing_copy_aside(
     tmp_path: Path, mutate: Any
 ) -> None:
-    import shutil
-
     vault = tmp_path / "vault"
     vault.mkdir()
     target = tmp_path / "papers" / "p1"
@@ -345,14 +357,12 @@ def test_settle_leaves_the_copy_alone_when_links_are_impossible(
     assert not (vault / ".trash").exists()
 
 
-def test_settle_keeps_a_copy_whose_extra_content_is_a_link(
+def test_settle_deletes_a_copy_whose_only_extra_is_a_link(
     tmp_path: Path,
 ) -> None:
     """Links inside a tree are skipped by the shape walk, so a copy carrying
     one extra symlink still reads as verbatim — deliberate: the vault entry
     holds none, and a link is not content we can compare."""
-    import shutil
-
     vault = tmp_path / "vault"
     vault.mkdir()
     target = tmp_path / "papers" / "p1"
@@ -538,3 +548,156 @@ def test_copy_untouched_when_project_drive_cannot_link(
     assert not (vault / ".trash" / "replaced-folders").exists()
     assert "could not replace existing entry" not in "\n".join(said)
     assert check_project_references(vault, list_papers(vault)) == []
+
+
+# --- a filesystem that refuses ----------------------------------------------
+
+
+def test_settle_reports_failure_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A folder that cannot be moved costs its own position and nothing else.
+
+    Letting the OSError out would take the rest of the rebuild, every other
+    project and every other ``--fix`` category with it — strictly worse than
+    the one warning per folder this replaced.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    copy = hub / "p1"
+    copy.mkdir()
+    (copy / "notes.md").write_text("mine\n", encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(32, "The process cannot access the file (mocked)")
+
+    monkeypatch.setattr(Path, "rename", boom)
+    monkeypatch.setattr(shutil, "copytree", boom)
+    said = _record_link_warnings(monkeypatch)
+
+    out = settle_hub_entry(
+        copy, None, vault=vault, project="pepforge", hub="litman_reflib"
+    )
+
+    assert out == HubSettlement("failed", None)
+    assert out.position_occupied is True
+    assert (copy / "notes.md").read_text(encoding="utf-8") == "mine\n"
+    joined = "\n".join(said)
+    assert "could not clear" in joined
+    assert str(copy) in joined
+    assert "re-run `lit health-check --fix`" in joined
+    # The destination directory gets created before the move is attempted;
+    # what matters is that nothing landed in it.
+    assert list(_replaced_root(vault, "pepforge", "litman_reflib").iterdir()) == []
+
+
+@pytest.mark.skipif(
+    _NO_PERMISSION_TESTS, reason="POSIX permission bits, and not as root"
+)
+def test_settle_reports_failure_on_a_real_read_only_hub(tmp_path: Path) -> None:
+    """The same, driven by the filesystem rather than a stub.
+
+    A read-only ``.trash/`` is the failure that leaves everything exactly
+    where it was: the destination cannot even be created, so the source is
+    never read and never removed.
+    """
+    vault = tmp_path / "vault"
+    trash = vault / ".trash"
+    trash.mkdir(parents=True)
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    copy = hub / "p1"
+    copy.mkdir()
+    (copy / "notes.md").write_text("mine\n", encoding="utf-8")
+
+    trash.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        out = settle_hub_entry(
+            copy, None, vault=vault, project="pepforge", hub="litman_reflib"
+        )
+        assert out.verdict == "failed"
+    finally:
+        trash.chmod(stat.S_IRWXU)
+    assert (copy / "notes.md").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_one_failed_position_does_not_stop_the_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two copies, one undeletable: the other still becomes a link."""
+    vault, project_dir = _linked_project(tmp_path, extra_papers=["p2"])
+    for pid in ("p1", "p2"):
+        _expand_to_copy(
+            project_dir / "litman_reflib" / pid, vault / "papers" / pid
+        )
+
+    def flaky_rmtree(path: Path, **kwargs: Any) -> None:
+        if Path(path).name == "p1":
+            raise OSError(16, "Device or resource busy (mocked)")
+        _real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(project_link, "rmtree", flaky_rmtree)
+    said = _record_link_warnings(monkeypatch)
+
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    stuck = project_dir / "litman_reflib" / "p1"
+    healed = project_dir / "litman_reflib" / "p2"
+    assert stuck.is_dir() and not is_portable_link(stuck)
+    assert (stuck / "metadata.yaml").is_file()
+    assert is_portable_link(healed)
+    assert out["pepforge"]["n_replaced_copies"] == 1
+    assert out["pepforge"]["n_paper_links"] == 1
+    # Exactly one warning, about the one folder — the create loop must not add
+    # a second for the position it was told to leave alone.
+    assert len(said) == 1
+    assert "p1" in said[0]
+
+
+@pytest.mark.skipif(
+    _NO_PERMISSION_TESTS, reason="POSIX permission bits, and not as root"
+)
+def test_unreadable_subtree_is_never_called_verbatim(tmp_path: Path) -> None:
+    """A subtree neither side can list is not "the same" — it is unknown.
+
+    os.walk's default onerror swallows a failed scandir and yields the
+    directory as empty, which would make two different unreadable trees
+    compare equal and hand a delete decision a false yes.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = tmp_path / "papers" / "p1"
+    (target / "sub").mkdir(parents=True)
+    (target / "sub" / "a.txt").write_text("theirs\n", encoding="utf-8")
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    copy = hub / "p1"
+    (copy / "sub").mkdir(parents=True)
+    (copy / "sub" / "b.txt").write_text("mine — different\n", encoding="utf-8")
+
+    (target / "sub").chmod(0)
+    (copy / "sub").chmod(0)
+    moved: Path | None = None
+    try:
+        assert project_link._is_verbatim_copy(copy, target) is False
+        out = settle_hub_entry(
+            copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+        )
+        moved = out.moved_to
+    finally:
+        # The subtree may have travelled; tmp_path cleanup cannot remove a
+        # 0-mode directory, so every place it might be has to be restored.
+        candidates = [target / "sub", copy / "sub"]
+        if moved is not None:
+            candidates.append(moved / "sub")
+        for d in candidates:
+            if d.exists():
+                d.chmod(stat.S_IRWXU)
+    # Preserved, not deleted — the whole point of refusing to guess.
+    assert out.verdict == "moved-aside"
+    assert out.moved_to is not None
+    assert (out.moved_to / "sub" / "b.txt").read_text(encoding="utf-8") == (
+        "mine — different\n"
+    )
