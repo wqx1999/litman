@@ -715,7 +715,9 @@ async def put_project(request: Request, name: str) -> dict[str, object]:
 
     vault = request.app.state.vault
     try:
-        n_changed, _ = rename_project(vault, name, new)
+        # The hub move-asides are a CLI report line; the GUI re-runs the
+        # health checks instead (decision #9).
+        n_changed, _, _ = rename_project(vault, name, new)
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "changed": n_changed}

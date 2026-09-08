@@ -37,6 +37,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import format_option, library_option, vault_option
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive
@@ -296,7 +297,7 @@ def project_rename_cmd(
     # Single write path (invariant #16): validation + atomic dual-write +
     # derived rebuild all live in core.project_link.rename_project, shared with
     # the webUI's PUT /api/projects/{name}. The command only renders the result.
-    n_changed, _ = rename_project(vault, old, new)
+    n_changed, _, hub_moved_aside = rename_project(vault, old, new)
 
     console.print(
         f"[bold green]✓ Renamed[/] project {escape(old.strip())} → "
@@ -306,6 +307,8 @@ def project_rename_cmd(
         f"  Updated [bold]{n_changed}[/] paper"
         f"{'s' if n_changed != 1 else ''}."
     )
+    for line in hub_settlement_lines(0, hub_moved_aside):
+        console.print(f"  {line}")
 
 
 # ---------------------------------------------------------------------------

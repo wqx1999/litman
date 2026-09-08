@@ -176,6 +176,17 @@ def reconcile_derived(
     }
 
 
+def moved_aside_from(derived: dict[str, Any]) -> list[str]:
+    """Pull the preserved-folder paths out of a :func:`reconcile_derived` result.
+
+    Lives next to the function that defines the return shape, so every command
+    that has to report a moved-aside hub folder narrows it the same way instead
+    of each doing its own isinstance dance on a ``dict[str, Any]``.
+    """
+    aside = derived.get("hub_moved_aside")
+    return [str(p) for p in aside] if isinstance(aside, list) else []
+
+
 # ---------------------------------------------------------------------------
 # regen — klass A (derived↔truth): recompute the derived artifact from TRUTH
 # ---------------------------------------------------------------------------

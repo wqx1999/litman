@@ -1810,3 +1810,53 @@ def test_retired_field_refusal_never_preempts_the_older_gates(
         msg = str(result.exception)
         assert expected in msg, (spec, msg)
         assert "retired" not in msg, (spec, msg)
+
+
+def test_modify_projects_reports_a_moved_aside_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--add-tag projects=X` rebuilds the project hubs, so it can move a
+    folder out of the user's own directory. Same wording as everywhere else."""
+    import shutil
+
+    from litman.core.library import create_vault
+    from litman.core.portable_link import is_portable_link, remove_link_if_present
+
+    monkeypatch.setenv("COLUMNS", "400")
+    vault = create_vault(tmp_path)
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    runner = CliRunner()
+    # `lit project add`, not add_taxonomy_values: `projects` carries a path
+    # binding, so the generic taxonomy write is hard-deprecated (M15).
+    reg = runner.invoke(
+        cli,
+        ["project", "add", "myproj", "--path", str(proj),
+         "--library", str(vault)],
+    )
+    assert reg.exit_code == 0, reg.output
+    _write_relation_paper(vault, "2024_A_One")
+    _link(vault, "2024_A_One", "myproj")
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    link = proj / "litman_reflib" / "2024_A_One"
+    assert remove_link_if_present(link)
+    shutil.copytree(vault / "papers" / "2024_A_One", link)
+    (link / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+
+    _write_relation_paper(vault, "2024_B_Two")
+    result = runner.invoke(
+        cli,
+        ["modify", "2024_B_Two", "--add-tag", "projects=myproj",
+         "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "kept 1 folder that does not match the vault:" in flat
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert (kept[0] / "MY_NOTES.md").is_file()
+    assert is_portable_link(link)

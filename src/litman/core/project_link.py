@@ -706,13 +706,20 @@ def link_paper_to_project(
         project_dir, paper_id, code_clones
     )
     paper_target = (vault / "papers" / paper_id).resolve()
-    if not settle_hub_entry(
+    # A folder MOVED out of the user's project dir has to be reported by
+    # whatever command moved it: unlike a deleted verbatim copy, whose original
+    # is in the vault, this is the only copy of what was in it.
+    hub_moved_aside: list[str] = []
+    settled = settle_hub_entry(
         paper_link_path,
         paper_target,
         vault=vault,
         project=project,
         hub=LITERATURE_SUBDIR,
-    ).position_occupied:
+    )
+    if settled.moved_to is not None:
+        hub_moved_aside.append(str(settled.moved_to))
+    if not settled.position_occupied:
         make_portable_link(paper_link_path, paper_target)
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
@@ -731,6 +738,8 @@ def link_paper_to_project(
             project=project,
             hub=CODE_SUBDIR,
         )
+        if settled.moved_to is not None:
+            hub_moved_aside.append(str(settled.moved_to))
         if settled.verdict == "blocked":
             # Same end state as a refused link: the drive cannot hold one.
             code_links_unsupported.append(repo_name)
@@ -764,6 +773,7 @@ def link_paper_to_project(
         "code_links": code_links_created,
         "code_links_skipped_missing_repo": code_links_missing_repo,
         "code_links_skipped_links_unsupported": code_links_unsupported,
+        "hub_moved_aside": hub_moved_aside,
         "references_md": refs_path,
     }
 
@@ -1108,7 +1118,9 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     return n_changed, referencing
 
 
-def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
+def rename_project(
+    vault: Path, old: str, new: str
+) -> tuple[int, list[str], list[str]]:
     """Rename a project across both truth sources + every referencing paper.
 
     The single backend for both ``lit project rename`` and the webUI's
@@ -1125,8 +1137,11 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     preserving (no data loss), so the CLI runs it confirm-free.
 
     Returns:
-        ``(n_changed, referencing_ids)`` — count of papers whose metadata was
-        rewritten and the sorted ids that referenced ``old`` before the rename.
+        ``(n_changed, referencing_ids, hub_moved_aside)`` — count of papers
+        whose metadata was rewritten, the sorted ids that referenced ``old``
+        before the rename, and any project-hub folders the rebuild had to
+        preserve under ``.trash/`` (the caller reports those; they are the only
+        copy of what was in them).
 
     Raises:
         TaxonomyError: ``new`` is empty; ``old`` == ``new``; ``old`` is not
@@ -1135,7 +1150,7 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     # Local import avoids a core import-cycle at module load (mirrors
     # remove_project): reconcile_derived → core.checks imports core.taxonomy, and
     # core.ripple imports core.taxonomy too.
-    from litman.core.correctors import reconcile_derived
+    from litman.core.correctors import moved_aside_from, reconcile_derived
     from litman.core.ripple import _ripple_replacements
 
     old = old.strip()
@@ -1195,9 +1210,9 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     # REFERENCES.md, all recomputed from the committed TRUTH. project_refs=True
     # because a rename touches the project side; the funnel reloads config (= the
     # just-committed new_projects) for the project side.
-    reconcile_derived(vault, project_refs=True)
+    derived = reconcile_derived(vault, project_refs=True)
 
-    return n_changed, referencing
+    return n_changed, referencing, moved_aside_from(derived)
 
 
 def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:

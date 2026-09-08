@@ -1054,3 +1054,45 @@ def test_project_rm_warning_block_names_the_reflib_dir(
     unwrapped = result.output.replace("\n", "")
     assert str(proj_dir / "litman_reflib") in unwrapped
     assert "Nothing changed" in result.output
+
+
+def test_project_rename_reports_a_moved_aside_folder(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename rebuilds every project's hub, which can move a folder out of
+    the user's own directory. It says where it went."""
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    monkeypatch.setenv("COLUMNS", "400")
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    link = proj_dir / "litman_reflib" / "2024_A"
+    assert remove_link_if_present(link)
+    shutil.copytree(vault / "papers" / "2024_A", link)
+    (link / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli,
+        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "kept 1 folder that does not match the vault:" in flat
+    # Filed under the NEW name: the config key is renamed before the rebuild.
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "pepcodec" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "MY_NOTES.md").is_file()
+    assert is_portable_link(proj_dir / "litman_reflib" / "2024_A")

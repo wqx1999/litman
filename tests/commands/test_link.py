@@ -899,3 +899,52 @@ def test_cli_rebuild_all_says_what_it_did_with_a_folder_copy(
     kept = sorted(kept_root.iterdir())
     assert len(kept) == 1
     assert str(kept[0]) in flat
+
+
+def test_cli_link_reports_a_moved_aside_folder_but_not_a_replaced_copy(
+    vault: Path, project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-paper `lit link` is silent about a deleted copy and loud about a
+    preserved one.
+
+    The deleted copy's original is in the vault; the preserved one is the only
+    copy of what the user put in it.
+    """
+    import shutil
+
+    monkeypatch.setenv("COLUMNS", "400")
+    _write_config_with_project(vault, "pepforge", project_dir)
+    paper_dir = _make_paper(vault, "p1", projects=["pepforge"])
+    link = project_dir / "litman_reflib" / "p1"
+    link.parent.mkdir(parents=True)
+    shutil.copytree(paper_dir, link)
+
+    runner = CliRunner()
+    quiet = runner.invoke(
+        cli, ["link", "p1", "--project", "pepforge", "--library", str(vault)]
+    )
+    assert quiet.exit_code == 0, quiet.output
+    assert "kept 1 folder" not in " ".join(quiet.output.split())
+
+    # The first run replaced the copy with a link. Expand it again, this time
+    # with something of the user's own inside.
+    from litman.core.portable_link import remove_link_if_present
+
+    assert remove_link_if_present(link)
+    shutil.copytree(paper_dir, link)
+    (link / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+
+    loud = runner.invoke(
+        cli, ["link", "p1", "--project", "pepforge", "--library", str(vault)]
+    )
+
+    assert loud.exit_code == 0, loud.output
+    flat = " ".join(loud.output.split())
+    assert "kept 1 folder that does not match the vault:" in flat
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "pepforge" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "MY_NOTES.md").is_file()

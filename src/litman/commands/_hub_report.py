@@ -1,17 +1,23 @@
 """What a project-link rebuild did with hub positions real folders occupied.
 
 ``settle_hub_entry`` deletes a folder that matches the vault and preserves one
-that does not — a real deletion and a real move, in the user's own directory,
-from a command the user ran for something else. Three commands report it, and
-report it through here so one event is not worded three ways:
-``lit health-check --fix``, ``lit refresh-views``, ``lit link --rebuild-all``.
+that does not. The deletion is silent on purpose — the original is in the vault,
+nothing is lost. The preservation is not: that folder is the ONLY copy of what
+was in it (a note written on the other machine, the one git checkout on this
+one), and relocating it under ``.trash/`` without saying so is not acceptable
+whichever command happened to trigger the rebuild.
 
-Other paths reach the same settle and currently say nothing: ``lit link <id>
---project P``, ``lit trash restore``, the code-link reconcile behind ``lit code
-add`` / ``lit unlink``, and ``lit modify`` / ``lit rename`` through
-``reconcile_derived``. Whether they should is an open question, not a settled
-boundary. The GUI's rebuild is the one deliberate exception — it stays silent
-and the health badge re-runs the checks instead.
+So every command that can move one reports it, and reports it through here so
+one event is not worded eight ways: ``lit health-check --fix``,
+``lit refresh-views`` and ``lit link --rebuild-all`` (which also report the
+replaced copies, being the commands you run *to* repair the hubs), plus
+``lit link <id> --project P``, ``lit trash restore``, ``lit project rename``,
+``lit modify`` and ``lit rename`` (move-asides only).
+
+Two paths stay silent. The GUI's rebuild by design — the health badge re-runs
+the checks instead (decision #9). And ``reconcile_project_code_links``, behind
+``lit code add`` / ``lit unlink``, which has no per-project report block of its
+own; `lit health-check` surfaces anything it parked.
 """
 
 from __future__ import annotations

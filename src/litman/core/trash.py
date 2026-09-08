@@ -169,6 +169,9 @@ class RestoreResult:
     repos_rebound: set[str] = field(default_factory=set)
     # projects whose symlink + REFERENCES were re-created.
     projects_rebuilt: set[str] = field(default_factory=set)
+    # project-hub folders the re-link had to preserve under .trash/ — the only
+    # copy of whatever was in them, so the caller reports the paths.
+    hub_moved_aside: list[str] = field(default_factory=list)
     # The post-restore paper list INDEX.json was rendered from — the caller
     # hands it to reconcile_derived so the derived rebuild does not re-scan
     # the vault (task-write-perf). May mix INDEX projections with the
@@ -550,7 +553,7 @@ def _rebuild_project_links(
     restored_meta: dict[str, Any],
     paper_id: str,
     registry: dict[str, str],
-) -> set[str]:
+) -> tuple[set[str], list[str]]:
     """Re-create A's project symlinks + re-render REFERENCES.md (post-stage).
 
     Inverse of rm's ``_teardown_project_links``. For each project A names:
@@ -560,10 +563,12 @@ def _rebuild_project_links(
     A project not registered or whose dir is missing on disk is skipped
     (decision: P missing → skip) — A's own ``projects`` field is untouched.
 
-    Returns the set of project names actually rebuilt.
+    Returns the set of project names actually rebuilt, plus any hub folders
+    that had to be preserved under ``.trash/`` to free a link position.
     """
     code_clones = [str(r) for r in (restored_meta.get("code-clones") or [])]
     rebuilt: set[str] = set()
+    moved_aside: list[str] = []
     for project in restored_meta.get("projects") or []:
         project = str(project)
         project_dir_str = registry.get(project)
@@ -575,13 +580,16 @@ def _rebuild_project_links(
 
         paper_link = project_dir / LITERATURE_SUBDIR / paper_id
         paper_target = (vault / "papers" / paper_id).resolve()
-        if not settle_hub_entry(
+        settled = settle_hub_entry(
             paper_link,
             paper_target,
             vault=vault,
             project=project,
             hub=LITERATURE_SUBDIR,
-        ).position_occupied:
+        )
+        if settled.moved_to is not None:
+            moved_aside.append(str(settled.moved_to))
+        if not settled.position_occupied:
             make_portable_link(paper_link, paper_target)
         for repo_name in code_clones:
             repo_target = (
@@ -590,20 +598,23 @@ def _rebuild_project_links(
             if not repo_target.exists():
                 continue
             code_link = project_dir / CODE_SUBDIR / repo_name
-            if not settle_hub_entry(
+            settled = settle_hub_entry(
                 code_link,
                 repo_target,
                 vault=vault,
                 project=project,
                 hub=CODE_SUBDIR,
-            ).position_occupied:
+            )
+            if settled.moved_to is not None:
+                moved_aside.append(str(settled.moved_to))
+            if not settled.position_occupied:
                 make_portable_link(code_link, repo_target)
         try:
             write_references_md(vault, project, project_dir)
         except FileNotFoundError:
             continue
         rebuilt.add(project)
-    return rebuilt
+    return rebuilt, moved_aside
 
 
 def restore_from_trash(
@@ -752,7 +763,7 @@ def restore_from_trash(
         pass
 
     # Post-stage filesystem rebuild: project symlinks + REFERENCES.md.
-    projects_rebuilt = _rebuild_project_links(
+    projects_rebuilt, hub_moved_aside = _rebuild_project_links(
         vault, sealed_meta, paper_id, registry
     )
 
@@ -765,6 +776,7 @@ def restore_from_trash(
         dead_edges_dropped=dead_edges,
         repos_rebound=repos_rebound,
         projects_rebuilt=projects_rebuilt,
+        hub_moved_aside=hub_moved_aside,
         surviving_papers=surviving,
         restored_view_fields=view_fields_snapshot(sealed_meta),
     )

@@ -237,6 +237,10 @@ def link_cmd(
             "[dim](binding kept; keep the library and project on an internal "
             "drive)[/]"
         )
+    # Only the move-aside: a verbatim copy is deleted silently on purpose
+    # (its original is in the vault), but a preserved folder is the only copy
+    # of whatever the user put in it.
+    body_lines.extend(hub_settlement_lines(0, result.get("hub_moved_aside", [])))
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     tips: list[str] = []
     if result["added_to_projects"] and not result["set_relevance"]:

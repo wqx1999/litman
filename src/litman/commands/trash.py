@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import format_option, library_option, vault_option
 from litman.core.code import (
     CODES_DIRNAME,
@@ -313,6 +314,11 @@ def trash_restore_cmd(
             f"{'s' if n != 1 else ''} "
             f"[dim]({escape(', '.join(sorted(result.projects_rebuilt)))})[/]"
         )
+
+    # Only the move-aside (see commands/_hub_report): a preserved folder is the
+    # only copy of what was in it, so relocating it is never silent.
+    for line in hub_settlement_lines(0, result.hub_moved_aside):
+        console.print(f"  {line}")
 
     # Step 3: re-clone any 1:1 hard-deleted repo (POST-transaction, may fail
     # without rolling back the restore).

@@ -31,6 +31,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.checks import (
@@ -41,7 +42,7 @@ from litman.core.checks import (
     retired_field_replacement,
 )
 from litman.core.config import load_config
-from litman.core.correctors import reconcile_derived
+from litman.core.correctors import moved_aside_from, reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
 from litman.core.dedup import find_paper_by_doi
 from litman.core.document import list_papers, load_yaml_or_raise
@@ -782,7 +783,7 @@ def _apply_modify(
     # modify on a non-member paper does not pay the rebuild-all cost.
     # (all_papers is full metadata in that branch — projects_changed forces
     # the full scan above.)
-    reconcile_derived(
+    derived = reconcile_derived(
         vault,
         papers=all_papers,
         project_refs=projects_changed,
@@ -829,6 +830,11 @@ def _apply_modify(
         console.print(
             f"  [dim]↔ paired reverse field written on[/] {escape(opposite_id)}"
         )
+    # A projects change rebuilds the project hubs, which can move a folder out
+    # of the user's own directory. Rare and consequential, so it says so here
+    # rather than only in `health-check --fix`.
+    for line in hub_settlement_lines(0, moved_aside_from(derived)):
+        console.print(f"  {line}")
     if projects_changed:
         console.print(
             "[dim]INDEX.json + views/ + project litman_reflib/REFERENCES.md "
