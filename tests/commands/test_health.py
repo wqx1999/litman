@@ -2945,3 +2945,70 @@ def test_folding_is_per_category_not_per_report(vault: Path) -> None:
     # phrase rather than every tail line keeps the assertion about these two
     # and not about whatever else an unregenerated fixture vault reports.
     assert result.output.count("… and 3 more in this category") == 2
+
+
+def _plant_kept_folder(vault: Path, project: str, name: str) -> Path:
+    kept = (
+        vault
+        / ".trash"
+        / "replaced-folders"
+        / project
+        / "litman_reflib"
+        / f"{name}-20260908T093800Z"
+    )
+    kept.mkdir(parents=True)
+    (kept / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+    return kept
+
+
+def test_kept_hub_folders_are_surfaced_as_info(vault: Path) -> None:
+    """The dim line at settle time scrolls away; the folders do not.
+
+    No cap, no eviction, no restore — and a litman_code one is a whole git
+    checkout that `lit sync` pushes to the user's cloud.
+    """
+    from litman.core.trash import count_replaced_folders
+
+    assert check_trash_health(vault, list_papers(vault)) == []
+    _plant_kept_folder(vault, "myproj", "2024_A_One")
+    assert count_replaced_folders(vault) == 1
+
+    issues = check_trash_health(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].category == "replaced_folders"
+    assert issues[0].severity == "info"
+    assert "holds 1 folder kept from project hubs" in issues[0].message
+    assert issues[0].hint is not None and "lit trash empty" in issues[0].hint
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert "Folders kept out of project hubs" in result.output
+
+
+def test_kept_hub_folders_are_never_auto_fixed(vault: Path) -> None:
+    """Decision #3: `--fix` must never delete what litman could not vouch for.
+
+    Pinned three ways — the two category sets and the command itself — because
+    a future category added to AUTO_FIXABLE_CATEGORIES by name would silently
+    turn `--fix` into a delete of the user's only copy.
+    """
+    from litman.commands import health
+
+    assert "replaced_folders" not in AUTO_FIXABLE_CATEGORIES
+    assert "replaced_folders" not in health._KLASS_A_CATEGORIES
+    assert "replaced_folders" not in health._fixable_categories()
+
+    kept = _plant_kept_folder(vault, "myproj", "2024_A_One")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert (kept / "MY_NOTES.md").read_text(encoding="utf-8") == "hand-written\n"
+    # Still reported after the fix — it is a notice, not a defect to clear.
+    assert "Folders kept out of project hubs" in result.output
+    assert "fixable via --fix" not in result.output.split(
+        "Folders kept out of project hubs"
+    )[1].split("\n")[0]
+    assert check_trash_health(vault, list_papers(vault))

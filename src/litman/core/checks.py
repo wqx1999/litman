@@ -78,6 +78,7 @@ from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
+    count_replaced_folders,
     is_trash_entry_name,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -2901,7 +2902,7 @@ def check_skill_drift(
 def check_trash_health(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Orphan sidecars + size warning for ``.trash/``."""
+    """Orphan sidecars, size warning, and preserved hub folders in ``.trash/``."""
     trash_root = vault / TRASH_DIRNAME
     if not trash_root.is_dir():
         return []
@@ -2946,6 +2947,32 @@ def check_trash_health(
                     f"auto-evicted at {TRASH_MAX_ENTRIES}"
                 ),
                 hint="run `lit trash empty` to clear it now",
+            )
+        )
+
+    # Folders `--fix` moved out of a project hub. Unlike a trash entry they
+    # have no cap, no eviction and no restore, and a litman_code one is a whole
+    # git checkout that `lit sync` pushes to the user's cloud — so the one dim
+    # line printed when it happened, which has long since scrolled away, cannot
+    # be the only place this is ever visible. Info, not a problem: the same
+    # tier as trash_size, and NEVER auto-fixable (decision #3 — the whole point
+    # of preserving them is that litman does not delete what it cannot vouch
+    # for).
+    n_kept = count_replaced_folders(vault)
+    if n_kept:
+        out.append(
+            Issue(
+                category="replaced_folders",
+                severity="info",
+                paper_id=None,
+                message=(
+                    f".trash/replaced-folders/ holds {n_kept} folder"
+                    f"{'s' if n_kept != 1 else ''} kept from project hubs"
+                ),
+                hint=(
+                    "copy anything you still want out of them, then "
+                    "`lit trash empty`"
+                ),
             )
         )
 

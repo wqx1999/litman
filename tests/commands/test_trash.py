@@ -664,8 +664,12 @@ def test_trash_list_and_empty_ignore_replaced_folders(vault: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "replaced-folders" not in result.output
     # The container is a directory in .trash/, so an unfiltered walk would
-    # count it as an entry and pair it against the orphan-sidecar test.
-    assert check_trash_health(vault, list_papers(vault)) == []
+    # count it as an entry and pair it against the orphan-sidecar test. It is
+    # surfaced, but as its own info notice — never as an entry.
+    categories = [
+        i.category for i in check_trash_health(vault, list_papers(vault))
+    ]
+    assert categories == ["replaced_folders"]
 
     result = runner.invoke(
         cli, ["trash", "empty", "--yes", "--library", str(vault)]

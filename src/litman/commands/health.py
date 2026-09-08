@@ -122,6 +122,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "stale_staging": ".litman-staging/ leftovers",
     "orphan_trash_sidecar": "Orphan .trash/ sidecars",
     "trash_size": "Trash bloat (entry count)",
+    "replaced_folders": "Folders kept out of project hubs",
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
     "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
