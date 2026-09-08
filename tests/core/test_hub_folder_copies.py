@@ -14,6 +14,7 @@ same states end-to-end through ``rebuild_all_project_links``.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -765,3 +766,105 @@ def test_verbatim_copy_is_deleted_through_the_read_only_aware_rmtree(
     # called shutil directly.
     assert seen, "the delete did not go through core.locking.rmtree"
     assert seen[-1].get("onexc") is not None
+
+
+def _differing_copy(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A vault, a target, and a hub copy that does not match it."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = tmp_path / "papers" / "p1"
+    target.mkdir(parents=True)
+    (target / "metadata.yaml").write_text("id: p1\n", encoding="utf-8")
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    copy = hub / "p1"
+    copy.mkdir()
+    (copy / "notes.md").write_text("mine\n", encoding="utf-8")
+    return vault, target, copy
+
+
+def test_a_cross_device_rename_falls_back_to_copying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one failure the copy fallback exists for: project and vault on
+    different drives, which is the whole cross-machine scenario."""
+    vault, target, copy = _differing_copy(tmp_path)
+
+    def exdev(*_a: object, **_k: object) -> None:
+        raise OSError(errno.EXDEV, "Invalid cross-device link (mocked)")
+
+    monkeypatch.setattr(Path, "rename", exdev)
+
+    out = settle_hub_entry(
+        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+    )
+
+    assert out.verdict == "moved-aside"
+    assert out.moved_to is not None
+    assert (out.moved_to / "notes.md").read_text(encoding="utf-8") == "mine\n"
+    assert not copy.exists()
+
+
+def test_any_other_rename_failure_never_copies_the_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked child is not a cross-device move.
+
+    Copying anyway left a complete copy in .trash/ AND the folder still in the
+    hub — and the next run, which our own warning asks for, copied it again
+    under a new timestamp. For a code hub that is a whole git checkout per
+    attempt, and .trash/ is deliberately not excluded from `lit sync`.
+    """
+    vault, target, copy = _differing_copy(tmp_path)
+    copied: list[object] = []
+    real_copytree = shutil.copytree
+
+    def spy_copytree(*a: Any, **k: Any) -> Any:
+        copied.append(a)
+        return real_copytree(*a, **k)
+
+    def denied(*_a: object, **_k: object) -> None:
+        raise OSError(errno.EACCES, "Permission denied (mocked)")
+
+    monkeypatch.setattr(Path, "rename", denied)
+    monkeypatch.setattr(shutil, "copytree", spy_copytree)
+    said = _record_link_warnings(monkeypatch)
+
+    out = settle_hub_entry(
+        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+    )
+
+    assert out.verdict == "failed"
+    assert copied == [], "a non-EXDEV failure must not duplicate the folder"
+    assert (copy / "notes.md").read_text(encoding="utf-8") == "mine\n"
+    assert list(_replaced_root(vault, "pepforge", "litman_reflib").iterdir()) == []
+    assert len(said) == 1
+
+
+def test_repeated_failed_settles_do_not_pile_up_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three runs of `--fix` on the same stuck folder leave nothing behind.
+
+    The growth was driven by our own message asking the user to re-run.
+    """
+    vault, target, copy = _differing_copy(tmp_path)
+
+    def denied(*_a: object, **_k: object) -> None:
+        raise OSError(errno.EACCES, "Permission denied (mocked)")
+
+    monkeypatch.setattr(Path, "rename", denied)
+    _record_link_warnings(monkeypatch)
+
+    for _ in range(3):
+        assert (
+            settle_hub_entry(
+                copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+            ).verdict
+            == "failed"
+        )
+
+    from litman.core.trash import count_replaced_folders
+
+    assert count_replaced_folders(vault) == 0
+    assert (copy / "notes.md").read_text(encoding="utf-8") == "mine\n"

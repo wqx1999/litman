@@ -10,6 +10,8 @@ contract is verified without needing an exFAT drive.
 
 from __future__ import annotations
 
+import io
+import shutil
 import sys
 from pathlib import Path
 
@@ -426,3 +428,115 @@ def test_make_portable_link_on_real_directory_warns_in_plain_english(
     assert "Errno" not in said
     assert "WinError" not in said
     assert "could not replace existing entry" not in said
+
+
+# ---------------------------------------------------------------------------
+# Warning text: what Rich actually renders, not what we hand it
+# ---------------------------------------------------------------------------
+
+
+def _render(monkeypatch: pytest.MonkeyPatch, fn: object, *args: object) -> str:
+    """Run a warning through a REAL Rich console and return the output.
+
+    A recording stub captures the markup string, which is exactly the thing
+    that cannot show a markup bug: `[draft]` in a path looks fine until Rich
+    parses it as a style tag and drops it.
+    """
+    buf = io.StringIO()
+    monkeypatch.setattr(
+        portable_link, "_console", Console(file=buf, width=400, no_color=True)
+    )
+    fn(*args)  # type: ignore[operator]
+    return buf.getvalue()
+
+
+def test_warnings_keep_square_brackets_in_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder named ``proj [draft]`` must survive into the message.
+
+    These are the messages whose whole job is "go and clear that folder";
+    handing back a path that does not exist is worse than saying nothing.
+    """
+    bracketed = Path("/tmp/proj [draft]/litman_reflib/p1")
+
+    unmovable = _render(
+        monkeypatch,
+        portable_link.warn_hub_entry_unmovable,
+        bracketed,
+        OSError(13, "Permission denied"),
+    )
+    assert "proj [draft]" in unmovable
+    assert "Permission denied" in unmovable
+
+    is_dir = _render(
+        monkeypatch,
+        portable_link._warn_link_obstructed,
+        bracketed,
+        IsADirectoryError(f"{bracketed} is a directory"),
+    )
+    assert "proj [draft]" in is_dir
+    assert "is a real folder, not a litman link" in is_dir
+
+    other = _render(
+        monkeypatch,
+        portable_link._warn_link_obstructed,
+        bracketed,
+        OSError(16, "Device or resource busy"),
+    )
+    assert "proj [draft]" in other
+    assert "Device or resource busy" in other
+
+
+def test_unmovable_warning_drops_the_errno_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``strerror``, not ``str(err)``: the errno and the repeated path are
+    noise in a message that already names the folder."""
+    out = _render(
+        monkeypatch,
+        portable_link.warn_hub_entry_unmovable,
+        Path("/tmp/proj/litman_reflib/p1"),
+        OSError(13, "Permission denied", "/tmp/proj/litman_reflib/p1"),
+    )
+    assert "Permission denied" in out
+    assert "Errno" not in out
+
+
+def test_copytree_failure_list_collapses_to_one_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shutil.Error`` is an ``OSError``, so ``except OSError`` catches it —
+    and it stringifies to one tuple per failed file. Reachable on the target
+    machine: project on D:, vault on C: → EXDEV → copytree → a locked PDF.
+    """
+    err = shutil.Error(
+        [
+            (f"/x/f{i}.pdf", f"/y/f{i}.pdf", f"[Errno 13] Permission denied: '/x/f{i}.pdf'")
+            for i in range(3)
+        ]
+    )
+    assert len(str(err)) > 200  # what would have been printed raw
+
+    reason = portable_link._os_error_reason(err)
+    assert len(reason) <= portable_link._MAX_REASON_CHARS
+    assert "f0.pdf" in reason
+    assert "(+2 more)" in reason
+
+    out = _render(
+        monkeypatch,
+        portable_link.warn_hub_entry_unmovable,
+        Path("/tmp/proj/litman_code/repo"),
+        err,
+    )
+    assert "f2.pdf" not in out
+    assert "(+2 more)" in out
+
+
+def test_os_error_reason_is_capped_whatever_it_is() -> None:
+    long_err = OSError(13, "x" * 500)
+    reason = portable_link._os_error_reason(long_err)
+    assert len(reason) <= portable_link._MAX_REASON_CHARS
+    assert reason.endswith("…")
+    # A bare OSError with no strerror still says something.
+    assert portable_link._os_error_reason(OSError("boom")) == "boom"

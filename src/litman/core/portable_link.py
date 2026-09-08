@@ -40,11 +40,13 @@ command keeps working without them.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 
 # Stderr console so warnings don't contaminate stdout (which CLI consumers
 # may pipe / parse). Module-level singleton because the warning is rare
@@ -349,17 +351,62 @@ def _warn_link_obstructed(link_path: Path, err: OSError) -> None:
     """
     if isinstance(err, IsADirectoryError):
         _console.print(
-            f"[yellow]warning:[/] {link_path} is a real folder, not a litman "
-            "link — left untouched.\n"
+            f"[yellow]warning:[/] {escape(str(link_path))} is a real folder, "
+            "not a litman link — left untouched.\n"
             "[dim]    Move it away, then re-run `lit health-check --fix`.[/]"
         )
         return
     _console.print(
         f"[yellow]warning:[/] could not replace existing entry at "
-        f"{link_path}: {err}.\n"
+        f"{escape(str(link_path))}: {escape(str(err))}.\n"
         "[dim]    The link was not created. Remove that entry manually "
         "and re-run; this is NOT a link-support problem.[/]"
     )
+
+
+# One verdict plus one way out, ~120 characters (the 2026-08-02 rule). An OS
+# reason has to fit inside that whatever the OS handed us.
+_MAX_REASON_CHARS = 80
+
+
+def _shutil_error_reason(err: shutil.Error) -> str:
+    """Collapse a copytree failure list to one child plus a count.
+
+    ``shutil.Error`` carries one ``(src, dst, why)`` tuple PER failed file and
+    stringifies to the repr of that list — hundreds of characters for a paper,
+    kilobytes for a code checkout. It is an ``OSError`` subclass, so it arrives
+    here through the same ``except OSError`` as everything else.
+    """
+    entries = err.args[0] if err.args else None
+    if not isinstance(entries, list) or not entries:
+        return "copy failed"
+    first = entries[0]
+    name = why = ""
+    if isinstance(first, tuple) and len(first) >= 3:
+        name = Path(str(first[0])).name
+        why = " ".join(str(first[2]).split())
+    rest = len(entries) - 1
+    more = f" (+{rest} more)" if rest > 0 else ""
+    head = f"{name}: " if name else ""
+    return f"{head}{why or 'copy failed'}{more}"
+
+
+def _os_error_reason(err: OSError) -> str:
+    """The short human half of an ``OSError``, capped.
+
+    ``strerror`` is the sentence without the ``[Errno N]`` prefix and without
+    the path repeated back (the message already names it). The cap is the
+    backstop: it holds whatever the exception turns out to be.
+    """
+    reason = (
+        _shutil_error_reason(err)
+        if isinstance(err, shutil.Error)
+        else (err.strerror or str(err))
+    )
+    reason = " ".join(reason.split())
+    if len(reason) > _MAX_REASON_CHARS:
+        reason = reason[: _MAX_REASON_CHARS - 1].rstrip() + "…"
+    return reason
 
 
 def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
@@ -376,7 +423,8 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     ``portable_link._console`` sees this one too.
     """
     _console.print(
-        f"[yellow]warning:[/] could not clear {path}: {err}.\n"
+        f"[yellow]warning:[/] could not clear {escape(str(path))}: "
+        f"{escape(_os_error_reason(err))}.\n"
         "[dim]    The link was not created. Close anything using that folder, "
         "then re-run `lit health-check --fix`.[/]"
     )

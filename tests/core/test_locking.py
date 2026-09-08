@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -244,6 +245,45 @@ def test_clear_readonly_onexc_removes_readonly_file(tmp_path: Path) -> None:
     locking._clear_readonly_onexc(os.unlink, str(target), None)
 
     assert not target.exists()
+
+
+@_posix_only
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores the permission bits this asserts on",
+)
+def test_failed_rmtree_leaves_the_folder_readable_by_its_owner(
+    tmp_path: Path,
+) -> None:
+    """A tree the handler touched but could not finish deleting stays usable.
+
+    ``stat.S_IWRITE`` on POSIX is 0o200 — write-only. Assigning it left the
+    folder un-listable and un-enterable by its own owner, and unreadable to the
+    next comparison run. Survivable for vault-internal state; not for a folder
+    in the user's project directory, which is where settle_hub_entry aims this.
+    """
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    victim = hub / "p1"
+    victim.mkdir()
+    (victim / "notes.md").write_text("mine\n", encoding="utf-8")
+    before = stat.S_IMODE(victim.stat().st_mode)
+
+    hub.chmod(stat.S_IRUSR | stat.S_IXUSR)  # entries cannot be removed from it
+    try:
+        with pytest.raises(OSError):
+            rmtree(victim)
+        after = stat.S_IMODE(victim.stat().st_mode)
+    finally:
+        hub.chmod(stat.S_IRWXU)
+        # If this assertion ever fails again, tmp_path cleanup must still be
+        # able to remove what the handler left behind.
+        victim.chmod(stat.S_IRWXU)
+
+    assert after & stat.S_IRUSR, "owner can no longer list the folder"
+    assert after & stat.S_IXUSR, "owner can no longer enter the folder"
+    assert after & stat.S_IWUSR
+    assert after == before | stat.S_IWRITE
 
 
 def test_rmtree_removes_tree_with_locked_truth_files(tmp_path: Path) -> None:
