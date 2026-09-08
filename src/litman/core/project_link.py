@@ -199,6 +199,21 @@ def _is_verbatim_copy(copy_dir: Path, target_dir: Path) -> bool:
     return True
 
 
+def _hub_target(vault: Path, hub: str, name: str) -> Path | None:
+    """The vault entry a hub position of this name should point at.
+
+    ``None`` when there is none — the paper was deleted, or the clone was
+    never restored on this machine. Derived from the position's name because
+    the wipe loop settles what it finds on disk, which by definition includes
+    names no longer in the project's membership.
+    """
+    if hub == CODE_SUBDIR:
+        candidate = (vault / "codes" / name / "repo").resolve()
+    else:
+        candidate = (vault / "papers" / name).resolve()
+    return candidate if candidate.is_dir() else None
+
+
 def _move_aside(src: Path, dest_parent: Path, name: str) -> Path:
     """Move ``src`` to ``dest_parent/name``, returning where it landed."""
     dest_parent.mkdir(parents=True, exist_ok=True)
@@ -1201,20 +1216,46 @@ def rebuild_all_project_links(
                 "n_tagged": n_tagged,
                 "n_paper_links": 0,
                 "n_code_links": 0,
+                "n_replaced_copies": 0,
+                "n_moved_aside": 0,
+                "aside_paths": [],
                 "detail": f"project dir not found: {project_dir}",
             }
             continue
 
         # Wipe the symlink hubs so stale entries from prior runs disappear.
+        # Whatever is NOT a link gets settled here (an expanded copy is
+        # deleted or preserved in .trash/), so the create loop below meets
+        # either an empty position or one it must leave alone.
+        blocked: set[Path] = set()
+        n_replaced_copies = 0
+        aside_paths: list[str] = []
         for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
             sub_dir = project_dir / sub
-            if sub_dir.exists():
-                for child in sub_dir.iterdir():
-                    remove_link_if_present(child)
-            else:
+            if not sub_dir.exists():
                 sub_dir.mkdir(exist_ok=True)
+                continue
+            # sorted() drains the scandir generator before the settling
+            # starts removing entries out from under it.
+            for child in sorted(sub_dir.iterdir()):
+                if remove_link_if_present(child):
+                    continue
+                settled = settle_hub_entry(
+                    child,
+                    _hub_target(vault, sub, child.name),
+                    vault=vault,
+                    project=project,
+                    hub=sub,
+                )
+                if settled.verdict == "replaced-copy":
+                    n_replaced_copies += 1
+                elif settled.verdict == "moved-aside":
+                    aside_paths.append(str(settled.moved_to))
+                elif settled.verdict == "blocked":
+                    blocked.add(child)
         # Preserve REFERENCES.md across the wipe — it lives in
-        # litman_reflib/ alongside the symlinks but is content, not a link.
+        # litman_reflib/ alongside the symlinks but is content, not a link
+        # (settle_hub_entry leaves every real file where it is).
 
         n_paper_links = 0
         n_code_links = 0
@@ -1225,16 +1266,18 @@ def rebuild_all_project_links(
             paper_dir = (vault / "papers" / pid).resolve()
             if not paper_dir.is_dir():
                 continue
-            if make_portable_link(
-                project_dir / LITERATURE_SUBDIR / pid, paper_dir
+            paper_link = project_dir / LITERATURE_SUBDIR / pid
+            if paper_link not in blocked and make_portable_link(
+                paper_link, paper_dir
             ):
                 n_paper_links += 1
             for repo_name in p.get("code-clones") or []:
                 repo_target = (vault / "codes" / repo_name / "repo").resolve()
                 if not repo_target.exists():
                     continue
-                if make_portable_link(
-                    project_dir / CODE_SUBDIR / repo_name, repo_target
+                code_link = project_dir / CODE_SUBDIR / repo_name
+                if code_link not in blocked and make_portable_link(
+                    code_link, repo_target
                 ):
                     n_code_links += 1
 
@@ -1245,6 +1288,9 @@ def rebuild_all_project_links(
             "n_tagged": n_tagged,
             "n_paper_links": n_paper_links,
             "n_code_links": n_code_links,
+            "n_replaced_copies": n_replaced_copies,
+            "n_moved_aside": len(aside_paths),
+            "aside_paths": aside_paths,
             "detail": "",
         }
 

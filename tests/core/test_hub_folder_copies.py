@@ -130,6 +130,21 @@ def _replaced_root(vault: Path, project: str, hub: str) -> Path:
     return vault / ".trash" / "replaced-folders" / project / hub
 
 
+def _record_link_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Collect what ``core.portable_link`` says, free of Rich's word wrapping."""
+    import litman.core.portable_link as portable_link
+
+    said: list[str] = []
+
+    class _RecordingConsole:
+        def print(self, *args: object, **_kw: object) -> None:
+            said.append(" ".join(str(a) for a in args))
+
+    monkeypatch.setattr(portable_link, "_console", _RecordingConsole())
+    portable_link.reset_warning_state()
+    return said
+
+
 # --- settle_hub_entry, on its own -------------------------------------------
 
 
@@ -354,3 +369,172 @@ def test_settle_keeps_a_copy_whose_extra_content_is_a_link(
     )
     assert out.verdict == "replaced-copy"
     assert not copy.exists()
+
+
+# --- end to end through rebuild_all_project_links ---------------------------
+
+
+def test_verbatim_reflib_copy_becomes_a_link_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-1: the whole Windows report — a dozen expanded folders — heals with
+    no warning and nothing left for the user to delete."""
+    vault, project_dir = _linked_project(tmp_path)
+    link = project_dir / "litman_reflib" / "p1"
+    _expand_to_copy(link, vault / "papers" / "p1")
+    said = _record_link_warnings(monkeypatch)
+
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert is_portable_link(link)
+    assert (link / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nfirst\n"
+    assert out["pepforge"]["n_replaced_copies"] == 1
+    assert out["pepforge"]["n_moved_aside"] == 0
+    assert out["pepforge"]["aside_paths"] == []
+    assert out["pepforge"]["n_paper_links"] == 1
+    assert said == []
+    assert not (vault / ".trash" / "replaced-folders").exists()
+
+
+def test_differing_copy_is_moved_to_replaced_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-2: a note written into the copy is a dead end nobody else holds —
+    it goes to .trash/, not to /dev/null."""
+    vault, project_dir = _linked_project(tmp_path)
+    link = project_dir / "litman_reflib" / "p1"
+    copy = _expand_to_copy(link, vault / "papers" / "p1")
+    (copy / "notes.md").write_text(
+        "# Notes\n\nfirst\nwritten on the other machine\n", encoding="utf-8"
+    )
+    said = _record_link_warnings(monkeypatch)
+
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert is_portable_link(link)
+    assert (link / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nfirst\n"
+    assert out["pepforge"]["n_replaced_copies"] == 0
+    assert out["pepforge"]["n_moved_aside"] == 1
+    aside = Path(out["pepforge"]["aside_paths"][0])
+    assert aside.parent == _replaced_root(vault, "pepforge", "litman_reflib")
+    assert aside.name.startswith("p1-")
+    assert (aside / "notes.md").read_text(encoding="utf-8") == (
+        "# Notes\n\nfirst\nwritten on the other machine\n"
+    )
+    assert (aside / "metadata.yaml").is_file()
+    assert said == []
+
+
+def test_orphan_copy_with_no_vault_original_is_moved_aside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-3: a folder for a paper that no longer exists — no membership, no
+    vault entry. Nothing else would ever look at it again."""
+    vault, project_dir = _linked_project(tmp_path)
+    orphan = project_dir / "litman_reflib" / "2020_Gone_Paper"
+    orphan.mkdir()
+    (orphan / "notes.md").write_text("stale\n", encoding="utf-8")
+    said = _record_link_warnings(monkeypatch)
+
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert not orphan.exists()
+    assert out["pepforge"]["n_moved_aside"] == 1
+    aside = Path(out["pepforge"]["aside_paths"][0])
+    assert aside.name.startswith("2020_Gone_Paper-")
+    assert (aside / "notes.md").read_text(encoding="utf-8") == "stale\n"
+    assert said == []
+
+
+def test_code_hub_copy_replaced_and_moved_aside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-4: litman_code/<repo> settles against codes/<repo>/repo the same way."""
+    vault, project_dir = _linked_project(tmp_path, code_clones=["diffdock"])
+    clone = vault / "codes" / "diffdock" / "repo"
+    code_link = project_dir / "litman_code" / "diffdock"
+    assert is_portable_link(code_link)
+
+    _expand_to_copy(code_link, clone)
+    said = _record_link_warnings(monkeypatch)
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert is_portable_link(code_link)
+    assert out["pepforge"]["n_replaced_copies"] == 1
+    assert out["pepforge"]["n_moved_aside"] == 0
+    assert out["pepforge"]["n_code_links"] == 1
+    assert said == []
+
+    _expand_to_copy(code_link, clone)
+    (code_link / "src" / "main.py").write_text("print('mine')\n", encoding="utf-8")
+    out2 = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert is_portable_link(code_link)
+    assert out2["pepforge"]["n_moved_aside"] == 1
+    aside = Path(out2["pepforge"]["aside_paths"][0])
+    assert aside.parent == _replaced_root(vault, "pepforge", "litman_code")
+    assert (aside / "src" / "main.py").read_text(encoding="utf-8") == (
+        "print('mine')\n"
+    )
+    assert said == []
+
+
+def test_references_md_survives_the_settling(tmp_path: Path) -> None:
+    """REFERENCES.md is a real FILE living in the hub; settling must not move
+    it (decision #4 — only folders are settled)."""
+    vault, project_dir = _linked_project(tmp_path)
+    refs = project_dir / "litman_reflib" / "REFERENCES.md"
+    assert refs.is_file()
+
+    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert refs.is_file()
+    assert not _replaced_root(vault, "pepforge", "litman_reflib").exists()
+
+
+def test_skipped_project_still_reports_the_new_counters(tmp_path: Path) -> None:
+    """Both result arms carry the same keys so consumers need no .get() dance."""
+    parent = tmp_path / "vault_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+
+    out = rebuild_all_project_links(
+        vault, {"ghost": str(tmp_path / "not_there")}
+    )
+
+    assert out["ghost"]["status"] == "skipped"
+    assert out["ghost"]["n_replaced_copies"] == 0
+    assert out["ghost"]["n_moved_aside"] == 0
+    assert out["ghost"]["aside_paths"] == []
+
+
+def test_copy_untouched_when_project_drive_cannot_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-11: on a drive that cannot hold links the copy is the only browsable
+    thing there is. Leave it, and stop telling the user to delete it."""
+    from litman.core.checks import check_project_references
+    from litman.core.document import list_papers
+    from litman.core.portable_link import (
+        _LINK_MECHANISM,
+        reset_link_probe_cache,
+    )
+
+    vault, project_dir = _linked_project(tmp_path)
+    link = project_dir / "litman_reflib" / "p1"
+    copy = _expand_to_copy(link, vault / "papers" / "p1")
+    said = _record_link_warnings(monkeypatch)
+
+    reset_link_probe_cache()
+    _LINK_MECHANISM[str(vault)] = "symlink"
+    _LINK_MECHANISM[str(project_dir)] = "none"
+
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert copy.is_dir() and not is_portable_link(copy)
+    assert (copy / "metadata.yaml").is_file()
+    assert out["pepforge"]["n_replaced_copies"] == 0
+    assert out["pepforge"]["n_moved_aside"] == 0
+    assert not (vault / ".trash" / "replaced-folders").exists()
+    assert "could not replace existing entry" not in "\n".join(said)
+    assert check_project_references(vault, list_papers(vault)) == []
