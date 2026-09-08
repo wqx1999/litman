@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use litman in your work, please cite it as below."
+title: litman
+abstract: >-
+  litman keeps the papers a researcher has read in plain files on their own
+  computer, one folder per paper holding the PDF, a structured record, the
+  notes, and the running discussion about it. The library is reachable through
+  a web app for reading and annotating and through a checked command line, so
+  an AI assistant can do the filing and help with the reading.
+type: software
+authors:
+  - family-names: Wang
+    given-names: Qingxin
+    orcid: "https://orcid.org/0009-0001-5601-5979"
+    email: qingxin.wang@chem.tu-berlin.de
+    affiliation: "Institut für Chemie, Technische Universität Berlin"
+  - family-names: He
+    given-names: Zhanyu
+    orcid: "https://orcid.org/0009-0009-9516-1862"
+    email: zhanyu.he@chem.tu-berlin.de
+    affiliation: "Institut für Chemie, Technische Universität Berlin"
+  - family-names: Süssmuth
+    given-names: Roderich D.
+    orcid: "https://orcid.org/0000-0001-7027-2069"
+    email: roderich.suessmuth@tu-berlin.de
+    affiliation: "Institut für Chemie, Technische Universität Berlin"
+repository-code: "https://github.com/wqx1999/litman"
+url: "https://litman.dev"
+license: AGPL-3.0-or-later
+keywords:
+  - literature management
+  - reference manager
+  - research data management
+  - large language models
+  - agentic workflows
+  - local-first
