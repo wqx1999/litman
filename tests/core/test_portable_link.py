@@ -391,3 +391,38 @@ class TestRealJunctionsOnWindows:
         assert remove_link_if_present(link) is True
         assert not link.exists()
         assert (target / "inside.txt").exists()
+
+
+def test_make_portable_link_on_real_directory_warns_in_plain_english(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real folder in the link position is reported as a real folder.
+
+    Letting ``unlink()`` discover it hands the user the OS's words — on
+    Windows "[WinError 5] Access is denied" — and sends them looking for a
+    permissions problem that does not exist. The folder itself is untouched
+    either way.
+    """
+    target = _dir_with(tmp_path, "target", "x")
+    occupied = _dir_with(tmp_path, "link", "mine")
+
+    print_calls: list[tuple[object, ...]] = []
+
+    class _RecordingConsole:
+        def print(self, *args: object, **_kw: object) -> None:
+            print_calls.append(args)
+
+    monkeypatch.setattr(portable_link, "_console", _RecordingConsole())
+
+    ok = make_portable_link(occupied, target)
+
+    assert ok is False
+    assert occupied.is_dir() and not is_portable_link(occupied)
+    assert (occupied / "f.txt").read_text(encoding="utf-8") == "mine"
+    assert len(print_calls) == 1
+    said = " ".join(str(a) for a in print_calls[0])
+    assert "is a real folder, not a litman link" in said
+    assert "lit health-check --fix" in said
+    assert "Errno" not in said
+    assert "WinError" not in said
+    assert "could not replace existing entry" not in said

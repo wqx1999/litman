@@ -289,6 +289,11 @@ def _remove_existing_entry(path: Path) -> None:
         except OSError:
             path.rmdir()
         return
+    if path.is_dir():
+        # Named here rather than discovered by unlink(): Windows answers that
+        # with "[WinError 5] Access is denied", which reads as a permissions
+        # problem and sends the user somewhere there is nothing to fix.
+        raise IsADirectoryError(f"{path} is a directory")
     path.unlink()
 
 
@@ -336,7 +341,19 @@ def _warn_link_obstructed(link_path: Path, err: OSError) -> None:
     that entry — not to move the library. Always printed (no once-per-process
     latch): it is a specific, actionable, per-link condition the user needs
     to see.
+
+    A real folder gets its own wording with the OS error string left out.
+    ``lit health-check --fix`` settles those positions itself now, so reaching
+    here means something outside the hubs put a folder in a link's place, and
+    the errno phrasing only ever misdirected.
     """
+    if isinstance(err, IsADirectoryError):
+        _console.print(
+            f"[yellow]warning:[/] {link_path} is a real folder, not a litman "
+            "link — left untouched.\n"
+            "[dim]    Move it away, then re-run `lit health-check --fix`.[/]"
+        )
+        return
     _console.print(
         f"[yellow]warning:[/] could not replace existing entry at "
         f"{link_path}: {err}.\n"
