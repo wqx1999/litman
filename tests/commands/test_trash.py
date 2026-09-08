@@ -723,3 +723,34 @@ def test_count_replaced_folders_ignores_the_scaffolding(vault: Path) -> None:
     _plant_replaced_folder(vault, "myproj", "2024_Bar")
     _plant_replaced_folder(vault, "otherproj", "2024_Baz")
     assert count_replaced_folders(vault) == 2
+
+
+def test_trash_empty_that_removes_nothing_does_not_claim_success(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every entry locked: no green tick, no empty count, nothing deleted.
+
+    `✓ Emptied trash ( removed)` was the rendering — a success claim with the
+    number missing, over a trash that is still full.
+    """
+    _write_paper(vault, "2024_Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+    entry = next(
+        c for c in (vault / TRASH_DIRNAME).iterdir() if c.is_dir()
+    )
+
+    def boom(path: object, **_kw: object) -> None:
+        raise OSError(16, "Device or resource busy (mocked)")
+
+    monkeypatch.setattr(trash_mod, "rmtree", boom)
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--yes", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "✓ Emptied" not in result.output
+    assert "( removed)" not in result.output
+    assert "Nothing was removed" in result.output
+    assert entry.is_dir()  # still there, as the message says

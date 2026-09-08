@@ -345,7 +345,9 @@ def _empty_subject(n_entries: int, n_kept: int) -> str:
         parts.append(
             f"{n_kept} replaced project folder{'' if n_kept == 1 else 's'}"
         )
-    return " + ".join(parts)
+    # Total on purpose: a caller that reaches zero of both still has to render
+    # a sentence, and an empty one reads as "( removed)".
+    return " + ".join(parts) or "nothing"
 
 
 @trash_group.command("empty")
@@ -428,6 +430,16 @@ def trash_empty_cmd(
     # Recounted, not assumed: empty_trash is best-effort per child, and the
     # count it reports is what actually went. The folders answer the same way.
     n_kept_removed = n_kept - count_replaced_folders(vault)
+    if not n and not n_kept_removed:
+        # A green tick over an empty trash that is still full is the one thing
+        # this must never print.
+        console.print(
+            "[yellow]Nothing was removed[/] — every entry is still locked or "
+            "unreadable.\n"
+            "[dim]Close anything using the vault, then run `lit trash empty` "
+            "again.[/]"
+        )
+        return
     console.print(
         f"[bold green]✓ Emptied[/] trash "
         f"[dim]({_empty_subject(n, n_kept_removed)} removed)[/]"

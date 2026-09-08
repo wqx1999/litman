@@ -2,14 +2,16 @@
 
 ``settle_hub_entry`` deletes a folder that matches the vault and preserves one
 that does not — a real deletion and a real move, in the user's own directory,
-from a command they ran for another reason. Every command that triggers the
-rebuild has to say so, and say it the same way: ``lit health-check --fix``,
-``lit refresh-views`` and ``lit link --rebuild-all`` all reach the same code
-and must not word the same event three different ways.
+from a command the user ran for something else. Three commands report it, and
+report it through here so one event is not worded three ways:
+``lit health-check --fix``, ``lit refresh-views``, ``lit link --rebuild-all``.
 
-The GUI's rebuild stays silent by design (the health badge re-runs the checks
-instead), and ``lit modify`` / ``lit rename`` reach it through
-``reconcile_derived`` without a per-project report block to hang this under.
+Other paths reach the same settle and currently say nothing: ``lit link <id>
+--project P``, ``lit trash restore``, the code-link reconcile behind ``lit code
+add`` / ``lit unlink``, and ``lit modify`` / ``lit rename`` through
+``reconcile_derived``. Whether they should is an open question, not a settled
+boundary. The GUI's rebuild is the one deliberate exception — it stays silent
+and the health badge re-runs the checks instead.
 """
 
 from __future__ import annotations
