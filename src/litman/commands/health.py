@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -285,12 +286,24 @@ def health_check_cmd(
         applied = _apply_fixes(vault, issues)
         if applied:
             console.print("\n[bold]Auto-fix:[/]")
+            hub_reported = False
             for cat, n in applied.items():
+                # hub_* carry detail about the project-link rebuild, not a
+                # per-category count; they render under project_references.
+                if cat.startswith("hub_"):
+                    continue
                 if n > 0:
                     console.print(
                         f"  [green]✓[/] {escape(cat)}: cleaned {n} item"
                         f"{'s' if n != 1 else ''}"
                     )
+                if cat == "project_references":
+                    _report_hub_settlements(applied)
+                    hub_reported = True
+            if not hub_reported:
+                # The rebuild can settle hub folders while some OTHER klass-A
+                # category is what fired it.
+                _report_hub_settlements(applied)
             # Re-run checks so the post-fix summary is honest.
             papers = list_papers(vault)
             issues = run_all_checks(vault, papers)
@@ -342,7 +355,36 @@ def _refresh_active_health_check_timestamp(vault: Path) -> None:
         pass
 
 
-def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, int]:
+def _report_hub_settlements(applied: dict[str, Any]) -> None:
+    """Say what the rebuild did with hub positions real folders were sitting in.
+
+    Reported under ``project_references`` rather than as its own category: it
+    is one rebuild, and the folders were never a separate finding.
+    """
+    replaced = applied.get("hub_replaced_copies")
+    if isinstance(replaced, int) and replaced > 0:
+        console.print(
+            "    [dim]replaced 1 folder copy with a link[/]"
+            if replaced == 1
+            else f"    [dim]replaced {replaced} folder copies with links[/]"
+        )
+    kept = applied.get("hub_moved_aside")
+    if isinstance(kept, list) and kept:
+        if len(kept) == 1:
+            console.print(
+                "    [dim]kept 1 folder that differs from the vault: "
+                f"{escape(str(kept[0]))}[/]"
+            )
+        else:
+            console.print(
+                f"    [dim]kept {len(kept)} folders that differ from the "
+                "vault:[/]"
+            )
+            for path in kept:
+                console.print(f"      [dim]{escape(str(path))}[/]")
+
+
+def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
 
     Two correction paths (ADR-015):
@@ -359,19 +401,26 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, int]:
 
     klass-B drift (registry / project / taxonomy / code-clone) is never fixed
     here — it needs a per-case user decision (the Tier-1 ``resolve`` prompt or
-    an explicit ``lit`` command). Returns ``{category: n_fixed}``.
+    an explicit ``lit`` command). Returns ``{category: n_fixed}`` plus, when a
+    klass-A regen ran, ``hub_replaced_copies`` / ``hub_moved_aside`` — detail
+    about the project-link rebuild, not categories.
     """
-    counts: dict[str, int] = {}
+    counts: dict[str, Any] = {}
 
     klass_a_present = {
         i.category for i in issues if i.category in _KLASS_A_CATEGORIES
     }
     if klass_a_present:
-        regen(vault, issues)
+        regenerated = regen(vault, issues)
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.
         for cat in klass_a_present:
             counts[cat] = 1
+        # Passed through, not counted: how many hub folder copies the rebuild
+        # deleted, and which differing ones it kept. core does not print.
+        for key in ("hub_replaced_copies", "hub_moved_aside"):
+            if key in regenerated:
+                counts[key] = regenerated[key]
 
     counts.update(apply_autofix(vault, issues))
     return counts

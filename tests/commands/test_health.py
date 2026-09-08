@@ -862,6 +862,75 @@ def test_folder_copy_reported_as_copy_not_missing(
     assert check_project_references(vault, list_papers(vault)) == []
 
 
+def test_fix_reports_replaced_and_kept_folder_counts(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--fix`` says what it did with the folders — the two outcomes read
+    differently, and the one it kept is only useful with its path."""
+    from litman.core.correctors import regen
+
+    # Wide enough that Rich does not fold the .trash/ path mid-word.
+    monkeypatch.setenv("COLUMNS", "400")
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    ids = ["2024_A_One", "2024_B_Two", "2024_C_Three"]
+    for pid in ids:
+        _write_paper(vault, pid, projects=["myproj"])
+    regen(vault)
+    for pid in ids:
+        _expand_link_to_copy(
+            proj / "litman_reflib" / pid, vault / "papers" / pid
+        )
+    (proj / "litman_reflib" / "2024_C_Three" / "notes.md").write_text(
+        "written on the other machine\n", encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    flat = " ".join(result.output.split())
+
+    assert "replaced 2 folder copies with links" in flat
+    assert "kept 1 folder that differs from the vault:" in flat
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "notes.md").read_text(encoding="utf-8") == (
+        "written on the other machine\n"
+    )
+    for pid in ids:
+        assert is_portable_link(proj / "litman_reflib" / pid)
+
+
+def test_fix_reports_a_single_replacement_in_the_singular(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_A_One", projects=["myproj"])
+    regen(vault)
+    _expand_link_to_copy(
+        proj / "litman_reflib" / "2024_A_One", vault / "papers" / "2024_A_One"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    flat = " ".join(result.output.split())
+
+    assert "replaced 1 folder copy with a link" in flat
+    assert "kept 1 folder" not in flat  # nothing differed, nothing preserved
+
+
 def test_folder_copy_outside_membership_reported_as_stale(
     vault: Path, tmp_path: Path
 ) -> None:

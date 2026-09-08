@@ -163,7 +163,7 @@ def test_regen_is_a_thin_wrapper_over_reconcile_derived(
     seen: dict[str, Any] = {}
     real = correctors.reconcile_derived
 
-    def _spy(v: Path, **kwargs: Any) -> dict[str, int]:
+    def _spy(v: Path, **kwargs: Any) -> dict[str, Any]:
         seen.update(kwargs)
         return real(v, **kwargs)
 

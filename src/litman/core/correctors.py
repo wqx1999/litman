@@ -23,6 +23,7 @@ ADR-015 separates *detection* (one tagged check registry) from *correction*
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
@@ -49,7 +50,7 @@ def reconcile_derived(
     papers: list[dict] | None = None,
     project_refs: bool = True,
     views_delta: list[tuple[str, dict, dict]] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Recompute the derived artifacts (INDEX.json + views/ [+ project refs]) from TRUTH.
 
     **The one shared rebuild path** (M30 Phase 4 / ADR-015 §Decision). Both the
@@ -96,7 +97,11 @@ def reconcile_derived(
             ``None`` (default, and always for the corrector / ``--fix`` path)
             → wholesale ``rebuild_views``.
 
-    Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>}``.
+    Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>,
+    "hub_replaced_copies": <n>, "hub_moved_aside": [<path>, ...]}`` — the last
+    two summarise what the project-link rebuild had to do with hub positions
+    occupied by real folders, so the caller can report it without ``core``
+    printing anything.
 
     Tier-2 only when ``papers is None``: it calls ``list_papers`` (reads every
     metadata.yaml), so it MUST NOT run inside the Tier-1 hook (invariant #15).
@@ -123,6 +128,8 @@ def reconcile_derived(
                 view_counts[view_name] = view_counts.get(view_name, 0) + n
 
     n_projects = 0
+    hub_replaced = 0
+    hub_moved_aside: list[str] = []
     if project_refs:
         # Project-side derived artifacts (#3). Only when projects are
         # configured; rebuild_all_* skip unreachable project dirs internally.
@@ -151,7 +158,12 @@ def reconcile_derived(
                 # rebuild_all_* ran its own full list_papers scan, so a
                 # projects-touching write (and every `--fix`) paid the vault
                 # scan three times over.
-                rebuild_all_project_links(vault, projects, papers=papers)
+                rebuilt = rebuild_all_project_links(
+                    vault, projects, papers=papers
+                )
+                for per_project in rebuilt.values():
+                    hub_replaced += int(per_project["n_replaced_copies"])
+                    hub_moved_aside.extend(per_project["aside_paths"])
                 rebuild_all_project_refs(vault, projects, papers=papers)
                 n_projects = len(projects)
 
@@ -159,6 +171,8 @@ def reconcile_derived(
         "index": 1,
         "views": sum(view_counts.values()),
         "project_refs": n_projects,
+        "hub_replaced_copies": hub_replaced,
+        "hub_moved_aside": hub_moved_aside,
     }
 
 
@@ -167,7 +181,7 @@ def reconcile_derived(
 # ---------------------------------------------------------------------------
 
 
-def regen(vault: Path, issues: list[Issue] | None = None) -> dict[str, int]:
+def regen(vault: Path, issues: list[Issue] | None = None) -> dict[str, Any]:
     """Recompute the full derived set (INDEX + views + project refs) from TRUTH.
 
     The ``lit health-check --fix`` klass-A corrector (ledger #1/#2/#3). A thin
