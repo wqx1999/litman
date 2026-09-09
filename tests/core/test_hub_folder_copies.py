@@ -386,6 +386,103 @@ def test_settle_deletes_a_copy_whose_only_extra_is_a_link(
     assert not copy.exists()
 
 
+def test_settle_deletes_an_empty_folder(tmp_path: Path) -> None:
+    """Explorer does not copy through a junction — it leaves an empty folder.
+
+    Measured on Windows 2026-09-09: Ctrl+C/Ctrl+V on a project directory turns
+    every ``litman_reflib\\<id>`` junction into a same-named directory holding
+    zero files. Parking those under .trash/ would hand the user one trash
+    entry and one standing health-check reminder per hub position to preserve
+    nothing at all — the cleanup burden this feature exists to remove.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = tmp_path / "papers" / "p1"
+    target.mkdir(parents=True)
+    (target / "metadata.yaml").write_text("id: p1\n", encoding="utf-8")
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    (hub / "p1").mkdir()
+
+    out = settle_hub_entry(
+        hub / "p1", target, vault=vault, project="pepforge", hub="litman_reflib"
+    )
+    assert out == HubSettlement("replaced-copy", None)
+    assert not (hub / "p1").exists()
+    assert not (vault / ".trash").exists()
+    assert (target / "metadata.yaml").is_file()
+
+
+def test_settle_deletes_a_tree_of_empty_folders(tmp_path: Path) -> None:
+    """Scaffolding with no file anywhere in it still has nothing to lose."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = tmp_path / "papers" / "p1"
+    target.mkdir(parents=True)
+    (target / "metadata.yaml").write_text("id: p1\n", encoding="utf-8")
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    (hub / "p1" / "a" / "b").mkdir(parents=True)
+
+    out = settle_hub_entry(
+        hub / "p1", target, vault=vault, project="pepforge", hub="litman_reflib"
+    )
+    assert out == HubSettlement("replaced-copy", None)
+    assert not (hub / "p1").exists()
+    assert not (vault / ".trash").exists()
+
+
+def test_settle_deletes_an_empty_folder_with_no_vault_original(
+    tmp_path: Path,
+) -> None:
+    """The ``litman_code`` half of the same Explorer copy.
+
+    No clone in the vault to compare against, so the verbatim test cannot run
+    — but an empty folder needs no comparison to be provably worthless.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    hub = tmp_path / "proj" / "litman_code"
+    hub.mkdir(parents=True)
+    (hub / "someRepo").mkdir()
+
+    out = settle_hub_entry(
+        hub / "someRepo", None, vault=vault, project="pepforge", hub="litman_code"
+    )
+    assert out == HubSettlement("replaced-copy", None)
+    assert not (hub / "someRepo").exists()
+    assert not (vault / ".trash").exists()
+
+
+def test_settle_keeps_a_fileless_folder_that_holds_a_link(
+    tmp_path: Path,
+) -> None:
+    """Negative control for the empty branch: a link is content.
+
+    It holds no file, but it names something outside the folder — the one
+    thing in an otherwise empty tree that a user could miss. Deleting it is
+    not free the way deleting an empty directory is, so it takes the
+    conservative branch.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    target = tmp_path / "papers" / "p1"
+    target.mkdir(parents=True)
+    (target / "metadata.yaml").write_text("id: p1\n", encoding="utf-8")
+    hub = tmp_path / "proj" / "litman_reflib"
+    hub.mkdir(parents=True)
+    fileless = hub / "p1"
+    fileless.mkdir()
+    assert make_portable_link(fileless / "elsewhere", target)
+
+    out = settle_hub_entry(
+        fileless, target, vault=vault, project="pepforge", hub="litman_reflib"
+    )
+    assert out.verdict == "moved-aside"
+    assert out.moved_to is not None
+    assert not fileless.exists()
+
+
 # --- end to end through rebuild_all_project_links ---------------------------
 
 
@@ -407,6 +504,37 @@ def test_verbatim_reflib_copy_becomes_a_link_silently(
     assert out["pepforge"]["n_moved_aside"] == 0
     assert out["pepforge"]["aside_paths"] == []
     assert out["pepforge"]["n_paper_links"] == 1
+    assert said == []
+    assert not (vault / ".trash" / "replaced-folders").exists()
+
+
+def test_explorer_shaped_empty_folders_heal_without_filling_the_trash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The commonest Windows shape end to end: both hubs, empty folders only.
+
+    wangq measured it on Windows 2026-09-09 — Explorer's copy of a project
+    directory leaves an empty folder per junction in BOTH hubs. Before the
+    empty branch this ran through _move_aside and left one trash entry per
+    position plus a standing ``replaced_folders`` info issue; the user's only
+    way out was ``lit trash empty``. Nothing in those folders was ever at
+    risk, so the trash must stay untouched.
+    """
+    vault, project_dir = _linked_project(tmp_path, code_clones=["someRepo"])
+    reflib = project_dir / "litman_reflib" / "p1"
+    code = project_dir / "litman_code" / "someRepo"
+    for link in (reflib, code):
+        assert remove_link_if_present(link)
+        link.mkdir()
+    said = _record_link_warnings(monkeypatch)
+
+    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+
+    assert is_portable_link(reflib) and is_portable_link(code)
+    assert (reflib / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nfirst\n"
+    assert out["pepforge"]["n_replaced_copies"] == 2
+    assert out["pepforge"]["n_moved_aside"] == 0
+    assert out["pepforge"]["aside_paths"] == []
     assert said == []
     assert not (vault / ".trash" / "replaced-folders").exists()
 

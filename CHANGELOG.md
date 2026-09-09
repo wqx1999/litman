@@ -39,19 +39,21 @@ conveniences.
 - **A project folder copied from another machine now repairs itself.** Copying a
   project directory — over the network, onto a USB stick, out of a tar, through
   cloud sync — turns every `litman_reflib/<id>` and `litman_code/<repo>`
-  shortcut into a real folder holding a full copy of the vault entry.
+  shortcut into a real folder — holding a full copy of the vault entry, or,
+  if the tool did not follow the shortcut, holding nothing at all.
   `lit health-check` used to call each of those shortcuts "missing" and `--fix`
   then refused the folder with a permissions error per entry, leaving a dozen
   directories to delete by hand. The check now says
   `... is a folder copy, not a litman link (copied from another machine?)`, and
-  `--fix` clears them: a folder that matches the vault is replaced with the
-  shortcut, and one that does not match it — a note you wrote on the other
-  machine, or a code checkout this machine never had — is kept under
-  `<vault>/.trash/replaced-folders/` and named in the output, so nothing you
-  wrote is thrown away. `lit trash empty` clears those folders; `lit trash
-  list` and `restore` never show them, because they must not come back. `lit link` and `lit trash restore` handle
-  the same folders the same way. On a drive that cannot hold shortcuts at all
-  (FAT32, exFAT, network shares) the copies are left exactly where they are.
+  `--fix` clears them: a folder that matches the vault, or that is empty, is
+  replaced with the shortcut, and one that does not match it — a note you wrote
+  on the other machine, or a code checkout this machine never had — is kept
+  under `<vault>/.trash/replaced-folders/` and named in the output, so nothing
+  you wrote is thrown away. `lit trash empty` clears those folders; `lit trash
+  list` and `restore` never show them, because they must not come back.
+  `lit link` and `lit trash restore` handle the same folders the same way. On a
+  drive that cannot hold shortcuts at all (FAT32, exFAT, network shares) the
+  copies are left exactly where they are.
 
 - **The health badge no longer waits to be clicked.** The shield in the toolbar
   showed nothing until you opened its panel, so a library problem could sit

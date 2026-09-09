@@ -194,6 +194,43 @@ def _tree_shape(root: Path) -> dict[tuple[str, ...], int | None] | None:
     return shape
 
 
+def _holds_no_files(root: Path) -> bool:
+    """True when ``root``'s tree holds no file and no link — nothing to lose.
+
+    Explorer does not copy *through* a junction: it leaves a same-named EMPTY
+    directory behind (wangq measured it on Windows 2026-09-09 — ``dir`` on the
+    copy reports "0 个文件"), and that is the commonest way a hub position ends
+    up occupied. Preserving such a folder under ``.trash/`` buys nothing and
+    costs the user a trash entry plus a standing health-check reminder for
+    every position, which is the cleanup burden this whole feature exists to
+    remove. Deleting it does not weaken decision #3: there is no content.
+
+    Empty-directory scaffolding still counts as empty. A link does NOT — it is
+    the one thing in here that names something outside, so it is treated as
+    content even though the target survives. An unreadable tree is not empty
+    either: unprovable is not proven, and the caller's conservative branch
+    keeps it.
+    """
+
+    def _reraise(err: OSError) -> None:
+        # os.walk's default onerror swallows a failed scandir and yields the
+        # directory as empty, which would read here as "nothing to lose".
+        raise err
+
+    try:
+        for dirpath, dirnames, filenames in os.walk(
+            root, onerror=_reraise, followlinks=False
+        ):
+            if filenames:
+                return False
+            here = Path(dirpath)
+            if any(is_portable_link(here / name) for name in dirnames):
+                return False
+    except OSError:
+        return False
+    return True
+
+
 def _is_verbatim_copy(copy_dir: Path, target_dir: Path) -> bool:
     """True when ``copy_dir`` holds exactly what ``target_dir`` holds.
 
@@ -286,7 +323,9 @@ def settle_hub_entry(
     entry. The link upsert then refuses to remove it — correctly, that is user
     data — and the user is left deleting a dozen folders by hand. This settles
     the position instead: a folder that matches the vault byte for byte is
-    redundant and goes; anything else is preserved under
+    redundant and goes, and so does one that holds nothing at all
+    (Explorer leaves an empty directory rather than copying through the
+    junction); anything else is preserved under
     ``<vault>/.trash/replaced-folders/<project>/<hub>/`` first. Unknown content
     is never rmtree'd.
 
@@ -300,7 +339,8 @@ def settle_hub_entry(
         ``('blocked', None)`` — a real folder on a filesystem that cannot hold
         links, left alone: deleting it there would take away the only
         browsable copy and give back nothing;
-        ``('replaced-copy', None)`` — a redundant copy was deleted;
+        ``('replaced-copy', None)`` — a redundant copy was deleted, either
+        because it matched the vault or because it held nothing;
         ``('moved-aside', dest)`` — the folder now lives at ``dest``;
         ``('failed', None)`` — the filesystem refused to move or delete it
         (a locked child, a read-only parent); warned about, left alone, and
@@ -321,6 +361,17 @@ def settle_hub_entry(
             # locking.rmtree, not shutil's: the copy carries the vault's
             # read-only metadata.yaml / paper.pdf attributes, which stop a
             # plain delete on Windows (ADR-005 dimension F).
+            rmtree(link_path)
+        except OSError as err:
+            warn_hub_entry_unmovable(link_path, err)
+            return HubSettlement("failed", None)
+        return HubSettlement("replaced-copy", None)
+    if _holds_no_files(link_path):
+        # Explorer's expansion of a junction: the folder is there, its content
+        # is not. Same disposal as a verbatim copy — there is nothing in it to
+        # preserve — and it reports as one, so the user is not handed a trash
+        # entry per hub position for folders that hold nothing.
+        try:
             rmtree(link_path)
         except OSError as err:
             warn_hub_entry_unmovable(link_path, err)
