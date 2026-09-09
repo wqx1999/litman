@@ -451,6 +451,11 @@ misread name leaves the correction at the end of the list — and if the name yo
 were fixing was the first author, that is also the name the paper id came from.
 `--set-author` states the whole list at once and is the only way to reorder it.
 
+`priority-<project>` is the one field `--set` will not clear: an ungraded link
+is simply the absent key, so `--set priority-<P>=` is refused, and `lit unlink`
+is what drops a grade. Grading a project the paper is not linked to is refused
+too — `lit link <id> --project <P> --priority A` links and grades in one step.
+
 ### `lit rename`
 
 Change a paper id, rippling the change everywhere: the renamed paper's metadata
@@ -923,9 +928,12 @@ Upgrade litman to the latest release on PyPI, through whichever tool installed
 it. It prints `current → latest`, asks once, then runs `uv tool upgrade litman`
 or `pipx upgrade litman`.
 
-Three installs it will not upgrade: an editable (development) checkout, a plain
-`pip install`, and a conda environment. Each one prints the command to run by
-hand instead. It never runs `pip install --upgrade` into the interpreter it is
+Four installs it will not upgrade: an editable (development) checkout, a plain
+`pip install`, a conda environment, and a copy installed from litman's git
+repository (or a local file) rather than from a release. Each one prints the
+command to run by hand instead — for the last, the pair that reinstalls it from
+PyPI: `uv tool uninstall litman && uv tool install litman`, or the `pipx`
+equivalent. It never runs `pip install --upgrade` into the interpreter it is
 running in.
 
 On Windows the upgrade starts the moment the command exits, so the prompt comes
@@ -934,7 +942,7 @@ The command prints the path of the log it writes.
 
 The Web UI does the same job without a terminal: when a new release is out, a
 chip with its version number appears next to the logo, and **Update & restart**
-closes litman, upgrades it, and reopens it. The same three installs are refused
+closes litman, upgrades it, and reopens it. The same four installs are refused
 there, with the reason shown in the chip.
 
 ```
