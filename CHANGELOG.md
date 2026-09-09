@@ -9,7 +9,7 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
-## Unreleased
+## 1.3.6 — 2026-09-09
 
 ### Added
 
