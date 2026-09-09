@@ -404,6 +404,12 @@ def _os_error_reason(err: OSError) -> str:
         else (err.strerror or str(err))
     )
     reason = " ".join(reason.split())
+    # Punctuation belongs to the caller's sentence, not to this half. A
+    # localized Windows strerror ends in its own full stop ("另一个程序正在使用
+    # 此文件，进程无法访问。"), which the caller's "." then doubled.
+    trimmed = reason.rstrip(".。!！")
+    if trimmed:
+        reason = trimmed
     if len(reason) > _MAX_REASON_CHARS:
         reason = reason[: _MAX_REASON_CHARS - 1].rstrip() + "…"
     return reason

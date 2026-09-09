@@ -533,6 +533,21 @@ def test_copytree_failure_list_collapses_to_one_sentence(
     assert "(+2 more)" in out
 
 
+def test_os_error_reason_drops_the_os_own_full_stop() -> None:
+    """A localized Windows strerror ends in its own punctuation.
+
+    wangq saw "进程无法访问。." on Chinese Windows 2026-09-09: the OS sentence
+    already closed, and the caller's own "." closed it again. Punctuation is
+    the caller's; this half hands back the words.
+    """
+    zh = OSError(13, "另一个程序正在使用此文件，进程无法访问。")
+    assert portable_link._os_error_reason(zh).endswith("进程无法访问")
+    en = OSError(13, "The process cannot access the file")
+    assert portable_link._os_error_reason(en) == "The process cannot access the file"
+    # Nothing but punctuation is not a message to strip away to nothing.
+    assert portable_link._os_error_reason(OSError(13, "...")) == "..."
+
+
 def test_os_error_reason_is_capped_whatever_it_is() -> None:
     long_err = OSError(13, "x" * 500)
     reason = portable_link._os_error_reason(long_err)
