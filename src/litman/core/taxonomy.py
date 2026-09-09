@@ -353,6 +353,21 @@ def remove_taxonomy_value(
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
         vault, USER_DICT_TO_METADATA_FIELD[dict_name], value, papers=papers
     )
+    # The views delta below reads `by_id`'s objects back after the ripple has
+    # mutated them in place. That holds only while the ripple's walk of
+    # papers/ stays on the objects it was handed: a folder the projection
+    # cannot account for — a sync conflict copy — is one the walk reads
+    # itself, so `by_id` never sees the change. A duplicate id is worse than
+    # that: one views symlink, two truths, and no single before/after pair
+    # reproduces what a wholesale rebuild computes. So the delta is used only
+    # when the walk came back with exactly these objects; anything else
+    # rebuilds views wholesale. That fires only on a vault
+    # `check_id_consistency` already reports as an error, and costs the
+    # healthy path nothing.
+    projection_objects = {id(entry) for entry in papers}
+    walk_stayed_on_projection = len(all_papers) == len(papers) and all(
+        id(entry) in projection_objects for entry in all_papers
+    )
     fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-rm-{dict_name}") as stage:
@@ -373,11 +388,15 @@ def remove_taxonomy_value(
             vault,
             papers=all_papers,
             project_refs=False,
-            views_delta=[
-                (pid, before[pid], view_fields_snapshot(by_id[pid]))
-                for pid in referencing
-                if pid in by_id
-            ],
+            views_delta=(
+                [
+                    (pid, before[pid], view_fields_snapshot(by_id[pid]))
+                    for pid in referencing
+                    if pid in by_id
+                ]
+                if walk_stayed_on_projection
+                else None
+            ),
         )
 
     return n_changed, referencing
@@ -450,6 +469,21 @@ def rename_taxonomy_value(
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
         vault, field, {old: new}, papers=papers
     )
+    # The views delta below reads `by_id`'s objects back after the ripple has
+    # mutated them in place. That holds only while the ripple's walk of
+    # papers/ stays on the objects it was handed: a folder the projection
+    # cannot account for — a sync conflict copy — is one the walk reads
+    # itself, so `by_id` never sees the change. A duplicate id is worse than
+    # that: one views symlink, two truths, and no single before/after pair
+    # reproduces what a wholesale rebuild computes. So the delta is used only
+    # when the walk came back with exactly these objects; anything else
+    # rebuilds views wholesale. That fires only on a vault
+    # `check_id_consistency` already reports as an error, and costs the
+    # healthy path nothing.
+    projection_objects = {id(entry) for entry in papers}
+    walk_stayed_on_projection = len(all_papers) == len(papers) and all(
+        id(entry) in projection_objects for entry in all_papers
+    )
     fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-rename-{dict_name}") as stage:
@@ -468,11 +502,15 @@ def rename_taxonomy_value(
             vault,
             papers=all_papers,
             project_refs=False,
-            views_delta=[
-                (pid, before[pid], view_fields_snapshot(by_id[pid]))
-                for pid in referencing
-                if pid in by_id
-            ],
+            views_delta=(
+                [
+                    (pid, before[pid], view_fields_snapshot(by_id[pid]))
+                    for pid in referencing
+                    if pid in by_id
+                ]
+                if walk_stayed_on_projection
+                else None
+            ),
         )
 
     return n_changed, referencing

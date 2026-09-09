@@ -36,6 +36,15 @@ conveniences.
 
 ### Fixed
 
+- **A cloud-sync conflict no longer hides half a rename.** Sync can leave two
+  folders in the library holding the same paper — the original and a
+  "conflicted copy" beside it. `lit taxonomy rename`, `merge` and `rm`, and
+  `lit project rename` and `rm`, built each file's path out of the id written
+  inside the file, so they rewrote one of those folders twice, left the other
+  holding the old value, and still counted both as updated. They now go
+  through the folders themselves, so both halves of a conflicted copy are
+  rewritten and the number reported is the number of files.
+
 - **A project folder copied from another machine now repairs itself.** Copying a
   project directory — over the network, onto a USB stick, out of a tar, through
   cloud sync — turns every `litman_reflib/<id>` and `litman_code/<repo>`

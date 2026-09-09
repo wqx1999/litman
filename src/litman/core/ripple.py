@@ -18,6 +18,9 @@ field (ADR-025).
 Both return ``(n_changed, staged_writes, all_papers_with_changes_applied)``
 so the caller can hand the staged writes to :func:`staged_write` and
 re-render INDEX.json from the in-memory paper list without a re-read.
+Both walk ``papers/`` through :func:`_papers_by_folder` and key every write
+on the FOLDER, never on the ``id`` the metadata declares — see that
+function for what keying on ``id`` used to cost.
 
 Extracted from ``commands/taxonomy.py`` (M-task web-gui P2): the project-rm
 core in ``core/project_link.py`` and the taxonomy-rm core in
@@ -31,6 +34,7 @@ makes this module self-contained. ``commands/taxonomy.py`` and
 from __future__ import annotations
 
 import io
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +42,7 @@ from ruamel.yaml import YAMLError
 
 from litman.core.atomic import _make_op_id, staged_write
 from litman.core.dates import now_iso
-from litman.core.document import list_papers, load_yaml_or_raise, read_metadata
+from litman.core.document import load_yaml_or_raise, read_metadata
 from litman.core.taxonomy import replace_value_in_field
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -75,6 +79,71 @@ def _dump_yaml_to_string(data: dict[str, Any]) -> str:
     return buf.getvalue()
 
 
+def _papers_by_folder(
+    vault: Path, papers: list[dict[str, Any]] | None
+) -> Iterator[tuple[Path, dict[str, Any]]]:
+    """Yield ``(paper_dir, paper)`` for every readable paper, keyed by FOLDER.
+
+    **The folder is the identity, never the declared ``id``.** ``id`` is an
+    ordinary metadata field: nothing enforces that it is unique or that it
+    matches its directory, and the vault is an rclone target (invariant #9)
+    where a sync conflict leaves two folders declaring one id. Resolving a
+    write path through ``id`` rewrote one of those folders twice, left the
+    other still holding the old value, and counted both — the same bug
+    :func:`migrate_retired_priority` was fixed for, which is why it enumerates
+    ``papers/`` itself too.
+
+    ``papers`` is an INDEX projection the caller already holds. It is used
+    only where it *accounts for* a folder — exactly one entry declares an id
+    equal to that folder's name. A folder no entry claims, or a name that two
+    entries claim, is read from disk here instead; that is precisely the
+    conflict pair, and why it now comes out right. A healthy vault therefore
+    pays for no metadata reads at all (task-write-perf: the taxonomy write
+    paths must not re-read every paper), and only the odd folder does.
+    ``None`` reads every folder — the scan ``list_papers`` used to do here.
+
+    Residual, and deliberately not paid for: a folder whose name some *other*
+    folder's declared id claims, and which declares something else itself, is
+    described by that other entry and can be passed over. Usually three
+    folders rather than a swap — ``B`` declares ``A`` while ``C`` declares
+    ``B``, so ``B`` is read as ``C``'s entry. Ruling that out means reading
+    every paper, which is the cost this exists to avoid; such a vault is
+    already one ``check_id_consistency`` reports as an error, and the write
+    below still goes to the folder it read, never to a guess — a mispaired
+    entry can only cause a skip, never a wrong file.
+
+    Tolerances mirror ``list_papers``: a directory with no readable
+    ``metadata.yaml``, or one whose YAML is not a non-empty mapping, is
+    skipped here and surfaced by ``check_paper_dir_validity`` instead.
+    """
+    papers_dir = vault / "papers"
+    if not papers_dir.is_dir():
+        return
+
+    claimed: dict[str, list[dict[str, Any]]] = {}
+    for known in papers or []:
+        pid = known.get("id")
+        if pid:
+            claimed.setdefault(str(pid), []).append(known)
+
+    for paper_dir in sorted(papers_dir.iterdir()):
+        if not paper_dir.is_dir():
+            continue
+        meta_path = paper_dir / "metadata.yaml"
+        if not meta_path.is_file():
+            continue
+        accounted = claimed.get(paper_dir.name)
+        if accounted is not None and len(accounted) == 1:
+            yield paper_dir, accounted[0]
+            continue
+        try:
+            paper = read_metadata(meta_path)
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if isinstance(paper, dict) and paper:
+            yield paper_dir, paper
+
+
 def _ripple_replacements(
     vault: Path,
     field: str,
@@ -103,24 +172,28 @@ def _ripple_replacements(
         * ``staged_writes`` — ``[(relpath, new_yaml_text), ...]`` ready to
           hand to :func:`staged_write`
         * ``all_papers_with_changes_applied`` — full paper list with
-          in-memory modifications, suitable for re-rendering INDEX.json
+          in-memory modifications, suitable for re-rendering INDEX.json.
+          One entry per readable FOLDER, so two folders declaring one id
+          yield two.
 
     ``papers`` lets a caller hand in an already-loaded list (INDEX
     projections via ``views.papers_for_index`` — the membership fields
-    topics/methods/data/projects are all projected; task-write-perf).
+    topics/methods/data/projects are all projected; task-write-perf). It is a
+    lookup, not the enumeration: :func:`_papers_by_folder` walks ``papers/``
+    and uses an entry only for the folder it accounts for, so the paths
+    written here are folder paths and the count is a count of files.
     FORBIDDEN with ``rename_project_keys``: the stray-key probe reads
     ``relevance-<old>`` / ``priority-<old>`` off every paper, and the
     projection carries neither — that path must keep the full-metadata scan.
     """
-    if papers is None:
-        papers = list_papers(vault)
-    elif rename_project_keys:
+    if papers is not None and rename_project_keys:
         raise ValueError(
             "papers= must not be combined with rename_project_keys: the stray "
             "relevance-/priority-key probe needs full metadata, not INDEX "
             "projections."
         )
     staged: list[tuple[str, str]] = []
+    all_papers: list[dict[str, Any]] = []
     n_changed = 0
     sources = set(replacements.keys())
     now = now_iso()
@@ -139,10 +212,8 @@ def _ripple_replacements(
     # it back preserving formatting. The paper list returned by
     # `list_papers` uses the safe loader and is fine for INDEX rendering,
     # but writing requires the roundtrip representation.
-    for paper in papers:
-        paper_id = paper.get("id")
-        if not paper_id:
-            continue
+    for paper_dir, paper in _papers_by_folder(vault, papers):
+        all_papers.append(paper)
         values = paper.get(field) or []
         # A paper is touched if its `field` references a source OR it carries a
         # per-project key that must be remapped (the latter handles a stray
@@ -150,8 +221,7 @@ def _ripple_replacements(
         has_project_key = any(k in (paper or {}) for k in project_key_renames)
         if not (sources & set(values)) and not has_project_key:
             continue
-        meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
-        rt_metadata = load_yaml_or_raise(meta_path, _yaml)
+        rt_metadata = load_yaml_or_raise(paper_dir / "metadata.yaml", _yaml)
         if rt_metadata is None:
             continue
         changed = replace_value_in_field(rt_metadata, field, replacements)
@@ -166,7 +236,7 @@ def _ripple_replacements(
             rt_metadata["updated-at"] = now
             staged.append(
                 (
-                    f"papers/{paper_id}/metadata.yaml",
+                    f"papers/{paper_dir.name}/metadata.yaml",
                     _dump_yaml_to_string(rt_metadata),
                 )
             )
@@ -179,7 +249,7 @@ def _ripple_replacements(
             paper["updated-at"] = now
             n_changed += 1
 
-    return n_changed, staged, papers
+    return n_changed, staged, all_papers
 
 
 def _ripple_removals(
@@ -212,28 +282,27 @@ def _ripple_removals(
         (n_changed, staged_writes, all_papers_with_changes_applied)
 
     ``papers`` mirrors :func:`_ripple_replacements`: an already-loaded list
-    (INDEX projections suffice for membership), FORBIDDEN with
-    ``drop_project_keys`` for the same stray-key-probe reason.
+    (INDEX projections suffice for membership) used as a lookup over the
+    ``papers/`` walk in :func:`_papers_by_folder`, never as the enumeration
+    itself; FORBIDDEN with ``drop_project_keys`` for the same
+    stray-key-probe reason.
     """
-    if papers is None:
-        papers = list_papers(vault)
-    elif drop_project_keys:
+    if papers is not None and drop_project_keys:
         raise ValueError(
             "papers= must not be combined with drop_project_keys: the stray "
             "relevance-/priority-key probe needs full metadata, not INDEX "
             "projections."
         )
     staged: list[tuple[str, str]] = []
+    all_papers: list[dict[str, Any]] = []
     n_changed = 0
     now = now_iso()
     project_keys = tuple(
         f"{prefix}{value}" for prefix in _project_key_prefixes()
     )
 
-    for paper in papers:
-        paper_id = paper.get("id")
-        if not paper_id:
-            continue
+    for paper_dir, paper in _papers_by_folder(vault, papers):
+        all_papers.append(paper)
         values = paper.get(field) or []
         is_member = value in values
         # A paper is touched if it is a member OR (only on the project-rm path)
@@ -247,15 +316,14 @@ def _ripple_removals(
         )
         if not is_member and not has_stray_project_key:
             continue
-        meta_path = vault / "papers" / str(paper_id) / "metadata.yaml"
-        rt_metadata = load_yaml_or_raise(meta_path, _yaml)
+        rt_metadata = load_yaml_or_raise(paper_dir / "metadata.yaml", _yaml)
         if rt_metadata is None:
             continue
         changed = False
         current = rt_metadata.get(field) or []
         if not isinstance(current, list):
             raise TaxonomyError(
-                f"papers/{paper_id}/metadata.yaml field {field!r} is "
+                f"papers/{paper_dir.name}/metadata.yaml field {field!r} is "
                 f"{type(current).__name__}, not a list — refusing to ripple "
                 "(a scalar value would be corrupted character-by-character). "
                 "Fix the field by hand or via `lit modify`."
@@ -274,7 +342,7 @@ def _ripple_removals(
         rt_metadata["updated-at"] = now
         staged.append(
             (
-                f"papers/{paper_id}/metadata.yaml",
+                f"papers/{paper_dir.name}/metadata.yaml",
                 _dump_yaml_to_string(rt_metadata),
             )
         )
@@ -285,7 +353,7 @@ def _ripple_removals(
         paper["updated-at"] = now
         n_changed += 1
 
-    return n_changed, staged, papers
+    return n_changed, staged, all_papers
 
 
 def migrate_retired_priority(vault: Path) -> int:
