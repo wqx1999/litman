@@ -178,7 +178,7 @@ Both fields follow the link: `lit unlink` drops them, `lit project rename`
 carries them over, `lit project rm` removes them.
 
 A paper-level `priority` field existed until 1.3.6 and is retired; see the
-[changelog](../CHANGELOG.md).
+[changelog](changelog.md).
 
 #### Full example
 
