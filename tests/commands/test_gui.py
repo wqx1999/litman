@@ -36,6 +36,7 @@ from litman import cli
 from litman.commands import _mac_shell, gui
 from litman.commands.gui import (
     _DEFAULT_PORT,
+    _MAX_PORT,
     _app_window_argv,
     _find_free_port,
     _migrate_legacy_http_cache,
@@ -157,16 +158,46 @@ def test_gui_without_uvicorn_errors_with_hint(
 # ---------------------------------------------------------------------------
 
 
-def test_find_free_port_returns_default_when_free() -> None:
-    assert _find_free_port(_DEFAULT_PORT) == _DEFAULT_PORT
+def _bind_free_loopback_port(headroom: int = 0) -> socket.socket:
+    """Bind and listen on a kernel-chosen free loopback port; return the socket.
+
+    Probed instead of hardcoded to ``_DEFAULT_PORT``: that is the port the
+    product itself binds, so it is already taken on any machine running a
+    litman GUI, and a test keyed to it goes red for a reason that has nothing
+    to do with the finder.
+
+    ``headroom`` keeps that many ports above the chosen one inside the
+    finder's range, so a caller expecting it to step upward has somewhere to
+    step — the ephemeral range the kernel picks from reaches ``_MAX_PORT``
+    itself.
+    """
+    for _ in range(20):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        if sock.getsockname()[1] + headroom > _MAX_PORT:
+            sock.close()
+            continue
+        sock.listen(1)
+        return sock
+    raise AssertionError(
+        f"no free loopback port left with {headroom} port(s) of headroom "
+        f"below {_MAX_PORT}"
+    )
+
+
+def test_find_free_port_returns_start_when_free() -> None:
+    with _bind_free_loopback_port() as probe:
+        free = probe.getsockname()[1]
+    # Closed again, and nothing ever connected to it, so it skipped TIME_WAIT:
+    # the port is free at the moment the finder probes it.
+    assert _find_free_port(free) == free
 
 
 def test_find_free_port_increments_when_busy() -> None:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
-        occupied.bind(("127.0.0.1", _DEFAULT_PORT))
-        occupied.listen(1)
-        chosen = _find_free_port(_DEFAULT_PORT)
-    assert chosen >= _DEFAULT_PORT + 1
+    with _bind_free_loopback_port(headroom=1) as occupied:
+        busy = occupied.getsockname()[1]
+        chosen = _find_free_port(busy)
+    assert chosen >= busy + 1
 
 
 def test_find_free_port_binds_loopback_only() -> None:
