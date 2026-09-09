@@ -68,7 +68,6 @@ def _make_paper(
         "year": 2024,
         "doi": f"10.test/{paper_id}",
         "status": "inbox",
-        "priority": "B",
         "type": "research",
         "projects": projects or [],
         "topics": [],

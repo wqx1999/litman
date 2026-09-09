@@ -817,7 +817,6 @@ def _make_paper(vault: Path, paper_id: str, *, projects: list[str]) -> None:
         "year": 2024,
         "doi": f"10.test/{paper_id}",
         "status": "inbox",
-        "priority": "B",
         "type": "research",
         "projects": projects,
         "topics": [],
@@ -879,6 +878,161 @@ def test_project_drift_tty_heal_rebuilds_at_new_path(
     refs = new_dir / "litman_reflib" / "REFERENCES.md"
     assert refs.is_file()
     assert "p1" in refs.read_text(encoding="utf-8")
+
+
+def _expand_to_folder_copy(link: Path, source: Path) -> None:
+    """Do to one bridge what a copy tool does to the whole project directory:
+    replace the link with a real folder holding the vault entry's contents."""
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    assert remove_link_if_present(link)
+    shutil.copytree(source, link)
+
+
+def test_project_drift_tty_heal_says_what_it_did_with_folder_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The heal rebuilds the hub, so it can delete a folder copy or park one
+    under ``.trash/`` — and it has to say which.
+
+    Answering a new path after changing machines is how most people meet the
+    hub-folder handling at all. This arm used to do the work in silence: the
+    kept folder was named nowhere, and the replaced copies were not mentioned.
+    The health check later in the same run reported only *that* one folder was
+    parked, never which one or where it had been.
+    """
+    from litman.core.project_link import rebuild_all_project_links
+
+    parent = tmp_path / "vault_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="v", path=str(vault), is_active=True)]
+        )
+    )
+
+    old_dir = tmp_path / "pepforge_old"
+    old_dir.mkdir()
+    _write_config_with_project(vault, "pepforge", old_dir)
+    _make_paper(vault, "p1", projects=["pepforge"])
+    _make_paper(vault, "p2", projects=["pepforge"])
+    rebuild_all_project_links(vault, {"pepforge": str(old_dir)})
+
+    # The copy tool turned both bridges into real folders; one of them then
+    # got something the vault has never held.
+    for pid in ("p1", "p2"):
+        _expand_to_folder_copy(
+            old_dir / "litman_reflib" / pid, vault / "papers" / pid
+        )
+    (old_dir / "litman_reflib" / "p2" / "ON_THE_LAPTOP.md").write_text(
+        "written on the other machine\n", encoding="utf-8"
+    )
+
+    new_dir = tmp_path / "pepforge_new"
+    old_dir.rename(new_dir)
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: str(new_dir))
+
+    _drift.check_and_prompt_project_drift()
+
+    out = capsys.readouterr().out
+    flat = " ".join(out.split())
+    assert "replaced 1 folder copy with a link" in flat
+    assert "kept 1 folder that does not match the vault:" in flat
+
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "pepforge" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    # The path itself, not just the sentence: it is the only pointer the user
+    # gets to the folder, and it is printed unbroken.
+    assert str(kept[0]) in out
+    assert (kept[0] / "ON_THE_LAPTOP.md").is_file()
+    # p1 matched the vault, so it went back to being a link with no fuss.
+    assert is_portable_link(new_dir / "litman_reflib" / "p1")
+
+
+def test_bridge_drift_heal_says_what_it_did_across_every_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The bridge rebuild settles folders in every project at once, and the
+    report covers all of them.
+
+    This arm has no per-project block to hang the lines under — it prints one
+    "Rebuilt project links for N projects" — so the counts and the paths are
+    summed across the whole rebuild. Two projects, so a report that only ever
+    looked at the first one would show up here.
+    """
+    from litman.core.project_link import rebuild_all_project_links
+
+    parent = tmp_path / "vault_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _write_config_with_projects(vault, {"alpha": alpha, "beta": beta})
+    _make_paper(vault, "a1", projects=["alpha"])
+    _make_paper(vault, "a2", projects=["alpha"])
+    _make_paper(vault, "b1", projects=["beta"])
+    _make_paper(vault, "b2", projects=["beta"])
+    rebuild_all_project_links(
+        vault, {"alpha": str(alpha), "beta": str(beta)}
+    )
+
+    # Move the vault: every bridge in every project dangles at once.
+    moved_parent = tmp_path / "moved"
+    moved_parent.mkdir()
+    moved = moved_parent / vault.name
+    vault.rename(moved)
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="v", path=str(moved), is_active=True)]
+        )
+    )
+
+    # a1 stays a dangling link, which is what fires the check. The other three
+    # are folder copies: one per project holding something of the user's own
+    # (kept), and one that matches the vault exactly (replaced).
+    for project, pid in (("alpha", "a2"), ("beta", "b1"), ("beta", "b2")):
+        proj_dir = alpha if project == "alpha" else beta
+        _expand_to_folder_copy(
+            proj_dir / "litman_reflib" / pid, moved / "papers" / pid
+        )
+    for proj_dir, pid in ((alpha, "a2"), (beta, "b1")):
+        (proj_dir / "litman_reflib" / pid / "ON_THE_LAPTOP.md").write_text(
+            "written on the other machine\n", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
+
+    _drift.check_and_prompt_bridge_drift()
+
+    out = capsys.readouterr().out
+    flat = " ".join(out.split())
+    assert "Rebuilt project links" in flat
+    assert "replaced 1 folder copy with a link" in flat
+    # Plural, and both of them: summed across projects, not just the first.
+    assert "kept 2 folders that do not match the vault:" in flat
+
+    kept_root = moved / ".trash" / "replaced-folders"
+    kept = sorted(
+        p for p in kept_root.rglob("*") if (p / "ON_THE_LAPTOP.md").is_file()
+    )
+    assert len(kept) == 2
+    for path in kept:
+        assert str(path) in out
 
 
 def test_project_drift_tty_heal_multiple_projects_one_run(

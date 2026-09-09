@@ -657,7 +657,6 @@ def _seed_active_vault_with_dangling_bridge(
                 "year": 2024,
                 "doi": "10.test/p1",
                 "status": "inbox",
-                "priority": "B",
                 "type": "research",
                 "projects": ["pepforge"],
                 "topics": [],

@@ -96,7 +96,6 @@ def _seed_paper(vault: Path, paper_id: str, title: str = "Test") -> None:
         "title": title,
         "year": 2024,
         "status": "inbox",
-        "priority": "B",
         "type": "research",
         "doi": f"10.fake/{paper_id}",
         "projects": [],

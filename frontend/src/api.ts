@@ -244,7 +244,7 @@ export function fetchVaultVersion(): Promise<{ version: string }> {
   return getJSON<{ version: string }>('/api/vault-version')
 }
 
-/** The status/priority/type whitelists (+ allowsNone) backing the cockpit
+/** The status/type whitelists (+ allowsNone) backing the cockpit
  * dropdowns. Sourced from the server, never hard-coded here. */
 export function fetchFixedEnums(): Promise<FixedEnums> {
   return getJSON<FixedEnums>('/api/fixed-enums')
@@ -277,7 +277,7 @@ export function clearPins(): Promise<{ pins: string[] }> {
 }
 
 /** The body of a structured metadata write (one transaction). All optional;
- * `set` carries scalar fields (status/priority/type, and the edit dialog's
+ * `set` carries scalar fields (status/type, and the edit dialog's
  * title/year/journal/...), the tag maps carry topics/methods/data add/remove. */
 export interface MetadataWrite {
   set?: Record<string, string | null>
@@ -592,7 +592,7 @@ export function postSelfUpdate(): Promise<{ status: string; installer: string }>
 }
 
 /** What this host can do. Cheap enough to call on page load — unlike
- * `/api/health`, which is Tier-2 and only runs when the user opens the panel.
+ * `/api/health`, which is Tier-2 and waits for the first idle after boot.
  *
  * `links` is which folder-link mechanism works in the served vault: 'symlink'
  * (POSIX) and 'junction' (Windows) are both fully-functional silent states.
@@ -613,8 +613,9 @@ export function fetchCapabilities(): Promise<Capabilities> {
 
 /** Run every health-check probe and return the flat findings list — the pure-read
  * mirror of `lit health-check` (the GET never re-locks / fixes / stamps the
- * registry). On demand only (Tier-2: reads all metadata server-side), so the
- * caller fetches this when the user opens the health panel, never on page load. */
+ * registry). Tier-2 (reads all metadata server-side), so the caller fetches it
+ * once after first paint (idle-deferred), to fill the shield badge, and again
+ * on every panel open — never on focus / resync. */
 export function fetchHealth(): Promise<HealthIssue[]> {
   return getJSON<HealthIssue[]>('/api/health')
 }
@@ -789,12 +790,16 @@ export function linkProject(
   id: string,
   project: string,
   relevance?: string,
+  priority?: string,
 ): Promise<{ ok: boolean }> {
-  return mutateJSON(
-    `/api/paper/${encodeURIComponent(id)}/project`,
-    'POST',
-    relevance ? { project, relevance } : { project },
-  )
+  const body: { project: string; relevance?: string; priority?: string } = { project }
+  if (relevance) body.relevance = relevance
+  // Grades the paper FOR THIS PROJECT in the same request, so the panel's
+  // "pick a letter on an unlinked row" gesture is ONE write rather than a link
+  // followed by a metadata PUT (ADR-025 decision 5). The A/B/C range is core's
+  // answer; a bad value comes back as the backend's raw 400 message.
+  if (priority) body.priority = priority
+  return mutateJSON(`/api/paper/${encodeURIComponent(id)}/project`, 'POST', body)
 }
 
 /** Unlink a paper from a project through the `lit unlink` backend. */

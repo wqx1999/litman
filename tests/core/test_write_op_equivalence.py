@@ -56,12 +56,23 @@ _SCAN_NAMESPACES = (
 
 @pytest.fixture
 def count_scans(monkeypatch: pytest.MonkeyPatch):
-    """Count every full-vault ``list_papers`` scan, wherever it is called from."""
+    """Count every full-vault scan: ``list_papers`` wherever it is called from,
+    and separately the per-paper reads ``core/ripple``'s own folder walk does.
+
+    The second counter exists because the ripple stopped resolving write paths
+    through the declared ``id`` and now walks ``papers/`` itself, reading a
+    folder only when the caller's INDEX projection cannot account for it. That
+    read goes through ``read_metadata``, not ``list_papers``, so a change that
+    made it read every folder would leave ``n`` at zero while undoing exactly
+    what these tests protect. ``ripple_reads`` is only meaningful on the
+    taxonomy paths — ``migrate_retired_priority`` shares the import and reads
+    every paper by design.
+    """
     import importlib
 
-    from litman.core import document
+    from litman.core import document, ripple
 
-    counter = {"n": 0}
+    counter = {"n": 0, "ripple_reads": 0}
     real = document.list_papers
 
     def counting(vault: Path):
@@ -72,6 +83,14 @@ def count_scans(monkeypatch: pytest.MonkeyPatch):
         module = importlib.import_module(name)
         if getattr(module, "list_papers", None) is not None:
             monkeypatch.setattr(module, "list_papers", counting)
+
+    real_read = ripple.read_metadata
+
+    def counting_read(path: Path):
+        counter["ripple_reads"] += 1
+        return real_read(path)
+
+    monkeypatch.setattr(ripple, "read_metadata", counting_read)
     return counter
 
 
@@ -82,7 +101,6 @@ def _write_paper(
     topics: list[str] | None = None,
     methods: list[str] | None = None,
     status: str = "inbox",
-    priority: str = "B",
     projects: list[str] | None = None,
     relevance: dict[str, str] | None = None,
     related: list[str] | None = None,
@@ -106,7 +124,6 @@ def _write_paper(
         "data": [],
         "type": "research",
         "status": status,
-        "priority": priority,
         "read-date": None,
         "last-revisited": None,
         "related": related or [],
@@ -146,7 +163,6 @@ def seeded(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
         "2020_Alpha_One",
         topics=["deep-learning"],
         status="reading",
-        priority="A",
         projects=["alpha"],
         relevance={"alpha": "seed relevance note"},
         related=["2021_Beta_Two"],
@@ -156,7 +172,6 @@ def seeded(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
         "2021_Beta_Two",
         topics=["deep-learning", "peptides"],
         methods=["docking"],
-        priority="C",
         projects=["alpha"],
         relevance={"alpha": "second member"},
         related=["2020_Alpha_One"],
@@ -306,6 +321,9 @@ def test_taxonomy_rename_zero_scan_and_equivalent(seeded, count_scans) -> None:
     assert n_changed == 2
     assert referencing == ["2020_Alpha_One", "2021_Beta_Two"]
     assert count_scans["n"] == 0
+    # Every folder name here matches its declared id, so the ripple's walk is
+    # fully accounted for by the projection and reads nothing.
+    assert count_scans["ripple_reads"] == 0
 
     assert (vault / "views" / "by-topic" / "geometric-dl").is_dir()
     assert not (vault / "views" / "by-topic" / "deep-learning").exists()
@@ -317,6 +335,7 @@ def test_taxonomy_rm_value_zero_scan_and_equivalent(seeded, count_scans) -> None
     n_changed, _ = remove_taxonomy_value(vault, "methods", "docking")
     assert n_changed == 1
     assert count_scans["n"] == 0
+    assert count_scans["ripple_reads"] == 0
     assert not (vault / "views" / "by-method" / "docking").exists()
     _assert_equals_full_rebuild(vault, proj_dirs)
 
@@ -332,16 +351,19 @@ def test_taxonomy_rename_stale_index_falls_back(seeded, count_scans) -> None:
     _assert_equals_full_rebuild(vault, proj_dirs)
 
 
-def test_ripple_refuses_papers_with_relevance_probes(seeded) -> None:
+def test_ripple_refuses_papers_with_project_key_probes(seeded) -> None:
+    """The stray-key probe reads relevance-<x> AND priority-<x> off every
+    paper; an INDEX projection carries neither, so combining the two must stay
+    a hard error rather than a silently incomplete cascade."""
     vault, _ = seeded
-    with pytest.raises(ValueError, match="rename_relevance"):
+    with pytest.raises(ValueError, match="rename_project_keys"):
         _ripple_replacements(
             vault, "projects", {"alpha": "gamma"},
-            rename_relevance=True, papers=[],
+            rename_project_keys=True, papers=[],
         )
-    with pytest.raises(ValueError, match="drop_relevance"):
+    with pytest.raises(ValueError, match="drop_project_keys"):
         _ripple_removals(
-            vault, "projects", "alpha", drop_relevance=True, papers=[]
+            vault, "projects", "alpha", drop_project_keys=True, papers=[]
         )
 
 

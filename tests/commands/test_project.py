@@ -17,7 +17,9 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import checks
 from litman.core.config import load_config
+from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.taxonomy import parse_taxonomy
 from litman.exceptions import TaxonomyError
@@ -51,7 +53,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "inbox"),
-        "priority": fields.get("priority", "B"),
         "read-date": None,
         "last-revisited": None,
         "related": [],
@@ -64,6 +65,18 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
     yaml.default_flow_style = False
     with (paper_dir / "metadata.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(payload, f)
+
+
+def _append_keys(vault: Path, paper_id: str, keys: dict[str, str]) -> None:
+    """Append raw YAML keys to a fixture paper's metadata.yaml.
+
+    For the per-project annotations ``_write_paper`` does not model — the
+    variable-length ``priority-<project>`` / ``relevance-<project>`` keys.
+    """
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    with meta.open("a", encoding="utf-8") as f:
+        for key, value in keys.items():
+            f.write(f"{key}: {value}\n")
 
 
 def _write_relevance_orphan(vault: Path, paper_id: str, project: str) -> None:
@@ -99,7 +112,6 @@ def _write_relevance_orphan(vault: Path, paper_id: str, project: str) -> None:
         "data": [],
         "type": "research",
         "status": "inbox",
-        "priority": "B",
         "read-date": None,
         "last-revisited": None,
         "related": [],
@@ -898,6 +910,91 @@ def test_project_rename_relevance_orphan_without_projects_key_no_crash(
 
 
 # ---------------------------------------------------------------------------
+# The grade cascades with the project (ADR-025): rename carries it, rm drops it
+# ---------------------------------------------------------------------------
+
+
+def test_project_rename_carries_the_priority_grade(
+    vault: Path, proj_dir: Path
+) -> None:
+    """`priority-<old>` must follow the rename exactly as `relevance-<old>`
+    does — otherwise `lit project rename` strands the very orphan
+    `check_priority_orphan` then reports."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _append_keys(
+        vault, "2024_A", {"priority-pepforge": "A", "relevance-pepforge": "core"}
+    )
+
+    result = runner.invoke(
+        cli,
+        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    meta = _meta(vault, "2024_A")
+    assert meta["projects"] == ["pepcodec"]
+    assert "priority-pepforge" not in meta
+    assert meta["priority-pepcodec"] == "A"          # value preserved
+    assert meta["relevance-pepcodec"] == "core"      # unchanged behavior
+    assert checks.check_priority_orphan(vault, list_papers(vault)) == []
+
+
+def test_project_rm_drops_the_priority_grade(
+    vault: Path, proj_dir: Path
+) -> None:
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _append_keys(
+        vault, "2024_A", {"priority-pepforge": "A", "relevance-pepforge": "core"}
+    )
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    meta = _meta(vault, "2024_A")
+    assert meta["projects"] == []
+    assert "priority-pepforge" not in meta
+    assert "relevance-pepforge" not in meta
+    assert checks.check_priority_orphan(vault, list_papers(vault)) == []
+
+
+def test_project_rm_drops_a_stray_grade_with_no_membership(
+    vault: Path, proj_dir: Path
+) -> None:
+    """Same hand-edit orphan the relevance twin above covers: a `priority-<x>`
+    whose membership was already gone must not survive `project rm x`."""
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=[])
+    _append_keys(vault, "2024_A", {"priority-pepforge": "B"})
+
+    result = runner.invoke(
+        cli,
+        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "priority-pepforge" not in _meta(vault, "2024_A")
+
+
+# ---------------------------------------------------------------------------
 # rm: the warning block's path separator
 # ---------------------------------------------------------------------------
 
@@ -957,3 +1054,45 @@ def test_project_rm_warning_block_names_the_reflib_dir(
     unwrapped = result.output.replace("\n", "")
     assert str(proj_dir / "litman_reflib") in unwrapped
     assert "Nothing changed" in result.output
+
+
+def test_project_rename_reports_a_moved_aside_folder(
+    vault: Path, proj_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename rebuilds every project's hub, which can move a folder out of
+    the user's own directory. It says where it went."""
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    monkeypatch.setenv("COLUMNS", "400")
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj_dir),
+         "--library", str(vault)],
+    )
+    _write_paper(vault, "2024_A", projects=["pepforge"])
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    link = proj_dir / "litman_reflib" / "2024_A"
+    assert remove_link_if_present(link)
+    shutil.copytree(vault / "papers" / "2024_A", link)
+    (link / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli,
+        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "kept 1 folder that does not match the vault:" in flat
+    # Filed under the NEW name: the config key is renamed before the rebuild.
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "pepcodec" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "MY_NOTES.md").is_file()
+    assert is_portable_link(proj_dir / "litman_reflib" / "2024_A")

@@ -5,7 +5,8 @@ existing vault and unregister one without dropping to the CLI:
 
 * ``POST /api/vaults`` — pure registry append via ``core.vault_registry.add_vault``;
   never touches ``app.state.vault`` / the active flag (invariant #16, no second
-  write path). Happy register, non-vault dir → 400, duplicate name → 400.
+  write path). Happy register, non-vault dir → 400, duplicate name → 400,
+  already-registered directory → 400.
 * ``DELETE /api/vaults/{name}`` — unregister via ``remove_vault``; GUARDS the
   served vault (== ``app.state.vault``) with a 409 before any mutation, never
   deletes the directory on disk, unknown name → 400.
@@ -110,6 +111,26 @@ def test_post_vault_duplicate_name_400(tmp_path: Path) -> None:
     entry = find_by_name(load_registry(), "dupe")
     assert entry is not None
     assert Path(entry.path).resolve() == other.resolve()
+
+
+def test_post_vault_duplicate_path_400(tmp_path: Path) -> None:
+    """A folder already registered under another name → 400, carrying core's
+    verdict and the switch hint verbatim."""
+    served = create_vault(tmp_path, name="served")
+    target = create_vault(tmp_path, name="target")
+    _register(served, "served")
+    _register(target, "target")
+    app = create_app(served)
+
+    resp = TestClient(app).post(
+        "/api/vaults", json={"name": "clone", "path": str(target)}
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "already registered as 'target'" in detail
+    assert "lit vault use target" in detail
+    # Nothing landed under the rejected name.
+    assert find_by_name(load_registry(), "clone") is None
 
 
 def test_post_vault_missing_path_400(tmp_path: Path) -> None:

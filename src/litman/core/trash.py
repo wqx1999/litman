@@ -60,7 +60,11 @@ from litman.core.portable_link import (
     make_portable_link,
     remove_link_if_present,
 )
-from litman.core.project_link import CODE_SUBDIR
+from litman.core.project_link import (
+    CODE_SUBDIR,
+    REPLACED_FOLDERS_DIRNAME,
+    settle_hub_entry,
+)
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
 from litman.core.views import (
@@ -112,6 +116,18 @@ def _dump_rt_to_string(data: dict[str, Any]) -> str:
 _ENTRY_NAME_RE = re.compile(r"^(.+?)-(\d{8}T\d{6}Z)(?:-[0-9a-f]{4})?$")
 
 
+def is_trash_entry_name(name: str) -> bool:
+    """True if ``name`` is a restorable trash entry, not something else.
+
+    ``.trash/`` also holds ``<entry>.meta.yaml`` sidecars and the
+    ``replaced-folders/`` container that :func:`settle_hub_entry` fills. Every
+    walk of the directory asks here so "what counts as an entry" keeps being
+    one rule in one place — a second spelling of it is how a recoverable
+    paper becomes un-listable but still deletable (review F19).
+    """
+    return _ENTRY_NAME_RE.match(name) is not None
+
+
 @dataclass
 class TrashEntry:
     """One row of `lit trash list` output."""
@@ -153,6 +169,9 @@ class RestoreResult:
     repos_rebound: set[str] = field(default_factory=set)
     # projects whose symlink + REFERENCES were re-created.
     projects_rebuilt: set[str] = field(default_factory=set)
+    # project-hub folders the re-link had to preserve under .trash/ — the only
+    # copy of whatever was in them, so the caller reports the paths.
+    hub_moved_aside: list[str] = field(default_factory=list)
     # The post-restore paper list INDEX.json was rendered from — the caller
     # hands it to reconcile_derived so the derived rebuild does not re-scan
     # the vault (task-write-perf). May mix INDEX projections with the
@@ -272,6 +291,30 @@ def move_to_trash(
         raise
 
     return entry_path
+
+
+def count_replaced_folders(vault: Path) -> int:
+    """How many hub folders ``lit health-check --fix`` has preserved.
+
+    They live under ``.trash/replaced-folders/<project>/<hub>/`` and are NOT
+    trash entries: `lit trash list` and `lit trash restore` skip them on the
+    entry-name rule, because a folder that was in a link's way must never come
+    back to that position. `lit trash empty` still clears them — one recycle
+    bin, one way to empty it — so it needs to be able to see that there is
+    something to clear, even when no paper has been deleted.
+    """
+    root = _trash_dir(vault) / REPLACED_FOLDERS_DIRNAME
+    if not root.is_dir():
+        return 0
+    n = 0
+    for project_dir in root.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for hub_dir in project_dir.iterdir():
+            if not hub_dir.is_dir():
+                continue
+            n += sum(1 for child in hub_dir.iterdir() if child.is_dir())
+    return n
 
 
 def list_trash(vault: Path) -> list[TrashEntry]:
@@ -510,7 +553,7 @@ def _rebuild_project_links(
     restored_meta: dict[str, Any],
     paper_id: str,
     registry: dict[str, str],
-) -> set[str]:
+) -> tuple[set[str], list[str]]:
     """Re-create A's project symlinks + re-render REFERENCES.md (post-stage).
 
     Inverse of rm's ``_teardown_project_links``. For each project A names:
@@ -520,10 +563,12 @@ def _rebuild_project_links(
     A project not registered or whose dir is missing on disk is skipped
     (decision: P missing → skip) — A's own ``projects`` field is untouched.
 
-    Returns the set of project names actually rebuilt.
+    Returns the set of project names actually rebuilt, plus any hub folders
+    that had to be preserved under ``.trash/`` to free a link position.
     """
     code_clones = [str(r) for r in (restored_meta.get("code-clones") or [])]
     rebuilt: set[str] = set()
+    moved_aside: list[str] = []
     for project in restored_meta.get("projects") or []:
         project = str(project)
         project_dir_str = registry.get(project)
@@ -533,25 +578,43 @@ def _rebuild_project_links(
         if not project_dir.is_dir():
             continue
 
-        make_portable_link(
-            project_dir / LITERATURE_SUBDIR / paper_id,
-            (vault / "papers" / paper_id).resolve(),
+        paper_link = project_dir / LITERATURE_SUBDIR / paper_id
+        paper_target = (vault / "papers" / paper_id).resolve()
+        settled = settle_hub_entry(
+            paper_link,
+            paper_target,
+            vault=vault,
+            project=project,
+            hub=LITERATURE_SUBDIR,
         )
+        if settled.moved_to is not None:
+            moved_aside.append(str(settled.moved_to))
+        if not settled.position_occupied:
+            make_portable_link(paper_link, paper_target)
         for repo_name in code_clones:
             repo_target = (
                 vault / CODES_DIRNAME / repo_name / REPO_DIRNAME
             ).resolve()
             if not repo_target.exists():
                 continue
-            make_portable_link(
-                project_dir / CODE_SUBDIR / repo_name, repo_target
+            code_link = project_dir / CODE_SUBDIR / repo_name
+            settled = settle_hub_entry(
+                code_link,
+                repo_target,
+                vault=vault,
+                project=project,
+                hub=CODE_SUBDIR,
             )
+            if settled.moved_to is not None:
+                moved_aside.append(str(settled.moved_to))
+            if not settled.position_occupied:
+                make_portable_link(code_link, repo_target)
         try:
             write_references_md(vault, project, project_dir)
         except FileNotFoundError:
             continue
         rebuilt.add(project)
-    return rebuilt
+    return rebuilt, moved_aside
 
 
 def restore_from_trash(
@@ -700,7 +763,7 @@ def restore_from_trash(
         pass
 
     # Post-stage filesystem rebuild: project symlinks + REFERENCES.md.
-    projects_rebuilt = _rebuild_project_links(
+    projects_rebuilt, hub_moved_aside = _rebuild_project_links(
         vault, sealed_meta, paper_id, registry
     )
 
@@ -713,6 +776,7 @@ def restore_from_trash(
         dead_edges_dropped=dead_edges,
         repos_rebound=repos_rebound,
         projects_rebuilt=projects_rebuilt,
+        hub_moved_aside=hub_moved_aside,
         surviving_papers=surviving,
         restored_view_fields=view_fields_snapshot(sealed_meta),
     )
@@ -732,6 +796,11 @@ def empty_trash(vault: Path) -> int:
     the whole sweep midway, so the returned count reflects what was *actually*
     deleted rather than diverging from a confirmation prompt. A skipped entry
     stays in ``.trash/`` and is retried on the next ``lit trash empty``.
+
+    ``.trash/`` may also hold ``replaced-folders/`` — hub folders preserved by
+    ``lit health-check --fix``. One recycle bin, one way to empty it: the
+    container goes with everything else, but it is not an entry and is not
+    counted.
     """
     trash_root = _trash_dir(vault)
     if not trash_root.is_dir():
@@ -745,7 +814,11 @@ def empty_trash(vault: Path) -> int:
                 child.unlink()
             elif child.is_dir():
                 rmtree(child)
-                n += 1  # count only entry folders, never the sidecars
+                # Count only entry folders — never the sidecars, and never
+                # the replaced-folders/ container (emptied all the same, but
+                # it is not one of the entries the prompt counted).
+                if is_trash_entry_name(child.name):
+                    n += 1
         except OSError:
             continue
     return n

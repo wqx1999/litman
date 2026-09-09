@@ -78,7 +78,7 @@ interface Props {
   /** Full INDEX projection — backs the Manage dialog's per-value in-use count
    * ("used by N", problem 2) without an extra round-trip. */
   allPapers?: IndexPaper[]
-  /** status/priority/type whitelists for the dropdowns. */
+  /** status/type whitelists for the dropdowns. */
   fixedEnums?: FixedEnums | null
   /** Called after a successful structured write so the parent re-fetches the
    * cockpit paper AND the left list (status/read-date move smart-list members). */
@@ -93,24 +93,38 @@ interface Props {
    * (Phase 4) drive curation through. Null on unmount. */
   onRegisterHandle?: (handle: CockpitHandle | null) => void
   /** Report whether any cockpit-owned modal (a Tags field panel, the Manage
-   * dictionary dialog, the Unread confirm, or the Drop confirm) is open, so the
-   * shortcut dispatcher's modal guard can suppress global keys while one is up. */
+   * dictionary dialog, the Unread confirm, the Drop confirm, or the relation-
+   * remove confirm) is open, so the shortcut dispatcher's modal guard can
+   * suppress global keys while one is up. */
   onModalState?: (open: boolean) => void
 }
 
 /** A read-only chip group (relations / code-clones stay read-only in 3b). */
-function Chips({ values }: { values: string[] | undefined }) {
+function Chips({
+  values,
+  suffix,
+}: {
+  values: string[] | undefined
+  /** Optional trailing detail, appended as `value · suffix`. Projects use it
+   * for the per-project grade (ADR-025); an ungraded link returns null and the
+   * chip reads exactly as it always did. Read-only: this panel is the trash
+   * inspector, where nothing is editable. */
+  suffix?: (value: string) => string | null
+}) {
   if (!values || values.length === 0) return <span className="text-stone-400">—</span>
   return (
     <div className="flex flex-wrap gap-1">
-      {values.map((v) => (
-        <span
-          key={v}
-          className="rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
-        >
-          {v}
-        </span>
-      ))}
+      {values.map((v) => {
+        const extra = suffix?.(v)
+        return (
+          <span
+            key={v}
+            className="rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700"
+          >
+            {extra ? `${v} · ${extra}` : v}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -189,14 +203,22 @@ const SELECT_CLASS =
   'shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 ' +
   'focus:ring-accent-400 disabled:opacity-50'
 
-/** A single fixed-enum dropdown (status / priority / type). Options come from
- * `fixedEnums`; the unset option is offered only when `allowsNone`. */
+/** A single fixed-enum dropdown (status / type), and the per-project grade
+ * picker in the Projects panel. Options come from `fixedEnums` for the former
+ * and from PROJECT_GRADES for the latter; the unset option is offered only
+ * when `allowsNone`.
+ *
+ * `compact` shrinks it to sit at the right edge of a project row: auto width so
+ * it takes only what the current letter needs, leaving the rest of the 320px
+ * aside to the project name. */
 function EnumSelect({
   field,
   value,
   options,
   allowsNone,
   disabled,
+  compact,
+  selectRef,
   onPick,
 }: {
   field: string
@@ -204,19 +226,38 @@ function EnumSelect({
   options: string[]
   allowsNone: boolean
   disabled: boolean
+  compact?: boolean
+  selectRef?: React.Ref<HTMLSelectElement>
   onPick: (next: string | null) => void
 }) {
   // Empty string is the sentinel for "— (unset)"; a real value never is.
   const current = value ?? ''
   return (
     <select
+      ref={selectRef}
       aria-label={field}
-      className={SELECT_CLASS}
+      className={
+        compact
+          ? SELECT_CLASS.replace('w-full', 'w-auto').replace('px-2', 'px-1.5') +
+            ' text-xs'
+          : SELECT_CLASS
+      }
       value={current}
       disabled={disabled}
       onChange={(e) => onPick(e.target.value === '' ? null : e.target.value)}
     >
-      {allowsNone && <option value="">— (unset)</option>}
+      {allowsNone && <option value="">{compact ? '–' : '— (unset)'}</option>}
+      {!allowsNone && current === '' && (
+        // A select whose stored value is absent, on a field that offers no
+        // unset option. Without this the browser falls back to displaying the
+        // FIRST option, so a linked-but-ungraded project would read as an "A"
+        // that is not in the metadata — the panel would lie about the grade.
+        // Disabled: it can be left, never chosen. The GUI repairs the
+        // ungraded state (ADR-025 decision 5); it never creates one.
+        <option value="" disabled>
+          {compact ? '–' : '— (none)'}
+        </option>
+      )}
       {options.map((opt) => (
         <option key={opt} value={opt}>
           {opt}
@@ -225,6 +266,13 @@ function EnumSelect({
     </select>
   )
 }
+
+/** The per-project grade vocabulary (ADR-025). Not from `/api/fixed-enums`:
+ * that endpoint serves whole-field enums, and this one is keyed per project, so
+ * core exposes it as PROJECT_PRIORITY_VALUES rather than a dropdown whitelist.
+ * Three letters that only change with a code release, same as the enum lists
+ * this file already pins the ORDER of. */
+const PROJECT_GRADES = ['A', 'B', 'C']
 
 /** One pill in the Tags group: the field name plus a count badge when the field
  * has values. Clicking toggles the field's inline editor panel open/closed. A
@@ -267,6 +315,139 @@ function TagPill({
   )
 }
 
+/** One row of a TagPanel's value list.
+ *
+ * Two shapes. Without `onGrade` (topics / methods / data) it is what it always
+ * was: a single full-width button that toggles the value on the paper.
+ *
+ * With `onGrade` (projects only) it splits into a div carrying a name button
+ * and a grade `<select>` — buttons cannot nest, so the row itself stops being
+ * one. The name wraps instead of truncating (`break-words`, no `truncate`):
+ * project names are long and the aside is only 320px, and a name the user
+ * cannot read is worse than a taller row. `items-start` + `ml-auto shrink-0`
+ * keeps the dropdown pinned to the FIRST line while the name flows under it.
+ *
+ * The two link states differ deliberately (ADR-025 decision 5):
+ *   - linked   → options A/B/C, no "–". Clearing a grade is not a GUI gesture;
+ *                unlink is. The GUI only ever repairs the ungraded state that
+ *                the CLI and the migration can create, never creates one.
+ *   - unlinked → options –/A/B/C; picking a letter links AND grades in one
+ *                write. Clicking the name opens the picker instead of linking,
+ *                because requiring a grade at link time IS the gesture.
+ *
+ * An unlinked row whose project is unhealthy shows the badge and no dropdown:
+ * the link would be refused anyway. A LINKED unhealthy row keeps its dropdown —
+ * a grade is metadata and does not need the project directory to exist.
+ */
+function TagPanelRow({
+  value,
+  on,
+  health,
+  grade,
+  busy,
+  onToggle,
+  onGrade,
+}: {
+  value: string
+  on: boolean
+  health: ProjectHealth | null
+  grade: string | null
+  busy: boolean
+  onToggle: () => void
+  onGrade?: (value: string, grade: string) => void
+}) {
+  const selectRef = useRef<HTMLSelectElement>(null)
+  const badge = health && (
+    <span
+      className={`ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
+        health.tone === 'missing' ? 'text-rose-600' : 'text-amber-600'
+      }`}
+    >
+      {health.badge}
+    </span>
+  )
+
+  if (!onGrade) {
+    return (
+      <button
+        type="button"
+        disabled={busy}
+        title={health?.title}
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
+      >
+        <span className={`w-3 shrink-0 ${on ? 'text-accent-600' : 'text-transparent'}`}>
+          ✓
+        </span>
+        <span className="truncate">{value}</span>
+        {badge}
+      </button>
+    )
+  }
+
+  // Linking is refused for an unhealthy project, so an unlinked one gets no
+  // picker to offer a write that cannot land.
+  const gradable = on || health == null
+
+  return (
+    <div className="flex items-start gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-stone-100">
+      <span
+        className={`w-3 shrink-0 pt-0.5 ${on ? 'text-accent-600' : 'text-transparent'}`}
+      >
+        ✓
+      </span>
+      <button
+        type="button"
+        disabled={busy}
+        title={
+          health?.title ??
+          (on ? `Unlink ${value}` : `Grade to link this paper to ${value}`)
+        }
+        onClick={() => {
+          if (on) {
+            onToggle()
+            return
+          }
+          // Progressive enhancement: showPicker() is missing on older
+          // browsers, and a focused select is still keyboard-operable without
+          // it. The guard is a RUNTIME one — the typed DOM lib declares the
+          // method, so `'showPicker' in el` would narrow the else branch to
+          // `never` and hide the fallback from the compiler.
+          const el = selectRef.current
+          if (!el) return
+          if (typeof el.showPicker === 'function') el.showPicker()
+          else el.focus()
+        }}
+        className={`min-w-0 flex-1 whitespace-normal break-words text-left transition-colors disabled:opacity-50 ${
+          health ? 'text-amber-700' : 'text-stone-700'
+        }`}
+      >
+        {value}
+      </button>
+      {gradable ? (
+        <div className="ml-auto shrink-0">
+          <EnumSelect
+            field={`priority-${value}`}
+            value={grade}
+            options={PROJECT_GRADES}
+            // A linked row cannot go back to ungraded from here; an unlinked
+            // one shows "–" because it has no grade yet.
+            allowsNone={!on}
+            disabled={busy}
+            compact
+            selectRef={selectRef}
+            onPick={(next) => {
+              if (next != null) onGrade(value, next)
+            }}
+          />
+        </div>
+      ) : (
+        badge
+      )}
+    </div>
+  )
+}
+
 /** The inline editor panel for one tag field — a combobox (problem 3). The input
  * is search-only (never doubles as a create box); the list shows every registered
  * value (attached ones get a ✓, click to add/remove); a contextual "Create" row
@@ -283,6 +464,8 @@ function TagPanel({
   busy,
   onAdd,
   onRemove,
+  grade,
+  onGrade,
   onCreate,
   onManage,
   onClose,
@@ -301,6 +484,9 @@ function TagPanel({
   busy: boolean
   onAdd: (value: string) => void
   onRemove: (value: string) => void
+  /** See TagFieldConfig — projects only. */
+  grade?: (value: string) => string | null
+  onGrade?: (value: string, grade: string) => void
   /** Register-then-attach a brand-new taxonomy value (controlled-vocab fields). */
   onCreate?: (value: string) => void
   /** Open the dictionary editor for this field (controlled-vocab fields). */
@@ -350,36 +536,18 @@ function TagPanel({
             {vocabulary.length === 0 ? 'No values yet.' : 'No match.'}
           </div>
         )}
-        {filtered.map((v) => {
-          const on = attached.includes(v)
-          const health = note?.(v)
-          return (
-            <button
-              key={v}
-              type="button"
-              disabled={busy}
-              title={health?.title}
-              onClick={() => (on ? onRemove(v) : onAdd(v))}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
-            >
-              <span
-                className={`w-3 shrink-0 ${on ? 'text-accent-600' : 'text-transparent'}`}
-              >
-                ✓
-              </span>
-              <span className="truncate">{v}</span>
-              {health && (
-                <span
-                  className={`ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
-                    health.tone === 'missing' ? 'text-rose-600' : 'text-amber-600'
-                  }`}
-                >
-                  {health.badge}
-                </span>
-              )}
-            </button>
-          )
-        })}
+        {filtered.map((v) => (
+          <TagPanelRow
+            key={v}
+            value={v}
+            on={attached.includes(v)}
+            health={note?.(v) ?? null}
+            grade={grade?.(v) ?? null}
+            busy={busy}
+            onToggle={() => (attached.includes(v) ? onRemove(v) : onAdd(v))}
+            onGrade={onGrade}
+          />
+        ))}
         {isNew && (
           <button
             type="button"
@@ -422,6 +590,13 @@ type TagFieldConfig = {
   onRemove: (value: string) => void
   onCreate?: (value: string) => void
   onManage?: () => void
+  /** This paper's grade for `value`, or null when the link is ungraded.
+   * Supplied ONLY by projects — a grade is a property of a paper↔project link,
+   * and a topic/method/data tag has nothing to be graded against. */
+  grade?: (value: string) => string | null
+  /** Set the grade for `value`. On an already-linked project this is a
+   * metadata write; on an unlinked one it links AND grades in one request. */
+  onGrade?: (value: string, grade: string) => void
 }
 
 /** The "Tags" group (problem 1): collapses the four multi-value association
@@ -480,6 +655,8 @@ function TagGroup({
           busy={busy}
           onAdd={openCfg.onAdd}
           onRemove={openCfg.onRemove}
+          grade={openCfg.grade}
+          onGrade={openCfg.onGrade}
           onCreate={openCfg.onCreate}
           onManage={openCfg.onManage}
           onClose={() => onOpenKey(null)}
@@ -804,14 +981,38 @@ function DeleteValueConfirm({
   )
 }
 
+/** The five relation fields the cockpit renders, in display order. */
+type RelField =
+  | 'related'
+  | 'extends'
+  | 'extended-by'
+  | 'contradicts'
+  | 'contradicted-by'
+
+/** Where a removal on a REVERSE row has to be sent. The backend refuses a write
+ * that names a reverse field (ADR-012: those edges exist only as the mirror of
+ * a forward write), so removing `extended-by: A` while standing on B means
+ * writing A's `extends` with B's id — one request, both sides cleared in the
+ * same transaction. `related` is symmetric and needs no flip. */
+const REVERSE_TO_FORWARD = {
+  'extended-by': 'extends',
+  'contradicted-by': 'contradicts',
+} as const
+
 function Relations({
   paper,
   onOpenPaper,
+  onRemove,
+  busy,
 }: {
   paper: PaperMeta
   onOpenPaper: (id: string) => void
+  /** Absent on the trash inspector: relations there are read-only. */
+  onRemove?: (rel: RelField, id: string) => void
+  /** A structured write is in flight — the × stops taking clicks. */
+  busy?: boolean
 }) {
-  const groups: Array<[string, string[] | undefined]> = [
+  const groups: Array<[RelField, string[] | undefined]> = [
     ['related', paper.related],
     ['extends', paper.extends],
     ['extended-by', paper['extended-by']],
@@ -826,13 +1027,37 @@ function Relations({
         <div key={rel}>
           <span className="text-xs text-stone-500">{rel}: </span>
           {ids!.map((id) => (
-            <button
+            // The × is a SIBLING of the link, never nested inside it (buttons
+            // cannot nest), and it is always in the DOM — `opacity-0` rather
+            // than a conditional render keeps the box, so the id does not shift
+            // sideways on hover. A moving target is exactly how a click meant
+            // for the link lands on the delete.
+            <span
               key={id}
-              onClick={() => onOpenPaper(id)}
-              className="mr-1 text-xs text-accent-600 transition-colors hover:underline"
+              className="group/rel mr-1 inline-flex items-center gap-0.5"
             >
-              {id}
-            </button>
+              <button
+                onClick={() => onOpenPaper(id)}
+                className="text-xs text-accent-600 transition-colors hover:underline"
+              >
+                {id}
+              </button>
+              {onRemove && (
+                <button
+                  type="button"
+                  aria-label={`Remove ${rel} link to ${id}`}
+                  title="Remove link"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRemove(rel, id)
+                  }}
+                  className="px-0.5 text-xs leading-none text-stone-400 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/rel:opacity-100 disabled:opacity-0"
+                >
+                  ×
+                </button>
+              )}
+            </span>
           ))}
         </div>
       ))}
@@ -841,7 +1066,7 @@ function Relations({
 }
 
 /** The bibliographic scalars the edit dialog exposes, in display order.
- * `status`/`priority`/`type` are NOT here (they have dropdowns), nor are the
+ * `status`/`type` are NOT here (they have dropdowns), nor are the
  * taxonomy dicts (register-first chip flow) — this dialog is for the fields
  * whose only prior edit path was the CLI. `id` is deliberately absent: an id
  * change is `lit rename`'s cascade (wikilinks, back-references), not a field
@@ -1145,9 +1370,73 @@ function DropConfirm({
   )
 }
 
+/** Default-No confirm for removing one relation from the Relations row.
+ *
+ * The × that opens this is the cockpit's first one-click delete reachable from
+ * the main panel — every other destructive action sits behind a panel the user
+ * had to open first — and it sits a few pixels from a navigation link, so the
+ * three guards below are structural, not styling:
+ *   · Cancel is autofocused, so Return on a confirm nobody meant to open cancels;
+ *   · `useEscapeLayer` closes AND consumes Esc (an unconsumed Esc reaches the
+ *     host, where macOS reads it as "leave fullscreen");
+ *   · the caller keeps `pendingRel` in `modalOpen`, so global shortcuts stay
+ *     suppressed while this is up.
+ * Confirming goes through the existing putMetadata rmTag path (invariant #16),
+ * which removes the paired edge on the other paper in the same transaction.
+ * Wording stays short deliberately: no "cannot be undone", because it can — one
+ * `lit modify --add-tag` puts the pair back. */
+function RelationRemoveConfirm({
+  rel,
+  id,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  rel: RelField
+  id: string
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  useEscapeLayer(true, onCancel)
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      {...modalBackdropProps}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Remove this link?</h2>
+        <p className="mt-1.5 font-mono text-xs leading-relaxed text-stone-600">
+          {rel} → {id}
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Curation cockpit with structured write controls (Phase 3b/3c/3d).
  *
- * Dropdowns (status/priority/type), the collapsed Tags group (topics/methods/
+ * Dropdowns (status/type), the collapsed Tags group (topics/methods/
  * data/projects pills), and mutually-exclusive read/revisit buttons all dispatch
  * to the invariant #16
  * second-class write endpoints (the server runs the `lit` command backend). On
@@ -1303,9 +1592,6 @@ function ReadOnlyCockpit({
             <Field label="Status">
               <span className="text-stone-700">{paper.status || '—'}</span>
             </Field>
-            <Field label="Priority">
-              <span className="text-stone-700">{paper.priority || '—'}</span>
-            </Field>
             <Field label="Type">
               <span className="text-stone-700">{paper.type || '—'}</span>
             </Field>
@@ -1322,7 +1608,7 @@ function ReadOnlyCockpit({
               <Chips values={paper.data} />
             </Field>
             <Field label="Projects">
-              <Chips values={paper.projects} />
+              <Chips values={paper.projects} suffix={(v) => paper[`priority-${v}`] ?? null} />
             </Field>
             <Field label="Relations">
               <Relations paper={paper} onOpenPaper={onOpenPaper} />
@@ -1377,6 +1663,16 @@ function WriteCockpit({
   // drop is guarded (the Status dropdown drops without a prompt; the shortcut
   // needs the confirm). On confirm it calls the existing setEnum write path.
   const [showDrop, setShowDrop] = useState(false)
+  // The relation the user asked to remove, or null. `me` is the paper the ask
+  // was made ON, frozen at click time: the confirm can outlive the selection
+  // (the user clicks another paper in the left list with it up), and reading
+  // `paper.id` at confirm time would then delete the relation from whichever
+  // paper is showing now.
+  const [pendingRel, setPendingRel] = useState<{
+    me: string
+    rel: RelField
+    id: string
+  } | null>(null)
   // The currently-open pill in the Tags group (topics/methods/data/projects), or
   // null. One field at a time: opening one collapses the others (problem 1/3).
   const [openField, setOpenField] = useState<string | null>(null)
@@ -1401,6 +1697,7 @@ function WriteCockpit({
     if (citeWarnTimer.current) clearTimeout(citeWarnTimer.current)
     setShowUnread(false)
     setShowDrop(false)
+    setPendingRel(null)
     setOpenField(null)
     setManageField(null)
     setEditingMeta(false)
@@ -1467,7 +1764,7 @@ function WriteCockpit({
     }
   }
 
-  function setEnum(field: 'status' | 'priority' | 'type', next: string | null) {
+  function setEnum(field: 'status' | 'type', next: string | null) {
     if (!paper) return
     const id = paper.id
     runWrite(() => putMetadata(id, { set: { [field]: next } }))
@@ -1483,6 +1780,31 @@ function WriteCockpit({
     if (!paper) return
     const id = paper.id
     runWrite(() => putMetadata(id, { rmTag: { [field]: [value] } }))
+  }
+
+  // Remove the confirmed relation through the same rmTag write path the tag
+  // chips use. The other paper's paired edge goes in the SAME transaction
+  // server-side (ADR-012), so this is one request, never "delete here then
+  // delete there". A reverse row flips the originator (see REVERSE_TO_FORWARD);
+  // everything else writes the field it is standing on.
+  function doRemoveRelation() {
+    if (!pendingRel) return
+    const { me, rel, id: other } = pendingRel
+    setPendingRel(null)
+    if (rel === 'extended-by' || rel === 'contradicted-by') {
+      // 🔴 The flip is load-bearing, and nothing in the frontend can catch its
+      // loss: "simplifying" this to putMetadata(me, {rmTag: {[rel]: [other]}})
+      // type-checks, builds, and leaves the whole Python suite green — it only
+      // shows up at runtime as a 400 toast. The contract it depends on is
+      // pinned server-side by
+      // tests/server/test_server_structured.py::test_put_metadata_rm_reverse_field_400,
+      // which is the test to read before touching this branch.
+      runWrite(() =>
+        putMetadata(other, { rmTag: { [REVERSE_TO_FORWARD[rel]]: [me] } }),
+      )
+    } else {
+      runWrite(() => putMetadata(me, { rmTag: { [rel]: [other] } }))
+    }
   }
 
   // Inline-create: register the new taxonomy value first (invariant #2), then
@@ -1530,10 +1852,22 @@ function WriteCockpit({
     return allPapers.filter((p) => (p[field] ?? []).includes(value)).length
   }
 
-  function linkProj(project: string) {
+  /** Link + grade in ONE request (ADR-025 decision 5): the panel's unlinked
+   * row only ever links by picking a letter, so there is no ungraded link for
+   * the GUI to create. `vocabChanged` stays true — membership moved. */
+  function linkProj(project: string, grade?: string) {
     if (!paper) return
     const id = paper.id
-    runWrite(() => linkProject(id, project), true)
+    runWrite(() => linkProject(id, project, undefined, grade), true)
+  }
+
+  /** Regrade an ALREADY-linked project: metadata only, so no membership change
+   * and no vocab refresh. Core refuses a project the paper is not in, which is
+   * why the caller must never route an unlinked row here. */
+  function gradeProj(project: string, grade: string) {
+    if (!paper) return
+    const id = paper.id
+    runWrite(() => putMetadata(id, { set: { [`priority-${project}`]: grade } }))
   }
 
   function unlinkProj(project: string) {
@@ -1631,9 +1965,15 @@ function WriteCockpit({
   }, [onRegisterHandle])
 
   // Report cockpit-owned modal state up so the shortcut dispatcher's modal guard
-  // suppresses global keys while a confirm / dictionary / tag panel is open.
+  // suppresses global keys while a confirm / dictionary / tag panel is open —
+  // including the relation-remove confirm, whose × is reachable straight from
+  // the panel, so a stray ⌥D under it would stack a second dialog.
   const modalOpen =
-    showUnread || showDrop || manageField != null || openField != null
+    showUnread ||
+    showDrop ||
+    pendingRel != null ||
+    manageField != null ||
+    openField != null
   useEffect(() => {
     onModalState(modalOpen)
   }, [modalOpen, onModalState])
@@ -1810,20 +2150,6 @@ function WriteCockpit({
                 <span className="text-stone-400">{paper.status || '—'}</span>
               )}
             </Field>
-            <Field label="Priority">
-              {fixedEnums ? (
-                <EnumSelect
-                  field="priority"
-                  value={paper.priority}
-                  options={fixedEnums.priority.values}
-                  allowsNone={fixedEnums.priority.allowsNone}
-                  disabled={writing}
-                  onPick={(next) => setEnum('priority', next)}
-                />
-              ) : (
-                <span className="text-stone-400">{paper.priority || '—'}</span>
-              )}
-            </Field>
             <Field label="Type">
               {fixedEnums ? (
                 <EnumSelect
@@ -1954,11 +2280,25 @@ function WriteCockpit({
                   },
                   onAdd: linkProj,
                   onRemove: unlinkProj,
+                  grade: (name: string) => paper[`priority-${name}`] ?? null,
+                  // One entry point, two writes: an already-linked project is a
+                  // metadata edit, an unlinked one is link+grade in a single
+                  // request. Deciding here (not in the row) keeps the row
+                  // ignorant of the API shape.
+                  onGrade: (name: string, next: string) =>
+                    (paper.projects ?? []).includes(name)
+                      ? gradeProj(name, next)
+                      : linkProj(name, next),
                 },
               ]}
             />
             <Field label="Relations">
-              <Relations paper={paper} onOpenPaper={onOpenPaper} />
+              <Relations
+                paper={paper}
+                onOpenPaper={onOpenPaper}
+                onRemove={(rel, id) => setPendingRel({ me: paper.id, rel, id })}
+                busy={writing}
+              />
             </Field>
             <Field label="Code-clones">
               <CodeCloneChips
@@ -1988,6 +2328,16 @@ function WriteCockpit({
           busy={writing}
           onCancel={() => setShowDrop(false)}
           onConfirm={doDrop}
+        />
+      )}
+
+      {pendingRel && (
+        <RelationRemoveConfirm
+          rel={pendingRel.rel}
+          id={pendingRel.id}
+          busy={writing}
+          onCancel={() => setPendingRel(null)}
+          onConfirm={doRemoveRelation}
         />
       )}
 

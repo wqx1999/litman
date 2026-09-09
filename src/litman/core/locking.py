@@ -184,8 +184,15 @@ def _clear_readonly_onexc(func, path, _exc):  # type: ignore[no-untyped-def]
     on POSIX, where ``rmtree`` ignores a child file's mode (deletion is
     governed by the parent dir's write bit); harmless if the retry still fails,
     in which case the original error re-raises to the caller.
+
+    The bit is OR-ed onto the existing mode, never assigned: on POSIX
+    ``stat.S_IWRITE`` alone is ``0o200`` — write-only — so a tree this handler
+    touched but could not finish deleting was left un-listable and un-enterable
+    by its owner. That is survivable for vault-internal state but not for a
+    folder in the user's own project directory, which is where
+    ``settle_hub_entry`` now points this.
     """
-    os.chmod(path, stat.S_IWRITE)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
     func(path)
 
 

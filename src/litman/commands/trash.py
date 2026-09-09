@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import format_option, library_option, vault_option
 from litman.core.code import (
     CODES_DIRNAME,
@@ -41,6 +42,7 @@ from litman.core.locking import rmtree
 from litman.core.trash import (
     RestoreResult,
     TrashEntry,
+    count_replaced_folders,
     empty_trash,
     list_trash,
     resolve_trash_entry,
@@ -313,6 +315,11 @@ def trash_restore_cmd(
             f"[dim]({escape(', '.join(sorted(result.projects_rebuilt)))})[/]"
         )
 
+    # Only the move-aside (see commands/_hub_report): a preserved folder is the
+    # only copy of what was in it, so relocating it is never silent.
+    for line in hub_settlement_lines(0, result.hub_moved_aside):
+        console.print(f"  {line}", soft_wrap=True)
+
     # Step 3: re-clone any 1:1 hard-deleted repo (POST-transaction, may fail
     # without rolling back the restore).
     _handle_missing_repos(vault, result, skip_confirm=skip_confirm)
@@ -327,6 +334,26 @@ def trash_restore_cmd(
 # ---------------------------------------------------------------------------
 # empty
 # ---------------------------------------------------------------------------
+
+
+def _empty_subject(n_entries: int, n_kept: int) -> str:
+    """Name what `lit trash empty` is about to remove.
+
+    Two kinds of thing live in ``.trash/``: deleted papers, which can be
+    restored, and folders `lit health-check --fix` moved out of a project hub,
+    which cannot. One phrase, used by the dry-run header, the confirmation and
+    the success line, so the three can never disagree about the count.
+    """
+    parts = []
+    if n_entries:
+        parts.append(f"{n_entries} entr{'y' if n_entries == 1 else 'ies'}")
+    if n_kept:
+        parts.append(
+            f"{n_kept} replaced project folder{'' if n_kept == 1 else 's'}"
+        )
+    # Total on purpose: a caller that reaches zero of both still has to render
+    # a sentence, and an empty one reads as "( removed)".
+    return " + ".join(parts) or "nothing"
 
 
 @trash_group.command("empty")
@@ -360,14 +387,19 @@ def trash_empty_cmd(
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
-    if not entries:
+    # Folders `lit health-check --fix` moved out of a project hub. They are
+    # deliberately invisible to list / restore, so this is the only command
+    # that can clear them — it must not report an empty trash while they sit
+    # there (and, for a code hub, sync a whole repo checkout to the cloud).
+    n_kept = count_replaced_folders(vault)
+    if not entries and not n_kept:
         console.print("[dim](trash is already empty)[/]")
         return
 
     if dry_run:
         console.print(
             f"[bold]Would permanently delete[/] "
-            f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'} "
+            f"{_empty_subject(len(entries), n_kept)} "
             "[dim](dry-run)[/]"
         )
         for e in entries:
@@ -387,7 +419,7 @@ def trash_empty_cmd(
     # the warning block + a default-No prompt.
     warning_lines = [
         f"[bold yellow]About to permanently delete[/] "
-        f"{len(entries)} trash entr{'y' if len(entries) == 1 else 'ies'}:"
+        f"{_empty_subject(len(entries), n_kept)}:"
     ]
     for e in entries[:10]:
         warning_lines.append(
@@ -401,7 +433,20 @@ def trash_empty_cmd(
         return
 
     n = empty_trash(vault)
+    # Recounted, not assumed: empty_trash is best-effort per child, and the
+    # count it reports is what actually went. The folders answer the same way.
+    n_kept_removed = n_kept - count_replaced_folders(vault)
+    if not n and not n_kept_removed:
+        # A green tick over an empty trash that is still full is the one thing
+        # this must never print.
+        console.print(
+            "[yellow]Nothing was removed[/] — every entry is still locked or "
+            "unreadable.\n"
+            "[dim]Close anything using the vault, then run `lit trash empty` "
+            "again.[/]"
+        )
+        return
     console.print(
         f"[bold green]✓ Emptied[/] trash "
-        f"[dim]({n} entr{'y' if n == 1 else 'ies'} removed)[/]"
+        f"[dim]({_empty_subject(n, n_kept_removed)} removed)[/]"
     )

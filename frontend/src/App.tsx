@@ -88,7 +88,7 @@ const LINK_NOTICE_DISMISSED = 'litman.linkNoticeDismissed'
 // `p[f]` (string[]). Status is filtered in the `visible` pipeline like the rest
 // now — dropped is never hidden; every view (all/reading/recent-read) shows it,
 // muted, so a set-aside paper never vanishes from the list.
-const SINGLE_FILTER_FIELDS: Array<'priority' | 'type'> = ['priority', 'type']
+const SINGLE_FILTER_FIELDS: Array<'type'> = ['type']
 const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
   'topics',
   'methods',
@@ -157,14 +157,14 @@ const RESYNC_TAG_FIELDS: ReadonlyArray<{
 
 // Taxonomy keys the diff inspects (D3): `projects` is owned by the projects-
 // registry diff (so it is excluded here — no duplicate entry), and the fixed
-// enums (type/status/priority) are never diffed.
+// enums (type/status) are never diffed.
 const RESYNC_TAXONOMY_KEYS: ReadonlyArray<'topics' | 'methods' | 'data'> = [
   'topics',
   'methods',
   'data',
 ]
 
-/** Null/empty scalar → em dash (D7), e.g. `priority — → B`. */
+/** Null/empty scalar → em dash (D7), e.g. `status — → skim`. */
 function resyncScalar(v: string | null | undefined): string {
   return v == null || v === '' ? '—' : v
 }
@@ -199,8 +199,6 @@ function diffResync(
     if (!p) continue
     if (f.status !== p.status)
       add(`${id}: status ${resyncScalar(p.status)} → ${resyncScalar(f.status)}`)
-    if (f.priority !== p.priority)
-      add(`${id}: priority ${resyncScalar(p.priority)} → ${resyncScalar(f.priority)}`)
     if (f.type !== p.type)
       add(`${id}: type ${resyncScalar(p.type)} → ${resyncScalar(f.type)}`)
     const prevRead = p['read-date']
@@ -327,7 +325,7 @@ export default function App() {
   // restart and never leak across vaults (reloadForVault clears + refetches).
   const [pins, setPins] = useState<string[]>([])
   // Multi-dimensional client-side filters: one multi-select Set per field, over
-  // all six facet dimensions (status/priority/type single-value; topics/methods/
+  // all five facet dimensions (status/type single-value; topics/methods/
   // data array). Cross-dimension AND, within-dimension OR. `project` is NOT a
   // facet — it stays the top dropdown (single-select scope).
   const [filters, setFilters] = useState<Filters>(emptyFilters)
@@ -729,8 +727,9 @@ export default function App() {
         }, 3000)
       })
       .catch(() => {})
-    // Link-capability advisory: cheap (one cached probe server-side) so it
-    // can run on load, unlike the Tier-2 health panel. Best-effort — a failure
+    // Link-capability advisory: cheap (one cached probe server-side) so it runs
+    // inline with the rest of the boot fetches — unlike the Tier-2 health check,
+    // which also runs on load now but waits for idle. Best-effort — a failure
     // just leaves the notice off; it must never block or error the boot path.
     if (localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
       fetchCapabilities()

@@ -206,7 +206,9 @@ def test_add_writes_metadata_yaml_correctly(
     assert metadata["type"] is None
     # Default evaluation
     assert metadata["status"] == "inbox"
-    assert metadata["priority"] is None
+    # `priority` was retired (ADR-025): a fresh paper must not carry the key
+    # at all, or every `lit add` would plant a schema error.
+    assert "priority" not in metadata
     # Default relations
     assert metadata["related"] == []
     # Code-binding layer (M3 will populate via `lit code add`)
@@ -848,6 +850,64 @@ def test_add_scan_failure_does_not_block_ingest(
     assert (paper_dir / "notes.md").is_file()
     assert "Warning" in result.output
     assert "scan failed" in result.output
+
+
+def test_filler_author_warning_is_one_verdict_and_one_way_out(
+    vault: Path,
+    fake_pdf: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The filler-author warning carries a verdict and a way out, nothing else.
+
+    A user-facing message has a length budget: past it people stop reading, so
+    a sentence added "to be thorough" protects nobody. Why the add was NOT
+    blocked (a filler after the first author never reaches the id) is the half
+    a reader can go look up, and it lives in lit-library/SKILL.md.
+
+    What must survive every future trim is the ordering hint. `--add-tag`
+    appends, so that recipe moves a corrected name to the END of the list —
+    and the terminal, not the skill file, is where a human makes that mistake.
+
+    COLUMNS is set wide on purpose: Rich wraps to the console, and a wrapped
+    message would be measured one fragment at a time, which is no measurement
+    at all.
+    """
+    monkeypatch.setenv("COLUMNS", "400")
+    runner = CliRunner()
+    j = tmp_path / "meta.json"
+    j.write_text(
+        json.dumps({
+            "title": "A peptide paper",
+            "authors": ["Chen, Yi", "Unknown"],
+            "year": 2024,
+        }),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j),
+         "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    hits = [ln.strip() for ln in result.output.splitlines()
+            if "not a real name" in ln]
+    assert len(hits) == 1, result.output
+    msg = hits[0]
+
+    # 200 is the ceiling the budget allows; the command itself is most of it.
+    assert len(msg) <= 200, f"{len(msg)} chars: {msg}"
+
+    assert "Unknown" in msg
+    # WHICH author, without the list length: the position is what the reader
+    # acts on, the total is visible in the metadata they are about to rewrite.
+    assert "author 2" in msg and "of 2" not in msg
+    assert "lit modify" in msg and "--set-author" in msg
+    # The --add-tag trap: dropping this is what the length budget must not buy.
+    assert "in order" in msg
+    # Rationale that belongs to SKILL.md, not to every reader of every add.
+    assert "paper id is unaffected" not in msg
 
 
 # ---------------------------------------------------------------------------

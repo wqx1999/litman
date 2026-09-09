@@ -2,10 +2,121 @@
 
 Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/project/litman/).
 
-Versions follow [semantic versioning](https://semver.org/): a major release
-breaks something you relied on, a minor release opens a new way of working with
-litman, and a patch release is everything else — fixes, new controls, and
-conveniences.
+Version numbers follow how much a release changes for you, not how much work
+went into it: a minor release opens a way of working that litman did not have
+before, and everything else is a patch — however large it was to build.
+
+Anything that takes something out of your library is marked **Breaking** in its
+own entry. Read those before you upgrade, whatever the number says.
+
+## Unreleased
+
+### Added
+
+- **Remove a relation from the GUI.** In the cockpit's Relations row, hover a
+  linked paper id and click the `×` beside it, then confirm. The paired reverse
+  link on the other paper is removed in the same step, exactly as
+  `lit modify --rm-tag` does.
+
+### Changed
+
+- **Breaking: a paper's priority is now set per project.** The A/B/C grade used
+  to belong to the paper, so one letter had to stand for how much it mattered
+  everywhere at once. It now belongs to each project link, as
+  `priority-<project>`, and each project's `REFERENCES.md` groups by its own
+  letters. Grade a paper as you link it with
+  `lit link <id> --project <name> --priority A`, or later with
+  `lit modify <id> --set priority-<name>=A`. `lit list --priority A` finds
+  papers graded A by any of their projects; `--project <name>` narrows it to
+  one, and `lit export` filters the same way. In the web UI the grade moved
+  onto each row of the Projects list.
+
+  `lit health-check --fix` migrates an existing library in one step. Run
+  `lit health-check --all` first to see every paper it will touch. **A paper
+  that belongs to no project loses its grade** — link it to a project first if
+  you want to keep it, and take a backup before migrating.
+
+### Fixed
+
+- **A cloud-sync conflict no longer hides half a rename.** Sync can leave two
+  folders in the library holding the same paper — the original and a
+  "conflicted copy" beside it. `lit taxonomy rename`, `merge` and `rm`, and
+  `lit project rename` and `rm`, built each file's path out of the id written
+  inside the file, so they rewrote one of those folders twice, left the other
+  holding the old value, and still counted both as updated. They now go
+  through the folders themselves, so both halves of a conflicted copy are
+  rewritten and the number reported is the number of files.
+
+- **A project folder copied from another machine now repairs itself.** Copying a
+  project directory — over the network, onto a USB stick, out of a tar, through
+  cloud sync — turns every `litman_reflib/<id>` and `litman_code/<repo>`
+  shortcut into a real folder — holding a full copy of the vault entry, or,
+  if the tool did not follow the shortcut, holding nothing at all.
+  `lit health-check` used to call each of those shortcuts "missing" and `--fix`
+  then refused the folder with a permissions error per entry, leaving a dozen
+  directories to delete by hand. The check now says
+  `... is a folder copy, not a litman link (copied from another machine?)`, and
+  `--fix` clears them: a folder that matches the vault, or that is empty, is
+  replaced with the shortcut, and one that does not match it — a note you wrote
+  on the other machine, or a code checkout this machine never had — is kept
+  under `<vault>/.trash/replaced-folders/` and named in the output, so nothing
+  you wrote is thrown away. `lit trash empty` clears those folders; `lit trash
+  list` and `restore` never show them, because they must not come back.
+  `lit link` and `lit trash restore` handle the same folders the same way, and
+  so does the prompt that asks for the new location after a project directory
+  or the library has moved — the most likely place to meet any of this. The
+  path is printed on one line however narrow the terminal, so it can be pasted
+  as it stands. On a drive that cannot hold shortcuts at all (FAT32, exFAT,
+  network shares) the copies are left exactly where they are.
+
+- **The health badge no longer waits to be clicked.** The shield in the toolbar
+  showed nothing until you opened its panel, so a library problem could sit
+  there unseen for as long as you never thought to look. litman now runs the
+  check by itself once the window has finished drawing, and the shield carries
+  the count from then on. A library with nothing wrong still shows no badge at
+  all. The check repeats when you open the panel and when the vault changes; it
+  does not repeat every time you focus the window or refresh the list.
+
+- **A note on a highlight now shows wherever you hover it.** Writing a note on a
+  highlight or a drawing left it readable only while the Highlight, Text or Draw
+  tool was selected. In Cursor — the tool you actually read in — hovering that
+  same annotation showed nothing, whether you had just written the note or were
+  coming back to it days later. Hovering now surfaces the note in every tool, and
+  it steps out of the way while you drag to select text. Annotations without a
+  note still show nothing, and one you have open for editing keeps its note in
+  the editing panel rather than also floating it as a tooltip.
+
+- **One folder can no longer be registered as two vaults.** `lit vault add`
+  checked that the name was free and that the folder held a library, but not
+  whether that folder was already registered — so one library could answer to
+  `main` and `clone` at once and turn up twice in `lit vault list`. Adding a
+  folder that is already registered now says so and names the vault it is:
+  `That folder is already registered as 'main'. Switch to it with: lit vault use
+  main`. `lit vault set-path` is refused the same way when the new path is
+  another vault's folder, and so are both actions in the web UI. The comparison
+  resolves `..` and symlinks, and where the filesystem itself treats `Vault` and
+  `VAULT` as one folder it catches that too, so a detour or a different spelling
+  of the same folder is refused like any other duplicate. Moving a vault and
+  pointing it at its new folder works as before. A duplicate already in your
+  registry is left alone — drop the spare with `lit vault remove <name>`.
+
+- **An update that cannot work no longer pretends it can.** If you installed
+  litman straight from its git repository instead of from a release, `lit
+  self-update` and the app's update button used to announce a new version and
+  then fail out of sight — the reason buried in a log file, or the window
+  closing and coming back with nothing changed. Both now tell you up front that
+  this copy did not come from a release, and hand you the two commands that
+  reinstall it.
+
+- **The warning about a filler author is short enough to be read.** `lit add`
+  warns when the author list still holds an `Unknown` or `N/A` after the first
+  name. The message ran long enough that the half naming the repair sat past
+  the point where a person at a terminal stops reading. It now carries the
+  position that went wrong and the one command that fixes it, and stops:
+  `Warning: author 2 is 'Unknown', not a real name. Fix: lit modify <id>
+  --set-author "Family, Given" ... (repeat, in order).` The add still goes
+  through, as before — a filler after the first author never reaches the paper
+  id.
 
 ## 1.3.5 — 2026-08-09
 

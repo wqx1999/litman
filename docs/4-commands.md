@@ -121,11 +121,11 @@ lit vault remove <name> [-y]
 
 | Subcommand | What it does |
 |---|---|
-| `add <name> <path>` | Register an *existing* vault directory (must already contain `lit-config.yaml`). Does not create a vault — use `lit init` for that. |
+| `add <name> <path>` | Register an *existing* vault directory (must already contain `lit-config.yaml`, and must not already be registered under another name). Does not create a vault — use `lit init` for that. |
 | `use <name>` | Switch the active vault. |
 | `list` | Show every registered vault; the active one is marked `✓`, with path, paper count, and provenance. `--format json` emits one object per vault. |
 | `info <name>` | Show one vault's path, paper count, on-disk size, provenance, and active flag. |
-| `set-path <name> <new-path>` | Re-point `<name>` at a vault you have moved. The new path must already hold a `lit-config.yaml`. The name, the active flag, and the provenance note are kept. |
+| `set-path <name> <new-path>` | Re-point `<name>` at a vault you have moved. The new path must already hold a `lit-config.yaml` and must not be another registered vault's folder. The name, the active flag, and the provenance note are kept. |
 | `remove <name>` | Unregister `<name>`. The directory itself is **not** deleted. |
 
 `lit vault add` flags: `--import-from <text>` (free-form provenance note for a
@@ -261,7 +261,9 @@ List papers, optionally filtered. Filters are AND-combined across flags; within
 one flag, comma-separated values are OR-combined. Multi-valued fields
 (`topics` / `methods` / `projects` / `data`) match by list intersection;
 `--author` / `--title` use case-insensitive substring; `--year` / `--type` /
-`--status` / `--priority` match exact values.
+`--status` match exact values. `--priority` is per project: on its own it
+matches a paper graded so by **any** of its projects; with a single `--project`
+it matches only that project's grade.
 
 ```
 lit list
@@ -276,7 +278,7 @@ lit list --topic transformer --format json
 | `--year <v>` | Publication year. |
 | `--type <v>` | Paper type (research / review / position / ...). |
 | `--status <v>` | Status (deep-read / skim / inbox / dropped). |
-| `--priority <v>` | Priority (A / B / C). |
+| `--priority <v>` | Priority (A / B / C), per project — see above. Adding a single `--project` also adds a `Priority(<project>)` column to the table. |
 | `--topic <v>` | Match papers whose `topics` list contains the value. |
 | `--method <v>` | Match against the `methods` list. |
 | `--project <v>` | Match against the `projects` list. |
@@ -449,6 +451,11 @@ misread name leaves the correction at the end of the list — and if the name yo
 were fixing was the first author, that is also the name the paper id came from.
 `--set-author` states the whole list at once and is the only way to reorder it.
 
+`priority-<project>` is the one field `--set` will not clear: an ungraded link
+is simply the absent key, so `--set priority-<P>=` is refused, and `lit unlink`
+is what drops a grade. Grading a project the paper is not linked to is refused
+too — `lit link <id> --project <P> --priority A` links and grades in one step.
+
 ### `lit rename`
 
 Change a paper id, rippling the change everywhere: the renamed paper's metadata
@@ -528,9 +535,18 @@ Link a paper to a project: add the `projects` tag, write a folder link under
 project must be registered in `lit-config.yaml` (via `lit project add`) and its
 directory must exist on disk **before** linking.
 
+If a real folder already sits where a link belongs — a project directory copied
+from another machine turns every link into one — it is settled on the way: a
+copy that matches the vault, or is empty, is replaced with the link; one that
+does not match is kept under `<vault>/.trash/replaced-folders/` and named in the
+output. `--rebuild-all`, `lit refresh-views`, `lit trash restore`,
+`lit health-check --fix` and the prompt that asks where a project directory or
+the library moved to all do the same, and all say so.
+
 ```
 lit link <id> --project <name>
 lit link <id> --project <name> --relevance "Direct baseline"
+lit link <id> --project <name> --priority A
 lit link --rebuild-all
 ```
 
@@ -539,12 +555,13 @@ lit link --rebuild-all
 | `--paper-doi <doi>` | Look the paper up by DOI. Mutually exclusive with the positional id and `--rebuild-all`. |
 | `--project <name>` | Project name (must be registered in `lit-config.yaml`). |
 | `--relevance <text>` | Set the `relevance-<project>` field in one shot. Otherwise left untouched. |
+| `--priority <A\|B\|C>` | Grade the paper for this project (`priority-<project>`) in one shot. Otherwise the link is left ungraded. |
 | `--rebuild-all` | Cross-machine recovery: rebuild every project's links + `REFERENCES.md` from each paper's `projects` field. Skips `<id>` / `--project`. |
 
 ### `lit unlink`
 
 Reverse a link: drop the `projects` tag, the folder link, the `REFERENCES.md` entry,
-and (by default) the `relevance-<project>` field. Code links under the project
+the `priority-<project>` grade, and (by default) the `relevance-<project>` field. Code links under the project
 are removed only if no other linked paper there still references the same repo.
 
 ```
@@ -556,7 +573,7 @@ lit unlink <id> --project <name> --keep-relevance
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. |
 | `--project <name>` | Project to unlink from. **Required.** |
-| `--keep-relevance` | Preserve the `relevance-<project>` field. Default drops it (the value is echoed in the summary). |
+| `--keep-relevance` | Preserve the `relevance-<project>` field. Default drops it (the value is echoed in the summary). There is no equivalent for the grade: it always goes with the link. |
 
 ### `lit project`
 
@@ -654,7 +671,7 @@ lit taxonomy rm <dict> <value> [-y]
 | `rm <dict> <value>` | Remove a value, cascading the removal to every referencing paper. Lists them and prompts `y/N`; `-y` skips. With zero referencing papers it removes straight away — nothing cascades, and re-adding the value undoes it. |
 
 `projects` is not managed here — use `lit project` (it carries an on-disk path).
-The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
+The two fixed-enum dicts (`type`, `status`) are read-only through
 `lit taxonomy` and require a code release to extend. Never hand-edit
 `TAXONOMY.md` to rename or remove a value. See [3-concepts.md](3-concepts.md) §1.3.
 
@@ -666,8 +683,10 @@ The three fixed-enum dicts (`type`, `status`, `priority`) are read-only through
 
 Scan the whole vault for inconsistencies: dangling references, schema gaps, stale
 staging dirs, missing PDFs, missing discussion logs, dangling wikilinks, dangling
-vault-registry entries, missing project directories, and installed agent skills
-that are out of date with the running litman. Exits 0 on a clean vault, 1
+vault-registry entries, missing project directories, real folders sitting where
+a project's links belong (a project directory copied from another machine), a
+paper still carrying the retired paper-level `priority`, and installed agent
+skills that are out of date with the running litman. Exits 0 on a clean vault, 1
 if any error or warning is found (so it can gate cron / CI). `info` findings —
 notes about the host, such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
@@ -689,7 +708,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata), clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Two repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; and where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of
@@ -703,7 +722,8 @@ and it is what you want when working through one category paper by paper.
 Rebuild every derived artifact from `papers/*/metadata.yaml`, in order: (1)
 `INDEX.json` (paper summary + by-doi reverse map), (2) `views/by-*` link hubs
 (wiped and rebuilt, so stale tag buckets disappear), (3) each project's
-`litman_reflib/` links and `REFERENCES.md`. Per-project failures (missing
+`litman_reflib/` links and `REFERENCES.md` — a real folder sitting where a link
+belongs is settled as under `lit link`. Per-project failures (missing
 project dir on this machine) are skipped, not aborted.
 
 ```
@@ -716,7 +736,12 @@ regenerate wholesale.
 ### `lit trash`
 
 Manage the recoverable-delete bin under `<vault>/.trash/`, capped at 100 entries
-(`lit rm` evicts the oldest when full).
+(`lit rm` evicts the oldest when full). The bin also holds, under
+`.trash/replaced-folders/`, the project-hub folders a link rebuild moved aside
+because they did not match the vault. Those are not trash entries: `list` and
+`restore` never show them, `lit health-check` reports how many there are, and
+you copy anything you still want out of them by hand before `empty` removes
+them.
 
 ```
 lit trash list [--format json]
@@ -726,9 +751,9 @@ lit trash empty [--dry-run] [-y]
 
 | Subcommand | What it does |
 |---|---|
-| `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. |
+| `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. Kept project folders are not listed. |
 | `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting). |
-| `empty` | Permanently delete every trash entry. `--dry-run` lists what would be removed; `-y` skips the prompt. |
+| `empty` | Permanently delete every trash entry and every kept project folder. `--dry-run` lists the entries and counts the folders; `-y` skips the prompt. |
 
 ### `lit sync`
 
@@ -776,7 +801,7 @@ lit export --all --topic transformer --author wang
 | `--project <name>` | Export every paper linked to the project. Mutually exclusive with `--all`. |
 | `--all` | Export every paper in the vault. |
 | `-o`, `--output <file>` | Output path. Default `./refs.bib`. |
-| `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). |
+| `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). `--priority` is per project, exactly as in `lit list`. |
 | `--force` | Overwrite a target file even without the litman sentinel (typically a hand-edited `.bib`). |
 | `--format [bibtex]` | Output format. Only `bibtex` is implemented. |
 
@@ -904,9 +929,12 @@ Upgrade litman to the latest release on PyPI, through whichever tool installed
 it. It prints `current → latest`, asks once, then runs `uv tool upgrade litman`
 or `pipx upgrade litman`.
 
-Three installs it will not upgrade: an editable (development) checkout, a plain
-`pip install`, and a conda environment. Each one prints the command to run by
-hand instead. It never runs `pip install --upgrade` into the interpreter it is
+Four installs it will not upgrade: an editable (development) checkout, a plain
+`pip install`, a conda environment, and a copy installed from litman's git
+repository (or a local file) rather than from a release. Each one prints the
+command to run by hand instead — for the last, the pair that reinstalls it from
+PyPI: `uv tool uninstall litman && uv tool install litman`, or the `pipx`
+equivalent. It never runs `pip install --upgrade` into the interpreter it is
 running in.
 
 On Windows the upgrade starts the moment the command exits, so the prompt comes
@@ -915,7 +943,7 @@ The command prints the path of the log it writes.
 
 The Web UI does the same job without a terminal: when a new release is out, a
 chip with its version number appears next to the logo, and **Update & restart**
-closes litman, upgrades it, and reopens it. The same three installs are refused
+closes litman, upgrades it, and reopens it. The same four installs are refused
 there, with the reason shown in the chip.
 
 ```

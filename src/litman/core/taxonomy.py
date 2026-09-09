@@ -8,9 +8,11 @@ Two classes of dictionaries:
 
 * **User-extensible**: ``projects``, ``topics``, ``methods``, ``data`` —
   modifiable by ``lit taxonomy {add, rename, merge, rm}``.
-* **Fixed enums**: ``type``, ``status``, ``priority`` — read-only here;
-  changes require a code release because the application logic enums
-  must change in lockstep.
+* **Fixed enums**: ``type``, ``status`` — read-only here; changes require
+  a code release because the application logic enums must change in
+  lockstep. (``priority`` was one until ADR-025 retired it; an existing
+  vault's ``## priority`` section is simply not a known dict any more, and
+  is left where it is — see :func:`parse_taxonomy`.)
 
 The rewriter is surgical: it replaces only the body of one section and
 leaves the rest of the file (preamble paragraph, other sections, fixed-
@@ -38,7 +40,7 @@ from litman.core.views import (
 from litman.exceptions import TaxonomyError
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
-FIXED_DICTS: tuple[str, ...] = ("type", "status", "priority")
+FIXED_DICTS: tuple[str, ...] = ("type", "status")
 ALL_DICTS: tuple[str, ...] = USER_DICTS + FIXED_DICTS
 
 # Each user dict drives the like-named list field on metadata.yaml.
@@ -236,7 +238,7 @@ def validate_user_dict(dict_name: str) -> None:
     if dict_name in FIXED_DICTS:
         raise TaxonomyError(
             f"Cannot modify fixed-enum dict {dict_name!r}. "
-            "Fixed enums (type, status, priority) require a code release "
+            f"Fixed enums ({', '.join(FIXED_DICTS)}) require a code release "
             "because the app's enum lists must change in lockstep."
         )
     if dict_name not in USER_DICTS:
@@ -351,6 +353,21 @@ def remove_taxonomy_value(
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
         vault, USER_DICT_TO_METADATA_FIELD[dict_name], value, papers=papers
     )
+    # The views delta below reads `by_id`'s objects back after the ripple has
+    # mutated them in place. That holds only while the ripple's walk of
+    # papers/ stays on the objects it was handed: a folder the projection
+    # cannot account for — a sync conflict copy — is one the walk reads
+    # itself, so `by_id` never sees the change. A duplicate id is worse than
+    # that: one views symlink, two truths, and no single before/after pair
+    # reproduces what a wholesale rebuild computes. So the delta is used only
+    # when the walk came back with exactly these objects; anything else
+    # rebuilds views wholesale. That fires only on a vault
+    # `check_id_consistency` already reports as an error, and costs the
+    # healthy path nothing.
+    projection_objects = {id(entry) for entry in papers}
+    walk_stayed_on_projection = len(all_papers) == len(papers) and all(
+        id(entry) in projection_objects for entry in all_papers
+    )
     fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-rm-{dict_name}") as stage:
@@ -371,11 +388,15 @@ def remove_taxonomy_value(
             vault,
             papers=all_papers,
             project_refs=False,
-            views_delta=[
-                (pid, before[pid], view_fields_snapshot(by_id[pid]))
-                for pid in referencing
-                if pid in by_id
-            ],
+            views_delta=(
+                [
+                    (pid, before[pid], view_fields_snapshot(by_id[pid]))
+                    for pid in referencing
+                    if pid in by_id
+                ]
+                if walk_stayed_on_projection
+                else None
+            ),
         )
 
     return n_changed, referencing
@@ -448,6 +469,21 @@ def rename_taxonomy_value(
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
         vault, field, {old: new}, papers=papers
     )
+    # The views delta below reads `by_id`'s objects back after the ripple has
+    # mutated them in place. That holds only while the ripple's walk of
+    # papers/ stays on the objects it was handed: a folder the projection
+    # cannot account for — a sync conflict copy — is one the walk reads
+    # itself, so `by_id` never sees the change. A duplicate id is worse than
+    # that: one views symlink, two truths, and no single before/after pair
+    # reproduces what a wholesale rebuild computes. So the delta is used only
+    # when the walk came back with exactly these objects; anything else
+    # rebuilds views wholesale. That fires only on a vault
+    # `check_id_consistency` already reports as an error, and costs the
+    # healthy path nothing.
+    projection_objects = {id(entry) for entry in papers}
+    walk_stayed_on_projection = len(all_papers) == len(papers) and all(
+        id(entry) in projection_objects for entry in all_papers
+    )
     fresh_index = render_index(all_papers, now_iso())
 
     with staged_write(vault, op_id=f"taxonomy-rename-{dict_name}") as stage:
@@ -466,11 +502,15 @@ def rename_taxonomy_value(
             vault,
             papers=all_papers,
             project_refs=False,
-            views_delta=[
-                (pid, before[pid], view_fields_snapshot(by_id[pid]))
-                for pid in referencing
-                if pid in by_id
-            ],
+            views_delta=(
+                [
+                    (pid, before[pid], view_fields_snapshot(by_id[pid]))
+                    for pid in referencing
+                    if pid in by_id
+                ]
+                if walk_stayed_on_projection
+                else None
+            ),
         )
 
     return n_changed, referencing

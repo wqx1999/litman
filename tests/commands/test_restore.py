@@ -65,7 +65,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "inbox"),
-        "priority": fields.get("priority", "B"),
         "read-date": None,
         "last-revisited": None,
         "related": fields.get("related", []),
@@ -585,3 +584,86 @@ def test_trash_restore_simple_no_relations(vault: Path) -> None:
         e for e in (vault / TRASH_DIRNAME).iterdir() if e.is_dir()
     ]
     assert trash_dirs == []
+
+
+def test_restore_replaces_folder_copy_in_hub(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Restore rebuilds the project hubs, so it settles an expanded folder
+    sitting in the link position the same way every other rebuild does."""
+    project_dir = tmp_path / "myproj"
+    project_dir.mkdir()
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "projects: {}", f"projects:\n  myproj: {project_dir}"
+        ),
+        encoding="utf-8",
+    )
+    _write_paper(vault, "2024_Target", projects=["myproj"])
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
+    )
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+
+    stale = project_dir / "litman_reflib" / "2024_Target"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "notes.md").write_text("from the other machine\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert is_portable_link(stale)
+    aside_root = (
+        vault / TRASH_DIRNAME / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(aside_root.iterdir())
+    assert len(kept) == 1
+    assert (kept[0] / "notes.md").read_text(encoding="utf-8") == (
+        "from the other machine\n"
+    )
+
+
+def test_restore_reports_a_moved_aside_folder(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore re-links into the project hubs, so it can move a folder out of
+    the user's own directory — and then it has to say where it went."""
+    monkeypatch.setenv("COLUMNS", "400")
+    project_dir = tmp_path / "myproj"
+    project_dir.mkdir()
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "projects: {}", f"projects:\n  myproj: {project_dir}"
+        ),
+        encoding="utf-8",
+    )
+    _write_paper(vault, "2024_Target", projects=["myproj"])
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
+    )
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+
+    stale = project_dir / "litman_reflib" / "2024_Target"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "kept 1 folder that does not match the vault:" in flat
+    aside_root = (
+        vault / TRASH_DIRNAME / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(aside_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "MY_NOTES.md").is_file()

@@ -1,9 +1,11 @@
 """Tests for `litman.core.checks` schema validation.
 
 Focused on M29's split of fixed-enum fields into required (``status``) and
-optional (``priority`` / ``type``): None is a legitimate "not yet evaluated"
-state for the optional ones, but still an error for ``status``; non-None
-values must still be in the allowed whitelist for all three.
+optional (``type``): None is a legitimate "not yet evaluated" state for the
+optional one, but still an error for ``status``; non-None values must still be
+in the allowed whitelist for both. Plus the two halves of the retired
+paper-level ``priority`` (ADR-025): the retired key itself, and the value range
+of the ``priority-<project>`` keys that replace it.
 """
 
 from __future__ import annotations
@@ -44,7 +46,6 @@ def _minimal_paper(**overrides: object) -> dict[str, object]:
         "updated-at": "2024-01-01T00:00:00+00:00",
         "type": "research",
         "status": "inbox",
-        "priority": "B",
     }
     base.update(overrides)
     return base
@@ -91,13 +92,76 @@ def test_duplicate_doi_silent_when_dois_are_unique_or_absent(
 
 
 # ---------------------------------------------------------------------------
-# M29: None is OK for the optional fixed enums
+# ADR-025: the retired paper-level `priority`
 # ---------------------------------------------------------------------------
 
 
-def test_schema_priority_none_ok(vault: Path) -> None:
-    paper = _minimal_paper(priority=None)
+def test_schema_retired_priority_key_errors_whatever_the_value(
+    vault: Path,
+) -> None:
+    """The trigger is the KEY, not the letter. `lit add` used to write
+    `priority: null` for every unread paper, so a null must report and migrate
+    exactly like a graded one. (Linked paper: the paper-in-no-project variant
+    has its own message, pinned in test_health.py.)"""
+    for value in ("A", None):
+        issues = check_schema(
+            vault, [_minimal_paper(priority=value, projects=["pep"])]
+        )
+        assert len(issues) == 1, value
+        assert issues[0].category == "retired_priority"
+        assert issues[0].severity == "error"
+        assert issues[0].message == (
+            "field 'priority' was retired; use priority-<project>"
+        )
+        assert issues[0].hint == "`lit health-check --fix` migrates it in one step"
+
+
+def test_schema_per_project_priority_rejects_junk_but_allows_none(
+    vault: Path,
+) -> None:
+    """`priority-<project>` is A/B/C or null.
+
+    Null means "linked, not graded yet" (ADR-025 decision 5): the link happens
+    at ingest, the grade after reading, and health-check must not nag about the
+    gap. It also must not be an ERROR, because `lit modify --set priority-P=`
+    writes exactly that, nothing can delete a key, and a schema error blocks
+    `lit sync push` — there would be no way back.
+    """
+    for value in ("X", "", "a", 1):
+        issues = check_schema(
+            vault, [_minimal_paper(**{"priority-pep": value})]
+        )
+        assert len(issues) == 1, value
+        assert issues[0].category == "schema"
+        assert issues[0].severity == "error"
+        assert "'priority-pep'" in issues[0].message
+        assert "['A', 'B', 'C']" in issues[0].message
+
+    for value in ("A", "B", "C", None):
+        assert (
+            check_schema(vault, [_minimal_paper(**{"priority-pep": value})])
+            == []
+        ), value
+
+
+def test_schema_per_project_priority_clean_for_hyphenated_project(
+    vault: Path,
+) -> None:
+    """Project names carry hyphens; the prefix is stripped, never split on
+    "-", so `priority-binder-design` is one key for one project."""
+    paper = _minimal_paper(
+        **{
+            "projects": ["binder-design"],
+            "priority-binder-design": "A",
+            "relevance-binder-design": "core method",
+        }
+    )
     assert check_schema(vault, [paper]) == []
+
+
+# ---------------------------------------------------------------------------
+# M29: None is OK for the optional fixed enums
+# ---------------------------------------------------------------------------
 
 
 def test_schema_type_none_ok(vault: Path) -> None:
@@ -119,17 +183,6 @@ def test_schema_status_none_still_errors(vault: Path) -> None:
     assert issue.category == "schema"
     assert "status" in issue.message
     assert "missing" in issue.message
-
-
-def test_schema_priority_invalid_value_still_errors(vault: Path) -> None:
-    paper = _minimal_paper(priority="X")
-    issues = check_schema(vault, [paper])
-    assert len(issues) == 1
-    issue = issues[0]
-    assert issue.severity == "error"
-    assert issue.category == "schema"
-    assert "'X'" in issue.message
-    assert "['A', 'B', 'C']" in issue.message
 
 
 def test_schema_type_invalid_value_still_errors(vault: Path) -> None:
@@ -247,17 +300,27 @@ def test_taxonomy_drift_unreadable_file_emits_error(
 # ---------------------------------------------------------------------------
 
 
-def _healthy_paper_on_disk(vault: Path, paper_id: str) -> Path:
-    """Write a health-check-clean paper folder, return its path."""
+def _healthy_paper_on_disk(
+    vault: Path, paper_id: str, *, status: str = "inbox", extra: str = ""
+) -> Path:
+    """Write a health-check-clean paper folder, return its path.
+
+    ``status`` / ``extra`` let a caller make it deliberately unhealthy. They
+    are written INTO the file rather than appended by the caller: a second
+    ``status:`` line would be a duplicate YAML key, which ``list_papers``
+    drops as corrupt — the paper would then fail a completely different check
+    and the test would pass for the wrong reason.
+    """
     p = vault / "papers" / paper_id
     p.mkdir(parents=True, exist_ok=True)
     (p / "metadata.yaml").write_text(
         f"id: {paper_id}\n"
         "title: T\n"
         "year: 2024\n"
-        "status: inbox\n"
+        f"status: {status}\n"
         "created-at: '2024-01-01T00:00:00+00:00'\n"
-        "updated-at: '2024-01-01T00:00:00+00:00'\n",
+        "updated-at: '2024-01-01T00:00:00+00:00'\n"
+        f"{extra}",
         encoding="utf-8",
     )
     (p / "paper.pdf").write_bytes(b"%PDF-1.4\n%minimal\n")
@@ -332,6 +395,63 @@ def test_push_gate_excludes_unreadable_registry(
     assert all(i.category != "vault_registry_drift" for i in gate)
 
 
+def test_push_gate_excludes_the_retired_priority_field(vault: Path) -> None:
+    """An unmigrated vault must still be backup-able (ADR-025).
+
+    Between upgrading and running `--fix`, every paper carries the retired
+    key. Blocking `lit sync push` on that would take the cloud backup away
+    exactly when the user is about to migrate — and the spec's own manual
+    test tells them to push FIRST.
+    """
+    _healthy_paper_on_disk(vault, "p1", extra="priority: A\n")
+    papers = list_papers(vault)
+
+    all_issues = run_all_checks(vault, papers)
+    assert any(
+        i.category == "retired_priority" and i.severity == "error"
+        for i in all_issues
+    ), "fixture must actually trigger a retired-field error"
+
+    assert run_push_integrity_errors(vault, papers) == []
+
+
+def test_push_gate_still_blocks_a_broken_schema(vault: Path) -> None:
+    """The control for the exclusion above: a real schema error still blocks.
+
+    Without this, "the gate returned nothing" would be equally consistent
+    with having defeated the gate instead of carving out one category.
+    """
+    _healthy_paper_on_disk(vault, "p1", status="bogus")
+    papers = list_papers(vault)
+
+    gate = run_push_integrity_errors(vault, papers)
+    assert [i.category for i in gate] == ["schema"]
+    assert "'status'" in gate[0].message
+
+
+def test_push_gate_blocks_a_broken_schema_even_beside_a_retired_field(
+    vault: Path,
+) -> None:
+    """One paper, both findings, one check: `check_schema` emits `schema` AND
+    `retired_priority`, so the gate must filter per ISSUE. A spec-level skip
+    would drop the real error along with the retired one."""
+    _healthy_paper_on_disk(
+        vault, "p1", status="bogus", extra="priority: A\n"
+    )
+    papers = list_papers(vault)
+
+    # The premise, stated against the single check that owns both categories
+    # (the whole registry also reports klass-A views drift on a hand-written
+    # paper, which the spec-level skip already handles).
+    assert {i.category for i in check_schema(vault, papers)} == {
+        "schema",
+        "retired_priority",
+    }, "fixture must make ONE check emit both categories"
+
+    gate = run_push_integrity_errors(vault, papers)
+    assert [i.category for i in gate] == ["schema"]
+
+
 # ---------------------------------------------------------------------------
 # all_fixed_enums accessor (webUI /api/fixed-enums source, Phase 3b)
 # ---------------------------------------------------------------------------
@@ -341,16 +461,20 @@ def test_all_fixed_enums_shape_and_order() -> None:
     """The public accessor exposes the three enums in display order, agreeing
     with the per-field accessors the write path uses (one source, no drift)."""
     enums = all_fixed_enums()
-    assert set(enums) == {"status", "priority", "type"}
+    # `priority` is retired (ADR-025) and must simply be absent — this accessor
+    # backs GET /api/fixed-enums, so hard-indexing a retired field here would
+    # take the route down rather than drop a dropdown.
+    assert set(enums) == {"status", "type"}
+    assert fixed_enum_values("priority") is None
+    assert fixed_enum_allows_none("priority") is False
 
-    # status: curation lifecycle order (not alphabetical), required.
+    # status: curation lifecycle order (not alphabetical), required, first.
+    assert next(iter(enums)) == "status"
     assert enums["status"] == ["inbox", "skim", "deep-read", "dropped"]
     assert fixed_enum_allows_none("status") is False
 
-    # priority / type: sorted, optional (None legal).
-    assert enums["priority"] == ["A", "B", "C"]
+    # type: sorted, optional (None legal).
     assert enums["type"] == sorted(enums["type"])
-    assert fixed_enum_allows_none("priority") is True
     assert fixed_enum_allows_none("type") is True
 
     # Values agree with the private table via the per-field accessor.

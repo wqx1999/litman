@@ -65,16 +65,17 @@ not in a cleanup pass three months on.
 |---|---|---|---|
 | `type` | what kind of paper it is | `lit modify --set type=research` | fixed enum |
 | `status` | where it is in your reading | `lit skim` / `lit promote` / `lit drop` | fixed enum |
-| `priority` | how much it matters to you | `lit modify --set priority=A` | fixed enum (`A`/`B`/`C`) |
 | `topics` | subject matter | `lit modify --add-tag topics=peptide-design` | TAXONOMY (register first) |
 | `methods` | techniques used | `lit modify --add-tag methods=reinforcement-learning` | TAXONOMY (register first) |
 | `data` | datasets used | `lit modify --add-tag data=...` | TAXONOMY (register first) |
 | `projects` | which of your projects it belongs to | `lit link --project peptide-design` | project registry |
+| `priority-<project>` | how much it matters **to one project** | `lit link --project peptide-design --priority A` | fixed enum (`A`/`B`/`C`) |
 
-`type`, `status`, and `priority` take a value from a fixed list (see
+`type` and `status` take a value from a fixed list (see
 [3-concepts.md](3-concepts.md) §1.1). `topics`, `methods`, and `data` take any
 value you register first in the TAXONOMY ([3-concepts.md](3-concepts.md) §1.3).
-`projects` is set by linking, covered in step 8.
+`projects` and `priority-<project>` are both set by linking, covered in
+step 8.
 
 ---
 
@@ -320,8 +321,8 @@ agent) can read the conclusion without wading through the back-and-forth.
 As you understand the paper, record what it is, tag what it covers, and write your
 summary. This is the everyday curation the Web UI is built for.
 
-🖥️ **Web UI:** in the paper's context panel, set `type` and `priority` from their
-dropdowns and add `topics` / `methods` tags — type a new value and it is
+🖥️ **Web UI:** in the paper's context panel, set `type` from its dropdown and
+add `topics` / `methods` tags — type a new value and it is
 registered in the TAXONOMY on the spot. Write the summary straight into the notes
 tab. You are already reading the PDF right there, so nothing pulls you out of the
 paper. The bibliographic fields live behind the pencil in the METADATA header:
@@ -331,9 +332,9 @@ their handles — and one Save writes the lot. The paper id is shown but not
 editable there, because changing it is a rename that has to rewrite every
 reference to the paper; that stays `lit rename`'s job.
 
-🤖 **Agent:** *"PepINVENT is a research paper, priority A; tag topics
-peptide-design and de-novo-design, method reinforcement-learning; then summarize
-it into its notes"* → the skill registers any missing taxonomy values, sets the
+🤖 **Agent:** *"PepINVENT is a research paper; tag topics peptide-design and
+de-novo-design, method reinforcement-learning; then summarize it into its
+notes"* → the skill registers any missing taxonomy values, sets the
 fields, and drafts the summary into `notes.md`. Review and edit the draft; it is a
 starting point, not the final word.
 
@@ -346,7 +347,7 @@ the UI's type-a-new-value and the agent both do for you underneath):
 ```console
 $ lit taxonomy add topics peptide-design de-novo-design
 $ lit taxonomy add methods reinforcement-learning
-$ lit modify 2025_Geylan_PepINVENT --set type=research --set priority=A \
+$ lit modify 2025_Geylan_PepINVENT --set type=research \
     --add-tag topics=peptide-design --add-tag topics=de-novo-design \
     --add-tag methods=reinforcement-learning
 ```
@@ -363,7 +364,7 @@ creates a tracked cross-paper link (and `lit rename` keeps it valid if either id
 changes later).
 
 **To undo a tag or field:** `lit modify 2025_Geylan_PepINVENT --rm-tag
-topics=de-novo-design` removes one tag; `lit modify ... --set priority=` (empty
+topics=de-novo-design` removes one tag; `lit modify ... --set type=` (empty
 value) clears a scalar.
 
 ## 8. Finish: link to the project and clone the code
@@ -374,20 +375,24 @@ its code.
 🖥️ **Web UI:** mark the read complete and link the paper to `peptide-design` from
 the context panel — the read stamp and the project link are both there.
 
-🤖 **Agent:** *"I've finished PepINVENT — link it to peptide-design with relevance
-'Baseline macrocycle generator.' and clone its repo"* → the three commands below.
+🤖 **Agent:** *"I've finished PepINVENT — link it to peptide-design as an A with
+relevance 'Baseline macrocycle generator.' and clone its repo"* → the three
+commands below.
 
 ⌨️ **CLI:**
 
 ```console
 $ lit read 2025_Geylan_PepINVENT
-$ lit link 2025_Geylan_PepINVENT --project peptide-design --relevance "Baseline macrocycle generator."
+$ lit link 2025_Geylan_PepINVENT --project peptide-design --priority A --relevance "Baseline macrocycle generator."
 $ lit code add https://github.com/MolecularAI/PepINVENT --paper 2025_Geylan_PepINVENT
 ```
 
 `lit read` stamps `read-date` (the first-read marker). `lit link` tags the
 project, drops a reference under `~/projects/peptide-design/litman_reflib/`, and
-regenerates that project's `REFERENCES.md`. Cloning the code (`lit code add`) is an
+regenerates that project's `REFERENCES.md`. `--priority` grades the paper for
+that project — how much it matters *there*, so the same paper can be an `A` for
+one project and a `C` for another. Leave it off if you are not sure yet and set
+it later with `lit modify <id> --set priority-peptide-design=A`. Cloning the code (`lit code add`) is an
 agent/CLI step — it fetches a git repository into the vault and binds it to the
 paper in both directions at once.
 

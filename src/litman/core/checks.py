@@ -75,7 +75,12 @@ from litman.core.portable_link import (
 )
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
-from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES
+from litman.core.trash import (
+    TRASH_DIRNAME,
+    TRASH_MAX_ENTRIES,
+    count_replaced_folders,
+    is_trash_entry_name,
+)
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError, VaultRegistryError
 
@@ -160,12 +165,30 @@ class CheckSpec:
 # ``skill_drift`` is the fourth: re-copying the bundled skill files over a
 # stale installed copy is lossless (the installed dir is a deploy artifact;
 # user-added files next to SKILL.md are never touched).
+#
+# ``retired_priority`` is the fifth and it BREAKS that pattern — it is the
+# first arm that can lose data, so it is admitted on a different argument.
+# The migration copies the retired paper-level grade onto every project the
+# paper is linked to; a paper in NO project has nowhere to put it and the
+# letter is dropped outright (ADR-025 decision 6). What is lost is a value the
+# schema no longer has a place for: `priority` meant "important" with no "to
+# what", which `status` already carries for an unlinked paper. Leaving it
+# unfixed is not the safer option either — the field is retired, so every
+# paper still holding it is a permanent schema error, and the only other way
+# out is hand-editing every metadata.yaml.
+#
+# The consent this rests on is per-finding, not per-report: check_schema gives
+# a paper in NO project a different message, naming the drop. It deliberately
+# is not "the report lists every affected paper first" — _CATEGORY_PREVIEW
+# folds each category after 5 entries unless `--all` is passed, so on a
+# 21-paper library most are never printed by name.
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {
         "stale_staging",
         "orphan_trash_sidecar",
         "discussion_scaffold",
         "skill_drift",
+        "retired_priority",
     }
 )
 
@@ -215,16 +238,30 @@ _FIXED_ENUM_VALUES: dict[str, frozenset[str]] = {
         }
     ),
     "status": frozenset({"deep-read", "skim", "inbox", "dropped"}),
-    "priority": frozenset({"A", "B", "C"}),
 }
 
 # Fixed enums where ``None`` is a legitimate "not yet evaluated" state
-# rather than a schema error. M29: `priority` and `type` are personal-
-# evaluation fields the user fills after reading; `lit add` writes None,
-# and `lit-reading` B10 self-check is the surfacing path. ``status``
-# stays required (its "not yet evaluated" state is the explicit value
-# "inbox", not None).
-_OPTIONAL_FIXED_ENUMS: frozenset[str] = frozenset({"priority", "type"})
+# rather than a schema error. M29: `type` is a personal-evaluation field
+# the user fills after reading; `lit add` writes None, and `lit-reading`
+# B10 self-check is the surfacing path. ``status`` stays required (its
+# "not yet evaluated" state is the explicit value "inbox", not None).
+_OPTIONAL_FIXED_ENUMS: frozenset[str] = frozenset({"type"})
+
+# Per-project grade. Not a fixed enum in the table above: the key is
+# variable (priority-<project>), so it never enters the INDEX projection
+# and is validated per key below (schema) + per membership (orphan).
+# ``None`` is legal and means "linked, not graded yet" (ADR-025 decision 5):
+# a link happens at ingest, a grade after reading, so the gap is a real state
+# and health-check must not nag about it. The migration still never WRITES a
+# null — it drops the key instead — but `lit modify --set priority-<P>=`
+# produces one, and nothing can delete a key, so rejecting it would strand
+# the vault with an unfixable error that blocks `lit sync push`.
+PROJECT_PRIORITY_PREFIX = "priority-"
+PROJECT_PRIORITY_VALUES: frozenset[str] = frozenset({"A", "B", "C"})
+
+# Fields retired from the schema. Present => schema error + a one-Enter
+# `--fix` migration (apply_autofix). Permanent by design - see ADR-025.
+_RETIRED_FIELDS: dict[str, str] = {"priority": "priority-<project>"}
 
 
 def fixed_enum_values(field: str) -> frozenset[str] | None:
@@ -239,17 +276,28 @@ def fixed_enum_values(field: str) -> frozenset[str] | None:
     return _FIXED_ENUM_VALUES.get(field)
 
 
+def retired_field_replacement(field: str) -> str | None:
+    """What replaced ``field``, or ``None`` if ``field`` is not retired.
+
+    Read-only accessor over the private ``_RETIRED_FIELDS`` table, for the
+    same reason :func:`fixed_enum_values` exists: the write commands
+    (``lit modify --set``) must refuse exactly what the read-side
+    ``check_schema`` reports, without reaching into this module's privates.
+    """
+    return _RETIRED_FIELDS.get(field)
+
+
 def fixed_enum_allows_none(field: str) -> bool:
     """Whether ``field`` is a fixed enum for which ``None`` ("not yet
-    evaluated") is legal (``priority`` / ``type``; M29). ``status`` is not —
-    its unevaluated state is the explicit value ``inbox``."""
+    evaluated") is legal (``type``; M29). ``status`` is not — its
+    unevaluated state is the explicit value ``inbox``."""
     return field in _OPTIONAL_FIXED_ENUMS
 
 
 # Display order for ``status``: a curation lifecycle (inbox → skim → deep-read,
-# then dropped), not alphabetical. The other two have no natural order, so they
-# are sorted. This is the order the webUI dropdowns render (one source, not a
-# second list hard-coded in the frontend).
+# then dropped), not alphabetical. Every other fixed enum has no natural order,
+# so it is sorted. This is the order the webUI dropdowns render (one source, not
+# a second list hard-coded in the frontend).
 _STATUS_ORDER: tuple[str, ...] = ("inbox", "skim", "deep-read", "dropped")
 
 
@@ -257,16 +305,24 @@ def all_fixed_enums() -> dict[str, list[str]]:
     """Every fixed-enum field's allowed values, in display order.
 
     Public accessor over the private ``_FIXED_ENUM_VALUES`` table so the webUI
-    can populate its status / priority / type dropdowns from the SAME source
+    can populate its status / type dropdowns from the SAME source
     ``check_schema`` / ``lit modify --set`` validate against (no second list in
-    the frontend). ``status`` follows the curation-lifecycle order; ``priority``
-    and ``type`` are sorted. ``None``-as-legal is reported separately via
-    :func:`fixed_enum_allows_none`.
+    the frontend). ``status`` comes first, in curation-lifecycle order; every
+    other field follows, sorted by name, with its values sorted.
+    ``None``-as-legal is reported separately via :func:`fixed_enum_allows_none`.
+
+    Derived from the table rather than naming each field a second time:
+    hard-indexing it meant retiring a field (``priority``, ADR-025) raised
+    KeyError here — and this is what ``GET /api/fixed-enums`` returns.
     """
+    ordered = ["status", *sorted(f for f in _FIXED_ENUM_VALUES if f != "status")]
     return {
-        "status": list(_STATUS_ORDER),
-        "priority": sorted(_FIXED_ENUM_VALUES["priority"]),
-        "type": sorted(_FIXED_ENUM_VALUES["type"]),
+        field: (
+            list(_STATUS_ORDER)
+            if field == "status"
+            else sorted(_FIXED_ENUM_VALUES[field])
+        )
+        for field in ordered
     }
 
 # Forward + reverse relation fields (ADR-012). Sourced from the shared
@@ -299,7 +355,31 @@ _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
-    """Required fields present + non-empty; fixed enums in range."""
+    """Required fields present + non-empty; fixed enums in range.
+
+    Also covers the two halves of the retired paper-level ``priority``
+    (ADR-025): a surviving ``_RETIRED_FIELDS`` key, reported under its own
+    ``retired_priority`` category so ``--fix`` can offer the one-Enter
+    migration without marking the whole schema group fixable; and the value
+    range of each ``priority-<project>`` key that replaces it, where ``None``
+    is legal ("linked, not graded yet" — ADR-025 decision 5).
+
+    The retired-field finding has THREE wordings, because only one of them is
+    a warning and it has to stand out from the other two:
+
+    * linked → the grade moves onto each project link, nothing is lost;
+    * in no project, WITH a value → the grade has nowhere to go and ``--fix``
+      drops it. The only place that loss is disclosed
+      (see :data:`AUTO_FIXABLE_CATEGORIES`), so it must not be diluted;
+    * in no project, with no value → also nothing to lose. ``lit add`` wrote
+      ``priority: null`` for every unread paper, so this is the COMMON case,
+      not an edge one; telling those papers their value will be dropped both
+      lies and buries the papers that really do lose one.
+
+    "Has a value" is ``is not None`` — deliberately the same test
+    ``ripple.migrate_retired_priority`` uses to decide whether to copy
+    anything, so the warning and the behaviour cannot disagree.
+    """
     out: list[Issue] = []
     for p in papers:
         pid = p.get("id") or "(unknown)"
@@ -319,6 +399,32 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                         ),
                     )
                 )
+        for field, replacement in _RETIRED_FIELDS.items():
+            if field not in p:
+                continue
+            message = f"field {field!r} was retired; use {replacement}"
+            if p.get("projects"):
+                hint = "`lit health-check --fix` migrates it in one step"
+            elif p.get(field) is not None:
+                message = (
+                    f"field {field!r} was retired and this paper is in no "
+                    "project, so its value is dropped"
+                )
+                hint = (
+                    "`lit health-check --fix` drops it; `lit link` it to a "
+                    "project first to keep the grade"
+                )
+            else:
+                hint = "`lit health-check --fix` clears it — this one is unset"
+            out.append(
+                Issue(
+                    category="retired_priority",
+                    severity="error",
+                    paper_id=pid,
+                    message=message,
+                    hint=hint,
+                )
+            )
         for field, allowed in _FIXED_ENUM_VALUES.items():
             value = p.get(field)
             if value is None:
@@ -345,6 +451,28 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                             f"not in {sorted(allowed)}"
                         ),
                         hint=f"correct via `lit modify {pid} --set {field}=<value>`",
+                    )
+                )
+        # Per-project grade range. Not driven off _FIXED_ENUM_VALUES because
+        # the key is variable (priority-<project>) — the table is keyed by
+        # field name and is what the INDEX projection and the webUI dropdowns
+        # read, neither of which can hold a per-project key.
+        for key, value in p.items():
+            if not isinstance(key, str):
+                continue
+            if not key.startswith(PROJECT_PRIORITY_PREFIX):
+                continue
+            if value is not None and value not in PROJECT_PRIORITY_VALUES:
+                out.append(
+                    Issue(
+                        category="schema",
+                        severity="error",
+                        paper_id=pid,
+                        message=(
+                            f"field {key!r} has value {value!r}, "
+                            f"not in {sorted(PROJECT_PRIORITY_VALUES)}"
+                        ),
+                        hint=f"set with `lit modify {pid} --set {key}=<A|B|C>`",
                     )
                 )
         # Timestamp format (invariant #11 + review F9). The two technical
@@ -1879,6 +2007,34 @@ def check_project_path_exists(
     return out
 
 
+_FOLDER_COPY_HINT = (
+    "`lit health-check --fix` replaces it with a link; a copy that does not "
+    "match the vault is kept in .trash/"
+)
+
+
+def _folder_copy_issue(path: Path, paper_id: str | None, *, known: bool) -> Issue:
+    """A hub position holding a real folder where a litman link belongs.
+
+    Copy tools expand links, so this is what a project directory looks like
+    after it travels between machines. Reported as its own finding rather than
+    as "the link is missing": the position is occupied, and the old wording
+    sent the user looking for something that was never lost.
+    """
+    return Issue(
+        category="project_references",
+        severity="error",
+        paper_id=paper_id,
+        message=(
+            f"{path} is a folder copy, not a litman link "
+            "(copied from another machine?)"
+            if known
+            else f"{path} is a stale folder copy, not a litman link"
+        ),
+        hint=_FOLDER_COPY_HINT,
+    )
+
+
 def check_project_references(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -2003,10 +2159,15 @@ def check_project_references(
 
         # 2) litman_reflib/<id> link set vs membership.
         link_ids: set[str] = set()
+        foreign_dirs: set[str] = set()
         if reflib.is_dir():
             for entry in reflib.iterdir():
+                # is_portable_link first: a junction answers is_dir() True, so
+                # the other order files every Windows link as a folder copy.
                 if is_portable_link(entry):
                     link_ids.add(entry.name)
+                elif entry.is_dir():
+                    foreign_dirs.add(entry.name)
         for extra in sorted(link_ids - member_ids):
             out.append(
                 Issue(
@@ -2030,7 +2191,7 @@ def check_project_references(
         project_can_link = links_supported(project_dir)
 
         if project_can_link:
-            for missing in sorted(member_ids - link_ids):
+            for missing in sorted(member_ids - link_ids - foreign_dirs):
                 out.append(
                     Issue(
                         category="project_references",
@@ -2041,6 +2202,15 @@ def check_project_references(
                             f"link for {missing!r} but it is missing"
                         ),
                         hint="run `lit health-check --fix` to rebuild project links",
+                    )
+                )
+            for occupied in sorted(foreign_dirs):
+                known = occupied in member_ids
+                out.append(
+                    _folder_copy_issue(
+                        reflib / occupied,
+                        occupied if known else None,
+                        known=known,
                     )
                 )
 
@@ -2057,10 +2227,13 @@ def check_project_references(
                     expected_repos.add(str(repo_name))
         code_dir = project_dir / CODE_SUBDIR
         code_link_names: set[str] = set()
+        code_foreign_dirs: set[str] = set()
         if code_dir.is_dir():
             for entry in code_dir.iterdir():
                 if is_portable_link(entry):
                     code_link_names.add(entry.name)
+                elif entry.is_dir():
+                    code_foreign_dirs.add(entry.name)
         for extra in sorted(code_link_names - expected_repos):
             out.append(
                 Issue(
@@ -2075,7 +2248,9 @@ def check_project_references(
                 )
             )
         if project_can_link:
-            for missing in sorted(expected_repos - code_link_names):
+            for missing in sorted(
+                expected_repos - code_link_names - code_foreign_dirs
+            ):
                 out.append(
                     Issue(
                         category="project_references",
@@ -2086,6 +2261,14 @@ def check_project_references(
                             f"link for {missing!r} but it is missing"
                         ),
                         hint="run `lit health-check --fix` to rebuild project links",
+                    )
+                )
+            for occupied in sorted(code_foreign_dirs):
+                out.append(
+                    _folder_copy_issue(
+                        code_dir / occupied,
+                        None,
+                        known=occupied in expected_repos,
                     )
                 )
     return out
@@ -2262,17 +2445,31 @@ def check_project_bridge_dangling(
     return out
 
 
-def check_relevance_orphan(
-    vault: Path, papers: list[dict[str, Any]]
+def _prefix_key_orphans(
+    papers: list[dict[str, Any]],
+    *,
+    prefix: str,
+    category: str,
+    message: str,
+    hint: str,
 ) -> list[Issue]:
-    """``relevance-<project>`` field whose paper is not in that project (ledger #11).
+    """``<prefix><project>`` keys on a paper that is not in ``<project>``.
 
-    A ``relevance-<project>`` annotation on a paper whose ``projects`` list does
-    NOT contain ``<project>`` is an orphan (e.g. the paper was unlinked without
-    purging relevance, or a ``project rm``/``rename`` did not cascade). klass
-    B-auth: the relevance text is hand-authored, so this is **report-only** —
-    never auto-deleted. Full-tier (the ``relevance-*`` fields are not in the
-    INDEX projection).
+    Shared body of :func:`check_relevance_orphan` (ledger #11) and
+    :func:`check_priority_orphan` (its ``priority-<project>`` twin, ADR-025).
+    Both keys are per-project annotations written by the link path, so both
+    strand the same way — the paper was unlinked without purging the key, or a
+    ``project rm`` / ``rename`` did not cascade.
+
+    The project name is the key with ``prefix`` stripped, matched against the
+    ``projects`` list. Never a split on ``-``: real project names carry hyphens
+    (``binder-design``), so ``priority-binder-design`` names ONE project.
+
+    ``message`` and ``hint`` are per-caller, not built from a shared noun: the
+    relevance wording is the one this check has always emitted and must stay
+    byte-identical, and the repair differs anyway (authored prose that must
+    never be auto-deleted vs one letter ``lit unlink`` drops). Both are
+    templates over ``{pid}`` / ``{key}`` / ``{project}``.
     """
     out: list[Issue] = []
     for p in papers:
@@ -2281,29 +2478,74 @@ def check_relevance_orphan(
             continue
         member_projects = set(p.get("projects") or [])
         for key in p:
-            if not isinstance(key, str) or not key.startswith("relevance-"):
+            if not isinstance(key, str) or not key.startswith(prefix):
                 continue
-            project = key[len("relevance-"):]
+            project = key[len(prefix):]
             if not project:
                 continue
             if project not in member_projects:
                 out.append(
                     Issue(
-                        category="relevance_orphan",
+                        category=category,
                         severity="warning",
                         paper_id=str(pid),
-                        message=(
-                            f"{pid!r} has a {key!r} annotation but its projects "
-                            f"list does not contain {project!r} (orphan relevance)"
+                        message=message.format(
+                            pid=pid, key=key, project=project
                         ),
-                        hint=(
-                            f"`lit modify {pid} --add-tag projects={project}` to "
-                            f"re-link, or remove the {key} field by hand "
-                            "(authored text — never auto-deleted)"
-                        ),
+                        hint=hint.format(pid=pid, key=key, project=project),
                     )
                 )
     return out
+
+
+def check_relevance_orphan(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``relevance-<project>`` field whose paper is not in that project (ledger #11).
+
+    klass B-auth: the relevance text is hand-authored, so this is
+    **report-only** — never auto-deleted. Full-tier (the ``relevance-*`` fields
+    are not in the INDEX projection).
+    """
+    return _prefix_key_orphans(
+        papers,
+        prefix="relevance-",
+        category="relevance_orphan",
+        message=(
+            "{pid!r} has a {key!r} annotation but its projects "
+            "list does not contain {project!r} (orphan relevance)"
+        ),
+        hint=(
+            "`lit modify {pid} --add-tag projects={project}` to "
+            "re-link, or remove the {key} field by hand "
+            "(authored text — never auto-deleted)"
+        ),
+    )
+
+
+def check_priority_orphan(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``priority-<project>`` grade whose paper is not in that project (ADR-025).
+
+    Same klass/tier as its relevance twin above: the grade is authored, so this
+    reports rather than deleting. It stays even though ``lit unlink`` drops the
+    grade — this is the check for the unlink that did not clean up (hand-edit,
+    interrupted cascade), which is exactly what the relevance row covers too.
+    """
+    return _prefix_key_orphans(
+        papers,
+        prefix=PROJECT_PRIORITY_PREFIX,
+        category="priority_orphan",
+        message=(
+            "{pid!r} has a {key!r} grade but its projects "
+            "list does not contain {project!r} (orphan priority)"
+        ),
+        hint=(
+            "`lit modify {pid} --add-tag projects={project}` to re-link, or "
+            "`lit unlink {pid} --project {project}` to drop the grade"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2660,7 +2902,7 @@ def check_skill_drift(
 def check_trash_health(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
-    """Orphan sidecars + size warning for ``.trash/``."""
+    """Orphan sidecars, size warning, and preserved hub folders in ``.trash/``."""
     trash_root = vault / TRASH_DIRNAME
     if not trash_root.is_dir():
         return []
@@ -2669,7 +2911,11 @@ def check_trash_health(
     entry_dirs: dict[str, Path] = {}
     sidecars: dict[str, Path] = {}
     for child in trash_root.iterdir():
-        if child.is_dir():
+        # Filtered at the collection point rather than at the count: the
+        # replaced-folders/ container is a directory under .trash/ but is not
+        # an entry, and both readers below (orphan-sidecar membership, size
+        # warning) would otherwise each have to remember that.
+        if child.is_dir() and is_trash_entry_name(child.name):
             entry_dirs[child.name] = child
         elif child.is_file() and child.name.endswith(".meta.yaml"):
             entry_name = child.name[: -len(".meta.yaml")]
@@ -2701,6 +2947,32 @@ def check_trash_health(
                     f"auto-evicted at {TRASH_MAX_ENTRIES}"
                 ),
                 hint="run `lit trash empty` to clear it now",
+            )
+        )
+
+    # Folders `--fix` moved out of a project hub. Unlike a trash entry they
+    # have no cap, no eviction and no restore, and a litman_code one is a whole
+    # git checkout that `lit sync` pushes to the user's cloud — so the one dim
+    # line printed when it happened, which has long since scrolled away, cannot
+    # be the only place this is ever visible. Info, not a problem: the same
+    # tier as trash_size, and NEVER auto-fixable (decision #3 — the whole point
+    # of preserving them is that litman does not delete what it cannot vouch
+    # for).
+    n_kept = count_replaced_folders(vault)
+    if n_kept:
+        out.append(
+            Issue(
+                category="replaced_folders",
+                severity="info",
+                paper_id=None,
+                message=(
+                    f".trash/replaced-folders/ holds {n_kept} folder"
+                    f"{'s' if n_kept != 1 else ''} kept from project hubs"
+                ),
+                hint=(
+                    "copy anything you still want out of them, then "
+                    "`lit trash empty`"
+                ),
             )
         )
 
@@ -2984,6 +3256,14 @@ def check_code_clone_integrity(
 #       klass=B-auth, correction=annotate.
 #   relevance_orphan (#11) — authored relevance-<project> annotation orphaned
 #       from membership → klass=B-auth, report (never auto-delete authored text).
+#   priority_orphan — the same cross-entity reference for the paired
+#       priority-<project> grade (ADR-025) → klass=B-auth, report, tier=full
+#       (a variable-length key can never enter the INDEX projection, so this
+#       can never drop to Tier-1, invariant #15). The RETIRED paper-level
+#       `priority` it replaces is a different finding: check_schema reports it
+#       under `retired_priority`, and that one IS auto-fixable — see
+#       AUTO_FIXABLE_CATEGORIES for why the migration is admitted despite
+#       being the only lossy arm.
 #   taxonomy_drift (#10) / project_config_consistency (#8) /
 #       code_clone_integrity (#6a/#6b/#6c/#6d) — truth↔external/controlled-dict,
 #       litman cannot pick a side → klass=B-ext, correction=resolve. #6d is the
@@ -3060,6 +3340,9 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     ),
     CheckSpec(
         "relevance_orphan", check_relevance_orphan, "full", "B-auth", "report"
+    ),
+    CheckSpec(
+        "priority_orphan", check_priority_orphan, "full", "B-auth", "report"
     ),
     CheckSpec("taxonomy_drift", check_taxonomy_drift, "full", "B-ext", "resolve"),
     CheckSpec(
@@ -3150,8 +3433,12 @@ def run_all_checks(
 #     B), and the malformed-link error is a minor authored typo (annotate
 #     class), below the bar for blocking a whole-vault backup. Same-vault
 #     dangling links are warnings and never block regardless.
+#   - retired_priority: a schema-vintage marker, not damage. Every paper is
+#     readable and its grade intact, so an unmigrated vault mirrors losslessly
+#     — and the backup has to stay available across the upgrade window, which
+#     is exactly when the user has not run `--fix` yet (ADR-025).
 _PUSH_GATE_EXCLUDED_CATEGORIES: frozenset[str] = frozenset(
-    {"vault_registry_drift", "dangling_wikilinks"}
+    {"vault_registry_drift", "dangling_wikilinks", "retired_priority"}
 )
 
 
@@ -3172,6 +3459,12 @@ def run_push_integrity_errors(
     remaining checks (TRUTH validity, authored refs, governance) are returned;
     ``warning`` / ``info`` never block.
 
+    The exclusion set is consulted twice: per spec (a check whose registry
+    category is listed never runs) AND per emitted issue. One check can emit
+    several categories — ``check_schema`` emits both ``schema`` and
+    ``retired_priority`` — so only the issue-level pass can gate one and let
+    the other through.
+
     This is a different layer from atomic crash-safety: a torn atomic op
     (F3) is recovered at vault-open time and may leave no trace here, while
     this gate catches damage atomic recovery cannot (hand-edited broken
@@ -3181,7 +3474,12 @@ def run_push_integrity_errors(
     for spec in _CHECK_REGISTRY:
         if spec.klass == "A" or spec.category in _PUSH_GATE_EXCLUDED_CATEGORIES:
             continue
-        out.extend(i for i in spec.fn(vault, papers) if i.severity == "error")
+        out.extend(
+            i
+            for i in spec.fn(vault, papers)
+            if i.severity == "error"
+            and i.category not in _PUSH_GATE_EXCLUDED_CATEGORIES
+        )
     return out
 
 
@@ -3212,6 +3510,9 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
       non-default copy may be the one an agent actually reads — Cursor
       prefers the Claude dir over the open-standard one. The fix is wider
       than the check on purpose; the check keeps its default-dir-only probe.
+    * ``retired_priority`` — migrates the retired paper-level ``priority``
+      onto the per-project ``priority-<project>`` keys (ADR-025). The one arm
+      here that is not lossless; see :data:`AUTO_FIXABLE_CATEGORIES`.
     """
     counts: dict[str, int] = {}
 
@@ -3285,6 +3586,15 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
                 # re-offered on the next health-check.
                 continue
         counts["discussion_scaffold"] = n
+
+    if "retired_priority" in fixable_present:
+        # Local import: core.ripple reaches back into THIS module for
+        # PROJECT_PRIORITY_PREFIX, so importing it at the top would make
+        # checks <-> ripple a load-time cycle. Mirrors the lazy corrector
+        # imports in core/project_link.py.
+        from litman.core.ripple import migrate_retired_priority
+
+        counts["retired_priority"] = migrate_retired_priority(vault)
 
     if "stale_staging" in fixable_present:
         counts["stale_staging"] = cleanup_stale_staging(vault)

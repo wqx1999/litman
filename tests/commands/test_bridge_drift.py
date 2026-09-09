@@ -73,7 +73,6 @@ def _make_paper(vault: Path, paper_id: str, *, projects: list[str]) -> None:
         "year": 2024,
         "doi": f"10.test/{paper_id}",
         "status": "inbox",
-        "priority": "B",
         "type": "research",
         "projects": projects,
         "topics": [],

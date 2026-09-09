@@ -8,6 +8,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.document import list_papers
@@ -50,7 +51,7 @@ def refresh_views_cmd(
     # REFERENCES.md — otherwise a `refresh-views` left dangling/missing project
     # symlinks while only the text index was current. Links first, then refs
     # (same order as the shared reconcile_derived funnel).
-    rebuild_all_project_links(vault, config.projects)
+    link_results = rebuild_all_project_links(vault, config.projects)
     project_results = rebuild_all_project_refs(vault, config.projects)
 
     n = len(papers)
@@ -78,6 +79,16 @@ def refresh_views_cmd(
                 console.print(
                     f"  [red]{escape(project)}: error[/] — {escape(info['detail'])}"
                 )
+            # A folder deleted or moved in the user's own project dir is never
+            # silent, whichever command triggered the rebuild. Reported under
+            # every status: the links rebuild runs first and can settle a
+            # folder in a project whose REFERENCES.md then fails.
+            settled = link_results.get(project, {})
+            for line in hub_settlement_lines(
+                settled.get("n_replaced_copies", 0),
+                settled.get("aside_paths", []),
+            ):
+                console.print(f"    {line}", soft_wrap=True)
     elif config.projects:
         # registry has entries but rebuild returned nothing — should not happen
         console.print("[yellow]Project registry populated but no results.[/]")

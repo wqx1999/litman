@@ -7,7 +7,7 @@ write path:
 * ``PUT  /api/paper/{id}/metadata`` → ``_apply_modify`` (set / addTag / rmTag)
 * ``POST /api/paper/{id}/read``     → ``apply_read`` (idempotent first-read)
 * ``POST /api/paper/{id}/revisit``  → ``apply_revisit`` (presupposes a read)
-* ``GET  /api/fixed-enums``         → status/priority/type whitelists
+* ``GET  /api/fixed-enums``         → status/type whitelists
 
 The A4 assertion is "the backend actually ran": after a write we read both
 ``metadata.yaml`` (TRUTH) AND ``INDEX.json`` (DERIVED) and assert the index was
@@ -78,7 +78,7 @@ def _register_topic(vault: Path, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# PUT /metadata — set (status/priority/type dropdowns)
+# PUT /metadata — set (status/type dropdowns)
 # ---------------------------------------------------------------------------
 
 
@@ -102,18 +102,18 @@ def test_put_metadata_set_status_writes_backend_and_reprojects_index(
     assert _index_paper(vault, paper_id)["status"] == "deep-read"
 
 
-def test_put_metadata_unset_priority(vault_with_paper: tuple[Path, str]) -> None:
-    """An empty value unsets an optional fixed enum to null (priority/type)."""
+def test_put_metadata_unset_type(vault_with_paper: tuple[Path, str]) -> None:
+    """An empty value unsets an optional fixed enum to null (type)."""
     vault, paper_id = vault_with_paper
-    assert _meta(vault, paper_id)["priority"] == "B"  # fixture default
+    assert _meta(vault, paper_id)["type"] == "research"  # fixture default
 
     resp = _client(vault).put(
-        f"/api/paper/{paper_id}/metadata", json={"set": {"priority": ""}}
+        f"/api/paper/{paper_id}/metadata", json={"set": {"type": ""}}
     )
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "changed": True}
-    assert _meta(vault, paper_id)["priority"] is None
-    assert _index_paper(vault, paper_id)["priority"] is None
+    assert _meta(vault, paper_id)["type"] is None
+    assert _index_paper(vault, paper_id)["type"] is None
 
 
 def test_put_metadata_set_same_value_is_noop(
@@ -155,7 +155,7 @@ def test_put_metadata_unset_required_status_400(
     vault_with_paper: tuple[Path, str],
 ) -> None:
     """Unsetting a REQUIRED fixed enum (status) is rejected — an empty value may
-    only clear the optional enums (priority/type). The backend's required-field
+    only clear the optional enums (type). The backend's required-field
     guard is enforced through the endpoint, not bypassed; status untouched."""
     vault, paper_id = vault_with_paper
     before = _meta(vault, paper_id)["status"]
@@ -558,15 +558,15 @@ def test_get_fixed_enums(vault_with_paper: tuple[Path, str]) -> None:
     resp = _client(vault).get("/api/fixed-enums")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"status", "priority", "type"}
+    # `priority` is gone: retired from the schema (ADR-025), and this route is
+    # the reason all_fixed_enums must be derived from the table, not indexed.
+    assert set(body) == {"status", "type"}
 
     # status: required (no unset), curation-lifecycle order.
     assert body["status"]["allowsNone"] is False
     assert body["status"]["values"] == ["inbox", "skim", "deep-read", "dropped"]
 
-    # priority / type: optional (offer an unset), sorted values.
-    assert body["priority"]["allowsNone"] is True
-    assert body["priority"]["values"] == ["A", "B", "C"]
+    # type: optional (offer an unset), sorted values.
     assert body["type"]["allowsNone"] is True
     assert "research" in body["type"]["values"]
     assert body["type"]["values"] == sorted(body["type"]["values"])
@@ -886,7 +886,6 @@ def _seed_second_paper(vault: Path, paper_id: str) -> None:
         "data: []\n"
         "type: research\n"
         "status: inbox\n"
-        "priority: B\n"
         "read-date:\n"
         "last-revisited:\n"
         "related: []\n"
@@ -1448,3 +1447,416 @@ def test_put_active_vault_empty_name_400(tmp_path: Path) -> None:
     v1, _v2 = _two_registered_vaults(tmp_path)
     resp = TestClient(create_app(v1)).put("/api/vaults/active", json={"name": ""})
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# ADR-025 — the per-project grade over the API
+#
+# The theme of this block: the server adds NO validation of its own. Every
+# refusal below is core's, arriving verbatim, because the GUI must never open
+# a second write path (invariant #16). Each test therefore asserts the
+# message TEXT, not just the status code — a server-side reimplementation
+# would pass a 400-only assertion while drifting from what the CLI says.
+# ---------------------------------------------------------------------------
+
+
+def _linked_paper(vault: Path, paper_id: str, project_dir: Path) -> None:
+    _register_project(vault, "pepforge", project_dir)
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_put_metadata_retired_priority_is_400_with_the_cli_wording(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority": "A"}}
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "Cannot --set 'priority': retired" in detail
+    assert "priority-<project>" in detail
+    assert "priority" not in _meta(vault, paper_id)
+
+
+def test_put_metadata_priority_for_an_unlinked_project_is_400(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The membership refusal is core's (`_apply_set_op`), not a copy here."""
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-nosuch": "A"}}
+    )
+    assert resp.status_code == 400
+    assert "not linked to 'nosuch'" in resp.json()["detail"]
+    assert "priority-nosuch" not in _meta(vault, paper_id)
+
+
+def test_put_metadata_priority_out_of_range_is_400(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": "Q"}}
+    )
+    assert resp.status_code == 400
+    assert "Invalid priority-pepforge 'Q'" in resp.json()["detail"]
+
+
+def test_put_metadata_empty_priority_is_400_not_a_null_grade(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """`{"priority-P": ""}` is the shape the cockpit would send for an "unset"
+    dropdown entry. There is no such entry by design: absence is the ungraded
+    form, so the API must refuse to write a null rather than invent one."""
+    vault, paper_id = vault_with_paper
+    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": ""}}
+    )
+    assert resp.status_code == 400
+    assert "absent key" in resp.json()["detail"]
+    assert "priority-pepforge" not in _meta(vault, paper_id)
+
+
+def test_put_metadata_priority_for_a_linked_project_is_written(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": "B"}}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "changed": True}
+    assert _meta(vault, paper_id)["priority-pepforge"] == "B"
+    # Not in the INDEX projection — variable-width keys never are (ADR-025).
+    assert "priority-pepforge" not in _index_paper(vault, paper_id)
+
+
+def test_post_project_links_and_grades_in_one_request(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Decision 5's gesture: picking a letter on an UNLINKED panel row is one
+    write, not a link followed by a metadata PUT."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "A"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    meta = _meta(vault, paper_id)
+    assert meta["projects"] == ["pepforge"]
+    assert meta["priority-pepforge"] == "A"
+
+
+def test_post_project_without_priority_links_ungraded(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+    )
+    assert resp.status_code == 200, resp.text
+    meta = _meta(vault, paper_id)
+    assert meta["projects"] == ["pepforge"]
+    assert not any(k.startswith("priority") for k in meta)
+
+
+def test_post_project_out_of_range_priority_is_400_from_core(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """Only the TYPE is checked in the handler; the A/B/C range is core's, so
+    the client sees exactly what `lit link --priority Q` prints."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "Q"},
+    )
+    assert resp.status_code == 400
+    assert "Invalid priority 'Q'" in resp.json()["detail"]
+    assert "A, B, C" in resp.json()["detail"]
+    # Refused whole: no half-made link left behind.
+    assert _meta(vault, paper_id)["projects"] == []
+
+
+def test_post_project_non_string_priority_is_400_at_the_boundary(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """The one check the handler DOES own, mirroring `relevance`: a non-string
+    would reach core as a type it cannot compare."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+
+    resp = _client(vault).post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": 3},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "priority must be a string."
+
+
+def test_delete_project_link_drops_the_grade(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "A"},
+    )
+
+    resp = client.delete(f"/api/paper/{paper_id}/project/pepforge")
+    assert resp.status_code == 200, resp.text
+    meta = _meta(vault, paper_id)
+    assert meta["projects"] == []
+    assert "priority-pepforge" not in meta
+
+
+def test_get_paper_passes_the_grade_through_untouched(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """`GET /api/paper/{id}` is the ONLY endpoint that serves the grade: it is
+    variable-width, so it can never enter the INDEX projection `/api/papers`
+    returns. The cockpit reads it from here."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "C", "relevance": "core baseline"},
+    )
+
+    body = client.get(f"/api/paper/{paper_id}").json()
+    assert body["priority-pepforge"] == "C"
+    assert body["relevance-pepforge"] == "core baseline"
+    assert "priority" not in body
+    # Control: the same key is absent from the list projection.
+    listed = client.get("/api/papers").json()
+    rows = listed["papers"] if isinstance(listed, dict) else listed
+    row = next(r for r in rows if r["id"] == paper_id)
+    assert not any(k.startswith("priority") for k in row)
+
+
+def test_project_rm_and_rename_cascade_the_grade_over_the_api(
+    vault_with_paper: tuple[Path, str], tmp_path: Path
+) -> None:
+    """The route docstrings claim both per-project keys cascade. 3.2 did that
+    work in core; this pins that the API paths inherit it rather than the
+    comments merely asserting it."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    client.post(
+        f"/api/paper/{paper_id}/project",
+        json={"project": "pepforge", "priority": "A"},
+    )
+
+    assert client.put("/api/projects/pepforge", json={"new": "pepcodec"}).status_code == 200
+    meta = _meta(vault, paper_id)
+    assert "priority-pepforge" not in meta
+    assert meta["priority-pepcodec"] == "A"     # carried over, value preserved
+
+    assert client.delete("/api/projects/pepcodec").status_code == 200
+    assert "priority-pepcodec" not in _meta(vault, paper_id)
+
+
+# ---------------------------------------------------------------------------
+# PUT /metadata — rmTag on relation fields (the Relations remove button)
+# ---------------------------------------------------------------------------
+# The GUI's relation removal adds NO server code: it reuses this endpoint's
+# rmTag, so the ADR-012 double-write happens inside `_apply_modify`'s single
+# staged_write. These pin the endpoint-level contract the button relies on —
+# both sides cleared in one transaction, a reverse field refused, and a repeat
+# reported as `changed: false` rather than an error.
+
+
+def _relate(client: TestClient, paper_id: str, field: str, other: str) -> None:
+    """Create a relation through the same endpoint the GUI adds with."""
+    resp = client.put(
+        f"/api/paper/{paper_id}/metadata", json={"addTag": {field: [other]}}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _meta_bytes(vault: Path, paper_id: str) -> bytes:
+    return (vault / "papers" / paper_id / "metadata.yaml").read_bytes()
+
+
+def _index_bytes(vault: Path) -> bytes:
+    return (vault / "INDEX.json").read_bytes()
+
+
+def _distinct_stamps(monkeypatch) -> None:
+    """Give every `_apply_modify` call its own second.
+
+    `now_iso` truncates to whole seconds, so an addTag and the rmTag that
+    follows it normally land on the SAME timestamp. That makes "both papers
+    share an updated-at" true by accident, and a test asserting it would pass
+    even if the opposite paper were never rewritten. With this clock the two
+    requests are distinguishable, so the assertion can say the sharper thing:
+    both papers carry the *removal's* stamp, not the *addition's*.
+
+    Patched on the module object rather than by dotted string. That is the
+    house rule for patching a module this test does not own: it binds to the
+    object the code under test actually calls, so it cannot be defeated by
+    whatever else the session did to sys.modules. The rule was written after a
+    real bite, but the bite was specific — tests/commands/test_gui.py drops
+    `fastapi*`, `litman.cli*` and `litman.server*` from sys.modules, so a
+    string patch aimed at one of THOSE lands on a dead object and silently
+    no-ops (green alone, red in the full suite). `litman.commands.modify` is
+    not in that set and would survive a string patch; the form below is used
+    because it is correct everywhere, not because this module is at risk.
+    """
+    from litman.commands import modify as modify_module
+
+    calls = [0]
+
+    def fake_now_iso() -> str:
+        calls[0] += 1
+        return f"2026-09-07T12:00:{calls[0]:02d}+02:00"
+
+    monkeypatch.setattr(modify_module, "now_iso", fake_now_iso)
+
+
+def test_put_metadata_rm_related_removes_both_sides(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """Removing a `related:` id clears the symmetric edge on both papers, in
+    one transaction — both carrying the REMOVAL's timestamp is the evidence."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "related", paper_b)
+    assert _meta(vault, paper_a)["related"] == [paper_b]
+    assert _meta(vault, paper_b)["related"] == [paper_a]
+    add_stamp = _meta(vault, paper_a)["updated-at"]
+
+    rm = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"related": [paper_b]}}
+    )
+    assert rm.status_code == 200, rm.text
+    assert rm.json() == {"ok": True, "changed": True}
+
+    meta_a = _meta(vault, paper_a)
+    meta_b = _meta(vault, paper_b)
+    assert meta_a["related"] == []
+    assert meta_b["related"] == []
+    # One staged_write → one timestamp for both sides. Control first: the clock
+    # really did move between the two requests, so the equality below cannot be
+    # satisfied by B still holding the timestamp the ADD gave it.
+    assert meta_a["updated-at"] != add_stamp
+    assert meta_b["updated-at"] == meta_a["updated-at"]
+
+
+def test_put_metadata_rm_extends_originating_on_other_paper_clears_reverse(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """The path a reverse row's remove button takes: standing on B and removing
+    `extended-by: A` must PUT to A's forward `extends`, because a reverse field
+    is not writable (see the 400 test below). Both sides end up clear."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "extends", paper_b)
+    assert _meta(vault, paper_b)["extended-by"] == [paper_a]
+    add_stamp = _meta(vault, paper_b)["updated-at"]
+
+    # User is looking at B and removes `extended-by: A`; the cockpit flips the
+    # originator and writes A's forward field with B's id.
+    rm = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"extends": [paper_b]}}
+    )
+    assert rm.status_code == 200, rm.text
+    assert rm.json() == {"ok": True, "changed": True}
+
+    meta_a = _meta(vault, paper_a)
+    meta_b = _meta(vault, paper_b)
+    assert meta_a["extends"] == []
+    assert meta_b["extended-by"] == []
+    # Same one-transaction evidence, with the clock control: B carries the
+    # removal's stamp, not the one the addition left on it.
+    assert meta_b["updated-at"] != add_stamp
+    assert meta_b["updated-at"] == meta_a["updated-at"]
+
+
+def test_put_metadata_rm_reverse_field_400(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """Naming the reverse field directly is refused (ADR-012: reverse edges are
+    maintained only by the paired write) and nothing is written — neither TRUTH
+    nor the derived INDEX. This is why the cockpit flips the originator instead
+    of removing in place; regressing that flip lands here."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    # Relation fields are not in the INDEX projection, so the only bytes a
+    # wrongly-accepted write could move in INDEX.json are its timestamps — and
+    # on the real second-granularity clock this request would share one with
+    # the addTag above, making the comparison below pass by collision.
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "extends", paper_b)
+    before_a = _meta_bytes(vault, paper_a)
+    before_b = _meta_bytes(vault, paper_b)
+    before_index = _index_bytes(vault)
+
+    resp = client.put(
+        f"/api/paper/{paper_b}/metadata",
+        json={"rmTag": {"extended-by": [paper_a]}},
+    )
+    assert resp.status_code == 400
+    assert "extended-by" in resp.json()["detail"]
+    assert _meta_bytes(vault, paper_a) == before_a
+    assert _meta_bytes(vault, paper_b) == before_b
+    assert _index_bytes(vault) == before_index
+
+
+def test_put_metadata_rm_relation_idempotent(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """A second removal of an edge another writer already dropped is
+    `changed: false`, HTTP 200 — not an error the GUI has to special-case."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    # Without a moving clock the repeat lands in the same second as the first
+    # removal, so the byte-compares below would hold even if the no-op
+    # short-circuit were gone and both files had been rewritten.
+    _distinct_stamps(monkeypatch)
+
+    client = _client(vault)
+    _relate(client, paper_a, "related", paper_b)
+    first = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"related": [paper_b]}}
+    )
+    assert first.json() == {"ok": True, "changed": True}
+    after_a = _meta_bytes(vault, paper_a)
+    after_b = _meta_bytes(vault, paper_b)
+
+    second = client.put(
+        f"/api/paper/{paper_a}/metadata", json={"rmTag": {"related": [paper_b]}}
+    )
+    assert second.status_code == 200, second.text
+    assert second.json() == {"ok": True, "changed": False}
+    assert _meta_bytes(vault, paper_a) == after_a
+    assert _meta_bytes(vault, paper_b) == after_b

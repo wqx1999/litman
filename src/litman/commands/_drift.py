@@ -59,6 +59,7 @@ from typing import Callable
 import click
 from rich.console import Console
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.core.vault_registry import (
     VaultRegistryError,
     find_active,
@@ -494,7 +495,8 @@ def check_and_prompt_project_drift(
         # machine location per ADR-014) is "skipped" by rebuild_all_*; the
         # config is updated but litman_reflib is NOT recreated, so the message
         # must not lie about it.
-        if link_status.get(name, {}).get("status") == "rebuilt":
+        info = link_status.get(name, {})
+        if info.get("status") == "rebuilt":
             console.print(
                 f"[green]✓ Updated[/] {name} → {healed[name]} "
                 f"and rebuilt its litman_reflib."
@@ -505,6 +507,15 @@ def check_and_prompt_project_drift(
                 f"— directory not reachable here yet; run [bold]lit refresh-views"
                 f"[/bold] there to rebuild litman_reflib).[/dim]"
             )
+        # That rebuild can delete a folder copy or move one out of the user's
+        # own directory, and it is never silent whichever command triggered it
+        # (see commands/_hub_report). This is the likeliest way to meet the
+        # feature at all: a machine change, a new path typed here, a rebuild
+        # nobody asked for by name.
+        for line in hub_settlement_lines(
+            info.get("n_replaced_copies", 0), info.get("aside_paths", [])
+        ):
+            console.print(f"  {line}", soft_wrap=True)
     console.print()
 
 
@@ -640,5 +651,18 @@ def check_and_prompt_bridge_drift(
     )
     console.print(
         f"[green]Rebuilt project links for {n_rebuilt} "
-        f"project{'s' if n_rebuilt != 1 else ''}.[/]\n"
+        f"project{'s' if n_rebuilt != 1 else ''}.[/]"
     )
+    # Summed across projects: this arm rebuilds them all at once and has no
+    # per-project block to hang the lines under.
+    n_replaced = sum(
+        int(info.get("n_replaced_copies", 0)) for info in link_status.values()
+    )
+    aside = [
+        path
+        for info in link_status.values()
+        for path in info.get("aside_paths", [])
+    ]
+    for line in hub_settlement_lines(n_replaced, aside):
+        console.print(f"  {line}", soft_wrap=True)
+    console.print()

@@ -40,10 +40,11 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
-from litman.core.correctors import reconcile_derived
+from litman.core.correctors import moved_aside_from, reconcile_derived
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import find_case_fold_collision, is_valid_id
@@ -325,7 +326,7 @@ def rename_cmd(
     # rebuilt. Gate on the renamed paper's own membership (rename never changes
     # any OTHER paper's projects field) so an unlinked paper skips the cost.
     renamed_is_project_member = bool(renamed_meta.get("projects"))
-    reconcile_derived(
+    derived = reconcile_derived(
         vault,
         papers=list_papers(vault),
         project_refs=renamed_is_project_member,
@@ -352,4 +353,8 @@ def rename_cmd(
         console.print(
             f"  Updated [bold]{n}[/] notes file{'s' if n != 1 else ''}"
         )
+    # Renaming a linked paper rebuilds the project hubs, which can move a
+    # folder out of the user's own directory (see commands/_hub_report).
+    for line in hub_settlement_lines(0, moved_aside_from(derived)):
+        console.print(f"  {line}", soft_wrap=True)
     console.print("[dim]INDEX.json + views/ refreshed.[/]")

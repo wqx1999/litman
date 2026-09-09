@@ -196,7 +196,7 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
         ``{"set": {field: value}, "addTag": {key: [values]},
            "rmTag": {key: [values]}, "setList": {field: [values]}}``
 
-    Carries the cockpit's status/priority/type dropdown changes (``set``),
+    Carries the cockpit's status/type dropdown changes (``set``),
     topics/methods/data chip add/remove (``addTag`` / ``rmTag``), and the
     metadata editor's ordered author rewrite (``setList`` — whitelisted to
     ORDERED_LIST_FIELDS, i.e. ``authors``). Translated into
@@ -204,13 +204,21 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
     so re-selecting the current value is a true no-op (no spurious
     ``updated-at`` bump; a same-order ``setList`` is likewise a no-op inside
     ``_apply_set_list``). An empty ``value`` in ``set`` (e.g.
-    ``{"priority": ""}``) unsets the field to None — ``_apply_modify``
-    coerces ``""`` to None and the fixed-enum gate allows it for priority/type.
+    ``{"type": ""}``) unsets the field to None — ``_apply_modify`` coerces
+    ``""`` to None and the fixed-enum gate allows it for type.
 
     ``_apply_modify`` does ALL validation (fixed-enum range, TAXONOMY register-
     first for tags, date ordering) and the atomic write + INDEX/views recompute,
     so this handler adds no second write path. A rejected op surfaces its raw
     message: ModifyError → 400, PaperNotFoundError → 404.
+
+    That is why the per-project grade needs no code here (ADR-025). All three
+    of its refusals arrive from core, worded exactly as the CLI words them:
+    ``set: {"priority": ...}`` is the retired field; ``priority-<project>``
+    for a project the paper is not in fails the membership check; a value
+    outside A/B/C (``""`` included — absence is the ungraded form) fails the
+    range check. Re-implementing any of them here would be the second write
+    path invariant #16 exists to forbid.
     """
     _require_valid_id(paper_id)
 
@@ -426,16 +434,24 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
 async def post_paper_project(request: Request, paper_id: str) -> dict[str, object]:
     """Link a paper to a registered project through the ``lit link`` backend.
 
-    Body JSON ``{"project": str, "relevance"?: str}``. Reaches the filesystem
-    only through :func:`litman.core.project_link.link_paper_to_project`, which
-    resolves the project from the config registry map, updates the paper's
-    ``projects`` field, recreates the ``litman_reflib`` / ``litman_code``
-    symlinks, regenerates REFERENCES.md, and rebuilds INDEX + views atomically
+    Body JSON ``{"project": str, "relevance"?: str, "priority"?: "A"|"B"|"C"}``.
+    Reaches the filesystem only through
+    :func:`litman.core.project_link.link_paper_to_project`, which resolves the
+    project from the config registry map, updates the paper's ``projects``
+    field, recreates the ``litman_reflib`` / ``litman_code`` symlinks,
+    regenerates REFERENCES.md, and rebuilds INDEX + views atomically
     (invariant #16: no second write path). The registry is the same
     ``load_config(vault).projects`` map ``GET /api/projects`` reads from.
 
-    An unregistered project / missing project dir surfaces as LinkError → 400;
-    an unknown paper as PaperNotFoundError → 404.
+    ``priority`` grades the paper FOR THIS PROJECT in the same request, so the
+    panel's "pick a letter on an unlinked row" gesture is one write rather
+    than a link followed by a metadata PUT (ADR-025 decision 5). Omitting it
+    links without grading, which is a legal state. Only its TYPE is checked
+    here, mirroring ``relevance`` — the A/B/C range is core's answer, so the
+    client sees the same message the CLI prints.
+
+    An unregistered project / missing project dir / out-of-range priority
+    surfaces as LinkError → 400; an unknown paper as PaperNotFoundError → 404.
     """
     _require_valid_id(paper_id)
 
@@ -452,12 +468,20 @@ async def post_paper_project(request: Request, paper_id: str) -> dict[str, objec
     relevance = payload.get("relevance")
     if relevance is not None and not isinstance(relevance, str):
         raise HTTPException(status_code=400, detail="relevance must be a string.")
+    priority = payload.get("priority")
+    if priority is not None and not isinstance(priority, str):
+        raise HTTPException(status_code=400, detail="priority must be a string.")
 
     vault = request.app.state.vault
     registry = load_config(vault).projects
     try:
         link_paper_to_project(
-            vault, paper_id, project.strip(), registry, relevance=relevance
+            vault,
+            paper_id,
+            project.strip(),
+            registry,
+            relevance=relevance,
+            priority=priority,
         )
     except PaperNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -643,8 +667,9 @@ async def delete_project(request: Request, name: str) -> dict[str, object]:
     Reaches the filesystem only through
     :func:`litman.core.project_link.remove_project` (the same core the CLI's WRITE
     half calls): drops the project from both truth sources (TAXONOMY.md +
-    lit-config.yaml), cascades the untag (and the paired ``relevance-<name>``) to
-    every referencing paper, rebuilds INDEX + views, and tears down the project's
+    lit-config.yaml), cascades the untag (and BOTH paired per-project keys,
+    ``relevance-<name>`` and ``priority-<name>``) to every referencing paper,
+    rebuilds INDEX + views, and tears down the project's
     ``litman_reflib`` / ``litman_code`` symlinks + REFERENCES.md — without removing
     the project directory itself (invariant #16: no second write path). Confirm-
     free — the GUI's confirm dialog is the confirmation.
@@ -667,8 +692,10 @@ async def put_project(request: Request, name: str) -> dict[str, object]:
     the filesystem only through :func:`litman.core.project_link.rename_project`
     (the same core ``lit project rename`` calls): renames across BOTH truth
     sources (TAXONOMY.md + lit-config.yaml key, path carried over), every
-    referencing paper's ``projects`` field + the paired ``relevance-<name>``, and
-    INDEX, then rebuilds views/by-project/ + symlinks + REFERENCES.md in one
+    referencing paper's ``projects`` field + BOTH paired per-project keys
+    (``relevance-<name>`` and ``priority-<name>``, carried over with their
+    values), and INDEX, then rebuilds views/by-project/ + symlinks +
+    REFERENCES.md in one
     funnel (invariant #16: no second write path). Semantics-preserving, so there
     is no confirmation to skip.
 
@@ -688,7 +715,9 @@ async def put_project(request: Request, name: str) -> dict[str, object]:
 
     vault = request.app.state.vault
     try:
-        n_changed, _ = rename_project(vault, name, new)
+        # The hub move-asides are a CLI report line; the GUI re-runs the
+        # health checks instead (decision #9).
+        n_changed, _, _ = rename_project(vault, name, new)
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "changed": n_changed}
@@ -824,8 +853,9 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     registry write goes through one path (invariant #16), exactly as this route's
     sibling ``PUT /vaults/active`` shares ``apply_vault_use`` with ``lit vault
     use``. The new path must already be a litman vault (an existing directory
-    holding a lit-config.yaml); an unknown name or a bad path surfaces as
-    VaultRegistryError → 400 with the core's verbatim message.
+    holding a lit-config.yaml) and must not be another registered vault's
+    directory; an unknown name or a bad path surfaces as VaultRegistryError →
+    400 with the core's verbatim message.
 
     REPOINT RULE: if the relocated vault is the one this server is SERVING
     (``app.state.vault`` — what the 410 guard checks), the running server is
@@ -951,8 +981,9 @@ async def post_vault(request: Request) -> dict[str, object]:
     for body parse + ``VaultRegistryError`` → 400 mapping, but is a PURE registry
     append: :func:`litman.core.vault_registry.add_vault` validates name shape /
     uniqueness / that ``path`` is an existing directory containing a
-    ``lit-config.yaml``, then :func:`save_registry` persists. The route NEVER
-    touches ``app.state.vault`` and NEVER changes the active vault — "set active
+    ``lit-config.yaml`` / that no other entry already holds that directory, then
+    :func:`save_registry` persists. The route NEVER touches ``app.state.vault``
+    and NEVER changes the active vault — "set active
     after registering" is the frontend reusing the existing ``switchVault`` flow
     (``PUT /api/vaults/active``), not a repoint baked in here. No second write
     path (invariant #16).
@@ -960,8 +991,9 @@ async def post_vault(request: Request) -> dict[str, object]:
     ``set_active`` / ``imported_from`` / ``imported_at`` are deliberately not
     accepted: provenance stays a CLI-only colleague-fork concern, and keeping the
     route active-agnostic guarantees zero ``app.state`` side effect. A bad name /
-    duplicate / non-existent dir / non-vault dir surfaces as VaultRegistryError →
-    400 with the core's verbatim message preserved as ``detail``.
+    duplicate name / non-existent dir / non-vault dir / already-registered dir
+    surfaces as VaultRegistryError → 400 with the core's verbatim message
+    preserved as ``detail``.
     """
     try:
         payload = await request.json()
@@ -1005,8 +1037,9 @@ async def create_vault_route(request: Request) -> dict[str, object]:
     RED LINE: only a filesystem ``parent_dir`` + optional ``name`` are accepted —
     never a command. ``parent_dir`` is ``expanduser``'d and must be an existing
     directory (a missing parent is a 400, never a silent multi-level ``mkdir``).
-    Any backend failure (parent missing, target non-empty, name clash) surfaces
-    as a 400 with the core's verbatim message preserved as ``detail``.
+    Any backend failure (parent missing, target non-empty, name clash, target
+    directory already registered) surfaces as a 400 with the core's verbatim
+    message preserved as ``detail``.
     """
     try:
         payload = await request.json()

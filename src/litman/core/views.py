@@ -60,7 +60,6 @@ INDEX_PAPER_FIELDS: tuple[str, ...] = (
     "authors",
     "year",
     "type",
-    "priority",
     "status",
     "topics",
     "projects",

@@ -188,6 +188,31 @@ def test_cli_vault_add_duplicate_name_errors(
     assert "already registered" in str(result.exception)
 
 
+def test_cli_vault_add_duplicate_path_errors(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """The same folder under a second name is refused, and core's verdict plus
+    the switch hint reach the user verbatim.
+
+    Asserted on the exception, not ``result.output``: CliRunner invokes the
+    command directly, bypassing ``main()``'s ``LitmanError`` handler, so a
+    raised VaultRegistryError prints nothing here.
+    """
+    runner = CliRunner()
+    first = runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    assert first.exit_code == 0, first.output
+
+    result = runner.invoke(cli, ["vault", "add", "clone", str(vault_a)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, VaultRegistryError)
+    msg = str(result.exception)
+    assert "already registered as 'main'" in msg
+    assert "lit vault use main" in msg
+    # Rejected before the write: the registry still holds exactly one entry.
+    reg = load_registry()
+    assert [v.name for v in reg.vaults] == ["main"]
+
+
 def test_cli_vault_add_bad_name_errors(
     fake_home: Path, vault_a: Path
 ) -> None:

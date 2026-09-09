@@ -114,7 +114,6 @@ def _seed_paper(
         "title": title,
         "year": 2024,
         "status": "inbox",
-        "priority": "B",
         "type": "research",
         "doi": f"10.fake/{paper_id}",
         "projects": [],
@@ -149,7 +148,6 @@ def _write_index(vault: Path) -> None:
                 "title": p.get("title"),
                 "year": p.get("year"),
                 "status": p.get("status"),
-                "priority": p.get("priority"),
                 "type": p.get("type"),
             }
             for p in papers

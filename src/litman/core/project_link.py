@@ -26,19 +26,27 @@ the convenience links may be skipped (ADR-005).
 
 from __future__ import annotations
 
+import errno
+import filecmp
 import io
+import os
+import shutil
+import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from litman.core.atomic import staged_write
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
+from litman.core.locking import rmtree
 from litman.core.portable_link import (
     is_portable_link,
+    links_supported,
     make_portable_link,
     remove_link_if_present,
+    warn_hub_entry_unmovable,
 )
 from litman.core.project_refs import (
     LITERATURE_SUBDIR,
@@ -62,6 +70,18 @@ from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
 _PROJECTS_DICT = "projects"
 
 CODE_SUBDIR = "litman_code"
+
+# Container under <vault>/.trash/ for hub folders moved aside by
+# settle_hub_entry. Deliberately NOT shaped like a trash entry
+# ("<paper-id>-<UTC timestamp>"), so `lit trash list` / `lit trash restore`
+# skip it on the name rule alone — one recycle bin, one restore entity.
+REPLACED_FOLDERS_DIRNAME = "replaced-folders"
+
+# Files above this size compare on length alone. A vault entry that big is a
+# PDF; re-reading every byte of it on each health-check buys little, and the
+# only cost of a false "differs" verdict is that the folder is preserved in
+# .trash/ instead of deleted.
+_MAX_BYTE_COMPARE = 1024 * 1024
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -110,6 +130,274 @@ def _project_link_paths(
     paper_link = project_dir / LITERATURE_SUBDIR / paper_id
     code_links = [project_dir / CODE_SUBDIR / r for r in code_clones]
     return paper_link, code_links
+
+
+HubVerdict = Literal[
+    "clear", "replaced-copy", "moved-aside", "blocked", "failed"
+]
+
+
+class HubSettlement(NamedTuple):
+    """What :func:`settle_hub_entry` did with one hub position."""
+
+    verdict: HubVerdict
+    moved_to: Path | None  # set iff verdict == 'moved-aside'
+
+    @property
+    def position_occupied(self) -> bool:
+        """True when a real folder is still sitting there.
+
+        The caller must not attempt the link upsert: it would fail, and the
+        user has already been told why in the one case ('failed') where
+        something went wrong.
+        """
+        return self.verdict in ("blocked", "failed")
+
+
+def _tree_shape(root: Path) -> dict[tuple[str, ...], int | None] | None:
+    """Map every entry under ``root`` to its size, ``None`` for directories.
+
+    Keys are ``relative_to(root).parts`` tuples rather than joined strings so
+    the comparison never depends on the path separator. Links are skipped both
+    as entries and as descent targets — an expanded copy has none, and the
+    vault entry's own links (there are none today) would be a difference we
+    cannot judge. Any ``OSError`` collapses the whole answer to ``None``:
+    unreadable is not provably identical.
+    """
+
+    def _reraise(err: OSError) -> None:
+        # os.walk's default onerror SWALLOWS a failed scandir and yields the
+        # directory as empty. An unreadable subtree would then look equal to
+        # anything, and this answer decides whether a folder gets deleted.
+        raise err
+
+    shape: dict[tuple[str, ...], int | None] = {}
+    try:
+        for dirpath, dirnames, filenames in os.walk(
+            root, onerror=_reraise, followlinks=False
+        ):
+            here = Path(dirpath)
+            keep: list[str] = []
+            for name in dirnames:
+                if is_portable_link(here / name):
+                    continue
+                keep.append(name)
+                shape[(here / name).relative_to(root).parts] = None
+            dirnames[:] = keep
+            for name in filenames:
+                child = here / name
+                if is_portable_link(child):
+                    continue
+                shape[child.relative_to(root).parts] = child.stat().st_size
+    except OSError:
+        return None
+    return shape
+
+
+def _holds_no_files(root: Path) -> bool:
+    """True when ``root``'s tree holds no file and no link — nothing to lose.
+
+    Explorer does not copy *through* a junction: it leaves a same-named EMPTY
+    directory behind (wangq measured it on Windows 2026-09-09 — ``dir`` on the
+    copy reports "0 个文件"), and that is the commonest way a hub position ends
+    up occupied. Preserving such a folder under ``.trash/`` buys nothing and
+    costs the user a trash entry plus a standing health-check reminder for
+    every position, which is the cleanup burden this whole feature exists to
+    remove. Deleting it does not weaken decision #3: there is no content.
+
+    Empty-directory scaffolding still counts as empty. A link does NOT — it is
+    the one thing in here that names something outside, so it is treated as
+    content even though the target survives. An unreadable tree is not empty
+    either: unprovable is not proven, and the caller's conservative branch
+    keeps it.
+    """
+
+    def _reraise(err: OSError) -> None:
+        # os.walk's default onerror swallows a failed scandir and yields the
+        # directory as empty, which would read here as "nothing to lose".
+        raise err
+
+    try:
+        for dirpath, dirnames, filenames in os.walk(
+            root, onerror=_reraise, followlinks=False
+        ):
+            if filenames:
+                return False
+            here = Path(dirpath)
+            if any(is_portable_link(here / name) for name in dirnames):
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def _is_verbatim_copy(copy_dir: Path, target_dir: Path) -> bool:
+    """True when ``copy_dir`` holds exactly what ``target_dir`` holds.
+
+    Same relative-path set, same kind per path, same size per file, and — up to
+    :data:`_MAX_BYTE_COMPARE` — the same bytes.
+    """
+    if not copy_dir.is_dir() or not target_dir.is_dir():
+        return False
+    # filecmp memoises verdicts on (path, size, mtime). Two settlements landing
+    # inside one mtime tick — the same hub position twice in one test, one
+    # health-check over many projects — would otherwise reuse a stale answer.
+    filecmp.clear_cache()
+    left = _tree_shape(copy_dir)
+    right = _tree_shape(target_dir)
+    if left is None or right is None or left.keys() != right.keys():
+        return False
+    for rel, size in left.items():
+        if right[rel] != size:
+            return False
+        if size is None or size > _MAX_BYTE_COMPARE:
+            continue
+        try:
+            if not filecmp.cmp(
+                copy_dir.joinpath(*rel), target_dir.joinpath(*rel), shallow=False
+            ):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _hub_target(vault: Path, hub: str, name: str) -> Path | None:
+    """The vault entry a hub position of this name should point at.
+
+    ``None`` when there is none — the paper was deleted, or the clone was
+    never restored on this machine. Derived from the position's name because
+    the wipe loop settles what it finds on disk, which by definition includes
+    names no longer in the project's membership.
+    """
+    if hub == CODE_SUBDIR:
+        candidate = (vault / "codes" / name / "repo").resolve()
+    else:
+        candidate = (vault / "papers" / name).resolve()
+    return candidate if candidate.is_dir() else None
+
+
+def _move_aside(src: Path, dest_parent: Path, name: str) -> Path:
+    """Move ``src`` to ``dest_parent/name``, returning where it landed."""
+    dest_parent.mkdir(parents=True, exist_ok=True)
+    dest = dest_parent / name
+    # lexists, not exists: a broken symlink still occupies the name, and
+    # rename() would silently replace an empty directory. Loop rather than
+    # retry once — a four-hex suffix can collide too.
+    while os.path.lexists(dest):
+        dest = dest_parent / f"{name}-{uuid.uuid4().hex[:4]}"
+    try:
+        src.rename(dest)
+    except OSError as err:
+        # ONLY a cross-device move earns the copy fallback (Windows maps
+        # ERROR_NOT_SAME_DEVICE to EXDEV too). Any other refusal — a locked
+        # child, a read-only parent — must stay a failure: copying first would
+        # leave a full copy in .trash/ AND the folder still in the hub, and the
+        # next run, which our own message asks for, would copy it again under a
+        # new timestamp. For a code hub that is a whole checkout each time.
+        if err.errno != errno.EXDEV:
+            raise
+        # NOT shutil.move for the copy: its own cross-device path finishes
+        # with a bare shutil.rmtree, which trips over the read-only
+        # metadata.yaml the copy inherited from the vault (ADR-005) — and
+        # "project on a different drive from the vault" is precisely the
+        # situation this whole code path exists for.
+        shutil.copytree(src, dest, symlinks=True)
+        rmtree(src)
+    return dest
+
+
+def settle_hub_entry(
+    link_path: Path,
+    target: Path | None,
+    *,
+    vault: Path,
+    project: str,
+    hub: str,
+) -> HubSettlement:
+    """Clear a project hub position so a link can take it.
+
+    Copying a project directory between machines (scp -r, WinSCP, unpacking a
+    tar, Explorer, cloud sync) expands every ``litman_reflib`` /
+    ``litman_code`` link into a real folder holding a full copy of the vault
+    entry. The link upsert then refuses to remove it — correctly, that is user
+    data — and the user is left deleting a dozen folders by hand. This settles
+    the position instead: a folder that matches the vault byte for byte is
+    redundant and goes, and so does one that holds nothing at all
+    (Explorer leaves an empty directory rather than copying through the
+    junction); anything else is preserved under
+    ``<vault>/.trash/replaced-folders/<project>/<hub>/`` first. Unknown content
+    is never rmtree'd.
+
+    ``target`` is the vault entry the link should point at, or ``None`` when
+    there is none (paper deleted, clone never restored) — a folder with no
+    original can never be proven redundant, so it is preserved.
+
+    Returns:
+        ``('clear', None)`` — nothing in the way: position empty, already a
+        link, or a real file (which the upsert unlinks as it always has);
+        ``('blocked', None)`` — a real folder on a filesystem that cannot hold
+        links, left alone: deleting it there would take away the only
+        browsable copy and give back nothing;
+        ``('replaced-copy', None)`` — a redundant copy was deleted, either
+        because it matched the vault or because it held nothing;
+        ``('moved-aside', dest)`` — the folder now lives at ``dest``;
+        ``('failed', None)`` — the filesystem refused to move or delete it
+        (a locked child, a read-only parent); warned about, left alone, and
+        the rest of the rebuild carries on.
+    """
+    # is_portable_link BEFORE is_dir: a junction answers is_dir() True, so the
+    # other order would file every healthy Windows link as a folder copy.
+    if is_portable_link(link_path) or not link_path.is_dir():
+        return HubSettlement("clear", None)
+    # Probe the PROJECT dir (link_path is <project_dir>/<hub>/<name>), not the
+    # hub: same key as check_project_references so both read one cached
+    # verdict, and the probe file never lands in the hub the rebuild is
+    # iterating over.
+    if not links_supported(link_path.parent.parent):
+        return HubSettlement("blocked", None)
+    if target is not None and _is_verbatim_copy(link_path, target):
+        try:
+            # locking.rmtree, not shutil's: the copy carries the vault's
+            # read-only metadata.yaml / paper.pdf attributes, which stop a
+            # plain delete on Windows (ADR-005 dimension F).
+            rmtree(link_path)
+        except OSError as err:
+            warn_hub_entry_unmovable(link_path, err)
+            return HubSettlement("failed", None)
+        return HubSettlement("replaced-copy", None)
+    if _holds_no_files(link_path):
+        # Explorer's expansion of a junction: the folder is there, its content
+        # is not. Same disposal as a verbatim copy — there is nothing in it to
+        # preserve — and it reports as one, so the user is not handed a trash
+        # entry per hub position for folders that hold nothing.
+        try:
+            rmtree(link_path)
+        except OSError as err:
+            warn_hub_entry_unmovable(link_path, err)
+            return HubSettlement("failed", None)
+        return HubSettlement("replaced-copy", None)
+    # Local import: trash reaches back here for CODE_SUBDIR, so this edge can
+    # only run at call time. Mirrors the checks / correctors imports below.
+    from litman.core.trash import TRASH_DIRNAME, _utc_compact_now
+
+    try:
+        dest = _move_aside(
+            link_path,
+            vault / TRASH_DIRNAME / REPLACED_FOLDERS_DIRNAME / project / hub,
+            f"{link_path.name}-{_utc_compact_now()}",
+        )
+    except OSError as err:
+        # One locked child (a PDF open in a viewer, an indexer, antivirus)
+        # must cost this position only. Aborting would take the rest of the
+        # rebuild, every other project and every other --fix category with it
+        # — strictly worse than the warning-per-folder this replaced. Mirrors
+        # empty_trash / enforce_cap, which skip an unremovable entry the same
+        # way. A part-written destination may be left under .trash/; the
+        # source is only removed once the copy is complete, so nothing is lost.
+        warn_hub_entry_unmovable(link_path, err)
+        return HubSettlement("failed", None)
+    return HubSettlement("moved-aside", dest)
 
 
 def _papers_using_repo_in_project(
@@ -190,9 +478,18 @@ def reconcile_project_code_links(
 
     created: list[str] = []
     for repo_name, repo_target in expected.items():
-        if repo_name not in resolving and make_portable_link(
-            code_dir / repo_name, repo_target
-        ):
+        if repo_name in resolving:
+            continue
+        link_path = code_dir / repo_name
+        if settle_hub_entry(
+            link_path,
+            repo_target,
+            vault=vault,
+            project=project,
+            hub=CODE_SUBDIR,
+        ).position_occupied:
+            continue
+        if make_portable_link(link_path, repo_target):
             created.append(repo_name)
     removed: list[str] = []
     for repo_name in on_disk - set(expected):
@@ -330,6 +627,7 @@ def link_paper_to_project(
     registry: dict[str, str],
     *,
     relevance: str | None = None,
+    priority: str | None = None,
 ) -> dict[str, Any]:
     """Link a paper to a project (atomic metadata + symlinks + REFERENCES.md).
 
@@ -344,6 +642,11 @@ def link_paper_to_project(
              when ``relevance`` is ``None`` (the flag was omitted); the
              ``!= existing_relevance`` check is an idempotency guard, not a
              don't-clobber guard.
+           - Set ``priority-<project>`` the same way when an explicit
+             ``priority`` (A/B/C) is provided. This is the "link and grade in
+             one gesture" path (ADR-025 decision 5); omitting it leaves the
+             paper linked but ungraded, which is a legal state — a link
+             happens at ingest, a grade after reading.
            - Bump ``updated-at`` if anything actually changed.
         4. Re-render INDEX.json (in-memory splice on the modified copy).
         5. staged_write(metadata + INDEX.json).
@@ -355,9 +658,27 @@ def link_paper_to_project(
         A summary dict for the CLI to render.
 
     Raises:
-        LinkError: project unregistered or project_dir missing.
+        LinkError: project unregistered, project_dir missing, or ``priority``
+            outside A/B/C.
         PaperNotFoundError: paper id has no folder in the vault.
     """
+    # Local import: core.checks reaches back here through core.trash
+    # (checks -> trash -> project_link for CODE_SUBDIR), so a module-level
+    # import is a load-time cycle. Mirrors the lazy reconcile import below.
+    from litman.core.checks import (
+        PROJECT_PRIORITY_PREFIX,
+        PROJECT_PRIORITY_VALUES,
+    )
+
+    # Validated here, not with a click.Choice on the CLI flag: Click would
+    # raise UsageError (exit 2, its own formatting) for a metadata value,
+    # while every other bad metadata value in this codebase surfaces as a
+    # LitmanError (exit 1, Rich panel). One shape for one kind of mistake.
+    if priority is not None and priority not in PROJECT_PRIORITY_VALUES:
+        raise LinkError(
+            f"Invalid priority {priority!r}. Allowed values: "
+            f"{', '.join(sorted(PROJECT_PRIORITY_VALUES))}."
+        )
     project_dir = _resolve_project_dir(project, registry)
     paper_meta_path = vault / "papers" / paper_id / "metadata.yaml"
     if not paper_meta_path.is_file():
@@ -385,12 +706,18 @@ def link_paper_to_project(
     if set_relevance:
         metadata[relevance_key] = relevance
 
+    priority_key = f"{PROJECT_PRIORITY_PREFIX}{project}"
+    existing_priority = metadata.get(priority_key)
+    set_priority = priority is not None and priority != existing_priority
+    if set_priority:
+        metadata[priority_key] = priority
+
     code_clones = list(metadata.get("code-clones") or [])
 
-    # Idempotent on the metadata side: if nothing changed in projects or
-    # relevance, skip the staged write but still refresh symlinks +
-    # REFERENCES.md (cheap, defensive — handles partial state).
-    metadata_changed = added_to_projects or set_relevance
+    # Idempotent on the metadata side: if nothing changed in projects,
+    # relevance or priority, skip the staged write but still refresh symlinks
+    # + REFERENCES.md (cheap, defensive — handles partial state).
+    metadata_changed = added_to_projects or set_relevance or set_priority
 
     if metadata_changed:
         metadata["updated-at"] = now_iso()
@@ -429,9 +756,22 @@ def link_paper_to_project(
     paper_link_path, code_link_paths = _project_link_paths(
         project_dir, paper_id, code_clones
     )
-    make_portable_link(
-        paper_link_path, (vault / "papers" / paper_id).resolve()
+    paper_target = (vault / "papers" / paper_id).resolve()
+    # A folder MOVED out of the user's project dir has to be reported by
+    # whatever command moved it: unlike a deleted verbatim copy, whose original
+    # is in the vault, this is the only copy of what was in it.
+    hub_moved_aside: list[str] = []
+    settled = settle_hub_entry(
+        paper_link_path,
+        paper_target,
+        vault=vault,
+        project=project,
+        hub=LITERATURE_SUBDIR,
     )
+    if settled.moved_to is not None:
+        hub_moved_aside.append(str(settled.moved_to))
+    if not settled.position_occupied:
+        make_portable_link(paper_link_path, paper_target)
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
     code_links_unsupported: list[str] = []
@@ -441,6 +781,24 @@ def link_paper_to_project(
             # Repo bound on paper side but not present locally — re-clone via
             # `lit code restore-all`, then `lit link --rebuild-all`.
             code_links_missing_repo.append(repo_name)
+            continue
+        settled = settle_hub_entry(
+            link_path,
+            repo_target,
+            vault=vault,
+            project=project,
+            hub=CODE_SUBDIR,
+        )
+        if settled.moved_to is not None:
+            hub_moved_aside.append(str(settled.moved_to))
+        if settled.verdict == "blocked":
+            # Same end state as a refused link: the drive cannot hold one.
+            code_links_unsupported.append(repo_name)
+            continue
+        if settled.verdict == "failed":
+            # NOT the unsupported bucket: that renders as "this drive cannot
+            # hold folder links", which would be a false diagnosis. The folder
+            # in the way has already been named on stderr.
             continue
         if make_portable_link(link_path, repo_target):
             code_links_created.append(repo_name)
@@ -460,11 +818,13 @@ def link_paper_to_project(
         "project_dir": project_dir,
         "added_to_projects": added_to_projects,
         "set_relevance": set_relevance,
+        "set_priority": set_priority,
         "metadata_changed": metadata_changed,
         "paper_link": paper_link_path,
         "code_links": code_links_created,
         "code_links_skipped_missing_repo": code_links_missing_repo,
         "code_links_skipped_links_unsupported": code_links_unsupported,
+        "hub_moved_aside": hub_moved_aside,
         "references_md": refs_path,
     }
 
@@ -486,6 +846,10 @@ def unlink_paper_from_project(
         4. If ``purge_relevance`` (default), also drop the
            ``relevance-<project>`` field. The previous value is returned
            in the summary so the user sees what was removed.
+        4b. ALWAYS drop ``priority-<project>``. Unlike relevance there is no
+           opt-out: relevance is authored prose worth offering to keep, a
+           grade is one letter that means nothing without the link it grades
+           (ADR-025 decision 15). Its previous value is returned too.
         5. staged_write metadata + INDEX.json.
         6. Remove paper symlink under the project.
         7. For each repo in this paper's ``code-clones``, remove the
@@ -519,8 +883,20 @@ def unlink_paper_from_project(
     if removed_relevance:
         removed_relevance_value = metadata.pop(relevance_key)
 
+    # No purge_priority flag by design — see step 4b. Local import for the
+    # same checks -> trash -> project_link cycle as in link_paper_to_project.
+    from litman.core.checks import PROJECT_PRIORITY_PREFIX
+
+    priority_key = f"{PROJECT_PRIORITY_PREFIX}{project}"
+    removed_priority = priority_key in metadata
+    removed_priority_value: Any = None
+    if removed_priority:
+        removed_priority_value = metadata.pop(priority_key)
+
     code_clones = list(metadata.get("code-clones") or [])
-    metadata_changed = was_in_projects or removed_relevance
+    metadata_changed = (
+        was_in_projects or removed_relevance or removed_priority
+    )
 
     if metadata_changed:
         metadata["updated-at"] = now_iso()
@@ -592,6 +968,8 @@ def unlink_paper_from_project(
         "was_in_projects": was_in_projects,
         "removed_relevance": removed_relevance,
         "removed_relevance_value": removed_relevance_value,
+        "removed_priority": removed_priority,
+        "removed_priority_value": removed_priority_value,
         "metadata_changed": metadata_changed,
         "paper_link_removed": paper_link_removed,
         "code_links_removed": code_links_removed,
@@ -679,8 +1057,9 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     path). A project is a controlled ``projects`` value with a lit-config.yaml
     path binding, so removal updates BOTH truth sources (TAXONOMY.md's
     ``## projects`` section and the config map) plus every referencing paper's
-    metadata.yaml — including the paired ``relevance-<name>`` annotation
-    (``drop_relevance=True``) so no orphan is stranded — in one atomic
+    metadata.yaml — including the paired ``relevance-<name>`` /
+    ``priority-<name>`` annotations (``drop_project_keys=True``) so no orphan
+    is stranded — in one atomic
     staged_write. INDEX + views are then rebuilt through the shared
     ``reconcile_derived`` funnel.
 
@@ -741,7 +1120,7 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     new_config_text = _dump_yaml_to_string(as_dict)
 
     n_changed, staged_meta_paths, all_papers = _ripple_removals(
-        vault, _PROJECTS_DICT, name, drop_relevance=True
+        vault, _PROJECTS_DICT, name, drop_project_keys=True
     )
     fresh_index = render_index(all_papers, now_iso())
 
@@ -790,7 +1169,9 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     return n_changed, referencing
 
 
-def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
+def rename_project(
+    vault: Path, old: str, new: str
+) -> tuple[int, list[str], list[str]]:
     """Rename a project across both truth sources + every referencing paper.
 
     The single backend for both ``lit project rename`` and the webUI's
@@ -799,15 +1180,19 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     rename updates BOTH truth sources (TAXONOMY.md's ``## projects`` section and
     lit-config.yaml's ``projects:`` map key — carrying the path over unchanged
     under the new key), every referencing paper's ``projects`` field, and the
-    paired ``relevance-<name>`` annotation (``rename_relevance=True``), all in one
+    paired ``relevance-<name>`` / ``priority-<name>`` annotations
+    (``rename_project_keys=True``), all in one
     atomic staged_write. INDEX + views/by-project/ + every project's symlinks +
     REFERENCES.md are then rebuilt through the shared ``reconcile_derived`` funnel
     (``project_refs=True`` — a rename touches the project side). Semantics-
     preserving (no data loss), so the CLI runs it confirm-free.
 
     Returns:
-        ``(n_changed, referencing_ids)`` — count of papers whose metadata was
-        rewritten and the sorted ids that referenced ``old`` before the rename.
+        ``(n_changed, referencing_ids, hub_moved_aside)`` — count of papers
+        whose metadata was rewritten, the sorted ids that referenced ``old``
+        before the rename, and any project-hub folders the rebuild had to
+        preserve under ``.trash/`` (the caller reports those; they are the only
+        copy of what was in them).
 
     Raises:
         TaxonomyError: ``new`` is empty; ``old`` == ``new``; ``old`` is not
@@ -816,7 +1201,7 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     # Local import avoids a core import-cycle at module load (mirrors
     # remove_project): reconcile_derived → core.checks imports core.taxonomy, and
     # core.ripple imports core.taxonomy too.
-    from litman.core.correctors import reconcile_derived
+    from litman.core.correctors import moved_aside_from, reconcile_derived
     from litman.core.ripple import _ripple_replacements
 
     old = old.strip()
@@ -860,7 +1245,7 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     new_config_text = _dump_yaml_to_string(as_dict)
 
     n_changed, staged_meta_paths, all_papers = _ripple_replacements(
-        vault, _PROJECTS_DICT, {old: new}, rename_relevance=True
+        vault, _PROJECTS_DICT, {old: new}, rename_project_keys=True
     )
     fresh_index = render_index(all_papers, now_iso())
 
@@ -876,9 +1261,9 @@ def rename_project(vault: Path, old: str, new: str) -> tuple[int, list[str]]:
     # REFERENCES.md, all recomputed from the committed TRUTH. project_refs=True
     # because a rename touches the project side; the funnel reloads config (= the
     # just-committed new_projects) for the project side.
-    reconcile_derived(vault, project_refs=True)
+    derived = reconcile_derived(vault, project_refs=True)
 
-    return n_changed, referencing
+    return n_changed, referencing, moved_aside_from(derived)
 
 
 def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
@@ -982,20 +1367,49 @@ def rebuild_all_project_links(
                 "n_tagged": n_tagged,
                 "n_paper_links": 0,
                 "n_code_links": 0,
+                "n_replaced_copies": 0,
+                "n_moved_aside": 0,
+                "aside_paths": [],
                 "detail": f"project dir not found: {project_dir}",
             }
             continue
 
         # Wipe the symlink hubs so stale entries from prior runs disappear.
+        # Whatever is NOT a link gets settled here (an expanded copy is
+        # deleted or preserved in .trash/), so the create loop below meets
+        # either an empty position or one it must leave alone.
+        blocked: set[Path] = set()
+        n_replaced_copies = 0
+        aside_paths: list[str] = []
         for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
             sub_dir = project_dir / sub
-            if sub_dir.exists():
-                for child in sub_dir.iterdir():
-                    remove_link_if_present(child)
-            else:
+            if not sub_dir.exists():
                 sub_dir.mkdir(exist_ok=True)
+                continue
+            # sorted() drains the scandir generator before the settling
+            # starts removing entries out from under it.
+            for child in sorted(sub_dir.iterdir()):
+                if remove_link_if_present(child):
+                    continue
+                settled = settle_hub_entry(
+                    child,
+                    _hub_target(vault, sub, child.name),
+                    vault=vault,
+                    project=project,
+                    hub=sub,
+                )
+                if settled.verdict == "replaced-copy":
+                    n_replaced_copies += 1
+                elif settled.verdict == "moved-aside":
+                    aside_paths.append(str(settled.moved_to))
+                elif settled.position_occupied:
+                    # Still a real folder here. Skipping the upsert keeps the
+                    # create loop from adding a second warning about a
+                    # position the user has already been told about.
+                    blocked.add(child)
         # Preserve REFERENCES.md across the wipe — it lives in
-        # litman_reflib/ alongside the symlinks but is content, not a link.
+        # litman_reflib/ alongside the symlinks but is content, not a link
+        # (settle_hub_entry leaves every real file where it is).
 
         n_paper_links = 0
         n_code_links = 0
@@ -1006,16 +1420,18 @@ def rebuild_all_project_links(
             paper_dir = (vault / "papers" / pid).resolve()
             if not paper_dir.is_dir():
                 continue
-            if make_portable_link(
-                project_dir / LITERATURE_SUBDIR / pid, paper_dir
+            paper_link = project_dir / LITERATURE_SUBDIR / pid
+            if paper_link not in blocked and make_portable_link(
+                paper_link, paper_dir
             ):
                 n_paper_links += 1
             for repo_name in p.get("code-clones") or []:
                 repo_target = (vault / "codes" / repo_name / "repo").resolve()
                 if not repo_target.exists():
                     continue
-                if make_portable_link(
-                    project_dir / CODE_SUBDIR / repo_name, repo_target
+                code_link = project_dir / CODE_SUBDIR / repo_name
+                if code_link not in blocked and make_portable_link(
+                    code_link, repo_target
                 ):
                     n_code_links += 1
 
@@ -1026,6 +1442,9 @@ def rebuild_all_project_links(
             "n_tagged": n_tagged,
             "n_paper_links": n_paper_links,
             "n_code_links": n_code_links,
+            "n_replaced_copies": n_replaced_copies,
+            "n_moved_aside": len(aside_paths),
+            "aside_paths": aside_paths,
             "detail": "",
         }
 

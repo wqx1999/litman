@@ -56,7 +56,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "inbox"),
-        "priority": fields.get("priority", "B"),
         "read-date": None,
         "last-revisited": None,
         "related": [],
@@ -111,7 +110,75 @@ def test_parse_seed_yields_all_known_dicts(vault: Path) -> None:
     # Fixed enums populated from the seed.
     assert "research" in parsed["type"]
     assert "deep-read" in parsed["status"]
-    assert "A" in parsed["priority"]
+    # `priority` is no longer a dict at all (ADR-025) — a fresh seed does not
+    # write the section and the parser does not know the name.
+    assert "priority" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# A vault seeded before ADR-025 keeps its `## priority` section forever.
+# Retiring the dict must be tolerated, not "cleaned up": rewriting every
+# user's TAXONOMY.md would be a second migration carrying its own risk, and
+# the leftover section is inert. This pins all three behaviors that make it
+# inert, so a later refactor cannot quietly turn it into a finding.
+# ---------------------------------------------------------------------------
+
+_LEGACY_PRIORITY_SECTION = """
+## priority (fixed enum, not extensible)
+
+- A
+- B
+- C
+"""
+
+
+def test_legacy_priority_section_is_parsed_as_no_dict_at_all(
+    vault: Path,
+) -> None:
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    parsed = parse_taxonomy(text + _LEGACY_PRIORITY_SECTION)
+
+    # Not a known dict, and — the part that matters — its `- A/B/C` items are
+    # not swept into whichever section happened to precede it.
+    assert set(parsed) == set(ALL_DICTS)
+    assert "priority" not in parsed
+    assert all("A" not in values for values in parsed.values())
+
+
+def test_legacy_priority_section_is_not_taxonomy_drift(vault: Path) -> None:
+    from litman.core.checks import check_taxonomy_drift
+    from litman.core.document import list_papers
+    from litman.core.locking import lock_truth_file, unlock_truth_file
+
+    # TAXONOMY.md is a chmod-locked TRUTH file (read-only on every platform,
+    # not just Windows) — a bare write_text raises PermissionError.
+    path = vault / "TAXONOMY.md"
+    unlock_truth_file(path)
+    path.write_text(
+        path.read_text(encoding="utf-8") + _LEGACY_PRIORITY_SECTION,
+        encoding="utf-8",
+    )
+    lock_truth_file(path)
+    assert check_taxonomy_drift(vault, list_papers(vault)) == []
+
+    # Control: the check IS live on this vault — an unregistered topic fires.
+    _write_paper(vault, "2024_Foo_Bar", topics=["never-registered"])
+    issues = check_taxonomy_drift(vault, list_papers(vault))
+    assert issues, "control failed: the drift check saw nothing at all"
+    assert all("priority" not in i.message for i in issues)
+
+
+def test_legacy_priority_section_survives_a_user_dict_rewrite(
+    vault: Path,
+) -> None:
+    """`update_user_dict_section` is surgical: unknown sections are copied
+    verbatim, so editing topics never silently deletes the leftover."""
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    with_legacy = text + _LEGACY_PRIORITY_SECTION
+    rewritten = update_user_dict_section(with_legacy, "topics", ["alpha"])
+
+    assert _LEGACY_PRIORITY_SECTION.strip() in rewritten
+    assert parse_taxonomy(rewritten)["topics"] == ["alpha"]
 
 
 def test_update_user_dict_replaces_only_target_section(vault: Path) -> None:

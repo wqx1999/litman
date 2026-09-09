@@ -53,7 +53,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "inbox"),
-        "priority": fields.get("priority", "B"),
         "read-date": None,
         "last-revisited": None,
         "related": fields.get("related", []),
@@ -520,3 +519,44 @@ def test_rename_cascades_into_repo_meta(vault: Path) -> None:
     assert after["updated-at"] != stale_ts
     # Paper-side binding preserved (repo name is unchanged by a paper rename).
     assert _read_meta(vault, new)["code-clones"] == ["myrepo"]
+
+
+def test_rename_reports_a_moved_aside_folder(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Renaming a linked paper rebuilds the project hubs, which can move a
+    folder out of the user's own directory — never in silence."""
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    monkeypatch.setenv("COLUMNS", "400")
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: {vault.name}\nprojects:\n  myproj: {proj}\n",
+        encoding="utf-8",
+    )
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    runner = CliRunner()
+    runner.invoke(cli, ["refresh-views", "--library", str(vault)])
+    link = proj / "litman_reflib" / "2024_Foo_Bar"
+    assert remove_link_if_present(link)
+    shutil.copytree(vault / "papers" / "2024_Foo_Bar", link)
+    (link / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli,
+        ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "kept 1 folder that does not match the vault:" in flat
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert (kept[0] / "MY_NOTES.md").is_file()
+    assert is_portable_link(proj / "litman_reflib" / "2024_Foo_Baz")

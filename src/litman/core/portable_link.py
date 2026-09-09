@@ -40,11 +40,13 @@ command keeps working without them.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 
 # Stderr console so warnings don't contaminate stdout (which CLI consumers
 # may pipe / parse). Module-level singleton because the warning is rare
@@ -289,6 +291,11 @@ def _remove_existing_entry(path: Path) -> None:
         except OSError:
             path.rmdir()
         return
+    if path.is_dir():
+        # Named here rather than discovered by unlink(): Windows answers that
+        # with "[WinError 5] Access is denied", which reads as a permissions
+        # problem and sends the user somewhere there is nothing to fix.
+        raise IsADirectoryError(f"{path} is a directory")
     path.unlink()
 
 
@@ -336,12 +343,96 @@ def _warn_link_obstructed(link_path: Path, err: OSError) -> None:
     that entry — not to move the library. Always printed (no once-per-process
     latch): it is a specific, actionable, per-link condition the user needs
     to see.
+
+    A real folder gets its own wording with the OS error string left out.
+    ``lit health-check --fix`` settles those positions itself now, so reaching
+    here means something outside the hubs put a folder in a link's place, and
+    the errno phrasing only ever misdirected.
     """
+    if isinstance(err, IsADirectoryError):
+        _console.print(
+            f"[yellow]warning:[/] {escape(str(link_path))} is a real folder, "
+            "not a litman link — left untouched.\n"
+            "[dim]    Move it away, then re-run `lit health-check --fix`.[/]"
+        )
+        return
     _console.print(
         f"[yellow]warning:[/] could not replace existing entry at "
-        f"{link_path}: {err}.\n"
+        f"{escape(str(link_path))}: {escape(str(err))}.\n"
         "[dim]    The link was not created. Remove that entry manually "
         "and re-run; this is NOT a link-support problem.[/]"
+    )
+
+
+# One verdict plus one way out, ~120 characters (the 2026-08-02 rule). An OS
+# reason has to fit inside that whatever the OS handed us.
+_MAX_REASON_CHARS = 80
+
+
+def _shutil_error_reason(err: shutil.Error) -> str:
+    """Collapse a copytree failure list to one child plus a count.
+
+    ``shutil.Error`` carries one ``(src, dst, why)`` tuple PER failed file and
+    stringifies to the repr of that list — hundreds of characters for a paper,
+    kilobytes for a code checkout. It is an ``OSError`` subclass, so it arrives
+    here through the same ``except OSError`` as everything else.
+    """
+    entries = err.args[0] if err.args else None
+    if not isinstance(entries, list) or not entries:
+        return "copy failed"
+    first = entries[0]
+    name = why = ""
+    if isinstance(first, tuple) and len(first) >= 3:
+        name = Path(str(first[0])).name
+        why = " ".join(str(first[2]).split())
+    rest = len(entries) - 1
+    more = f" (+{rest} more)" if rest > 0 else ""
+    head = f"{name}: " if name else ""
+    return f"{head}{why or 'copy failed'}{more}"
+
+
+def _os_error_reason(err: OSError) -> str:
+    """The short human half of an ``OSError``, capped.
+
+    ``strerror`` is the sentence without the ``[Errno N]`` prefix and without
+    the path repeated back (the message already names it). The cap is the
+    backstop: it holds whatever the exception turns out to be.
+    """
+    reason = (
+        _shutil_error_reason(err)
+        if isinstance(err, shutil.Error)
+        else (err.strerror or str(err))
+    )
+    reason = " ".join(reason.split())
+    # Punctuation belongs to the caller's sentence, not to this half. A
+    # localized Windows strerror ends in its own full stop ("另一个程序正在使用
+    # 此文件，进程无法访问。"), which the caller's "." then doubled.
+    trimmed = reason.rstrip(".。!！")
+    if trimmed:
+        reason = trimmed
+    if len(reason) > _MAX_REASON_CHARS:
+        reason = reason[: _MAX_REASON_CHARS - 1].rstrip() + "…"
+    return reason
+
+
+def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
+    """Warn that a real folder in a link position could not be cleared.
+
+    Raised by ``project_link.settle_hub_entry`` when the filesystem refuses to
+    delete or move the folder — a child open in another program, a read-only
+    parent. The OS reason is kept here (unlike the real-folder message above,
+    where it only misdirected): "used by another process" is exactly what the
+    user has to act on.
+
+    Lives in this module rather than with its caller so every folder-link
+    warning goes through the one stderr console, and so a test that stubs
+    ``portable_link._console`` sees this one too.
+    """
+    _console.print(
+        f"[yellow]warning:[/] could not clear {escape(str(path))}: "
+        f"{escape(_os_error_reason(err))}.\n"
+        "[dim]    The link was not created. Close anything using that folder, "
+        "then re-run `lit health-check --fix`.[/]"
     )
 
 

@@ -52,7 +52,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": [],
         "type": "research",
         "status": "inbox",
-        "priority": "B",
         "read-date": None,
         "last-revisited": None,
         "related": fields.get("related", []),
@@ -626,3 +625,136 @@ def test_trash_empty_dry_run_lists_full_entries(vault: Path) -> None:
     assert "more" not in result.output
     for i in range(12):
         assert f"2024_P{i:02d}" in result.output
+
+
+# ===========================================================================
+# .trash/replaced-folders/ — the hub folders `--fix` preserved
+# ===========================================================================
+
+
+def _plant_replaced_folder(vault: Path, project: str, name: str) -> Path:
+    """A folder settle_hub_entry moved out of a project hub."""
+    kept = (
+        vault
+        / TRASH_DIRNAME
+        / "replaced-folders"
+        / project
+        / "litman_reflib"
+        / f"{name}-20260908T093800Z"
+    )
+    kept.mkdir(parents=True)
+    (kept / "notes.md").write_text("from the other machine\n", encoding="utf-8")
+    return kept
+
+
+def test_trash_list_and_empty_ignore_replaced_folders(vault: Path) -> None:
+    """One recycle bin, one way to empty it — but the container is not an
+    entry: it never shows up in `lit trash list` and never inflates the count.
+    """
+    from litman.core.checks import check_trash_health
+    from litman.core.document import list_papers
+
+    _write_paper(vault, "2024_Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+    kept = _plant_replaced_folder(vault, "myproj", "2024_Bar")
+
+    assert [e.paper_id for e in list_trash(vault)] == ["2024_Foo"]
+    result = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert "replaced-folders" not in result.output
+    # The container is a directory in .trash/, so an unfiltered walk would
+    # count it as an entry and pair it against the orphan-sidecar test. It is
+    # surfaced, but as its own info notice — never as an entry.
+    categories = [
+        i.category for i in check_trash_health(vault, list_papers(vault))
+    ]
+    assert categories == ["replaced_folders"]
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "1 entr" in result.output  # the paper, not the container
+    assert not kept.exists()
+    assert list((vault / TRASH_DIRNAME).iterdir()) == []
+
+
+def test_trash_empty_clears_replaced_folders_with_no_entries(vault: Path) -> None:
+    """The realistic case: `--fix` preserved a folder and no paper was ever
+    deleted. `empty` is the only command that can clear them, so it must not
+    report an empty trash while they are sitting there.
+    """
+    from litman.core.trash import count_replaced_folders
+
+    kept = _plant_replaced_folder(vault, "myproj", "2024_Bar")
+    assert count_replaced_folders(vault) == 1
+    assert list_trash(vault) == []
+
+    runner = CliRunner()
+    listed = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    assert listed.exit_code == 0, listed.output
+    assert "replaced-folders" not in listed.output
+    assert "2024_Bar" not in listed.output  # decision #8: never restorable
+
+    dry = runner.invoke(
+        cli, ["trash", "empty", "--dry-run", "--library", str(vault)]
+    )
+    assert dry.exit_code == 0, dry.output
+    assert "1 replaced project folder" in dry.output
+    assert kept.exists()  # dry-run deletes nothing
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--yes", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "already empty" not in result.output
+    assert "1 replaced project folder removed" in result.output
+    assert not kept.exists()
+    assert list((vault / TRASH_DIRNAME).iterdir()) == []
+
+
+def test_count_replaced_folders_ignores_the_scaffolding(vault: Path) -> None:
+    """Only the leaf folders count — not the project / hub directories above
+    them, and not an empty container left behind by a failed move."""
+    from litman.core.trash import count_replaced_folders
+
+    assert count_replaced_folders(vault) == 0
+    (vault / TRASH_DIRNAME / "replaced-folders" / "myproj" / "litman_code").mkdir(
+        parents=True
+    )
+    assert count_replaced_folders(vault) == 0
+    _plant_replaced_folder(vault, "myproj", "2024_Bar")
+    _plant_replaced_folder(vault, "otherproj", "2024_Baz")
+    assert count_replaced_folders(vault) == 2
+
+
+def test_trash_empty_that_removes_nothing_does_not_claim_success(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every entry locked: no green tick, no empty count, nothing deleted.
+
+    `✓ Emptied trash ( removed)` was the rendering — a success claim with the
+    number missing, over a trash that is still full.
+    """
+    _write_paper(vault, "2024_Foo")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+    entry = next(
+        c for c in (vault / TRASH_DIRNAME).iterdir() if c.is_dir()
+    )
+
+    def boom(path: object, **_kw: object) -> None:
+        raise OSError(16, "Device or resource busy (mocked)")
+
+    monkeypatch.setattr(trash_mod, "rmtree", boom)
+
+    result = runner.invoke(
+        cli, ["trash", "empty", "--yes", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "✓ Emptied" not in result.output
+    assert "( removed)" not in result.output
+    assert "Nothing was removed" in result.output
+    assert entry.is_dir()  # still there, as the message says

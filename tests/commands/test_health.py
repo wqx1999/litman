@@ -87,7 +87,6 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         "data": fields.get("data", []),
         "type": fields.get("type", "research"),
         "status": fields.get("status", "deep-read"),
-        "priority": fields.get("priority", "B"),
         "read-date": fields.get("read_date"),
         "last-revisited": fields.get("last_revisited"),
         "related": fields.get("related", []),
@@ -117,6 +116,19 @@ def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
         (paper_dir / "discussion.md").write_text(
             discussion_scaffold(paper_id), encoding="utf-8"
         )
+
+
+def _append_metadata(vault: Path, paper_id: str, yaml_text: str) -> None:
+    """Append raw YAML lines to a fixture paper's metadata.yaml.
+
+    For keys ``_write_paper`` deliberately does not model: the RETIRED
+    paper-level ``priority`` and the variable ``priority-<project>`` keys that
+    replaced it (ADR-025). Appending keeps the fixture honest — a real vault
+    grew these keys the same way, at the end of the file.
+    """
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    with meta.open("a", encoding="utf-8") as f:
+        f.write(yaml_text)
 
 
 @pytest.fixture
@@ -153,10 +165,154 @@ def test_schema_invalid_status_value(vault: Path) -> None:
     )
 
 
-def test_schema_invalid_priority(vault: Path) -> None:
-    _write_paper(vault, "2024_Foo_Bar", priority="X")
+def test_schema_retired_priority_field(vault: Path) -> None:
+    """A surviving paper-level `priority` is an error whatever its value —
+    the trigger is the key, not the letter (ADR-025)."""
+    _write_paper(vault, "2024_Foo_Bar", projects=["pep"])
+    _append_metadata(vault, "2024_Foo_Bar", "priority: A\n")
     issues = check_schema(vault, list_papers(vault))
-    assert any(i.category == "schema" and "'priority'" in i.message for i in issues)
+    retired = [i for i in issues if i.category == "retired_priority"]
+    assert len(retired) == 1
+    assert retired[0].severity == "error"
+    assert retired[0].paper_id == "2024_Foo_Bar"
+    assert "retired" in retired[0].message
+    assert "priority-<project>" in retired[0].message
+    assert "--fix" in (retired[0].hint or "")
+
+
+def test_schema_per_project_priority_out_of_range(vault: Path) -> None:
+    """Only the junk value is an error. A null `priority-<other>` is the legal
+    "linked, not graded yet" state (ADR-025 decision 5) and stays silent."""
+    _write_paper(vault, "2024_Foo_Bar", projects=["pep", "other"])
+    _append_metadata(vault, "2024_Foo_Bar", "priority-pep: Z\npriority-other:\n")
+    issues = check_schema(vault, list_papers(vault))
+    schema = [i for i in issues if i.category == "schema"]
+    assert [i.message.split("'")[1] for i in schema] == ["priority-pep"]
+    assert schema[0].severity == "error"
+
+
+def _retired_findings(vault: Path) -> dict[str, Any]:
+    return {
+        i.paper_id: i
+        for i in check_schema(vault, list_papers(vault))
+        if i.category == "retired_priority"
+    }
+
+
+def test_schema_retired_priority_discloses_the_lossy_case(vault: Path) -> None:
+    """Three cases, and only ONE of them is a warning.
+
+    The loss is disclosed here and nowhere else — the report folds each
+    category after five entries, so "the user saw the list first" is not an
+    argument that holds. That makes dilution the failure mode to guard: a
+    paper with `priority: null` and no projects loses nothing, and `lit add`
+    wrote exactly that for every unread paper, so warning about those buries
+    the few that really do lose a grade.
+    """
+    _write_paper(vault, "2024_Linked_Paper", projects=["pep"])
+    _append_metadata(vault, "2024_Linked_Paper", "priority: A\n")
+    _write_paper(vault, "2024_Loose_Paper", projects=[])
+    _append_metadata(vault, "2024_Loose_Paper", "priority: A\n")
+    # The common case: added, never triaged, never linked.
+    _write_paper(vault, "2024_Unset_Paper", projects=[])
+    _append_metadata(vault, "2024_Unset_Paper", "priority:\n")
+
+    found = _retired_findings(vault)
+    assert set(found) == {
+        "2024_Linked_Paper",
+        "2024_Loose_Paper",
+        "2024_Unset_Paper",
+    }
+    linked = found["2024_Linked_Paper"]
+    loose = found["2024_Loose_Paper"]
+    unset = found["2024_Unset_Paper"]
+
+    # Only the genuinely lossy paper says anything is dropped.
+    assert "dropped" in loose.message
+    assert "in no project" in loose.message
+    # One verdict + one way out, and the way out is the one that KEEPS the
+    # grade (link it first), not just the one that deletes it.
+    assert "lit link" in (loose.hint or "")
+
+    for issue in (linked, unset):
+        assert "dropped" not in issue.message, issue.message
+        assert "keep the grade" not in (issue.hint or ""), issue.hint
+        assert issue.message != loose.message, "the warning must stand out"
+
+    for issue in (linked, loose, unset):
+        assert len(issue.message) < 120, issue.message
+        assert len(issue.hint or "") < 120, issue.hint
+
+
+def test_schema_retired_priority_does_not_warn_an_unset_field(
+    vault: Path,
+) -> None:
+    """The regression this exists for. `lit add` wrote `priority: null`, so on
+    a real library most untriaged papers are in this state — 8 of 18 on the
+    demo vault. Telling them their value will be dropped is false, and it
+    drowns the papers that lose a real grade."""
+    _write_paper(vault, "2024_Unset_Paper", projects=[])
+    _append_metadata(vault, "2024_Unset_Paper", "priority:\n")
+
+    issue = _retired_findings(vault)["2024_Unset_Paper"]
+    assert "dropped" not in issue.message
+    assert "no project" not in issue.message
+    assert "keep the grade" not in (issue.hint or "")
+    # Still an error, still fixable in one Enter — only the wording changes.
+    assert issue.severity == "error"
+    assert "--fix" in (issue.hint or "")
+
+
+def test_schema_retired_priority_still_warns_a_real_loss(vault: Path) -> None:
+    """The paired control. Without it, a build that never warns at all would
+    satisfy the test above."""
+    _write_paper(vault, "2024_Loose_Paper", projects=[])
+    _append_metadata(vault, "2024_Loose_Paper", "priority: C\n")
+
+    issue = _retired_findings(vault)["2024_Loose_Paper"]
+    assert "dropped" in issue.message
+    assert "keep the grade" in (issue.hint or "")
+
+
+def test_schema_retired_priority_warning_tracks_the_migration(
+    vault: Path,
+) -> None:
+    """The warning and the behaviour must not disagree: a paper is told it
+    loses something exactly when `migrate_retired_priority` would drop a value
+    without copying it anywhere."""
+    from litman.core.ripple import migrate_retired_priority
+
+    for name, projects, line in (
+        ("2024_Linked_Graded", ["pep"], "priority: A\n"),
+        ("2024_Linked_Unset", ["pep"], "priority:\n"),
+        ("2024_Loose_Graded", [], "priority: C\n"),
+        ("2024_Loose_Unset", [], "priority:\n"),
+    ):
+        _write_paper(vault, name, projects=projects)
+        _append_metadata(vault, name, line)
+
+    warned = {
+        pid for pid, i in _retired_findings(vault).items() if "dropped" in i.message
+    }
+    before = {p["id"]: dict(p) for p in list_papers(vault)}
+    migrate_retired_priority(vault)
+    after = {p["id"]: dict(p) for p in list_papers(vault)}
+
+    lost = {
+        pid
+        for pid, old in before.items()
+        if old.get("priority") is not None
+        and not any(k.startswith("priority-") for k in after[pid])
+    }
+    assert warned == lost == {"2024_Loose_Graded"}
+
+
+def test_schema_per_project_priority_in_range_is_clean(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar", projects=["binder-design"])
+    # A hyphenated project name is the normal case — the key is never split
+    # on "-", the prefix is stripped.
+    _append_metadata(vault, "2024_Foo_Bar", "priority-binder-design: A\n")
+    assert check_schema(vault, list_papers(vault)) == []
 
 
 def test_schema_clean_with_consistent_dates(vault: Path) -> None:
@@ -548,6 +704,68 @@ def test_relevance_orphan_detected_report_only(vault: Path) -> None:
     assert "relevance-pep" in issues[0].message
 
 
+# --- priority_orphan (ADR-025) ----------------------------------------------
+
+
+def test_priority_orphan_clean(vault: Path) -> None:
+    from litman.core.checks import check_priority_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    # Hyphenated project name: the key is the prefix + the WHOLE name.
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects:\n  - binder-design\n"
+        "priority-binder-design: A\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    assert check_priority_orphan(vault, list_papers(vault)) == []
+
+
+def test_priority_orphan_detected_report_only(vault: Path) -> None:
+    from litman.core.checks import check_priority_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    # priority-pep present but projects does NOT contain pep -> orphan.
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects: []\npriority-pep: B\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    issues = check_priority_orphan(vault, list_papers(vault))
+    assert len(issues) == 1
+    assert issues[0].category == "priority_orphan"
+    assert issues[0].severity == "warning"  # report-only, never auto-deleted
+    assert issues[0].paper_id == "2024_Foo_Bar"
+    assert "priority-pep" in issues[0].message
+    assert "lit unlink" in (issues[0].hint or "")
+
+
+def test_priority_and_relevance_orphans_stay_separate_categories(
+    vault: Path,
+) -> None:
+    """One shared body, two findings: the repair prose differs (authored text
+    vs one letter), so they must not collapse into one category."""
+    from litman.core.checks import check_priority_orphan, check_relevance_orphan
+
+    paper_dir = vault / "papers" / "2024_Foo_Bar"
+    paper_dir.mkdir(parents=True)
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_Foo_Bar\nprojects: []\n"
+        "priority-pep: B\nrelevance-pep: stale note\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "paper.pdf").write_bytes(b"%PDF stub\n")
+    papers = list_papers(vault)
+    assert [i.category for i in check_priority_orphan(vault, papers)] == [
+        "priority_orphan"
+    ]
+    rel = check_relevance_orphan(vault, papers)
+    assert [i.category for i in rel] == ["relevance_orphan"]
+    assert "never auto-deleted" in (rel[0].hint or "")
+
+
 # --- project_references (M30 #3) --------------------------------------------
 
 
@@ -595,6 +813,245 @@ def test_project_references_unreachable_dir_skipped(
 
     _configure_project(vault, "gone", tmp_path / "nonexistent")
     _write_paper(vault, "2024_Foo_Bar", projects=["gone"])
+    assert check_project_references(vault, list_papers(vault)) == []
+
+
+def _expand_link_to_copy(link: Path, source: Path) -> None:
+    """Do to one link what a copy tool does to a whole project directory."""
+    import shutil
+
+    from litman.core.portable_link import remove_link_if_present
+
+    assert remove_link_if_present(link)
+    shutil.copytree(source, link)
+
+
+def test_folder_copy_reported_as_copy_not_missing(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The position is occupied, not empty. "missing" sent the user hunting
+    for something that was never lost — and ``--fix`` into a wall it could
+    not get past."""
+    from litman.core.checks import check_project_references
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)
+    link = proj / "litman_reflib" / "2024_Foo_Bar"
+    _expand_link_to_copy(link, vault / "papers" / "2024_Foo_Bar")
+
+    issues = check_project_references(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].category == "project_references"
+    assert issues[0].severity == "error"
+    assert issues[0].paper_id == "2024_Foo_Bar"
+    assert "is a folder copy, not a litman link" in issues[0].message
+    assert "missing" not in issues[0].message
+    assert issues[0].hint is not None and ".trash/" in issues[0].hint
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert "project_references" in result.output
+    assert is_portable_link(link)
+    assert check_project_references(vault, list_papers(vault)) == []
+
+
+def test_fix_reports_replaced_and_kept_folder_counts(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--fix`` says what it did with the folders — the two outcomes read
+    differently, and the one it kept is only useful with its path."""
+    from litman.core.correctors import regen
+
+    # Wide enough that Rich does not fold the .trash/ path mid-word.
+    monkeypatch.setenv("COLUMNS", "400")
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    ids = ["2024_A_One", "2024_B_Two", "2024_C_Three"]
+    for pid in ids:
+        _write_paper(vault, pid, projects=["myproj"])
+    regen(vault)
+    for pid in ids:
+        _expand_link_to_copy(
+            proj / "litman_reflib" / pid, vault / "papers" / pid
+        )
+    (proj / "litman_reflib" / "2024_C_Three" / "notes.md").write_text(
+        "written on the other machine\n", encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    flat = " ".join(result.output.split())
+
+    assert "replaced 2 folder copies with links" in flat
+    assert "kept 1 folder that does not match the vault:" in flat
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    assert str(kept[0]) in flat
+    assert (kept[0] / "notes.md").read_text(encoding="utf-8") == (
+        "written on the other machine\n"
+    )
+    for pid in ids:
+        assert is_portable_link(proj / "litman_reflib" / pid)
+
+
+def test_fix_keeps_the_kept_folder_path_copyable_at_80_columns(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The kept folder's path is only useful if it survives a copy-paste.
+
+    At the default 80 columns it is far wider than the console, and rich's own
+    wrapping puts a real newline inside it — the pasted path then points
+    nowhere. The line goes out soft-wrapped instead, leaving the folding to
+    the terminal. The whole point here is to render at a width the path cannot
+    fit into.
+    """
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core.correctors import regen
+
+    # Pinned, not set through COLUMNS: rich caches a console's width the first
+    # time anything reads it, and `health`'s console is a module global that
+    # earlier tests in this file have already read. Patching the console makes
+    # the width a property of this test instead of of the run order.
+    monkeypatch.setattr(health_cmd, "console", Console(width=80))
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    pid = "2024_C_Three"
+    _write_paper(vault, pid, projects=["myproj"])
+    regen(vault)
+    _expand_link_to_copy(proj / "litman_reflib" / pid, vault / "papers" / pid)
+    (proj / "litman_reflib" / pid / "notes.md").write_text(
+        "written on the other machine\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    # Control: the assertion below proves nothing about wrapping unless the
+    # path is genuinely wider than the console it was printed to.
+    assert len(str(kept[0])) > 80
+    # NOT flattened, unlike the sibling test: a fold lands a real newline
+    # inside the path and this substring stops existing.
+    assert str(kept[0]) in result.output
+
+
+def test_fix_reports_a_single_replacement_in_the_singular(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_A_One", projects=["myproj"])
+    regen(vault)
+    _expand_link_to_copy(
+        proj / "litman_reflib" / "2024_A_One", vault / "papers" / "2024_A_One"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    flat = " ".join(result.output.split())
+
+    assert "replaced 1 folder copy with a link" in flat
+    assert "kept 1 folder" not in flat  # nothing differed, nothing preserved
+
+
+def test_one_unclearable_folder_does_not_abort_the_whole_fix(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked folder costs its own position, not the run.
+
+    Before this, an OSError from the settle escaped through regen into
+    ``health_check_cmd``, so the post-fix re-check, the summary and every
+    other klass-A category never ran — a stack trace where the old code had
+    printed one warning and finished.
+    """
+    import litman.core.project_link as project_link
+    from litman.core.correctors import regen
+    from litman.core.locking import rmtree as real_rmtree
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_A_One", projects=["myproj"], no_discussion=True)
+    _write_paper(vault, "2024_B_Two", projects=["myproj"], no_discussion=True)
+    regen(vault)
+    for pid in ("2024_A_One", "2024_B_Two"):
+        _expand_link_to_copy(proj / "litman_reflib" / pid, vault / "papers" / pid)
+
+    def flaky_rmtree(path: Path, **kwargs: Any) -> None:
+        if Path(path).name == "2024_A_One":
+            raise OSError(32, "used by another process (mocked)")
+        real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(project_link, "rmtree", flaky_rmtree)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    flat = " ".join(result.output.split())
+    assert "Summary:" in flat  # the run reached the end
+    assert "discussion_scaffold: cleaned 2 items" in flat  # other repairs ran
+    assert "replaced 1 folder copy with a link" in flat
+    stuck = proj / "litman_reflib" / "2024_A_One"
+    assert stuck.is_dir() and not is_portable_link(stuck)
+    assert (stuck / "metadata.yaml").is_file()
+    assert is_portable_link(proj / "litman_reflib" / "2024_B_Two")
+
+
+def test_folder_copy_outside_membership_reported_as_stale(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A folder for a paper this project no longer holds. The ``extra`` arm
+    only ever counted links, so nothing saw it."""
+    from litman.core.checks import check_project_references
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    _write_paper(vault, "2024_Foo_Bar", projects=["myproj"])
+    regen(vault)
+    orphan = proj / "litman_reflib" / "2019_Old_Paper"
+    orphan.mkdir()
+    (orphan / "notes.md").write_text("stale\n", encoding="utf-8")
+
+    issues = check_project_references(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].paper_id is None
+    assert "is a stale folder copy, not a litman link" in issues[0].message
+
+    runner = CliRunner()
+    runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+    assert not orphan.exists()
     assert check_project_references(vault, list_papers(vault)) == []
 
 
@@ -1736,6 +2193,7 @@ def test_auto_fixable_categories_constant() -> None:
             "orphan_trash_sidecar",
             "discussion_scaffold",
             "skill_drift",
+            "retired_priority",
         }
     )
 
@@ -2536,3 +2994,70 @@ def test_folding_is_per_category_not_per_report(vault: Path) -> None:
     # phrase rather than every tail line keeps the assertion about these two
     # and not about whatever else an unregenerated fixture vault reports.
     assert result.output.count("… and 3 more in this category") == 2
+
+
+def _plant_kept_folder(vault: Path, project: str, name: str) -> Path:
+    kept = (
+        vault
+        / ".trash"
+        / "replaced-folders"
+        / project
+        / "litman_reflib"
+        / f"{name}-20260908T093800Z"
+    )
+    kept.mkdir(parents=True)
+    (kept / "MY_NOTES.md").write_text("hand-written\n", encoding="utf-8")
+    return kept
+
+
+def test_kept_hub_folders_are_surfaced_as_info(vault: Path) -> None:
+    """The dim line at settle time scrolls away; the folders do not.
+
+    No cap, no eviction, no restore — and a litman_code one is a whole git
+    checkout that `lit sync` pushes to the user's cloud.
+    """
+    from litman.core.trash import count_replaced_folders
+
+    assert check_trash_health(vault, list_papers(vault)) == []
+    _plant_kept_folder(vault, "myproj", "2024_A_One")
+    assert count_replaced_folders(vault) == 1
+
+    issues = check_trash_health(vault, list_papers(vault))
+
+    assert len(issues) == 1
+    assert issues[0].category == "replaced_folders"
+    assert issues[0].severity == "info"
+    assert "holds 1 folder kept from project hubs" in issues[0].message
+    assert issues[0].hint is not None and "lit trash empty" in issues[0].hint
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert "Folders kept out of project hubs" in result.output
+
+
+def test_kept_hub_folders_are_never_auto_fixed(vault: Path) -> None:
+    """Decision #3: `--fix` must never delete what litman could not vouch for.
+
+    Pinned three ways — the two category sets and the command itself — because
+    a future category added to AUTO_FIXABLE_CATEGORIES by name would silently
+    turn `--fix` into a delete of the user's only copy.
+    """
+    from litman.commands import health
+
+    assert "replaced_folders" not in AUTO_FIXABLE_CATEGORIES
+    assert "replaced_folders" not in health._KLASS_A_CATEGORIES
+    assert "replaced_folders" not in health._fixable_categories()
+
+    kept = _plant_kept_folder(vault, "myproj", "2024_A_One")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert (kept / "MY_NOTES.md").read_text(encoding="utf-8") == "hand-written\n"
+    # Still reported after the fix — it is a notice, not a defect to clear.
+    assert "Folders kept out of project hubs" in result.output
+    assert "fixable via --fix" not in result.output.split(
+        "Folders kept out of project hubs"
+    )[1].split("\n")[0]
+    assert check_trash_health(vault, list_papers(vault))

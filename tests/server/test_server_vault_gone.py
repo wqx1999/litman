@@ -394,7 +394,6 @@ def _link_paper_into_project(vault: Path, tmp_path: Path) -> Path:
                 "year": 2024,
                 "doi": "10.test/p1",
                 "status": "inbox",
-                "priority": "B",
                 "type": "research",
                 "projects": ["pepforge"],
                 "topics": [],

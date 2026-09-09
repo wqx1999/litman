@@ -82,13 +82,12 @@ def test_project_paper_key_order_is_index_fields_order() -> None:
     # recency ranking, and the rule — not the specific tail — is the point.)
     out = project_paper({"id": "p1"})
     assert tuple(out.keys()) == INDEX_PAPER_FIELDS
-    assert INDEX_PAPER_FIELDS[:13] == (
+    assert INDEX_PAPER_FIELDS[:12] == (
         "id",
         "title",
         "authors",
         "year",
         "type",
-        "priority",
         "status",
         "topics",
         "projects",

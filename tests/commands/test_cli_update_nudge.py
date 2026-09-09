@@ -13,6 +13,7 @@ fixture (``$LITMAN_REGISTRY_DIR`` → a temp dir).
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from click.testing import CliRunner
 
 from litman.cli import cli
 from litman.commands import _drift
+from litman.commands import self_update as su
 from litman.core import update_check
 from litman.core.library import create_vault
 from litman.core.vault_registry import add_vault, load_registry, save_registry
@@ -50,6 +52,32 @@ def _seed_active_vault(tmp_path: Path) -> Path:
 
 def _force_tty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+
+def _contain_self_update(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[object]]:
+    """Stub every seam ``lit self-update`` could act on the machine through.
+
+    A test that drives the command to completion must not be contained merely
+    by the absence of a ``uv`` binary: the manual-test stations are uv-installed
+    boxes and they run this suite, so a regression in the source guard would
+    upgrade the developer's own litman instead of failing the test.
+    """
+    seen: dict[str, list[object]] = {"ran": [], "spawned": []}
+
+    def _completed(cmd: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(su.launcher_stubs, "repair_default", lambda: [])
+    monkeypatch.setattr(su, "_run_capture", lambda cmd, **kw: _completed(cmd))
+    monkeypatch.setattr(
+        su.subprocess, "run", lambda cmd, **kw: seen["ran"].append(cmd) or _completed(cmd)
+    )
+    monkeypatch.setattr(
+        su.self_update_helper,
+        "write_and_spawn_helper",
+        lambda **kw: seen["spawned"].append(kw),
+    )
+    return seen
 
 
 def _mock_fetch(monkeypatch: pytest.MonkeyPatch, version: str | None) -> list[int]:
@@ -263,3 +291,38 @@ def test_update_nudge_skipped_for_self_update(
     assert result.exit_code == 0, result.output
     assert _TIP not in result.stdout
     assert _TIP not in result.stderr
+
+
+def test_nudge_stays_while_self_update_refuses_git_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The funnel has to stay closed at both ends.
+
+    A litman installed from git still gets the tip — the release it names is
+    real — and the command the tip points at answers with a way to get that
+    release, instead of announcing an upgrade it cannot perform. Asserting the
+    pair together stops a future change from fixing only one end and leaving
+    the other pointing nowhere.
+    """
+    _seed_active_vault(tmp_path)
+    _force_tty(monkeypatch)
+    _mock_fetch(monkeypatch, "9.9.9")
+    monkeypatch.setattr(su, "_is_editable_install", lambda: False)
+    monkeypatch.setattr(su, "_install_origin", lambda: "git (dev/1.3.5)")
+    monkeypatch.setattr(su, "_detect_installer", lambda: "uv")
+    seen = _contain_self_update(monkeypatch)
+
+    nudged = CliRunner().invoke(cli, ["list"])
+    assert nudged.exit_code == 0, nudged.output
+    assert "litman 9.9.9 is available (you have 1.1.0)" in nudged.stderr
+    assert "lit self-update" in nudged.stderr
+
+    refused = CliRunner().invoke(cli, ["self-update", "-y"])
+    assert refused.exit_code == 0, refused.output
+    # Rich hard-wraps to the console width, so compare on normalised spacing.
+    said = " ".join(refused.output.split())
+    assert "not from a release" in said
+    assert "uv tool uninstall litman && uv tool install litman" in said
+    assert "current" not in said  # no promise was made on the way past
+    assert seen["ran"] == []  # and the upgrade itself never started
+    assert seen["spawned"] == []

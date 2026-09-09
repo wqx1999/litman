@@ -10,6 +10,8 @@ contract is verified without needing an exFAT drive.
 
 from __future__ import annotations
 
+import io
+import shutil
 import sys
 from pathlib import Path
 
@@ -391,3 +393,165 @@ class TestRealJunctionsOnWindows:
         assert remove_link_if_present(link) is True
         assert not link.exists()
         assert (target / "inside.txt").exists()
+
+
+def test_make_portable_link_on_real_directory_warns_in_plain_english(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real folder in the link position is reported as a real folder.
+
+    Letting ``unlink()`` discover it hands the user the OS's words — on
+    Windows "[WinError 5] Access is denied" — and sends them looking for a
+    permissions problem that does not exist. The folder itself is untouched
+    either way.
+    """
+    target = _dir_with(tmp_path, "target", "x")
+    occupied = _dir_with(tmp_path, "link", "mine")
+
+    print_calls: list[tuple[object, ...]] = []
+
+    class _RecordingConsole:
+        def print(self, *args: object, **_kw: object) -> None:
+            print_calls.append(args)
+
+    monkeypatch.setattr(portable_link, "_console", _RecordingConsole())
+
+    ok = make_portable_link(occupied, target)
+
+    assert ok is False
+    assert occupied.is_dir() and not is_portable_link(occupied)
+    assert (occupied / "f.txt").read_text(encoding="utf-8") == "mine"
+    assert len(print_calls) == 1
+    said = " ".join(str(a) for a in print_calls[0])
+    assert "is a real folder, not a litman link" in said
+    assert "lit health-check --fix" in said
+    assert "Errno" not in said
+    assert "WinError" not in said
+    assert "could not replace existing entry" not in said
+
+
+# ---------------------------------------------------------------------------
+# Warning text: what Rich actually renders, not what we hand it
+# ---------------------------------------------------------------------------
+
+
+def _render(monkeypatch: pytest.MonkeyPatch, fn: object, *args: object) -> str:
+    """Run a warning through a REAL Rich console and return the output.
+
+    A recording stub captures the markup string, which is exactly the thing
+    that cannot show a markup bug: `[draft]` in a path looks fine until Rich
+    parses it as a style tag and drops it.
+    """
+    buf = io.StringIO()
+    monkeypatch.setattr(
+        portable_link, "_console", Console(file=buf, width=400, no_color=True)
+    )
+    fn(*args)  # type: ignore[operator]
+    return buf.getvalue()
+
+
+def test_warnings_keep_square_brackets_in_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder named ``proj [draft]`` must survive into the message.
+
+    These are the messages whose whole job is "go and clear that folder";
+    handing back a path that does not exist is worse than saying nothing.
+    """
+    bracketed = Path("/tmp/proj [draft]/litman_reflib/p1")
+
+    unmovable = _render(
+        monkeypatch,
+        portable_link.warn_hub_entry_unmovable,
+        bracketed,
+        OSError(13, "Permission denied"),
+    )
+    assert "proj [draft]" in unmovable
+    assert "Permission denied" in unmovable
+
+    is_dir = _render(
+        monkeypatch,
+        portable_link._warn_link_obstructed,
+        bracketed,
+        IsADirectoryError(f"{bracketed} is a directory"),
+    )
+    assert "proj [draft]" in is_dir
+    assert "is a real folder, not a litman link" in is_dir
+
+    other = _render(
+        monkeypatch,
+        portable_link._warn_link_obstructed,
+        bracketed,
+        OSError(16, "Device or resource busy"),
+    )
+    assert "proj [draft]" in other
+    assert "Device or resource busy" in other
+
+
+def test_unmovable_warning_drops_the_errno_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``strerror``, not ``str(err)``: the errno and the repeated path are
+    noise in a message that already names the folder."""
+    out = _render(
+        monkeypatch,
+        portable_link.warn_hub_entry_unmovable,
+        Path("/tmp/proj/litman_reflib/p1"),
+        OSError(13, "Permission denied", "/tmp/proj/litman_reflib/p1"),
+    )
+    assert "Permission denied" in out
+    assert "Errno" not in out
+
+
+def test_copytree_failure_list_collapses_to_one_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shutil.Error`` is an ``OSError``, so ``except OSError`` catches it —
+    and it stringifies to one tuple per failed file. Reachable on the target
+    machine: project on D:, vault on C: → EXDEV → copytree → a locked PDF.
+    """
+    err = shutil.Error(
+        [
+            (f"/x/f{i}.pdf", f"/y/f{i}.pdf", f"[Errno 13] Permission denied: '/x/f{i}.pdf'")
+            for i in range(3)
+        ]
+    )
+    assert len(str(err)) > 200  # what would have been printed raw
+
+    reason = portable_link._os_error_reason(err)
+    assert len(reason) <= portable_link._MAX_REASON_CHARS
+    assert "f0.pdf" in reason
+    assert "(+2 more)" in reason
+
+    out = _render(
+        monkeypatch,
+        portable_link.warn_hub_entry_unmovable,
+        Path("/tmp/proj/litman_code/repo"),
+        err,
+    )
+    assert "f2.pdf" not in out
+    assert "(+2 more)" in out
+
+
+def test_os_error_reason_drops_the_os_own_full_stop() -> None:
+    """A localized Windows strerror ends in its own punctuation.
+
+    wangq saw "进程无法访问。." on Chinese Windows 2026-09-09: the OS sentence
+    already closed, and the caller's own "." closed it again. Punctuation is
+    the caller's; this half hands back the words.
+    """
+    zh = OSError(13, "另一个程序正在使用此文件，进程无法访问。")
+    assert portable_link._os_error_reason(zh).endswith("进程无法访问")
+    en = OSError(13, "The process cannot access the file")
+    assert portable_link._os_error_reason(en) == "The process cannot access the file"
+    # Nothing but punctuation is not a message to strip away to nothing.
+    assert portable_link._os_error_reason(OSError(13, "...")) == "..."
+
+
+def test_os_error_reason_is_capped_whatever_it_is() -> None:
+    long_err = OSError(13, "x" * 500)
+    reason = portable_link._os_error_reason(long_err)
+    assert len(reason) <= portable_link._MAX_REASON_CHARS
+    assert reason.endswith("…")
+    # A bare OSError with no strerror still says something.
+    assert portable_link._os_error_reason(OSError("boom")) == "boom"

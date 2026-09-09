@@ -19,6 +19,14 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.6
+
+- Priority is now per project; the health check migrates your library.
+- Hover a highlight in any tool to read its note.
+- The toolbar shield now flags problems without being clicked.
+- A project folder copied from another machine repairs itself.
+- Remove a link between two papers from the Relations row.
+
 ## 1.3.5
 
 - The window refreshes itself automatically.

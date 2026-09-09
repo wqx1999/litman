@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.commands._usage import reject_second_positional
 from litman.core.config import load_config
@@ -60,6 +61,17 @@ console = Console()
     ),
 )
 @click.option(
+    "--priority",
+    "priority",
+    default=None,
+    help=(
+        "Grade the paper FOR THIS PROJECT (A/B/C) in the same step. Without "
+        "this flag the link is left ungraded, which is legal — you usually "
+        "only know the grade after reading. Set it later with "
+        "lit modify <id> --set priority-<project>=A."
+    ),
+)
+@click.option(
     "--rebuild-all",
     is_flag=True,
     default=False,
@@ -77,6 +89,7 @@ def link_cmd(
     paper_doi: str | None,
     project: str | None,
     relevance: str | None,
+    priority: str | None,
     rebuild_all: bool,
     library: Path | None,
     vault_name: str | None,
@@ -89,6 +102,7 @@ def link_cmd(
     \b
         lit link <paper-id> --project <name>
         lit link <paper-id> --project <name> --relevance "Direct baseline"
+        lit link <paper-id> --project <name> --priority A
         lit link --paper-doi 10.1038/... --project <name>
 
     Cross-machine recovery mode (rebuild every project's links +
@@ -132,6 +146,13 @@ def link_cmd(
                     f"{info['n_code_links']} code link(s) "
                     f"({info['n_tagged']} paper(s) tagged)"
                 )
+                # A folder deleted or moved in the user's own project dir is
+                # never silent, whichever command triggered the rebuild.
+                for line in hub_settlement_lines(
+                    info.get("n_replaced_copies", 0),
+                    info.get("aside_paths", []),
+                ):
+                    console.print(f"  {line}", soft_wrap=True)
             else:
                 console.print(
                     f"[yellow]○ {escape(proj)}: {status}[/] — "
@@ -167,7 +188,12 @@ def link_cmd(
         paper_id = resolve_paper_id(vault, paper_id)
     config = load_config(vault)
     result = link_paper_to_project(
-        vault, paper_id, project, config.projects, relevance=relevance
+        vault,
+        paper_id,
+        project,
+        config.projects,
+        relevance=relevance,
+        priority=priority,
     )
 
     body_lines = [
@@ -183,6 +209,10 @@ def link_cmd(
         if result["set_relevance"]:
             body_lines.append(
                 f"[dim]Metadata:[/] set `relevance-{escape(project)}`"
+            )
+        if result["set_priority"]:
+            body_lines.append(
+                f"[dim]Metadata:[/] set `priority-{escape(project)}`"
             )
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (already linked)")
@@ -207,14 +237,27 @@ def link_cmd(
             "[dim](binding kept; keep the library and project on an internal "
             "drive)[/]"
         )
+    # Only the move-aside: a verbatim copy is deleted silently on purpose
+    # (its original is in the vault), but a preserved folder is the only copy
+    # of whatever the user put in it.
+    body_lines.extend(hub_settlement_lines(0, result.get("hub_moved_aside", [])))
     body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
+    tips: list[str] = []
     if result["added_to_projects"] and not result["set_relevance"]:
-        body_lines.append("")
-        body_lines.append(
+        tips.append(
             f"[dim]Tip:[/] set the per-project note with "
             f"`lit modify {escape(paper_id)} --set "
             f"relevance-{escape(project)}='...'`."
         )
+    if result["added_to_projects"] and not result["set_priority"]:
+        tips.append(
+            f"[dim]Tip:[/] grade it for this project with "
+            f"`lit modify {escape(paper_id)} --set "
+            f"priority-{escape(project)}=A`."
+        )
+    if tips:
+        body_lines.append("")
+        body_lines.extend(tips)
     console.print(
         Panel.fit("\n".join(body_lines), title="lit link", border_style="green")
     )

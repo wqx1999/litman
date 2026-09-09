@@ -101,7 +101,12 @@ def test_priority_change_on_member_keeps_refs_in_sync(tmp_path: Path) -> None:
     vault, refs_file, paper_id = _setup_linked(tmp_path)
 
     result = CliRunner().invoke(
-        cli, ["modify", paper_id, "--set", "priority=A", "--library", str(vault)]
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "priority-pepcodec=A",
+            "--library", str(vault),
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -151,13 +156,17 @@ def test_relevance_change_on_member_keeps_refs_in_sync(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_nonmember_priority_change_does_not_touch_refs(tmp_path: Path) -> None:
+def test_nonmember_refs_field_change_does_not_touch_refs(tmp_path: Path) -> None:
+    """The guard is about MEMBERSHIP, not about which field was edited, so the
+    edit has to be one that DOES trigger the refs refresh. `title` is in that
+    set for every paper; a per-project grade would not be — `--set
+    priority-pepcodec=` on a non-member is refused outright (decision 10)."""
     vault, refs_file, _ = _setup_linked(tmp_path)
-    _make_paper(vault, "p2", priority="C")  # not linked to any project
+    _make_paper(vault, "p2")  # not linked to any project
     mtime_before = refs_file.stat().st_mtime_ns
 
     result = CliRunner().invoke(
-        cli, ["modify", "p2", "--set", "priority=A", "--library", str(vault)]
+        cli, ["modify", "p2", "--set", "title=Renamed", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
 

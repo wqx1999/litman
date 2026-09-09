@@ -10,8 +10,9 @@ reads at boot to raise that notice; it reports which mechanism works
 both — only ``none`` raises the notice.
 
 It exists separately from ``GET /api/health`` on purpose: health is Tier-2 (it
-reads every ``metadata.yaml``) and is fetched only when the user opens the
-panel, which is far too late and far too expensive for a boot-time banner.
+reads every ``metadata.yaml``) and so is deferred to the first idle after the
+page paints, while this endpoint runs inline with the boot fetches. Idle is
+still far too late for a banner that has to be up when the user first looks.
 
 Guarded with ``importorskip`` so the suite still collects when the optional
 ``web`` extra is absent (invariant #5).

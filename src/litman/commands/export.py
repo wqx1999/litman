@@ -15,7 +15,10 @@ Filter semantics match ``lit list`` (shared via ``core.query``):
 ``--priority`` / ``--status`` / ``--year`` / ``--type`` / ``--topic`` /
 ``--method`` / ``--data`` / ``--author`` each accept a comma-separated
 list to express OR-within-field, and filters across different flags are
-AND-combined.
+AND-combined. ``--priority`` is per project (ADR-025): on its own it
+matches a paper graded so by ANY of its projects, and a single
+``--project`` narrows it to that project's grade. No code here implements
+that — it rides ``matches_filters`` exactly as every other filter does.
 
 Future formats (RIS / CSL-JSON) live behind the ``--format`` flag,
 which is reserved but only ``bibtex`` is implemented in M12.
@@ -94,7 +97,9 @@ def _build_sentinel(timestamp: str | None = None) -> str:
     help=(
         "Comma-separated list of priorities to include "
         "(e.g. --priority A,B). Within the flag values are OR-combined; "
-        "across flags they are AND-combined."
+        "across flags they are AND-combined. The grade is per project: "
+        "without --project any project's grade matches, with a single "
+        "--project only that project's."
     ),
 )
 @click.option(

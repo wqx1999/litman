@@ -131,7 +131,6 @@ lifecycle commands.
 | Field | Type | Default | Values / Notes |
 |---|---|---|---|
 | `status` | string enum | `inbox` | `inbox`, `skim`, `deep-read`, `dropped`. Changed by `lit skim` / `lit promote` / `lit drop`. A status, not a folder, so no file moves. |
-| `priority` | string enum or null | null | `A`, `B`, `C`. `null` means "not yet evaluated". |
 
 #### Relations layer
 
@@ -154,23 +153,36 @@ You drive only the forward fields (`related`, `extends`, `contradicts`) with
 double-write only, and `lit modify` rejects them as targets. To repair a
 broken pair, act on the forward field.
 
-#### Project-relevance layer
+#### Per-project layer
 
-A schema-less, per-project annotation. One `relevance-<project>` field per
-project the paper is linked to, written by `lit link --project <P> --relevance "…"`
-(or later `lit modify --set relevance-<P>=…`).
+Schema-less, per-project annotations. One field of each kind per project the
+paper is linked to.
+
+| Field | Type | Values / Notes |
+|---|---|---|
+| `relevance-<project>` | string | Free text — why this paper matters to that project. Written by `lit link --project <P> --relevance "…"`, or later `lit modify --set relevance-<P>=…`. |
+| `priority-<project>` | string enum | `A`, `B`, `C` — how much the paper matters to that project. Written by `lit link --project <P> --priority A`, or later `lit modify --set priority-<P>=A`. Absent means linked but not graded yet. |
 
 ```yaml
 relevance-pepcodec: "Direct baseline — section 3.2 reuses the encoder block."
+priority-pepcodec: A
 relevance-pepforge: "Cited only as motivation in the introduction."
+priority-pepforge: C
 ```
 
 The project name appears verbatim in the field name, so each project carries
-its own perspective on the same paper.
+its own perspective on the same paper — including how important it is. The same
+paper can be an `A` for one project and a `C` for another.
+
+Both fields follow the link: `lit unlink` drops them, `lit project rename`
+carries them over, `lit project rm` removes them.
+
+A paper-level `priority` field existed until 1.3.6 and is retired; see the
+[changelog](../CHANGELOG.md).
 
 #### Full example
 
-A fully evaluated paper after a deep read. On first add, `type`, `priority`,
+A fully evaluated paper after a deep read. On first add, `type`,
 `read-date`, and `last-revisited` are all `null`.
 
 ```yaml
@@ -211,7 +223,6 @@ type: research
 
 # Personal evaluation
 status: deep-read
-priority: A
 
 # Relations
 related:
@@ -332,7 +343,7 @@ always plural (`projects`, `topics`, `methods`, `data`); the command group is
 singular (`lit project`), matching litman's other groups (`lit code`,
 `lit vault`).
 
-**Fixed enums (3).** Read-only here. The values are baked into the application
+**Fixed enums (2).** Read-only here. The values are baked into the application
 logic, so changing them requires a code release, and `lit taxonomy` refuses to
 touch these dictionaries.
 
@@ -340,7 +351,6 @@ touch these dictionaries.
 |---|---|---|
 | `type` | `type` | `research`, `review`, `position`, `benchmark`, `dataset`, `tutorial`, `thesis`, `book-chapter` |
 | `status` | `status` | `deep-read`, `skim`, `inbox`, `dropped` |
-| `priority` | `priority` | `A`, `B`, `C` |
 
 #### Naming rules for user-dictionary values
 
@@ -408,12 +418,6 @@ from `TAXONOMY.md`, from every referencing `metadata.yaml`, and from
 - skim
 - inbox
 - dropped
-
-## priority (fixed enum, not extensible)
-
-- A
-- B
-- C
 ```
 
 ### 1.4 `lit-config.yaml` — library settings
@@ -468,9 +472,11 @@ Top-level structure:
 | `papers` | list[object] | One thin projection per paper, sorted by id. |
 | `by_doi` | dict[string, string] | Reverse map from normalized (lowercase) DOI to paper id. |
 
-Each entry in `papers` is a **14-field projection** of `metadata.yaml`, not the
-whole record: `id`, `title`, `authors`, `year`, `type`, `priority`, `status`,
-`topics`, `projects`, `methods`, `data`, `doi`, `read-date`, `updated-at`. A
+Each entry in `papers` is a **13-field projection** of `metadata.yaml`, not the
+whole record: `id`, `title`, `authors`, `year`, `type`, `status`,
+`topics`, `projects`, `methods`, `data`, `doi`, `read-date`, `updated-at`. The
+per-project fields (`relevance-<project>`, `priority-<project>`) are not in it —
+their names vary per project, so they cannot be columns. A
 consumer narrows the candidate set from this file, then opens a candidate's
 `metadata.yaml` for any field not in the projection. `lit list --format json`
 emits the same per-paper projection, so its schema never drifts from the index.
@@ -504,7 +510,7 @@ The file holds a `vaults:` list. Each entry has these fields:
 | Field | Type | Written by | Notes |
 |---|---|---|---|
 | `name` | string | `lit vault add` / `lit init` | Unique handle. No `:` (reserved for cross-vault wikilinks), no leading hyphen, checked case-insensitively unique. |
-| `path` | string | `lit vault add` / `lit init` | Absolute path to the vault root. |
+| `path` | string | `lit vault add` / `lit init` | Absolute path to the vault root. Unique across entries — one folder cannot be registered under two names. |
 | `imported_from` | string or null | `lit vault add --import-from` | Free-form provenance for a forked vault. `null` for a locally created one. |
 | `imported_at` | string or null | `lit vault add` | ISO 8601 date the vault was registered. |
 | `is_active` | boolean | `lit vault use` / `lit init` | The default vault when no `--vault` / `--library` / `$LIT_LIBRARY` is given. |
@@ -521,7 +527,13 @@ under the project directory, outside the vault: a `litman_reflib/<id>/` folder
 link back to the paper folder, and a generated `litman_reflib/REFERENCES.md` reading
 list. Both
 are derived and rebuilt by `lit link --rebuild-all`. They are not fields, but
-they are the project end of the paper-to-project binding.
+they are the project end of the paper-to-project binding. Copying the project
+directory with a tool that follows links (onto a USB stick, over a network
+share, through cloud sync, out of a tar) turns each link into a real folder;
+the next `lit link`, `lit refresh-views` or `lit health-check --fix` puts the
+links back, keeping any folder that no longer matches the vault under
+`<vault>/.trash/replaced-folders/`. So does answering the prompt that asks
+where the directory moved to.
 
 ---
 

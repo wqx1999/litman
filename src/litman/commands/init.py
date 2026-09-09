@@ -24,6 +24,7 @@ from litman.core.vault_registry import (
     VaultEntry,
     add_vault,
     ensure_name_registrable,
+    ensure_path_registrable,
     find_by_name,
     load_registry,
     mark_health_checked,
@@ -53,12 +54,19 @@ def apply_init(
 
     Raises:
         VaultRegistryError: ``register_as`` / ``name`` is not registrable (bad
-            shape or already registered) — raised BEFORE anything is created.
+            shape or already registered), or ``parent_dir / name`` is a
+            directory some other entry already holds — raised BEFORE anything
+            is created.
         ParentNotFoundError / VaultExistsError: from :func:`create_vault`.
     """
     register_name = register_as or name
     reg = load_registry()
     ensure_name_registrable(reg, register_name)
+    # Same reason the name check runs here: refuse BEFORE create_vault, so a
+    # clash cannot strand an unregistered vault on disk that the user then has
+    # to clear by hand. Only a stale entry — one whose folder was deleted — can
+    # reach this; a live one makes create_vault raise VaultExistsError first.
+    ensure_path_registrable(reg, parent_dir / name)
     vault = create_vault(parent_dir, name=name)
     updated = mark_health_checked(
         add_vault(reg, register_name, vault),
