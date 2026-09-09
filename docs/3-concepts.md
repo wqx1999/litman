@@ -527,7 +527,12 @@ under the project directory, outside the vault: a `litman_reflib/<id>/` folder
 link back to the paper folder, and a generated `litman_reflib/REFERENCES.md` reading
 list. Both
 are derived and rebuilt by `lit link --rebuild-all`. They are not fields, but
-they are the project end of the paper-to-project binding.
+they are the project end of the paper-to-project binding. Copying the project
+directory with a tool that follows links (onto a USB stick, over a network
+share, through cloud sync, out of a tar) turns each link into a real folder;
+the next `lit link`, `lit refresh-views` or `lit health-check --fix` puts the
+links back, keeping any folder that no longer matches the vault under
+`<vault>/.trash/replaced-folders/`.
 
 ---
 

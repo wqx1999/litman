@@ -216,10 +216,12 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     is_flag=True,
     default=False,
     help=(
-        "Auto-regenerate all derived (klass-A) artifacts (lossless recompute "
-        "from metadata) plus clean stale staging dirs / orphan trash sidecars, "
-        "refresh stale installed agent skills, and migrate the retired "
-        "paper-level `priority` onto priority-<project>. "
+        "Auto-regenerate all derived artifacts from metadata, clean stale "
+        "staging dirs / orphan trash sidecars, refresh stale installed agent "
+        "skills, migrate the retired paper-level `priority` onto "
+        "priority-<project> (a paper in no project loses it), and put links "
+        "back where a copied project folder left real folders (one that does "
+        "not match the vault is kept under .trash/replaced-folders/). "
         "Registry / project / taxonomy / code-clone drift stays report-only "
         "(it needs a per-case decision; --fix never picks a side)."
     ),

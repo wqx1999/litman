@@ -530,9 +530,17 @@ Link a paper to a project: add the `projects` tag, write a folder link under
 project must be registered in `lit-config.yaml` (via `lit project add`) and its
 directory must exist on disk **before** linking.
 
+If a real folder already sits where a link belongs — a project directory copied
+from another machine turns every link into one — it is settled on the way: a
+copy that matches the vault, or is empty, is replaced with the link; one that
+does not match is kept under `<vault>/.trash/replaced-folders/` and named in the
+output. `--rebuild-all`, `lit refresh-views`, `lit trash restore` and
+`lit health-check --fix` do the same.
+
 ```
 lit link <id> --project <name>
 lit link <id> --project <name> --relevance "Direct baseline"
+lit link <id> --project <name> --priority A
 lit link --rebuild-all
 ```
 
@@ -669,8 +677,10 @@ The two fixed-enum dicts (`type`, `status`) are read-only through
 
 Scan the whole vault for inconsistencies: dangling references, schema gaps, stale
 staging dirs, missing PDFs, missing discussion logs, dangling wikilinks, dangling
-vault-registry entries, missing project directories, and installed agent skills
-that are out of date with the running litman. Exits 0 on a clean vault, 1
+vault-registry entries, missing project directories, real folders sitting where
+a project's links belong (a project directory copied from another machine), a
+paper still carrying the retired paper-level `priority`, and installed agent
+skills that are out of date with the running litman. Exits 0 on a clean vault, 1
 if any error or warning is found (so it can gate cron / CI). `info` findings —
 notes about the host, such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
@@ -692,7 +702,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts (lossless recompute from metadata), clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Two repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; and where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of
@@ -706,7 +716,8 @@ and it is what you want when working through one category paper by paper.
 Rebuild every derived artifact from `papers/*/metadata.yaml`, in order: (1)
 `INDEX.json` (paper summary + by-doi reverse map), (2) `views/by-*` link hubs
 (wiped and rebuilt, so stale tag buckets disappear), (3) each project's
-`litman_reflib/` links and `REFERENCES.md`. Per-project failures (missing
+`litman_reflib/` links and `REFERENCES.md` — a real folder sitting where a link
+belongs is settled as under `lit link`. Per-project failures (missing
 project dir on this machine) are skipped, not aborted.
 
 ```
@@ -719,7 +730,12 @@ regenerate wholesale.
 ### `lit trash`
 
 Manage the recoverable-delete bin under `<vault>/.trash/`, capped at 100 entries
-(`lit rm` evicts the oldest when full).
+(`lit rm` evicts the oldest when full). The bin also holds, under
+`.trash/replaced-folders/`, the project-hub folders `lit health-check --fix` (or
+`lit link`) moved aside because they did not match the vault. Those are not
+trash entries: `list` and `restore` never show them, `lit health-check` reports
+how many there are, and you copy anything you still want out of them by hand
+before `empty` removes them.
 
 ```
 lit trash list [--format json]
@@ -729,9 +745,9 @@ lit trash empty [--dry-run] [-y]
 
 | Subcommand | What it does |
 |---|---|
-| `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. |
+| `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. Kept project folders are not listed. |
 | `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting). |
-| `empty` | Permanently delete every trash entry. `--dry-run` lists what would be removed; `-y` skips the prompt. |
+| `empty` | Permanently delete every trash entry and every kept project folder. `--dry-run` lists the entries and counts the folders; `-y` skips the prompt. |
 
 ### `lit sync`
 

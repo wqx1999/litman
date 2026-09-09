@@ -61,7 +61,7 @@ The chain is **bidirectional**: lit-reading hands writes *in* (A2), and lit-libr
 **Destructive operations by reversibility:**
 
 - **Soft-delete `lit rm`** (default → moves `papers/<id>/` into `.trash/`, recoverable via `lit trash restore`; [I]). **Never initiate.** May execute on explicit, confirmed request — via the agent path: the CLI's own `y/N` never reaches you (a non-tty run without `--yes` aborts with "pass --yes to confirm"; with `--yes` the warning block is skipped entirely), so first run `lit rm <id> --dry-run` (read-only) and **relay its impact set verbatim** (the paper + every reference that would be cleared / repo unbound / orphaned) — never silently delete, never summarize the link count away — then, on the user's go, run `lit rm <id> --yes`.
-- **Irreversible removal** (`lit rm --purge`, `lit trash empty`): **NEVER execute these, even on explicit request.** Surface the exact command and let the user run it. **Delete-safety preview (read-only, you MAY run it):** before surfacing a destructive command you may run `lit rm <id> --dry-run` (lists the paper + every link that would be cleared / unbound / orphaned) or `lit trash empty --dry-run` (lists every entry that would be permanently removed). The `--dry-run` flag writes nothing — it belongs to the delete-safety family, NOT to retrieval; do not reach for `rm --dry-run` as a way to inspect a paper's links (use `lit show` / `lit related` for that).
+- **Irreversible removal** (`lit rm --purge`, `lit trash empty`): **NEVER execute these, even on explicit request.** Surface the exact command and let the user run it. **Delete-safety preview (read-only, you MAY run it):** before surfacing a destructive command you may run `lit rm <id> --dry-run` (lists the paper + every link that would be cleared / unbound / orphaned) or `lit trash empty --dry-run` (lists every entry that would be permanently removed; folders `lit health-check --fix` moved out of project hubs — `.trash/replaced-folders/`, lit-reading B12 — are only counted, and `empty` deletes them too, so say so when surfacing the command). The `--dry-run` flag writes nothing — it belongs to the delete-safety family, NOT to retrieval; do not reach for `rm --dry-run` as a way to inspect a paper's links (use `lit show` / `lit related` for that).
 - **`lit code rm`** stays governed by [C.3] (confirm before execute; clone is re-cloneable).
 
 **(2) Write only in the active (primary) vault.** Every write — ingest, modify, link, code add, taxonomy, appends to `notes.md` / `discussion.md` — targets the **currently-active vault only**. Cross-vault reading is fine; cross-vault writing is forbidden. If the user's intent requires writing into a different vault, **tell the user to switch first** (`lit vault use <name>`) and only then operate.
@@ -357,7 +357,7 @@ lit promote <id>                    # status = deep-read  (does NOT also stamp r
 lit skim <id>                       # status = skim
 ```
 
-Same-day repeats are no-ops. For a per-project grade or an arbitrary scalar, fall back to `lit modify <id> --set priority-<project>=A` (the paper must already be linked to that project; `lit link <id> --project <P> --priority A` does both at once).
+Same-day repeats are no-ops. For a per-project grade or an arbitrary scalar, fall back to `lit modify <id> --set priority-<project>=A` (the paper must already be linked to that project; `lit link <id> --project <P> --priority A` does both at once). A grade can be changed but not cleared in place (`--set priority-<P>=` is refused, `--rm-tag` does not take it): an ungraded link is simply the absent key, and `lit unlink` is what drops it.
 
 ### Apply a knowledge-graph edge (inbound from lit-reading B7)
 
@@ -399,9 +399,10 @@ Tier: projection is **Tier 2**; `--force`-over-sentinel is a **Tier-3 ask**.
 ## [H] Project operations
 
 - **Register** — `lit project add <name> --path <abs>`. **Tier 3.** **User supplies the path — never guess it.** Same register-first instance Flow B routes to.
-- **Link** — `lit link <paper-id> --project <name> [--relevance "..."]`. Atomically adds the project to the paper's `projects:`, builds the link folders, regenerates `<project>/REFERENCES.md`. **Trigger ownership = user** (only on explicit request; never self-initiate). **Tier 2.** Unregistered `--project` → Flow B routing (`lit project add`).
-- **Unlink** — `lit unlink <paper-id> --project <name>`. **Tier 2**, reversible. (Not for code — that's [C].)
+- **Link** — `lit link <paper-id> --project <name> [--relevance "..."] [--priority A|B|C]`. Atomically adds the project to the paper's `projects:`, builds the link folders, regenerates `<project>/REFERENCES.md`. **Trigger ownership = user** (only on explicit request; never self-initiate). **Tier 2.** Unregistered `--project` → Flow B routing (`lit project add`). If the output says `kept N folder(s) that do not match the vault: <path>`, relay the paths verbatim — that folder was moved to `<vault>/.trash/replaced-folders/` and comes back only by hand (lit-reading B12; the same line can come from `--rebuild-all`, `trash restore` and `health-check --fix`).
+- **Unlink** — `lit unlink <paper-id> --project <name>`. **Tier 2.** Drops that project's `relevance-<project>` (unless `--keep-relevance`; the value is echoed in the summary) and its `priority-<project>` — there is no keep flag for the grade, and re-linking does not bring it back. (Not for code — that's [C].)
 - **Update relevance after linking** — `lit modify <paper-id> --set relevance-<project>=…` sets/edits the per-project relevance note without re-linking. **Tier 2.** At link time prefer the inline `lit link --relevance "..."`.
+- **Grade after linking** — `lit modify <paper-id> --set priority-<project>=A|B|C`. **Tier 2.** At link time prefer the inline `lit link --priority A`. Change by setting another letter; clearing has no path — see [E].
 - **List projects** — `lit project list` (add `--format json` for `{name, path, status}` per project). **Tier 1** read, **canonical source** for the registered set AND each project's path. `status` is the drift marker: `ok` / `path-missing` / `config-only` / `taxonomy-only`. Use this for both "what projects exist" and "where is `<project>` on disk". Do NOT hand-parse `lit-config.yaml`, do NOT use `lit config show` for project paths.
 - **List a project's literature** — `lit list --project <name>` (**Tier 1**; supports `--format json`). Per-project view of *papers*, distinct from `lit project list` which lists the *projects* themselves.
 - **Rename** — `lit project rename <old> <new>`. **Tier 3 governance** (cascades: TAXONOMY + config key + every referencing paper's `projects:` + INDEX). Reuse [J] discipline: never hand-edit; for an **explicitly named** rename ("把 `<old>` 改名 `<new>`") **show the impact** ("renames `<old>`→`<new>` across the N papers using it") **then run and report** (semantics-preserving — the CLI has no prompt and no `--yes`; named ⇒ show-then-act, don't re-ask); re-run `lit project list` afterward.
@@ -432,7 +433,7 @@ Agent behavior:
 - Before running, surface the re-clone target(s) to the user up front: `lit trash list --format json` carries `orphan_repos` (`{repo: upstream}`) per entry (tier 1 read).
 - **TTY caveat**: driving `lit trash restore <id>` without `-y` hangs/aborts at the interactive re-clone confirm on a non-TTY stdin. Agent path: surface the re-clone target(s) → get the user's nod → run `lit trash restore <id> -y`. No `--no-reclone` flag today — if the user wants restore but skip re-clone, relay that and let them run it themselves.
 - **Tier 2** (local, reversible, single-paper). **Trigger = the user-confirmed identity from B13** — never restore on your own initiative, never pick the candidate for the user.
-- **Relay the CLI's result summary verbatim** (reverse edges rebuilt in N papers, re-bound to N repos, re-linked into N projects).
+- **Relay the CLI's result summary verbatim** (reverse edges rebuilt in N papers, re-bound to N repos, re-linked into N projects), including any `kept N folder(s) that do not match the vault` line ([H]).
 
 ---
 
@@ -526,14 +527,14 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit read / revisit / drop / promote / skim <id>` | Status & date sugar ([E]) |
 | `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Topics/methods/data vocab; `list` takes `--format json`; merge/rm prompt — pass `--yes` non-interactively ([J]) |
 | `lit project {add,list,rename,set-path,rm} [args]` | Project registry ([H]); `list` takes `--format json`; `rm` prompts — pass `--yes` non-interactively |
-| `lit link / unlink <id> --project <name>` | Bind / unbind paper↔project ([H]) |
+| `lit link <id> --project <name> [--priority A] [--relevance "…"]` / `lit unlink <id> --project <name>` | Bind / unbind paper↔project ([H]); unlink drops that project's grade + relevance |
 | `lit export (--project <p> \| --all) [filters] [-o file]` | Project vault → `.bib` ([G]) |
 | `lit code add <url\|path> --paper <id>` | Clone (URL) or copy/move (local dir) + bind a code repo ([C.1]) |
 | `lit code link <repo> --paper <id>` | Bind an existing vault repo (1:N — [C.2]) |
 | `lit code unlink <repo> --paper <id>` | Unbind one paper, keep the clone ([C.3]) |
 | `lit code list [--paper <id>] [--orphan] [--format json]` | Browse code repos; `--format json` emits each `repo-meta.yaml` (incl. the `papers` reverse list) |
 | `lit code rm <repo> --cascade` | Retire a repo (last citer only — [C.3]) |
-| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` regenerates derived artifacts + cleans staging/sidecar leftovers (user's nod first) |
+| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` = bulk repair (user's nod first), not all of it lossless: it migrates the retired paper-level `priority` (a paper in no project loses its grade) and moves unmatched hub folder copies to `.trash/replaced-folders/` — procedure in lit-reading B12 |
 | `lit rename <old> <new>` | Atomic id rename with cascade |
 | `lit cite <id-or-substring>` | Paste-ready ACS citation on stdout (caveats → stderr; `--paper-doi` supported) |
 | `lit rm <id> [--dry-run\|--yes\|--purge]` | Soft-delete (trash) or purge; `--dry-run` previews the impact set, a non-tty run needs `--yes` |

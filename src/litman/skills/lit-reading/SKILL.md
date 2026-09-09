@@ -64,7 +64,7 @@ The CLI hard-rejects unregistered controlled-vocabulary values, so your job is t
 
 1. Controlled-vocabulary tagging `lit modify --add-tag topics/methods/data=` → lit-library [E] (Flow A/B).
 2. A cross-paper edge `lit modify --add-tag extends/related/contradicts=` → lit-library [E] (forward direction only — see B7).
-3. Project binding `lit link --project` / `lit modify --set relevance-<P>=` → lit-library [H].
+3. Project binding `lit link --project` / `lit modify --set relevance-<P>=` → lit-library [H] (pass along a grade the user already gave, so the link runs with `--priority` in one step).
 4. Ingest / clone / code-binding `lit add` / `lit code add` / `lit code link`, plus code unbind / retire (`lit code unlink` or `lit code rm`) → lit-library [A]/[B]/[C].
 5. Restore a trashed paper `lit trash restore` → lit-library [I].
 6. TAXONOMY / project governance → lit-library [J]/[H].
@@ -321,7 +321,12 @@ At a natural moment (using the existing staleness check, introduce no new mechan
 
 At a natural moment (occasionally at session start / after a batch of operations / when the user asks "is my library still clean?"), **run `lit health-check`, translate the report's categories, and propose a remedy per finding** — except the `env` class below, which has none.
 
-**Red line: a bare `lit health-check` never writes, and no fix runs without the user's nod** — never self-correct. Running health-check is Tier 1 (just do it). The CLI's one bulk repair is `lit health-check --fix`: it regenerates every derived artifact (lossless recompute from metadata) and cleans stale staging dirs / orphan trash sidecars; registry / project / taxonomy / code-clone drift stays report-only (needs a per-case decision — `--fix` never picks a side). When the findings are in the derived class, propose `--fix` and run it on the user's nod; every other proposed fix follows its own tier (e.g. unlinking a dangling clone = Tier 3, ask once).
+**Red line: a bare `lit health-check` never writes, and no fix runs without the user's nod** — never self-correct. Running health-check is Tier 1 (just do it). The CLI's one bulk repair is `lit health-check --fix`: it regenerates every derived artifact (recomputed from metadata) and cleans stale staging dirs / orphan trash sidecars; registry / project / taxonomy / code-clone drift stays report-only (needs a per-case decision — `--fix` never picks a side). When the findings are in the derived class, propose `--fix` and run it on the user's nod; every other proposed fix follows its own tier (e.g. unlinking a dangling clone = Tier 3, ask once).
+
+**Two `--fix` arms are not lossless — name them before proposing it:**
+
+- `retired_priority` — the retired paper-level `priority` moves onto each project the paper is linked to, but **a paper in no project loses its grade** (the report says `its value is dropped` only for those). Categories fold after 5 findings, so run `lit health-check --all` first, list those papers, and offer `lit link` before `--fix`.
+- `project_references` `… is a folder copy, not a litman link` — a project folder copied from another machine holds real folders where the links belong. Copies that match the vault (or are empty) become links; the rest are **moved to `<vault>/.trash/replaced-folders/`** and printed as `kept N folder(s) that do not match the vault: <path>` — relay those paths verbatim. `lit trash list` / `restore` never show them (copy back by hand), and `lit trash empty` deletes them for good — that is what the `replaced_folders` info line is about.
 
 **The `env` class has no remedy — never invent one.** `links_unsupported` (severity `info`) reports a host capability, not damage: the drive holding the library (FAT32 / exFAT / some network shares) cannot hold folder links; nothing drifted, nothing is broken. Relay the CLI's own hint — keep the library on an internal drive; after moving it, `lit health-check --fix` backfills the skipped links — and stop there. **Never suggest Developer Mode, administrator / elevated shells, WSL, or any Windows system setting**: the cause is the drive's filesystem, and none of those change it. `info` findings do not gate the exit code — `lit health-check` exiting 0 while printing an info line is a healthy library.
 
@@ -356,7 +361,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit project list [--format json]` | canonical source for the registered project set AND each project's path | 1 (read) |
 | `lit trash list [--format json]` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
 | `lit taxonomy list [<dict>] [--format json]` | the registered vocabulary (all four dicts, or one) — the Phase 2 session load | 1 (read) |
-| `lit health-check [--fix] [--all]` | translate the report + propose per-finding remedies (B12); categories fold past the first few findings, `--all` prints every one; `--fix` = bulk derived-artifact repair, run only on the user's nod. Bulk filler-metadata / filler-id repair is lit-library [K] | 1 (read); `--fix` 2 |
+| `lit health-check [--fix] [--all]` | translate the report + propose per-finding remedies (B12); categories fold past the first few findings, `--all` prints every one; `--fix` = bulk repair, run only on the user's nod — not all of it lossless (B12: retired-priority migration, hub folder copies). Bulk filler-metadata / filler-id repair is lit-library [K] | 1 (read); `--fix` 2 |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit modify --set priority-<P>=` / `lit modify --set type=` | the per-project grade / type verdicts — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit open <id>` | suggest by default; run only on explicit request (B14) | — |

@@ -40,6 +40,7 @@ discussion, the links between papers, and the code repositories cloned for it.
 │   └── by-status/
 │
 ├── .trash/                 # recoverable-delete bin (created on first delete)
+│   └── replaced-folders/   # project-hub folders kept by lit health-check --fix; cleared by lit trash empty
 ├── .litman-staging/        # atomic-op staging area; transient
 └── .litman-upload/         # PDFs dropped into the Web UI, awaiting confirmation; transient
 ```
