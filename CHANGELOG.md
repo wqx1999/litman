@@ -2,10 +2,12 @@
 
 Notable changes to litman. Dates are release dates on [PyPI](https://pypi.org/project/litman/).
 
-Versions follow [semantic versioning](https://semver.org/): a major release
-breaks something you relied on, a minor release opens a new way of working with
-litman, and a patch release is everything else — fixes, new controls, and
-conveniences.
+Version numbers follow how much a release changes for you, not how much work
+went into it: a minor release opens a way of working that litman did not have
+before, and everything else is a patch — however large it was to build.
+
+Anything that takes something out of your library is marked **Breaking** in its
+own entry. Read those before you upgrade, whatever the number says.
 
 ## Unreleased
 
