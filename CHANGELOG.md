@@ -106,6 +106,16 @@ conveniences.
   this copy did not come from a release, and hand you the two commands that
   reinstall it.
 
+- **The warning about a filler author is short enough to be read.** `lit add`
+  warns when the author list still holds an `Unknown` or `N/A` after the first
+  name. The message ran long enough that the half naming the repair sat past
+  the point where a person at a terminal stops reading. It now carries the
+  position that went wrong and the one command that fixes it, and stops:
+  `Warning: author 2 is 'Unknown', not a real name. Fix: lit modify <id>
+  --set-author "Family, Given" ... (repeat, in order).` The add still goes
+  through, as before — a filler after the first author never reaches the paper
+  id.
+
 ## 1.3.5 — 2026-08-09
 
 ### Changed
