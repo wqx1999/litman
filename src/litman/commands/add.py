@@ -730,12 +730,15 @@ def add_cmd(
             console.print(
                 f"[yellow]Warning:[/] author {position + 1} of "
                 f"{len(parsed['authors'])} is "
-                f"{escape(repr(name.strip()))} — a filler, not a real name. "
-                "The paper id is unaffected, but the entry exports with it. "
+                f"{escape(repr(name.strip()))}, not a real name. "
                 # --set-author, not --rm-tag/--add-tag: add-tag appends, so
                 # that recipe would move the corrected name to the end of the
-                # list when the filler is not the last author.
-                f"Fix it with `lit modify {escape(paper_id)} "
-                '--set-author "Family, Given" ...` '
-                "(one flag per author, the whole list in order)."
+                # list when the filler is not the last author — hence "in
+                # order". Why the add was NOT blocked (the filler never reaches
+                # the id) belongs to the reader who wants it, not to every
+                # reader: it lives in lit-library/SKILL.md. A warning nobody
+                # finishes reading protects nobody, so this line carries the
+                # verdict and the way out and stops.
+                f"Fix: `lit modify {escape(paper_id)} "
+                '--set-author "Family, Given" ...` (repeat, in order).'
             )
