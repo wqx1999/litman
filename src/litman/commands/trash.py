@@ -318,7 +318,7 @@ def trash_restore_cmd(
     # Only the move-aside (see commands/_hub_report): a preserved folder is the
     # only copy of what was in it, so relocating it is never silent.
     for line in hub_settlement_lines(0, result.hub_moved_aside):
-        console.print(f"  {line}")
+        console.print(f"  {line}", soft_wrap=True)
 
     # Step 3: re-clone any 1:1 hard-deleted repo (POST-transaction, may fail
     # without rolling back the restore).

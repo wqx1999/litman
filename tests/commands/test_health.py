@@ -907,6 +907,55 @@ def test_fix_reports_replaced_and_kept_folder_counts(
         assert is_portable_link(proj / "litman_reflib" / pid)
 
 
+def test_fix_keeps_the_kept_folder_path_copyable_at_80_columns(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The kept folder's path is only useful if it survives a copy-paste.
+
+    At the default 80 columns it is far wider than the console, and rich's own
+    wrapping puts a real newline inside it — the pasted path then points
+    nowhere. The line goes out soft-wrapped instead, leaving the folding to
+    the terminal. The whole point here is to render at a width the path cannot
+    fit into.
+    """
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core.correctors import regen
+
+    # Pinned, not set through COLUMNS: rich caches a console's width the first
+    # time anything reads it, and `health`'s console is a module global that
+    # earlier tests in this file have already read. Patching the console makes
+    # the width a property of this test instead of of the run order.
+    monkeypatch.setattr(health_cmd, "console", Console(width=80))
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    pid = "2024_C_Three"
+    _write_paper(vault, pid, projects=["myproj"])
+    regen(vault)
+    _expand_link_to_copy(proj / "litman_reflib" / pid, vault / "papers" / pid)
+    (proj / "litman_reflib" / pid / "notes.md").write_text(
+        "written on the other machine\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    kept_root = (
+        vault / ".trash" / "replaced-folders" / "myproj" / "litman_reflib"
+    )
+    kept = sorted(kept_root.iterdir())
+    assert len(kept) == 1
+    # Control: the assertion below proves nothing about wrapping unless the
+    # path is genuinely wider than the console it was printed to.
+    assert len(str(kept[0])) > 80
+    # NOT flattened, unlike the sibling test: a fold lands a real newline
+    # inside the path and this substring stops existing.
+    assert str(kept[0]) in result.output
+
+
 def test_fix_reports_a_single_replacement_in_the_singular(
     vault: Path, tmp_path: Path
 ) -> None:

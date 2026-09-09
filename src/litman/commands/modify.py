@@ -834,7 +834,7 @@ def _apply_modify(
     # of the user's own directory. Rare and consequential, so it says so here
     # rather than only in `health-check --fix`.
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
-        console.print(f"  {line}")
+        console.print(f"  {line}", soft_wrap=True)
     if projects_changed:
         console.print(
             "[dim]INDEX.json + views/ + project litman_reflib/REFERENCES.md "

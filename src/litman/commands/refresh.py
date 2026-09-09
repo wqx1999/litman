@@ -88,7 +88,7 @@ def refresh_views_cmd(
                 settled.get("n_replaced_copies", 0),
                 settled.get("aside_paths", []),
             ):
-                console.print(f"    {line}")
+                console.print(f"    {line}", soft_wrap=True)
     elif config.projects:
         # registry has entries but rebuild returned nothing — should not happen
         console.print("[yellow]Project registry populated but no results.[/]")

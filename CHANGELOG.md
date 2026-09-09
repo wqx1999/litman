@@ -51,9 +51,10 @@ conveniences.
   under `<vault>/.trash/replaced-folders/` and named in the output, so nothing
   you wrote is thrown away. `lit trash empty` clears those folders; `lit trash
   list` and `restore` never show them, because they must not come back.
-  `lit link` and `lit trash restore` handle the same folders the same way. On a
-  drive that cannot hold shortcuts at all (FAT32, exFAT, network shares) the
-  copies are left exactly where they are.
+  `lit link` and `lit trash restore` handle the same folders the same way. The
+  path is printed on one line however narrow the terminal, so it can be pasted
+  as it stands. On a drive that cannot hold shortcuts at all (FAT32, exFAT,
+  network shares) the copies are left exactly where they are.
 
 - **The health badge no longer waits to be clicked.** The shield in the toolbar
   showed nothing until you opened its panel, so a library problem could sit

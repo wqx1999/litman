@@ -152,7 +152,7 @@ def link_cmd(
                     info.get("n_replaced_copies", 0),
                     info.get("aside_paths", []),
                 ):
-                    console.print(f"  {line}")
+                    console.print(f"  {line}", soft_wrap=True)
             else:
                 console.print(
                     f"[yellow]○ {escape(proj)}: {status}[/] — "

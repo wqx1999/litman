@@ -356,5 +356,5 @@ def rename_cmd(
     # Renaming a linked paper rebuilds the project hubs, which can move a
     # folder out of the user's own directory (see commands/_hub_report).
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
-        console.print(f"  {line}")
+        console.print(f"  {line}", soft_wrap=True)
     console.print("[dim]INDEX.json + views/ refreshed.[/]")

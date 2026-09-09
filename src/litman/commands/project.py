@@ -308,7 +308,7 @@ def project_rename_cmd(
         f"{'s' if n_changed != 1 else ''}."
     )
     for line in hub_settlement_lines(0, hub_moved_aside):
-        console.print(f"  {line}")
+        console.print(f"  {line}", soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------

@@ -371,7 +371,7 @@ def _report_hub_settlements(applied: dict[str, Any]) -> None:
         replaced if isinstance(replaced, int) else 0,
         [str(p) for p in kept] if isinstance(kept, list) else [],
     ):
-        console.print(f"    {line}")
+        console.print(f"    {line}", soft_wrap=True)
 
 
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:

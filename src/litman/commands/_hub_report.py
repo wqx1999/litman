@@ -32,8 +32,11 @@ def hub_settlement_lines(
 ) -> list[str]:
     """Rich lines describing one project's settled hub positions.
 
-    No leading indent — the caller places them under its own line. Empty when
-    nothing was settled, which is every ordinary run.
+    No leading indent — the caller places them under its own line, and prints
+    them with ``soft_wrap=True``: the kept-folder line ends in an absolute
+    path meant to be copied straight out of the terminal, and rich's own
+    wrapping puts a real newline inside it at 80 columns. Empty when nothing
+    was settled, which is every ordinary run.
 
     "does not match" rather than "differs from": a ``litman_code/<repo>`` copy
     whose clone was never restored here is *absent* from the vault, not
