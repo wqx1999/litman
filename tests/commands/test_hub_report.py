@@ -29,6 +29,7 @@ import litman.commands
 # list changes, `commands/_hub_report`'s module docstring enumerates the same
 # set and has to change with it.
 _REPORTING_MODULES = {
+    "_drift.py",
     "health.py",
     "link.py",
     "modify.py",

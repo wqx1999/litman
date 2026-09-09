@@ -7,12 +7,18 @@ was in it (a note written on the other machine, the one git checkout on this
 one), and relocating it under ``.trash/`` without saying so is not acceptable
 whichever command happened to trigger the rebuild.
 
-So every command that can move one reports it, and reports it through here so
-one event is not worded eight ways: ``lit health-check --fix``,
-``lit refresh-views`` and ``lit link --rebuild-all`` (which also report the
-replaced copies, being the commands you run *to* repair the hubs), plus
+So every path that can move one reports it, and reports it through here so one
+event is not worded a different way in each: ``lit health-check --fix``,
+``lit refresh-views``, ``lit link --rebuild-all`` and the two drift prompts in
+``commands/_drift`` — the one that heals a project directory that moved, and
+the one that rebuilds bridges after the vault moved (all of which also report
+the replaced copies, being what you go through *to* repair the hubs), plus
 ``lit link <id> --project P``, ``lit trash restore``, ``lit project rename``,
 ``lit modify`` and ``lit rename`` (move-asides only).
+
+The drift prompts matter most of the three repair paths: answering a new path
+after changing machines is how most people meet this feature at all, and they
+never typed a command with "rebuild" in it.
 
 Two paths stay silent. The GUI's rebuild by design — the health badge re-runs
 the checks instead (decision #9). And ``reconcile_project_code_links``, behind
