@@ -539,8 +539,9 @@ If a real folder already sits where a link belongs — a project directory copie
 from another machine turns every link into one — it is settled on the way: a
 copy that matches the vault, or is empty, is replaced with the link; one that
 does not match is kept under `<vault>/.trash/replaced-folders/` and named in the
-output. `--rebuild-all`, `lit refresh-views`, `lit trash restore` and
-`lit health-check --fix` do the same.
+output. `--rebuild-all`, `lit refresh-views`, `lit trash restore`,
+`lit health-check --fix` and the prompt that asks where a project directory or
+the library moved to all do the same, and all say so.
 
 ```
 lit link <id> --project <name>
@@ -736,11 +737,11 @@ regenerate wholesale.
 
 Manage the recoverable-delete bin under `<vault>/.trash/`, capped at 100 entries
 (`lit rm` evicts the oldest when full). The bin also holds, under
-`.trash/replaced-folders/`, the project-hub folders `lit health-check --fix` (or
-`lit link`) moved aside because they did not match the vault. Those are not
-trash entries: `list` and `restore` never show them, `lit health-check` reports
-how many there are, and you copy anything you still want out of them by hand
-before `empty` removes them.
+`.trash/replaced-folders/`, the project-hub folders a link rebuild moved aside
+because they did not match the vault. Those are not trash entries: `list` and
+`restore` never show them, `lit health-check` reports how many there are, and
+you copy anything you still want out of them by hand before `empty` removes
+them.
 
 ```
 lit trash list [--format json]

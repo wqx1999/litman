@@ -532,7 +532,8 @@ directory with a tool that follows links (onto a USB stick, over a network
 share, through cloud sync, out of a tar) turns each link into a real folder;
 the next `lit link`, `lit refresh-views` or `lit health-check --fix` puts the
 links back, keeping any folder that no longer matches the vault under
-`<vault>/.trash/replaced-folders/`.
+`<vault>/.trash/replaced-folders/`. So does answering the prompt that asks
+where the directory moved to.
 
 ---
 
