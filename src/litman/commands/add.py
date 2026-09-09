@@ -728,8 +728,7 @@ def add_cmd(
     for position, name in enumerate(parsed.get("authors") or []):
         if isinstance(name, str) and is_placeholder(name):
             console.print(
-                f"[yellow]Warning:[/] author {position + 1} of "
-                f"{len(parsed['authors'])} is "
+                f"[yellow]Warning:[/] author {position + 1} is "
                 f"{escape(repr(name.strip()))}, not a real name. "
                 # --set-author, not --rm-tag/--add-tag: add-tag appends, so
                 # that recipe would move the corrected name to the end of the

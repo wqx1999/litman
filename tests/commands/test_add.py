@@ -900,6 +900,9 @@ def test_filler_author_warning_is_one_verdict_and_one_way_out(
     assert len(msg) <= 200, f"{len(msg)} chars: {msg}"
 
     assert "Unknown" in msg
+    # WHICH author, without the list length: the position is what the reader
+    # acts on, the total is visible in the metadata they are about to rewrite.
+    assert "author 2" in msg and "of 2" not in msg
     assert "lit modify" in msg and "--set-author" in msg
     # The --add-tag trap: dropping this is what the length budget must not buy.
     assert "in order" in msg
