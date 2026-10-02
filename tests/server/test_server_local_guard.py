@@ -5,7 +5,8 @@ Two checks keep them out: a request must arrive under a loopback name (Host),
 which stops DNS rebinding, and a write or WebSocket handshake that carries an
 Origin must carry this server's own, which stops cross-site requests. Every
 refusal here is paired with the same request from the page passing, so a
-refusal can't be an artefact of the request itself.
+refusal can't be an artefact of the request itself. A third answer covers the
+page itself being framed by another site: no response may be shown in a frame.
 """
 
 from __future__ import annotations
@@ -59,6 +60,13 @@ def _mkdir(client: TestClient, parent: Path, name: str, **headers: str):
         "/api/fs/mkdir",
         content=json.dumps({"parent": str(parent), "name": name}),
         headers={"Content-Type": TEXT, **headers},
+    )
+
+
+def _unframable(resp) -> bool:
+    return (
+        resp.headers.get("content-security-policy") == "frame-ancestors 'none'"
+        and resp.headers.get("x-frame-options") == "DENY"
     )
 
 
@@ -307,6 +315,25 @@ def test_a_cross_site_get_or_head_is_not_checked(vault: Path, method: str) -> No
 
 
 # ---------------------------------------------------------------------------
+# Framing: no other page can show this one inside itself
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", ["/", "/favicon.svg", "/api/papers", "/api/no-such-route"])
+def test_every_response_refuses_to_be_framed(vault: Path, path: str) -> None:
+    """The page, its files, the API and its errors alike."""
+    resp = TestClient(create_app(vault)).get(path)
+    assert _unframable(resp), dict(resp.headers)
+
+
+@pytest.mark.parametrize("headers", [{"Host": "rebind.evil.example:8765"}, {"Origin": FOREIGN}])
+def test_a_refusal_refuses_to_be_framed_too(tmp_path: Path, headers: dict[str, str]) -> None:
+    resp = _mkdir(TestClient(create_app(None)), tmp_path, "x", **headers)
+    assert resp.status_code == 403
+    assert _unframable(resp), dict(resp.headers)
+
+
+# ---------------------------------------------------------------------------
 # WebSocket: the presence socket that keeps a --window server alive
 # ---------------------------------------------------------------------------
 
@@ -384,7 +411,9 @@ def test_a_real_server_refuses_with_403() -> None:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             try:
                 conn.request("GET", "/api/papers", headers={"Host": host})
-                assert conn.getresponse().status == status
+                response = conn.getresponse()
+                assert response.status == status
+                assert response.getheader("X-Frame-Options") == "DENY"
             finally:
                 conn.close()
     finally:

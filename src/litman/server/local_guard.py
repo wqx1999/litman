@@ -2,8 +2,8 @@
 
 Binding ``127.0.0.1`` keeps other machines out, not other web pages: any page
 open in the user's browser can send requests to ``http://127.0.0.1:8765``, and
-the server would take them for the user's own clicks. There are two ways in,
-and one check for each:
+the server would take them for the user's own clicks. There are three ways
+in, and one answer for each:
 
 * **Cross-site requests.** A foreign page cannot read our responses (the
   server sends no CORS headers), but a "simple" request — a POST with no body,
@@ -20,6 +20,13 @@ and one check for each:
   method. What gives it away is the name it arrives under: ``Host`` carries
   that domain. The server is only ever reached as ``127.0.0.1``, ``localhost``
   or ``[::1]``, so any other name is refused, for pages and API alike.
+* **Framing (clickjacking).** Another site can show the real litman page in
+  a frame and trick the user into clicking it. Those clicks are the page's
+  own requests, carrying the page's own Origin, so the two checks above pass
+  them. Every response therefore says it must not be framed: CSP
+  ``frame-ancestors 'none'``, and ``X-Frame-Options`` for browsers older than
+  that. It holds for litman too — a frame that loads this server inside the
+  UI would stay blank.
 
 The Origin is compared with the request's own Host, not with a fixed address:
 Host has already passed as a loopback name, and the two agreeing is exactly
@@ -36,7 +43,7 @@ sees WebSocket traffic, and pages reach ``/api/presence`` too.
 from __future__ import annotations
 
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -46,6 +53,12 @@ _UNCHECKED_METHODS = frozenset({"GET", "HEAD"})
 
 # Policy violation: the close code a refused WebSocket handshake carries.
 _WS_POLICY_VIOLATION = 1008
+
+# On every HTTP response, refusals included: never shown inside another page.
+_NO_FRAMING = (
+    (b"content-security-policy", b"frame-ancestors 'none'"),
+    (b"x-frame-options", b"DENY"),
+)
 
 
 def _header(scope: Scope, name: bytes) -> str | None:
@@ -80,6 +93,17 @@ def host_name(host: str) -> str | None:
     return name
 
 
+def _unframed(send: Send) -> Send:
+    """``send``, adding ``_NO_FRAMING`` to the start of every response."""
+
+    async def send_unframed(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            message = {**message, "headers": [*message.get("headers", ()), *_NO_FRAMING]}
+        await send(message)
+
+    return send_unframed
+
+
 def refusal(scope: Scope) -> str | None:
     """``"host"`` or ``"origin"`` — which check this request fails — or ``None``."""
     host = _header(scope, b"host")
@@ -96,7 +120,8 @@ def refusal(scope: Scope) -> str | None:
 
 
 class LocalPageGuard:
-    """Refuse requests that did not come from the litman page (module docstring)."""
+    """Refuse requests that did not come from the litman page, and keep every
+    response out of other pages' frames (module docstring)."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -105,6 +130,8 @@ class LocalPageGuard:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        if scope["type"] == "http":
+            send = _unframed(send)
         reason = refusal(scope)
         if reason is None:
             await self.app(scope, receive, send)

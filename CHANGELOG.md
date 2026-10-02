@@ -74,8 +74,9 @@ own entry. Read those before you upgrade, whatever the number says.
   requests, and litman acted on them as if you had clicked: launching an
   agent, creating a folder, registering a library. A site set up for it could
   also read your library and notes through the browser. litman now answers
-  only its own page and refuses requests from any other site. The web UI, the
-  command line and `ssh -L` tunnels work as before.
+  only its own page: it refuses requests from any other site, and no other
+  site can show it inside its own page. The web UI, the command line and
+  `ssh -L` tunnels work as before.
 
 ## 1.3.6 — 2026-09-09
 
