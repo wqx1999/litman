@@ -1331,14 +1331,38 @@ def test_a_case_variant_the_disk_resolves_is_not_dangling(
     assert _meta(vault, "X_x_x")["extends"] == ["a_a_a"]
 
 
-def test_a_hand_edited_scalar_relation_is_one_edge(vault: Path) -> None:
-    """`related: GHOST` (no list) is one dangling id, not five characters."""
+def test_a_hand_edited_scalar_relation_is_reported_not_guessed(
+    vault: Path,
+) -> None:
+    """`related: GHOST` (no list) is not read as an edge at all — as one id or
+    as five characters. The file is reported, and `--fix` leaves it alone."""
     _write_paper(vault, "A_a_a", related="GHOST")
+    meta_file = vault / "papers" / "A_a_a" / "metadata.yaml"
+    before = meta_file.read_bytes()
 
-    (issue,) = check_dangling_refs(vault, list_papers(vault))
-    assert "'GHOST'" in issue.message
-    assert drop_dangling_relations(vault) == 1
-    assert _meta(vault, "A_a_a")["related"] == []
+    assert check_dangling_refs(vault, list_papers(vault)) == []
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, [])
+        if "is not a list" in i.message
+    ]
+    assert issue.severity == "error"
+    assert issue.message == (
+        "papers/A_a_a/metadata.yaml: 'related' is not a list — paper invisible "
+        "to all checks/INDEX"
+    )
+    assert issue.hint.startswith("write it as `related: ['GHOST']`")
+    assert drop_dangling_relations(vault) == 0
+    assert meta_file.read_bytes() == before
+
+
+def test_every_field_that_is_not_a_list_gets_its_own_finding(vault: Path) -> None:
+    """One pass names them all, so fixing the file takes one round."""
+    _write_paper(vault, "A_a_a", topics="peptide", methods=42)
+    fields = sorted(
+        i.message.split("'")[1] for i in check_paper_dir_validity(vault, [])
+        if "is not a list" in i.message
+    )
+    assert fields == ["methods", "topics"]
 
 
 # --- bidirectional_refs -----------------------------------------------------
@@ -1360,23 +1384,18 @@ def test_bidirectional_one_sided(vault: Path) -> None:
     assert "B_b_b" in issues[0].message
 
 
-def test_bidirectional_reads_a_hand_edited_scalar_as_one_id(vault: Path) -> None:
-    """`related: A_a_a` (no list) pairs with A's `related: [B_b_b]` — it is
-    not five characters, none of them A."""
-    _write_paper(vault, "A_a_a", related=["B_b_b"])
+@pytest.mark.parametrize("a_returns_it", [True, False])
+def test_bidirectional_makes_no_claim_about_a_scalar_relation(
+    vault: Path, a_returns_it: bool
+) -> None:
+    """B's hand-edited `related: A_a_a` is neither a pairing nor a missing
+    one: B is reported as a broken file, and nothing is said about A."""
+    _write_paper(vault, "A_a_a", related=["B_b_b"] if a_returns_it else [])
     _write_paper(vault, "B_b_b", related="A_a_a")
     assert check_bidirectional_refs(vault, list_papers(vault)) == []
-
-
-def test_bidirectional_reports_a_one_sided_scalar(vault: Path) -> None:
-    """A hand-edited `related: A_a_a` that A does not return is one missing
-    pairing, read as the id it names."""
-    _write_paper(vault, "A_a_a")
-    _write_paper(vault, "B_b_b", related="A_a_a")
-    (issue,) = check_bidirectional_refs(vault, list_papers(vault))
-    assert issue.message == (
-        "'B_b_b'.related contains 'A_a_a' but 'A_a_a'.related does not "
-        "contain 'B_b_b'"
+    assert any(
+        i.paper_id == "B_b_b" and "'related' is not a list" in i.message
+        for i in check_paper_dir_validity(vault, [])
     )
 
 

@@ -46,6 +46,7 @@ from litman.core.correctors import moved_aside_from, reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
 from litman.core.dedup import find_paper_by_doi
 from litman.core.document import (
+    PAPER_LIST_FIELDS,
     LibraryIds,
     library_paper_ids,
     list_papers,
@@ -95,20 +96,10 @@ FORBIDDEN_SET_FIELDS: frozenset[str] = frozenset({
 # scalar fields work without a registry update. This set INCLUDES the
 # ADR-012 reverse fields (``extended-by`` / ``contradicted-by``) so the
 # auto double-write can maintain them with correct list semantics — but
-# users may NOT name them on the command line (see USER_TAG_FIELDS).
-LIST_FIELDS: frozenset[str] = frozenset({
-    "authors",
-    "projects",
-    "topics",
-    "methods",
-    "data",
-    "related",
-    "contradicts",
-    "contradicted-by",
-    "extends",
-    "extended-by",
-    "code-clones",
-})
+# users may NOT name them on the command line (see USER_TAG_FIELDS). The set
+# itself lives in core/document.py, whose readers refuse a file where one of
+# these holds anything but a list.
+LIST_FIELDS: frozenset[str] = PAPER_LIST_FIELDS
 
 # Reverse relation fields (ADR-012) are maintained ONLY by the auto
 # double-write; a user must never set them directly via --add-tag /

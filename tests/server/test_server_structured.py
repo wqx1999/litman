@@ -1998,10 +1998,11 @@ def test_put_metadata_drop_dangling_refuses_a_folder_it_cannot_read(
     assert _meta_bytes(vault, survivor) == before
 
 
-def test_put_metadata_drop_dangling_removes_a_hand_edited_scalar(
+def test_put_metadata_drop_dangling_on_a_hand_edited_scalar_names_the_file(
     vault_with_paper: tuple[Path, str],
 ) -> None:
-    """`extended-by: X` written by hand (no list) is one link, and goes."""
+    """`extended-by: X` written by hand (no list) is not read as a link: the
+    remove is refused with the file and the fix, and nothing is written."""
     vault, survivor = vault_with_paper
     meta_file = vault / "papers" / survivor / "metadata.yaml"
     os.chmod(meta_file, 0o644)  # TRUTH files are kept read-only
@@ -2010,12 +2011,14 @@ def test_put_metadata_drop_dangling_removes_a_hand_edited_scalar(
     data["extended-by"] = "2025_Gone_Paper"
     with meta_file.open("w", encoding="utf-8") as f:
         yaml.dump(data, f)
+    before = _meta_bytes(vault, survivor)
 
     resp = _client(vault).put(
         f"/api/paper/{survivor}/metadata",
         json={"dropDangling": {"extended-by": ["2025_Gone_Paper"]}},
     )
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {"ok": True, "changed": True}
-    assert _meta(vault, survivor)["extended-by"] == []
+    assert resp.status_code == 500
+    assert str(meta_file) in resp.json()["detail"]
+    assert "write it as `extended-by: ['2025_Gone_Paper']`" in resp.json()["detail"]
+    assert _meta_bytes(vault, survivor) == before

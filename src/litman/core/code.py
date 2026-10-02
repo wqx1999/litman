@@ -39,7 +39,11 @@ from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.locking import rmtree
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import CodeError, PaperNotFoundError
+from litman.exceptions import (
+    CodeError,
+    CorruptMetadataError,
+    PaperNotFoundError,
+)
 
 # Directory layout constants.
 CODES_DIRNAME = "codes"
@@ -758,10 +762,12 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
         if not meta_file.is_file():
             continue
         try:
-            meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, YAMLError):
-            # The try only reads + parses, so these are the only failures
-            # possible — let any other (programming) error propagate.
+            meta = load_yaml_or_raise(meta_file, _yaml)
+        except CorruptMetadataError:
+            # Unreadable, unparseable, or a list field that is not a list
+            # (`code-clones: myrepo-fork` would match as a substring and be
+            # saved back as its characters): skip it like list_papers does —
+            # health-check names the file.
             continue
         if not isinstance(meta, dict):
             # Empty/None or a non-mapping top-level YAML (list/scalar): skip like

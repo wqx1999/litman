@@ -53,7 +53,7 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.dedup import normalize_doi
-from litman.core.document import library_paper_ids
+from litman.core.document import library_paper_ids, malformed_list_fields
 from litman.core.id import (
     derive_keyword,
     family_segment,
@@ -89,7 +89,11 @@ from litman.core.trash import (
     list_trash,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import ConfigError, VaultRegistryError
+from litman.exceptions import (
+    ConfigError,
+    MalformedMetadataError,
+    VaultRegistryError,
+)
 
 _yaml = ThreadLocalYAML(typ="safe")
 
@@ -807,9 +811,10 @@ def check_paper_dir_validity(
     * a non-directory entry under ``papers/`` (``warning``);
     * a directory name that is not a valid paper id;
     * ``metadata.yaml`` missing (orphan from a failed rm / interrupted add);
-    * ``metadata.yaml`` present but **unparseable or empty** — the paper is
-      invisible to ``list_papers``, ``INDEX``, and every metadata-keyed check,
-      so it is reported here instead of vanishing silently;
+    * ``metadata.yaml`` present but **unparseable or empty**, or with a list
+      field that holds something else — the paper is invisible to
+      ``list_papers``, ``INDEX``, and every metadata-keyed check, so it is
+      reported here instead of vanishing silently;
     * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename);
     * ``paper.pdf`` missing (``lit open`` depends on it; irreplaceable).
 
@@ -941,6 +946,27 @@ def check_paper_dir_validity(
                             hint=(
                                 f"reconcile manually: rename dir or "
                                 f"`lit modify {child.name} --set id={child.name}`"
+                            ),
+                        )
+                    )
+                # Parses, but list_papers refuses it all the same (see
+                # MalformedMetadataError), so it is reported here too. One
+                # finding per field, so a single pass names them all.
+                for field in malformed_list_fields(data):
+                    example = MalformedMetadataError(field, data[field]).example
+                    out.append(
+                        Issue(
+                            category="paper_dir_validity",
+                            severity="error",
+                            paper_id=child.name,
+                            message=(
+                                f"papers/{child.name}/metadata.yaml: {field!r} "
+                                "is not a list — paper invisible to all "
+                                "checks/INDEX"
+                            ),
+                            hint=(
+                                f"write it as `{example}`; until then "
+                                "`--fix` drops this paper from list/INDEX"
                             ),
                         )
                     )

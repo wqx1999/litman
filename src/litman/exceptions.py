@@ -7,6 +7,8 @@ level and prints a friendly stderr message. Anything not a subclass of
 
 from __future__ import annotations
 
+from ruamel.yaml import YAMLError
+
 
 class LitmanError(Exception):
     """Base class for all litman-specific errors."""
@@ -67,11 +69,42 @@ class CorruptMetadataError(LitmanError):
 
     def __init__(self, path: object, cause: Exception | None = None) -> None:
         self.path = path
+        if isinstance(cause, MalformedMetadataError):
+            super().__init__(f"Cannot use {path}: {cause}, then retry.")
+            return
         detail = f" ({cause})" if cause is not None else ""
         super().__init__(
             f"Cannot read YAML file {path}{detail}. "
             "Fix the file (invalid YAML or non-UTF-8 encoding), then retry."
         )
+
+
+class MalformedMetadataError(YAMLError):
+    """A metadata.yaml parses, but one of its list fields holds something else.
+
+    ``topics: peptide`` is a hand edit that dropped the list. Read as it
+    stands, a string iterates as its characters: litman would file seven
+    one-letter topics and write them back on the next ``--add-tag``. So the
+    file is refused, as one whose YAML does not parse is, and the person who
+    edited it decides what it should say.
+
+    A ``YAMLError`` on purpose: every reader of a paper's metadata already
+    treats that as "this file is broken" — ``list_papers`` leaves the paper
+    out, ``load_yaml_or_raise`` turns it into :class:`CorruptMetadataError` —
+    which is exactly the handling wanted, with no new except clause to miss.
+    So it is not a :class:`LitmanError`, yet never reaches the CLI as itself.
+    """
+
+    def __init__(self, field: str, value: object) -> None:
+        self.field = field
+        if isinstance(value, str) and value:
+            item = "'" + value.replace("'", "''") + "'"
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            item = str(value)
+        else:
+            item = "..."
+        self.example = f"{field}: [{item}]"
+        super().__init__(f"{field!r} is not a list; write it as `{self.example}`")
 
 
 class AmbiguousPaperIdError(LitmanError):

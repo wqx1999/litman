@@ -496,7 +496,7 @@ Rules:
 
 ## Architecture Invariants (do not violate)
 
-1. **Never** write `papers/<id>/metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `codes/<name>/repo-meta.yaml` directly. Always go through `lit add` / `lit modify` / `lit taxonomy` / `lit project` / `lit code …`.
+1. **Never** write `papers/<id>/metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `codes/<name>/repo-meta.yaml` directly. Always go through `lit add` / `lit modify` / `lit taxonomy` / `lit project` / `lit code …`. That holds even when a command stops with `Cannot use <file>: '<field>' is not a list; write it as …`: a hand edit broke that file and no command will rewrite it. Relay the file and the line to the user and stop — never unlock or edit it yourself.
 2. **Never** suggest hand-editing `TAXONOMY.md` or `lit-config.yaml`'s `projects:` map. Use `lit taxonomy {rm,rename,merge}` for topics/methods/data ([J]) and `lit project {add,rename,set-path,rm}` for projects ([H]). Tagging requires the value registered first.
 3. **Never** assume the vault is git-tracked. It is deliberately not.
 4. **Never** store API keys in `lit-config.yaml`. The CLI calls no LLM API — that's the agent's job, via the JSON-file bridge.

@@ -44,7 +44,8 @@ valid and read as "this dimension does not apply to this paper". What
 `lit health-check` insists on is narrow: `id`, `created-at`, and `updated-at`
 must be present and non-empty, and `status` must carry one of its enum values
 (`inbox` is the value for "not evaluated yet", so an empty `status` is an
-error). Everything else may be empty or absent.
+error), and a list field that is present must be a list (`topics: [peptide]`,
+not `topics: peptide`). Everything else may be empty or absent.
 
 The whole file is **read-only locked** and every write is **atomic**. Edit it
 through `lit add`, `lit modify`, `lit link`, and the reading-lifecycle

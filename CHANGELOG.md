@@ -52,6 +52,20 @@ own entry. Read those before you upgrade, whatever the number says.
   longer in the library, and the × removes a single one. A link to a paper in
   the trash is reported as such: restore that paper first to keep the link.
 
+- **A list field edited by hand into a single value is reported, not misread.**
+  `topics`, `authors`, the relation fields and the other list fields of
+  `metadata.yaml` are lists. Written as one value instead (`topics: peptide`),
+  litman read it letter by letter: a folder under `views/` for each letter, a
+  blank web UI on that paper, and the next `lit modify --add-tag` saving the
+  letters into the file. A number there (`topics: 42`) stopped `lit
+  health-check` and every later write to any paper. Such a file is now treated
+  like one whose YAML does not parse. `lit health-check` names the file, the
+  field and the line to write, and `lit health-check --fix` takes the paper out
+  of the index and `views/` until it is fixed. litman never writes to the file:
+  a command that would change it refuses, and one that sweeps the whole
+  library leaves it as it is. `lit sync push` waits until it is fixed. The
+  other papers are unaffected.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added

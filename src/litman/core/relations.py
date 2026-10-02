@@ -58,14 +58,11 @@ FORWARD_REF_FIELDS: tuple[str, ...] = tuple(
 
 
 def relation_refs(value: object) -> list[str]:
-    """The ids one relation field holds.
+    """The ids one relation field holds: a list's entries, else none.
 
-    A list holds its entries. A bare string is a hand-edit (``related: X``)
-    and holds that one id — iterating it would yield characters. Anything else
-    holds none.
+    A hand edit that is not a list (``related: X``) never gets here — the
+    metadata readers refuse that file (``document.malformed_list_fields``).
     """
-    if isinstance(value, str):
-        return [value] if value else []
     if isinstance(value, list):
         return [str(v) for v in value]
     return []

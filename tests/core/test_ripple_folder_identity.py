@@ -25,7 +25,6 @@ vault owns that branch, and it is pinned in ``test_write_op_equivalence.py``.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.core.checks import check_paper_dir_validity
 from litman.core.correctors import reconcile_derived
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
@@ -385,31 +385,36 @@ def test_a_paper_dir_whose_metadata_vanished_does_not_crash_the_cascade(
 # ---------------------------------------------------------------------------
 
 
-def test_scalar_field_refusal_names_the_folder_not_the_declared_id(
+def test_a_scalar_field_is_left_alone_and_reported_by_its_folder(
     vault: Path,
 ) -> None:
-    """metadata is schema-less (invariant #7), so a hand-edit can leave
-    ``topics: AMP``. The ripple refuses that paper rather than rippling a
-    string character by character — and the message has to name the folder it
-    actually read, since resolving through the declared id used to point the
-    user at a directory that does not exist.
+    """A hand-edit can leave ``topics: AMP``. The readers refuse that file, so
+    the ripple never rewrites the string character by character — it leaves
+    the file as it was — and the report names the folder it actually read:
+    resolving through the declared id used to point the user at a directory
+    that does not exist.
     """
     _paper_folder(vault, "2024_Bad_Folder", "2024_Somewhere_Else",
                   raw_topics="AMP")
+    meta_file = vault / "papers" / "2024_Bad_Folder" / "metadata.yaml"
+    before = meta_file.read_bytes()
     runner = CliRunner()
     _ok(runner.invoke(
         cli, ["taxonomy", "add", "topics", "AMP", "--library", str(vault)]
     ))
 
-    result = runner.invoke(
+    _ok(runner.invoke(
         cli,
         ["taxonomy", "rm", "topics", "AMP", "--yes", "--library", str(vault)],
-    )
+    ))
 
-    assert result.exit_code != 0
-    message = re.sub(r"\s+", " ", str(result.exception))
-    assert "papers/2024_Bad_Folder/metadata.yaml" in message
-    assert "2024_Somewhere_Else" not in message
+    assert meta_file.read_bytes() == before
+    assert any(
+        i.message.startswith(
+            "papers/2024_Bad_Folder/metadata.yaml: 'topics' is not a list"
+        )
+        for i in check_paper_dir_validity(vault, [])
+    )
     assert not (vault / "papers" / "2024_Somewhere_Else").exists()
 
 
