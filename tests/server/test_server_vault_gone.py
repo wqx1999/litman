@@ -31,9 +31,9 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
+from litman.core import locking
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link, make_portable_link
 from litman.core.vault_registry import (
     add_vault,
     find_active,
@@ -43,8 +43,7 @@ from litman.core.vault_registry import (
     set_active,
 )
 from litman.server import create_app
-from litman.core.portable_link import is_portable_link, make_portable_link
-from litman.core import locking
+from tests.server._client import TestClient
 
 
 def _client(vault: Path) -> TestClient:

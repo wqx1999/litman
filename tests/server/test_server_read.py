@@ -14,13 +14,12 @@ from click.testing import CliRunner
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.cli import cli
 from litman.core.document import list_papers
 from litman.core.query import recency_key
 from litman.core.views import INDEX_PAPER_FIELDS, project_paper, write_index
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 def _client(vault: Path) -> TestClient:

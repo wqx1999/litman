@@ -22,13 +22,12 @@ from ruamel.yaml import YAML
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.trash import list_trash, move_to_trash
 from litman.server import create_app
-from litman.core.portable_link import is_portable_link
+from tests.server._client import TestClient
 
 _yaml = YAML(typ="safe")
 

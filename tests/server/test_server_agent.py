@@ -26,13 +26,13 @@ import pytest
 pytest.importorskip("fastapi")
 
 from fastapi import HTTPException, Response
-from fastapi.testclient import TestClient
 
 from litman.core import agent_prefs, agents
 from litman.core.library import create_vault
 from litman.core.skill import list_bundled_skills
 from litman.server import create_app, routes_agent
 from litman.server.routes_agent import agent_status
+from tests.server._client import TestClient
 
 
 @pytest.fixture

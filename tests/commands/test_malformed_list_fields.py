@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner, Result
-from fastapi.testclient import TestClient
 from ruamel.yaml import YAML
 
 from litman.cli import cli
@@ -31,6 +30,7 @@ from litman.core.library import create_vault
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import CorruptMetadataError
 from litman.server import create_app
+from tests.server._client import TestClient
 
 GOOD, BAD, OTHER = "2024_Good_Paper", "2024_Bad_Paper", "2024_Other_Paper"
 

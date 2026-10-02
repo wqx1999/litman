@@ -28,12 +28,11 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 import litman.core.portable_link as portable_link
 from litman.core.library import create_vault
 from litman.core.portable_link import reset_link_probe_cache
 from litman.server import create_app
+from tests.server._client import TestClient
 
 # What a working drive answers on this host — the endpoint reports the
 # mechanism, and the mechanism is not the same one everywhere.

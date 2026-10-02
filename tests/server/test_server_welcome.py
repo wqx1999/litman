@@ -38,8 +38,6 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 import litman
 from litman.core.library import create_vault
 from litman.core.vault_registry import (
@@ -49,6 +47,7 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 def _register(vault: Path, name: str) -> None:

@@ -21,10 +21,9 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.core.config import CONFIG_FILENAME
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 def _client() -> TestClient:

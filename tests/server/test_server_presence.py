@@ -34,13 +34,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.commands.gui import _stop_server_when_window_closes
 from litman.core.config import CONFIG_FILENAME
 from litman.core.library import create_vault
 from litman.core.presence import PresenceTracker
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 def _wait_for(predicate, *, timeout: float = 5.0) -> bool:

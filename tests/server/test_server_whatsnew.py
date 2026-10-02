@@ -20,13 +20,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 import litman
 from litman.core import ui_state
 from litman.core.library import create_vault
 from litman.core.whatsnew import CHANGELOG_URL
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 def test_whatsnew_reports_running_version_digest(tmp_path: Path) -> None:
