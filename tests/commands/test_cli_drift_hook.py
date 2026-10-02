@@ -620,7 +620,7 @@ def test_hook_corrupt_config_surfaces_finding(
 
 
 def _seed_active_vault_with_dangling_bridge(
-    tmp_path: Path,
+    tmp_path: Path, project_dirname: str = "pepforge"
 ) -> tuple[Path, Path]:
     """An active vault whose project bridges dangle: linked, then MOVED.
 
@@ -638,7 +638,7 @@ def _seed_active_vault_with_dangling_bridge(
     parent = tmp_path / "bridge_parent"
     parent.mkdir()
     vault = create_vault(parent)
-    project_dir = tmp_path / "pepforge"
+    project_dir = tmp_path / project_dirname
     project_dir.mkdir()
     (vault / "lit-config.yaml").write_text(
         f"library_name: {vault.name}\nprojects:\n  pepforge: {project_dir}\n",
@@ -725,6 +725,69 @@ def test_hook_bridge_heal_end_to_end(
     link = project_dir / "litman_reflib" / "p1"
     assert is_portable_link(link)
     assert link.resolve() == (moved / "papers" / "p1").resolve()
+
+
+# A directory name long enough that any path built on it overruns 80 columns
+# by itself, wherever the test's tmp_path happens to sit.
+_LONG_DIRNAME = "a-project-directory-name-long-enough-to-overrun-an-80-column-terminal"
+
+
+def _assert_path_on_one_line(output: str, path: Path) -> None:
+    # rich hard-wraps at the console width unless the print passes soft_wrap;
+    # a newline inside the path is what the user then copies out.
+    assert str(path) in output, output
+
+
+def test_project_drift_prompt_keeps_paths_copyable_at_80_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both lines of the project-path heal embed a path — the old one in the
+    warning, the new one in the confirmation — and neither may be folded."""
+    real_vault = _seed_dangling_plus_active(tmp_path)
+    old = tmp_path / _LONG_DIRNAME / "on-the-old-machine"
+    new = tmp_path / _LONG_DIRNAME / "on-this-machine"
+    new.mkdir(parents=True)
+    (real_vault / "lit-config.yaml").write_text(
+        f"library_name: {real_vault.name}\nprojects:\n  binder: {old}\n",
+        encoding="utf-8",
+    )
+    save_registry(
+        VaultRegistry(
+            vaults=[VaultEntry(name="real", path=str(real_vault), is_active=True)]
+        )
+    )
+
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: str(new))
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
+
+    result = CliRunner().invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert "directory not found" in result.output
+    assert "Updated" in result.output
+    _assert_path_on_one_line(result.output, old)
+    _assert_path_on_one_line(result.output, new)
+
+
+def test_bridge_drift_prompt_keeps_the_example_link_copyable_at_80_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dangling-bridge list names one example link per project."""
+    _, project_dir = _seed_active_vault_with_dangling_bridge(
+        tmp_path, project_dirname=_LONG_DIRNAME
+    )
+
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
+
+    result = CliRunner().invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert "dangling (e.g." in result.output
+    _assert_path_on_one_line(result.output, project_dir / "litman_reflib" / "p1")
 
 
 def test_tty_probe_survives_none_streams(

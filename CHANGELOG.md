@@ -9,6 +9,16 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Fixed
+
+- **Paths in the moved-directory prompt are no longer split across lines.**
+  When a project directory has moved, the warning naming its old location,
+  the line confirming the new one, and the example in the list of broken
+  project links each print their path on one line however narrow the
+  terminal, so it can be pasted as it stands.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added
