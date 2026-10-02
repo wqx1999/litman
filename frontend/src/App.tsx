@@ -618,6 +618,12 @@ export default function App() {
     (handle: CockpitHandle | null) => setCockpitHandle(handle),
     [],
   )
+  // BrowsePanel's "scroll the selected row back into view". Only event handlers
+  // call it, so a bare ref: registering it re-renders nothing.
+  const revealSelectedRef = useRef<(() => void) | null>(null)
+  const registerReveal = useCallback((reveal: (() => void) | null) => {
+    revealSelectedRef.current = reveal
+  }, [])
 
   const loadList = useCallback(
     (mode: ListMode) => {
@@ -1945,18 +1951,25 @@ export default function App() {
     (key: string) => {
       setActiveTab(key)
       const tab = tabs.find((t) => t.key === key)
-      if (tab) selectPaper(tab.paperId)
+      if (!tab) return
+      selectPaper(tab.paperId)
+      // Already selected: the list's own scroll-on-change won't fire, so bring
+      // its row back in case the list was scrolled away from it.
+      if (tab.paperId === selectedId) revealSelectedRef.current?.()
     },
-    [tabs, selectPaper],
+    [tabs, selectedId, selectPaper],
   )
   // A press anywhere in the open document (PDF page or toolbar, notes or
   // discussion) brings the selection back to its paper — what clicking its tab
-  // does, so the list and the cockpit follow what is being read. Only when the
-  // selection has moved off it: a reader presses constantly, and re-selecting
-  // the same paper would refetch the cockpit on every press.
+  // does, so the list and the cockpit follow what is being read. Re-selected
+  // only when the selection has moved off it: a reader presses constantly, and
+  // re-selecting the same paper would refetch the cockpit on every press. Then
+  // only its row is brought back (a no-op while the row is in view).
   const selectActivePaper = useCallback(() => {
     const tab = tabs.find((t) => t.key === activeTab)
-    if (tab && tab.paperId !== selectedId) selectPaper(tab.paperId)
+    if (!tab) return
+    if (tab.paperId !== selectedId) selectPaper(tab.paperId)
+    else revealSelectedRef.current?.()
   }, [tabs, activeTab, selectedId, selectPaper])
   // `,` / `.` cycle the open tabs (wrap-around); both no-op with < 2 tabs.
   const activateAdjacentTab = useCallback(
@@ -2268,6 +2281,7 @@ export default function App() {
               onOpenTrash={openTrash}
               collapsed={leftCollapsed}
               onToggle={() => setLeftCollapsed((c) => !c)}
+              onRegisterReveal={registerReveal}
             />
             <TabArea
               tabs={tabs}

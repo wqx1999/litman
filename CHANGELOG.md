@@ -22,7 +22,8 @@ own entry. Read those before you upgrade, whatever the number says.
 - **Clicking the PDF, notes or discussion you are reading selects that paper
   again** in the GUI. After moving to another paper in the list, a click in
   the open document brings the list and the cockpit back to it, as clicking
-  its tab already did.
+  its tab already did. If it is still selected but the list has been scrolled
+  away from it, the click, or a click on its tab, scrolls the list back to it.
 
 ### Fixed
 
