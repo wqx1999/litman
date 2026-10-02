@@ -64,7 +64,8 @@ own entry. Read those before you upgrade, whatever the number says.
   of the index and `views/` until it is fixed. litman never writes to the file:
   a command that would change it refuses, and one that sweeps the whole
   library leaves it as it is. `lit sync push` waits until it is fixed. The
-  other papers are unaffected.
+  other papers are unaffected. Opening such a paper in the web UI, or one whose
+  YAML does not parse, now shows that message instead of an empty panel.
 
 ## 1.3.6 — 2026-09-09
 

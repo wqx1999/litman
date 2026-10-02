@@ -52,6 +52,10 @@ import {
 interface Props {
   paper: PaperMeta | null
   loading: boolean
+  /** Why the selected paper could not be loaded — the server's own sentence
+   * (a broken metadata.yaml names the file and the fix). Shown in place of the
+   * empty state, which would otherwise read as "nothing is selected". */
+  loadError?: string | null
   collapsed: boolean
   onToggle: () => void
   onOpenPaper: (id: string) => void
@@ -1631,6 +1635,7 @@ function ReadOnlyCockpit({
 function WriteCockpit({
   paper,
   loading,
+  loadError = null,
   collapsed,
   onToggle,
   onOpenPaper,
@@ -2069,7 +2074,12 @@ function WriteCockpit({
         </div>
 
         {loading && <div className="text-sm text-stone-500">Loading…</div>}
-        {!loading && !paper && (
+        {!loading && !paper && loadError && (
+          <div className="break-words rounded-md border border-red-300 bg-red-50 px-2.5 py-1.5 text-xs leading-relaxed text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
+            {loadError}
+          </div>
+        )}
+        {!loading && !paper && !loadError && (
           <div className="text-sm text-stone-500">Select a paper.</div>
         )}
 

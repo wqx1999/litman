@@ -552,6 +552,10 @@ export default function App() {
   }, [])
 
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
+  // The server's reason the selected paper could not be loaded, shown in the
+  // cockpit instead of its empty state. Cleared whenever the paper loads or the
+  // selection goes away.
+  const [cockpitError, setCockpitError] = useState<string | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
   const [cockpitCollapsed, setCockpitCollapsed] = useState(false)
   const [leftCollapsed, setLeftCollapsed] = useState(false)
@@ -941,19 +945,33 @@ export default function App() {
     setFilters(emptyFilters())
   }, [])
 
+  // Every load of the cockpit paper settles through these two, so a paper the
+  // server refuses (its metadata.yaml is broken) says why on every path — a
+  // click, a refresh after a write, a live-sync sweep — instead of leaving the
+  // "Select a paper." empty state. A network failure has its own banner.
+  const showCockpitPaper = useCallback((paper: PaperMeta) => {
+    setCockpitPaper(paper)
+    setCockpitError(null)
+  }, [])
+  const showCockpitFailure = useCallback((err: unknown) => {
+    setCockpitPaper(null)
+    setCockpitError(err instanceof ApiError ? err.message : null)
+  }, [])
+
   const selectPaper = useCallback(
     (id: string) => {
       setSelectedId(id)
       setCockpitLoading(true)
+      setCockpitError(null)
       fetchPaper(id)
-        .then(setCockpitPaper)
+        .then(showCockpitPaper)
         .catch((err) => {
           classifyFetchError(err)
-          setCockpitPaper(null)
+          showCockpitFailure(err)
         })
         .finally(() => setCockpitLoading(false))
     },
-    [classifyFetchError],
+    [classifyFetchError, showCockpitPaper, showCockpitFailure],
   )
 
   // After a cockpit structured write: re-fetch the selected paper so the cockpit
@@ -964,16 +982,14 @@ export default function App() {
   const refreshAfterWrite = useCallback(() => {
     const id = selectedId
     if (id) {
-      fetchPaper(id)
-        .then(setCockpitPaper)
-        .catch(() => setCockpitPaper(null))
+      fetchPaper(id).then(showCockpitPaper).catch(showCockpitFailure)
     }
     loadList(listMode)
     fetchPapers().then((ps) => {
       setAllPapers(ps)
       setAllLoaded(true)
     })
-  }, [selectedId, loadList, listMode])
+  }, [selectedId, loadList, listMode, showCockpitPaper, showCockpitFailure])
 
   // After a write that changes the shared vocabulary (a new taxonomy value, a
   // project link/unlink, a new project): refresh the cached /api/taxonomy +
@@ -1073,9 +1089,7 @@ export default function App() {
       setVaultGone(false)
       setListFailed(false)
       if (selectedId) {
-        fetchPaper(selectedId)
-          .then(setCockpitPaper)
-          .catch(() => setCockpitPaper(null))
+        fetchPaper(selectedId).then(showCockpitPaper).catch(showCockpitFailure)
       }
       setMdReloadToken((t) => t + 1)
     } catch (err) {
@@ -1087,7 +1101,7 @@ export default function App() {
       // it is the last thing that was true, and the banner says so.
       classifyFetchError(err)
     }
-  }, [listMode, selectedId, appendLog, classifyFetchError])
+  }, [listMode, selectedId, appendLog, classifyFetchError, showCockpitPaper, showCockpitFailure])
 
   // Auto-resync when the browser regains focus / the tab becomes visible — the
   // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
@@ -1497,6 +1511,7 @@ export default function App() {
     if (selectedId === id) {
       setSelectedId(null)
       setCockpitPaper(null)
+      setCockpitError(null)
     }
     setRemoving(false)
     setPendingRemove(null)
@@ -1616,6 +1631,7 @@ export default function App() {
     setActiveTab(null)
     setSelectedId(null)
     setCockpitPaper(null)
+    setCockpitError(null)
     setMdDrafts(new Map())
     // Tabs are gone, so each PdfView unmounts and fires registerPdf(null) on a
     // now-absent key (a harmless delete); clear the handle map directly rather
@@ -2241,6 +2257,7 @@ export default function App() {
             <Cockpit
               paper={cockpitPaper}
               loading={cockpitLoading}
+              loadError={cockpitError}
               collapsed={cockpitCollapsed}
               onToggle={() => setCockpitCollapsed((c) => !c)}
               onOpenPaper={openPdf}

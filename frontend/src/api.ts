@@ -111,8 +111,11 @@ export function fetchPapers(view?: SmartListView): Promise<IndexPaper[]> {
   return getJSON<IndexPaper[]>(`/api/papers${qs}`)
 }
 
+/** Full metadata for one paper. Detailed, because the server says why a paper
+ * cannot be served — a broken metadata.yaml names the file and the fix — and
+ * the cockpit shows that sentence in place of the paper. */
 export function fetchPaper(id: string): Promise<PaperMeta> {
-  return getJSON<PaperMeta>(`/api/paper/${encodeURIComponent(id)}`)
+  return getJSONDetailed<PaperMeta>(`/api/paper/${encodeURIComponent(id)}`)
 }
 
 /** A compact ACS-style citation plus any caveats (unverified journal
