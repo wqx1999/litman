@@ -11,6 +11,7 @@ from rich.panel import Panel
 
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
+from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._usage import reject_second_positional
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -196,10 +197,11 @@ def link_cmd(
         priority=priority,
     )
 
+    # The panel holds the summary; every path and every command to paste
+    # goes underneath it, where it can print unfolded (commands/_path_lines).
     body_lines = [
         f"[bold green]Linked:[/] {escape(paper_id)} → "
         f"project {escape(project)}",
-        f"[dim]Project dir:[/] {result['project_dir']}",
     ]
     if result["metadata_changed"]:
         if result["added_to_projects"]:
@@ -216,7 +218,6 @@ def link_cmd(
             )
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (already linked)")
-    body_lines.append(f"[dim]Paper link:[/] {result['paper_link']}")
     if result["code_links"]:
         body_lines.append(
             f"[dim]Code links:[/] {', '.join(escape(r) for r in result['code_links'])}"
@@ -237,11 +238,6 @@ def link_cmd(
             "[dim](binding kept; keep the library and project on an internal "
             "drive)[/]"
         )
-    # Only the move-aside: a verbatim copy is deleted silently on purpose
-    # (its original is in the vault), but a preserved folder is the only copy
-    # of whatever the user put in it.
-    body_lines.extend(hub_settlement_lines(0, result.get("hub_moved_aside", [])))
-    body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     tips: list[str] = []
     if result["added_to_projects"] and not result["set_relevance"]:
         tips.append(
@@ -255,12 +251,27 @@ def link_cmd(
             f"`lit modify {escape(paper_id)} --set "
             f"priority-{escape(project)}=A`."
         )
-    if tips:
-        body_lines.append("")
-        body_lines.extend(tips)
     console.print(
         Panel.fit("\n".join(body_lines), title="lit link", border_style="green")
     )
+    print_unwrapped(
+        console,
+        path_lines(
+            [
+                ("Project dir:", result["project_dir"]),
+                ("Paper link:", result["paper_link"]),
+                ("REFERENCES.md:", result["references_md"]),
+            ]
+        ),
+    )
+    # Only the move-aside: a verbatim copy is deleted silently on purpose
+    # (its original is in the vault), but a preserved folder is the only copy
+    # of whatever the user put in it.
+    for line in hub_settlement_lines(0, result.get("hub_moved_aside", [])):
+        console.print(f"  {line}", soft_wrap=True)
+    if tips:
+        console.print()
+        print_unwrapped(console, tips)
 
 
 @click.command("unlink")

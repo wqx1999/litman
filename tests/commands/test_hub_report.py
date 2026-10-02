@@ -12,9 +12,10 @@ That the flag keeps the path in one piece is covered end to end in
 cannot cover is the other six, or the eighth site somebody adds later — so the
 sweep below reads the sources instead of running them.
 
-Out of scope on purpose: ``lit link``'s other call site feeds its lines into a
-``Panel``, which wraps its own content and takes no ``soft_wrap``. That path
-folds the path the same way and needs a different fix, not this flag.
+``lit link``'s single-paper report used to feed these lines into its success
+``Panel``, which wraps its own content and takes no ``soft_wrap``; it now
+prints them below the panel like every other site, so the sweep covers it too
+(the panel's own paths are covered in ``test_panel_paths.py``).
 """
 
 from __future__ import annotations

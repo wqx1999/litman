@@ -19,6 +19,13 @@ own entry. Read those before you upgrade, whatever the number says.
   project links each print their path on one line however narrow the
   terminal, so it can be pasted as it stands.
 
+- **The paths `lit add`, `lit link`, `lit code add` and `lit init` report can
+  be copied whole.** On a narrow terminal the box these commands print split
+  every long path inside it, with a border character in the middle. The box
+  now holds the summary, and the paths — with the code links `lit add` finds
+  and the commands the others suggest next — print below it, one per line.
+  `lit project add` and `set-path` print their path on one line too.
+
 - **A conflicted copy no longer makes the count disagree with itself.** When
   cloud sync has left two folders holding one paper, `lit taxonomy merge` and
   `rm` and `lit project rm` asked to change 1 paper and then reported 2, and

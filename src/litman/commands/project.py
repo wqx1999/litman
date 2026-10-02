@@ -165,7 +165,8 @@ def project_add_cmd(
 
     console.print(
         f"[bold green]✓ Registered[/] {escape(summary['name'])} → "
-        f"{escape(summary['path'])}"
+        f"{escape(summary['path'])}",
+        soft_wrap=True,
     )
 
 
@@ -358,12 +359,14 @@ def project_set_path_cmd(
     if not result["changed"]:
         console.print(
             f"[yellow]No-op:[/] {escape(name_str)} already points at "
-            f"{escape(new_path_str)}."
+            f"{escape(new_path_str)}.",
+            soft_wrap=True,
         )
         return
 
     console.print(
-        f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}"
+        f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}",
+        soft_wrap=True,
     )
     # The registry change does not move the directory, so litman_reflib /
     # litman_code keep pointing at the OLD location until rebuilt. Repairable

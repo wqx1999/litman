@@ -16,8 +16,10 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
+from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
 from litman.core.library import DEFAULT_VAULT_NAME, create_vault
 from litman.core.vault_registry import (
@@ -150,18 +152,29 @@ def init_cmd(
     ):
         parent_dir.mkdir(parents=True, exist_ok=True)
 
+    # The vault path, and the commands that embed it, print below the panel
+    # unfolded (commands/_path_lines): a panel wraps them at 80 columns.
     if no_register:
         vault = create_vault(parent_dir, name=name)
         body = (
-            f"[bold green]Vault initialized:[/] {vault}\n"
-            f"[yellow]Not registered[/] (--no-register).\n\n"
-            "Point lit at it with one of:\n"
-            f"  [dim]•[/] export LIT_LIBRARY={vault}\n"
-            f"  [dim]•[/] lit <cmd> --library {vault}\n"
-            f"  [dim]•[/] lit vault add <name> {vault}\n\n"
-            "Then: lit add <path-to-pdf> --doi <doi>"
+            "[bold green]Vault initialized.[/]\n"
+            "[yellow]Not registered[/] (--no-register)."
         )
         console.print(Panel.fit(body, title="lit init", border_style="green"))
+        shown = escape(str(vault))
+        print_unwrapped(
+            console,
+            [
+                *path_lines([("Vault:", vault)]),
+                "",
+                "Point lit at it with one of:",
+                f"  [dim]•[/] export LIT_LIBRARY={shown}",
+                f"  [dim]•[/] lit <cmd> --library {shown}",
+                f"  [dim]•[/] lit vault add <name> {shown}",
+                "",
+                "Then: lit add <path-to-pdf> --doi <doi>",
+            ],
+        )
         return
 
     # Pre-flight: validate the registry name BEFORE creating anything (and before
@@ -184,21 +197,27 @@ def init_cmd(
     vault, entry = apply_init(parent_dir, name, register_as)
     if entry.is_active:
         body = (
-            f"[bold green]Vault initialized & registered:[/] {vault}\n"
+            "[bold green]Vault initialized & registered.[/]\n"
             f"[bold]Registry name:[/] {register_name}  "
             f"[green](active)[/]\n\n"
             "lit will use this vault automatically — no environment "
-            "variable needed.\n\n"
-            "Next: lit add <path-to-pdf> --doi <doi>"
+            "variable needed."
         )
     else:
         body = (
-            f"[bold green]Vault initialized & registered:[/] {vault}\n"
+            "[bold green]Vault initialized & registered.[/]\n"
             f"[bold]Registry name:[/] {register_name}  "
             f"[yellow](not active)[/]\n\n"
             f"Another vault is currently active. To switch:\n"
-            f"  [dim]•[/] lit vault use {register_name}\n\n"
-            "Next: lit add <path-to-pdf> --doi <doi>"
+            f"  [dim]•[/] lit vault use {register_name}"
         )
 
     console.print(Panel.fit(body, title="lit init", border_style="green"))
+    print_unwrapped(
+        console,
+        [
+            *path_lines([("Vault:", vault)]),
+            "",
+            "Next: lit add <path-to-pdf> --doi <doi>",
+        ],
+    )

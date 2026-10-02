@@ -215,11 +215,11 @@ the agent prepared.
 ```console
 $ lit add ~/Downloads/pepinvent.pdf --doi 10.1039/D4SC07642G --id 2025_Geylan_PepINVENT
 Paper added: 2025_Geylan_PepINVENT
-Folder: ~/research/literature_vault/papers/2025_Geylan_PepINVENT
 
 Title: PepINVENT: generative peptide design beyond natural amino acids
 Year: 2025    Journal: Chemical Science
 Authors: Geylan, Gökçe et al. (10 authors)
+  Folder: ~/research/literature_vault/papers/2025_Geylan_PepINVENT
 ```
 
 CrossRef fills the identity fields. The `--id` gives the paper a short handle;
