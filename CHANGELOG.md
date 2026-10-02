@@ -19,6 +19,15 @@ own entry. Read those before you upgrade, whatever the number says.
   project links each print their path on one line however narrow the
   terminal, so it can be pasted as it stands.
 
+- **A conflicted copy no longer makes the count disagree with itself.** When
+  cloud sync has left two folders holding one paper, `lit taxonomy merge` and
+  `rm` and `lit project rm` asked to change 1 paper and then reported 2, and
+  `lit taxonomy rm` listed the paper twice. The confirmation and the result
+  now both count papers, list each one once, and add the folder count when
+  it differs — `1 paper (2 folders — 1 is a conflicted copy)` — so you know
+  the copy is there to clean up. `lit taxonomy rename` and `lit project
+  rename` report the same way.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added
