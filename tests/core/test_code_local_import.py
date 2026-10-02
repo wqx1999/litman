@@ -492,14 +492,17 @@ def test_any_other_file_vanishing_mid_copy_restarts_the_copy(
 
     Git keeps loose objects read-only, and the half copy holds them, so the
     restart has to delete read-only files first — the step that fails on
-    Windows unless it goes through ``core.locking.rmtree``. The precondition
-    pins that the files really are read-only there, not just assumed to be.
+    Windows unless it goes through ``core.locking.rmtree``. Not every git
+    build leaves all of them read-only (Homebrew git 2.55 on macOS did not),
+    so the test sets that itself instead of depending on the git it finds.
     """
     objects = [
         f for f in (racy_repo / ".git" / "objects").rglob("*")
         if f.is_file() and f.parent.name not in ("info", "pack")
     ]
-    assert objects and not any(os.access(f, os.W_OK) for f in objects)
+    assert objects
+    for f in objects:
+        f.chmod(0o444)
     listings = _vanish_after_listing(
         monkeypatch, racy_repo, lambda n: "tmp_obj_Ab12Cd" if n == 0 else None
     )
