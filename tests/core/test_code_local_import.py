@@ -488,7 +488,18 @@ def test_any_other_file_vanishing_mid_copy_restarts_the_copy(
     monkeypatch: pytest.MonkeyPatch,
     no_retry_delay: None,
 ) -> None:
-    """A temp object gone after listing: the half copy is redone, not patched."""
+    """A temp object gone after listing: the half copy is redone, not patched.
+
+    Git keeps loose objects read-only, and the half copy holds them, so the
+    restart has to delete read-only files first — the step that fails on
+    Windows unless it goes through ``core.locking.rmtree``. The precondition
+    pins that the files really are read-only there, not just assumed to be.
+    """
+    objects = [
+        f for f in (racy_repo / ".git" / "objects").rglob("*")
+        if f.is_file() and f.parent.name not in ("info", "pack")
+    ]
+    assert objects and not any(os.access(f, os.W_OK) for f in objects)
     listings = _vanish_after_listing(
         monkeypatch, racy_repo, lambda n: "tmp_obj_Ab12Cd" if n == 0 else None
     )
