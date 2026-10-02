@@ -6,8 +6,9 @@ import type { CockpitHandle } from './cockpit/Cockpit'
  * live through this object (App rebinds the effect when any reference changes),
  * so the handlers always act on the current selection / active tab / handles. */
 export interface ShortcutDeps {
-  /** True when ANY blocking surface is up (SaveDialog, SwitchVaultDialog, the
-   * cheat sheet itself, a cockpit confirm/panel, the TopBar Projects manager).
+  /** True when ANY blocking surface is up (SaveDialog, SwitchVaultDialog, a
+   * cockpit confirm/panel, the TopBar Projects manager, trash mode). Not the
+   * cheat sheet: it is a non-blocking overlay, so shortcuts still fire behind it.
    * While true, all global shortcuts are suppressed so a key meant for the open
    * modal (Enter/Esc/typing) never also fires a global action. The modal owns
    * its own Esc handler, so we deliberately do NOT handle Esc here in that case. */
@@ -37,6 +38,9 @@ export interface ShortcutDeps {
   openSelected: () => void
   /** Toggle the selected paper's pin (P). App owns the no-selection toast. */
   togglePinSelected: () => void
+  /** Open the selected paper's notes or discussion tab (Shift+N / Shift+D) —
+   * the 📝 / 💬 buttons on its list row. App owns the no-selection toast. */
+  openSelectedDoc: (doc: 'notes' | 'discussion') => void
 
   // --- Tier 1: agent launch (global, focus-guarded) -----------------------
   /** Open the AI agent: launch it in a terminal, or raise the onboarding panel
@@ -130,6 +134,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     moveSelection,
     openSelected,
     togglePinSelected,
+    openSelectedDoc,
     openAgent,
     manageAgents,
     toggleCheatSheet,
@@ -245,7 +250,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       // reject. The keycap is engraved `~` over `` ` `` and readers scan for
       // the tilde, so the cheat sheet shows `~`; were Shift rejected, anyone
       // following that label would press Shift+` and get silence. Precedent:
-      // `?` is itself Shift+/ and is handled the same way, above. Ctrl/Cmd are
+      // `?` is itself Shift+/ and is handled the same way, above.
       // Ctrl+Backquote is claimed above for management; Cmd is reserved and
       // Alt is handled by the Tier-2 block, so only Shift can still be set here.
       //
@@ -254,6 +259,18 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
       if (e.code === 'Backquote') {
         e.preventDefault()
         openAgent?.()
+        return
+      }
+
+      // --- Shift+N / Shift+D — the selected paper's notes / discussion -----
+      // Above the Tier-1 modifier reject, which would otherwise drop them.
+      // Cmd/Ctrl and Alt have all returned by now, so Shift is the only
+      // modifier left — and it is what keeps Shift+D apart from D, the PDF
+      // Draw tool. Matched on e.code + shiftKey, not e.key: Caps Lock alone
+      // gives e.key 'D' but no shiftKey, so it still gets Draw.
+      if (e.shiftKey && (e.code === 'KeyN' || e.code === 'KeyD')) {
+        e.preventDefault()
+        openSelectedDoc(e.code === 'KeyN' ? 'notes' : 'discussion')
         return
       }
 
@@ -367,6 +384,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
     moveSelection,
     openSelected,
     togglePinSelected,
+    openSelectedDoc,
     openAgent,
     manageAgents,
     toggleCheatSheet,

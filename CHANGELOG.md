@@ -11,6 +11,12 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ## Unreleased
 
+### Added
+
+- **`Shift+N` and `Shift+D` open the selected paper's notes and discussion**
+  in the GUI, like the 📝 notes and 💬 discussion buttons on its row. `D` alone
+  is still the PDF drawing tool. Press `?` for the full shortcut list.
+
 ### Fixed
 
 - **Paths in the moved-directory prompt are no longer split across lines.**

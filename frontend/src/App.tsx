@@ -2036,6 +2036,19 @@ export default function App() {
     }
     togglePin(selectedId)
   }, [selectedId, togglePin, notify])
+  // Shift+N / Shift+D: the selected paper's notes / discussion, through the
+  // same openDoc as the 📝 / 💬 buttons on its row (an open tab is switched to,
+  // not duplicated). Same no-selection toast as P.
+  const openSelectedDoc = useCallback(
+    (doc: 'notes' | 'discussion') => {
+      if (!selectedId) {
+        notify('No paper selected')
+        return
+      }
+      openDoc(selectedId, doc)
+    },
+    [selectedId, openDoc, notify],
+  )
 
   useKeyboardShortcuts({
     anyModalOpen,
@@ -2049,6 +2062,7 @@ export default function App() {
     moveSelection,
     openSelected,
     togglePinSelected,
+    openSelectedDoc,
     openAgent,
     manageAgents,
     toggleCheatSheet,
