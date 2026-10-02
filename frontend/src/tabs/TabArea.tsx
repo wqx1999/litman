@@ -11,6 +11,9 @@ interface Props {
   tabs: Tab[]
   activeKey: string | null
   onActivate: (key: string) => void
+  /** A press anywhere in the open document: App selects its paper again if the
+   * selection has moved off it, as a click on its tab does. */
+  onContentPress: () => void
   onClose: (key: string) => void
   /** Move the tab at index `from` to index `to` (pointer-drag reorder). */
   onReorder: (from: number, to: number) => void
@@ -54,6 +57,7 @@ export default function TabArea({
   tabs,
   activeKey,
   onActivate,
+  onContentPress,
   onClose,
   onReorder,
   onCloseOthers,
@@ -450,7 +454,10 @@ export default function TabArea({
           document.body,
         )}
 
-      <div className="min-h-0 flex-1">
+      {/* Capture phase: React dispatches it at the root before pdf.js's own
+          listeners on the page, so a handler there that stops propagation
+          cannot keep the press from selecting the paper. */}
+      <div className="min-h-0 flex-1" onPointerDownCapture={onContentPress}>
         {active === null && (
           <div className="flex h-full items-center justify-center text-sm text-stone-400">
             No document open.

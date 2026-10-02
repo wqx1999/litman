@@ -181,6 +181,11 @@ export default function MdView({
     () => (previewSrc === null ? '' : renderMarkdown(previewSrc)),
     [previewSrc],
   )
+  // React compares this prop by object, not by its string: a fresh `{__html}`
+  // on every render rewrites the whole rendered doc each time the host
+  // re-renders — the node under a press is swapped out mid-click (a wikilink
+  // never opens, a drag selects nothing) and the search marks are wiped.
+  const innerHtml = useMemo(() => ({ __html: html }), [html])
 
   useEffect(() => {
     let cancelled = false
@@ -576,7 +581,7 @@ export default function MdView({
             if (previewingDraft) previewScrollRef.current = top
             else if (tabKey) mdScrollPositions.set(tabKey, top)
           }}
-          dangerouslySetInnerHTML={{ __html: html }}
+          dangerouslySetInnerHTML={innerHtml}
         />
       )}
     </div>

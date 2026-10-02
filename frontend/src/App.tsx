@@ -958,18 +958,29 @@ export default function App() {
     setCockpitError(err instanceof ApiError ? err.message : null)
   }, [])
 
+  // Only the latest selection may settle the cockpit. Two can be in flight —
+  // J/K held down, or a press in the document re-selecting its paper just
+  // before the click on a wikilink in it selects the target — and an earlier
+  // answer landing last would show one paper under another's selection.
+  const selectSeq = useRef(0)
   const selectPaper = useCallback(
     (id: string) => {
+      const seq = ++selectSeq.current
+      const latest = () => seq === selectSeq.current
       setSelectedId(id)
       setCockpitLoading(true)
       setCockpitError(null)
       fetchPaper(id)
-        .then(showCockpitPaper)
+        .then((paper) => {
+          if (latest()) showCockpitPaper(paper)
+        })
         .catch((err) => {
           classifyFetchError(err)
-          showCockpitFailure(err)
+          if (latest()) showCockpitFailure(err)
         })
-        .finally(() => setCockpitLoading(false))
+        .finally(() => {
+          if (latest()) setCockpitLoading(false)
+        })
     },
     [classifyFetchError, showCockpitPaper, showCockpitFailure],
   )
@@ -1938,6 +1949,15 @@ export default function App() {
     },
     [tabs, selectPaper],
   )
+  // A press anywhere in the open document (PDF page or toolbar, notes or
+  // discussion) brings the selection back to its paper — what clicking its tab
+  // does, so the list and the cockpit follow what is being read. Only when the
+  // selection has moved off it: a reader presses constantly, and re-selecting
+  // the same paper would refetch the cockpit on every press.
+  const selectActivePaper = useCallback(() => {
+    const tab = tabs.find((t) => t.key === activeTab)
+    if (tab && tab.paperId !== selectedId) selectPaper(tab.paperId)
+  }, [tabs, activeTab, selectedId, selectPaper])
   // `,` / `.` cycle the open tabs (wrap-around); both no-op with < 2 tabs.
   const activateAdjacentTab = useCallback(
     (delta: 1 | -1) => {
@@ -2253,6 +2273,7 @@ export default function App() {
               tabs={tabs}
               activeKey={activeTab}
               onActivate={activateTab}
+              onContentPress={selectActivePaper}
               onClose={closeTab}
               onReorder={reorderTab}
               onCloseOthers={closeOtherTabs}

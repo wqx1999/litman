@@ -17,6 +17,13 @@ own entry. Read those before you upgrade, whatever the number says.
   in the GUI, like the 📝 notes and 💬 discussion buttons on its row. `D` alone
   is still the PDF drawing tool. Press `?` for the full shortcut list.
 
+### Changed
+
+- **Clicking the PDF, notes or discussion you are reading selects that paper
+  again** in the GUI. After moving to another paper in the list, a click in
+  the open document brings the list and the cockpit back to it, as clicking
+  its tab already did.
+
 ### Fixed
 
 - **Paths in the moved-directory prompt are no longer split across lines.**
@@ -72,6 +79,11 @@ own entry. Read those before you upgrade, whatever the number says.
   library leaves it as it is. `lit sync push` waits until it is fixed. The
   other papers are unaffected. Opening such a paper in the web UI, or one whose
   YAML does not parse, now shows that message instead of an empty panel.
+
+- **Search highlights in notes and discussion stay in place.** Opening a notes
+  or discussion search hit in the GUI marked the matches, but the marks
+  vanished as soon as anything else in the window changed, such as selecting
+  another paper in the list.
 
 ### Security
 
