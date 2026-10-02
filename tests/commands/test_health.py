@@ -8,6 +8,7 @@ code, and ``--fix`` round-trip.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +44,7 @@ from litman.core.checks import (
     run_all_checks,
 )
 from litman.core.document import list_papers
+from litman.core.ripple import drop_dangling_relations
 from litman.core.library import create_vault
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.portable_link import is_portable_link
@@ -1143,6 +1145,202 @@ def test_dangling_refs_covers_reverse_fields(vault: Path) -> None:
     assert cats == {"'extended-by'", "'contradicted-by'"}
 
 
+# --- dangling_refs: --fix removes them --------------------------------------
+#
+# A dangling edge names a paper no longer in the library. A reverse one
+# (extended-by / contradicted-by) had no way out at all: `lit modify` refuses
+# to name a reverse field, and the forward edge it mirrors lived on the paper
+# that is gone. `--fix` now drops every dangling edge, by the same definition
+# the check reports by.
+
+
+def _meta(vault: Path, folder: str) -> dict[str, Any]:
+    return YAML(typ="safe").load(
+        (vault / "papers" / folder / "metadata.yaml").read_text(encoding="utf-8")
+    )
+
+
+def test_dangling_refs_hint_is_a_command_that_clears_the_finding(
+    vault: Path,
+) -> None:
+    """The finding's own hint, run as written, removes the edge."""
+    _write_paper(vault, "B_b_b", extended_by=["A_a_a"])  # A was deleted
+    (issue,) = check_dangling_refs(vault, list_papers(vault))
+    assert "missing paper 'A_a_a'" in issue.message
+    command = (issue.hint or "").split("`")[1]
+    argv = shlex.split(command)
+    assert argv[0] == "lit", issue.hint
+
+    result = CliRunner().invoke(cli, [*argv[1:], "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert _meta(vault, "B_b_b")["extended-by"] == []
+    assert check_dangling_refs(vault, list_papers(vault)) == []
+
+
+def test_fix_drops_every_dangling_edge_and_nothing_else(vault: Path) -> None:
+    _write_paper(vault, "C_c_c", related=["B_b_b"])
+    _write_paper(
+        vault,
+        "B_b_b",
+        related=["C_c_c"],
+        extends=["GHOST_one"],
+        extended_by=["GHOST_two"],
+        contradicted_by=["GHOST_three", "C_c_c"],
+    )
+    issues = run_all_checks(vault, list_papers(vault))
+
+    counts = apply_autofix(vault, issues)
+
+    assert counts["dangling_refs"] == 3
+    meta = _meta(vault, "B_b_b")
+    assert meta["related"] == ["C_c_c"]
+    assert meta["extends"] == []
+    assert meta["extended-by"] == []
+    assert meta["contradicted-by"] == ["C_c_c"]  # live, if one-sided: kept
+    # The paper's relations changed, so its audit stamp moved — and INDEX,
+    # which carries the stamp, moved with it in the same commit.
+    assert meta["updated-at"] != "2026-04-28T10:00:00+02:00"
+    after = run_all_checks(vault, list_papers(vault))
+    assert not [i for i in after if i.category in {"dangling_refs", "index_vs_disk"}]
+    # The one-sided live edge is a different finding, still reported.
+    assert [i.paper_id for i in after if i.category == "bidirectional_refs"] == [
+        "B_b_b"
+    ]
+    assert drop_dangling_relations(vault) == 0  # idempotent
+
+
+def _trash_one_side_of(vault: Path) -> dict[str, Any]:
+    """B keeps `extended-by: A` with A in the trash; returns A as it was.
+
+    The pair was already one-sided, so `lit rm A` could not see B's half: it
+    stays behind pointing into the trash.
+    """
+    _write_paper(vault, "A_a_a")  # A no longer names B
+    _write_paper(vault, "B_b_b", extended_by=["A_a_a"])
+    before = _meta(vault, "A_a_a")
+    rm = CliRunner().invoke(cli, ["rm", "A_a_a", "-y", "--library", str(vault)])
+    assert rm.exit_code == 0, rm.output
+    assert _meta(vault, "B_b_b")["extended-by"] == ["A_a_a"]
+    return before
+
+
+def test_fix_treats_a_trashed_paper_as_gone(vault: Path) -> None:
+    """--fix removes B's half; A itself comes back from the trash whole."""
+    a_before = _trash_one_side_of(vault)
+    runner = CliRunner()
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert "dangling_refs: cleaned 1 item" in fix.output, fix.output
+    assert _meta(vault, "B_b_b")["extended-by"] == []
+    restore = runner.invoke(
+        cli, ["trash", "restore", "A_a_a", "--library", str(vault)]
+    )
+    assert restore.exit_code == 0, restore.output
+    assert _meta(vault, "A_a_a") == a_before
+
+
+@pytest.mark.parametrize("way_out", [0, 1], ids=["restore", "fix"])
+def test_an_edge_into_the_trash_says_so_and_names_both_ways_out(
+    vault: Path, way_out: int
+) -> None:
+    """The one lossy finding names itself: each command in its hint, run as
+    written, clears it — restoring keeps the link, --fix drops it."""
+    _trash_one_side_of(vault)
+    (issue,) = check_dangling_refs(vault, list_papers(vault))
+    assert issue.message == "'extended-by' references 'A_a_a', which is in the trash"
+    commands = (issue.hint or "").split("`")[1::2]
+    assert len(commands) == 2, issue.hint
+    argv = shlex.split(commands[way_out])
+    assert argv[0] == "lit", issue.hint
+
+    result = CliRunner().invoke(cli, [*argv[1:], "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert check_dangling_refs(vault, list_papers(vault)) == []
+    kept = ["A_a_a"] if way_out == 0 else []
+    assert _meta(vault, "B_b_b")["extended-by"] == kept
+
+
+def test_an_edge_to_a_folder_that_cannot_be_read_is_not_dangling(
+    vault: Path,
+) -> None:
+    """A paper whose metadata.yaml is broken right now is not gone: neither
+    the check nor the fix may treat an edge to it as dangling."""
+    _write_paper(vault, "B_b_b", extended_by=["A_a_a"])
+    broken = vault / "papers" / "A_a_a"
+    broken.mkdir()
+    (broken / "metadata.yaml").write_text("id: [unclosed\n", encoding="utf-8")
+    assert "A_a_a" not in {p["id"] for p in list_papers(vault)}
+
+    assert check_dangling_refs(vault, list_papers(vault)) == []
+    assert drop_dangling_relations(vault) == 0
+    assert _meta(vault, "B_b_b")["extended-by"] == ["A_a_a"]
+
+
+def test_fix_rewrites_each_folder_of_a_conflicted_copy(vault: Path) -> None:
+    """Two folders declaring one id are both rewritten, and counted as two."""
+    _write_paper(vault, "A_a_a", related=["GHOST"])
+    _write_paper(vault, "A_a_a_conflict", override_id="A_a_a", related=["GHOST"])
+    assert len(check_dangling_refs(vault, list_papers(vault))) == 2
+
+    assert drop_dangling_relations(vault) == 2
+
+    assert _meta(vault, "A_a_a")["related"] == []
+    assert _meta(vault, "A_a_a_conflict")["related"] == []
+
+
+def test_a_ref_that_walks_out_of_papers_is_still_dangling(vault: Path) -> None:
+    """`..` names the folder above papers/, which exists: the disk probe for a
+    case-insensitive match must not take it for a paper."""
+    _write_paper(vault, "B_b_b", related=[".."])
+
+    assert len(check_dangling_refs(vault, list_papers(vault))) == 1
+    assert drop_dangling_relations(vault) == 1
+    assert _meta(vault, "B_b_b")["related"] == []
+
+
+def _fs_ignores_case(where: Path) -> bool:
+    """Probed, not read off sys.platform: Windows and default macOS ignore
+    case, Linux and a case-sensitive APFS volume do not."""
+    probe = where / "LitmanCaseProbe"
+    probe.mkdir()
+    try:
+        return (where / "LITMANCASEPROBE").is_dir()
+    finally:
+        probe.rmdir()
+
+
+def test_a_case_variant_the_disk_resolves_is_not_dangling(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Where the filesystem ignores case, `extends: a_a_a` opens A_a_a's
+    folder — the double-write paired it — so the edge is live: neither the
+    check nor the fix may take it for a dangling one."""
+    if not _fs_ignores_case(tmp_path):
+        pytest.skip(
+            "Only where the filesystem itself ignores case does a case "
+            "variant name the paper's folder; here it names nothing."
+        )
+    _write_paper(vault, "A_a_a", extended_by=["X_x_x"])
+    _write_paper(vault, "X_x_x", extends=["a_a_a"])
+
+    assert check_dangling_refs(vault, list_papers(vault)) == []
+    assert drop_dangling_relations(vault) == 0
+    assert _meta(vault, "X_x_x")["extends"] == ["a_a_a"]
+
+
+def test_a_hand_edited_scalar_relation_is_one_edge(vault: Path) -> None:
+    """`related: GHOST` (no list) is one dangling id, not five characters."""
+    _write_paper(vault, "A_a_a", related="GHOST")
+
+    (issue,) = check_dangling_refs(vault, list_papers(vault))
+    assert "'GHOST'" in issue.message
+    assert drop_dangling_relations(vault) == 1
+    assert _meta(vault, "A_a_a")["related"] == []
+
+
 # --- bidirectional_refs -----------------------------------------------------
 
 
@@ -1160,6 +1358,26 @@ def test_bidirectional_one_sided(vault: Path) -> None:
     assert issues[0].category == "bidirectional_refs"
     assert "A_a_a" in issues[0].message
     assert "B_b_b" in issues[0].message
+
+
+def test_bidirectional_reads_a_hand_edited_scalar_as_one_id(vault: Path) -> None:
+    """`related: A_a_a` (no list) pairs with A's `related: [B_b_b]` — it is
+    not five characters, none of them A."""
+    _write_paper(vault, "A_a_a", related=["B_b_b"])
+    _write_paper(vault, "B_b_b", related="A_a_a")
+    assert check_bidirectional_refs(vault, list_papers(vault)) == []
+
+
+def test_bidirectional_reports_a_one_sided_scalar(vault: Path) -> None:
+    """A hand-edited `related: A_a_a` that A does not return is one missing
+    pairing, read as the id it names."""
+    _write_paper(vault, "A_a_a")
+    _write_paper(vault, "B_b_b", related="A_a_a")
+    (issue,) = check_bidirectional_refs(vault, list_papers(vault))
+    assert issue.message == (
+        "'B_b_b'.related contains 'A_a_a' but 'A_a_a'.related does not "
+        "contain 'B_b_b'"
+    )
 
 
 def test_bidirectional_skips_dangling(vault: Path) -> None:
@@ -2179,7 +2397,7 @@ def test_apply_autofix_clears_orphan_sidecar(vault: Path) -> None:
 
 
 def test_apply_autofix_skips_non_fixable_categories(vault: Path) -> None:
-    _write_paper(vault, "A_a_a", related=["GHOST"])
+    _write_paper(vault, "A_a_a", topics=["unregistered-topic"])
     issues = run_all_checks(vault, list_papers(vault))
     counts = apply_autofix(vault, issues)
     # No fixable categories present.
@@ -2194,6 +2412,7 @@ def test_auto_fixable_categories_constant() -> None:
             "discussion_scaffold",
             "skill_drift",
             "retired_priority",
+            "dangling_refs",
         }
     )
 
@@ -2306,16 +2525,18 @@ def test_health_check_fix_clears_staging(
 
 
 def test_health_check_fix_does_not_touch_unfixable(vault: Path) -> None:
-    """--fix should leave dangling refs alone."""
-    _write_paper(vault, "A_a_a", related=["GHOST"])
+    """--fix leaves a one-sided pairing alone: both papers exist, so which
+    side is right is the user's call."""
+    _write_paper(vault, "A_a_a", related=["B_b_b"])
+    _write_paper(vault, "B_b_b")
     (vault / ".litman-staging" / "op-crashed").mkdir()
     runner = CliRunner()
     result = runner.invoke(
         cli, ["health-check", "--fix", "--library", str(vault)]
     )
-    # Still has dangling refs, so exit 1.
+    # Still one-sided, so exit 1.
     assert result.exit_code == 1
-    assert "GHOST" in result.output
+    assert "'A_a_a'.related contains 'B_b_b'" in result.output
     # But staging was cleaned.
     assert not (vault / ".litman-staging" / "op-crashed").exists()
 

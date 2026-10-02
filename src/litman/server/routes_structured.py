@@ -194,12 +194,16 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
 
     Body JSON (all optional, combined in one transaction):
         ``{"set": {field: value}, "addTag": {key: [values]},
-           "rmTag": {key: [values]}, "setList": {field: [values]}}``
+           "rmTag": {key: [values]}, "setList": {field: [values]},
+           "dropDangling": {field: [ids]}}``
 
     Carries the cockpit's status/type dropdown changes (``set``),
     topics/methods/data chip add/remove (``addTag`` / ``rmTag``), and the
     metadata editor's ordered author rewrite (``setList`` — whitelisted to
-    ORDERED_LIST_FIELDS, i.e. ``authors``). Translated into
+    ORDERED_LIST_FIELDS, i.e. ``authors``), and the relation remove button on
+    a link whose other paper is no longer in the library (``dropDangling`` —
+    the per-edge form of ``lit health-check --fix``; core refuses an id still
+    in the library, so it cannot break a live pairing). Translated into
     ``_apply_modify``'s arg shapes and dispatched with ``skip_set_noop=True``
     so re-selecting the current value is a true no-op (no spurious
     ``updated-at`` bump; a same-order ``setList`` is likewise a no-op inside
@@ -251,13 +255,18 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
     add_tag_ops = _ops_from_tag_map(payload.get("addTag", {}), "addTag")
     rm_tag_ops = _ops_from_tag_map(payload.get("rmTag", {}), "rmTag")
     set_list_ops = _set_list_from_payload(payload.get("setList"))
+    drop_dangling_ops = _ops_from_tag_map(
+        payload.get("dropDangling", {}), "dropDangling"
+    )
 
-    if not (set_ops or add_tag_ops or rm_tag_ops or set_list_ops):
+    if not (
+        set_ops or add_tag_ops or rm_tag_ops or set_list_ops or drop_dangling_ops
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
                 "Body must contain at least one of set / addTag / rmTag / "
-                "setList."
+                "setList / dropDangling."
             ),
         )
 
@@ -271,6 +280,7 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
             rm_tag_ops=rm_tag_ops,
             set_list_ops=set_list_ops,
             skip_set_noop=True,
+            drop_dangling_ops=drop_dangling_ops,
         )
     except PaperNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -42,6 +42,16 @@ own entry. Read those before you upgrade, whatever the number says.
   changing. Git's own lock files are no longer copied either, so a git
   command running in the source can no longer leave the copy locked.
 
+- **A link to a paper that is no longer in the library can be removed.** When
+  a paper was deleted outside litman or lost in a sync, the papers it linked to
+  kept their link to it. On the side litman fills in for you (`extended-by`,
+  `contradicted-by`) nothing could remove it: `lit modify` refused, the web
+  UI's × reported the missing paper, `lit health-check` suggested the very
+  command `lit modify` refused — and the finding kept `lit sync push` from
+  running. `lit health-check --fix` now removes every link to a paper no
+  longer in the library, and the × removes a single one. A link to a paper in
+  the trash is reported as such: restore that paper first to keep the link.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added

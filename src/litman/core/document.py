@@ -6,6 +6,7 @@ these to enumerate or look up papers; tests exercise them directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,53 @@ def list_papers(vault: Path) -> list[dict[str, Any]]:
             continue
         results.append(metadata)
     return results
+
+
+class LibraryIds:
+    """Every id a relation edge can name and still point at a paper.
+
+    Only ``in`` is supported; build one with :func:`library_paper_ids`.
+    """
+
+    __slots__ = ("_ids", "_papers_dir")
+
+    def __init__(self, ids: set[str], papers_dir: Path) -> None:
+        self._ids = ids
+        self._papers_dir = papers_dir
+
+    def __contains__(self, ref: object) -> bool:
+        if ref in self._ids:
+            return True
+        # Not a declared id: ask the disk, once ``is_valid_id`` has ruled out
+        # the ``..`` and separators that would walk out of ``papers/``.
+        return (
+            isinstance(ref, str)
+            and is_valid_id(ref)
+            and (self._papers_dir / ref).is_dir()
+        )
+
+
+def library_paper_ids(
+    vault: Path, papers: Iterable[Mapping[str, Any]]
+) -> LibraryIds:
+    """Every id a relation edge can name and still point at a paper.
+
+    Each paper's declared ``id``, and any id that names a folder under
+    ``papers/``. The folder is what keeps this conservative: a folder whose
+    ``metadata.yaml`` cannot be read right now (a sync conflict, a
+    half-written file) is dropped by :func:`list_papers`, but the paper is
+    not gone — ``check_paper_dir_validity`` reports the broken file, and an
+    edge naming it must not be called dangling, let alone removed. Asking the
+    disk also settles a spelling that differs only in case: it names nothing
+    on Linux, and the paper's own folder on Windows and macOS — where the
+    double-write and the GUI's flip resolve it too, so the pairing is live.
+
+    ``papers`` is the caller's already-loaded list (full metadata or INDEX
+    projections; only ``id`` is read). The disk is asked only about an id
+    outside it — one ``stat`` per candidate edge, none for a clean library.
+    """
+    ids = {str(p.get("id")) for p in papers if p.get("id")}
+    return LibraryIds(ids, vault / "papers")
 
 
 def find_paper(vault: Path, paper_id: str) -> dict[str, Any]:

@@ -151,7 +151,8 @@ the opposite paper in the same atomic write.
 You drive only the forward fields (`related`, `extends`, `contradicts`) with
 `lit modify --add-tag` / `--rm-tag`. The reverse fields are maintained by the
 double-write only, and `lit modify` rejects them as targets. To repair a
-broken pair, act on the forward field.
+broken pair, act on the forward field. A link to a paper that is no longer
+in the library is removed by `lit health-check --fix`.
 
 #### Per-project layer
 

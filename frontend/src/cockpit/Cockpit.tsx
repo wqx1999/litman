@@ -28,6 +28,7 @@ export interface CockpitHandle {
   copyId(): void
 }
 import {
+  ApiError,
   addTaxonomyValue,
   deleteTaxonomyValue,
   fetchCite,
@@ -1382,7 +1383,8 @@ function DropConfirm({
  *   · the caller keeps `pendingRel` in `modalOpen`, so global shortcuts stay
  *     suppressed while this is up.
  * Confirming goes through the existing putMetadata rmTag path (invariant #16),
- * which removes the paired edge on the other paper in the same transaction.
+ * which removes the paired edge on the other paper in the same transaction
+ * (when that paper is gone, doRemoveRelation removes this side alone).
  * Wording stays short deliberately: no "cannot be undone", because it can — one
  * `lit modify --add-tag` puts the pair back. */
 function RelationRemoveConfirm({
@@ -1799,9 +1801,30 @@ function WriteCockpit({
       // pinned server-side by
       // tests/server/test_server_structured.py::test_put_metadata_rm_reverse_field_400,
       // which is the test to read before touching this branch.
-      runWrite(() =>
-        putMetadata(other, { rmTag: { [REVERSE_TO_FORWARD[rel]]: [me] } }),
-      )
+      runWrite(async () => {
+        try {
+          await putMetadata(other, {
+            rmTag: { [REVERSE_TO_FORWARD[rel]]: [me] },
+          })
+        } catch (err) {
+          // A 404 is the server finding no paper `other` on disk — deleted
+          // outside litman, lost by a sync, or in the trash — so there is no
+          // forward edge left to rewrite. dropDangling removes this side
+          // alone, the per-edge form of `lit health-check --fix`. Only the
+          // server can tell: allPapers is INDEX.json, which can be stale in
+          // either direction. It refuses an id still in the library (there,
+          // just unreadable); that corner then shows the flip's own error, as
+          // it always did.
+          if (!(err instanceof ApiError && err.status === 404)) throw err
+          try {
+            await putMetadata(me, { dropDangling: { [rel]: [other] } })
+          } catch (refused) {
+            throw refused instanceof ApiError && refused.status === 400
+              ? err
+              : refused
+          }
+        }
+      })
     } else {
       runWrite(() => putMetadata(me, { rmTag: { [rel]: [other] } }))
     }

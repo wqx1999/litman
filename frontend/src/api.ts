@@ -289,6 +289,10 @@ export interface MetadataWrite {
    * express: add appends, and adds run before removes, so correcting any
    * name but the last would move it to the end. */
   setList?: Record<string, string[]>
+  /** Remove a relation edge whose other paper is no longer in the library — the
+   * per-edge form of `lit health-check --fix`. The server refuses an id that is
+   * still in the library, so this can never break a live pairing. */
+  dropDangling?: Record<string, string[]>
 }
 
 /** Apply a structured metadata change through the `lit modify` backend

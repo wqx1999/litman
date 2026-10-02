@@ -53,6 +53,7 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.dedup import normalize_doi
+from litman.core.document import library_paper_ids
 from litman.core.id import (
     derive_keyword,
     family_segment,
@@ -73,13 +74,19 @@ from litman.core.portable_link import (
     links_supported,
     links_unsupported_hint,
 )
-from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS, REVERSE_REF_FIELDS
+from litman.core.relations import (
+    RELATION_PAIRS,
+    REVERSE_REF_FIELDS,
+    dangling_relation_edges,
+    relation_refs,
+)
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
     count_replaced_folders,
     is_trash_entry_name,
+    list_trash,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import ConfigError, VaultRegistryError
@@ -182,6 +189,17 @@ class CheckSpec:
 # is not "the report lists every affected paper first" — _CATEGORY_PREVIEW
 # folds each category after 5 entries unless `--all` is passed, so on a
 # 21-paper library most are never printed by name.
+#
+# ``dangling_refs`` is the sixth and the second that can lose authored data: a
+# relation edge naming a paper no longer in the library (deleted outside
+# litman, lost by a sync, or in the trash). What goes is a pointer to nothing.
+# It is admitted because nothing else can remove a reverse one — `lit modify`
+# refuses to name a reverse field (ADR-012) and the forward edge it mirrors
+# lived on the missing paper — so without this arm the finding is an error no
+# command clears, and it blocks `lit sync push`. A trashed paper keeps every
+# edge it carries itself and gets their other halves back on restore; the cost
+# is a half-edge only the surviving paper held. Per-finding consent again, the
+# same way: an edge into the trash gets its own message, offering the restore.
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {
         "stale_staging",
@@ -189,6 +207,7 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
         "discussion_scaffold",
         "skill_drift",
         "retired_priority",
+        "dangling_refs",
     }
 )
 
@@ -325,9 +344,6 @@ def all_fixed_enums() -> dict[str, list[str]]:
         for field in ordered
     }
 
-# Forward + reverse relation fields (ADR-012). Sourced from the shared
-# RELATION_PAIRS map so dangling-ref scans cover reverse fields too.
-_REF_FIELDS: tuple[str, ...] = ALL_REF_FIELDS
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
 # Inline deletion-status marker the CLI maintains on same-vault wikilinks
@@ -1145,34 +1161,49 @@ def check_dangling_refs(
     """Any relation field (forward or reverse) referencing missing ids.
 
     Covers ``related`` / ``contradicts`` / ``extends`` and their ADR-012
-    reverse fields ``contradicted-by`` / ``extended-by`` (the full
-    ``ALL_REF_FIELDS`` set), so a reverse edge left dangling by a deletion
-    or rename is reported the same as a forward one.
+    reverse fields ``contradicted-by`` / ``extended-by``, so a reverse edge
+    left dangling by a deletion or rename is reported the same as a forward
+    one. "Missing" is ``relations.dangling_relation_edges`` over
+    ``document.library_paper_ids`` — the definition ``--fix`` drops by, so a
+    finding here is always one ``--fix`` clears.
+
+    The fix is ``--fix``, not ``lit modify``: a reverse field cannot be named
+    in ``--rm-tag``, and the forward edge it mirrors lived on the paper that
+    is gone, so no ``lit modify`` command reaches it.
+
+    An edge into the trash says so, and offers the restore first: it is the
+    one finding ``--fix`` can cost something on. Restoring the paper rebuilds
+    the edges it names itself, but not one only this side held — and only
+    such an edge is left behind by ``lit rm``.
     """
-    known_ids = {str(p.get("id")) for p in papers if p.get("id")}
+    known_ids = library_paper_ids(vault, papers)
+    trashed: set[str] | None = None  # read only once something dangles
     out: list[Issue] = []
     for p in papers:
         pid = p.get("id")
         if not pid:
             continue
-        for field in _REF_FIELDS:
-            for ref in p.get(field) or []:
-                if str(ref) not in known_ids:
-                    out.append(
-                        Issue(
-                            category="dangling_refs",
-                            severity="error",
-                            paper_id=str(pid),
-                            message=(
-                                f"{field!r} references missing paper "
-                                f"{ref!r}"
-                            ),
-                            hint=(
-                                f"`lit modify {pid} --rm-tag {field}={ref}` "
-                                "to drop the broken edge"
-                            ),
-                        )
-                    )
+        for field, ref in dangling_relation_edges(p, known_ids):
+            if trashed is None:
+                trashed = {entry.paper_id for entry in list_trash(vault)}
+            if ref in trashed:
+                message = f"{field!r} references {ref!r}, which is in the trash"
+                hint = (
+                    f"`lit trash restore {ref}` to keep the link, or "
+                    "`lit health-check --fix` to drop it"
+                )
+            else:
+                message = f"{field!r} references missing paper {ref!r}"
+                hint = "`lit health-check --fix` to drop the broken edge"
+            out.append(
+                Issue(
+                    category="dangling_refs",
+                    severity="error",
+                    paper_id=str(pid),
+                    message=message,
+                    hint=hint,
+                )
+            )
     return out
 
 
@@ -1193,8 +1224,10 @@ def check_bidirectional_refs(
     directional relations are now stored symmetrically and maintained by
     the CLI's auto double-write, so a one-directional residual means the
     pairing got out of sync (e.g. a hand-edit or an interrupted write) and
-    is reported as an error. Only edges whose other endpoint exists are
-    flagged; missing endpoints are reported by ``check_dangling_refs``.
+    is reported as an error. Only edges whose other endpoint is a readable
+    paper are checked: an edge naming no paper is ``check_dangling_refs``'s,
+    and a folder whose metadata cannot be read is
+    ``check_paper_dir_validity``'s.
     """
     by_id = {str(p.get("id")): p for p in papers if p.get("id")}
     out: list[Issue] = []
@@ -1204,12 +1237,11 @@ def check_bidirectional_refs(
     seen_related_pairs: set[tuple[str, str]] = set()
     for pid, paper in by_id.items():
         for field, reverse in RELATION_PAIRS.items():
-            for ref in paper.get(field) or []:
-                ref = str(ref)
+            for ref in relation_refs(paper.get(field)):
                 other = by_id.get(ref)
                 if other is None:
                     continue
-                other_vals = {str(x) for x in (other.get(reverse) or [])}
+                other_vals = set(relation_refs(other.get(reverse)))
                 if pid in other_vals:
                     continue
                 if field == reverse:
@@ -3251,7 +3283,9 @@ def check_code_clone_integrity(
 #       know cannot exist, and the absence is still explained once instead of
 #       reported ~6x per paper as unfixable damage.
 #   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
-#       the user/CLI to re-sync → klass=B-auth, correction=report.
+#       the user/CLI to re-sync → klass=B-auth, correction=report. A dangling
+#       edge points at nothing, so there is no side to re-sync it with; `--fix`
+#       removes it (AUTO_FIXABLE_CATEGORIES, as with retired_priority).
 #   dangling_wikilinks — authored prose marked in place (`(deleted)`) →
 #       klass=B-auth, correction=annotate.
 #   relevance_orphan (#11) — authored relevance-<project> annotation orphaned
@@ -3511,8 +3545,11 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
       prefers the Claude dir over the open-standard one. The fix is wider
       than the check on purpose; the check keeps its default-dir-only probe.
     * ``retired_priority`` — migrates the retired paper-level ``priority``
-      onto the per-project ``priority-<project>`` keys (ADR-025). The one arm
-      here that is not lossless; see :data:`AUTO_FIXABLE_CATEGORIES`.
+      onto the per-project ``priority-<project>`` keys (ADR-025). Not
+      lossless; see :data:`AUTO_FIXABLE_CATEGORIES`.
+    * ``dangling_refs`` — removes every relation edge naming a paper no longer
+      in the library, forward and reverse. Also not lossless; see the same
+      constant.
     """
     counts: dict[str, int] = {}
 
@@ -3595,6 +3632,12 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
         from litman.core.ripple import migrate_retired_priority
 
         counts["retired_priority"] = migrate_retired_priority(vault)
+
+    if "dangling_refs" in fixable_present:
+        # Lazy for the same reason as the arm above.
+        from litman.core.ripple import drop_dangling_relations
+
+        counts["dangling_refs"] = drop_dangling_relations(vault)
 
     if "stale_staging" in fixable_present:
         counts["stale_staging"] = cleanup_stale_staging(vault)

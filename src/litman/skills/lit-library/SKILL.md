@@ -534,7 +534,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit code unlink <repo> --paper <id>` | Unbind one paper, keep the clone ([C.3]) |
 | `lit code list [--paper <id>] [--orphan] [--format json]` | Browse code repos; `--format json` emits each `repo-meta.yaml` (incl. the `papers` reverse list) |
 | `lit code rm <repo> --cascade` | Retire a repo (last citer only — [C.3]) |
-| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` = bulk repair (user's nod first), not all of it lossless: it migrates the retired paper-level `priority` (a paper in no project loses its grade) and moves unmatched hub folder copies to `.trash/replaced-folders/` — procedure in lit-reading B12 |
+| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` = bulk repair (user's nod first), not all of it lossless: it migrates the retired paper-level `priority` (a paper in no project loses its grade), removes relation links to papers no longer in the library (trash included), and moves unmatched hub folder copies to `.trash/replaced-folders/` — procedure in lit-reading B12 |
 | `lit rename <old> <new>` | Atomic id rename with cascade |
 | `lit cite <id-or-substring>` | Paste-ready ACS citation on stdout (caveats → stderr; `--paper-doi` supported) |
 | `lit rm <id> [--dry-run\|--yes\|--purge]` | Soft-delete (trash) or purge; `--dry-run` previews the impact set, a non-tty run needs `--yes` |
