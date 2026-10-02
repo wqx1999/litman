@@ -67,6 +67,16 @@ own entry. Read those before you upgrade, whatever the number says.
   other papers are unaffected. Opening such a paper in the web UI, or one whose
   YAML does not parse, now shows that message instead of an empty panel.
 
+### Security
+
+- **Other websites can no longer use `lit gui` through your browser.** While
+  the web UI was running, any page open in your browser could send it
+  requests, and litman acted on them as if you had clicked: launching an
+  agent, creating a folder, registering a library. A site set up for it could
+  also read your library and notes through the browser. litman now answers
+  only its own page and refuses requests from any other site. The web UI, the
+  command line and `ssh -L` tunnels work as before.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added

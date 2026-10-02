@@ -160,7 +160,9 @@ def test_window_gate_survives_the_browser_handoff_end_to_end() -> None:
             args=(proc, server, app.state.presence),  # shipped defaults only
             daemon=True,
         )
-        with ws_connect(f"ws://127.0.0.1:{port}/api/presence"):
+        # The Origin a browser sends, which the server checks (ADR-026).
+        page = f"http://127.0.0.1:{port}"
+        with ws_connect(f"ws://127.0.0.1:{port}/api/presence", origin=page):
             watcher.start()
             time.sleep(1.0)
             # Old behavior killed the server the moment proc.wait() returned.

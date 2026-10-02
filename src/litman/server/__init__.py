@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
 from litman.exceptions import CorruptMetadataError
+from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
 from litman.server.routes_ingest import sweep_uploads
@@ -268,6 +269,10 @@ def create_app(vault: Path | None) -> FastAPI:
         if is_api:
             response.headers["Cache-Control"] = "no-store"
         return response
+
+    # Added after ``_guard_vault`` so it wraps it: a request from another web
+    # page is refused before anything reads the vault — WebSockets included.
+    app.add_middleware(LocalPageGuard)
 
     @app.exception_handler(CorruptMetadataError)
     async def _corrupt_metadata(request: Request, exc: CorruptMetadataError) -> JSONResponse:

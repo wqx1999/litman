@@ -17,7 +17,9 @@ This route must NOT be gated on a usable vault, and is not: ``_guard_vault``
 in ``litman.server`` is an ``http`` middleware, which WebSocket connections
 bypass. That is load-bearing — the welcome page (no vault yet) and the
 vault-gone banner both need to keep the server alive exactly like any other
-page.
+page. Who opens the socket is still checked: ``LocalPageGuard``
+(``litman.server.local_guard``) wraps every route, WebSockets included, and
+refuses a handshake from another site before this route runs.
 """
 
 from __future__ import annotations
