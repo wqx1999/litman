@@ -35,6 +35,13 @@ own entry. Read those before you upgrade, whatever the number says.
   the copy is there to clean up. `lit taxonomy rename` and `lit project
   rename` report the same way.
 
+- **`lit code add` on a local repository no longer fails while git is busy in
+  it.** git tidies a repository in the background on its own schedule, and a
+  file it removed mid-copy stopped the import with a Python error. The copy
+  now starts over when that happens, and says so plainly if the folder keeps
+  changing. Git's own lock files are no longer copied either, so a git
+  command running in the source can no longer leave the copy locked.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added

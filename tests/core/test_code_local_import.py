@@ -13,16 +13,26 @@ also accepts bare paths.
 
 from __future__ import annotations
 
+import errno
+import os
+import shutil
 import subprocess
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 from ruamel.yaml import YAML
 
 from litman.cli import cli
-from litman.core.code import make_repo_meta, missing_code_clones, write_repo_meta
+from litman.core import code as code_mod
+from litman.core.code import (
+    import_local_repo,
+    make_repo_meta,
+    missing_code_clones,
+    write_repo_meta,
+)
 from litman.core.library import create_vault
 from litman.exceptions import CodeError
 
@@ -347,6 +357,249 @@ def test_local_dirty_git_repo_preserves_uncommitted_changes(
         text=True,
     )
     assert "dirty.txt" in status.stdout
+
+
+# ---------------------------------------------------------------------------
+# A source written to while it is copied — git's background maintenance
+# ---------------------------------------------------------------------------
+#
+# git takes and drops locks and temp files inside `.git/` on its own schedule,
+# so a file `copytree` listed can be gone when it gets to it (CI, macOS,
+# 2026-09-06: `.git/objects/maintenance.lock`). These tests reproduce that
+# window exactly: `os.scandir` of the source's `.git/objects` is answered with
+# a listing that still names a file which is deleted before it is returned.
+
+_real_scandir = os.scandir
+
+
+class _Listing:
+    """Stands in for ``os.scandir``'s iterator: a fixed list of entries."""
+
+    def __init__(self, entries: list[os.DirEntry[str]]) -> None:
+        self._entries = entries
+
+    def __enter__(self) -> _Listing:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def __iter__(self) -> Iterator[os.DirEntry[str]]:
+        return iter(self._entries)
+
+    def close(self) -> None:
+        return None
+
+
+def _vanish_after_listing(
+    monkeypatch: pytest.MonkeyPatch,
+    src_root: Path,
+    victim_for: Callable[[int], str | None],
+) -> list[int]:
+    """Make ``<src_root>/.git/objects`` lose a file between listing and copy.
+
+    ``victim_for(n)`` names the file planted in that directory on its n-th
+    listing (or ``None`` for an honest listing). Returns the list the listings
+    are counted into.
+    """
+    listings: list[int] = []
+
+    def scandir(path: Any = ".") -> Any:
+        if isinstance(path, int):
+            return _real_scandir(path)
+        here = Path(os.fspath(path))
+        if not (
+            here.name == "objects"
+            and here.parent.name == ".git"
+            and src_root.name in here.parts
+        ):
+            return _real_scandir(path)
+        victim = victim_for(len(listings))
+        listings.append(len(listings))
+        if victim is None:
+            return _real_scandir(path)
+        planted = here / victim
+        planted.write_text("transient\n", encoding="utf-8")
+        with _real_scandir(path) as it:
+            entries = list(it)
+        planted.unlink()
+        return _Listing(entries)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    return listings
+
+
+@pytest.fixture
+def racy_repo(tmp_path: Path) -> Path:
+    """A git repo with an uncommitted file, named so the hook can find it."""
+    repo = tmp_path / "racy-src"
+    repo.mkdir()
+    _git_init_with_commit(repo, file_contents="# racy\n")
+    (repo / "dirty.txt").write_text("uncommitted change\n", encoding="utf-8")
+    return repo
+
+
+@pytest.fixture
+def no_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(code_mod, "_COPY_RETRY_DELAY_S", 0)
+
+
+def _add_local(vault: Path, src: Path, name: str) -> Result:
+    return CliRunner().invoke(
+        cli,
+        ["code", "add", str(src), "--name", name, "--library", str(vault)],
+    )
+
+
+def _assert_healthy_copy(repo_dir: Path) -> None:
+    """The copy is a git repo git itself finds whole, dirty file included."""
+    assert (repo_dir / "dirty.txt").read_text(encoding="utf-8") == (
+        "uncommitted change\n"
+    )
+    subprocess.run(["git", "-C", str(repo_dir), "fsck", "--full"], check=True,
+                   capture_output=True)
+    status = subprocess.run(
+        ["git", "-C", str(repo_dir), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    )
+    assert "dirty.txt" in status.stdout
+
+
+def test_a_git_lock_taken_and_dropped_mid_copy_is_not_copied(
+    vault: Path, racy_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CI failure itself: one walk, the lock never looked at."""
+    listings = _vanish_after_listing(
+        monkeypatch, racy_repo, lambda n: "maintenance.lock"
+    )
+
+    result = _add_local(vault, racy_repo, "Racy")
+
+    assert result.exit_code == 0, result.output
+    assert listings == [0]  # skipped by name, no restart needed
+    repo_dir = vault / "codes" / "Racy" / "repo"
+    assert not (repo_dir / ".git" / "objects" / "maintenance.lock").exists()
+    _assert_healthy_copy(repo_dir)
+
+
+def test_any_other_file_vanishing_mid_copy_restarts_the_copy(
+    vault: Path,
+    racy_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_retry_delay: None,
+) -> None:
+    """A temp object gone after listing: the half copy is redone, not patched."""
+    listings = _vanish_after_listing(
+        monkeypatch, racy_repo, lambda n: "tmp_obj_Ab12Cd" if n == 0 else None
+    )
+
+    result = _add_local(vault, racy_repo, "Racy")
+
+    assert result.exit_code == 0, result.output
+    assert listings == [0, 1]
+    _assert_healthy_copy(vault / "codes" / "Racy" / "repo")
+    assert racy_repo.is_dir()
+
+
+def test_a_folder_gone_mid_copy_and_back_by_the_check_still_restarts(
+    vault: Path,
+    racy_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_retry_delay: None,
+) -> None:
+    """git deletes an emptied ``objects/<xx>/`` and recreates it on its next
+    write, so "is it gone now?" cannot be what decides a restart.
+    """
+    blob = subprocess.run(
+        ["git", "-C", str(racy_repo), "hash-object", "-w", "--stdin"],
+        input="a fresh loose object\n", check=True, capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tail = (racy_repo.name, ".git", "objects", blob[:2])
+    walks: list[int] = []
+
+    def scandir(path: Any = ".") -> Any:
+        if not isinstance(path, int) and Path(os.fspath(path)).parts[-4:] == tail:
+            walks.append(len(walks))
+            if len(walks) == 1:  # gone when walked; back before anyone looks
+                raise FileNotFoundError(
+                    errno.ENOENT, os.strerror(errno.ENOENT), os.fspath(path)
+                )
+        return _real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    result = _add_local(vault, racy_repo, "Racy")
+
+    assert result.exit_code == 0, result.output
+    assert walks == [0, 1]
+    repo_dir = vault / "codes" / "Racy" / "repo"
+    assert (repo_dir / ".git" / "objects" / blob[:2] / blob[2:]).is_file()
+    _assert_healthy_copy(repo_dir)
+
+
+def test_a_source_that_never_settles_gives_up_with_a_message(
+    vault: Path,
+    racy_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_retry_delay: None,
+) -> None:
+    listings = _vanish_after_listing(
+        monkeypatch, racy_repo, lambda n: f"tmp_obj_{n:06d}"
+    )
+
+    result = _add_local(vault, racy_repo, "Racy")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, CodeError), result.output
+    assert "kept disappearing while they were copied" in str(result.exception)
+    assert len(listings) == code_mod._COPY_ATTEMPTS
+    assert not (vault / "codes" / "Racy").exists()
+    assert (racy_repo / "dirty.txt").is_file()  # the source is untouched
+
+
+def test_a_lock_held_in_the_source_is_left_behind(
+    vault: Path, racy_repo: Path
+) -> None:
+    """A git command running in the source must not leave the copy locked.
+
+    The project's own lock files (``uv.lock``, ``Cargo.lock``) are ordinary
+    files and still come across.
+    """
+    (racy_repo / ".git" / "index.lock").write_text("", encoding="utf-8")
+    (racy_repo / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (racy_repo / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+
+    result = _add_local(vault, racy_repo, "Locked")
+
+    assert result.exit_code == 0, result.output
+    repo_dir = vault / "codes" / "Locked" / "repo"
+    assert not (repo_dir / ".git" / "index.lock").exists()
+    assert (repo_dir / "uv.lock").read_text(encoding="utf-8") == "version = 1\n"
+    assert (repo_dir / "Cargo.lock").is_file()
+    # git can write in the copy (a copied index.lock makes this refuse).
+    subprocess.run(["git", "-C", str(repo_dir), "add", "-A"], check=True,
+                   capture_output=True)
+    assert (racy_repo / ".git" / "index.lock").exists()  # source untouched
+
+
+def test_a_copy_failure_that_is_not_a_vanished_file_is_not_retried(
+    racy_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable file is a real error: raised at once, no restart."""
+    calls: list[Path] = []
+    still_there = racy_repo / "README.md"
+
+    def copytree(src: Path, dst: Path, **_: Any) -> None:
+        calls.append(dst)
+        raise shutil.Error([(str(still_there), str(dst / "README.md"),
+                             "[Errno 13] Permission denied")])
+
+    monkeypatch.setattr(code_mod.shutil, "copytree", copytree)
+
+    with pytest.raises(shutil.Error):
+        import_local_repo(racy_repo, tmp_path / "codes" / "X" / "repo")
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
