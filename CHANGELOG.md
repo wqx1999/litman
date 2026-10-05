@@ -96,6 +96,11 @@ own entry. Read those before you upgrade, whatever the number says.
   console.** Closing its tab, or opening the Trash, just as its first page
   appeared logged one error for every other page of the PDF.
 
+- **The metadata panel always shows the paper selected in the list.** Moving
+  through the GUI's list with `J` just after switching back to its window
+  could leave the panel on the paper selected before, under the newly selected
+  one, until another paper was clicked.
+
 ### Security
 
 - **Other websites can no longer use `lit gui` through your browser.** While

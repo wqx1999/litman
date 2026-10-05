@@ -967,7 +967,9 @@ export default function App() {
   // Only the latest selection may settle the cockpit. Two can be in flight —
   // J/K held down, or a press in the document re-selecting its paper just
   // before the click on a wikilink in it selects the target — and an earlier
-  // answer landing last would show one paper under another's selection.
+  // answer landing last would show one paper under another's selection. The
+  // same holds for the re-fetches below (a write, a resync sweep): each one
+  // carries the count it started under, and clearing the selection bumps it too.
   const selectSeq = useRef(0)
   const selectPaper = useCallback(
     (id: string) => {
@@ -990,6 +992,20 @@ export default function App() {
     },
     [classifyFetchError, showCockpitPaper, showCockpitFailure],
   )
+  // Re-fetch a paper into the cockpit for the selection counted as `seq`; the
+  // answer is dropped if the selection has moved on by the time it lands.
+  const refetchCockpit = useCallback(
+    (id: string, seq: number) => {
+      fetchPaper(id)
+        .then((paper) => {
+          if (seq === selectSeq.current) showCockpitPaper(paper)
+        })
+        .catch((err) => {
+          if (seq === selectSeq.current) showCockpitFailure(err)
+        })
+    },
+    [showCockpitPaper, showCockpitFailure],
+  )
 
   // After a cockpit structured write: re-fetch the selected paper so the cockpit
   // reflects the change, AND refresh both the current smart-list (a status /
@@ -998,15 +1014,13 @@ export default function App() {
   // INDEX/views atomically — these are read refreshes, not a re-derivation.
   const refreshAfterWrite = useCallback(() => {
     const id = selectedId
-    if (id) {
-      fetchPaper(id).then(showCockpitPaper).catch(showCockpitFailure)
-    }
+    if (id) refetchCockpit(id, selectSeq.current)
     loadList(listMode)
     fetchPapers().then((ps) => {
       setAllPapers(ps)
       setAllLoaded(true)
     })
-  }, [selectedId, loadList, listMode, showCockpitPaper, showCockpitFailure])
+  }, [selectedId, loadList, listMode, refetchCockpit])
 
   // After a write that changes the shared vocabulary (a new taxonomy value, a
   // project link/unlink, a new project): refresh the cached /api/taxonomy +
@@ -1039,6 +1053,9 @@ export default function App() {
   // here (the resync path), never in the direct refreshAfterWrite a GUI write
   // fires, so a GUI action is not double-logged (red line #3).
   const doResync = useCallback(async () => {
+    // `selectedId` is the selection this sweep started under; J held through
+    // the sweep moves it on, and then the cockpit is no longer this sweep's.
+    const seq = selectSeq.current
     // Snapshot the last-seen truth BEFORE fresh data lands; the refs are kept
     // mirrored from every commit path (D1), so this is the true prior baseline.
     const prev: ResyncSnapshot = {
@@ -1105,9 +1122,7 @@ export default function App() {
       setDisconnected(false)
       setVaultGone(false)
       setListFailed(false)
-      if (selectedId) {
-        fetchPaper(selectedId).then(showCockpitPaper).catch(showCockpitFailure)
-      }
+      if (selectedId) refetchCockpit(selectedId, seq)
       setMdReloadToken((t) => t + 1)
     } catch (err) {
       // A failed sweep is a data no-op: leave the UI and the diff baseline
@@ -1118,7 +1133,7 @@ export default function App() {
       // it is the last thing that was true, and the banner says so.
       classifyFetchError(err)
     }
-  }, [listMode, selectedId, appendLog, classifyFetchError, showCockpitPaper, showCockpitFailure])
+  }, [listMode, selectedId, appendLog, classifyFetchError, refetchCockpit])
 
   // Auto-resync when the browser regains focus / the tab becomes visible — the
   // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
@@ -1526,6 +1541,7 @@ export default function App() {
     // their content is gone now. removeTab re-points the active tab each call.
     tabs.filter((t) => t.paperId === id).forEach((t) => removeTab(t.key))
     if (selectedId === id) {
+      selectSeq.current++
       setSelectedId(null)
       setCockpitPaper(null)
       setCockpitError(null)
@@ -1646,6 +1662,7 @@ export default function App() {
   const reloadForVault = useCallback(() => {
     setTabs([])
     setActiveTab(null)
+    selectSeq.current++
     setSelectedId(null)
     setCockpitPaper(null)
     setCockpitError(null)
