@@ -39,6 +39,12 @@ from rich.table import Table
 
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import format_option, library_option, vault_option
+from litman.commands._paper_count import (
+    duplicate_count,
+    paper_count,
+    paper_id_lines,
+    plural_papers,
+)
 from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.document import list_papers
@@ -159,7 +165,8 @@ def project_add_cmd(
 
     console.print(
         f"[bold green]✓ Registered[/] {escape(summary['name'])} → "
-        f"{escape(summary['path'])}"
+        f"{escape(summary['path'])}",
+        soft_wrap=True,
     )
 
 
@@ -297,15 +304,14 @@ def project_rename_cmd(
     # Single write path (invariant #16): validation + atomic dual-write +
     # derived rebuild all live in core.project_link.rename_project, shared with
     # the webUI's PUT /api/projects/{name}. The command only renders the result.
-    n_changed, _, hub_moved_aside = rename_project(vault, old, new)
+    n_changed, referencing, hub_moved_aside = rename_project(vault, old, new)
 
     console.print(
         f"[bold green]✓ Renamed[/] project {escape(old.strip())} → "
         f"{escape(new.strip())}"
     )
     console.print(
-        f"  Updated [bold]{n_changed}[/] paper"
-        f"{'s' if n_changed != 1 else ''}."
+        f"  Updated {paper_count(n_changed, duplicate_count(referencing))}."
     )
     for line in hub_settlement_lines(0, hub_moved_aside):
         console.print(f"  {line}", soft_wrap=True)
@@ -353,12 +359,14 @@ def project_set_path_cmd(
     if not result["changed"]:
         console.print(
             f"[yellow]No-op:[/] {escape(name_str)} already points at "
-            f"{escape(new_path_str)}."
+            f"{escape(new_path_str)}.",
+            soft_wrap=True,
         )
         return
 
     console.print(
-        f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}"
+        f"[bold green]✓ Updated[/] {escape(name_str)} → {escape(new_path_str)}",
+        soft_wrap=True,
     )
     # The registry change does not move the directory, so litman_reflib /
     # litman_code keep pointing at the OLD location until rebuilt. Repairable
@@ -469,24 +477,19 @@ def project_rm_cmd(
     if referencing:
         warning_lines = [
             f"[yellow]⚠[/] '{escape(name)}' is referenced by "
-            f"[bold]{len(referencing)}[/] paper(s):",
+            f"{paper_count(len(referencing), duplicate_count(referencing))}:",
+            *paper_id_lines(referencing),
         ]
-        for pid in referencing[:10]:
-            warning_lines.append(f"  - {escape(pid)}")
-        if len(referencing) > 10:
-            warning_lines.append(
-                f"  ... and {len(referencing) - 10} more"
-            )
     else:
         warning_lines = [
             f"[yellow]⚠[/] '{escape(name)}' is referenced by "
-            f"[bold]0[/] paper(s) — nothing will be untagged.",
+            f"[bold]0[/] papers — nothing will be untagged.",
         ]
     warning_lines.append("")
     warning_lines.append("Removing will:")
     if referencing:
         warning_lines.append(
-            f"  • Untag these {len(referencing)} paper(s): drop "
+            f"  • Untag {plural_papers(len(set(referencing)))}: drop "
             f"'{escape(name)}' from their projects field"
         )
     warning_lines.append(
@@ -502,12 +505,11 @@ def project_rm_cmd(
     # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI
     # DELETE endpoint shares the exact write path (invariant #16). The command
     # keeps only the confirm gate + console output.
-    n_changed, _ = remove_project(vault, name)
+    n_changed, removed_from = remove_project(vault, name)
 
     console.print(
         f"[bold green]✓ Removed[/] project {escape(name)}."
     )
     console.print(
-        f"  Untagged [bold]{n_changed}[/] paper"
-        f"{'s' if n_changed != 1 else ''}."
+        f"  Untagged {paper_count(n_changed, duplicate_count(removed_from))}."
     )

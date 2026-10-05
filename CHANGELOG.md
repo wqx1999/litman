@@ -9,6 +9,109 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **`Shift+N` and `Shift+D` open the selected paper's notes and discussion**
+  in the GUI, like the 📝 notes and 💬 discussion buttons on its row. `D` alone
+  is still the PDF drawing tool. Press `?` for the full shortcut list.
+
+### Changed
+
+- **Clicking the PDF, notes or discussion you are reading selects that paper
+  again** in the GUI. After moving to another paper in the list, a click in
+  the open document brings the list and the cockpit back to it, as clicking
+  its tab already did. If it is still selected but the list has been scrolled
+  away from it, the click, or a click on its tab, scrolls the list back to it.
+
+### Fixed
+
+- **Paths in the moved-directory prompt are no longer split across lines.**
+  When a project directory has moved, the warning naming its old location,
+  the line confirming the new one, and the example in the list of broken
+  project links each print their path on one line however narrow the
+  terminal, so it can be pasted as it stands.
+
+- **The paths `lit add`, `lit link`, `lit code add` and `lit init` report can
+  be copied whole.** On a narrow terminal the box these commands print split
+  every long path inside it, with a border character in the middle. The box
+  now holds the summary, and the paths — with the code links `lit add` finds
+  and the commands the others suggest next — print below it, one per line.
+  `lit project add` and `set-path` print their path on one line too.
+
+- **A conflicted copy no longer makes the count disagree with itself.** When
+  cloud sync has left two folders holding one paper, `lit taxonomy merge` and
+  `rm` and `lit project rm` asked to change 1 paper and then reported 2, and
+  `lit taxonomy rm` listed the paper twice. The confirmation and the result
+  now both count papers, list each one once, and add the folder count when
+  it differs — `1 paper (2 folders — 1 is a conflicted copy)` — so you know
+  the copy is there to clean up. `lit taxonomy rename` and `lit project
+  rename` report the same way.
+
+- **`lit code add` on a local repository no longer fails while git is busy in
+  it.** git tidies a repository in the background on its own schedule, and a
+  file it removed mid-copy stopped the import with a Python error. The copy
+  now starts over when that happens, and says so plainly if the folder keeps
+  changing. Git's own lock files are no longer copied either, so a git
+  command running in the source can no longer leave the copy locked.
+
+- **A link to a paper that is no longer in the library can be removed.** When
+  a paper was deleted outside litman or lost in a sync, the papers it linked to
+  kept their link to it. On the side litman fills in for you (`extended-by`,
+  `contradicted-by`) nothing could remove it: `lit modify` refused, the web
+  UI's × reported the missing paper, `lit health-check` suggested the very
+  command `lit modify` refused — and the finding kept `lit sync push` from
+  running. `lit health-check --fix` now removes every link to a paper no
+  longer in the library, and the × removes a single one. A link to a paper in
+  the trash is reported as such: restore that paper first to keep the link.
+
+- **A list field edited by hand into a single value is reported, not misread.**
+  `topics`, `authors`, the relation fields and the other list fields of
+  `metadata.yaml` are lists. Written as one value instead (`topics: peptide`),
+  litman read it letter by letter: a folder under `views/` for each letter, a
+  blank web UI on that paper, and the next `lit modify --add-tag` saving the
+  letters into the file. A number there (`topics: 42`) stopped `lit
+  health-check` and every later write to any paper. Such a file is now treated
+  like one whose YAML does not parse. `lit health-check` names the file, the
+  field and the line to write, and `lit health-check --fix` takes the paper out
+  of the index and `views/` until it is fixed. litman never writes to the file:
+  a command that would change it refuses, and one that sweeps the whole
+  library leaves it as it is. `lit sync push` waits until it is fixed. The
+  other papers are unaffected. Opening such a paper in the web UI, or one whose
+  YAML does not parse, now shows that message instead of an empty panel.
+
+- **Search highlights in notes and discussion stay in place.** Opening a notes
+  or discussion search hit in the GUI marked the matches, but the marks
+  vanished as soon as anything else in the window changed, such as selecting
+  another paper in the list.
+
+- **The selected paper's card is no longer cut off at the bottom of the list.**
+  Moving down with `J`, or clicking a row near the bottom of the GUI's list,
+  left the lower part of the card that opens under it out of view. The list
+  now scrolls just far enough to show the whole card. Clicking a row whose
+  card already fits still leaves the list where it is.
+
+- **Closing a long PDF right after opening it no longer floods the browser
+  console.** Closing its tab, or opening the Trash, just as its first page
+  appeared logged one error for every other page of the PDF.
+
+- **The metadata panel always shows the paper selected in the list.** Moving
+  through the GUI's list with `J` just after switching back to its window
+  could leave the panel on the paper selected before, under the newly selected
+  one, until another paper was clicked.
+
+### Security
+
+- **Other websites can no longer use `lit gui` through your browser.** While
+  the web UI was running, any page open in your browser could send it
+  requests, and litman acted on them as if you had clicked: launching an
+  agent, creating a folder, registering a library. A site set up for it could
+  also read your library and notes through the browser. litman now answers
+  only its own page: it refuses requests from any other site, and no other
+  site can show it inside its own page. The web UI, the command line and
+  `ssh -L` tunnels work as before.
+
 ## 1.3.6 — 2026-09-09
 
 ### Added

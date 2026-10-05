@@ -98,10 +98,11 @@ def test_every_spec_fn_has_check_signature() -> None:
 def test_auto_fixable_categories_unchanged() -> None:
     """``--fix``'s validity set: the two Phase-1 cleanups, the discussion
     scaffold, the skill re-copy (the installed skill dir is a deploy artifact;
-    refreshing it never touches files the user added), and the retired-field
-    migration — the one member that is NOT lossless, admitted on the argument
-    recorded beside the constant (ADR-025). Broadening to klass-A regen is
-    separate."""
+    refreshing it never touches files the user added), and two members that
+    are NOT lossless, each admitted on the argument recorded beside the
+    constant: the retired-field migration (ADR-025) and the removal of
+    relation edges that name a paper no longer in the library. Broadening to
+    klass-A regen is separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
         {
             "stale_staging",
@@ -109,6 +110,7 @@ def test_auto_fixable_categories_unchanged() -> None:
             "discussion_scaffold",
             "skill_drift",
             "retired_priority",
+            "dangling_refs",
         }
     )
 

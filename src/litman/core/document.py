@@ -6,6 +6,7 @@ these to enumerate or look up papers; tests exercise them directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -13,13 +14,51 @@ from ruamel.yaml import YAML, YAMLError
 
 from litman.core.id import is_valid_id
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import CorruptMetadataError, PaperNotFoundError
+from litman.exceptions import (
+    CorruptMetadataError,
+    MalformedMetadataError,
+    PaperNotFoundError,
+)
 
 # A ruamel ``YAML`` instance is not thread-safe and the ``lit gui`` server reads
 # metadata from a threadpool (live-sync fires ``/api/papers`` and
 # ``/api/doc-mtimes`` together) — see :mod:`litman.core.yaml_pool` for why this
 # must be per-thread rather than a shared module-level loader.
 _yaml_safe = ThreadLocalYAML(typ="safe")
+
+# The fields of a paper that hold a list — the shape `lit add` writes them in,
+# and the only shape `lit modify` will write. Absent or null is fine
+# (metadata.yaml is schema-less, invariant #7); anything else is a hand edit
+# the readers below refuse.
+PAPER_LIST_FIELDS: frozenset[str] = frozenset({
+    "authors",
+    "projects",
+    "topics",
+    "methods",
+    "data",
+    "related",
+    "contradicts",
+    "contradicted-by",
+    "extends",
+    "extended-by",
+    "code-clones",
+})
+
+
+def malformed_list_fields(data: Mapping[str, Any]) -> list[str]:
+    """The list fields of ``data`` that hold something other than a list."""
+    return [
+        field for field, value in data.items()
+        if field in PAPER_LIST_FIELDS
+        and value is not None and not isinstance(value, list)
+    ]
+
+
+def _check_list_fields(data: object) -> None:
+    if isinstance(data, Mapping):
+        bad = malformed_list_fields(data)
+        if bad:
+            raise MalformedMetadataError(bad[0], data[bad[0]])
 
 
 def load_yaml_or_raise(path: Path, loader: YAML | ThreadLocalYAML) -> Any:
@@ -35,6 +74,10 @@ def load_yaml_or_raise(path: Path, loader: YAML | ThreadLocalYAML) -> Any:
     round-trip ``YAML()`` instance as ``loader`` so comment/quote preservation
     on the subsequent write-back is unchanged.
 
+    A paper's ``metadata.yaml`` whose list field holds something else counts as
+    unparseable too (:class:`MalformedMetadataError`): a write would otherwise
+    treat ``related: X`` as the characters of ``X`` and save them.
+
     Returns the parsed value, which may be ``None`` for an empty /
     comment-only file. Callers that distinguish "empty" from "corrupt" keep
     their existing ``if data is None`` handling — this helper only intercepts
@@ -45,9 +88,12 @@ def load_yaml_or_raise(path: Path, loader: YAML | ThreadLocalYAML) -> Any:
     except (OSError, UnicodeDecodeError) as exc:
         raise CorruptMetadataError(path, exc) from exc
     try:
-        return loader.load(text)
+        data = loader.load(text)
+        if path.name == "metadata.yaml":
+            _check_list_fields(data)
     except YAMLError as exc:
         raise CorruptMetadataError(path, exc) from exc
+    return data
 
 
 def read_metadata(metadata_path: Path) -> dict[str, Any]:
@@ -55,9 +101,14 @@ def read_metadata(metadata_path: Path) -> dict[str, Any]:
 
     Returns an empty dict for a YAML file whose top-level value is null /
     empty / comment-only — caller decides whether that counts as missing.
+
+    Raises :class:`MalformedMetadataError` — a ``YAMLError``, so every caller's
+    existing parse-failure handling covers it — when a list field holds
+    something else.
     """
     text = metadata_path.read_text(encoding="utf-8")
     data = _yaml_safe.load(text)
+    _check_list_fields(data)
     return data if data is not None else {}
 
 
@@ -120,6 +171,53 @@ def list_papers(vault: Path) -> list[dict[str, Any]]:
             continue
         results.append(metadata)
     return results
+
+
+class LibraryIds:
+    """Every id a relation edge can name and still point at a paper.
+
+    Only ``in`` is supported; build one with :func:`library_paper_ids`.
+    """
+
+    __slots__ = ("_ids", "_papers_dir")
+
+    def __init__(self, ids: set[str], papers_dir: Path) -> None:
+        self._ids = ids
+        self._papers_dir = papers_dir
+
+    def __contains__(self, ref: object) -> bool:
+        if ref in self._ids:
+            return True
+        # Not a declared id: ask the disk, once ``is_valid_id`` has ruled out
+        # the ``..`` and separators that would walk out of ``papers/``.
+        return (
+            isinstance(ref, str)
+            and is_valid_id(ref)
+            and (self._papers_dir / ref).is_dir()
+        )
+
+
+def library_paper_ids(
+    vault: Path, papers: Iterable[Mapping[str, Any]]
+) -> LibraryIds:
+    """Every id a relation edge can name and still point at a paper.
+
+    Each paper's declared ``id``, and any id that names a folder under
+    ``papers/``. The folder is what keeps this conservative: a folder whose
+    ``metadata.yaml`` cannot be read right now (a sync conflict, a
+    half-written file) is dropped by :func:`list_papers`, but the paper is
+    not gone — ``check_paper_dir_validity`` reports the broken file, and an
+    edge naming it must not be called dangling, let alone removed. Asking the
+    disk also settles a spelling that differs only in case: it names nothing
+    on Linux, and the paper's own folder on Windows and macOS — where the
+    double-write and the GUI's flip resolve it too, so the pairing is live.
+
+    ``papers`` is the caller's already-loaded list (full metadata or INDEX
+    projections; only ``id`` is read). The disk is asked only about an id
+    outside it — one ``stat`` per candidate edge, none for a clean library.
+    """
+    ids = {str(p.get("id")) for p in papers if p.get("id")}
+    return LibraryIds(ids, vault / "papers")
 
 
 def find_paper(vault: Path, paper_id: str) -> dict[str, Any]:

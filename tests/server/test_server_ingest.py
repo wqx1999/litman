@@ -23,15 +23,13 @@ from ruamel.yaml import YAML
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.core.library import create_vault
 from litman.exceptions import ImporterError
 from litman.server import create_app
 from litman.server import routes_ingest as ri
 from litman.server.routes_ingest import _UPLOAD_DIRNAME
-
 from tests.core.test_doi_sniff import _minimal_pdf_with_text
+from tests.server._client import TestClient
 
 _yaml = YAML(typ="safe")
 

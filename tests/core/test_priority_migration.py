@@ -23,7 +23,11 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
-from litman.core.checks import check_schema, run_all_checks
+from litman.core.checks import (
+    check_paper_dir_validity,
+    check_schema,
+    run_all_checks,
+)
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import create_vault
@@ -592,8 +596,8 @@ def test_a_scalar_projects_field_is_never_iterated(vault: Path) -> None:
     """metadata is schema-less (invariant #7), so a hand-edit can leave
     `projects: pepcodec`. Iterating a string yields one key PER CHARACTER
     (`priority-p`, `priority-e`, ...) and check_priority_orphan cannot catch it
-    — `set("pepcodec")` contains every one of those letters. Refuse the paper
-    instead, mirroring `_ripple_removals`' scalar guard."""
+    — `set("pepcodec")` contains every one of those letters. The readers
+    refuse the file instead, so the migration never sees it."""
     d = vault / "papers" / "2024_Xray_Three"
     d.mkdir(parents=True)
     with (d / "metadata.yaml").open("w", encoding="utf-8", newline="\n") as f:
@@ -610,11 +614,11 @@ def test_a_scalar_projects_field_is_never_iterated(vault: Path) -> None:
     text = (d / "metadata.yaml").read_text(encoding="utf-8")
     assert "priority: A" in text  # untouched, so nothing was invented
     assert "priority-p" not in text
-    # Not a silent skip (invariant #14): the finding survives, because the
-    # paper still holds the retired key and check_schema still reports it.
+    # Not a silent skip (invariant #14): the paper is reported as a broken
+    # file, the field named, and its retired key waits for that fix.
     assert any(
-        i.category == "retired_priority" and i.paper_id == "2024_Xray_Three"
-        for i in check_schema(vault, list_papers(vault))
+        i.paper_id == "2024_Xray_Three" and "'projects' is not a list" in i.message
+        for i in check_paper_dir_validity(vault, [])
     )
 
 

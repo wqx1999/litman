@@ -19,10 +19,14 @@ binding logic is testable without spinning up a real git clone every time.
 
 from __future__ import annotations
 
+import errno
 import io
+import os
 import re
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -35,7 +39,11 @@ from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.locking import rmtree
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import CodeError, PaperNotFoundError
+from litman.exceptions import (
+    CodeError,
+    CorruptMetadataError,
+    PaperNotFoundError,
+)
 
 # Directory layout constants.
 CODES_DIRNAME = "codes"
@@ -272,6 +280,88 @@ def _init_git_repo_at(target_dir: Path, orig_path: Path) -> None:
         )
 
 
+# A local source can be written to while it is copied — git's background
+# maintenance takes and drops locks and temp packs inside `.git/` on its own
+# schedule — so a file listed by `copytree` may be gone by the time it is
+# opened (CI, macOS, 2026-09-06: `.git/objects/maintenance.lock`).
+_COPY_ATTEMPTS = 3
+_COPY_RETRY_DELAY_S = 1.0
+# `copytree` hands each failure back as text, `str(OSError)`, which starts
+# "[Errno N]" — or "[WinError N]" from a Windows API call, where 2 and 3 are
+# file and path not found.
+_NOT_FOUND = re.compile(rf"^\[(?:Errno {errno.ENOENT}|WinError [23])\]")
+
+
+def _skip_git_locks(src_root: Path) -> Callable[[str, list[str]], set[str]]:
+    """``copytree`` ignore callback: no ``*.lock`` from inside a ``.git/``.
+
+    Every lock git takes is ``<file>.lock`` beside the file it guards, and git
+    refuses ref names ending in ``.lock``, so inside a git directory the suffix
+    names nothing else. A copied lock is stale in the copy, where git would
+    then refuse to write ("Unable to create '….lock': File exists"). Outside
+    ``.git/`` the suffix is the project's own (``uv.lock``, ``Cargo.lock``) and
+    is copied like any other file.
+    """
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        if ".git" not in Path(directory).relative_to(src_root).parts:
+            return set()
+        return {name for name in names if name.endswith(".lock")}
+
+    return ignore
+
+
+def _only_vanished(errors: object) -> bool:
+    """Whether every failure ``copytree`` collected is a source that went away.
+
+    A failure counts if it says not-found, or if its source is gone now. Not
+    only the second: git deletes an emptied ``objects/<xx>/`` and recreates it
+    with the next object it writes, so a folder that vanished under the walk
+    can be back by the time anyone looks.
+    """
+    if not isinstance(errors, list) or not errors:
+        return False
+    for entry in errors:
+        if not (isinstance(entry, tuple) and len(entry) == 3):
+            return False
+        src, _dst, why = entry
+        if not (_NOT_FOUND.match(str(why)) or not os.path.lexists(src)):
+            return False
+    return True
+
+
+def _copy_source_tree(src_path: Path, target: Path) -> None:
+    """``copytree`` that restarts when files vanish under it mid-walk.
+
+    A file that went away is not simply skipped: git repacks by writing the
+    new pack before deleting the old ones, so a walk that listed only the old
+    pack and then lost it would yield a copy missing objects, with no error.
+    The half copy is removed instead and the walk starts again. Any other
+    failure (a file the user cannot read) is
+    raised as before, at once: a second walk would fail the same way, after
+    copying the whole tree again.
+    """
+    error: shutil.Error | None = None
+    for attempt in range(_COPY_ATTEMPTS):
+        if attempt:
+            if os.path.lexists(target):
+                rmtree(target)
+            time.sleep(_COPY_RETRY_DELAY_S * attempt)
+        try:
+            shutil.copytree(
+                src_path, target, symlinks=True, ignore=_skip_git_locks(src_path)
+            )
+            return
+        except shutil.Error as e:
+            if not _only_vanished(e.args[0] if e.args else None):
+                raise
+            error = e
+    raise CodeError(
+        f"Files under {src_path} kept disappearing while they were copied. "
+        "Let whatever is writing there (e.g. git) finish, then re-run."
+    ) from error
+
+
 def import_local_repo(
     src_path: Path,
     target_repo_root: Path,
@@ -345,7 +435,7 @@ def import_local_repo(
     # removal is owned by the caller and happens only after the full import
     # commits, so a mid-import failure can never leave the user with neither
     # the source nor the vault copy.
-    shutil.copytree(src_path, target_repo_root, symlinks=True)
+    _copy_source_tree(src_path, target_repo_root)
 
     name = target_repo_root.parent.name
     if is_git:
@@ -672,10 +762,12 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
         if not meta_file.is_file():
             continue
         try:
-            meta = _yaml.load(meta_file.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, YAMLError):
-            # The try only reads + parses, so these are the only failures
-            # possible — let any other (programming) error propagate.
+            meta = load_yaml_or_raise(meta_file, _yaml)
+        except CorruptMetadataError:
+            # Unreadable, unparseable, or a list field that is not a list
+            # (`code-clones: myrepo-fork` would match as a substring and be
+            # saved back as its characters): skip it like list_papers does —
+            # health-check names the file.
             continue
         if not isinstance(meta, dict):
             # Empty/None or a non-mapping top-level YAML (list/scalar): skip like

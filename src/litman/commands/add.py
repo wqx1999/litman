@@ -36,6 +36,7 @@ from rich.markup import escape
 from rich.panel import Panel
 
 from litman.commands._options import library_option, vault_option
+from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
@@ -684,7 +685,7 @@ def add_cmd(
         else "no code repo URL found in full text"
     )
     code_block = (
-        "\n\n[bold]Code candidates (full-text scan):[/]\n"
+        "[bold]Code candidates (full-text scan):[/]\n"
         "\\[code_candidates]\n"
         f"{body}\n"
         "\\[/code_candidates]"
@@ -702,20 +703,25 @@ def add_cmd(
     # raise MarkupError here — AFTER the paper is ingested and the source PDF
     # deleted — making a successful add look like a failure. The literal markup
     # tags and the \[code_candidates] fences are author-controlled and stay.
+    # The folder and the candidate URLs print below the panel, unfolded: the
+    # panel wraps at 80 columns, which is also the width an agent's non-TTY
+    # console gets, and a URL split by the border is one it cannot parse
+    # (commands/_path_lines).
     console.print(
         Panel.fit(
-            f"[bold green]Paper added:[/] {escape(paper_id)}\n"
-            f"[dim]Folder:[/] {escape(str(paper_dir))}\n\n"
+            f"[bold green]Paper added:[/] {escape(paper_id)}\n\n"
             f"[bold]Title:[/] {escape(str(parsed['title']))}\n"
             f"[bold]Year:[/] {escape(str(parsed['year']))}    "
             f"[bold]Journal:[/] {escape(str(parsed['journal']))}\n"
             f"[bold]Authors:[/] {escape(author_summary)}"
-            f"{source_line}"
-            f"{code_block}",
+            f"{source_line}",
             title="lit add",
             border_style="green",
         )
     )
+    print_unwrapped(console, path_lines([("Folder:", paper_dir)]))
+    console.print()
+    console.print(code_block, soft_wrap=True)
 
     # A filler after the first author does not reach the paper id, so the
     # importer lets it through rather than strand a paper whose author block

@@ -50,6 +50,7 @@ from ruamel.yaml import YAMLError
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import now_iso
+from litman.core.document import load_yaml_or_raise
 from litman.core.locking import rmtree
 from litman.core.notes import (
     deannotate_deleted_wikilinks,
@@ -215,16 +216,18 @@ def _read_paper_meta(paper_dir: Path) -> dict[str, Any]:
     """Load a (round-trip) metadata.yaml dict from a paper / trash-entry dir.
 
     Used by restore to read A's sealed fields out of the trash entry before
-    moving it back. Returns ``{}`` for a missing / empty / malformed file so
-    restore degrades to a plain folder move (no edges to rebuild).
+    moving it back. Returns ``{}`` for a missing / empty file so restore
+    degrades to a plain folder move (no edges to rebuild).
+
+    Raises:
+        CorruptMetadataError: the file cannot be read or parsed, or a list
+            field holds something else. Restoring it would rebuild (or prune)
+            its edges from a misreading, so the user fixes the file first.
     """
     meta_file = paper_dir / "metadata.yaml"
     if not meta_file.is_file():
         return {}
-    try:
-        data = _yaml_rt.load(meta_file.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    data = load_yaml_or_raise(meta_file, _yaml_rt)
     return data if isinstance(data, dict) else {}
 
 
@@ -457,15 +460,15 @@ def _build_restore_ref_updates(
         if not meta_path.is_file():
             dead.add(opposite_id)
             continue
-        try:
-            rt = _yaml_rt.load(meta_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, YAMLError):
-            rt = None
+        # A broken opposite refuses the restore (it raises before the folder
+        # moves, so nothing is written). Pruning its edge instead would drop
+        # a link to a paper that is still there, and writing A back into it
+        # would save a misread list.
+        rt = load_yaml_or_raise(meta_path, _yaml_rt)
         if rt is None:
-            # Opposite present but empty/corrupt/unreadable: treat as a dead
-            # edge so the restored paper does not keep a ref into an
-            # unusable target (and an unrelated corrupt opposite never aborts
-            # the restore). The one-directional residual is reported later by
+            # Opposite present but empty: treat as a dead edge so the
+            # restored paper does not keep a ref into an unusable target. The
+            # one-directional residual is reported later by
             # check_bidirectional_refs.
             dead.add(opposite_id)
             continue
@@ -647,6 +650,8 @@ def restore_from_trash(
 
     Raises:
         TrashError: ``papers/<id>/`` already exists (would clobber active state).
+        CorruptMetadataError: A's sealed metadata.yaml, or that of a paper it
+            links to, is broken — nothing is moved or written.
     """
     paper_id = entry.paper_id
     dst = vault / "papers" / paper_id

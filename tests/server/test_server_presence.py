@@ -34,13 +34,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.commands.gui import _stop_server_when_window_closes
 from litman.core.config import CONFIG_FILENAME
 from litman.core.library import create_vault
 from litman.core.presence import PresenceTracker
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 def _wait_for(predicate, *, timeout: float = 5.0) -> bool:
@@ -161,7 +160,9 @@ def test_window_gate_survives_the_browser_handoff_end_to_end() -> None:
             args=(proc, server, app.state.presence),  # shipped defaults only
             daemon=True,
         )
-        with ws_connect(f"ws://127.0.0.1:{port}/api/presence"):
+        # The Origin a browser sends, which the server checks (ADR-026).
+        page = f"http://127.0.0.1:{port}"
+        with ws_connect(f"ws://127.0.0.1:{port}/api/presence", origin=page):
             watcher.start()
             time.sleep(1.0)
             # Old behavior killed the server the moment proc.wait() returned.

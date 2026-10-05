@@ -9,11 +9,12 @@ TAXONOMY.md. These two helpers compute that cascade:
   one-to-one, merge many-to-one).
 * :func:`_ripple_removals` — drop a value entirely (the deletion path).
 
-A third, unrelated helper lives here for the same reason (it needs the same
+Two unrelated helpers live here for the same reason (they need the same
 round-trip YAML machinery and the same "rewrite many metadata.yaml in one
-staged commit" shape): :func:`migrate_retired_priority`, the permanent
-``lit health-check --fix`` migration off the retired paper-level ``priority``
-field (ADR-025).
+staged commit" shape), both ``lit health-check --fix`` arms:
+:func:`migrate_retired_priority`, the permanent migration off the retired
+paper-level ``priority`` field (ADR-025), and :func:`drop_dangling_relations`,
+which removes relation edges naming a paper no longer in the library.
 
 Both return ``(n_changed, staged_writes, all_papers_with_changes_applied)``
 so the caller can hand the staged writes to :func:`staged_write` and
@@ -42,7 +43,12 @@ from ruamel.yaml import YAMLError
 
 from litman.core.atomic import _make_op_id, staged_write
 from litman.core.dates import now_iso
-from litman.core.document import load_yaml_or_raise, read_metadata
+from litman.core.document import (
+    library_paper_ids,
+    load_yaml_or_raise,
+    read_metadata,
+)
+from litman.core.relations import dangling_relation_edges, relation_refs
 from litman.core.taxonomy import replace_value_in_field
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -491,3 +497,81 @@ def migrate_retired_priority(vault: Path) -> int:
     # one in would silently rewrite every project's reference list without it.
     reconcile_derived(vault, project_refs=True)
     return n_changed
+
+
+def drop_dangling_relations(vault: Path) -> int:
+    """Remove every relation edge that names no paper in the library. Returns n.
+
+    The ``lit health-check --fix`` arm behind the ``dangling_refs`` finding.
+    An edge dangles when the paper it names was deleted outside litman, lost
+    by a sync, or sits in the trash — ``relations.dangling_relation_edges``
+    over ``document.library_paper_ids``, the definition the check reports by.
+    Forward and reverse fields alike. A reverse edge (``extended-by`` /
+    ``contradicted-by``) has no other way out: ``lit modify`` refuses to name
+    a reverse field, and the forward edge it mirrors lived on the paper that
+    is gone.
+
+    A trashed paper counts as gone. Restoring it later rebuilds the other half
+    of every edge it names itself (``core/trash.py``), so nothing it carries is
+    lost; what this can cost is a half-edge only the paper here held — one the
+    trashed paper never named, which is why ``lit rm`` could not clear it.
+
+    Keyed by FOLDER, like :func:`migrate_retired_priority`: two folders
+    declaring one id are each rewritten. The count is of EDGES removed, so it
+    matches the number of findings the check reported. ``updated-at`` is
+    bumped — the paper's relations changed, exactly as when ``lit rm`` clears
+    the same edge from an opposite paper at delete time.
+
+    All rewritten ``metadata.yaml`` files plus ``INDEX.json`` (which carries
+    ``updated-at``) go into ONE :func:`staged_write`; ``reconcile_derived``
+    then re-derives INDEX + views from the same list. Relation fields drive no
+    view bucket and no ``REFERENCES.md`` line, so project refs are left alone.
+    Idempotent: a second run finds nothing to drop and returns 0.
+    """
+    from litman.core.correctors import reconcile_derived
+
+    entries = list(_papers_by_folder(vault, None))
+    known_ids = library_paper_ids(vault, (paper for _, paper in entries))
+    now = now_iso()
+
+    staged: list[tuple[str, str]] = []
+    index_papers: list[dict[str, Any]] = []
+    n_dropped = 0
+    for paper_dir, paper in entries:
+        index_papers.append(paper)
+        if not paper.get("id"):
+            continue  # the check skips an id-less paper; so does the fix
+        edges = dangling_relation_edges(paper, known_ids)
+        if not edges:
+            continue
+        rt_metadata = load_yaml_or_raise(paper_dir / "metadata.yaml", _yaml)
+        if not isinstance(rt_metadata, dict):
+            continue
+        for field in dict.fromkeys(field for field, _ in edges):
+            gone = {ref for f, ref in edges if f == field}
+            before = relation_refs(rt_metadata.get(field))
+            kept = [ref for ref in before if ref not in gone]
+            n_dropped += len(before) - len(kept)
+            rt_metadata[field] = kept
+            paper[field] = kept
+        rt_metadata["updated-at"] = now
+        paper["updated-at"] = now
+        staged.append(
+            (
+                f"papers/{paper_dir.name}/metadata.yaml",
+                _dump_yaml_to_string(rt_metadata),
+            )
+        )
+
+    if not staged:
+        return 0
+
+    with staged_write(
+        vault, op_id=_make_op_id("drop-dangling-relations")
+    ) as stage:
+        for relpath, content in staged:
+            stage.write_text(relpath, content)
+        stage.write_text("INDEX.json", render_index(index_papers, now))
+
+    reconcile_derived(vault, papers=index_papers, project_refs=False)
+    return n_dropped

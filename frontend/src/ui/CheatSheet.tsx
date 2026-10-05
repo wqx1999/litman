@@ -93,6 +93,8 @@ const SECTIONS: Section[] = [
       { chords: [['K']], action: 'Previous paper' },
       { chords: [['P']], action: 'Pin / unpin the selected paper' },
       { chords: [['Enter']], action: 'Open the selected paper' },
+      { chords: [['Shift', 'N']], action: 'Open its notes' },
+      { chords: [['Shift', 'D']], action: 'Open its discussion' },
       { chords: [['/']], action: 'Focus search' },
       { chords: [['Esc']], action: 'Clear search', scope: 'Search' },
     ],

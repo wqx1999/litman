@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from litman.commands._options import format_option, library_option, vault_option
+from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._usage import reject_second_positional
 from litman.core.code import (
     CODES_DIRNAME,
@@ -295,30 +296,36 @@ def code_add_cmd(
         )
         binding_line = f"\n[bold]Bound to paper:[/] {escape(paper_id)}{suffix}"
 
-    upstream_display = meta.get("upstream") or "(none)"
+    # Paths and the upstream URL print below the panel, unfolded
+    # (commands/_path_lines); the panel keeps what fits in a sentence.
+    path_rows: list[tuple[str, object]] = [("Folder:", repo_root)]
     if use_url:
         depth_label = "full history" if depth < 1 else f"depth {depth}"
         provenance_line = f"[bold]Clone:[/] {depth_label}"
     else:
         verb = "moved" if move_src else "copied"
-        provenance_line = (
-            f"[bold]Local import:[/] {verb} from "
-            f"{escape(str(src_path))}"
-        )
+        provenance_line = f"[bold]Local import:[/] {verb}"
+        path_rows.append(("From:", src_path))
+    path_rows.append(("Upstream:", meta.get("upstream") or "(none)"))
 
     console.print(
         Panel.fit(
-            f"[bold green]Code added:[/] {escape(repo_name)}\n"
-            f"[dim]Folder:[/] {repo_root}\n\n"
-            f"[bold]Upstream:[/] {escape(str(upstream_display))}\n"
+            f"[bold green]Code added:[/] {escape(repo_name)}\n\n"
             f"{provenance_line}"
-            f"{binding_line}\n\n"
-            f"[dim]Next:[/] edit {REPO_META_FILENAME} to fill "
-            "framework / runs-on / status, then `lit refresh-views` to "
-            "update INDEX.json.",
+            f"{binding_line}",
             title="lit code add",
             border_style="green",
         )
+    )
+    print_unwrapped(
+        console,
+        [
+            *path_lines(path_rows),
+            "",
+            f"[dim]Next:[/] edit {REPO_META_FILENAME} to fill "
+            "framework / runs-on / status, then `lit refresh-views` to "
+            "update INDEX.json.",
+        ],
     )
 
 

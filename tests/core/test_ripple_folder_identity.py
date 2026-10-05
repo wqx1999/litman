@@ -25,7 +25,6 @@ vault owns that branch, and it is pinned in ``test_write_op_equivalence.py``.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.core.checks import check_paper_dir_validity
 from litman.core.correctors import reconcile_derived
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
@@ -152,7 +152,7 @@ def test_taxonomy_merge_rewrites_both_folders_of_a_conflict_pair(
     ))
 
     # Two files, not one dict counted twice.
-    assert "Updated 2 paper" in result.output
+    assert "Updated 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
         assert "AMP-design" in _meta(vault, folder), folder
         assert "- AMP\n" not in _meta(vault, folder), folder
@@ -173,7 +173,7 @@ def test_taxonomy_rename_rewrites_both_folders_of_a_conflict_pair(
          "--library", str(vault)],
     ))
 
-    assert "Updated 2 paper" in result.output
+    assert "Updated 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
         assert "antimicrobial" in _meta(vault, folder), folder
         assert "- AMP\n" not in _meta(vault, folder), folder
@@ -205,7 +205,7 @@ def test_project_rename_carries_both_folders_per_project_keys(
          "--library", str(vault)],
     ))
 
-    assert "Updated 2 paper" in result.output
+    assert "Updated 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
         text = _meta(vault, folder)
         assert "- pepcodec\n" in text, folder
@@ -233,7 +233,7 @@ def test_taxonomy_rm_clears_both_folders_of_a_conflict_pair(
         ["taxonomy", "rm", "topics", "AMP", "--yes", "--library", str(vault)],
     ))
 
-    assert "Untagged 2 paper" in result.output
+    assert "Untagged 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
         assert "- AMP\n" not in _meta(vault, folder), folder
 
@@ -260,7 +260,7 @@ def test_project_rm_untags_both_folders_and_drops_their_keys(
         ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
     ))
 
-    assert "Untagged 2 paper" in result.output
+    assert "Untagged 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
         assert "pepforge" not in _meta(vault, folder), folder
 
@@ -385,29 +385,134 @@ def test_a_paper_dir_whose_metadata_vanished_does_not_crash_the_cascade(
 # ---------------------------------------------------------------------------
 
 
-def test_scalar_field_refusal_names_the_folder_not_the_declared_id(
+def test_a_scalar_field_is_left_alone_and_reported_by_its_folder(
     vault: Path,
 ) -> None:
-    """metadata is schema-less (invariant #7), so a hand-edit can leave
-    ``topics: AMP``. The ripple refuses that paper rather than rippling a
-    string character by character — and the message has to name the folder it
-    actually read, since resolving through the declared id used to point the
-    user at a directory that does not exist.
+    """A hand-edit can leave ``topics: AMP``. The readers refuse that file, so
+    the ripple never rewrites the string character by character — it leaves
+    the file as it was — and the report names the folder it actually read:
+    resolving through the declared id used to point the user at a directory
+    that does not exist.
     """
     _paper_folder(vault, "2024_Bad_Folder", "2024_Somewhere_Else",
                   raw_topics="AMP")
+    meta_file = vault / "papers" / "2024_Bad_Folder" / "metadata.yaml"
+    before = meta_file.read_bytes()
     runner = CliRunner()
     _ok(runner.invoke(
         cli, ["taxonomy", "add", "topics", "AMP", "--library", str(vault)]
     ))
 
-    result = runner.invoke(
+    _ok(runner.invoke(
         cli,
         ["taxonomy", "rm", "topics", "AMP", "--yes", "--library", str(vault)],
-    )
+    ))
 
-    assert result.exit_code != 0
-    message = re.sub(r"\s+", " ", str(result.exception))
-    assert "papers/2024_Bad_Folder/metadata.yaml" in message
-    assert "2024_Somewhere_Else" not in message
+    assert meta_file.read_bytes() == before
+    assert any(
+        i.message.startswith(
+            "papers/2024_Bad_Folder/metadata.yaml: 'topics' is not a list"
+        )
+        for i in check_paper_dir_validity(vault, [])
+    )
     assert not (vault / "papers" / "2024_Somewhere_Else").exists()
+
+
+# ---------------------------------------------------------------------------
+# The confirmation and the result count the same thing
+# ---------------------------------------------------------------------------
+#
+# Both count papers; the folder count rides along only when it differs. The
+# confirmation used to say 1 (ids) where the result said 2 (files).
+
+_CONFLICT_COUNT = "1 paper (2 folders — 1 is a conflicted copy)"
+
+
+def _flat(output: str) -> str:
+    # The longer gate line wraps at 80 columns; it is prose, not a path.
+    return " ".join(output.split())
+
+
+@pytest.fixture
+def interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    import litman.core.confirm as confirm
+
+    monkeypatch.setattr(confirm, "_stdin_is_tty", lambda: True)
+
+
+@pytest.mark.parametrize(
+    ("args", "gate", "result_verb"),
+    [
+        (["taxonomy", "merge", "topics", "AMP", "--into", "AMP-design"],
+         "will rewrite", "Updated"),
+        (["taxonomy", "rm", "topics", "AMP"], "will untag", "Untagged"),
+    ],
+    ids=["merge", "rm"],
+)
+def test_taxonomy_gate_and_result_agree_on_a_conflict_pair(
+    vault: Path, interactive: None, args: list[str], gate: str, result_verb: str
+) -> None:
+    _seed_conflict_pair(vault, topics=["AMP"])
+    runner = CliRunner()
+    _ok(runner.invoke(
+        cli, ["taxonomy", "add", "topics", "AMP", "--library", str(vault)]
+    ))
+
+    result = _ok(runner.invoke(
+        cli, [*args, "--library", str(vault)], input="y\n"
+    ))
+
+    assert f"{gate} {_CONFLICT_COUNT}:" in _flat(result.output)
+    assert f"{result_verb} {_CONFLICT_COUNT}." in _flat(result.output)
+    # The id is listed once, carrying the folder count the total refers to.
+    assert result.output.count("- 2024_Zeta_One") == 1
+    assert "- 2024_Zeta_One (2 folders)" in result.output
+
+
+def test_project_rm_gate_and_result_agree_on_a_conflict_pair(
+    vault: Path, tmp_path: Path, interactive: None
+) -> None:
+    proj = tmp_path / "pepforge_dir"
+    proj.mkdir()
+    runner = CliRunner()
+    _ok(runner.invoke(
+        cli,
+        ["project", "add", "pepforge", "--path", str(proj),
+         "--library", str(vault)],
+    ))
+    _seed_conflict_pair(vault, projects=["pepforge"])
+
+    result = _ok(runner.invoke(
+        cli, ["project", "rm", "pepforge", "--library", str(vault)],
+        input="y\n",
+    ))
+
+    assert f"referenced by {_CONFLICT_COUNT}:" in _flat(result.output)
+    assert "Untag 1 paper:" in _flat(result.output)
+    assert f"Untagged {_CONFLICT_COUNT}." in _flat(result.output)
+    assert result.output.count("- 2024_Zeta_One") == 1
+
+
+def test_a_healthy_vault_never_mentions_folders(
+    vault: Path, interactive: None
+) -> None:
+    """Control: the note is the conflict's alone — one folder per paper, and
+    a paper tagged with two of the sources, both read as plain paper counts."""
+    _paper_folder(vault, "2024_Alpha_One", "2024_Alpha_One", topics=["AMP", "peptide"])
+    _paper_folder(vault, "2024_Beta_Two", "2024_Beta_Two", topics=["AMP"])
+    runner = CliRunner()
+    _ok(runner.invoke(
+        cli,
+        ["taxonomy", "add", "topics", "AMP", "peptide", "--library", str(vault)],
+    ))
+
+    result = _ok(runner.invoke(
+        cli,
+        ["taxonomy", "merge", "topics", "AMP", "peptide", "--into", "AMP-design",
+         "--library", str(vault)],
+        input="y\n",
+    ))
+
+    assert "will rewrite 2 papers:" in _flat(result.output)
+    assert "Updated 2 papers." in _flat(result.output)
+    assert "folder" not in result.output

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
@@ -73,6 +73,10 @@ interface Props {
   onOpenTrash: () => void
   collapsed: boolean
   onToggle: () => void
+  /** Register/unregister the call that scrolls the selected row back into view,
+   * for when the selection stays put but the list was scrolled away from it.
+   * Null on unmount. */
+  onRegisterReveal?: (reveal: (() => void) | null) => void
 }
 
 const LIST_MODES: Array<[ListMode, string]> = [
@@ -235,6 +239,7 @@ export default function BrowsePanel({
   onOpenTrash,
   collapsed,
   onToggle,
+  onRegisterReveal = () => {},
 }: Props) {
   // Level-1 disclosure: the whole Filter section. Collapsed by default so the
   // panel stays clean — the labelled "Filter" row is still an obvious entry.
@@ -244,16 +249,56 @@ export default function BrowsePanel({
   // collapsed (the default).
   const [openGroups, setOpenGroups] = useState<Set<FacetKey>>(new Set())
 
-  // Keep the selection visible when it moves without a click (the J/K keyboard
-  // navigation): nudge the selected row into view. block:'nearest' = no scroll
-  // at all while the row is already visible, so mouse selection never jumps.
+  // Keep the selection visible when it moves (the J/K keyboard navigation, or
+  // a click near the list's lower edge): nudge the selected row into view.
+  // Nearest edge = no scroll at all while the row is already visible, so a
+  // click on a row whose card fits where it is never moves the list. Vertical
+  // only, and only the list's own scrollers (the pinned group's, then the
+  // list's) — not scrollIntoView, which scrolls every scrollable ancestor:
+  // with the panel collapsed (or in focus mode) it slid the 36px-wide shell
+  // sideways to reach the hidden row, and left it off by a pixel once expanded.
   const listRef = useRef<HTMLDivElement | null>(null)
+  const revealSelected = useCallback(() => {
+    const list = listRef.current
+    const row = list?.querySelector<HTMLElement>('[data-selected="true"]')
+    if (!list || !row) return
+    for (let box = row.parentElement; box; box = box.parentElement) {
+      if (/auto|scroll/.test(getComputedStyle(box).overflowY)) {
+        const r = row.getBoundingClientRect()
+        const top = box.getBoundingClientRect().top + box.clientTop
+        const bottom = top + box.clientHeight
+        if (r.top < top) box.scrollTop -= top - r.top
+        else if (r.bottom > bottom) box.scrollTop += Math.min(r.bottom - bottom, r.top - top)
+      }
+      if (box === list) break
+    }
+  }, [])
   useEffect(() => {
     if (!selectedId) return
-    listRef.current
-      ?.querySelector('[data-selected="true"]')
-      ?.scrollIntoView({ block: 'nearest' })
-  }, [selectedId])
+    revealSelected()
+    // The row then grows into its card over 300 ms (renderRow's grid-rows
+    // transition) while the card it replaces shrinks, so a nudge measured on
+    // the row before it grew left a card brought to — or clicked at — the
+    // bottom edge hanging below the list. Repeat it on every frame the row
+    // resizes until the growth is over; the nearest edge never gives up the
+    // row's top for its bottom. Only during the growth: the card changing size
+    // later on must not pull a list the user has scrolled away back to it.
+    const row = listRef.current?.querySelector('[data-selected="true"]')
+    if (!row) return
+    const growing = new ResizeObserver(revealSelected)
+    growing.observe(row)
+    const grown = window.setTimeout(() => growing.disconnect(), 500)
+    return () => {
+      window.clearTimeout(grown)
+      growing.disconnect()
+    }
+  }, [selectedId, revealSelected])
+  // The same nudge on App's call when the selection did not move: a press in
+  // the open document, or a click on its tab, after the list was scrolled away.
+  useEffect(() => {
+    onRegisterReveal(revealSelected)
+    return () => onRegisterReveal(null)
+  }, [onRegisterReveal, revealSelected])
 
   const toggleGroup = (key: FacetKey) =>
     setOpenGroups((prev) => {

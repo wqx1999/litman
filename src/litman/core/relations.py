@@ -21,6 +21,9 @@ the reverse fields are covered uniformly.
 
 from __future__ import annotations
 
+from collections.abc import Container, Mapping
+from typing import Any
+
 # Maps each relation field to its paired reverse field. Symmetric fields
 # (only ``related`` today) map to themselves. Both members of every
 # directional pair appear as keys so a lookup never needs to know which
@@ -52,3 +55,33 @@ REVERSE_REF_FIELDS: frozenset[str] = frozenset({"extended-by", "contradicted-by"
 FORWARD_REF_FIELDS: tuple[str, ...] = tuple(
     f for f in RELATION_PAIRS if f not in REVERSE_REF_FIELDS
 )
+
+
+def relation_refs(value: object) -> list[str]:
+    """The ids one relation field holds: a list's entries, else none.
+
+    A hand edit that is not a list (``related: X``) never gets here — the
+    metadata readers refuse that file (``document.malformed_list_fields``).
+    """
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return []
+
+
+def dangling_relation_edges(
+    paper: Mapping[str, Any], known_ids: Container[str]
+) -> list[tuple[str, str]]:
+    """``(field, ref)`` for each relation edge on ``paper`` naming no paper.
+
+    The one definition of a dangling edge: ``lit health-check`` reports exactly
+    these, ``--fix`` drops exactly these, and the GUI's remove on a link to a
+    missing paper refuses anything else. Forward and reverse fields alike.
+    ``known_ids`` comes from ``document.library_paper_ids`` — the trash is not
+    in it, so an edge to a trashed paper dangles.
+    """
+    return [
+        (field, ref)
+        for field in ALL_REF_FIELDS
+        for ref in relation_refs(paper.get(field))
+        if ref not in known_ids
+    ]

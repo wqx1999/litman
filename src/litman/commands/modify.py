@@ -45,14 +45,24 @@ from litman.core.config import load_config
 from litman.core.correctors import moved_aside_from, reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
 from litman.core.dedup import find_paper_by_doi
-from litman.core.document import list_papers, load_yaml_or_raise
+from litman.core.document import (
+    PAPER_LIST_FIELDS,
+    LibraryIds,
+    library_paper_ids,
+    list_papers,
+    load_yaml_or_raise,
+)
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.project_refs import (
     load_project_member_metas,
     write_references_md,
 )
-from litman.core.relations import RELATION_PAIRS, REVERSE_REF_FIELDS
+from litman.core.relations import (
+    RELATION_PAIRS,
+    REVERSE_REF_FIELDS,
+    relation_refs,
+)
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import (
     load_index_papers,
@@ -86,20 +96,10 @@ FORBIDDEN_SET_FIELDS: frozenset[str] = frozenset({
 # scalar fields work without a registry update. This set INCLUDES the
 # ADR-012 reverse fields (``extended-by`` / ``contradicted-by``) so the
 # auto double-write can maintain them with correct list semantics — but
-# users may NOT name them on the command line (see USER_TAG_FIELDS).
-LIST_FIELDS: frozenset[str] = frozenset({
-    "authors",
-    "projects",
-    "topics",
-    "methods",
-    "data",
-    "related",
-    "contradicts",
-    "contradicted-by",
-    "extends",
-    "extended-by",
-    "code-clones",
-})
+# users may NOT name them on the command line (see USER_TAG_FIELDS). The set
+# itself lives in core/document.py, whose readers refuse a file where one of
+# these holds anything but a list.
+LIST_FIELDS: frozenset[str] = PAPER_LIST_FIELDS
 
 # Reverse relation fields (ADR-012) are maintained ONLY by the auto
 # double-write; a user must never set them directly via --add-tag /
@@ -374,6 +374,40 @@ def _apply_rm_tag(
     return before, after
 
 
+def _apply_drop_dangling(
+    metadata: dict[str, Any], key: str, value: str, known_ids: LibraryIds
+) -> tuple[list[Any], list[Any]] | None:
+    """Remove a relation edge naming a paper that is no longer in the library.
+
+    The GUI's remove on a link whose other paper is gone. For a reverse field
+    (``extended-by`` / ``contradicted-by``) nothing else reaches it: the field
+    is never user-writable (ADR-012), and the forward edge it mirrors was on
+    the missing paper, so the usual flip has no paper to write. This is the
+    per-edge form of ``lit health-check --fix`` (``ripple.
+    drop_dangling_relations``), with the same definition of "no longer in the
+    library" (``document.library_paper_ids``). It refuses an edge to any
+    paper still in the library, so it can never break a live pairing.
+
+    Silent no-op when the edge is already absent, like ``--rm-tag``.
+    """
+    if key not in RELATION_PAIRS:
+        raise ModifyError(
+            f"dropDangling rejects {key!r}: not a relation field. "
+            f"Allowed: {', '.join(sorted(RELATION_PAIRS))}."
+        )
+    if value in known_ids:
+        raise ModifyError(
+            f"Not removed: {value!r} is still in the library, so this link is "
+            "not dangling."
+        )
+    before = relation_refs(metadata.get(key))
+    if value not in before:
+        return None
+    after = [v for v in before if v != value]
+    metadata[key] = after
+    return before, after
+
+
 def _apply_set_list(
     metadata: dict[str, Any], key: str, values: list[str]
 ) -> tuple[list[Any], list[Any]] | None:
@@ -487,8 +521,9 @@ def _apply_modify(
     rm_tag_ops: tuple[str, ...] = (),
     set_list_ops: dict[str, list[str]] | None = None,
     skip_set_noop: bool = False,
+    drop_dangling_ops: tuple[str, ...] = (),
 ) -> bool:
-    """Apply set-list / set / add-tag / rm-tag ops to one paper's metadata.yaml.
+    """Apply set-list / set / add-tag / rm-tag / drop-dangling ops to one paper.
 
     Shared backend for ``lit modify`` and the M13 semantic-sugar commands
     (``lit read`` / ``lit revisit`` / ``lit drop`` / ``lit promote`` /
@@ -522,6 +557,11 @@ def _apply_modify(
             user explicitly asked to write that value). M13 sugar
             commands pass True so that ``lit read X`` twice in one day
             is a true no-op.
+        drop_dangling_ops: Sequence of ``"field=ref"`` specs, each removing a
+            relation edge whose other paper is no longer in the library (see
+            ``_apply_drop_dangling``). No ``lit modify`` flag sends these —
+            the CLI clears such edges with ``lit health-check --fix``; the
+            GUI sends them one link at a time.
 
     Returns:
         ``True`` when at least one change landed on disk, ``False`` when
@@ -531,7 +571,8 @@ def _apply_modify(
         PaperNotFoundError: ``papers/<id>/metadata.yaml`` does not exist.
         ModifyError: empty metadata file, malformed key=value spec, or
             an op rejected by ``_apply_set`` / ``_apply_add_tag`` /
-            ``_apply_rm_tag`` (forbidden field, wrong type, etc.).
+            ``_apply_rm_tag`` / ``_apply_drop_dangling`` (forbidden field,
+            wrong type, a link that is not dangling, etc.).
     """
     meta_file = vault / "papers" / paper_id / "metadata.yaml"
     if not meta_file.is_file():
@@ -605,6 +646,22 @@ def _apply_modify(
             diffs.append((key, before, after))
         if key in RELATION_TAG_FIELDS:
             relation_ops.append(("rm", key, value))
+
+    # An edge to a missing paper is removed from this side only: there is no
+    # opposite to write. The library listing it is checked against is reused
+    # below as the INDEX splice base, so this costs no second read.
+    library_base: list[dict[str, Any]] | None = None
+    if drop_dangling_ops:
+        library_base = load_index_papers(vault)
+        if library_base is None:
+            library_base = list_papers(vault)
+        known_ids = library_paper_ids(vault, library_base)
+        for spec in drop_dangling_ops:
+            key, value = _parse_kv(spec, "dropDangling")
+            change = _apply_drop_dangling(metadata, key, value, known_ids)
+            if change is not None:
+                before, after = change
+                diffs.append((key, before, after))
 
     # Date-ordering guard (invariant #11): when this op touched read-date or
     # last-revisited, the resulting pair must stay consistent — neither in the
@@ -735,7 +792,9 @@ def _apply_modify(
     # scan (down from two). load_index_papers returning None (missing /
     # stale / older-schema INDEX) falls back to the scan, and the render
     # below regenerates a fresh INDEX from it either way.
-    base_papers = None if projects_changed else load_index_papers(vault)
+    base_papers = (
+        None if projects_changed else library_base or load_index_papers(vault)
+    )
     if base_papers is None:
         base_papers = list_papers(vault)
     elif refs_fields_changed and member_projects:

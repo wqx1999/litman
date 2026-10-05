@@ -708,7 +708,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Two repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; and where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Three repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; and where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of
@@ -835,8 +835,9 @@ See [3-concepts.md](3-concepts.md) §1.4 for what each config field controls.
 
 Launch the litman Web UI — a localhost browser app for browsing, reading PDFs,
 annotating, and everyday curation. It serves the active vault and binds
-`127.0.0.1` only. When your session has a display, the UI also opens in your
-browser automatically; on a headless box (HPC) it never tries — it prints a
+`127.0.0.1` only and answers only its own page: requests sent by other
+websites are refused. When your session has a display, the UI also opens in
+your browser automatically; on a headless box (HPC) it never tries — it prints a
 ready-to-paste `ssh -L` tunnel line so you can open the printed URL in your
 local browser. If the default port is busy it walks upward to the next free
 one (Jupyter-style) and prints the port it landed on.

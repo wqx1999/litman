@@ -20,11 +20,10 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
-from litman.core.library import create_vault
 from litman.core import update_check
+from litman.core.library import create_vault
 from litman.server import create_app
+from tests.server._client import TestClient
 
 
 @pytest.fixture(autouse=True)

@@ -419,7 +419,8 @@ def check_and_prompt_project_drift(
         console.print()
         console.print(
             f"[yellow]⚠[/]  Project [bold]{name}[/] directory not found "
-            f"(was {old})."
+            f"(was {old}).",
+            soft_wrap=True,
         )
         kind, reply = _ask_drift_answer(
             "    Moved? Enter the new path, 'rm' to delete the project, "
@@ -499,13 +500,15 @@ def check_and_prompt_project_drift(
         if info.get("status") == "rebuilt":
             console.print(
                 f"[green]✓ Updated[/] {name} → {healed[name]} "
-                f"and rebuilt its litman_reflib."
+                f"and rebuilt its litman_reflib.",
+                soft_wrap=True,
             )
         else:
             console.print(
                 f"[green]✓ Updated[/] {name} → {healed[name]}[dim] (config only "
                 f"— directory not reachable here yet; run [bold]lit refresh-views"
-                f"[/bold] there to rebuild litman_reflib).[/dim]"
+                f"[/bold] there to rebuild litman_reflib).[/dim]",
+                soft_wrap=True,
             )
         # That rebuild can delete a folder copy or move one out of the user's
         # own directory, and it is never silent whichever command triggered it
@@ -628,7 +631,8 @@ def check_and_prompt_bridge_drift(
     )
     for name, links in dangling.items():
         console.print(
-            f"    [bold]{name}[/] → {len(links)} dangling (e.g. {links[0]})"
+            f"    [bold]{name}[/] → {len(links)} dangling (e.g. {links[0]})",
+            soft_wrap=True,
         )
     if not click.confirm(
         "Rebuild all project links from the library's current location now?",

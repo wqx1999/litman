@@ -19,6 +19,14 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.7
+
+- Shift+N and Shift+D open the selected paper's notes and discussion.
+- Click the document you are reading to select its paper again.
+- Long paths in the terminal now copy in one piece.
+- Links to papers no longer in your library can be removed.
+- Other websites can no longer reach litman through your browser.
+
 ## 1.3.6
 
 - Priority is now per project; the health check migrates your library.

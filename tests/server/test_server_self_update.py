@@ -21,12 +21,11 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
 from litman.core import self_update_helper
 from litman.core.library import create_vault
 from litman.core.update_check import OPT_OUT_ENV
 from litman.server import create_app, routes_update
+from tests.server._client import TestClient
 
 
 @pytest.fixture(autouse=True)

@@ -31,6 +31,11 @@ from rich.markup import escape
 from rich.table import Table
 
 from litman.commands._options import format_option, library_option, vault_option
+from litman.commands._paper_count import (
+    duplicate_count,
+    paper_count,
+    paper_id_lines,
+)
 from litman.core.atomic import staged_write
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
@@ -223,14 +228,14 @@ def taxonomy_rename_cmd(
     # Single write path (invariant #16): validation + atomic rename + derived
     # rebuild all live in core.taxonomy.rename_taxonomy_value, shared with the
     # webUI's PUT /api/taxonomy/{key}. The command only renders the result.
-    n_changed, _ = rename_taxonomy_value(vault, dict_name, old, new)
+    n_changed, referencing = rename_taxonomy_value(vault, dict_name, old, new)
 
     console.print(
         f"[bold green]✓ Renamed[/] {escape(dict_name)}: "
         f"{escape(old)} → {escape(new)}"
     )
     console.print(
-        f"  Updated [bold]{n_changed}[/] paper{'s' if n_changed != 1 else ''}."
+        f"  Updated {paper_count(n_changed, duplicate_count(referencing))}."
     )
 
 
@@ -311,25 +316,24 @@ def taxonomy_merge_cmd(
 
     # Cascade-with-confirm (M15): rewriting many papers' metadata changes
     # their semantics, so gate it behind a confirmation. Scope = union of
-    # papers referencing any source value.
-    affected: list[str] = []
-    seen_affected: set[str] = set()
-    for src in sources_to_remove:
-        for pid in find_referencing_papers(list_papers(vault), dict_name, src):
-            if pid not in seen_affected:
-                seen_affected.add(pid)
-                affected.append(pid)
+    # papers referencing any source value, one entry per FOLDER (a paper
+    # tagged with two of the sources is still one folder, and a conflicted
+    # copy is still a second one — see commands/_paper_count).
+    papers = list_papers(vault)
+    by_folder = [
+        str(p["id"])
+        for p in papers
+        if p.get("id") and set(p.get(field) or []) & set(sources_to_remove)
+    ]
+    affected = sorted(by_folder)
     if affected:
         warning_lines = [
             f"[yellow]⚠[/] Merging "
             f"{', '.join(escape(s) for s in sources_to_remove)} → "
-            f"{escape(dest)} will rewrite [bold]{len(affected)}[/] "
-            f"paper(s):",
+            f"{escape(dest)} will rewrite "
+            f"{paper_count(len(affected), duplicate_count(affected))}:",
+            *paper_id_lines(affected),
         ]
-        for pid in sorted(affected)[:10]:
-            warning_lines.append(f"  - {escape(pid)}")
-        if len(affected) > 10:
-            warning_lines.append(f"  ... and {len(affected) - 10} more")
         if not _confirm_destructive(warning_lines, yes=yes):
             console.print("[dim]Aborted. Nothing changed.[/]")
             return
@@ -358,7 +362,7 @@ def taxonomy_merge_cmd(
         f"{', '.join(escape(s) for s in sources_to_remove)} → {escape(dest)}"
     )
     console.print(
-        f"  Updated [bold]{n_changed}[/] paper{'s' if n_changed != 1 else ''}."
+        f"  Updated {paper_count(n_changed, duplicate_count(affected))}."
     )
 
 
@@ -411,14 +415,9 @@ def taxonomy_rm_cmd(
         warning_lines = [
             f"[yellow]⚠[/] Removing '{escape(value)}' from "
             f"{escape(dict_name)} will untag "
-            f"[bold]{len(referencing)}[/] paper(s):",
+            f"{paper_count(len(referencing), duplicate_count(referencing))}:",
+            *paper_id_lines(referencing),
         ]
-        for pid in referencing[:10]:
-            warning_lines.append(f"  - {escape(pid)}")
-        if len(referencing) > 10:
-            warning_lines.append(
-                f"  ... and {len(referencing) - 10} more"
-            )
         if not _confirm_destructive(warning_lines, yes=yes):
             console.print("[dim]Aborted. Nothing changed.[/]")
             return
@@ -426,12 +425,11 @@ def taxonomy_rm_cmd(
     # The cascade write (TAXONOMY.md + metadata + INDEX, then derived rebuild)
     # lives in the core so the webUI DELETE endpoint shares the exact write path
     # (invariant #16). The command keeps only the confirm gate + console output.
-    n_changed, _ = remove_taxonomy_value(vault, dict_name, value)
+    n_changed, removed_from = remove_taxonomy_value(vault, dict_name, value)
 
     console.print(
         f"[bold green]✓ Removed[/] {escape(value)} from {escape(dict_name)}."
     )
     console.print(
-        f"  Untagged [bold]{n_changed}[/] paper"
-        f"{'s' if n_changed != 1 else ''}."
+        f"  Untagged {paper_count(n_changed, duplicate_count(removed_from))}."
     )

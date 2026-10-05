@@ -27,8 +27,7 @@ from ruamel.yaml import YAML
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
+from litman.core import locking
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.vault_registry import (
@@ -39,7 +38,7 @@ from litman.core.vault_registry import (
 )
 from litman.core.views import write_index
 from litman.server import create_app
-from litman.core import locking
+from tests.server._client import TestClient
 
 _yaml = YAML(typ="safe")
 

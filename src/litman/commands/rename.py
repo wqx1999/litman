@@ -204,6 +204,16 @@ def rename_cmd(
 
     # ----- Find and rewrite back-referencing papers -----
     safe_papers = list_papers(vault)  # safe-loaded, used for INDEX rendering
+    # The papers A links to hold the other end of each edge (ADR-012), so
+    # this rename must rewrite them. One whose metadata.yaml is broken is
+    # left out of list_papers; renaming around it would leave its edge naming
+    # <old>, which --fix later drops as dangling. Refuse instead, as rm does.
+    listed = {str(p.get("id")) for p in safe_papers}
+    partners = {str(v) for f in REF_FIELDS for v in renamed_meta.get(f) or []}
+    for partner in sorted(partners - listed - {old}):
+        partner_meta = vault / "papers" / partner / "metadata.yaml"
+        if is_valid_id(partner) and partner_meta.is_file():
+            load_yaml_or_raise(partner_meta, _yaml)
     other_updates: dict[str, str] = {}  # paper_id → new yaml text
     ref_holders: list[str] = []
     for paper in safe_papers:

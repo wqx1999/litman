@@ -19,11 +19,10 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi.testclient import TestClient
-
+from litman.core import locking
 from litman.core.ui_state import load_pins, ui_state_path
 from litman.server import create_app
-from litman.core import locking
+from tests.server._client import TestClient
 
 
 def _client(vault: Path) -> TestClient:

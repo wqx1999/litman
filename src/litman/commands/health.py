@@ -11,7 +11,9 @@ display decision and never a check-layer one.
 
 The CLI is read-only by default. ``--fix`` auto-regenerates every derived
 (klass-A) artifact — lossless recompute from TRUTH — plus the legacy
-validity auto-fixes (stale staging dirs + orphan trash sidecars). klass-B
+validity auto-fixes (stale staging dirs + orphan trash sidecars) and the
+arms ``checks.AUTO_FIXABLE_CATEGORIES`` has grown since, among them removing
+relation edges that name a paper no longer in the library. klass-B
 drift (registry / project / taxonomy / code-clone) needs per-case user
 judgment and stays report-only — ``--fix`` never picks a side (ADR-015).
 
@@ -219,8 +221,10 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
         "Auto-regenerate all derived artifacts from metadata, clean stale "
         "staging dirs / orphan trash sidecars, refresh stale installed agent "
         "skills, migrate the retired paper-level `priority` onto "
-        "priority-<project> (a paper in no project loses it), and put links "
-        "back where a copied project folder left real folders (one that does "
+        "priority-<project> (a paper in no project loses it), drop relation "
+        "links to papers no longer in the library (deleted, lost, or in the "
+        "trash), and put links back where a copied project folder left real "
+        "folders (one that does "
         "not match the vault is kept under .trash/replaced-folders/). "
         "Registry / project / taxonomy / code-clone drift stays report-only "
         "(it needs a per-case decision; --fix never picks a side)."
@@ -386,8 +390,8 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     * **validity** — ``stale_staging`` roll-back/forward and
       ``orphan_trash_sidecar`` removal stay routed through
       :func:`apply_autofix`, unchanged, alongside the scaffold / skill / retired
-      -field arms it has grown since. All lossless except the retired-field
-      migration; see ``checks.AUTO_FIXABLE_CATEGORIES`` for why that one is in.
+      -field and dangling-edge arms it has grown since. All lossless except
+      those two; see ``checks.AUTO_FIXABLE_CATEGORIES`` for why they are in.
 
     klass-B drift (registry / project / taxonomy / code-clone) is never fixed
     here — it needs a per-case user decision (the Tier-1 ``resolve`` prompt or

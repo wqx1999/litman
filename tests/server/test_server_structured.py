@@ -31,10 +31,10 @@ pytest.importorskip("fastapi")
 
 from datetime import UTC
 
-from fastapi.testclient import TestClient
-
 from litman.cli import cli
+from litman.core import locking
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.vault_registry import (
     add_vault,
     find_active,
@@ -42,8 +42,7 @@ from litman.core.vault_registry import (
     save_registry,
 )
 from litman.server import create_app
-from litman.core.portable_link import is_portable_link
-from litman.core import locking
+from tests.server._client import TestClient
 
 _yaml = YAML(typ="safe")
 
@@ -1860,3 +1859,165 @@ def test_put_metadata_rm_relation_idempotent(
     assert second.json() == {"ok": True, "changed": False}
     assert _meta_bytes(vault, paper_a) == after_a
     assert _meta_bytes(vault, paper_b) == after_b
+
+
+# ---------------------------------------------------------------------------
+# dropDangling — the relation remove button on a link whose other paper is gone
+# ---------------------------------------------------------------------------
+#
+# B extends A, then B vanishes outside litman: A keeps `extended-by: B`. The
+# cockpit's usual remove flips to B (`rmTag extends=A` on B), which 404s —
+# there is no B. `dropDangling` removes A's side alone, refusing any id still
+# in the library.
+
+
+def _strand_reverse_edge(vault: Path, client: TestClient, survivor: str) -> str:
+    """Give ``survivor`` an ``extended-by`` naming a paper that is then gone."""
+    gone = "2025_Baz_Qux"
+    _seed_second_paper(vault, gone)
+    _relate(client, gone, "extends", survivor)
+    locking.rmtree(vault / "papers" / gone)  # deleted in a file manager
+    assert _meta(vault, survivor)["extended-by"] == [gone]
+    return gone
+
+
+def test_put_metadata_drop_dangling_removes_this_side_only(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    vault, survivor = vault_with_paper
+    _distinct_stamps(monkeypatch)
+    client = _client(vault)
+    gone = _strand_reverse_edge(vault, client, survivor)
+    stamp_before = _meta(vault, survivor)["updated-at"]
+
+    resp = client.put(
+        f"/api/paper/{survivor}/metadata",
+        json={"dropDangling": {"extended-by": [gone]}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "changed": True}
+    meta = _meta(vault, survivor)
+    assert meta["extended-by"] == []
+    assert meta["updated-at"] != stamp_before
+    assert _index_paper(vault, survivor)["updated-at"] == meta["updated-at"]
+    assert not (vault / "papers" / gone).exists()  # nothing recreated
+
+
+def test_put_metadata_drop_dangling_refuses_a_paper_still_in_the_library(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """A live pairing is out of reach: both papers and INDEX stay byte-equal."""
+    vault, paper_a = vault_with_paper
+    paper_b = "2025_Baz_Qux"
+    _seed_second_paper(vault, paper_b)
+    _distinct_stamps(monkeypatch)
+    client = _client(vault)
+    _relate(client, paper_a, "extends", paper_b)
+    before = (_meta_bytes(vault, paper_a), _meta_bytes(vault, paper_b))
+    before_index = _index_bytes(vault)
+
+    resp = client.put(
+        f"/api/paper/{paper_b}/metadata",
+        json={"dropDangling": {"extended-by": [paper_a]}},
+    )
+
+    assert resp.status_code == 400
+    assert "still in the library" in resp.json()["detail"]
+    assert (_meta_bytes(vault, paper_a), _meta_bytes(vault, paper_b)) == before
+    assert _index_bytes(vault) == before_index
+
+
+def test_put_metadata_drop_dangling_rejects_a_non_relation_field(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata",
+        json={"dropDangling": {"topics": ["anything"]}},
+    )
+    assert resp.status_code == 400
+    assert "not a relation field" in resp.json()["detail"]
+
+
+def test_put_metadata_drop_dangling_reads_no_paper_when_index_is_fresh(
+    vault_with_paper: tuple[Path, str], monkeypatch
+) -> None:
+    """One link, one paper: with a current INDEX the check against the
+    library is the INDEX id list and a folder listing, never a scan of every
+    metadata.yaml. (A stale INDEX falls back to one scan, shared with the
+    INDEX re-render the write does anyway.)"""
+    from litman.commands import modify as modify_module
+    from litman.core.document import list_papers
+    from litman.core.views import write_index
+
+    vault, survivor = vault_with_paper
+    client = _client(vault)
+    gone = _strand_reverse_edge(vault, client, survivor)
+    write_index(vault, list_papers(vault))  # INDEX current again
+
+    def no_scan(_vault: Path) -> list[dict]:
+        raise AssertionError("dropDangling scanned every paper")
+
+    monkeypatch.setattr(modify_module, "list_papers", no_scan)
+
+    resp = client.put(
+        f"/api/paper/{survivor}/metadata",
+        json={"dropDangling": {"extended-by": [gone]}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _meta(vault, survivor)["extended-by"] == []
+
+
+def test_put_metadata_drop_dangling_refuses_a_folder_it_cannot_read(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A paper whose metadata.yaml is broken right now is not gone. INDEX is
+    rebuilt without it first, so the refusal rests on the folder alone."""
+    from litman.core.document import list_papers
+    from litman.core.views import write_index
+
+    vault, survivor = vault_with_paper
+    client = _client(vault)
+    gone = _strand_reverse_edge(vault, client, survivor)
+    write_index(vault, list_papers(vault))
+    broken = vault / "papers" / gone
+    broken.mkdir()
+    (broken / "metadata.yaml").write_text("id: [unclosed\n", encoding="utf-8")
+    before = _meta_bytes(vault, survivor)
+
+    resp = client.put(
+        f"/api/paper/{survivor}/metadata",
+        json={"dropDangling": {"extended-by": [gone]}},
+    )
+
+    assert resp.status_code == 400
+    assert "still in the library" in resp.json()["detail"]
+    assert _meta_bytes(vault, survivor) == before
+
+
+def test_put_metadata_drop_dangling_on_a_hand_edited_scalar_names_the_file(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """`extended-by: X` written by hand (no list) is not read as a link: the
+    remove is refused with the file and the fix, and nothing is written."""
+    vault, survivor = vault_with_paper
+    meta_file = vault / "papers" / survivor / "metadata.yaml"
+    os.chmod(meta_file, 0o644)  # TRUTH files are kept read-only
+    yaml = YAML()
+    data = yaml.load(meta_file.read_text(encoding="utf-8"))
+    data["extended-by"] = "2025_Gone_Paper"
+    with meta_file.open("w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+    before = _meta_bytes(vault, survivor)
+
+    resp = _client(vault).put(
+        f"/api/paper/{survivor}/metadata",
+        json={"dropDangling": {"extended-by": ["2025_Gone_Paper"]}},
+    )
+
+    assert resp.status_code == 500
+    assert str(meta_file) in resp.json()["detail"]
+    assert "write it as `extended-by: ['2025_Gone_Paper']`" in resp.json()["detail"]
+    assert _meta_bytes(vault, survivor) == before

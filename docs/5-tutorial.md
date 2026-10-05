@@ -215,11 +215,11 @@ the agent prepared.
 ```console
 $ lit add ~/Downloads/pepinvent.pdf --doi 10.1039/D4SC07642G --id 2025_Geylan_PepINVENT
 Paper added: 2025_Geylan_PepINVENT
-Folder: ~/research/literature_vault/papers/2025_Geylan_PepINVENT
 
 Title: PepINVENT: generative peptide design beyond natural amino acids
 Year: 2025    Journal: Chemical Science
 Authors: Geylan, Gökçe et al. (10 authors)
+  Folder: ~/research/literature_vault/papers/2025_Geylan_PepINVENT
 ```
 
 CrossRef fills the identity fields. The `--id` gives the paper a short handle;
@@ -301,8 +301,9 @@ Each paper has a `discussion.md` — your running log of questions, objections, 
 working-through while you read. Keep it open and write to it as things occur to
 you.
 
-🖥️ **Web UI:** the reader has a discussion tab beside the PDF. Jot questions and
-objections there as they occur, without leaving the page.
+🖥️ **Web UI:** the reader has a discussion tab beside the PDF — press `Shift+D`
+to open it for the selected paper. Jot questions and objections there as they
+occur, without leaving the page.
 
 🤖 **Agent:** talk through the paper with your agent. When you say *"note that down"*
 or work through a question, the `lit-reading` skill appends the exchange to
@@ -324,8 +325,9 @@ summary. This is the everyday curation the Web UI is built for.
 🖥️ **Web UI:** in the paper's context panel, set `type` from its dropdown and
 add `topics` / `methods` tags — type a new value and it is
 registered in the TAXONOMY on the spot. Write the summary straight into the notes
-tab. You are already reading the PDF right there, so nothing pulls you out of the
-paper. The bibliographic fields live behind the pencil in the METADATA header:
+tab (`Shift+N` opens it). You are already reading the PDF right there, so nothing
+pulls you out of the paper. The bibliographic fields live behind the pencil in the
+METADATA header:
 open it to correct a title the import garbled, fill in a missing journal, or fix
 the author list — names can be renamed, added, removed, and reordered by dragging
 their handles — and one Save writes the lot. The paper id is shown but not

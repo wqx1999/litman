@@ -552,6 +552,10 @@ export default function App() {
   }, [])
 
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
+  // The server's reason the selected paper could not be loaded, shown in the
+  // cockpit instead of its empty state. Cleared whenever the paper loads or the
+  // selection goes away.
+  const [cockpitError, setCockpitError] = useState<string | null>(null)
   const [cockpitLoading, setCockpitLoading] = useState(false)
   const [cockpitCollapsed, setCockpitCollapsed] = useState(false)
   const [leftCollapsed, setLeftCollapsed] = useState(false)
@@ -614,6 +618,12 @@ export default function App() {
     (handle: CockpitHandle | null) => setCockpitHandle(handle),
     [],
   )
+  // BrowsePanel's "scroll the selected row back into view". Only event handlers
+  // call it, so a bare ref: registering it re-renders nothing.
+  const revealSelectedRef = useRef<(() => void) | null>(null)
+  const registerReveal = useCallback((reveal: (() => void) | null) => {
+    revealSelectedRef.current = reveal
+  }, [])
 
   const loadList = useCallback(
     (mode: ListMode) => {
@@ -941,19 +951,60 @@ export default function App() {
     setFilters(emptyFilters())
   }, [])
 
+  // Every load of the cockpit paper settles through these two, so a paper the
+  // server refuses (its metadata.yaml is broken) says why on every path — a
+  // click, a refresh after a write, a live-sync sweep — instead of leaving the
+  // "Select a paper." empty state. A network failure has its own banner.
+  const showCockpitPaper = useCallback((paper: PaperMeta) => {
+    setCockpitPaper(paper)
+    setCockpitError(null)
+  }, [])
+  const showCockpitFailure = useCallback((err: unknown) => {
+    setCockpitPaper(null)
+    setCockpitError(err instanceof ApiError ? err.message : null)
+  }, [])
+
+  // Only the latest selection may settle the cockpit. Two can be in flight —
+  // J/K held down, or a press in the document re-selecting its paper just
+  // before the click on a wikilink in it selects the target — and an earlier
+  // answer landing last would show one paper under another's selection. The
+  // same holds for the re-fetches below (a write, a resync sweep): each one
+  // carries the count it started under, and clearing the selection bumps it too.
+  const selectSeq = useRef(0)
   const selectPaper = useCallback(
     (id: string) => {
+      const seq = ++selectSeq.current
+      const latest = () => seq === selectSeq.current
       setSelectedId(id)
       setCockpitLoading(true)
+      setCockpitError(null)
       fetchPaper(id)
-        .then(setCockpitPaper)
+        .then((paper) => {
+          if (latest()) showCockpitPaper(paper)
+        })
         .catch((err) => {
           classifyFetchError(err)
-          setCockpitPaper(null)
+          if (latest()) showCockpitFailure(err)
         })
-        .finally(() => setCockpitLoading(false))
+        .finally(() => {
+          if (latest()) setCockpitLoading(false)
+        })
     },
-    [classifyFetchError],
+    [classifyFetchError, showCockpitPaper, showCockpitFailure],
+  )
+  // Re-fetch a paper into the cockpit for the selection counted as `seq`; the
+  // answer is dropped if the selection has moved on by the time it lands.
+  const refetchCockpit = useCallback(
+    (id: string, seq: number) => {
+      fetchPaper(id)
+        .then((paper) => {
+          if (seq === selectSeq.current) showCockpitPaper(paper)
+        })
+        .catch((err) => {
+          if (seq === selectSeq.current) showCockpitFailure(err)
+        })
+    },
+    [showCockpitPaper, showCockpitFailure],
   )
 
   // After a cockpit structured write: re-fetch the selected paper so the cockpit
@@ -963,17 +1014,13 @@ export default function App() {
   // INDEX/views atomically — these are read refreshes, not a re-derivation.
   const refreshAfterWrite = useCallback(() => {
     const id = selectedId
-    if (id) {
-      fetchPaper(id)
-        .then(setCockpitPaper)
-        .catch(() => setCockpitPaper(null))
-    }
+    if (id) refetchCockpit(id, selectSeq.current)
     loadList(listMode)
     fetchPapers().then((ps) => {
       setAllPapers(ps)
       setAllLoaded(true)
     })
-  }, [selectedId, loadList, listMode])
+  }, [selectedId, loadList, listMode, refetchCockpit])
 
   // After a write that changes the shared vocabulary (a new taxonomy value, a
   // project link/unlink, a new project): refresh the cached /api/taxonomy +
@@ -1006,6 +1053,9 @@ export default function App() {
   // here (the resync path), never in the direct refreshAfterWrite a GUI write
   // fires, so a GUI action is not double-logged (red line #3).
   const doResync = useCallback(async () => {
+    // `selectedId` is the selection this sweep started under; J held through
+    // the sweep moves it on, and then the cockpit is no longer this sweep's.
+    const seq = selectSeq.current
     // Snapshot the last-seen truth BEFORE fresh data lands; the refs are kept
     // mirrored from every commit path (D1), so this is the true prior baseline.
     const prev: ResyncSnapshot = {
@@ -1072,11 +1122,7 @@ export default function App() {
       setDisconnected(false)
       setVaultGone(false)
       setListFailed(false)
-      if (selectedId) {
-        fetchPaper(selectedId)
-          .then(setCockpitPaper)
-          .catch(() => setCockpitPaper(null))
-      }
+      if (selectedId) refetchCockpit(selectedId, seq)
       setMdReloadToken((t) => t + 1)
     } catch (err) {
       // A failed sweep is a data no-op: leave the UI and the diff baseline
@@ -1087,7 +1133,7 @@ export default function App() {
       // it is the last thing that was true, and the banner says so.
       classifyFetchError(err)
     }
-  }, [listMode, selectedId, appendLog, classifyFetchError])
+  }, [listMode, selectedId, appendLog, classifyFetchError, refetchCockpit])
 
   // Auto-resync when the browser regains focus / the tab becomes visible — the
   // "go to the terminal, run CLI/agent, come back to the browser" loop. `focus`
@@ -1495,8 +1541,10 @@ export default function App() {
     // their content is gone now. removeTab re-points the active tab each call.
     tabs.filter((t) => t.paperId === id).forEach((t) => removeTab(t.key))
     if (selectedId === id) {
+      selectSeq.current++
       setSelectedId(null)
       setCockpitPaper(null)
+      setCockpitError(null)
     }
     setRemoving(false)
     setPendingRemove(null)
@@ -1614,8 +1662,10 @@ export default function App() {
   const reloadForVault = useCallback(() => {
     setTabs([])
     setActiveTab(null)
+    selectSeq.current++
     setSelectedId(null)
     setCockpitPaper(null)
+    setCockpitError(null)
     setMdDrafts(new Map())
     // Tabs are gone, so each PdfView unmounts and fires registerPdf(null) on a
     // now-absent key (a harmless delete); clear the handle map directly rather
@@ -1918,10 +1968,26 @@ export default function App() {
     (key: string) => {
       setActiveTab(key)
       const tab = tabs.find((t) => t.key === key)
-      if (tab) selectPaper(tab.paperId)
+      if (!tab) return
+      selectPaper(tab.paperId)
+      // Already selected: the list's own scroll-on-change won't fire, so bring
+      // its row back in case the list was scrolled away from it.
+      if (tab.paperId === selectedId) revealSelectedRef.current?.()
     },
-    [tabs, selectPaper],
+    [tabs, selectedId, selectPaper],
   )
+  // A press anywhere in the open document (PDF page or toolbar, notes or
+  // discussion) brings the selection back to its paper — what clicking its tab
+  // does, so the list and the cockpit follow what is being read. Re-selected
+  // only when the selection has moved off it: a reader presses constantly, and
+  // re-selecting the same paper would refetch the cockpit on every press. Then
+  // only its row is brought back (a no-op while the row is in view).
+  const selectActivePaper = useCallback(() => {
+    const tab = tabs.find((t) => t.key === activeTab)
+    if (!tab) return
+    if (tab.paperId !== selectedId) selectPaper(tab.paperId)
+    else revealSelectedRef.current?.()
+  }, [tabs, activeTab, selectedId, selectPaper])
   // `,` / `.` cycle the open tabs (wrap-around); both no-op with < 2 tabs.
   const activateAdjacentTab = useCallback(
     (delta: 1 | -1) => {
@@ -2020,6 +2086,19 @@ export default function App() {
     }
     togglePin(selectedId)
   }, [selectedId, togglePin, notify])
+  // Shift+N / Shift+D: the selected paper's notes / discussion, through the
+  // same openDoc as the 📝 / 💬 buttons on its row (an open tab is switched to,
+  // not duplicated). Same no-selection toast as P.
+  const openSelectedDoc = useCallback(
+    (doc: 'notes' | 'discussion') => {
+      if (!selectedId) {
+        notify('No paper selected')
+        return
+      }
+      openDoc(selectedId, doc)
+    },
+    [selectedId, openDoc, notify],
+  )
 
   useKeyboardShortcuts({
     anyModalOpen,
@@ -2033,6 +2112,7 @@ export default function App() {
     moveSelection,
     openSelected,
     togglePinSelected,
+    openSelectedDoc,
     openAgent,
     manageAgents,
     toggleCheatSheet,
@@ -2218,11 +2298,13 @@ export default function App() {
               onOpenTrash={openTrash}
               collapsed={leftCollapsed}
               onToggle={() => setLeftCollapsed((c) => !c)}
+              onRegisterReveal={registerReveal}
             />
             <TabArea
               tabs={tabs}
               activeKey={activeTab}
               onActivate={activateTab}
+              onContentPress={selectActivePaper}
               onClose={closeTab}
               onReorder={reorderTab}
               onCloseOthers={closeOtherTabs}
@@ -2241,6 +2323,7 @@ export default function App() {
             <Cockpit
               paper={cockpitPaper}
               loading={cockpitLoading}
+              loadError={cockpitError}
               collapsed={cockpitCollapsed}
               onToggle={() => setCockpitCollapsed((c) => !c)}
               onOpenPaper={openPdf}

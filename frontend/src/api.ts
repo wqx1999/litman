@@ -111,8 +111,11 @@ export function fetchPapers(view?: SmartListView): Promise<IndexPaper[]> {
   return getJSON<IndexPaper[]>(`/api/papers${qs}`)
 }
 
+/** Full metadata for one paper. Detailed, because the server says why a paper
+ * cannot be served — a broken metadata.yaml names the file and the fix — and
+ * the cockpit shows that sentence in place of the paper. */
 export function fetchPaper(id: string): Promise<PaperMeta> {
-  return getJSON<PaperMeta>(`/api/paper/${encodeURIComponent(id)}`)
+  return getJSONDetailed<PaperMeta>(`/api/paper/${encodeURIComponent(id)}`)
 }
 
 /** A compact ACS-style citation plus any caveats (unverified journal
@@ -289,6 +292,10 @@ export interface MetadataWrite {
    * express: add appends, and adds run before removes, so correcting any
    * name but the last would move it to the end. */
   setList?: Record<string, string[]>
+  /** Remove a relation edge whose other paper is no longer in the library — the
+   * per-edge form of `lit health-check --fix`. The server refuses an id that is
+   * still in the library, so this can never break a live pairing. */
+  dropDangling?: Record<string, string[]>
 }
 
 /** Apply a structured metadata change through the `lit modify` backend

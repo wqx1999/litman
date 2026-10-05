@@ -7,14 +7,20 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
+from litman.commands.add import _build_metadata
 from litman.core.document import (
+    PAPER_LIST_FIELDS,
     find_paper,
     list_papers,
     load_yaml_or_raise,
     read_metadata,
 )
 from litman.core.library import create_vault
-from litman.exceptions import CorruptMetadataError, PaperNotFoundError
+from litman.exceptions import (
+    CorruptMetadataError,
+    MalformedMetadataError,
+    PaperNotFoundError,
+)
 
 
 def _write_paper(vault: Path, paper_id: str, **fields: object) -> Path:
@@ -224,3 +230,98 @@ def test_concurrent_read_metadata_does_not_corrupt(vault: Path) -> None:
         t.join()
 
     assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# A list field that is not a list — refused like a file that does not parse
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["topics: peptide", "topics: 2024", "topics: true", "topics: {a: 1}",
+     "related: 2025_Gone_Paper", "authors: Doe, Jane"],
+)
+def test_read_metadata_refuses_a_list_field_that_is_not_a_list(
+    tmp_path: Path, line: str
+) -> None:
+    path = tmp_path / "metadata.yaml"
+    path.write_text(f"id: 2024_X_Foo\n{line}\n", encoding="utf-8")
+    field = line.split(":")[0]
+    with pytest.raises(MalformedMetadataError) as exc:
+        read_metadata(path)
+    assert exc.value.field == field
+    assert f"{field!r} is not a list" in str(exc.value)
+
+
+def test_read_metadata_takes_a_list_field_that_is_absent_null_or_a_list(
+    tmp_path: Path,
+) -> None:
+    """Schema-less (invariant #7): only a value that is there and is not a
+    list is refused — what the list holds is not checked."""
+    path = tmp_path / "metadata.yaml"
+    path.write_text(
+        "id: 2024_X_Foo\ntopics:\nmethods: []\nrelated:\n  - 2024_Y_Bar\n"
+        "authors: [42]\ndata: [1, 2]\nnote: a free-form string field\n",
+        encoding="utf-8",
+    )
+    meta = read_metadata(path)
+    assert meta["related"] == ["2024_Y_Bar"]
+    assert (meta["authors"], meta["data"]) == ([42], [1, 2])
+
+
+@pytest.mark.parametrize("value", ["peptide", "Doe, Jane", "it's: odd", 2024])
+def test_the_example_in_the_message_is_yaml_that_fixes_the_file(
+    value: object,
+) -> None:
+    """The hint is pasted back into the file, so it must parse to the one
+    value the hand edit meant — a comma or a colon in it included."""
+    example = MalformedMetadataError("authors", value).example
+    assert YAML(typ="safe").load(example) == {"authors": [value]}
+
+
+def test_list_papers_leaves_out_a_paper_with_a_scalar_list_field(
+    vault: Path,
+) -> None:
+    _write_paper(vault, "2024_A_Good", topics=["peptide"])
+    _write_paper(vault, "2024_B_Bad", topics="peptide")
+    assert [p["id"] for p in list_papers(vault)] == ["2024_A_Good"]
+
+
+def test_find_paper_names_the_file_and_the_fix(vault: Path) -> None:
+    _write_paper(vault, "2024_B_Bad", related="2024_A_Good")
+    with pytest.raises(CorruptMetadataError) as exc:
+        find_paper(vault, "2024_B_Bad")
+    message = str(exc.value)
+    assert str(vault / "papers" / "2024_B_Bad" / "metadata.yaml") in message
+    assert "'related' is not a list; write it as `related: ['2024_A_Good']`" in (
+        message
+    )
+    assert "invalid YAML" not in message  # the parse-failure wording is wrong here
+
+
+def test_load_yaml_or_raise_refuses_a_scalar_list_field(tmp_path: Path) -> None:
+    """The write commands' loader: refusing here is what stops `--add-tag`
+    from saving `related: X` back as the characters of X."""
+    path = tmp_path / "metadata.yaml"
+    path.write_text("id: 2024_X_Foo\nrelated: 2024_Y_Bar\n", encoding="utf-8")
+    with pytest.raises(CorruptMetadataError) as exc:
+        load_yaml_or_raise(path, YAML())
+    assert exc.value.path == path
+    assert "'related' is not a list" in str(exc.value)
+
+
+def test_load_yaml_or_raise_checks_only_a_papers_metadata(tmp_path: Path) -> None:
+    """repo-meta.yaml has fields of its own; the paper schema is not its."""
+    path = tmp_path / "repo-meta.yaml"
+    path.write_text("name: X\nprojects: one-string\n", encoding="utf-8")
+    assert load_yaml_or_raise(path, YAML())["projects"] == "one-string"
+
+
+def test_every_list_field_lit_add_writes_is_checked() -> None:
+    """The shape check and `lit add`'s skeleton agree on which fields are
+    lists, so a field added to one cannot be missed by the other."""
+    skeleton = _build_metadata({"authors": ["Doe, Jane"]}, "2024_Doe_Foo")
+    assert {k for k, v in skeleton.items() if isinstance(v, list)} == (
+        PAPER_LIST_FIELDS
+    )
