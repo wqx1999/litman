@@ -86,6 +86,16 @@ own entry. Read those before you upgrade, whatever the number says.
   vanished as soon as anything else in the window changed, such as selecting
   another paper in the list.
 
+- **The selected paper's card is no longer cut off at the bottom of the list.**
+  Moving down with `J`, or clicking a row near the bottom of the GUI's list,
+  left the lower part of the card that opens under it out of view. The list
+  now scrolls just far enough to show the whole card. Clicking a row whose
+  card already fits still leaves the list where it is.
+
+- **Closing a long PDF right after opening it no longer floods the browser
+  console.** Closing its tab, or opening the Trash, just as its first page
+  appeared logged one error for every other page of the PDF.
+
 ### Security
 
 - **Other websites can no longer use `lit gui` through your browser.** While

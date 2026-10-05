@@ -1206,6 +1206,20 @@ export default function PdfView({
           void doc.destroy()
           return
         }
+        // Once page 1 has painted, the viewer fetches every other page in the
+        // background and logs each request that fails. Closing the view in that
+        // window destroys the document under them: a long PDF closed (or left
+        // for Trash) right after opening printed one "Unable to get page N to
+        // initialize viewer" per page. Those failures are the teardown's own, so
+        // past cleanup a failed page request is dropped — left pending, as the
+        // viewer that asked is being thrown away — instead of reaching that log.
+        // One that fails while the view is open still reports.
+        const getPage = doc.getPage.bind(doc)
+        doc.getPage = (pageNumber) =>
+          getPage(pageNumber).catch((err: unknown) => {
+            if (cancelled) return new Promise<never>(() => {})
+            throw err
+          })
         docRef.current = doc
         // Baseline for the dirty comparison. Read it rather than assuming "":
         // whatever this document hashes to at rest is what "no unsaved edits"
