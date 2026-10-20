@@ -729,7 +729,8 @@ def test_add_bad_pdf_path_reads_as_before(
     folder = _add_cli(vault, str(tmp_path), "--doi", "10.1/x")
     assert folder.exit_code == 2
     assert folder.output == _add_usage(vault) + (
-        f"Error: Invalid value for 'PDF_PATH': File '{tmp_path}' is a directory.\n"
+        # Click quotes the path with repr(), which doubles Windows backslashes.
+        f"Error: Invalid value for 'PDF_PATH': File {str(tmp_path)!r} is a directory.\n"
     )
     assert "doi" not in mock_crossref
 
