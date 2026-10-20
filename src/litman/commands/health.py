@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
@@ -34,6 +34,7 @@ from rich.markup import escape
 
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
+from litman.core import confirm as confirm_mod
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     Issue,
@@ -46,6 +47,9 @@ from litman.core.correctors import regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import ensure_truth_locked
+
+if TYPE_CHECKING:
+    from litman.core.supplementary import SiFixPolicy
 
 console = Console()
 
@@ -129,6 +133,12 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
     "vault_registry_drift": "Vault registry drift (registered path missing)",
+    "supplementary_field": "SI records (the supplementary field in metadata.yaml)",
+    "supplementary_missing": "SI files recorded but missing",
+    "supplementary_changed": "SI files whose content changed",
+    "supplementary_unrecorded": "Files in supplementary/ with no record",
+    "supplementary_layout": "SI folder layout litman will not change (links, files, folders)",
+    "supplementary_unchecked": "SI litman cannot check (unreadable, or no checksum on record)",
 }
 
 
@@ -223,7 +233,10 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
         "skills, migrate the retired paper-level `priority` onto "
         "priority-<project> (a paper in no project loses it), drop relation "
         "links to papers no longer in the library (deleted, lost, or in the "
-        "trash), and put links back where a copied project folder left real "
+        "trash), record files found in a paper's supplementary/ folder once "
+        "they check out and drop the records of SI files that are gone (both "
+        "ask first at a terminal), "
+        "and put links back where a copied project folder left real "
         "folders (one that does "
         "not match the vault is kept under .trash/replaced-folders/). "
         "Registry / project / taxonomy / code-clone drift stays report-only "
@@ -280,7 +293,8 @@ def health_check_cmd(
         console.print(
             f"[green]✓[/] Re-locked {n_relocked} TRUTH file"
             f"{'s' if n_relocked != 1 else ''} "
-            f"[dim](metadata.yaml / TAXONOMY.md / paper.pdf made read-only)[/]"
+            f"[dim](metadata.yaml / TAXONOMY.md / paper.pdf / SI files made "
+            "read-only)[/]"
         )
 
     issues = run_all_checks(vault, papers)
@@ -378,6 +392,61 @@ def _report_hub_settlements(applied: dict[str, Any]) -> None:
         console.print(f"    {line}", soft_wrap=True)
 
 
+def _si_fix_policy() -> SiFixPolicy:
+    """How ``--fix`` settles the SI cases it must not decide alone.
+
+    At a terminal it asks: whether to drop the records of SI files that are
+    gone (default yes — the file is not there) and whether to record a file it
+    cannot confirm belongs to the paper (default no). With nobody to ask it
+    does neither and prints the command that would.
+    """
+    from litman.core.supplementary import SiFixPolicy, shell_path, si_stem
+
+    interactive = confirm_mod._stdin_is_tty()
+
+    def confirm_drop(paper_id: str, names: list[str]) -> bool:
+        listed = ", ".join(names)
+        if interactive:
+            return click.confirm(
+                f"{paper_id}: {listed} recorded but missing. "
+                "Drop the record(s)?",
+                default=True,
+            )
+        flags = " ".join(f"--si {si_stem(name)}" for name in names)
+        record, them = ("record", "it") if len(names) == 1 else ("records", "them")
+        console.print(
+            f"  [yellow]kept[/] {escape(paper_id)}: {record} of missing "
+            f"{escape(listed)} [dim](drop {them}: `lit rm {escape(paper_id)} "
+            f"{flags} --yes`)[/]",
+            soft_wrap=True,
+        )
+        return False
+
+    def confirm_unverified(paper_id: str, path: Path, verdict: Any) -> bool:
+        if interactive:
+            return click.confirm(
+                f"{paper_id}: can't confirm {path.name} belongs to it. "
+                "Record it anyway?",
+                default=False,
+            )
+        command = f"lit add --si {paper_id} {shell_path(path)} --force"
+        console.print(
+            f"  [yellow]left[/] {escape(str(path))}: can't confirm it belongs "
+            f"to {escape(paper_id)} [dim](record it: `{escape(command)}`)[/]",
+            soft_wrap=True,
+        )
+        return False
+
+    def on_rejected(paper_id: str, path: Path, verdict: Any) -> None:
+        console.print(
+            f"  [yellow]left[/] {escape(str(path))}: {escape(verdict.reason)} "
+            "[dim](move it out of supplementary/)[/]",
+            soft_wrap=True,
+        )
+
+    return SiFixPolicy(confirm_drop, confirm_unverified, on_rejected)
+
+
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
 
@@ -416,5 +485,5 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
             if key in regenerated:
                 counts[key] = regenerated[key]
 
-    counts.update(apply_autofix(vault, issues))
+    counts.update(apply_autofix(vault, issues, si_policy=_si_fix_policy()))
     return counts

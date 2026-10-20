@@ -365,6 +365,23 @@ class StagedWrite:
         """Stage a binary write to ``<vault>/<relpath>``."""
         return self._stage(relpath, content)
 
+    def copy_file(self, relpath: str, src: Path) -> Path:
+        """Stage a copy of the file at ``src`` as ``<vault>/<relpath>``.
+
+        Streams the bytes (``shutil.copyfile``) instead of holding them in
+        memory, for payloads such as SI archives that can run to gigabytes.
+        Content only, never the mode: the staged copy must stay writable,
+        because ``_fsync_file`` opens it ``O_WRONLY`` and a source that is
+        itself a locked TRUTH file would otherwise pass its read-only bit on.
+        Returns the staging path, so a caller can check the copy before the
+        commit.
+        """
+        staging_path = self._staged_path(relpath)
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, staging_path)
+        self._staged[relpath] = (staging_path, self.vault / relpath)
+        return staging_path
+
     # ----- internals ---------------------------------------------------
 
     def _staged_path(self, relpath: str) -> Path:

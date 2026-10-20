@@ -636,9 +636,13 @@ def test_pull_stamps_last_pull(
 def test_pull_relocks_truth_files(
     configured_vault: tuple[Path, str],
 ) -> None:
-    """rclone drops Unix perms, so pull re-locks TRUTH files locally (M32)."""
+    """rclone drops Unix perms, so pull re-locks TRUTH files locally (M32) —
+    a paper's SI files included."""
     vault, target = configured_vault
     _seed_paper(vault, "p1")
+    si_file = vault / "papers" / "p1" / "supplementary" / "si-01.pdf"
+    si_file.parent.mkdir()
+    si_file.write_bytes(b"%PDF-1.4\n%si\n")
     push(vault, target)
 
     # Simulate the post-pull state: a TRUTH file arrives writable.
@@ -648,6 +652,7 @@ def test_pull_relocks_truth_files(
     os.chmod(meta, 0o644)
     os.chmod(pdf, 0o644)
     os.chmod(tax, 0o644)
+    os.chmod(si_file, 0o644)
     assert os.access(meta, os.W_OK)
 
     pull(vault, target)
@@ -655,6 +660,7 @@ def test_pull_relocks_truth_files(
     assert not os.access(meta, os.W_OK)
     assert not os.access(pdf, os.W_OK)
     assert not os.access(tax, os.W_OK)
+    assert not os.access(si_file, os.W_OK)
 
 
 @pytest.mark.skipif(

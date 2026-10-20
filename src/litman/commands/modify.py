@@ -63,6 +63,7 @@ from litman.core.relations import (
     REVERSE_REF_FIELDS,
     relation_refs,
 )
+from litman.core.supplementary import SUPPLEMENTARY_FIELD
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
 from litman.core.views import (
     load_index_papers,
@@ -207,6 +208,13 @@ def _apply_set(
         raise ModifyError(
             f"--set on list field {key!r} would clobber it. "
             f"Use --add-tag {key}=<value> / --rm-tag {key}=<value> instead."
+        )
+    # Each SI record pairs with a locked file in supplementary/; a value set
+    # here would describe files that are not there (or forget ones that are).
+    if key == SUPPLEMENTARY_FIELD:
+        raise ModifyError(
+            f"Cannot --set {key!r}: SI files are added with `lit add --si` "
+            "and removed with `lit rm --si`."
         )
     # The retired paper-level field and its per-project replacement (ADR-025).
     # Placed AFTER the two gates above so a field that is both forbidden and

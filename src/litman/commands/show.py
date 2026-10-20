@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -14,11 +15,18 @@ from litman.commands._options import library_option, vault_option
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.locking import SI_DIRNAME
 from litman.core.paper_lookup import (
     complete_paper_id,
     most_recent_paper_id,
     resolve_paper_input,
 )
+from litman.core.supplementary import (
+    SUPPLEMENTARY_FIELD,
+    field_problems,
+    list_supplementary,
+)
+from litman.core.sync import humanize_bytes
 
 console = Console()
 
@@ -113,6 +121,32 @@ def show_cmd(
     notes_status = "" if notes_file.is_file() else "  [bold red](missing!)[/]"
     console.print(f"[dim]PDF:  [/] {pdf_file}{pdf_status}")
     console.print(f"[dim]Notes:[/] {notes_file}{notes_status}")
+
+    # SI: one line per recorded file — path, the name it was added under, and
+    # its size — with the same (missing!) marker. A malformed field lists what
+    # still parses and says so, rather than hiding the rest.
+    si_dir = paper_dir / SI_DIRNAME
+    for record in list_supplementary(meta):
+        si_file = si_dir / record["file"]
+        try:
+            si_status = "" if si_file.is_file() else "  [bold red](missing!)[/]"
+        except OSError:
+            si_status = "  [bold red](unreadable!)[/]"
+        details = []
+        if record.get("original"):
+            details.append(escape(str(record["original"])))
+        if isinstance(record.get("bytes"), int):
+            details.append(humanize_bytes(record["bytes"]))
+        detail = f"  [dim]({', '.join(details)})[/]" if details else ""
+        console.print(
+            f"[dim]SI:   [/] {escape(str(si_file))}{detail}{si_status}",
+            soft_wrap=True,
+        )
+    if field_problems(meta.get(SUPPLEMENTARY_FIELD)):
+        console.print(
+            "[dim]SI:   [/] [yellow]'supplementary' in metadata.yaml is "
+            "malformed — `lit health-check` says how[/]"
+        )
 
     # Code-clones: one line per bound repo, with the same (missing!) marker used
     # for PDF/Notes when codes/<name>/ is gone (the dangling-link case lit

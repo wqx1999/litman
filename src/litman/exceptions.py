@@ -155,6 +155,14 @@ class TrashError(LitmanError):
     """
 
 
+class SupplementaryError(LitmanError):
+    """A paper's SI files could not be added or removed: a file failed
+    verification or needs confirmation, a source is missing or sits inside
+    the library, an SI name is unknown, or the ``supplementary`` field is
+    malformed.
+    """
+
+
 class CodeError(LitmanError):
     """`lit code` rejected an op: invalid URL / repo-name, collision with an
     existing clone, missing paper for --paper binding, or ``git clone`` failure.

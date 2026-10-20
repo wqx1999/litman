@@ -340,6 +340,34 @@ def test_modify_set_updated_at_forbidden(
     assert isinstance(result.exception, ModifyError)
 
 
+def test_modify_set_supplementary_forbidden(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """SI records pair with locked files in supplementary/: only `lit add
+    --si` / `lit rm --si` write them. `_apply_set` is also what the GUI's
+    metadata PUT runs, so one refusal covers both front doors."""
+    from litman.commands.modify import _apply_set
+
+    vault, paper_id = vault_with_paper
+    meta_path = vault / "papers" / paper_id / "metadata.yaml"
+    before = meta_path.read_bytes()
+    runner = CliRunner()
+    for args in (
+        ["--set", "supplementary=si-01.pdf"],
+        ["--set", "supplementary="],
+        ["--add-tag", "supplementary=si-01.pdf"],
+    ):
+        result = runner.invoke(
+            cli, ["modify", paper_id, *args, "--library", str(vault)]
+        )
+        assert result.exit_code != 0, args
+        assert isinstance(result.exception, ModifyError), args
+    assert meta_path.read_bytes() == before
+
+    with pytest.raises(ModifyError, match="lit rm --si"):
+        _apply_set(vault, paper_id, {}, "supplementary", "si-01.pdf")
+
+
 def test_modify_set_on_list_field_rejected(
     vault_with_paper: tuple[Path, str]
 ) -> None:

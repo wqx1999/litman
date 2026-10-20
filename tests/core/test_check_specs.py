@@ -57,11 +57,12 @@ _EXPECTED_CATEGORIES = (
     "pdf_viewer",
     "skill_drift",
     "code_clone_integrity",
+    "supplementary",
 )
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 28
+    assert len(_CHECK_REGISTRY) == 29
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -101,8 +102,9 @@ def test_auto_fixable_categories_unchanged() -> None:
     refreshing it never touches files the user added), and two members that
     are NOT lossless, each admitted on the argument recorded beside the
     constant: the retired-field migration (ADR-025) and the removal of
-    relation edges that name a paper no longer in the library. Broadening to
-    klass-A regen is separate."""
+    relation edges that name a paper no longer in the library — and the SI
+    pair, which records verified strays and drops records of missing files,
+    asking first. Broadening to klass-A regen is separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
         {
             "stale_staging",
@@ -111,8 +113,18 @@ def test_auto_fixable_categories_unchanged() -> None:
             "skill_drift",
             "retired_priority",
             "dangling_refs",
+            "supplementary_missing",
+            "supplementary_unrecorded",
         }
     )
+
+
+def test_supplementary_is_full_b_auth_report() -> None:
+    """Ledger #13: SI records ↔ SI files. Both sides are authored truth, and
+    the records are not in the INDEX projection, so the check can only run
+    in the full tier (invariant #15)."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
 
 
 def test_cheap_checks_returns_only_cheap_tier() -> None:

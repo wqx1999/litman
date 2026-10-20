@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -63,6 +64,65 @@ def test_staged_write_write_bytes(vault: Path) -> None:
         stage.write_bytes("attachments/blob.bin", payload)
 
     assert (vault / "attachments/blob.bin").read_bytes() == payload
+
+
+def test_staged_write_copy_file_copies_a_file_in(
+    vault: Path, tmp_path: Path
+) -> None:
+    """copy_file stages a copy of a file on disk (SI can be gigabytes, so it
+    is streamed rather than handed over as bytes); the source stays put."""
+    source = tmp_path / "blob.bin"
+    source.write_bytes(bytes(range(256)) * 4096)
+
+    with staged_write(vault) as stage:
+        staged = stage.copy_file("attachments/blob.bin", source)
+        # In place before the commit, so a caller can check it.
+        assert staged.read_bytes() == source.read_bytes()
+
+    assert (vault / "attachments/blob.bin").read_bytes() == source.read_bytes()
+    assert source.is_file()
+    assert list((vault / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_staged_write_copy_file_does_not_carry_a_read_only_bit(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A locked source (an SI file re-added from inside the vault) must not
+    lock the staged copy: _fsync_file opens it O_WRONLY. The promoted target
+    is a lockable SI file, so it ends up locked all the same."""
+    from litman.core.locking import lock_truth_file
+
+    source = tmp_path / "locked.pdf"
+    source.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    lock_truth_file(source)
+
+    with staged_write(vault) as stage:
+        staged = stage.copy_file(
+            "papers/2024_A_b/supplementary/si-01.pdf", source
+        )
+        assert os.access(staged, os.W_OK)
+
+    target = vault / "papers" / "2024_A_b" / "supplementary" / "si-01.pdf"
+    assert target.read_bytes() == b"%PDF-1.4\n%%EOF\n"
+    assert not os.access(target, os.W_OK)
+
+
+def test_staged_write_copy_file_rolls_back_on_exception(
+    vault: Path, tmp_path: Path
+) -> None:
+    source = tmp_path / "a.bin"
+    source.write_bytes(b"x")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with staged_write(vault) as stage:
+            stage.copy_file("papers/2024_A_b/supplementary/si-01.bin", source)
+            raise RuntimeError("boom")
+
+    assert not (vault / "papers" / "2024_A_b").exists()
+    assert source.read_bytes() == b"x"
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,10 @@ Atomicity layers:
   project symlink removal, REFERENCES.md re-render, views rebuild) run after
   the staged commit. A failure there leaves INDEX.json claiming the paper is
   gone while the dir is still on disk — ``lit health-check`` flags this.
+
+``lit rm <paper> --si si-02`` removes one of the paper's SI files instead of
+the paper: :func:`litman.core.supplementary.remove_supplementary` moves it to
+``.trash/removed-si/`` and drops its record; the paper is untouched.
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ from litman.core.config import load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
-from litman.core.document import load_yaml_or_raise
+from litman.core.document import find_paper, load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
@@ -370,6 +374,72 @@ class RmResult:
     warnings: list[str]
 
 
+def _rm_si(
+    vault: Path,
+    paper_id: str,
+    names: tuple[str, ...],
+    *,
+    skip_confirm: bool,
+    dry_run: bool,
+) -> None:
+    """``lit rm PAPER --si NAME...``: move SI files to .trash/removed-si/.
+
+    Same confirmation contract as deleting a paper (``--yes`` / non-tty refusal
+    / default-No prompt) and the same ``--dry-run``. Each moved file prints the
+    command that puts it back.
+    """
+    from litman.core.supplementary import (
+        remove_supplementary,
+        resolve_si_records,
+        restore_command,
+    )
+
+    records = resolve_si_records(paper_id, find_paper(vault, paper_id), names)
+    listing = [
+        f"  {escape(rec['file'])} [dim]({escape(str(rec.get('original') or '?'))})[/]"
+        for rec in records
+    ]
+    if dry_run:
+        console.print(
+            f"[bold]Would move to .trash/removed-si/:[/] SI of "
+            f"{escape(paper_id)} [dim](dry-run)[/]",
+            soft_wrap=True,
+        )
+        for line in listing:
+            console.print(line, soft_wrap=True)
+        console.print(
+            "[dim]Dry-run only — nothing deleted. "
+            "Drop --dry-run to remove for real.[/]"
+        )
+        return
+
+    warning_lines = [
+        f"[bold yellow]About to move to .trash/removed-si/:[/] SI of "
+        f"{escape(paper_id)}",
+        *listing,
+        "Put one back with [bold]lit add --si[/] and its path in the trash.",
+    ]
+    if not _confirm_destructive(warning_lines, yes=skip_confirm):
+        console.print("[dim]Aborted. No changes made.[/]")
+        return
+
+    for name, dest in remove_supplementary(
+        vault, paper_id, [rec["file"] for rec in records]
+    ):
+        if dest is None:
+            console.print(
+                f"[bold green]✓ Dropped the record[/] of {escape(name)} "
+                "[dim](the file was already gone)[/]"
+            )
+            continue
+        console.print(f"[bold green]✓ Moved[/] {escape(name)} to the trash")
+        console.print(
+            f"  [dim]put it back:[/] {escape(restore_command(paper_id, dest))}",
+            soft_wrap=True,
+        )
+    console.print("[dim]metadata.yaml + INDEX.json updated.[/]")
+
+
 def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
     """Compute the full delete impact set for ``paper_id`` WITHOUT writing.
 
@@ -633,6 +703,17 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     help="Preview only — list the paper plus every external link that would "
     "be cleared / unbound / orphaned, then exit without deleting anything.",
 )
+@click.option(
+    "--si",
+    "si_names",
+    multiple=True,
+    metavar="NAME",
+    help=(
+        "Remove one of the paper's SI files (si-02, or si-02.xlsx) instead of "
+        "the paper. Repeatable. It moves to .trash/removed-si/; "
+        "`lit add --si <paper> <that path>` puts it back. Not with --purge."
+    ),
+)
 @library_option
 @vault_option
 def rm_cmd(
@@ -641,6 +722,7 @@ def rm_cmd(
     purge: bool,
     skip_confirm: bool,
     dry_run: bool,
+    si_names: tuple[str, ...],
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -659,9 +741,27 @@ def rm_cmd(
     A y/N confirmation guards the delete (default N); pass -y to force it
     non-interactively. --dry-run previews the full impact set (the paper plus
     every link that would be cleared / unbound / orphaned) without deleting.
+
+    With --si NAME only that SI file goes (to .trash/removed-si/), under the
+    same confirmation and --dry-run; the paper stays.
     """
+    if si_names and purge:
+        raise click.UsageError(
+            "--si moves SI files to the trash; it cannot be combined with "
+            "--purge."
+        )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
+
+    if si_names:
+        _rm_si(
+            vault,
+            paper_id,
+            si_names,
+            skip_confirm=skip_confirm,
+            dry_run=dry_run,
+        )
+        return
 
     # Discovery + cascade computation (pure read) is shared with the webUI
     # route via discover_rm_impact; it raises RmError / PaperNotFoundError for

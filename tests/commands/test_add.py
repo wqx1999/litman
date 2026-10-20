@@ -670,6 +670,61 @@ def test_add_nonexistent_pdf_rejected_by_click(
     assert "doi" not in mock_crossref
 
 
+# Since `--si`, PDF_PATH takes any number of paths. Without --si every way of
+# getting it wrong must still read exactly as it did when the argument took
+# one path — these are the texts Click printed then (red line: `lit add`
+# without --si is unchanged, errors included).
+_ADD_USAGE = "Usage: cli add [OPTIONS] PDF_PATH\nTry 'cli add -h' for help.\n\n"
+
+
+def _add_cli(vault: Path, *args: str) -> Any:
+    return CliRunner().invoke(cli, ["add", *args, "--library", str(vault)])
+
+
+def test_add_missing_pdf_path_reads_as_before(
+    vault: Path, mock_crossref: dict[str, Any]
+) -> None:
+    result = _add_cli(vault, "--doi", "10.1/x")
+    assert result.exit_code == 2
+    assert result.output == _ADD_USAGE + "Error: Missing argument 'PDF_PATH'.\n"
+    assert "doi" not in mock_crossref
+
+
+def test_add_extra_paths_read_as_before(
+    vault: Path, fake_pdf: Path, mock_crossref: dict[str, Any], tmp_path: Path
+) -> None:
+    other = tmp_path / "other.pdf"
+    other.write_bytes(_FAKE_PDF_BYTES)
+    for extra, message in (
+        ([str(other)], f"Got unexpected extra argument ({other})"),
+        # A second path that does not exist is still just "extra".
+        (["./not-there.pdf"], "Got unexpected extra argument (./not-there.pdf)"),
+        (["x", "y"], "Got unexpected extra arguments (x y)"),
+    ):
+        result = _add_cli(vault, str(fake_pdf), *extra, "--doi", "10.1/x")
+        assert result.exit_code == 2, extra
+        assert result.output == _ADD_USAGE + f"Error: {message}\n"
+    assert fake_pdf.exists() and other.exists()
+    assert "doi" not in mock_crossref
+    assert list((vault / "papers").iterdir()) == []
+
+
+def test_add_bad_pdf_path_reads_as_before(
+    vault: Path, mock_crossref: dict[str, Any], tmp_path: Path
+) -> None:
+    missing = _add_cli(vault, "missing.pdf", "extra.pdf", "--doi", "10.1/x")
+    assert missing.exit_code == 2
+    assert missing.output == _ADD_USAGE + (
+        "Error: Invalid value for 'PDF_PATH': File 'missing.pdf' does not exist.\n"
+    )
+    folder = _add_cli(vault, str(tmp_path), "--doi", "10.1/x")
+    assert folder.exit_code == 2
+    assert folder.output == _ADD_USAGE + (
+        f"Error: Invalid value for 'PDF_PATH': File '{tmp_path}' is a directory.\n"
+    )
+    assert "doi" not in mock_crossref
+
+
 def test_add_rejects_non_pdf_before_touching_vault(
     vault: Path,
     mock_crossref: dict[str, Any],

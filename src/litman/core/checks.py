@@ -36,12 +36,13 @@ Cross-references:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
 
 from ruamel.yaml import YAMLError
 
@@ -94,6 +95,9 @@ from litman.exceptions import (
     MalformedMetadataError,
     VaultRegistryError,
 )
+
+if TYPE_CHECKING:
+    from litman.core.supplementary import SiFixPolicy
 
 _yaml = ThreadLocalYAML(typ="safe")
 
@@ -204,6 +208,15 @@ class CheckSpec:
 # edge it carries itself and gets their other halves back on restore; the cost
 # is a half-edge only the surviving paper held. Per-finding consent again, the
 # same way: an edge into the trash gets its own message, offering the restore.
+#
+# ``supplementary_missing`` / ``supplementary_unrecorded`` are the SI pair, and
+# the only arms that ask before acting. Recording a file found in a paper's
+# supplementary/ folder verifies it first and never takes one that belongs
+# elsewhere; one that cannot be confirmed goes in only on a yes. Dropping the
+# record of an SI file that is gone loses a pointer to nothing, but a
+# half-pulled sync looks the same, so it is asked about too (default yes) —
+# and with no one to ask, both are left in the report with the explicit
+# command that would do it.
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {
         "stale_staging",
@@ -212,6 +225,8 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
         "skill_drift",
         "retired_priority",
         "dangling_refs",
+        "supplementary_missing",
+        "supplementary_unrecorded",
     }
 )
 
@@ -3037,6 +3052,147 @@ def check_trash_health(
     return out
 
 
+def check_supplementary(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Each paper's ``supplementary`` records ↔ its ``supplementary/`` folder.
+
+    Six categories. Two are ``--fix``-able (AUTO_FIXABLE_CATEGORIES):
+
+    * ``supplementary_missing`` (error) — a record whose file is gone.
+    * ``supplementary_unrecorded`` (warning) — a plain file in the folder with
+      no record (dropped in by hand, or left by a half-finished sync).
+
+    The rest are report-only:
+
+    * ``supplementary_field`` (error) — the list is malformed (not a list, an
+      entry that is not a mapping, a bad or repeated ``file``). Nothing else
+      is checked for that paper until it is fixed.
+    * ``supplementary_changed`` (error) — a recorded file whose content no
+      longer matches its checksum: which copy is right is the user's call.
+    * ``supplementary_layout`` — what litman will not touch: the folder is a
+      link or a file (error, and nothing else is checked for that paper), a
+      recorded file was replaced by a link or a folder (error), or the folder
+      holds a sub-folder or a link (warning).
+    * ``supplementary_unchecked`` (warning) — what cannot be checked: a
+      record without ``sha256`` / ``bytes``, or an entry that cannot be read.
+
+    The errors block ``lit sync push``: pushing would delete or overwrite the
+    good copy in the cloud (rclone does not follow links either). Content is
+    compared by size, and re-hashed only when the file's mtime moved away from
+    its ``added`` stamp. Nothing is followed through a link, and an
+    unreadable folder is a finding, never an exception. Full tier — it reads
+    every paper's metadata (invariant #15).
+    """
+    # Lazy: this module loads on every `lit` command (the drift hook), the SI
+    # module only once a full health check runs.
+    from litman.core.locking import SI_DIRNAME
+    from litman.core.supplementary import (
+        SUPPLEMENTARY_FIELD,
+        si_stem,
+        supplementary_drift,
+    )
+
+    kind_words = {"link": "a link", "dir": "a folder", "other": "a special file"}
+    out: list[Issue] = []
+
+    def add(category: str, severity: str, paper_id: str, message: str, hint: str) -> None:
+        out.append(Issue(category, severity, paper_id, message, hint))
+
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        paper_id = str(paper_id)
+        where = f"papers/{paper_id}/supplementary"
+        if SUPPLEMENTARY_FIELD not in paper and not os.path.lexists(
+            vault / "papers" / paper_id / SI_DIRNAME
+        ):
+            continue
+        try:
+            drift = supplementary_drift(vault, paper_id, paper)
+        except OSError as exc:
+            add(
+                "supplementary_unchecked", "warning", paper_id,
+                f"{where} cannot be checked ({exc.__class__.__name__})",
+                "fix its permissions, then rerun `lit health-check`",
+            )
+            continue
+        for problem in drift.problems:
+            add(
+                "supplementary_field", "error", paper_id,
+                f"papers/{paper_id}/metadata.yaml: 'supplementary' {problem}",
+                "fix it by hand — litman leaves this paper's SI alone until "
+                "it parses",
+            )
+        if drift.folder == "link":
+            add(
+                "supplementary_layout", "error", paper_id,
+                f"{where} is a link; litman does not follow it",
+                "replace it with a real folder holding the SI files",
+            )
+        elif drift.folder == "file":
+            add(
+                "supplementary_layout", "error", paper_id,
+                f"{where} is a file, not a folder",
+                "move it out of the paper folder; add SI with `lit add --si`",
+            )
+        for name in drift.missing:
+            add(
+                "supplementary_missing", "error", paper_id,
+                f"{where}/{name} is recorded but missing",
+                "put the file back, or drop the record: "
+                f"`lit rm {paper_id} --si {si_stem(name)} --yes`",
+            )
+        for name in drift.changed:
+            add(
+                "supplementary_changed", "error", paper_id,
+                f"{where}/{name} no longer matches its recorded checksum",
+                f"put the original back, or `lit rm {paper_id} --si "
+                f"{si_stem(name)}` and add the right file",
+            )
+        for name, kind in drift.odd_recorded:
+            add(
+                "supplementary_layout", "error", paper_id,
+                f"{where}/{name} is recorded, but is now {kind_words[kind]}",
+                "put the recorded file back in its place",
+            )
+        for name in drift.unrecorded:
+            add(
+                "supplementary_unrecorded", "warning", paper_id,
+                f"{where}/{name} has no record in metadata.yaml",
+                "`lit health-check --fix` checks it and records it",
+            )
+        for name, kind in drift.odd_strays:
+            if kind == "dir":
+                message = f"{where}/{name}/ is a folder; SI files are single files"
+                hint = "move it out; to keep it as SI, zip it and `lit add --si` the zip"
+            elif kind == "link":
+                message = f"{where}/{name} is a link; litman does not follow it"
+                hint = "replace it with a copy of the file itself"
+            else:
+                message = f"{where}/{name} is not a regular file"
+                hint = "move it out of supplementary/"
+            add("supplementary_layout", "warning", paper_id, message, hint)
+        for name, why in drift.unchecked:
+            if why == "no checksum":
+                add(
+                    "supplementary_unchecked", "warning", paper_id,
+                    f"{where}/{name} has no sha256 / bytes on record — its "
+                    "content can't be verified",
+                    f"`lit rm {paper_id} --si {si_stem(name)}`, then `lit add "
+                    "--si` the trashed copy to record them",
+                )
+            else:
+                path = f"{where}/{name}" if name else where
+                add(
+                    "supplementary_unchecked", "warning", paper_id,
+                    f"{path} cannot be read ({why}); litman can't check it",
+                    "fix its permissions, then rerun `lit health-check`",
+                )
+    return out
+
+
 def check_code_clone_integrity(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -3338,6 +3494,13 @@ def check_code_clone_integrity(
 #       only, no per-paper metadata) → tier=cheap, klass=B-ext, resolve.
 #   inbox_staleness / stale_staging / trash_health / pdf_viewer — non-drift
 #       diagnostics, surface only → klass=validity, correction=report.
+#   supplementary (#13) — metadata `supplementary` records ↔ the files in
+#       papers/<id>/supplementary/ → klass=B-auth (both sides are authored
+#       truth), report; tier=full (the records are not in the INDEX
+#       projection, invariant #15). Of its six finding categories only
+#       missing / unrecorded are `--fix`able, with consent (see
+#       AUTO_FIXABLE_CATEGORIES); field / changed / layout / unchecked need
+#       a person.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
     # Same shape as schema (metadata read, nothing derived to regenerate), but
@@ -3446,6 +3609,7 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "B-ext",
         "resolve",
     ),
+    CheckSpec("supplementary", check_supplementary, "full", "B-auth", "report"),
 )
 
 
@@ -3551,7 +3715,12 @@ def group_by_category(issues: Iterable[Issue]) -> dict[str, list[Issue]]:
     return grouped
 
 
-def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
+def apply_autofix(
+    vault: Path,
+    issues: list[Issue],
+    *,
+    si_policy: SiFixPolicy | None = None,
+) -> dict[str, int]:
     """Auto-clean fixable categories. Returns ``{category: n_fixed}``.
 
     Currently fixes:
@@ -3576,6 +3745,11 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
     * ``dangling_refs`` — removes every relation edge naming a paper no longer
       in the library, forward and reverse. Also not lossless; see the same
       constant.
+    * ``supplementary_missing`` / ``supplementary_unrecorded`` — drops the
+      records of SI files that are gone and records files found in a paper's
+      ``supplementary/`` folder (verified first), asking through
+      ``si_policy``. Without one, nobody is asked: only files that verify are
+      recorded, and the rest stays in the report.
     """
     counts: dict[str, int] = {}
 
@@ -3664,6 +3838,22 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
         from litman.core.ripple import drop_dangling_relations
 
         counts["dangling_refs"] = drop_dangling_relations(vault)
+
+    si_present = fixable_present & {
+        "supplementary_missing",
+        "supplementary_unrecorded",
+    }
+    if si_present:
+        from litman.core.supplementary import NO_PROMPT_POLICY, fix_supplementary
+
+        si_ids = {
+            i.paper_id for i in issues if i.category in si_present and i.paper_id
+        }
+        fixed = fix_supplementary(
+            vault, si_ids, policy=si_policy or NO_PROMPT_POLICY
+        )
+        for category in si_present:
+            counts[category] = fixed[category]
 
     if "stale_staging" in fixable_present:
         counts["stale_staging"] = cleanup_stale_staging(vault)

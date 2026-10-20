@@ -64,6 +64,25 @@ def test_list_commands_enumerates_without_importing() -> None:
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
 
+def test_si_reading_paths_leave_pypdf_unloaded() -> None:
+    # The per-command drift hook imports litman.core.checks on every `lit`
+    # call, and `lit show` / `lit rm` / `lit trash` import the SI module: none
+    # of them may drag pypdf in at import time. It loads only when a PDF is
+    # actually read (SI verification).
+    code = (
+        "import sys;"
+        "import litman.core.checks, litman.core.supplementary;"
+        "import litman.commands.show, litman.commands.rm, litman.commands.trash;"
+        "import litman.commands.health, litman.commands.modify;"
+        "assert 'pypdf' not in sys.modules, 'pypdf loaded at import';"
+        "print('ok')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
 def test_lazy_table_covers_every_workflow_section_command() -> None:
     # Guard against a command being added to _COMMAND_SECTIONS but forgotten in
     # _LAZY (it would then 404 at dispatch). help/hello are decorator-only.

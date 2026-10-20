@@ -21,12 +21,17 @@ Pipeline (M2.9 + M4.1):
        ``copy2`` so a mid-write failure does not strand the original; the
        ``unlink`` happens only once the vault is consistent.
     7. Print a summary panel.
+
+``lit add --si <paper> FILE...`` is the second mode: it adds supplementary
+files to a paper already in the vault, through
+:mod:`litman.core.supplementary` (same mv semantics, all or nothing).
 """
 
 from __future__ import annotations
 
 import shutil
 import sys
+from gettext import ngettext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,6 +42,7 @@ from rich.panel import Panel
 
 from litman.commands._options import library_option, vault_option
 from litman.commands._path_lines import path_lines, print_unwrapped
+from litman.core import confirm as confirm_mod
 from litman.core.code_scan import scan_code_urls
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
@@ -55,6 +61,7 @@ from litman.core.id import (
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.placeholders import is_placeholder
 from litman.core.views import load_index_papers, view_fields_snapshot
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -250,6 +257,122 @@ def _validate_id_override(
             param=param,
         )
     return value
+
+
+# PDF_PATH's type before --si: one existing file. The argument now takes any
+# number of paths (--si can add several), and without --si the first is held
+# to this type — the same check, at the same point of parsing, with the same
+# error text as when the argument took exactly one.
+_PDF_PATH_TYPE = click.Path(
+    exists=True, file_okay=True, dir_okay=False, path_type=Path
+)
+
+
+def _check_pdf_path(
+    ctx: click.Context, param: click.Parameter, value: tuple[Any, ...]
+) -> tuple[Any, ...]:
+    """Click callback: without ``--si``, PDF_PATH is required and must exist.
+
+    ``--si`` is eager, so it is already in ``ctx.params`` here. A second path
+    is refused later, in the command body: Click reported an extra argument
+    only after every option had been processed, and so does the body.
+    """
+    if ctx.params.get("si_paper") is not None:
+        return value
+    if not value:
+        raise click.MissingParameter(ctx=ctx, param=param)
+    return (_PDF_PATH_TYPE.convert(value[0], param, ctx), *value[1:])
+
+
+def _verdict_line(item: Any, verdict: Any) -> str:
+    from litman.core.sync import humanize_bytes
+
+    mark = {"ok": "[green]✓[/]", "unverified": "[yellow]?[/]"}.get(
+        verdict.status, "[red]✕[/]"
+    )
+    return (
+        f"{mark} {escape(item.original)} "
+        f"[dim]({humanize_bytes(verdict.size)})[/] — {escape(verdict.reason)}"
+    )
+
+
+def _add_si_files(
+    si_paper: str,
+    paths: tuple[Any, ...],
+    *,
+    force: bool,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
+    """``lit add --si PAPER FILE...``: verify every file, then add all or none.
+
+    Verdicts and warnings go to stderr; stdout carries only ``SI ready: N
+    file(s)`` and one absolute path per line, the shape an agent parses (the
+    same lines the GUI-wait mode will print). A rejected file is never added;
+    one that cannot be confirmed, or is over 100 MiB, needs a yes at a
+    terminal or ``--force`` — and any no adds nothing.
+    """
+    from litman.core.supplementary import (
+        LARGE_FILE_BYTES,
+        add_supplementary,
+        prepare_items,
+        verify_batch,
+    )
+    from litman.core.sync import humanize_bytes
+    from litman.exceptions import SupplementaryError
+
+    err = Console(stderr=True)
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    paper_id = resolve_paper_id(vault, si_paper)
+    items = prepare_items(vault, paper_id, [Path(p) for p in paths])
+    verdicts = verify_batch(vault, paper_id, items)
+    for item, verdict in zip(items, verdicts, strict=True):
+        err.print(_verdict_line(item, verdict), soft_wrap=True)
+
+    refused = [v for v in verdicts if v.status == "rejected"]
+    if refused:
+        noun = "file" if len(refused) == 1 else "files"
+        raise SupplementaryError(
+            f"Refused {len(refused)} {noun} — nothing was added. "
+            "A refused file cannot be added, even with --force."
+        )
+
+    held: list[tuple[Any, list[str]]] = []
+    for item, verdict in zip(items, verdicts, strict=True):
+        reasons = []
+        if verdict.status == "unverified":
+            reasons.append(f"can't confirm it belongs to {paper_id}")
+        if verdict.size > LARGE_FILE_BYTES:
+            reasons.append(f"it is {humanize_bytes(verdict.size)}")
+        if reasons:
+            held.append((item, reasons))
+    if held and not force:
+        if not confirm_mod._stdin_is_tty():
+            noun, them = (
+                ("file needs", "it") if len(held) == 1 else ("files need", "them")
+            )
+            raise SupplementaryError(
+                f"{len(held)} {noun} a yes — nothing was added. "
+                f"Pass --force to add {them} anyway."
+            )
+        for item, reasons in held:
+            if not click.confirm(
+                f"Add {item.original} anyway ({'; '.join(reasons)})?",
+                default=False,
+            ):
+                raise SupplementaryError("Nothing was added.")
+
+    result = add_supplementary(
+        vault,
+        paper_id,
+        items,
+        allow_unverified=any(v.status == "unverified" for v in verdicts),
+    )
+    for message in result.warnings:
+        err.print(f"[yellow]Warning:[/] {escape(message)}", soft_wrap=True)
+    click.echo(f"SI ready: {len(result.paths)} file(s)")
+    for path in result.paths:
+        click.echo(str(path))
 
 
 def _apply_add(
@@ -492,8 +615,12 @@ def _apply_add(
 
 @click.command("add")
 @click.argument(
-    "pdf_path",
-    type=click.Path(exists=True, file_okay=True, dir_okay=False, path_type=Path),
+    "pdf_paths",
+    nargs=-1,
+    required=False,
+    metavar="PDF_PATH",
+    type=click.Path(),
+    callback=_check_pdf_path,
 )
 @click.option(
     "--doi",
@@ -533,28 +660,109 @@ def _apply_add(
         "Required for non-interactive (non-TTY) batch use."
     ),
 )
+@click.option(
+    "--si",
+    "si_paper",
+    default=None,
+    metavar="PAPER",
+    is_eager=True,
+    shell_complete=complete_paper_id,
+    help=(
+        "Add supplementary files (SI) to PAPER, a paper already in the vault "
+        "(full id or unique substring), instead of importing a paper: "
+        "lit add --si PAPER FILE... Each file is checked against the paper "
+        "first; files go to papers/<id>/supplementary/si-01.<ext>... and are "
+        "moved, like the PDF. Not with --doi / --from-llm-json / --id / "
+        "--auto-suffix."
+    ),
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help=(
+        "With --si: add files that cannot be confirmed as the paper's SI, or "
+        "are over 100 MiB, without asking. Never adds a refused file."
+    ),
+)
 @library_option
 @vault_option
 def add_cmd(
-    pdf_path: Path,
+    pdf_paths: tuple[Any, ...],
     doi: str | None,
     from_llm_json: Path | None,
     id_override: str | None,
     auto_suffix: bool,
+    si_paper: str | None,
+    force: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Import a paper PDF into the vault.
+    """Import a paper PDF into the vault — or, with --si, add its SI files.
 
-    Source of metadata: either --doi (CrossRef fetch) or
+    \b
+    lit add PDF_PATH --doi DOI | --from-llm-json PATH
+    lit add --si PAPER FILE...
+
+    Importing: metadata comes from either --doi (CrossRef fetch) or
     --from-llm-json <path> (LLM-prepared JSON file). Exactly one is
     required. Refuses on duplicate DOI, derives a canonical id, and
     creates papers/<id>/ containing paper.pdf, metadata.yaml, an empty
     notes.md, and an empty discussion.md.
 
-    The source PDF is moved into the vault: the original file is removed
-    after a successful ingest.
+    Adding SI: every FILE is checked against PAPER first (file name vs its
+    DOI, first pages vs its title). All are added or none: a file that
+    looks like another paper's SI, or is the article itself, is refused; one
+    that cannot be confirmed, or is over 100 MiB, needs a yes (or --force).
+    Prints `SI ready: N file(s)` and the new paths.
+
+    Either way the source files are moved into the vault: the originals are
+    removed after a successful add.
     """
+    ctx = click.get_current_context()
+    if si_paper is not None:
+        given = [
+            flag
+            for flag, value in (
+                ("--doi", doi),
+                ("--from-llm-json", from_llm_json),
+                ("--id", id_override),
+                ("--auto-suffix", auto_suffix or None),
+            )
+            if value is not None
+        ]
+        if given:
+            raise click.UsageError(
+                f"--si adds SI to a paper already in the vault; drop "
+                f"{' / '.join(given)}.",
+                ctx=ctx,
+            )
+        if not pdf_paths:
+            raise click.UsageError(
+                "--si needs the SI files: lit add --si PAPER FILE...", ctx=ctx
+            )
+        _add_si_files(
+            si_paper,
+            pdf_paths,
+            force=force,
+            library=library,
+            vault_name=vault_name,
+        )
+        return
+
+    if force:
+        raise click.UsageError("--force only applies to --si.", ctx=ctx)
+    if len(pdf_paths) > 1:
+        extra = pdf_paths[1:]
+        ctx.fail(
+            ngettext(
+                "Got unexpected extra argument ({args})",
+                "Got unexpected extra arguments ({args})",
+                len(extra),
+            ).format(args=" ".join(map(str, extra)))
+        )
+    pdf_path: Path = pdf_paths[0]
+
     if (doi is None) == (from_llm_json is None):
         raise AddError(
             "Provide exactly one of --doi <doi> or --from-llm-json <path>. "

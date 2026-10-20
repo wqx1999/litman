@@ -2432,6 +2432,8 @@ def test_auto_fixable_categories_constant() -> None:
             "skill_drift",
             "retired_priority",
             "dangling_refs",
+            "supplementary_missing",
+            "supplementary_unrecorded",
         }
     )
 
@@ -3301,3 +3303,270 @@ def test_kept_hub_folders_are_never_auto_fixed(vault: Path) -> None:
         "Folders kept out of project hubs"
     )[1].split("\n")[0]
     assert check_trash_health(vault, list_papers(vault))
+
+
+# ===========================================================================
+# supplementary — SI records ↔ papers/<id>/supplementary/ (ledger #13)
+# ===========================================================================
+
+# SI named ci9b00237_* carries this DOI's number, so it verifies by name.
+_SI_DOI = "10.1021/acs.jcim.9b00237"
+_SI_PAPER = "2019_Yang_Si"
+
+
+def _si_paper(vault: Path, tmp_path: Path, n: int = 2) -> Path:
+    """A paper with ``n`` recorded SI files (si-01.csv …); returns its folder."""
+    from litman.core.supplementary import SiItem, add_supplementary
+
+    _write_paper(vault, _SI_PAPER, doi=_SI_DOI)
+    items = []
+    for i in range(1, n + 1):
+        src = tmp_path / f"ci9b00237_si_{i:03d}.csv"
+        src.write_text(f"row,{i}\n", encoding="utf-8")
+        items.append(SiItem(src, src.name))
+    add_supplementary(vault, _SI_PAPER, items, allow_unverified=False)
+    return vault / "papers" / _SI_PAPER / "supplementary"
+
+
+def _si_records(vault: Path) -> list[tuple[str, str]]:
+    from litman.core.document import find_paper
+
+    meta = find_paper(vault, _SI_PAPER)
+    return [(r["file"], r["check"]) for r in meta.get("supplementary") or []]
+
+
+def _si_issues(vault: Path) -> list[Any]:
+    from litman.core.checks import check_supplementary
+
+    return check_supplementary(vault, list_papers(vault))
+
+
+def test_supplementary_check_reports_each_drift(vault: Path, tmp_path: Path) -> None:
+    si = _si_paper(vault, tmp_path)
+    assert _si_issues(vault) == []
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    unlock_truth_file(si / "si-02.csv")
+    (si / "si-02.csv").write_text("row,2,edited\n", encoding="utf-8")
+    (si / "notes from the email.txt").write_text("x", encoding="utf-8")
+    (si / ".DS_Store").write_bytes(b"\0")  # clutter is nobody's finding
+    _write_paper(vault, "2020_Bad_Field")
+    _append_metadata(vault, "2020_Bad_Field", "supplementary: si-01.pdf\n")
+
+    issues = _si_issues(vault)
+
+    assert sorted((i.category, i.severity, i.paper_id) for i in issues) == [
+        ("supplementary_changed", "error", _SI_PAPER),
+        ("supplementary_field", "error", "2020_Bad_Field"),
+        ("supplementary_missing", "error", _SI_PAPER),
+        ("supplementary_unrecorded", "warning", _SI_PAPER),
+    ]
+    by_category = {i.category: i for i in issues}
+    assert "si-01.csv is recorded but missing" in by_category["supplementary_missing"].message
+    assert by_category["supplementary_missing"].hint.endswith(
+        f"`lit rm {_SI_PAPER} --si si-01 --yes`"
+    )
+    assert "'supplementary' is not a list" in by_category["supplementary_field"].message
+    assert "notes from the email.txt" in by_category["supplementary_unrecorded"].message
+
+
+def test_supplementary_errors_block_push_but_a_stray_does_not(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.checks import run_push_integrity_errors
+
+    si = _si_paper(vault, tmp_path)
+    (si / "stray.txt").write_text("x", encoding="utf-8")
+
+    def si_errors() -> set[str]:
+        return {
+            i.category
+            for i in run_push_integrity_errors(vault, list_papers(vault))
+            if i.category.startswith("supplementary")
+        }
+
+    assert si_errors() == set()  # a stray is a warning
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    assert si_errors() == {"supplementary_missing"}
+
+
+def test_health_check_reports_si_findings(vault: Path, tmp_path: Path) -> None:
+    si = _si_paper(vault, tmp_path)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exit_code == 1
+    header = next(
+        line for line in result.output.splitlines()
+        if line.startswith("SI files recorded but missing")
+    )
+    assert "fixable via --fix" in header
+
+
+def test_fix_without_a_terminal_records_only_what_verifies(
+    vault: Path, tmp_path: Path
+) -> None:
+    """No one to ask: a stray that verifies is recorded; the dead record, the
+    unconfirmable stray and the refused one stay — each with the command that
+    would settle it."""
+    si = _si_paper(vault, tmp_path, n=1)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    (si / "ci9b00237_si_004.csv").write_text("verified,4\n", encoding="utf-8")
+    (si / "Table S2.xlsx").write_bytes(b"PK sheet")
+    _write_paper(vault, "2023_Zhong_Other", doi="10.1038/s41467-023-38851-5")
+    (si / "41467_2023_38851_MOESM1_ESM.pdf").write_bytes(b"%PDF-1.4 theirs\n")
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    out = result.output
+    assert f"lit rm {_SI_PAPER} --si si-01 --yes" in out
+    assert f'lit add --si {_SI_PAPER} "{si / "Table S2.xlsx"}" --force' in out
+    assert "looks like the SI of 2023_Zhong_Other" in out
+    assert "supplementary_unrecorded: cleaned 1 item" in out
+    assert _si_records(vault) == [("si-01.csv", "filename"), ("si-02.csv", "filename")]
+    assert not (si / "ci9b00237_si_004.csv").exists()
+    assert (si / "Table S2.xlsx").exists()
+    assert (si / "41467_2023_38851_MOESM1_ESM.pdf").exists()
+    assert result.exit_code == 1  # what was left is still reported
+
+
+def test_fix_at_a_terminal_asks_before_dropping_or_recording(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    si = _si_paper(vault, tmp_path, n=1)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    # Already si-NN: recorded where it is, keeping a number notes may cite.
+    (si / "si-07.csv").write_text("x,7\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)], input="y\ny\n"
+    )
+
+    assert "si-01.csv recorded but missing. Drop the record(s)?" in result.output
+    assert "can't confirm si-07.csv belongs to it. Record it anyway?" in result.output
+    assert _si_records(vault) == [("si-07.csv", "user")]
+    assert (si / "si-07.csv").is_file()
+    assert _si_issues(vault) == []
+
+
+def test_fix_at_a_terminal_defaults(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enter twice: the dead record goes (default yes), the unconfirmable
+    stray stays out (default no)."""
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    si = _si_paper(vault, tmp_path, n=2)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    (si / "unsure.csv").write_text("u\n", encoding="utf-8")
+
+    CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)], input="\n\n"
+    )
+
+    assert _si_records(vault) == [("si-02.csv", "filename")]
+    assert (si / "unsure.csv").exists()
+
+
+def test_apply_autofix_without_a_policy_asks_nobody(
+    vault: Path, tmp_path: Path
+) -> None:
+    si = _si_paper(vault, tmp_path, n=1)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    (si / "ci9b00237_si_009.csv").write_text("v\n", encoding="utf-8")
+    (si / "unsure.csv").write_text("u\n", encoding="utf-8")
+
+    counts = apply_autofix(vault, run_all_checks(vault, list_papers(vault)))
+
+    assert counts["supplementary_missing"] == 0
+    assert counts["supplementary_unrecorded"] == 1
+    assert [f for f, _ in _si_records(vault)] == ["si-01.csv", "si-02.csv"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_health_check_relocks_si_files(vault: Path, tmp_path: Path) -> None:
+    si = _si_paper(vault, tmp_path, n=1)
+    os.chmod(si / "si-01.csv", 0o644)  # e.g. pulled by a sync, mode lost
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    # Folded at the console width: compare with the line breaks flattened.
+    flat = " ".join(result.output.split())
+    assert "Re-locked" in flat
+    assert "/ SI files made read-only" in flat
+    assert not os.access(si / "si-01.csv", os.W_OK)
+
+
+def test_layout_findings_are_report_only(vault: Path, tmp_path: Path) -> None:
+    """What --fix will never touch — a sub-folder, a supplementary that is a
+    file — sits in a category outside AUTO_FIXABLE, whose header and hints
+    promise nothing about --fix."""
+    si = _si_paper(vault, tmp_path, n=1)
+    unzipped = si / "unzipped"
+    unzipped.mkdir()
+    (unzipped / "table.csv").write_text("t\n", encoding="utf-8")
+    _write_paper(vault, "2020_File_Folder")
+    placeholder = vault / "papers" / "2020_File_Folder" / "supplementary"
+    placeholder.write_text("x", encoding="utf-8")
+
+    layout = [i for i in _si_issues(vault) if i.category == "supplementary_layout"]
+
+    assert sorted((i.paper_id, i.severity) for i in layout) == [
+        ("2019_Yang_Si", "warning"),
+        ("2020_File_Folder", "error"),
+    ]
+    assert "supplementary_layout" not in AUTO_FIXABLE_CATEGORIES
+    assert all("--fix" not in (i.hint or "") for i in layout)
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    header = next(
+        line for line in result.output.splitlines()
+        if line.startswith("SI folder layout")
+    )
+    assert "fixable via --fix" not in header
+    assert (unzipped / "table.csv").is_file()
+    assert placeholder.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="chmod cannot take a folder's read bit"
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores the permission bits this takes away",
+)
+def test_health_check_reports_an_unreadable_si_folder(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A folder litman cannot read is a finding ("can't check X"), never a
+    traceback out of the relock sweep or the check."""
+    si = _si_paper(vault, tmp_path, n=1)
+    si.chmod(0o000)
+    try:
+        result = CliRunner().invoke(
+            cli, ["health-check", "--library", str(vault)]
+        )
+    finally:
+        si.chmod(0o755)
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "SI litman cannot check" in flat
+    assert "cannot be read (PermissionError)" in flat
