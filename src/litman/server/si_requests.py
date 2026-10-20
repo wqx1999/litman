@@ -27,6 +27,14 @@ handed over this way only if a CLI joined it while it was open — that CLI
 waited on it, and a later rerun gets the result it missed. One no CLI ever
 waited on never reaches the CLI.
 
+Two more conditions keep a rerun from being handed a result it did not ask
+for. The rerun must ask the same way (``force``) as the last CLI run that
+opened or joined the request: a plain ``lit add --si`` that found the files
+already in the library never collects the result, and a later ``--force``
+run means "show the window again". And an ``added`` result none of whose
+files is still recorded for the paper is moot — the user removed them — so
+it is marked delivered instead.
+
 Everything here is memory: one lock, held only to read or change state. The
 routes do every disk operation — stash writes and deletes, verification, the
 library write — outside it. Pruning drops entries from memory only, so a GET
@@ -40,6 +48,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -126,6 +135,20 @@ class SiRequest:
     finished: float | None = None
     awaited: bool = False
     delivered: bool = False
+    # The --force of the last CLI run that opened or joined it (rule ②).
+    force: bool = False
+    # SiRequestTable.mark() as of its Done.
+    done_mark: int = 0
+
+    def is_moot(self, recorded: Collection[str], read_mark: int) -> bool:
+        """An ``added`` result none of whose files the paper records, by a
+        read begun at ``read_mark`` — after its Done, or the read may predate
+        the files."""
+        return (
+            self.status == ADDED
+            and self.done_mark <= read_mark
+            and not any(entry.get("file") in recorded for entry in self.added)
+        )
 
     @property
     def is_open(self) -> bool:
@@ -163,6 +186,15 @@ class SiRequestTable:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requests: dict[str, SiRequest] = {}
+        # Dones so far: orders a metadata read against a Done exactly, where
+        # the clock may not (Windows' monotonic clock ticks every ~16 ms).
+        self._dones = 0
+
+    def mark(self) -> int:
+        """Where the table stands, to take before reading a paper's
+        metadata for :meth:`open`."""
+        with self._lock:
+            return self._dones
 
     # -- bookkeeping (call with the lock held) ------------------------------
 
@@ -213,16 +245,27 @@ class SiRequestTable:
         title: str,
         link: str | None,
         source: str,
+        recorded: Collection[str],
+        read_mark: int,
+        force: bool = False,
     ) -> dict[str, Any]:
         """The request for ``paper_id`` this caller should follow (snapshot).
 
         1. One already open for the paper in this library: that one (a CLI
-           caller now awaits it, whoever made it).
+           caller now awaits it, whoever made it, with its ``force``). The
+           first CLI to join a window the page opened replaces every result
+           of the paper the agent has not read, as in 3.
         2. For the CLI only: one that ended within the last 30 minutes, that
-           a CLI awaited and that has not been delivered — the result a timed
-           out ``lit add --si`` never saw, page-made ones included once a CLI
-           joined them. Handing it over delivers it.
-        3. Otherwise a new one.
+           a CLI awaited with the same ``force`` and that has not been
+           delivered — the result a timed out ``lit add --si`` never saw,
+           page-made ones included once a CLI joined them. Handing it over
+           delivers it. An ``added`` one none of whose files is among
+           ``recorded`` (the paper's SI file names, read from :meth:`mark`
+           ``read_mark`` on) is delivered unseen.
+        3. Otherwise a new one. For the CLI it replaces every result of the
+           paper the agent has not read, so at most one is ever unread.
+
+        ``force`` matters for the CLI only; a page's request never sets it.
         """
         now = _clock()
         with self._lock:
@@ -235,17 +278,27 @@ class SiRequestTable:
             for req in mine:
                 if req.is_open:
                     if source == "cli":
+                        if not req.awaited:
+                            _retire_unread(mine)
                         req.awaited = True
+                        req.force = force
                     req.touched = now
                     return req.snapshot(anchor)
             if source == "cli":
-                unseen = [
-                    req for req in mine if req.awaited and not req.delivered
-                ]
+                unseen: list[SiRequest] = []
+                for req in mine:
+                    if not req.awaited or req.delivered:
+                        continue
+                    if req.is_moot(recorded, read_mark):
+                        # Its files left the library: no run should get it.
+                        req.delivered = True
+                    elif req.force == force:
+                        unseen.append(req)
                 if unseen:
                     req = max(unseen, key=lambda r: r.finished or 0.0)
                     req.delivered = True
                     return req.snapshot(anchor)
+                _retire_unread(mine)
             req = SiRequest(
                 id=new_id(),
                 vault=vault,
@@ -256,6 +309,7 @@ class SiRequestTable:
                 source=source,
                 touched=now,
                 awaited=source == "cli",
+                force=force and source == "cli",
             )
             self._requests[req.id] = req
             return req.snapshot(anchor)
@@ -417,6 +471,8 @@ class SiRequestTable:
             req.warnings = list(warnings)
             req.finished = now
             req.touched = now
+            self._dones += 1
+            req.done_mark = self._dones
             return req.snapshot(served)
 
     def abort_confirm(
@@ -468,6 +524,16 @@ class SiRequestTable:
             req.finished = now
             req.touched = now
             return stashes, req.snapshot(served)
+
+
+def _retire_unread(requests: list[SiRequest]) -> None:
+    """The agent now follows another window: every finished result among
+    ``requests`` it has not read is replaced by it, so a paper never has two
+    unread. Only for the CLI — the page's own Add SI says nothing about what
+    the agent has seen. Call with the table's lock held."""
+    for req in requests:
+        if not req.is_open and req.awaited:
+            req.delivered = True
 
 
 _STATE_WORDS = {

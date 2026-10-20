@@ -61,8 +61,17 @@ def table() -> SiRequestTable:
 
 
 def _open(
-    table: SiRequestTable, vault: Path, source: str = "cli", paper: str = PAPER
+    table: SiRequestTable,
+    vault: Path,
+    source: str = "cli",
+    paper: str = PAPER,
+    *,
+    force: bool = False,
+    recorded: tuple[str, ...] = ("si-01.pdf",),
+    read_mark: int | None = None,
 ) -> dict[str, Any]:
+    """``recorded``: the SI files the paper records, by default the one
+    :func:`_finish` adds, read from ``read_mark`` (by default: now) on."""
     return table.open(
         vault=vault,
         anchor=Anchor.of(vault),
@@ -70,6 +79,9 @@ def _open(
         title="A title",
         link="https://doi.org/10.1/x",
         source=source,
+        recorded=recorded,
+        read_mark=table.mark() if read_mark is None else read_mark,
+        force=force,
     )
 
 
@@ -86,12 +98,14 @@ def _row(fid: str, verdict: str = "ok", sha: str | None = None) -> SiRow:
     )
 
 
-def _finish(table: SiRequestTable, rid: str, vault: Path) -> dict[str, Any]:
+def _finish(
+    table: SiRequestTable, rid: str, vault: Path, files: tuple[str, ...] = ("si-01.pdf",)
+) -> dict[str, Any]:
     served = Anchor.of(vault)
     table.add_row(rid, served, _row("a" * 32))
     plan = table.begin_confirm(rid, served, [])
     assert isinstance(plan, ConfirmPlan)
-    return table.finish_confirm(rid, served, [{"file": "si-01.pdf"}], [])
+    return table.finish_confirm(rid, served, [{"file": name} for name in files], [])
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +252,182 @@ def test_rule_2_ends_with_the_30_minutes(
     with pytest.raises(UnknownRequest):
         table.snapshot(rid, Anchor.of(one))
     assert _open(table, one)["id"] != rid
+
+
+def test_rule_2_hands_a_result_only_to_a_run_asking_the_same_way(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """A plain run found the files in the library and never collected the
+    result; a later --force run means "show the window again"."""
+    one, _two = libs
+    rid = _open(table, one)["id"]
+    _finish(table, rid, one)
+
+    fresh = _open(table, one, force=True)
+    assert fresh["id"] != rid and fresh["status"] == PENDING
+    assert table._requests[rid].delivered is True  # replaced by the window
+
+    forced = _open(table, one, paper=OTHER_PAPER, force=True)["id"]
+    _finish(table, forced, one)
+    handed = _open(table, one, paper=OTHER_PAPER, force=True)
+    assert handed["id"] == forced and handed["status"] == ADDED
+
+
+def test_rule_1_a_joining_cli_brings_its_force(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """The page's own Add SI, joined by `lit add --si --force`: the result
+    goes to a --force rerun, not to a plain one."""
+    one, _two = libs
+    rid = _open(table, one, "page", force=True)["id"]
+    assert table._requests[rid].force is False  # a page never sets it
+    assert _open(table, one, force=True)["id"] == rid
+    assert table._requests[rid].force is True
+    _finish(table, rid, one)
+
+    assert _open(table, one)["id"] != rid  # plain: a fresh window
+    assert table._requests[rid].delivered is True  # replaced by it
+
+
+def test_rule_1_the_last_joining_cli_decides(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    one, _two = libs
+    rid = _open(table, one, force=True)["id"]
+    assert _open(table, one)["id"] == rid  # a plain rerun joins it
+    _finish(table, rid, one)
+    assert _open(table, one)["id"] == rid
+
+
+def test_rule_2_skips_an_added_result_whose_files_are_all_gone(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """The user removed what Done added: handing the result over would point
+    the agent at files that are not there. It is never handed over again."""
+    one, _two = libs
+    rid = _open(table, one)["id"]
+    _finish(table, rid, one, ("si-01.pdf", "si-02.csv"))
+
+    fresh = _open(table, one, recorded=("si-03.pdf",))
+    assert fresh["id"] != rid and fresh["status"] == PENDING
+    assert table._requests[rid].delivered is True
+
+
+def test_rule_2_hands_over_an_added_result_with_a_file_still_recorded(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    one, _two = libs
+    rid = _open(table, one)["id"]
+    _finish(table, rid, one, ("si-01.pdf", "si-02.csv"))
+
+    handed = _open(table, one, recorded=("si-02.csv",))
+    assert handed["id"] == rid and handed["status"] == ADDED
+
+
+def test_rule_2_a_result_done_while_the_files_were_read_is_not_moot(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """Done committed after the route began reading the paper's metadata:
+    the read cannot show the new files, so it is no proof they are gone."""
+    one, _two = libs
+    rid = _open(table, one)["id"]
+    read_mark = table.mark()
+    _finish(table, rid, one)
+
+    handed = _open(table, one, recorded=(), read_mark=read_mark)
+
+    assert handed["id"] == rid and handed["status"] == ADDED
+
+
+def test_rule_3_a_new_window_for_the_cli_replaces_every_unread_result(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """A plain run timed out and the user cancelled A; a --force run opened
+    B (A asked differently), timed out, the user cancelled B, the --force
+    rerun read that. A later plain run must open a window, not hand over A's
+    old cancel: at most one unread result per paper."""
+    one, _two = libs
+    a = _open(table, one)["id"]
+    table.cancel(a, Anchor.of(one))
+    b = _open(table, one, force=True)["id"]
+    assert b != a
+    assert table._requests[a].delivered is True
+    table.cancel(b, Anchor.of(one))
+    assert _open(table, one, force=True)["id"] == b  # read: delivered
+
+    later = _open(table, one)
+
+    assert later["id"] not in (a, b) and later["status"] == PENDING
+
+
+def test_rule_3_a_window_the_page_opens_replaces_nothing(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """The user's own Add SI says nothing about what the agent has seen."""
+    one, _two = libs
+    a = _open(table, one)["id"]
+    table.cancel(a, Anchor.of(one))
+    page = _open(table, one, "page")["id"]
+    assert page != a
+    assert table._requests[a].delivered is False
+    table.cancel(page, Anchor.of(one))
+
+    assert _open(table, one)["id"] == a
+
+
+def test_rule_1_the_first_cli_to_join_a_page_window_replaces_unread_results(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """A plain run timed out and the user cancelled R1 (unread); then opened
+    the cockpit's own Add SI (P), which a --force run joined; Done, and the
+    --force rerun read P. With all SI removed later, a plain run must open a
+    window — not replay R1's cancel."""
+    one, _two = libs
+    r1 = _open(table, one)["id"]
+    table.cancel(r1, Anchor.of(one))
+    page = _open(table, one, "page")["id"]
+    assert table._requests[r1].delivered is False  # the page replaces nothing
+    assert _open(table, one, force=True)["id"] == page
+    assert table._requests[r1].delivered is True
+    _finish(table, page, one)
+    handed = _open(table, one, force=True)
+    assert handed["id"] == page and handed["status"] == ADDED
+
+    later = _open(table, one, recorded=())
+
+    assert later["id"] not in (r1, page) and later["status"] == PENDING
+
+
+def test_rule_1_a_cli_rejoining_its_window_changes_nothing_else(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    """Only the first CLI to join a window replaces older results; a rerun
+    joining the window it already awaits is just that."""
+    one, _two = libs
+    own = _open(table, one)["id"]
+    assert _open(table, one)["id"] == own
+    assert list(table._requests) == [own]
+
+    old = _open(table, one, paper=OTHER_PAPER)["id"]
+    table.cancel(old, Anchor.of(one))
+    page = _open(table, one, "page", paper=OTHER_PAPER)["id"]
+    assert _open(table, one, paper=OTHER_PAPER)["id"] == page  # first join
+    assert table._requests[old].delivered is True
+    # Not reachable through open() while the window is open — set here to
+    # show that a rejoin leaves every other request alone.
+    table._requests[old].delivered = False
+    assert _open(table, one, paper=OTHER_PAPER)["id"] == page
+    assert table._requests[old].delivered is False
+
+
+def test_rule_2_a_cancel_needs_no_files(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    one, _two = libs
+    rid = _open(table, one)["id"]
+    table.cancel(rid, Anchor.of(one))
+    handed = _open(table, one, recorded=())
+    assert handed["id"] == rid and handed["status"] == CANCELLED
 
 
 def test_rule_2_takes_the_paper_and_library_into_account(

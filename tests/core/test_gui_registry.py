@@ -32,6 +32,7 @@ from litman.core.gui_registry import (
     find_gui,
     gui_dir,
     host_id,
+    other_host_guis,
     register_gui,
     unregister_gui,
 )
@@ -53,6 +54,7 @@ def _plant(
     host: str | None = None,
     started_ago: float = OLD,
     name: str | None = None,
+    vault: Path | None = None,
 ) -> Path:
     """A record as another GUI process would have written it."""
     folder = gui_dir()
@@ -67,7 +69,7 @@ def _plant(
                 "host": host,
                 "pid": pid,
                 "port": port,
-                "vault": None,
+                "vault": str(vault.resolve()) if vault is not None else None,
                 "started": time.time() - started_ago,
             }
         ),
@@ -327,6 +329,34 @@ def test_an_unreadable_record_is_skipped_and_kept(vault: Path) -> None:
     assert junk.exists() and partial.exists() and other_file.exists()
 
 
+@pytest.mark.parametrize(
+    "started",
+    ["NaN", "Infinity", "-Infinity", "1" + "0" * 400, '"yesterday"', "true"],
+    ids=["nan", "inf", "-inf", "too-big-for-a-float", "text", "bool"],
+)
+def test_a_record_with_an_unusable_start_time_is_skipped_and_kept(
+    vault: Path, started: str
+) -> None:
+    """JSON lets NaN, Infinity and huge integers through: such a record is
+    not pinged (the client refuses any port), not named, and not deleted."""
+    folder = gui_dir()
+    folder.mkdir(parents=True)
+    records = []
+    for host in (host_id(), "node-b"):
+        path = folder / f"{host}-11.json"
+        library = json.dumps(str(vault.resolve()))
+        path.write_text(
+            f'{{"app": "litman", "version": "1.3.8", "host": {json.dumps(host)}, '
+            f'"pid": 11, "port": 9001, "vault": {library}, "started": {started}}}',
+            encoding="utf-8",
+        )
+        records.append(path)
+
+    assert find_gui(vault, client=_client({})) is None
+    assert other_host_guis(vault) == []
+    assert all(path.exists() for path in records)
+
+
 def test_a_gui_with_a_page_wins_then_the_newest(vault: Path) -> None:
     _plant(port=9001, pid=11, started_ago=300)  # pages, oldest
     _plant(port=9002, pid=12, started_ago=10)  # no page, newest
@@ -387,6 +417,52 @@ def test_the_default_client_ignores_proxies_and_dials_127_0_0_1(
     assert built["timeout"].connect == 3.0
     assert built["timeout"].read == 2.0
     assert hosts == ["127.0.0.1"]
+
+
+# ---------------------------------------------------------------------------
+# other_host_guis
+# ---------------------------------------------------------------------------
+
+
+def test_other_host_guis_names_this_librarys_guis_elsewhere_newest_first(
+    vault: Path, tmp_path: Path
+) -> None:
+    (tmp_path / "other").mkdir()
+    elsewhere = create_vault(tmp_path / "other")
+    older = _plant(port=9001, pid=11, host="node-a", vault=vault, started_ago=600)
+    newer = _plant(port=9002, pid=12, host="node-b", vault=vault, started_ago=60)
+    planted = [
+        older,
+        newer,
+        _plant(port=9003, pid=13, vault=vault),  # this host
+        _plant(port=9004, pid=14, host="node-c", vault=elsewhere),
+        _plant(port=9005, pid=15, host="node-d"),  # serves no library
+    ]
+    junk = gui_dir() / "junk.json"
+    junk.write_text("{not json", encoding="utf-8")
+
+    found = other_host_guis(vault)
+
+    assert [host for host, _started in found] == ["node-b", "node-a"]
+    assert abs(found[0][1] - (time.time() - 60)) < 60
+    # Read only: nothing is deleted, however stale.
+    assert all(path.exists() for path in planted)
+    assert junk.exists()
+
+
+def test_other_host_guis_matches_the_library_through_a_link(
+    vault: Path, tmp_path: Path
+) -> None:
+    alias = tmp_path / "alias-of-the-library"
+    if not make_portable_link(alias, vault):
+        pytest.skip("this filesystem cannot hold folder links")
+    _plant(port=9001, pid=11, host="node-a", vault=vault)
+    assert [host for host, _ in other_host_guis(alias)] == ["node-a"]
+
+
+def test_other_host_guis_without_records(vault: Path) -> None:
+    assert not gui_dir().exists()
+    assert other_host_guis(vault) == []
 
 
 # ---------------------------------------------------------------------------

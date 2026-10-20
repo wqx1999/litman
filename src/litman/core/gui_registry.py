@@ -28,6 +28,7 @@ Standard library only, apart from httpx imported inside :func:`find_gui`:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -144,14 +145,12 @@ def _read_record(path: Path) -> dict[str, Any] | None:
         return None
     host = record.get("host")
     pid, port = _int_or_none(record.get("pid")), _int_or_none(record.get("port"))
-    started = record.get("started")
     if (
         not isinstance(host, str)
         or pid is None
         or port is None
         or not 0 < port < 65536
-        or not isinstance(started, (int, float))
-        or isinstance(started, bool)
+        or _seconds_or_none(record.get("started")) is None
     ):
         return None
     return record
@@ -162,6 +161,18 @@ def _int_or_none(value: object) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
+
+
+def _seconds_or_none(value: object) -> float | None:
+    """``value`` as a finite float, else ``None``: JSON lets NaN, Infinity
+    and integers too big for a float through."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        seconds = float(value)
+    except OverflowError:
+        return None
+    return seconds if math.isfinite(seconds) else None
 
 
 def _ping(client: httpx.Client, record: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -260,11 +271,38 @@ def find_gui(
     return found[0][0]
 
 
+def other_host_guis(vault: Path) -> list[tuple[str, float]]:
+    """``(host, started)`` of each GUI recorded for ``vault`` on another
+    machine, newest first.
+
+    Only the files are read: another host's ``127.0.0.1`` is another machine,
+    so these records are never pinged and never deleted, and any of them may
+    be stale. What the CLI says when no GUI here serves the library.
+    """
+    try:
+        paths = sorted(gui_dir().glob("*.json"))
+    except OSError:
+        return []
+    me = host_id()
+    found: list[tuple[str, float]] = []
+    for path in paths:
+        record = _read_record(path)
+        if record is None or record["host"] == me:
+            continue
+        served = record.get("vault")
+        if not isinstance(served, str) or not same_entry(Path(served), vault):
+            continue
+        found.append((record["host"], float(record["started"])))
+    found.sort(key=lambda hit: hit[1], reverse=True)
+    return found
+
+
 __all__ = [
     "GuiServer",
     "find_gui",
     "gui_dir",
     "host_id",
+    "other_host_guis",
     "register_gui",
     "unregister_gui",
 ]

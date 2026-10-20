@@ -84,14 +84,14 @@ def test_si_reading_paths_leave_pypdf_unloaded() -> None:
 
 
 def test_gui_registration_paths_stay_light() -> None:
-    # `lit add --si` (find_gui) and `lit gui` (register / unregister) reach
-    # these on the CLI's import path: none of them may load the HTTP client,
-    # the server stack or pypdf just by being imported. httpx loads only when
-    # find_gui actually asks a GUI.
+    # `lit add --si` (find_gui, _si_gui) and `lit gui` (register / unregister)
+    # reach these on the CLI's import path: none of them may load the HTTP
+    # client, the server stack or pypdf just by being imported. httpx loads
+    # only when a GUI is actually asked.
     code = (
         "import sys;"
         "import litman.core.fs_identity, litman.core.gui_registry;"
-        "import litman.commands.gui;"
+        "import litman.commands.gui, litman.commands._si_gui;"
         "heavy=('httpx','fastapi','starlette','uvicorn','litman.server','pypdf');"
         "loaded=[m for m in heavy if m in sys.modules];"
         "assert not loaded, 'loaded at import: '+repr(loaded);"

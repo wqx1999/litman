@@ -291,6 +291,9 @@ def test_another_library_shown_hides_the_request(
         {"paperId": A_ID, "source": "agent"},
         {"paperId": 7, "source": "cli"},
         {"paperId": A_ID, "source": "cli", "vault": 3},
+        {"paperId": A_ID, "source": "cli", "force": "yes"},
+        {"paperId": A_ID, "source": "cli", "force": 1},
+        {"paperId": A_ID, "source": "cli", "force": None},
         ["not", "an", "object"],
     ],
 )
@@ -346,6 +349,66 @@ def test_status_and_collect(client: TestClient) -> None:
     assert done["status"] == "cancelled"
     # Collected: the next CLI run opens a new window instead of a stale cancel.
     assert _open(client, source="cli")["id"] != rid
+
+
+def test_a_result_goes_back_to_a_run_asking_the_same_way(client: TestClient) -> None:
+    """No ``force`` in the body is a plain run, the same as ``force: false``."""
+    rid = _open(client, source="cli")["id"]
+    client.post(f"/api/si/requests/{rid}/cancel")
+    handed = _open(client, source="cli", force=False)
+    assert handed["id"] == rid and handed["status"] == "cancelled"
+
+
+def test_a_force_run_after_a_plain_one_opens_a_fresh_window(client: TestClient) -> None:
+    rid = _open(client, source="cli")["id"]
+    client.post(f"/api/si/requests/{rid}/cancel")
+    fresh = _open(client, source="cli", force=True)
+    assert fresh["id"] != rid and fresh["status"] == "pending"
+
+
+def test_a_page_request_joined_by_a_force_run_goes_back_to_one(client: TestClient) -> None:
+    rid = _open(client, source="page", force=True)["id"]
+    assert _open(client, source="cli", force=True)["id"] == rid
+    client.post(f"/api/si/requests/{rid}/cancel")
+    handed = _open(client, source="cli", force=True)
+    assert handed["id"] == rid and handed["status"] == "cancelled"
+
+
+def _done(client: TestClient, rid: str, *drops: tuple[str, bytes]) -> list[str]:
+    for name, body in drops:
+        _row(client, rid, name, body)
+    response = client.post(f"/api/si/requests/{rid}/confirm", json={})
+    assert response.status_code == 200, response.text
+    return [entry["file"] for entry in response.json()["request"]["added"]]
+
+
+def test_an_added_result_whose_files_were_all_removed_is_not_handed_over(
+    client: TestClient,
+) -> None:
+    rid = _open(client, source="cli")["id"]
+    for name in _done(client, rid, ("ci9b00237_si_001.xlsx", SHEET)):
+        assert client.delete(f"/api/paper/{A_ID}/si/{name}").status_code == 200
+
+    fresh = _open(client, source="cli")
+
+    assert fresh["id"] != rid and fresh["status"] == "pending"
+
+
+def test_an_added_result_with_a_file_still_recorded_is_handed_over(
+    client: TestClient,
+) -> None:
+    rid = _open(client, source="cli")["id"]
+    first, _second = _done(
+        client,
+        rid,
+        ("ci9b00237_si_001.xlsx", SHEET),
+        ("ci9b00237_si_002.xlsx", OTHER_SHEET),
+    )
+    assert client.delete(f"/api/paper/{A_ID}/si/{first}").status_code == 200
+
+    handed = _open(client, source="cli")
+
+    assert handed["id"] == rid and handed["status"] == "added"
 
 
 @pytest.mark.parametrize("rid", ["f" * 32, "not-an-id", "F" * 32, "a" * 31])

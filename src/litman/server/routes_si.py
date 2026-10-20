@@ -234,6 +234,7 @@ def _open_request(
     paper_id: str,
     source: str,
     asked_vault: str | None,
+    force: bool,
 ) -> dict[str, Any]:
     served = Anchor.of(vault)
     if asked_vault is not None and not Anchor.of(Path(asked_vault)).same_as(served):
@@ -244,6 +245,9 @@ def _open_request(
                 "Switch it to this library, then run the command again."
             ),
         )
+    # Before the read: a Done landing during it must not make its own result
+    # look moot for want of files the read could not see yet.
+    read_mark = table.mark()
     try:
         meta = find_paper(vault, paper_id)
         problem = si_write_problem(vault, paper_id)
@@ -259,6 +263,9 @@ def _open_request(
         title=title,
         link=official_link(meta),
         source=source,
+        recorded=[record["file"] for record in list_supplementary(meta)],
+        read_mark=read_mark,
+        force=force,
     )
     return {"request": snapshot}
 
@@ -267,17 +274,21 @@ def _open_request(
 async def post_si_request(request: Request) -> dict[str, Any]:
     """Open the SI window for a paper, or rejoin the one already open.
 
-    Body ``{paperId, source: "cli"|"page", vault?}``. The CLI passes the
-    library it means, and gets 409 when the GUI shows another one.
+    Body ``{paperId, source: "cli"|"page", vault?, force?}``. The CLI passes
+    the library it means, and gets 409 when the GUI shows another one; and
+    its ``--force`` (absent = false), so a finished result goes back only to
+    a run asking the same way.
     """
     body = await _json_object(request)
     paper_id = body.get("paperId")
     source = body.get("source")
     asked_vault = body.get("vault")
+    force = body.get("force", False)
     if (
         not isinstance(paper_id, str)
         or source not in ("cli", "page")
         or not (asked_vault is None or isinstance(asked_vault, str))
+        or not isinstance(force, bool)
     ):
         raise HTTPException(
             status_code=400,
@@ -293,6 +304,7 @@ async def post_si_request(request: Request) -> dict[str, Any]:
         paper_id,
         source,
         asked_vault,
+        force,
     )
 
 

@@ -25,6 +25,8 @@ Pipeline (M2.9 + M4.1):
 ``lit add --si <paper> FILE...`` is the second mode: it adds supplementary
 files to a paper already in the vault, through
 :mod:`litman.core.supplementary` (same mv semantics, all or nothing).
+``lit add --si <paper>`` with no files is the third: the open GUI page asks
+the user for them (:mod:`litman.commands._si_gui`).
 """
 
 from __future__ import annotations
@@ -308,7 +310,7 @@ def _add_si_files(
 
     Verdicts and warnings go to stderr; stdout carries only ``SI ready: N
     file(s)`` and one absolute path per line, the shape an agent parses (the
-    same lines the GUI-wait mode will print). A rejected file is never added;
+    same lines ``lit add --si PAPER`` prints). A rejected file is never added;
     one that cannot be confirmed, or is over 100 MiB, needs a yes at a
     terminal or ``--force`` — and any no adds nothing.
     """
@@ -672,8 +674,9 @@ def _apply_add(
         "(full id or unique substring), instead of importing a paper: "
         "lit add --si PAPER FILE... Each file is checked against the paper "
         "first; files go to papers/<id>/supplementary/si-01.<ext>... and are "
-        "moved, like the PDF. Not with --doi / --from-llm-json / --id / "
-        "--auto-suffix."
+        "moved, like the PDF. Without FILE, the litman GUI page open for this "
+        "library asks the user for them. Not with --doi / --from-llm-json / "
+        "--id / --auto-suffix."
     ),
 )
 @click.option(
@@ -681,8 +684,10 @@ def _apply_add(
     is_flag=True,
     default=False,
     help=(
-        "With --si: add files that cannot be confirmed as the paper's SI, or "
-        "are over 100 MiB, without asking. Never adds a refused file."
+        "With --si FILE...: add files that cannot be confirmed as the paper's "
+        "SI, or are over 100 MiB, without asking; never adds a refused file. "
+        "With --si alone: ask the GUI even when the paper has SI already or "
+        "its text never mentions any."
     ),
 )
 @library_option
@@ -703,6 +708,7 @@ def add_cmd(
     \b
     lit add PDF_PATH --doi DOI | --from-llm-json PATH
     lit add --si PAPER FILE...
+    lit add --si PAPER
 
     Importing: metadata comes from either --doi (CrossRef fetch) or
     --from-llm-json <path> (LLM-prepared JSON file). Exactly one is
@@ -718,6 +724,22 @@ def add_cmd(
 
     Either way the source files are moved into the vault: the originals are
     removed after a successful add.
+
+    Asking the GUI (--si PAPER, no FILE): the litman GUI page open for this
+    library shows an SI window; the user downloads the files from the
+    article's page, drops them in and presses Done. Waits up to 90 s, then
+    exits with one of:
+
+    \b
+      0   SI ready: N file(s), then one path per line; the first line ends
+          in (already in the library) when the paper had SI already
+      1   an error, such as no such paper or a broken SI record
+      10  the SI request was cancelled in the GUI
+      11  still waiting: run the same command again to keep waiting
+      12  no GUI page is open for this library: prints the article link
+          and the lit add --si PAPER FILE... form
+      13  the paper's text never mentions supplementary material
+          (--force asks anyway)
     """
     ctx = click.get_current_context()
     if si_paper is not None:
@@ -738,9 +760,14 @@ def add_cmd(
                 ctx=ctx,
             )
         if not pdf_paths:
-            raise click.UsageError(
-                "--si needs the SI files: lit add --si PAPER FILE...", ctx=ctx
+            from litman.commands._si_gui import request_si
+
+            code = request_si(
+                si_paper, force=force, library=library, vault_name=vault_name
             )
+            if code:
+                sys.exit(code)
+            return
         _add_si_files(
             si_paper,
             pdf_paths,

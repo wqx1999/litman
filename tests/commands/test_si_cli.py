@@ -270,10 +270,15 @@ def test_add_si_refuses_ingest_options(
     assert sheet.exists()
 
 
-def test_add_si_without_files_is_a_usage_error(vault: Path) -> None:
-    result = _run(vault, "add", "--si", A_ID)
-    assert result.exit_code == 2
-    assert "lit add --si PAPER FILE..." in result.output
+def test_add_si_without_files_asks_the_gui_rather_than_a_usage_error(
+    vault: Path,
+) -> None:
+    """No FILE is the third form now (tests/commands/test_si_gui_wait.py):
+    with no GUI running it says so, exit 12, not Click's usage error 2.
+    --force because this file's articles never mention SI (that is 13)."""
+    result = _run(vault, "add", "--si", A_ID, "--force")
+    assert result.exit_code == 12, result.output
+    assert result.stdout.splitlines()[0] == "No litman GUI page is open for this library"
 
 
 def test_add_si_missing_file(vault: Path, tmp_path: Path) -> None:
