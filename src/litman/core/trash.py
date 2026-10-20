@@ -45,7 +45,9 @@ Two containers live beside the entries and are not entries themselves:
 
 from __future__ import annotations
 
+import contextlib
 import io
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -426,6 +428,116 @@ def list_removed_si(vault: Path) -> list[RemovedSi]:
 def count_removed_si(vault: Path) -> int:
     """How many SI files sit in ``.trash/removed-si/`` (sidecars not counted)."""
     return len(list_removed_si(vault))
+
+
+def rename_removed_si(vault: Path, old: str, new: str) -> int:
+    """Move a renamed paper's removed SI to ``.trash/removed-si/<new>/``.
+
+    The folder moves whole when ``<new>/`` is not there yet. When it is (left
+    by an earlier paper with that id), the files are merged in, each together
+    with its sidecar; a name already taken there gets a fresh ``-<hex4>``
+    after its stamp, as in :func:`move_si_to_trash`. Every moved sidecar's
+    ``paper_id`` is then set to ``new``, best effort. Returns how many SI files
+    moved, sidecars not counted.
+
+    Raises:
+        OSError: a move failed. What had not moved yet is still in ``<old>/``,
+            and no file is ever parted from its sidecar.
+    """
+    src = removed_si_dir(vault, old)
+    dst = removed_si_dir(vault, new)
+    if not src.is_dir():
+        return 0
+    if not dst.exists():
+        moved = os.listdir(src)
+        os.rename(src, dst)
+    elif os.path.samefile(src, dst):
+        # Both names reach one folder (a case-only rename on a
+        # case-insensitive disk): merging it into itself would rename every file.
+        return 0
+    else:
+        moved = _merge_removed_si(src, dst)
+    for name in moved:
+        if name.endswith(SIDECAR_SUFFIX):
+            _repoint_removed_si_sidecar(dst / name, new)
+    return sum(
+        1
+        for name in moved
+        if not name.endswith(SIDECAR_SUFFIX) and (dst / name).is_file()
+    )
+
+
+def _merge_removed_si(src: Path, dst: Path) -> list[str]:
+    """Move everything in ``src`` into ``dst``, then drop ``src``.
+
+    A file and its sidecar move as one, under a name free for both. Returns
+    the names the moved entries have in ``dst``.
+    """
+    pairs: dict[str, list[str]] = {}
+    for name in sorted(os.listdir(src)):  # a file sorts before its sidecar
+        stem = name[: -len(SIDECAR_SUFFIX)] if name.endswith(SIDECAR_SUFFIX) else name
+        pairs.setdefault(stem, []).append(name)
+    moved: list[str] = []
+    for stem, names in pairs.items():
+        target = _unused_removed_si_name(dst, stem)
+        done: list[tuple[Path, Path]] = []
+        try:
+            for name in names:
+                there = dst / f"{target}{name[len(stem):]}"
+                os.rename(src / name, there)
+                done.append((src / name, there))
+        except OSError:
+            for here, there in reversed(done):
+                os.rename(there, here)
+            raise
+        moved.extend(there.name for _, there in done)
+    # A folder that will not go (something new landed in it) loses nothing.
+    with contextlib.suppress(OSError):
+        src.rmdir()
+    return moved
+
+
+def _unused_removed_si_name(folder: Path, name: str) -> str:
+    """``name``, or a fresh variant when ``folder`` already holds it or its
+    sidecar: ``-<hex4>`` after the stamp of a litman name, in front of any
+    other."""
+    import uuid
+
+    m = _REMOVED_SI_NAME_RE.match(name)
+    candidate = name
+    while os.path.lexists(folder / candidate) or os.path.lexists(
+        folder / f"{candidate}{SIDECAR_SUFFIX}"
+    ):
+        hex4 = uuid.uuid4().hex[:4]
+        candidate = f"{m.group(1)}-{hex4}-{m.group(2)}" if m else f"{hex4}-{name}"
+    return candidate
+
+
+def _repoint_removed_si_sidecar(sidecar: Path, paper_id: str) -> None:
+    """Set a removed-SI sidecar's ``paper_id``, leaving the rest as written.
+
+    Best effort: nothing reads the field back (the folder name says whose SI
+    it is), so a sidecar that cannot be read or rewritten keeps the old id.
+    The sidecar is the only copy of the record, so the new text is written
+    beside it and swapped in whole; that file's name ends like a sidecar's,
+    so even one a crash strands is never listed as a removed SI file.
+    """
+    import uuid
+
+    tmp = sidecar.with_name(
+        f".{sidecar.name}.{uuid.uuid4().hex[:8]}.tmp{SIDECAR_SUFFIX}"
+    )
+    try:
+        data = _yaml_rt.load(sidecar.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data["paper_id"] = paper_id
+            tmp.write_text(_dump_rt_to_string(data), encoding="utf-8")
+            os.replace(tmp, sidecar)
+    except (OSError, UnicodeError, YAMLError):
+        pass  # keeps the old id
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def count_replaced_folders(vault: Path) -> int:
