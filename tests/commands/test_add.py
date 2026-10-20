@@ -674,11 +674,20 @@ def test_add_nonexistent_pdf_rejected_by_click(
 # getting it wrong must still read exactly as it did when the argument took
 # one path — these are the texts Click printed then (red line: `lit add`
 # without --si is unchanged, errors included).
-_ADD_USAGE = "Usage: cli add [OPTIONS] PDF_PATH\nTry 'cli add -h' for help.\n\n"
-
-
 def _add_cli(vault: Path, *args: str) -> Any:
     return CliRunner().invoke(cli, ["add", *args, "--library", str(vault)])
+
+
+def _add_usage(vault: Path) -> str:
+    """The header Click prints above a `lit add` usage error.
+
+    The usage line is ours and stays pinned. The "Try ... for help." hint is
+    Click's own and its wording differs between Click releases (8.3 names -h,
+    8.5 --help), so it is taken from the installed Click.
+    """
+    try_line = _add_cli(vault, "--no-such-option").output.splitlines()[1]
+    assert try_line.startswith("Try 'cli add "), try_line
+    return f"Usage: cli add [OPTIONS] PDF_PATH\n{try_line}\n\n"
 
 
 def test_add_missing_pdf_path_reads_as_before(
@@ -686,7 +695,7 @@ def test_add_missing_pdf_path_reads_as_before(
 ) -> None:
     result = _add_cli(vault, "--doi", "10.1/x")
     assert result.exit_code == 2
-    assert result.output == _ADD_USAGE + "Error: Missing argument 'PDF_PATH'.\n"
+    assert result.output == _add_usage(vault) + "Error: Missing argument 'PDF_PATH'.\n"
     assert "doi" not in mock_crossref
 
 
@@ -703,7 +712,7 @@ def test_add_extra_paths_read_as_before(
     ):
         result = _add_cli(vault, str(fake_pdf), *extra, "--doi", "10.1/x")
         assert result.exit_code == 2, extra
-        assert result.output == _ADD_USAGE + f"Error: {message}\n"
+        assert result.output == _add_usage(vault) + f"Error: {message}\n"
     assert fake_pdf.exists() and other.exists()
     assert "doi" not in mock_crossref
     assert list((vault / "papers").iterdir()) == []
@@ -714,12 +723,12 @@ def test_add_bad_pdf_path_reads_as_before(
 ) -> None:
     missing = _add_cli(vault, "missing.pdf", "extra.pdf", "--doi", "10.1/x")
     assert missing.exit_code == 2
-    assert missing.output == _ADD_USAGE + (
+    assert missing.output == _add_usage(vault) + (
         "Error: Invalid value for 'PDF_PATH': File 'missing.pdf' does not exist.\n"
     )
     folder = _add_cli(vault, str(tmp_path), "--doi", "10.1/x")
     assert folder.exit_code == 2
-    assert folder.output == _ADD_USAGE + (
+    assert folder.output == _add_usage(vault) + (
         f"Error: Invalid value for 'PDF_PATH': File '{tmp_path}' is a directory.\n"
     )
     assert "doi" not in mock_crossref
