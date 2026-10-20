@@ -23,6 +23,7 @@ from litman.core.cite import format_acs
 from litman.core.config import CONFIG_FILENAME
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
+from litman.core.fs_identity import Anchor
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
 from litman.core.search import search_notes
@@ -352,7 +353,7 @@ def _fingerprint(path: Path) -> str:
 
 
 @router.get("/vault-version")
-def get_vault_version(request: Request) -> dict[str, str]:
+def get_vault_version(request: Request) -> dict[str, Any]:
     """An opaque token that changes iff the vault changed on disk.
 
     PURE READ (invariant #16), and stat-only: it never opens a file. The webUI
@@ -367,6 +368,11 @@ def get_vault_version(request: Request) -> dict[str, str]:
     Cost is O(papers) stats — the same walk ``GET /api/doc-mtimes`` already does
     on every resync — plus five. No content is read and nothing is parsed, so a
     poll is orders of magnitude cheaper than the sweep it guards.
+
+    ``siRequest`` rides along on the same poll: the oldest open SI request of
+    this library (``{id, paperId, title, link}``, all held in memory since the
+    request was made) or ``null`` — how the page learns that ``lit add --si``
+    is waiting for it, without a timer of its own. It is not part of the token.
     """
     vault = _vault(request)
     digest = hashlib.blake2b(digest_size=12)
@@ -389,7 +395,11 @@ def get_vault_version(request: Request) -> dict[str, str]:
         for doc in _VAULT_VERSION_DOCS:
             feed(f"{paper_id}/{doc}", papers_dir / paper_id / doc)
 
-    return {"version": digest.hexdigest()}
+    si_request = None
+    table = getattr(request.app.state, "si_requests", None)
+    if table is not None and table.has_open():
+        si_request = table.first_open(Anchor.of(vault))
+    return {"version": digest.hexdigest(), "siRequest": si_request}
 
 
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:

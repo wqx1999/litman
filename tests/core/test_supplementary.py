@@ -48,7 +48,7 @@ from litman.core.supplementary import (
 )
 from litman.core.trash import TRASH_DIRNAME, is_trash_entry_name
 from litman.core.views import write_index
-from litman.exceptions import SupplementaryError
+from litman.exceptions import PaperNotFoundError, SupplementaryError
 
 _posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX read-only bit semantics"
@@ -1219,3 +1219,256 @@ def test_a_record_without_checksum_is_kept_and_only_warned_about(
 
     remove_supplementary(vault, A_ID, ["si-02"])
     assert _meta(vault)["supplementary"] == [legacy]
+
+
+# ---------------------------------------------------------------------------
+# M2 carry-over ①: a volume without inode numbers (st_ino == 0)
+# ---------------------------------------------------------------------------
+
+
+def test_without_inodes_a_file_outside_the_library_is_taken(
+    vault: Path, tmp_path: Path, no_inodes: None
+) -> None:
+    """Same disk as the library, yet outside it: compared by inode 0 alone,
+    every such file used to read as "inside the library"."""
+    src = _blob(tmp_path, "ci9b00237_si_002.xlsx")
+    items = prepare_items(vault, A_ID, [src])
+    add_supplementary(vault, A_ID, items, allow_unverified=False)
+    assert not src.exists()
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-01.xlsx"]
+
+
+def test_without_inodes_the_upload_stash_is_taken(
+    vault: Path, no_inodes: None
+) -> None:
+    stash = vault / ".litman-upload"
+    stash.mkdir(exist_ok=True)
+    upload = _blob(stash, "si-abc-def.xlsx")
+    add_supplementary(
+        vault, A_ID, [SiItem(upload, "ci9b00237_si_003.xlsx")],
+        allow_unverified=False,
+    )
+    assert not upload.exists()
+    assert _meta(vault)["supplementary"][0]["original"] == "ci9b00237_si_003.xlsx"
+
+
+def test_without_inodes_the_library_is_still_the_library(
+    vault: Path, no_inodes: None
+) -> None:
+    for inside in (
+        vault / "papers" / B_ID / "paper.pdf",
+        vault / "INDEX.json",
+    ):
+        with pytest.raises(SupplementaryError, match="inside the library"):
+            prepare_items(vault, A_ID, [inside])
+        with pytest.raises(SupplementaryError, match="inside the library"):
+            add_supplementary(
+                vault, A_ID, [SiItem(inside, "ci9b00237_si_1.pdf")],
+                allow_unverified=True,
+            )
+        assert inside.exists()
+
+
+# ---------------------------------------------------------------------------
+# M2 carry-over ②: a link to a stray in the paper's own folder
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("where", ["own-folder", "outside"])
+def test_a_link_to_a_stray_takes_the_stray_with_it(
+    vault: Path, tmp_path: Path, where: str
+) -> None:
+    """Recording the file behind the link removes the file, not only the link:
+    left behind it would be a stray of the very SI just recorded, refused by
+    `health-check --fix` forever as "already in the library"."""
+    si = vault / "papers" / A_ID / "supplementary"
+    si.mkdir()
+    stray = _blob(si, "data.xlsx", b"the stray")
+    lock_truth_file(stray)  # what the health-check re-lock sweep does first
+    link = (si if where == "own-folder" else tmp_path) / "linked.xlsx"
+    try:
+        os.symlink(stray, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this system cannot make a symlink here: {exc}")
+
+    items = prepare_items(vault, A_ID, [link])
+    result = add_supplementary(vault, A_ID, items, allow_unverified=True)
+
+    (target,) = result.paths
+    assert target.read_bytes() == b"the stray"
+    assert not os.path.lexists(link)
+    assert not os.path.lexists(stray)
+    assert supplementary_drift(vault, A_ID, _meta(vault)) == si_mod.SiDrift()
+
+
+def test_a_link_from_outside_to_outside_loses_only_the_link(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Unchanged from M1: a source outside the library is the user's own
+    file; going through a link to it, only the link is taken."""
+    outside, _personal = _outside_folder(tmp_path)
+    original = _blob(outside, "ci9b00237_si_002.xlsx", b"the user's file")
+    link = tmp_path / "shortcut.xlsx"
+    try:
+        os.symlink(original, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this system cannot make a symlink here: {exc}")
+
+    # Judged by the link's own name, which carries no DOI number.
+    result = add_supplementary(
+        vault, A_ID, prepare_items(vault, A_ID, [link]), allow_unverified=True
+    )
+
+    (target,) = result.paths
+    assert target.read_bytes() == b"the user's file"
+    assert not os.path.lexists(link)
+    assert original.read_bytes() == b"the user's file"
+
+
+# ---------------------------------------------------------------------------
+# SiItem.approved — the user's "add anyway" for one file
+# ---------------------------------------------------------------------------
+
+
+def _set_doi(vault: Path, paper_id: str, doi: str) -> None:
+    meta_path = vault / "papers" / paper_id / "metadata.yaml"
+    text = meta_path.read_text(encoding="utf-8")
+    old = next(line for line in text.splitlines() if line.startswith("doi:"))
+    meta_path.write_text(text.replace(old, f"doi: {doi}"), encoding="utf-8")
+
+
+def test_approved_lets_one_unconfirmed_file_in(vault: Path, tmp_path: Path) -> None:
+    sheet = _blob(tmp_path, "Table_S2.xlsx")
+    with pytest.raises(SupplementaryError, match="Can't confirm"):
+        add_supplementary(vault, A_ID, [SiItem(sheet, sheet.name)], allow_unverified=False)
+    add_supplementary(
+        vault, A_ID, [SiItem(sheet, sheet.name, approved=True)], allow_unverified=False
+    )
+    assert _meta(vault)["supplementary"][0]["check"] == "user"
+
+
+def test_a_verified_file_that_no_longer_verifies_needs_approval(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The GUI showed ✓ (its name carried the DOI number); the DOI was edited
+    before Done. Without the user's own "add anyway" for it, core refuses."""
+    sheet = _blob(tmp_path, "ci9b00237_si_002.xlsx")
+    assert _verdict(vault, A_ID, sheet).status == "ok"
+    _set_doi(vault, A_ID, "10.1000/zz.other")
+    assert _verdict(vault, A_ID, sheet).status == "unverified"
+
+    with pytest.raises(SupplementaryError, match="Can't confirm"):
+        add_supplementary(vault, A_ID, [SiItem(sheet, sheet.name)], allow_unverified=False)
+    assert sheet.exists()
+
+    add_supplementary(
+        vault, A_ID, [SiItem(sheet, sheet.name, approved=True)], allow_unverified=False
+    )
+    assert _meta(vault)["supplementary"][0]["check"] == "user"
+
+
+def test_approved_never_lets_a_rejected_file_in(
+    vault: Path, tmp_path: Path, make_text_pdf: MakePdf
+) -> None:
+    other = _si_pdf(make_text_pdf, "41467_2023_38851_MOESM1_ESM.pdf", B_TITLE)
+    with pytest.raises(SupplementaryError, match="looks like the SI of"):
+        add_supplementary(
+            vault, A_ID, [SiItem(other, other.name, approved=True)],
+            allow_unverified=True,
+        )
+    assert other.exists()
+    assert "supplementary" not in _meta(vault)
+
+
+# ---------------------------------------------------------------------------
+# official_link / si_write_problem / recorded_si_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("meta", "link"),
+    [
+        ({"doi": A_DOI}, "https://doi.org/10.1021/acs.jcim.9b00237"),
+        ({"doi": "https://doi.org/" + A_DOI}, "https://doi.org/10.1021/acs.jcim.9b00237"),
+        ({"doi": "10.1002/(SICI)1097 <x>"}, "https://doi.org/10.1002/%28SICI%291097%20%3Cx%3E"),
+        ({"doi": A_DOI, "arxiv-id": "2101.00001"}, "https://doi.org/10.1021/acs.jcim.9b00237"),
+        ({"doi": None, "arxiv-id": "2101.00001"}, "https://arxiv.org/abs/2101.00001"),
+        ({"doi": "", "arxiv-id": "hep-th/9901001"}, "https://arxiv.org/abs/hep-th/9901001"),
+        ({"doi": None, "arxiv-id": None}, None),
+        ({}, None),
+    ],
+)
+def test_official_link(meta: dict[str, object], link: str | None) -> None:
+    assert si_mod.official_link(meta) == link
+
+
+def test_si_write_problem(vault: Path) -> None:
+    assert si_mod.si_write_problem(vault, A_ID) is None
+    meta_path = vault / "papers" / B_ID / "metadata.yaml"
+    with meta_path.open("a", encoding="utf-8") as f:
+        f.write("supplementary: si-01.pdf\n")
+    assert "'supplementary' is not a list" in (
+        si_mod.si_write_problem(vault, B_ID) or ""
+    )
+    (vault / "papers" / C_ID / "supplementary").write_text("x", encoding="utf-8")
+    assert "is a file, not a folder" in (si_mod.si_write_problem(vault, C_ID) or "")
+    with pytest.raises(PaperNotFoundError):
+        si_mod.si_write_problem(vault, "2000_Nobody_Here")
+
+
+def test_si_write_problem_names_a_linked_folder(vault: Path, tmp_path: Path) -> None:
+    outside, _personal = _outside_folder(tmp_path)
+    _link_si_folder(vault, outside)
+    assert "is a link" in (si_mod.si_write_problem(vault, A_ID) or "")
+
+
+def test_recorded_si_file_gives_only_recorded_files(vault: Path, tmp_path: Path) -> None:
+    _add_two(vault, tmp_path)
+    path, record = si_mod.recorded_si_file(vault, A_ID, "si-02.xlsx")
+    assert path == vault / "papers" / A_ID / "supplementary" / "si-02.xlsx"
+    assert record["original"] == "ci9b00237_si_002.xlsx"
+
+    _blob(vault / "papers" / A_ID / "supplementary", "si-07.csv", b"stray")
+    for name in (
+        "si-02",  # the short form is the CLI's, not a file name
+        "SI-02.xlsx",
+        "si-07.csv",  # on disk, never recorded
+        "../paper.pdf",
+        "..",
+        "si-02.xlsx/..",
+        "",
+    ):
+        with pytest.raises(SupplementaryError):
+            si_mod.recorded_si_file(vault, A_ID, name)
+    with pytest.raises(PaperNotFoundError):
+        si_mod.recorded_si_file(vault, "2000_Nobody_Here", "si-01.csv")
+
+
+def test_recorded_si_file_refuses_a_missing_or_linked_file(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    gone = si / "si-01.csv"
+    unlock_truth_file(gone)
+    gone.unlink()
+    with pytest.raises(SupplementaryError, match="missing"):
+        si_mod.recorded_si_file(vault, A_ID, "si-01.csv")
+
+    _outside, personal = _outside_folder(tmp_path)
+    try:
+        os.symlink(personal, gone)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"this system cannot make a symlink here: {exc}")
+    with pytest.raises(SupplementaryError, match="not a plain file"):
+        si_mod.recorded_si_file(vault, A_ID, "si-01.csv")
+
+
+def test_recorded_si_file_refuses_a_linked_folder(vault: Path, tmp_path: Path) -> None:
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    moved_away = tmp_path / "moved-away"
+    shutil.move(str(si), str(moved_away))
+    _link_si_folder(vault, moved_away)
+    with pytest.raises(SupplementaryError, match="is a link"):
+        si_mod.recorded_si_file(vault, A_ID, "si-01.csv")

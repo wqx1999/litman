@@ -61,6 +61,7 @@ from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import now_iso
 from litman.core.document import load_yaml_or_raise
+from litman.core.fs_identity import same_entry
 from litman.core.locking import rmtree
 from litman.core.notes import (
     deannotate_deleted_wikilinks,
@@ -451,7 +452,7 @@ def rename_removed_si(vault: Path, old: str, new: str) -> int:
     if not dst.exists():
         moved = os.listdir(src)
         os.rename(src, dst)
-    elif os.path.samefile(src, dst):
+    elif same_entry(src, dst):
         # Both names reach one folder (a case-only rename on a
         # case-insensitive disk): merging it into itself would rename every file.
         return 0

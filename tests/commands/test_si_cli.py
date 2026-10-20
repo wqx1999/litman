@@ -477,6 +477,34 @@ def test_show_lists_si_after_pdf_and_notes(vault: Path, tmp_path: Path) -> None:
     )
 
 
+def test_show_marks_an_si_file_it_cannot_look_at(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python 3.12+ lets is_file() raise for a file it may not stat (EACCES).
+    That line says (unreadable!); the others print as usual. Played by
+    raising for that one file rather than by chmod, which Windows ignores."""
+    _add_two(vault, tmp_path)
+    real_is_file = Path.is_file
+
+    def is_file(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent.name == "supplementary" and self.name.startswith("si-01."):
+            raise PermissionError(13, "Permission denied (mocked)", str(self))
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    result = _run(vault, "show", A_ID)
+
+    assert result.exit_code == 0, result.output
+    si_lines = [line for line in result.output.splitlines() if line.startswith("SI:")]
+    assert len(si_lines) == 2
+    assert str(_si_dir(vault) / "si-01.csv") in si_lines[0]
+    assert "(unreadable!)" in si_lines[0]
+    assert "(missing!)" not in si_lines[0]
+    assert str(_si_dir(vault) / "si-02.xlsx") in si_lines[1]
+    assert "(unreadable!)" not in si_lines[1]
+    assert "(missing!)" not in si_lines[1]
+
+
 def test_show_without_si_prints_no_si_line(vault: Path) -> None:
     result = _run(vault, "show", A_ID)
     assert result.exit_code == 0, result.output

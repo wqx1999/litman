@@ -42,11 +42,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.dedup import canonicalize_doi
 from litman.core.document import find_paper, list_papers, load_yaml_or_raise
+from litman.core.fs_identity import Anchor
 from litman.core.locking import (
     SI_DIRNAME,
     is_file_manager_dropping,
@@ -169,10 +171,16 @@ class SiItem:
     ``original`` is the name the publisher gave it — the file's own name, or
     for a file coming back from ``.trash/removed-si/`` the name recorded when
     it was first added (its trash name carries no DOI number).
+
+    ``approved`` is the user's "add anyway" for this one file: a file that
+    cannot be confirmed goes in when it is set, as with ``allow_unverified``
+    for the whole call. It never lets a rejected file in, and a file that
+    verified when the user saw it but no longer does still needs it.
     """
 
     path: Path
     original: str
+    approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -900,23 +908,22 @@ def _refuse_bad_folder(vault: Path, paper_id: str) -> None:
         )
 
 
-def _vault_parts(vault_stat: os.stat_result, path: Path) -> tuple[str, ...] | None:
+def _vault_parts(vault: Anchor, path: Path) -> tuple[str, ...] | None:
     """``path``'s parts below the library root, ``None`` when outside it.
 
-    Decided by identity — ``os.path.samestat`` against each ancestor of the
-    resolved path — never by comparing strings: on a case-insensitive
-    filesystem a path typed in another case reaches the same folder, yet
-    spells it differently. The parts keep the spelling found, so the
-    allow-list below refuses a differently-spelled path rather than admit it.
+    Decided by identity — each ancestor of the resolved path against the
+    library's (:class:`~litman.core.fs_identity.Anchor`) — not by comparing
+    strings: on a case-insensitive filesystem a path typed in another case
+    reaches the same folder, yet spells it differently. Only on a volume
+    without inode numbers do the resolved paths decide. The parts keep the
+    spelling found, so the allow-list below refuses a differently-spelled
+    path rather than admit it.
     """
     current = path.resolve()
     below: list[str] = []
     while True:
-        try:
-            if os.path.samestat(os.stat(current), vault_stat):
-                return tuple(reversed(below))
-        except OSError:
-            pass  # not there (the leaf may not exist yet): look further up
+        if vault.matches(current):
+            return tuple(reversed(below))
         if current.parent == current:
             return None
         below.append(current.name)
@@ -935,7 +942,7 @@ def _is_removed_si_file(parts: tuple[str, ...] | None) -> bool:
 
 
 def _source_problem(
-    vault_stat: os.stat_result, paper_id: str, path: Path, recorded: set[str]
+    vault: Anchor, paper_id: str, path: Path, recorded: set[str]
 ) -> str | None:
     """Why ``path`` may not be taken in, or ``None``.
 
@@ -951,7 +958,7 @@ def _source_problem(
         return f"No such file: {path}"
     if path.is_dir():
         return f"{path} is a folder — add its files one by one, or zip it first."
-    parts = _vault_parts(vault_stat, path)
+    parts = _vault_parts(vault, path)
     if parts is None or _is_removed_si_file(parts):
         return None
     if len(parts) == 2 and parts[0] == _UPLOAD_DIRNAME:
@@ -966,8 +973,8 @@ def _source_problem(
     return f"{path} is inside the library — copy it somewhere outside first."
 
 
-def _original_name(vault_stat: os.stat_result, path: Path) -> str:
-    if _is_removed_si_file(_vault_parts(vault_stat, path)):
+def _original_name(vault: Anchor, path: Path) -> str:
+    if _is_removed_si_file(_vault_parts(vault, path)):
         record = read_removed_si_sidecar(path.resolve()).get("record")
         if isinstance(record, Mapping) and record.get("original"):
             return str(record["original"])
@@ -988,14 +995,96 @@ def prepare_items(
     meta = find_paper(vault, paper_id)
     _refuse_bad_folder(vault, paper_id)
     recorded = {rec["file"] for rec in list_supplementary(meta)}
-    vault_stat = os.stat(vault)
+    anchor = Anchor.of(vault)
     items: list[SiItem] = []
     for path in paths:
-        problem = _source_problem(vault_stat, paper_id, path, recorded)
+        problem = _source_problem(anchor, paper_id, path, recorded)
         if problem:
             raise SupplementaryError(problem)
-        items.append(SiItem(path, _original_name(vault_stat, path)))
+        items.append(SiItem(path, _original_name(anchor, path)))
     return items
+
+
+# ---------------------------------------------------------------------------
+# What the GUI's SI window asks before and around a write
+# ---------------------------------------------------------------------------
+
+
+def official_link(meta: Mapping[str, Any]) -> str | None:
+    """The publisher's page for the paper, where its SI is downloaded.
+
+    ``https://doi.org/<doi>`` when it has a DOI, else
+    ``https://arxiv.org/abs/<id>`` when it has an arXiv id, else ``None``.
+    """
+    doi = canonicalize_doi(str(meta.get("doi") or ""))
+    if doi:
+        return f"https://doi.org/{quote(doi, safe='/')}"
+    arxiv = str(meta.get("arxiv-id") or "").strip()
+    if arxiv:
+        return f"https://arxiv.org/abs/{quote(arxiv, safe='/')}"
+    return None
+
+
+def si_write_problem(vault: Path, paper_id: str) -> str | None:
+    """Why no SI can be added to or removed from the paper now, or ``None``.
+
+    The words :func:`add_supplementary` would refuse with: a malformed
+    ``supplementary`` field, or ``supplementary`` being a link or a file.
+
+    Raises:
+        PaperNotFoundError / CorruptMetadataError: no such paper, or its
+            metadata does not parse.
+    """
+    try:
+        _load_rt(vault, paper_id)
+        _refuse_bad_folder(vault, paper_id)
+    except SupplementaryError as exc:
+        return str(exc)
+    return None
+
+
+def recorded_si_file(
+    vault: Path, paper_id: str, name: str
+) -> tuple[Path, dict[str, Any]]:
+    """The recorded SI file ``name`` (exactly as recorded) and its record.
+
+    Only a recorded name is ever turned into a path, so nothing else in the
+    folder — let alone outside it — can be reached through this.
+
+    Raises:
+        PaperNotFoundError / CorruptMetadataError: no such paper, or its
+            metadata does not parse.
+        SupplementaryError: no record by that name, ``supplementary`` is a
+            link or a file, or the file is gone or not a plain file.
+    """
+    meta = find_paper(vault, paper_id)
+    record = None
+    if _SI_NAME_RE.match(name):
+        record = next(
+            (rec for rec in list_supplementary(meta) if rec["file"] == name),
+            None,
+        )
+    if record is None:
+        raise SupplementaryError(
+            f"{paper_id} has no SI file {name!r}. "
+            f"`lit show {paper_id}` lists its SI files."
+        )
+    _refuse_bad_folder(vault, paper_id)
+    path = vault / "papers" / paper_id / SI_DIRNAME / name
+    try:
+        kind = _entry_kind(path)
+    except OSError as exc:
+        raise SupplementaryError(
+            f"papers/{paper_id}/{SI_DIRNAME}/{name} cannot be read "
+            f"({exc.__class__.__name__}). Fix its permissions, then retry."
+        ) from exc
+    if kind != "file":
+        raise SupplementaryError(
+            f"papers/{paper_id}/{SI_DIRNAME}/{name} is "
+            f"{'missing' if kind == 'missing' else 'not a plain file'}. "
+            "`lit health-check` says how to fix it."
+        )
+    return path, record
 
 
 # ---------------------------------------------------------------------------
@@ -1116,15 +1205,16 @@ def add_supplementary(
         SupplementaryError: the field is malformed, ``supplementary`` is a
             link or a file, a source is not acceptable (see
             :func:`prepare_items`), a file is rejected, or one cannot be
-            confirmed and ``allow_unverified`` is false. Nothing is written.
+            confirmed and neither ``allow_unverified`` nor its own
+            ``approved`` is set. Nothing is written.
     """
     meta = _load_rt(vault, paper_id)
     _refuse_bad_folder(vault, paper_id)
     records = list_supplementary(meta)
     recorded = {rec["file"] for rec in records}
-    vault_stat = os.stat(vault)
+    anchor = Anchor.of(vault)
     for item in items:
-        problem = _source_problem(vault_stat, paper_id, item.path, recorded)
+        problem = _source_problem(anchor, paper_id, item.path, recorded)
         if problem:
             raise SupplementaryError(problem)
     if not items:
@@ -1135,7 +1225,11 @@ def add_supplementary(
     refused = [(i, v) for i, v in pairs if v.status == "rejected"]
     if refused:
         raise SupplementaryError(_refusal(refused))
-    unconfirmed = [i.original for i, v in pairs if v.status == "unverified"]
+    unconfirmed = [
+        i.original
+        for i, v in pairs
+        if v.status == "unverified" and not i.approved
+    ]
     if unconfirmed and not allow_unverified:
         raise SupplementaryError(
             f"Can't confirm {', '.join(unconfirmed)} belongs to {paper_id}. "
@@ -1224,7 +1318,7 @@ def add_supplementary(
         source = items[index].path
         try:
             resolved = source.resolve()
-            parts = _vault_parts(vault_stat, source)
+            parts = _vault_parts(anchor, source)
             if parts is not None and _is_removed_si_file(parts):
                 # The real file goes with its sidecar, even when the path given
                 # was a link to it: removing only the link would strand the
@@ -1236,10 +1330,19 @@ def add_supplementary(
                     source.unlink()
                 _prune_removed_si(vault, parts[2])
                 continue
-            # A stray from the paper's own folder was locked by the re-lock
-            # sweep, and Windows refuses to unlink a read-only file.
-            if resolved.parent == si_dir_resolved:
-                unlock_truth_file(source)
+            if parts is not None:
+                # From inside the library (the upload stash, or a stray in
+                # this paper's own folder), possibly through a link: the real
+                # file goes, then the link. Removing only the link would leave
+                # the file behind as a stray of the very SI just recorded.
+                # A stray was locked by the re-lock sweep, and Windows refuses
+                # to unlink a read-only file.
+                if parts[:3] == ("papers", paper_id, SI_DIRNAME):
+                    unlock_truth_file(resolved)
+                resolved.unlink()
+                if source.is_symlink():
+                    source.unlink()
+                continue
             source.unlink()
         except OSError as exc:
             warnings.append(
@@ -1517,14 +1620,17 @@ __all__ = [
     "list_supplementary",
     "mentions_supplementary",
     "name_matches",
+    "official_link",
     "plan_names",
     "prepare_items",
+    "recorded_si_file",
     "remove_supplementary",
     "resolve_si_records",
     "restore_command",
     "shell_path",
     "si_extension",
     "si_stem",
+    "si_write_problem",
     "supplementary_drift",
     "verify_batch",
     "verify_candidate",

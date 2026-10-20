@@ -49,6 +49,7 @@ import contextlib
 import getpass
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -67,6 +68,7 @@ from rich.console import Console
 
 from litman.cli import _launched_without_console
 from litman.commands._options import library_option, vault_option
+from litman.core.gui_registry import unregister_gui
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
 from litman.core.presence import PresenceTracker
@@ -94,7 +96,10 @@ SPLASH_TIMEOUT = 25.0
 # The live-refresh change token, polled by every visible page every few seconds.
 # It is the one route whose access-log line carries no information: hundreds of
 # identical 200s per hour, in a log file that exists to explain a *failure*.
-_POLLED_PATHS = ("/api/vault-version",)
+# `lit add --si` adds two more of the kind: the ping it finds the GUI with, and
+# its once-a-second look at the request it waits on.
+_POLLED_PATHS = ("/api/vault-version", "/api/si/ping")
+_POLLED_PATH_RES = (re.compile(r"/api/si/requests/[0-9a-f]{32}"),)
 
 
 class _DropPolledAccessLines(logging.Filter):
@@ -121,7 +126,12 @@ class _DropPolledAccessLines(logging.Filter):
         path = args[2]
         if not isinstance(path, str):
             return True
-        return path.split("?", 1)[0] not in _POLLED_PATHS
+        path = path.split("?", 1)[0]
+        if path in _POLLED_PATHS:
+            return False
+        return not (
+            args[1] == "GET" and any(r.fullmatch(path) for r in _POLLED_PATH_RES)
+        )
 
 
 def _quiet_polled_access_lines() -> None:
@@ -1534,6 +1544,9 @@ def gui_cmd(
     # was.
     app.state.uvicorn_server = server
     app.state.self_update_port = actual_port
+    # The lifespan records this server for `lit add --si` to find (only when
+    # this is set, so no other app ever records itself).
+    app.state.gui_port = actual_port
     try:
         if window:
             relaunch = [_shortcut_executable(), "gui", "--window"]
@@ -1548,187 +1561,195 @@ def gui_cmd(
         # its manual hint instead of arming a restart that cannot work.
         pass
 
-    # macOS --window: prefer a window this process owns. The Dock badges a
-    # window with the owning process's bundle, so a WKWebView here wears
-    # litman's own face (the .app stub exec'd us) where the Chromium --app
-    # window wore the browser's — and no browser needs to be installed at
-    # all. Anything short of a working pywebview falls back to the Chromium
-    # route below, byte-for-byte the launch it always was.
-    if window and sys.platform == "darwin":
-        try:
-            shell = _load_mac_shell()
-        except Exception:
-            # Belt and braces: the seam already swallows its own failures —
-            # this catch only survives a broken (or test-patched) seam
-            # object itself.
-            shell = None
-        if shell is not None:
-            console.print("[dim]Close the window to stop the server.[/]")
-            from litman.commands import _mac_shell
-
-            if _mac_shell.run_shell(shell, server, url, app.state.presence):
-                return
-            # False: the window layer failed before the server ever ran, so
-            # the launch is still ours to make good on below.
-        if _shed_darwin_app_identity():
-            console.print(
-                "[dim]Native window unavailable; relaunching in the "
-                "browser.[/]"
-            )
-            return
-        console.print(
-            "[dim]Native window unavailable; falling back to the browser.[/]"
-        )
-
-    # Signals the readiness poller to stand down: set in `finally` so a server
-    # that raised before it ever listened never gets a browser opened onto it.
-    stop_event = threading.Event()
-    ready_thread: threading.Thread | None = None
-    # The app window we spawned, if we spawned one. Appended from the readiness
-    # thread, read in `finally` — a list because a plain name cannot be rebound
-    # across that boundary.
-    owned: list[subprocess.Popen[bytes]] = []
-
-    if not no_browser and display_available():
-        app_argv = _app_window_argv(url) if window else None
-        if window and app_argv is None:
-            console.print(
-                "[dim]No Chrome/Edge/Chromium found for --window; opening a "
-                "normal browser tab instead.[/]"
-            )
-        elif app_argv is not None:
-            console.print("[dim]Close the window to stop the server (or Ctrl+C).[/]")
-
-        def _hard_exit() -> None:
-            # `finally` never runs after os._exit, so take the window down
-            # here rather than leave a shell on screen pointing at a server
-            # that is about to stop existing.
-            for spawned in owned:
-                with contextlib.suppress(OSError):
-                    spawned.terminate()
-            os._exit(0)
-
-        def _fall_back_to_tab() -> bool:
-            """Open a tab for a window that died before it loaded a page.
-
-            The last-resort twin of the `except OSError` arm in `_open`: that
-            one catches a browser that would not start, this one a browser
-            that started and then quit. Same remedy, because the splash is
-            still up and the server is still serving a UI nobody can see.
-
-            Unless the run is already ending: `_hard_exit` and the `finally`
-            below terminate the window themselves, and a signalled process
-            exits non-zero exactly like a crashed one. Ctrl+C would otherwise
-            throw a tab up on its way out — the parting gift nobody asked for.
-            """
-            if stop_event.is_set():
-                return False
-            _terminate_splash()
-            return webbrowser.open(url)
-
-        def _watch_window(proc: subprocess.Popen[bytes] | None) -> None:
-            """Stop the server when the last page goes, and see it through."""
-            _stop_server_when_window_closes(
-                proc,
-                server,
-                app.state.presence,
-                # Only a launch that spawned something can have failed this
-                # way; a tab that never connects has nothing left to fall
-                # back to.
-                on_launch_failed=_fall_back_to_tab if proc is not None else None,
-            )
-            # The server may already be down (Ctrl+C raced the window close),
-            # in which case there is nothing to escalate against — and arming
-            # the kill stage against a finished run is exactly the mistake
-            # worth being structural about.
-            if stop_event.is_set():
-                return
-            _escalate_shutdown(server, stop_event, hard_exit=_hard_exit)
-
-        def _start_watcher(proc: subprocess.Popen[bytes] | None) -> None:
-            threading.Thread(
-                target=_watch_window, args=(proc,), daemon=True
-            ).start()
-
-        def _open() -> None:
-            if app_argv is None:
-                # A plain tab (no Chromium found, or tab mode): no window
-                # process to watch, and no page paint will close the splash —
-                # so close it now (SF-5).
-                _terminate_splash()
-                webbrowser.open(url)
-                # `--window` still owes the user a way to stop the server, and
-                # the tab is the window here. Its launch may well have come
-                # from the desktop shortcut, where the console-less litw.exe
-                # leaves no Ctrl+C to fall back on — so watch the page even
-                # though there is no process to poll alongside it.
-                if window:
-                    _start_watcher(None)
-                return
-            try:
-                # The same directory _app_window_flags put on the command
-                # line: argv[0] is the browser, and for a confined one that
-                # is what decides where its profile is allowed to live.
-                profile = browser_profile_dir(app_argv[0])
-                profile.mkdir(parents=True, exist_ok=True)
-                _quiet_browser_profile(profile)
-                _purge_stale_browser_session(profile)
-                _migrate_legacy_http_cache(profile)
-                proc = subprocess.Popen(
-                    app_argv,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                )
-            except OSError:
-                # The browser vanished between the `which` probe and now. A tab
-                # is a worse window, but no window at all is worse still. No
-                # window to paint, so close the splash now (SF-5); the page
-                # gate still applies, for the same reason as above.
-                _terminate_splash()
-                webbrowser.open(url)
-                _start_watcher(None)
-                return
-            owned.append(proc)
-            # Watcher first: closing the window must always stop the server,
-            # and the brander is cosmetics — it never gets to stand in front
-            # of the lifeline.
-            _start_watcher(proc)
-            _brand_windows_taskbar(stop_event)
-
-        def _after_open() -> None:
-            # Splash hand-off: only a real app window has a page that will hold
-            # the presence socket, so wait for it to paint before closing the
-            # splash. The tab / default-browser fallbacks in _open already
-            # closed it (owned stays empty there); nothing to hold for.
-            if splash_proc is None:
-                return
-            if owned:
-                _terminate_splash_when_visible(
-                    splash_proc, app.state.presence, stop_event
-                )
-            else:
-                _terminate_splash()
-
-        ready_thread = _spawn_ready_watcher(
-            server, _open, stop_event, after_open=_after_open
-        )
-
     try:
-        server.run()
+        # macOS --window: prefer a window this process owns. The Dock badges a
+        # window with the owning process's bundle, so a WKWebView here wears
+        # litman's own face (the .app stub exec'd us) where the Chromium --app
+        # window wore the browser's — and no browser needs to be installed at
+        # all. Anything short of a working pywebview falls back to the Chromium
+        # route below, byte-for-byte the launch it always was.
+        if window and sys.platform == "darwin":
+            try:
+                shell = _load_mac_shell()
+            except Exception:
+                # Belt and braces: the seam already swallows its own failures —
+                # this catch only survives a broken (or test-patched) seam
+                # object itself.
+                shell = None
+            if shell is not None:
+                console.print("[dim]Close the window to stop the server.[/]")
+                from litman.commands import _mac_shell
+
+                if _mac_shell.run_shell(shell, server, url, app.state.presence):
+                    return
+                # False: the window layer failed before the server ever ran, so
+                # the launch is still ours to make good on below.
+            if _shed_darwin_app_identity():
+                console.print(
+                    "[dim]Native window unavailable; relaunching in the "
+                    "browser.[/]"
+                )
+                return
+            console.print(
+                "[dim]Native window unavailable; falling back to the browser.[/]"
+            )
+
+        # Signals the readiness poller to stand down: set in `finally` so a server
+        # that raised before it ever listened never gets a browser opened onto it.
+        stop_event = threading.Event()
+        ready_thread: threading.Thread | None = None
+        # The app window we spawned, if we spawned one. Appended from the readiness
+        # thread, read in `finally` — a list because a plain name cannot be rebound
+        # across that boundary.
+        owned: list[subprocess.Popen[bytes]] = []
+
+        if not no_browser and display_available():
+            app_argv = _app_window_argv(url) if window else None
+            if window and app_argv is None:
+                console.print(
+                    "[dim]No Chrome/Edge/Chromium found for --window; opening a "
+                    "normal browser tab instead.[/]"
+                )
+            elif app_argv is not None:
+                console.print("[dim]Close the window to stop the server (or Ctrl+C).[/]")
+
+            def _hard_exit() -> None:
+                # `finally` never runs after os._exit, so take the window down
+                # here rather than leave a shell on screen pointing at a server
+                # that is about to stop existing.
+                for spawned in owned:
+                    with contextlib.suppress(OSError):
+                        spawned.terminate()
+                unregister_gui(getattr(app.state, "gui_registration", None))
+                os._exit(0)
+
+            def _fall_back_to_tab() -> bool:
+                """Open a tab for a window that died before it loaded a page.
+
+                The last-resort twin of the `except OSError` arm in `_open`: that
+                one catches a browser that would not start, this one a browser
+                that started and then quit. Same remedy, because the splash is
+                still up and the server is still serving a UI nobody can see.
+
+                Unless the run is already ending: `_hard_exit` and the `finally`
+                below terminate the window themselves, and a signalled process
+                exits non-zero exactly like a crashed one. Ctrl+C would otherwise
+                throw a tab up on its way out — the parting gift nobody asked for.
+                """
+                if stop_event.is_set():
+                    return False
+                _terminate_splash()
+                return webbrowser.open(url)
+
+            def _watch_window(proc: subprocess.Popen[bytes] | None) -> None:
+                """Stop the server when the last page goes, and see it through."""
+                _stop_server_when_window_closes(
+                    proc,
+                    server,
+                    app.state.presence,
+                    # Only a launch that spawned something can have failed this
+                    # way; a tab that never connects has nothing left to fall
+                    # back to.
+                    on_launch_failed=_fall_back_to_tab if proc is not None else None,
+                )
+                # The server may already be down (Ctrl+C raced the window close),
+                # in which case there is nothing to escalate against — and arming
+                # the kill stage against a finished run is exactly the mistake
+                # worth being structural about.
+                if stop_event.is_set():
+                    return
+                _escalate_shutdown(server, stop_event, hard_exit=_hard_exit)
+
+            def _start_watcher(proc: subprocess.Popen[bytes] | None) -> None:
+                threading.Thread(
+                    target=_watch_window, args=(proc,), daemon=True
+                ).start()
+
+            def _open() -> None:
+                if app_argv is None:
+                    # A plain tab (no Chromium found, or tab mode): no window
+                    # process to watch, and no page paint will close the splash —
+                    # so close it now (SF-5).
+                    _terminate_splash()
+                    webbrowser.open(url)
+                    # `--window` still owes the user a way to stop the server, and
+                    # the tab is the window here. Its launch may well have come
+                    # from the desktop shortcut, where the console-less litw.exe
+                    # leaves no Ctrl+C to fall back on — so watch the page even
+                    # though there is no process to poll alongside it.
+                    if window:
+                        _start_watcher(None)
+                    return
+                try:
+                    # The same directory _app_window_flags put on the command
+                    # line: argv[0] is the browser, and for a confined one that
+                    # is what decides where its profile is allowed to live.
+                    profile = browser_profile_dir(app_argv[0])
+                    profile.mkdir(parents=True, exist_ok=True)
+                    _quiet_browser_profile(profile)
+                    _purge_stale_browser_session(profile)
+                    _migrate_legacy_http_cache(profile)
+                    proc = subprocess.Popen(
+                        app_argv,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                    )
+                except OSError:
+                    # The browser vanished between the `which` probe and now. A tab
+                    # is a worse window, but no window at all is worse still. No
+                    # window to paint, so close the splash now (SF-5); the page
+                    # gate still applies, for the same reason as above.
+                    _terminate_splash()
+                    webbrowser.open(url)
+                    _start_watcher(None)
+                    return
+                owned.append(proc)
+                # Watcher first: closing the window must always stop the server,
+                # and the brander is cosmetics — it never gets to stand in front
+                # of the lifeline.
+                _start_watcher(proc)
+                _brand_windows_taskbar(stop_event)
+
+            def _after_open() -> None:
+                # Splash hand-off: only a real app window has a page that will hold
+                # the presence socket, so wait for it to paint before closing the
+                # splash. The tab / default-browser fallbacks in _open already
+                # closed it (owned stays empty there); nothing to hold for.
+                if splash_proc is None:
+                    return
+                if owned:
+                    _terminate_splash_when_visible(
+                        splash_proc, app.state.presence, stop_event
+                    )
+                else:
+                    _terminate_splash()
+
+            ready_thread = _spawn_ready_watcher(
+                server, _open, stop_event, after_open=_after_open
+            )
+
+        try:
+            server.run()
+        finally:
+            # Tell the readiness poller to stand down and wait for it, so a server
+            # that raised before listening leaves no thread behind (and never opens
+            # a browser onto a dead server).
+            stop_event.set()
+            if ready_thread is not None:
+                ready_thread.join(timeout=READY_TIMEOUT + 1.0)
+            # Backstop: close the splash no matter which path brought us here.
+            _terminate_splash()
+            # The other direction: the server stopped first (Ctrl+C, or a crash),
+            # so close the window it was serving rather than leave a dead shell on
+            # screen. Safe because the profile is ours alone — there are no other
+            # tabs to take down with it. A no-op when the window is already gone.
+            for proc in owned:
+                with contextlib.suppress(OSError):
+                    proc.terminate()
     finally:
-        # Tell the readiness poller to stand down and wait for it, so a server
-        # that raised before listening leaves no thread behind (and never opens
-        # a browser onto a dead server).
-        stop_event.set()
-        if ready_thread is not None:
-            ready_thread.join(timeout=READY_TIMEOUT + 1.0)
-        # Backstop: close the splash no matter which path brought us here.
-        _terminate_splash()
-        # The other direction: the server stopped first (Ctrl+C, or a crash),
-        # so close the window it was serving rather than leave a dead shell on
-        # screen. Safe because the profile is ours alone — there are no other
-        # tabs to take down with it. A no-op when the window is already gone.
-        for proc in owned:
-            with contextlib.suppress(OSError):
-                proc.terminate()
+        # The lifespan drops this server's record on a graceful stop. This
+        # covers the exits that skip it: uvicorn's force-exit, the macOS
+        # window returning while the server thread still winds down, a
+        # launch handed to another process. Idempotent.
+        unregister_gui(getattr(app.state, "gui_registration", None))

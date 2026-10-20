@@ -854,3 +854,35 @@ def test_rename_removed_si_never_cuts_a_sidecar_short(
     folder = removed_si_dir(vault, "2024_Foo_Baz")
     assert sorted(os.listdir(folder)) == [trashed.name, sidecar_name]
     assert (folder / sidecar_name).read_bytes() == before
+
+
+def test_rename_removed_si_merges_on_a_disk_without_inodes(
+    vault: Path, tmp_path: Path, no_inodes: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two different folders: compared by inode 0 they looked like one, and
+    nothing moved, without a word."""
+    _plant_removed_si(vault, tmp_path, "2024_Foo_Baz", "si-01.pdf", b"earlier")
+    _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
+    # The same disk as the stdlib sees it, so a return to os.path.samefile
+    # (inode 0 on both sides: "same file") fails here too. Patched only now:
+    # planting moves files, and shutil asks samefile on the way.
+    monkeypatch.setattr(
+        os.path, "samefile", lambda a, b: os.stat(a).st_dev == os.stat(b).st_dev
+    )
+
+    assert rename_removed_si(vault, "2024_Foo_Bar", "2024_Foo_Baz") == 1
+
+    assert not removed_si_dir(vault, "2024_Foo_Bar").exists()
+    rows = {row.path.read_bytes(): row for row in list_removed_si(vault)}
+    assert sorted(rows) == [b"earlier", b"own"]
+    assert {row.paper_id for row in rows.values()} == {"2024_Foo_Baz"}
+
+
+def test_rename_removed_si_to_the_same_name_on_a_disk_without_inodes(
+    vault: Path, tmp_path: Path, no_inodes: None
+) -> None:
+    trashed = _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
+    before = _contents(trashed.parent)
+
+    assert rename_removed_si(vault, "2024_Foo_Bar", "2024_Foo_Bar") == 0
+    assert _contents(trashed.parent) == before
