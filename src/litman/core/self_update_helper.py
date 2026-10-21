@@ -64,6 +64,36 @@ def fail_flag_path() -> Path:
     return registry_path().parent / FAIL_FLAG_FILENAME
 
 
+def leftover_files() -> list[Path]:
+    """The log and the failure flag, those that exist. What ``lit uninstall``
+    removes."""
+    return [p for p in (log_path(), fail_flag_path()) if p.is_file()]
+
+
+def remove_leftover_files() -> dict[str, object]:
+    """Delete :func:`leftover_files`, and the config dir too once it is empty.
+
+    Used by ``lit uninstall``. Returns ``{"removed", "dir_removed"}``;
+    ``removed`` lists the files actually deleted.
+    """
+    removed: list[Path] = []
+    for target in (log_path(), fail_flag_path()):
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            continue
+        removed.append(target)
+    dir_removed = False
+    parent = registry_path().parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            dir_removed = True
+    except OSError:
+        pass
+    return {"removed": removed, "dir_removed": dir_removed}
+
+
 def build_helper_script(
     *,
     pid: int,

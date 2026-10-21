@@ -21,6 +21,7 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.commands import _drift
 from litman.commands.gui import browser_profile_dir, remove_shortcut, shortcut_path
 from litman.commands.install_completion import (
     _build_plan,
@@ -28,8 +29,17 @@ from litman.commands.install_completion import (
     completion_installed,
     uninstall_completion,
 )
+from litman.core import gui_registry, update_check
 from litman.core.agent_prefs import prefs_path, remove_prefs, save_default_agent
+from litman.core.gui_registry import (
+    gui_dir,
+    gui_record_files,
+    register_gui,
+    remove_gui_records,
+    unregister_gui,
+)
 from litman.core.library import create_vault
+from litman.core.self_update_helper import fail_flag_path, log_path
 from litman.core.skill import (
     install_all_skills,
     install_skill,
@@ -761,3 +771,317 @@ def test_uninstall_dry_run_lists_shortcut_and_prefs(
     # dry run changes nothing
     assert shortcut.exists()
     assert prefs_path().is_file()
+
+
+# --------------------------------------------------------------------------
+# GUI server records (core/gui_registry.py) — a killed `lit gui` leaves one
+# --------------------------------------------------------------------------
+
+
+def _redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+
+
+def _seed_other_host_record() -> Path:
+    """A record another machine sharing this config dir wrote."""
+    record = gui_dir() / "other-node-4242.json"
+    record.write_text('{"app": "litman", "host": "other-node"}\n', encoding="utf-8")
+    return record
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_removes_leftover_gui_records_and_the_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record a killed GUI left (this process stands in for it) and one
+    another host left both go, and with them `gui/` and the config dir."""
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+    save_default_agent("claude")
+    own = register_gui(8765, None)
+    other = _seed_other_host_record()
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "GUI server records (2)" in normalized
+    assert not own.exists()
+    assert not other.exists()
+    assert not gui_dir().exists()
+    assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_with_only_a_gui_record_still_removes_the_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No registry/prefs/ui-state remover runs, so the records' own remover
+    # has to take the config dir.
+    _redirect(tmp_path, monkeypatch)
+    record = register_gui(8765, None)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing to remove" not in result.output
+    assert not record.exists()
+    assert not registry_path().parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_without_gui_dir_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+
+    plan = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert plan.exit_code == 0, plan.output
+    assert result.exit_code == 0, result.output
+    assert "GUI server records" not in " ".join(plan.output.split())
+    assert "GUI server records" not in " ".join(result.output.split())
+    assert not gui_dir().exists()
+    assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_dry_run_lists_and_keeps_gui_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _redirect(tmp_path, monkeypatch)
+    record = register_gui(8765, None)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "GUI server records" in " ".join(result.output.split())
+    assert record.is_file()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_keeps_a_foreign_file_in_the_gui_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only names litman writes are deleted; anything else keeps `gui/` and
+    therefore the config dir, and the Removed list says so."""
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+    record = register_gui(8765, None)
+    notes = gui_dir() / "notes.txt"
+    notes.write_text("mine", encoding="utf-8")
+    lookalike = gui_dir() / "export.json"
+    lookalike.write_text("{}", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "GUI server records (1) (kept 2 user file(s) + gui/ dir)" in normalized
+    assert not record.exists()
+    assert notes.read_text(encoding="utf-8") == "mine"
+    assert lookalike.is_file()
+    assert not reg.exists()
+    assert reg.parent.is_dir()
+
+
+def test_remove_gui_records_takes_a_stranded_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What a write killed between create and rename leaves beside the record.
+    _redirect(tmp_path, monkeypatch)
+    record = register_gui(8765, None)
+    temp = record.with_name(f".{record.name}.{'0' * 32}.tmp")
+    temp.write_text("{", encoding="utf-8")
+    assert gui_record_files() == sorted([record, temp])
+
+    result = remove_gui_records()
+
+    assert result["removed"] == sorted([record, temp])
+    assert result["kept"] == []
+    assert result["dir_removed"] is True
+    assert not registry_path().parent.exists()
+
+
+def test_running_gui_exits_cleanly_after_uninstall_took_its_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Uninstall does not ask whether a GUI is still up; that GUI's own
+    # shutdown then finds nothing to remove and must neither raise nor
+    # recreate anything.
+    _redirect(tmp_path, monkeypatch)
+    record = register_gui(8765, None)
+    remove_gui_records()
+
+    unregister_gui(record)
+
+    assert not gui_dir().exists()
+    assert not registry_path().parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_keeps_a_record_named_file_litman_did_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record is ours by its name AND its `app` field: a lookalike name
+    holding something else stays, while a record of another litman version
+    (same `app`, different shape) goes."""
+    _redirect(tmp_path, monkeypatch)
+    record = register_gui(8765, None)
+    other_app = gui_dir() / "node-12.json"
+    other_app.write_text('{"app": "something-else"}', encoding="utf-8")
+    not_json = gui_dir() / "node-13.json"
+    not_json.write_text("not json", encoding="utf-8")
+    older = gui_dir() / "node-14.json"
+    older.write_text('{"app": "litman"}', encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "GUI server records (2) (kept 2 user file(s) + gui/ dir)" in normalized
+    assert not record.exists()
+    assert not older.exists()
+    assert other_app.is_file()
+    assert not_json.read_text(encoding="utf-8") == "not json"
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_removes_an_empty_gui_dir_and_the_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No record to delete, but the folder alone would keep the config dir.
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+    gui_dir().mkdir()
+
+    plan = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert plan.exit_code == 0, plan.output
+    assert "GUI server records" in " ".join(plan.output.split())
+    assert result.exit_code == 0, result.output
+    assert "GUI server records (empty folder)" in " ".join(result.output.split())
+    assert not gui_dir().exists()
+    assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_with_only_an_empty_gui_dir_removes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _redirect(tmp_path, monkeypatch)
+    gui_dir().mkdir(parents=True)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing to remove" not in result.output
+    assert not registry_path().parent.exists()
+
+
+def test_remove_gui_records_counts_only_what_it_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A record listed a moment ago may be gone by the time it is unlinked
+    # (that GUI exited and took it): it must not be reported as removed.
+    _redirect(tmp_path, monkeypatch)
+    record = register_gui(8765, None)
+    vanished = gui_dir() / "gone-99.json"
+    monkeypatch.setattr(gui_registry, "gui_record_files", lambda: [vanished, record])
+
+    result = remove_gui_records()
+
+    assert result["removed"] == [record]
+    assert not record.exists()
+
+
+# --------------------------------------------------------------------------
+# update-check cache + self-update log (beside the registry)
+# --------------------------------------------------------------------------
+
+
+def _seed_update_leftovers() -> list[Path]:
+    """The cache (written for real), a temp file a killed cache write left,
+    and what a self-update helper writes: its log and its failure flag."""
+    update_check._write_cache({"latest": "1.0.0"})
+    stale_tmp = update_check.cache_path().with_name("update-check.json.tmp")
+    stale_tmp.write_text("{", encoding="utf-8")
+    log_path().write_text("[helper] upgrading\n", encoding="utf-8")
+    fail_flag_path().write_text("", encoding="utf-8")
+    return [update_check.cache_path(), stale_tmp, log_path(), fail_flag_path()]
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_removes_update_check_and_self_update_files_and_the_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+    leftovers = _seed_update_leftovers()
+
+    plan = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+    assert plan.exit_code == 0, plan.output
+    normalized = " ".join(plan.output.split())
+    assert "Update-check cache" in normalized
+    assert "Self-update log" in normalized
+    assert all(p.is_file() for p in leftovers)
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "update-check cache" in normalized
+    assert "self-update log (self-update.log, self-update-failed)" in normalized
+    assert not any(p.exists() for p in leftovers)
+    assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_keeps_the_config_dir_for_a_file_litman_did_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+    leftovers = _seed_update_leftovers()
+    mine = reg.parent / "notes.txt"
+    mine.write_text("mine", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert not any(p.exists() for p in leftovers)
+    assert mine.read_text(encoding="utf-8") == "mine"
+    assert reg.parent.is_dir()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_on_a_terminal_does_not_write_the_update_cache_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After any other command on a terminal the update tip refreshes a
+    missing cache — which after uninstall would recreate the config dir."""
+    _redirect(tmp_path, monkeypatch)
+    monkeypatch.delenv(update_check.OPT_OUT_ENV, raising=False)
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    fetched: list[int] = []
+
+    def _fetch(**kw: object) -> str | None:
+        fetched.append(1)
+        return "9.9.9"
+
+    monkeypatch.setattr(update_check, "_fetch_latest_version", _fetch)
+    reg = _seed_artifacts(tmp_path)
+    _seed_update_leftovers()
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert fetched == []
+    assert "is available" not in result.output
+    assert not update_check.cache_path().exists()
+    assert not reg.parent.exists()

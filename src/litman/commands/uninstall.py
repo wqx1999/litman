@@ -10,6 +10,10 @@ Removes the artifacts ``lit setup`` placed OUTSIDE the tool venv (uv or pipx):
 * the shell tab-completion block(s),
 * the vault registry (``vaults.yaml`` — the list of vault names/paths),
 * the machine-level ``preferences.yaml`` (the chosen default agent),
+* the ``gui/`` records of running ``lit gui`` servers (a killed GUI leaves
+  its record behind),
+* the update-check cache and the self-update log / failure flag kept beside
+  the registry,
 * the app-window browser profile (Chromium state for ``lit gui --window``).
 
 It deliberately does NOT remove the ``lit`` CLI itself: a running command
@@ -42,8 +46,16 @@ from litman.commands.install_completion import (
 )
 from litman.core.agent_prefs import prefs_path, remove_prefs
 from litman.core.agents import skills_parent_dirs
+from litman.core.gui_registry import (
+    gui_dir,
+    gui_dir_is_empty,
+    gui_record_files,
+    remove_gui_records,
+)
+from litman.core.self_update_helper import leftover_files, remove_leftover_files
 from litman.core.skill import installed_skill_names, uninstall_skill
 from litman.core.ui_state import remove_ui_state, ui_state_path
+from litman.core.update_check import cache_files, remove_cache
 from litman.core.vault_registry import registry_path, remove_registry
 
 console = Console()
@@ -81,9 +93,11 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     Reverses the setup wizard: deletes the bundled agent skills (from every
     agent skills directory litman knows), the desktop shortcut, the shell
     tab-completion block, the vault registry (the list of vault names/paths
-    — NOT the vaults themselves), the machine-level agent preferences, and
-    the browser profile the app window uses. Your papers, PDFs, notes and
-    annotations are never touched.
+    — NOT the vaults themselves), the machine-level agent preferences, the
+    other files litman keeps beside the registry (Web UI pins, the
+    update-check cache, the self-update log, records a stopped `lit gui`
+    left), and the browser profile the app window uses. Your papers, PDFs,
+    notes and annotations are never touched.
 
     This does NOT uninstall the lit CLI, because a running command can't
     delete its own environment. Finish with `uv tool uninstall litman` or
@@ -104,6 +118,11 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     shortcut = shortcut_path()
     shortcut_present = shortcut.exists()
     shells = [s for s in SUPPORTED_SHELLS if completion_installed(s, home)]
+    gui_records = gui_record_files()
+    # An empty gui/ is ours too, and would keep the config dir alive.
+    gui_empty = not gui_records and gui_dir_is_empty()
+    update_cache = cache_files()
+    self_update_files = leftover_files()
     reg = registry_path()
     reg_present = reg.is_file()
     prefs = prefs_path()
@@ -124,6 +143,23 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     if shells:
         plan_lines.append("[bold]Shell completion:[/]")
         plan_lines += [f"  [red]•[/] {escape(s)}" for s in shells]
+    if gui_records or gui_empty:
+        plan_lines.append(
+            "[bold]GUI server records[/] [dim](how `lit add --si` finds a GUI)[/]:"
+        )
+        plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in gui_records]
+        if gui_empty:
+            plan_lines.append(f"  [red]•[/] {escape(str(gui_dir()))} [dim](empty)[/]")
+    if update_cache:
+        plan_lines.append(
+            "[bold]Update-check cache[/] [dim](newest release seen on PyPI)[/]:"
+        )
+        plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in update_cache]
+    if self_update_files:
+        plan_lines.append(
+            "[bold]Self-update log[/] [dim](what past upgrades left behind)[/]:"
+        )
+        plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in self_update_files]
     if reg_present:
         plan_lines.append(
             "[bold]Vault registry[/] [dim](de-registers vaults; data kept)[/]:"
@@ -196,12 +232,36 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     for shell in shells:
         if uninstall_completion(shell, home)["removed"]:
             done.append(f"completion ({shell})")
+    # The shared config dir can only be empty once its last entry is gone, so
+    # the removers run GUI records → update-check cache → self-update files →
+    # registry → prefs → ui-state, and each later one gets the rmdir chance
+    # the earlier ones pass up (remove_prefs keeps a dir that still holds
+    # ui-state.json). The records go first: the `gui/` folder is the one
+    # entry the file removers cannot clear. Nothing writes the cache back
+    # afterwards — `uninstall` is in the CLI's post-command nudge skip set.
+    if gui_records or gui_empty:
+        gone = remove_gui_records()
+        removed = gone["removed"]
+        kept = gone["kept"]
+        assert isinstance(removed, list) and isinstance(kept, list)
+        if removed and kept:
+            done.append(
+                f"GUI server records ({len(removed)}) (kept {len(kept)} "
+                "user file(s) + gui/ dir)"
+            )
+        elif removed:
+            done.append(f"GUI server records ({len(removed)})")
+        elif gone["dir_removed"]:
+            done.append("GUI server records (empty folder)")
+    if update_cache and remove_cache()["removed"]:
+        done.append("update-check cache")
+    if self_update_files:
+        removed = remove_leftover_files()["removed"]
+        assert isinstance(removed, list)
+        if removed:
+            done.append(f"self-update log ({', '.join(p.name for p in removed)})")
     if reg_present and remove_registry()["removed"]:
         done.append("vault registry")
-    # After the registry file: the shared config dir can only be empty once
-    # its last sibling is gone, so the removers run registry → prefs →
-    # ui-state, and each later one gets the rmdir chance the earlier ones
-    # pass up (remove_prefs keeps a dir that still holds ui-state.json).
     if prefs_present and remove_prefs()["removed"]:
         done.append("agent preferences")
     if ui_state_present and remove_ui_state()["removed"]:

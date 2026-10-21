@@ -100,8 +100,12 @@ class LitGroup(click.Group):
     # answer — it stays exempt only from the interactive drift prompt above.
     # `self-update` skips for the opposite reason: the running process still
     # carries the pre-upgrade version, so right after a successful upgrade the
-    # tip would advertise the very release it just installed.
-    _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", "self-update", None})
+    # tip would advertise the very release it just installed. `uninstall` skips
+    # because the update tip's refresh would write update-check.json straight
+    # back into the config dir the command just emptied.
+    _NUDGE_SKIP: frozenset[str | None] = frozenset(
+        {"help", "self-update", "uninstall", None}
+    )
 
     # Commands that report an available update every single time, ignoring the
     # once-a-day cap that keeps the tip from trailing every command in a

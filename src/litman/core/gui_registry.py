@@ -62,6 +62,12 @@ _READ_TIMEOUT_S = 2.0
 _HOST_UNSAFE_RE = re.compile(r"[^a-z0-9._-]")
 _HOST_MAX = 64
 
+# The names litman itself writes in ``gui/``: a record (which must also read as
+# one, see :func:`gui_record_files`), and the temp file a write killed between
+# create and rename strands beside it. Anything else there is not ours to delete.
+_RECORD_NAME_RE = re.compile(r"[a-z0-9._-]*-[0-9]+\.json")
+_TEMP_NAME_RE = re.compile(r"\.[a-z0-9._-]*-[0-9]+\.json\.[0-9a-f]{32}\.tmp")
+
 
 @dataclass(frozen=True)
 class GuiServer:
@@ -133,6 +139,87 @@ def unregister_gui(path: Path | None) -> None:
         path.unlink()
     with suppress(OSError):
         path.parent.rmdir()
+
+
+def gui_record_files() -> list[Path]:
+    """Every file litman wrote in ``gui/``, whichever host wrote it.
+
+    A record is recognised by its name and by its ``app`` field, not by the
+    full shape :func:`_read_record` demands: a record another litman version
+    wrote is still ours to remove. A temp file only ever had half a record in
+    it, so its name has to do.
+    """
+    try:
+        entries = sorted(gui_dir().iterdir())
+    except OSError:
+        return []
+    return [
+        path
+        for path in entries
+        if path.is_file()
+        and (
+            (_RECORD_NAME_RE.fullmatch(path.name) and _written_by_litman(path))
+            or _TEMP_NAME_RE.fullmatch(path.name)
+        )
+    ]
+
+
+def _written_by_litman(path: Path) -> bool:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and record.get("app") == APP_NAME
+
+
+def gui_dir_is_empty() -> bool:
+    """``gui/`` exists and holds nothing: a leftover only an rmdir clears."""
+    try:
+        return not any(gui_dir().iterdir())
+    except OSError:
+        return False
+
+
+def remove_gui_records() -> dict[str, object]:
+    """Delete :func:`gui_record_files`, then ``gui/`` and the config dir
+    around it once each is empty — also when ``gui/`` held no record at all.
+    Used by ``lit uninstall``.
+
+    Every host's records go, not only this one's: the uninstall drops the
+    whole registry dir, and a record left in it would keep the dir alive. A
+    GUI still running just loses its record — ``lit add --si`` stops finding
+    it, and its own exit finds nothing to remove, which
+    :func:`unregister_gui` tolerates. A file litman did not write keeps
+    ``gui/`` (and so the config dir) in place.
+
+    Returns ``{"path", "removed", "kept", "dir_removed"}``: ``gui/``, the
+    files deleted, what is left in ``gui/``, and whether ``gui/`` is gone.
+    """
+    folder = gui_dir()
+    removed: list[Path] = []
+    for path in gui_record_files():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            # A GUI exiting right now took its record first.
+            continue
+        removed.append(path)
+    for empty in (folder, folder.parent):
+        try:
+            if empty.is_dir() and not any(empty.iterdir()):
+                empty.rmdir()
+        except OSError:
+            pass
+    try:
+        kept = sorted(folder.iterdir())
+    except OSError:
+        kept = []
+    return {
+        "path": folder,
+        "removed": removed,
+        "kept": kept,
+        "dir_removed": not folder.exists(),
+    }
 
 
 def _read_record(path: Path) -> dict[str, Any] | None:
@@ -301,8 +388,11 @@ __all__ = [
     "GuiServer",
     "find_gui",
     "gui_dir",
+    "gui_dir_is_empty",
+    "gui_record_files",
     "host_id",
     "other_host_guis",
     "register_gui",
+    "remove_gui_records",
     "unregister_gui",
 ]

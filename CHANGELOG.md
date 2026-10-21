@@ -9,6 +9,17 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Fixed
+
+- **`lit uninstall` no longer leaves litman's own files behind.** It removed
+  the vault registry and the agent preferences but kept the update-check cache
+  (`update-check.json`) and the self-update log (`self-update.log`,
+  `self-update-failed`) beside them, so the folder that held the registry
+  stayed on disk. Those files now go too, and so does the folder once nothing
+  of yours is left in it.
+
 ## 1.3.7 — 2026-10-05
 
 ### Added

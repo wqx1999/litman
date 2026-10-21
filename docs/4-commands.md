@@ -185,11 +185,14 @@ lit install-skill --skill lit-reading
 ### `lit uninstall`
 
 Reverse of `lit setup`: remove the bundled skills (from every agent skills
-directory litman knows), the desktop shortcut, the
-shell-completion block, the vault registry (the list of vault names/paths), the
-machine-level agent preferences, and the browser profile the `lit gui --window`
-app window runs against (a sandboxed browser keeps that profile somewhere its
-sandbox allows, so both locations are swept). It does not remove the `lit` CLI
+directory litman knows), the desktop shortcut, the shell-completion block, the
+vault registry (the list of vault names/paths), the machine-level agent
+preferences, the other files litman keeps beside the registry (Web UI pins, the
+update-check cache, the self-update log, and the records a stopped `lit gui`
+leaves), and the browser profile the `lit gui --window` app window runs against
+(a sandboxed browser keeps that profile somewhere its sandbox allows, so both
+locations are swept). A file of your own there is left, and so is its folder.
+It does not remove the `lit` CLI
 itself — a
 running command can't delete its own environment — so it prints the final
 CLI-removal step (`uv tool uninstall litman` or `pipx uninstall litman`,
