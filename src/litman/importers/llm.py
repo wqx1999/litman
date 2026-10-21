@@ -62,6 +62,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from litman.core.dedup import canonicalize_doi
 from litman.core.placeholders import is_placeholder
+from litman.core.textclean import clean_metadata_text
 from litman.exceptions import ImporterError
 
 
@@ -136,6 +137,25 @@ class LLMCandidateMeta(BaseModel):
         ),
     )
 
+    # Text is cleaned on the way in (core/textclean.py): a model reading a PDF
+    # can hand back a title's line breaks or a publisher's <i>, and either
+    # reaches the id. In "before" mode, so the first-author check below
+    # judges the clean value.
+    @field_validator(
+        "journal", "volume", "issue", "pages", "publisher", "booktitle",
+        mode="before",
+    )
+    @classmethod
+    def _clean_text(cls, value: Any) -> Any:
+        return clean_metadata_text(value) if isinstance(value, str) else value
+
+    @field_validator("authors", mode="before")
+    @classmethod
+    def _clean_authors(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [clean_metadata_text(v) if isinstance(v, str) else v for v in value]
+
     # Filler values on the two identity fields are refused here rather than
     # written and regretted later. Both feed the paper id, so "Unknown" does
     # not stay a metadata blemish — it becomes the folder name, the citation
@@ -147,6 +167,10 @@ class LLMCandidateMeta(BaseModel):
     @field_validator("title")
     @classmethod
     def _title_is_real(cls, value: str) -> str:
+        # Cleaned here, after min_length, so "" is still refused as empty
+        # while a title of only spaces or markup is refused as a placeholder,
+        # as a blank one always was.
+        value = clean_metadata_text(value)
         if is_placeholder(value):
             raise ValueError(
                 f"title is {value.strip()!r}, a placeholder. Take it from "

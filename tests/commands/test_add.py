@@ -1057,3 +1057,72 @@ def test_add_with_stale_index_falls_back_to_the_full_rebuild(
     ids = {p["id"] for p in index["papers"]}
     assert ids == {"2020_Unindexed_Paper", _PAPER_ID}
     assert is_portable_link(vault / "views" / "by-status" / "inbox" / "2020_Unindexed_Paper")
+
+
+# ---------------------------------------------------------------------------
+# CrossRef returns what the publisher deposited: for 10.1021/jacs.6c11517 that
+# is line breaks, indentation and <i> inside the title (fetched 2026-10-21).
+# Before the cleaning, the id came out as 2026_Zhang_INi--Hydroxyamide-...
+# ---------------------------------------------------------------------------
+
+_PP = "\n" + " " * 20
+_DIRTY_MESSAGE: dict[str, Any] = {
+    "title": [
+        f"({_PP}<i>N</i>{_PP}-Hydroxy)amide-Mediated\nRapid Head-to-Tail "
+        "Cyclization of Unprotected Peptides in Water"
+    ],
+    "author": [
+        {"family": "Zhang", "given": "Yue"},
+        {"family": "Wang", "given": "Weifeng"},
+    ],
+    "published-print": {"date-parts": [[2026, 10, 7]]},
+    "container-title": ["Journal of the American\nChemical Society"],
+    "DOI": "10.1021/jacs.6c11517",
+    "type": "journal-article",
+}
+_CLEAN_TITLE = (
+    "(N-Hydroxy)amide-Mediated Rapid Head-to-Tail Cyclization of "
+    "Unprotected Peptides in Water"
+)
+
+
+def test_add_cleans_a_crossref_title_before_anything_is_made_from_it(
+    vault: Path,
+    fake_pdf: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import add as add_mod
+    from litman.core.id import derive_id
+
+    monkeypatch.setattr(
+        add_mod, "fetch_crossref", lambda doi, client=None: _DIRTY_MESSAGE
+    )
+    # The panel line is read whole, so the console is pinned wide: rich caches
+    # a module console's width the first time anything reads it.
+    monkeypatch.setattr(add_mod, "console", Console(width=200))
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--doi", "10.1021/jacs.6c11517",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    paper_id = derive_id(2026, "Zhang", _CLEAN_TITLE)
+    assert "INi" not in paper_id
+    paper_dir = vault / "papers" / paper_id
+    assert paper_dir.is_dir(), sorted(p.name for p in (vault / "papers").iterdir())
+    meta = YAML(typ="safe").load(
+        (paper_dir / "metadata.yaml").read_text(encoding="utf-8")
+    )
+    assert meta["title"] == _CLEAN_TITLE
+    assert meta["journal"] == "Journal of the American Chemical Society"
+    notes = (paper_dir / "notes.md").read_text(encoding="utf-8")
+    assert notes.splitlines()[0] == f"# {_CLEAN_TITLE}"
+    # The success panel shows the whole title on its line, not "Title: (".
+    assert f"Title: {_CLEAN_TITLE}" in result.output

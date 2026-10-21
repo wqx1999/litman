@@ -37,6 +37,8 @@ from litman.commands._options import library_option, vault_option
 from litman.core import confirm as confirm_mod
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
+    DIRTY_NOTES_KEPT,
+    DIRTY_RENAMES,
     Issue,
     apply_autofix,
     group_by_category,
@@ -102,6 +104,9 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "placeholder_metadata": "Filler metadata (title / authors hold a placeholder)",
     "placeholder_id": "Filler inside a paper id (folder name, wikilink, cite key)",
     "weak_id_keyword": "Uninformative id keyword (and a title that cannot fix it)",
+    "dirty_metadata": (
+        "Line breaks, stray spaces or markup in title / journal / authors"
+    ),
     "paper_dir_validity": (
         "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
     ),
@@ -234,7 +239,10 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
         "skills, migrate the retired paper-level `priority` onto "
         "priority-<project> (a paper in no project loses it), drop relation "
         "links to papers no longer in the library (deleted, lost, or in the "
-        "trash), record files found in a paper's supplementary/ folder once "
+        "trash), rewrite titles, journal names and authors that carry line "
+        "breaks, stray spaces or markup (and the notes.md heading lit add "
+        "wrote from the title), record files found in a paper's "
+        "supplementary/ folder once "
         "they check out and drop the records of SI files that are gone (both "
         "ask first at a terminal), "
         "and put links back where a copied project folder left real "
@@ -313,7 +321,12 @@ def health_check_cmd(
             for cat, n in applied.items():
                 # hub_* carry detail about the project-link rebuild, not a
                 # per-category count; they render under project_references.
-                if cat.startswith("hub_"):
+                # The kept notes.md and rename lists render under
+                # dirty_metadata.
+                if cat.startswith("hub_") or cat in (
+                    DIRTY_NOTES_KEPT,
+                    DIRTY_RENAMES,
+                ):
                     continue
                 if n > 0:
                     console.print(
@@ -323,6 +336,9 @@ def health_check_cmd(
                 if cat == "project_references":
                     _report_hub_settlements(applied)
                     hub_reported = True
+                if cat == "dirty_metadata":
+                    _report_notes_kept(applied)
+                    _report_renames(applied)
             if not hub_reported:
                 # The rebuild can settle hub folders while some OTHER klass-A
                 # category is what fired it.
@@ -391,6 +407,36 @@ def _report_hub_settlements(applied: dict[str, Any]) -> None:
         [str(p) for p in kept] if isinstance(kept, list) else [],
     ):
         console.print(f"    {line}", soft_wrap=True)
+
+
+def _report_notes_kept(applied: dict[str, Any]) -> None:
+    """Name each paper whose notes.md heading the metadata cleanup left alone.
+
+    Its title is clean in metadata.yaml now, but notes.md no longer opens with
+    the heading ``lit add`` wrote, so that line is the user's to change.
+    """
+    kept = applied.get(DIRTY_NOTES_KEPT)
+    for folder in kept if isinstance(kept, list) else []:
+        console.print(
+            f"    [yellow]kept[/] {escape(folder)}: notes.md heading differs "
+            "from the one lit add wrote, left as is",
+            soft_wrap=True,
+        )
+
+
+def _report_renames(applied: dict[str, Any]) -> None:
+    """Give the ``lit rename`` for each id made from a title the fix cleaned.
+
+    The report's finding said so too, but it can sit past the per-category
+    fold, and once the title is clean no later run can tell.
+    """
+    renames = applied.get(DIRTY_RENAMES)
+    for pid, target in renames if isinstance(renames, list) else []:
+        console.print(
+            f"    [yellow]rename[/] {escape(pid)}: `lit rename {escape(pid)} "
+            f"{escape(target)}` if you want the id to match the clean title",
+            soft_wrap=True,
+        )
 
 
 def _si_fix_policy() -> SiFixPolicy:
@@ -467,7 +513,10 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     here — it needs a per-case user decision (the Tier-1 ``resolve`` prompt or
     an explicit ``lit`` command). Returns ``{category: n_fixed}`` plus, when a
     klass-A regen ran, ``hub_replaced_copies`` / ``hub_moved_aside`` — detail
-    about the project-link rebuild, not categories.
+    about the project-link rebuild, not categories — and, from the
+    ``dirty_metadata`` arm, ``dirty_metadata_notes_kept`` /
+    ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_KEPT`` /
+    ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name.
     """
     counts: dict[str, Any] = {}
 

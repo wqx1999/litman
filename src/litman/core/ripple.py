@@ -9,19 +9,22 @@ TAXONOMY.md. These two helpers compute that cascade:
   one-to-one, merge many-to-one).
 * :func:`_ripple_removals` — drop a value entirely (the deletion path).
 
-Two unrelated helpers live here for the same reason (they need the same
+Three unrelated helpers live here for the same reason (they need the same
 round-trip YAML machinery and the same "rewrite many metadata.yaml in one
-staged commit" shape), both ``lit health-check --fix`` arms:
+staged commit" shape), all ``lit health-check --fix`` arms:
 :func:`migrate_retired_priority`, the permanent migration off the retired
-paper-level ``priority`` field (ADR-025), and :func:`drop_dangling_relations`,
-which removes relation edges naming a paper no longer in the library.
+paper-level ``priority`` field (ADR-025), :func:`drop_dangling_relations`,
+which removes relation edges naming a paper no longer in the library, and
+:func:`clean_dirty_metadata`, which rewrites titles and author names that
+still carry a publisher's line breaks, stray spaces or markup.
 
-Both return ``(n_changed, staged_writes, all_papers_with_changes_applied)``
-so the caller can hand the staged writes to :func:`staged_write` and
-re-render INDEX.json from the in-memory paper list without a re-read.
-Both walk ``papers/`` through :func:`_papers_by_folder` and key every write
-on the FOLDER, never on the ``id`` the metadata declares — see that
-function for what keying on ``id`` used to cost.
+The two cascade helpers return ``(n_changed, staged_writes,
+all_papers_with_changes_applied)`` so the caller can hand the staged writes to
+:func:`staged_write` and re-render INDEX.json from the in-memory paper list
+without a re-read. Everything here walks ``papers/`` through
+:func:`_papers_by_folder` and keys every write on the FOLDER, never on the
+``id`` the metadata declares — see that function for what keying on ``id``
+used to cost.
 
 Extracted from ``commands/taxonomy.py`` (M-task web-gui P2): the project-rm
 core in ``core/project_link.py`` and the taxonomy-rm core in
@@ -50,6 +53,7 @@ from litman.core.document import (
 )
 from litman.core.relations import dangling_relation_edges, relation_refs
 from litman.core.taxonomy import replace_value_in_field
+from litman.core.textclean import dirty_text_fields
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
@@ -575,3 +579,128 @@ def drop_dangling_relations(vault: Path) -> int:
 
     reconcile_derived(vault, papers=index_papers, project_refs=False)
     return n_dropped
+
+
+def clean_dirty_metadata(
+    vault: Path,
+) -> tuple[int, list[str], list[tuple[str, str]]]:
+    """Rewrite text fields with line breaks, stray spaces or markup.
+
+    Returns ``(n, kept, renames)``.
+
+    The ``lit health-check --fix`` arm behind the ``dirty_metadata`` finding.
+    Every title / journal / booktitle / publisher / author string that
+    ``textclean.clean_metadata_text`` would change is replaced with its clean
+    form; the check reads the same ``dirty_text_fields``, so the two agree on
+    what is dirty. Lossless: every word stays, only line breaks, indentation,
+    markup and entity escapes go. The id is never changed.
+
+    notes.md is rewritten only where ``lit add`` left it. When its first line
+    is exactly the heading the scaffold wrote from the old title — ``# `` +
+    title + a line break, LF or (on a vault written on Windows) CRLF, the
+    breaks inside the old title included — that heading becomes ``# `` + the
+    clean title with the same line ending, and every other byte of the file
+    stays. Any other notes.md is the user's and is not touched; its folder
+    goes into ``kept`` so the caller can say so, unless its heading already
+    reads the clean title.
+
+    ``renames`` pairs each id derived from a title this cleans with the id the
+    clean title derives — the ``lit rename`` the title finding suggests, by the
+    same rule (``checks._clean_title_rename_target``). It is worked out before
+    the rewrite, because afterwards nothing on disk shows the id came from the
+    old title.
+
+    Keyed by FOLDER, like :func:`drop_dangling_relations`. ``n`` counts FIELDS
+    cleaned — one per finding the check reported, the author list counting
+    once. ``updated-at`` is bumped: the paper's metadata changed. All the
+    rewritten files plus ``INDEX.json`` go into ONE :func:`staged_write`.
+    Idempotent: a second run finds nothing and returns ``(0, [], [])``.
+    """
+    from litman.core.checks import _clean_title_rename_target
+    from litman.core.correctors import reconcile_derived
+
+    now = now_iso()
+    staged: list[tuple[str, bytes]] = []
+    index_papers: list[dict[str, Any]] = []
+    kept: list[str] = []
+    renames: list[tuple[str, str]] = []
+    n_cleaned = 0
+    for paper_dir, paper in _papers_by_folder(vault, None):
+        index_papers.append(paper)
+        # The plain read decides; only a dirty paper pays for the round trip.
+        if not dirty_text_fields(paper):
+            continue
+        rt_metadata = load_yaml_or_raise(paper_dir / "metadata.yaml", _yaml)
+        if not isinstance(rt_metadata, dict):
+            continue
+        dirty = dirty_text_fields(rt_metadata)
+        if not dirty:
+            continue
+        # A non-empty str whenever "title" is in dirty, the only case it is read.
+        old_title: str = rt_metadata.get("title") or ""
+        if "title" in dirty:
+            target = _clean_title_rename_target(paper, dirty)
+            if target is not None:
+                renames.append((paper["id"], target))
+        for field, value in dirty.items():
+            rt_metadata[field] = value
+            paper[field] = value
+        rt_metadata["updated-at"] = now
+        paper["updated-at"] = now
+        n_cleaned += len(dirty)
+        folder = f"papers/{paper_dir.name}"
+        staged.append(
+            (
+                f"{folder}/metadata.yaml",
+                _dump_yaml_to_string(rt_metadata).encode("utf-8"),
+            )
+        )
+
+        notes = paper_dir / "notes.md"
+        if "title" not in dirty or not notes.is_file():
+            continue
+        try:
+            raw = notes.read_bytes()
+        except OSError:
+            kept.append(paper_dir.name)
+            continue
+        retitled = _retitle_scaffold_heading(raw, old_title, dirty["title"])
+        if retitled is not None:
+            staged.append((f"{folder}/notes.md", retitled))
+        elif not _heading_reads(raw, dirty["title"]):
+            kept.append(paper_dir.name)
+
+    if not staged:
+        return 0, [], []
+
+    with staged_write(
+        vault, op_id=_make_op_id("clean-dirty-metadata")
+    ) as stage:
+        for relpath, content in staged:
+            stage.write_bytes(relpath, content)
+        stage.write_text("INDEX.json", render_index(index_papers, now))
+
+    # papers=None, as in migrate_retired_priority: REFERENCES.md prints the
+    # titles and authors this rewrote, next to relevance-<project>, so project
+    # refs are rebuilt from the committed files rather than a list built here.
+    reconcile_derived(vault, project_refs=True)
+    return n_cleaned, kept, renames
+
+
+def _retitle_scaffold_heading(raw: bytes, old: str, new: str) -> bytes | None:
+    """``raw`` with ``lit add``'s heading for ``old`` retitled ``new``, or None.
+
+    ``lit add`` writes the heading in text mode, so on Windows every line
+    break in it — those inside a broken title too — went to disk as CRLF.
+    """
+    for newline in ("\n", "\r\n"):
+        heading = f"# {old}\n".replace("\n", newline).encode()
+        if raw.startswith(heading):
+            return f"# {new}{newline}".encode() + raw[len(heading):]
+    return None
+
+
+def _heading_reads(raw: bytes, title: str) -> bool:
+    """Whether notes.md already starts with the heading ``# <title>``."""
+    first_line = raw.split(b"\n", 1)[0].removesuffix(b"\r")
+    return first_line == f"# {title}".encode()

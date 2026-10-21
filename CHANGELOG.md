@@ -86,6 +86,20 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Fixed
 
+- **Titles from CrossRef no longer keep the publisher's line breaks and
+  markup.** Some publishers deposit a title or journal name with line breaks,
+  indentation and tags such as `<i>` inside it, and `lit add --doi` stored it
+  that way: the tag ended up in the paper id (`2026_Zhang_INi--Hydroxyamide-…`),
+  the heading of `notes.md` broke across lines, and the panel after the add
+  showed only the title's first line. Titles, journal names and authors now
+  come in as one plain line — from CrossRef, from `--from-llm-json` and from
+  `lit modify`. For papers already in your library, `lit health-check` lists
+  every title, journal or author name with line breaks, stray spaces or
+  markup, and `lit health-check --fix` cleans them, along with the `notes.md`
+  heading `lit add` wrote from the title if you have not changed it. It never
+  changes a paper id; when an id was made from a broken title, the report and
+  the `--fix` output give the `lit rename` that would make it match.
+
 - **A file name that is not valid UTF-8 no longer stops `lit`.** On Linux, a
   name from an old archive or another system's encoding (GBK, Latin-1) made
   any `lit` command that printed it stop with a Python error. It now prints,

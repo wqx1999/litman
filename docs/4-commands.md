@@ -783,14 +783,15 @@ a clean vault, 1 if any error or warning is found (so it can gate cron / CI). `i
 notes about the host, such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
 
-Three of the checks look for papers that entered the library before litman
+Four of the checks look for papers that entered the library before litman
 guarded the door, so they matter most on one you have been keeping a while. One
 reports a title or author still holding a filler value; one reports a paper id
 that carries such a filler, which survives correcting the fields because only
-`lit rename` touches an id; and one reports an id whose keyword says nothing
-about the paper, the `2018_Zhang_A` left behind by a title the derivation could
-not read. Each finding comes with the command that fixes it, complete and ready
-to paste.
+`lit rename` touches an id; one reports an id whose keyword says nothing about
+the paper, the `2018_Zhang_A` left behind by a title the derivation could not
+read; and one reports a title, journal or author name still carrying line
+breaks, stray spaces or markup such as `<i>` from the publisher's record. Each
+finding comes with the command that fixes it, complete and ready to paste.
 
 Seven categories cover a paper's SI files and the notes that cite them, printed
 under these headings:
@@ -822,7 +823,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Four repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Five repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; a title, journal or author name carrying line breaks, stray spaces or markup is rewritten as one plain line, as is the title line `lit add` put at the top of `notes.md` if you have not changed it (the paper id is never changed; if it was made from the old title, the output prints the `lit rename` that matches the new one); and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of

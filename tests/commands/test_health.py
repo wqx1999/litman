@@ -7,6 +7,7 @@ code, and ``--fix`` round-trip.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import sys
@@ -30,6 +31,7 @@ from litman.core.checks import (
     check_code_clone_integrity,
     check_dangling_refs,
     check_dangling_wikilinks,
+    check_dirty_metadata,
     check_inbox_staleness,
     check_discussion_scaffold,
     check_paper_dir_validity,
@@ -44,7 +46,8 @@ from litman.core.checks import (
     run_all_checks,
 )
 from litman.core.document import list_papers
-from litman.core.ripple import drop_dangling_relations
+from litman.core.id import derive_id
+from litman.core.ripple import clean_dirty_metadata, drop_dangling_relations
 from litman.core.library import create_vault
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.portable_link import is_portable_link
@@ -2458,6 +2461,7 @@ def test_auto_fixable_categories_constant() -> None:
             "dangling_refs",
             "supplementary_missing",
             "supplementary_unrecorded",
+            "dirty_metadata",
         }
     )
 
@@ -3829,3 +3833,289 @@ def test_an_unreadable_added_date_is_a_finding_not_a_skip(vault: Path) -> None:
             "with its original name",
         ),
     ]
+
+
+# ---------------------------------------------------------------------------
+# dirty_metadata: a publisher's line breaks and markup, and what --fix does
+#
+# Titles and journals as Crossref returned them for 10.1021/jacs.6c11517 (A),
+# 10.1021/acs.jcim.6c00587 (B) and 10.1093/bib/bbae714 (C). notes.md goes to
+# disk as bytes: the line endings are the point of two of these tests.
+# ---------------------------------------------------------------------------
+
+_PP = "\n" + " " * 20
+_TITLE_A = (
+    f"({_PP}<i>N</i>{_PP}-Hydroxy)amide-Mediated\nRapid Head-to-Tail "
+    "Cyclization of Unprotected Peptides in Water"
+)
+_CLEAN_A = (
+    "(N-Hydroxy)amide-Mediated Rapid Head-to-Tail Cyclization of "
+    "Unprotected Peptides in Water"
+)
+_TITLE_B = (
+    "Advancing Biochemical\nMolecule Registration, Representation\nand "
+    "Search for New Drug Modalities"
+)
+_CLEAN_B = (
+    "Advancing Biochemical Molecule Registration, Representation and "
+    "Search for New Drug Modalities"
+)
+_TITLE_C = "<i>cyclicpeptide</i>: a Python package for cyclic peptide drug design"
+_CLEAN_C = "cyclicpeptide: a Python package for cyclic peptide drug design"
+_EDITED_C = b"# cyclicpeptide, the package\n\nMy notes on <i>cyclicpeptide</i>.\n"
+
+
+def _scaffold_notes(title: str, newline: str = "\n") -> bytes:
+    """notes.md byte for byte as `lit add` writes it. Text mode, so a library
+    written on Windows has CRLF throughout — inside a broken title too."""
+    text = f"# {title}\n\n{WIKILINK_REMINDER}\n\n(Personal notes go here.)\n"
+    return text.replace("\n", newline).encode("utf-8")
+
+
+def _notes(vault: Path, paper_id: str) -> Path:
+    return vault / "papers" / paper_id / "notes.md"
+
+
+def _dirty_library(vault: Path) -> dict[str, str]:
+    """The three samples as they sit in a library filled before the fix.
+
+    A: id derived from the dirty title, notes written on Windows. B: line
+    breaks only, LF notes the user has added to below the heading. C: id given
+    by hand, and a notes.md whose heading the user rewrote.
+    """
+    ids = {
+        "A": derive_id(2026, "Zhang", _TITLE_A),
+        "B": "2026_Pinto-Gil_Advancing-Biochemical-Molecule",
+        "C": "2025_Zhu_CyclicPeptide",
+    }
+    _write_paper(
+        vault, ids["A"], title=_TITLE_A, authors=["Zhang, Yue"], year=2026,
+        journal="Journal of the American\nChemical Society",
+    )
+    _write_paper(
+        vault, ids["B"], title=_TITLE_B, authors=["Pinto-Gil, Kevin"], year=2026,
+        journal="Journal of Chemical Information\nand Modeling",
+    )
+    _write_paper(
+        vault, ids["C"], title=_TITLE_C, authors=["Yang, Liu", "Zhu, Ruixin"],
+        year=2024, journal="Briefings in Bioinformatics",
+    )
+    _notes(vault, ids["A"]).write_bytes(_scaffold_notes(_TITLE_A, "\r\n"))
+    _notes(vault, ids["B"]).write_bytes(_scaffold_notes(_TITLE_B) + b"Mine.\n")
+    _notes(vault, ids["C"]).write_bytes(_EDITED_C)
+    return ids
+
+
+def test_dirty_metadata_reported_then_cleaned_by_fix(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+
+    # The probe, not sys.platform (see the linkless-drive fixture above).
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    # Wide and pinned: each assertion below reads one whole line.
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    ids = _dirty_library(vault)
+    stamps = {k: _meta(vault, pid)["updated-at"] for k, pid in ids.items()}
+    runner = CliRunner()
+
+    report = runner.invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert report.exit_code == 1, report.output
+    assert (
+        "Line breaks, stray spaces or markup in title / journal / authors"
+        in report.output
+    )
+    assert "(5 issues)" in report.output
+    # Only A's id was derived from its broken title.
+    clean_id = derive_id(2026, "Zhang", _CLEAN_A)
+    assert f"`lit rename {ids['A']} {clean_id}`" in report.output
+    assert report.output.count("lit rename") == 1
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert fix.exit_code == 0, fix.output
+    assert "dirty_metadata: cleaned 5 items" in fix.output
+    assert (
+        f"kept {ids['C']}: notes.md heading differs from the one lit add "
+        "wrote, left as is"
+    ) in fix.output
+    assert fix.output.count("kept ") == 1
+    assert (
+        f"rename {ids['A']}: `lit rename {ids['A']} {clean_id}` if you want "
+        "the id to match the clean title"
+    ) in fix.output
+
+    expected = {
+        "A": (_CLEAN_A, "Journal of the American Chemical Society"),
+        "B": (_CLEAN_B, "Journal of Chemical Information and Modeling"),
+        "C": (_CLEAN_C, "Briefings in Bioinformatics"),
+    }
+    for letter, pid in ids.items():
+        meta = _meta(vault, pid)
+        assert (meta["title"], meta["journal"]) == expected[letter]
+        assert meta["id"] == pid  # never renamed
+        assert meta["updated-at"] != stamps[letter]
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert {p["id"]: p["title"] for p in index["papers"]} == {
+        pid: expected[letter][0] for letter, pid in ids.items()
+    }
+    # The heading lit add wrote becomes one line, in the file's own line
+    # endings, and nothing after it moves; a heading the user wrote stays.
+    assert _notes(vault, ids["A"]).read_bytes() == _scaffold_notes(_CLEAN_A, "\r\n")
+    assert _notes(vault, ids["B"]).read_bytes() == (
+        _scaffold_notes(_CLEAN_B) + b"Mine.\n"
+    )
+    assert _notes(vault, ids["C"]).read_bytes() == _EDITED_C
+
+    again = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert again.exit_code == 0, again.output
+    assert "Line breaks, stray spaces or markup" not in again.output
+
+
+def test_clean_dirty_metadata_counts_fields_and_runs_once(vault: Path) -> None:
+    """One per finding — A and B two each, C one — and a second run finds
+    nothing to do."""
+    ids = _dirty_library(vault)
+    assert len(check_dirty_metadata(vault, list_papers(vault))) == 5
+
+    clean_id = derive_id(2026, "Zhang", _CLEAN_A)
+    assert clean_dirty_metadata(vault) == (5, [ids["C"]], [(ids["A"], clean_id)])
+
+    assert check_dirty_metadata(vault, list_papers(vault)) == []
+    assert clean_dirty_metadata(vault) == (0, [], [])
+
+
+def test_a_notes_heading_that_already_reads_clean_is_left_quietly(
+    vault: Path,
+) -> None:
+    """Someone fixed the heading by hand and not the metadata: nothing to say."""
+    _write_paper(vault, "2025_Zhu_CyclicPeptide", title=_TITLE_C, year=2024)
+    notes = _scaffold_notes(_CLEAN_C) + b"Mine.\n"
+    _notes(vault, "2025_Zhu_CyclicPeptide").write_bytes(notes)
+
+    assert clean_dirty_metadata(vault) == (1, [], [])
+    assert _notes(vault, "2025_Zhu_CyclicPeptide").read_bytes() == notes
+
+
+def test_fix_carries_the_clean_title_into_project_references(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    pid = "2026_Pinto-Gil_Advancing-Biochemical-Molecule"
+    _write_paper(
+        vault, pid, title=_TITLE_B, authors=["Pinto-Gil, Kevin"], year=2026,
+        projects=["myproj"],
+    )
+    regen(vault)
+    refs = proj / "litman_reflib" / "REFERENCES.md"
+    assert "Advancing Biochemical\nMolecule" in refs.read_text(encoding="utf-8")
+
+    clean_dirty_metadata(vault)
+
+    assert f"**{_CLEAN_B}**" in refs.read_text(encoding="utf-8")
+
+
+def test_clean_dirty_metadata_names_the_rename_only_for_an_id_made_from_the_title(
+    vault: Path,
+) -> None:
+    """The same broken title twice: under the id `lit add` derived from it,
+    and under one picked by hand. Only the first gets a rename, and neither
+    id moves."""
+    derived = derive_id(2026, "Zhang", _TITLE_A)
+    by_hand = "2026_Zhang_Head-to-tail-cyclization"
+    for pid in (derived, by_hand):
+        _write_paper(
+            vault, pid, title=_TITLE_A, authors=["Zhang, Yue"], year=2026
+        )
+
+    n, kept, renames = clean_dirty_metadata(vault)
+
+    assert (n, kept) == (2, [])
+    assert renames == [(derived, derive_id(2026, "Zhang", _CLEAN_A))]
+    assert {_meta(vault, pid)["id"] for pid in (derived, by_hand)} == {
+        derived,
+        by_hand,
+    }
+
+
+def _noisy_paper(vault: Path, paper_id: str) -> None:
+    """A hand-given id whose every text field is dirty: five findings."""
+    _write_paper(
+        vault, paper_id, year=2020,
+        title="Noisy\n    <i>Peptide</i>\n    Cyclization",
+        journal="Journal of\n  Noise",
+        authors=["Zhang,\n  Yue", "Wang, Weifeng", "<i>Fu</i>, Hua", "Lu,\xa0Ana"],
+    )
+    # A JSON string is a YAML double-quoted scalar: the line break goes to
+    # disk as an escape and comes back as a line break on read.
+    booktitle = json.dumps("Proceedings of\n  <i>NeurIPS</i>")
+    publisher = json.dumps("Curran &amp; Associates")
+    _append_metadata(
+        vault, paper_id, f"booktitle: {booktitle}\npublisher: {publisher}\n"
+    )
+
+
+def test_fix_cleans_authors_booktitle_and_publisher(vault: Path) -> None:
+    pid = "2020_Zhang_Noisy-Peptide"
+    _noisy_paper(vault, pid)
+    clean_authors = ["Zhang, Yue", "Wang, Weifeng", "Fu, Hua", "Lu, Ana"]
+
+    fix = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert fix.exit_code == 0, fix.output
+    assert "dirty_metadata: cleaned 5 items" in fix.output
+    meta = _meta(vault, pid)
+    assert meta["authors"] == clean_authors  # order kept
+    assert meta["booktitle"] == "Proceedings of NeurIPS"
+    assert meta["publisher"] == "Curran & Associates"
+    assert (meta["title"], meta["journal"]) == (
+        "Noisy Peptide Cyclization",
+        "Journal of Noise",
+    )
+    # INDEX.json is what the web UI's paper list shows.
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    (entry,) = index["papers"]
+    assert entry["authors"] == clean_authors
+    assert entry["title"] == "Noisy Peptide Cyclization"
+
+
+def test_fix_gives_the_rename_even_when_the_report_folded_the_finding(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A's title finding sorts sixth, past the fold, so the report never shows
+    its `lit rename`; the --fix output must, because afterwards nothing can."""
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    _noisy_paper(vault, "2020_Zhang_Noisy-Peptide")
+    pid = derive_id(2026, "Zhang", _TITLE_A)
+    _write_paper(vault, pid, title=_TITLE_A, authors=["Zhang, Yue"], year=2026)
+    target = derive_id(2026, "Zhang", _CLEAN_A)
+    runner = CliRunner()
+
+    report = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert "(6 issues)" in report.output
+    assert "and 1 more in this category" in report.output
+    assert "lit rename" not in report.output
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert fix.exit_code == 0, fix.output
+    assert (
+        f"rename {pid}: `lit rename {pid} {target}` if you want the id to "
+        "match the clean title"
+    ) in fix.output
+    assert _meta(vault, pid)["id"] == pid
+    assert not (vault / "papers" / target).exists()

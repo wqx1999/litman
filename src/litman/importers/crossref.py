@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from litman import __version__
+from litman.core.textclean import clean_metadata_text
 from litman.exceptions import ImporterError
 
 _CROSSREF_URL = "https://api.crossref.org/works/{doi}"
@@ -101,6 +102,11 @@ _NON_JOURNAL_VENUE_TYPES: frozenset[str] = frozenset({
 })
 
 
+def _text(value: Any) -> Any:
+    """A CrossRef string field, cleaned; null or absent comes back ``""``."""
+    return clean_metadata_text(value) if isinstance(value, str) else value or ""
+
+
 def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
     """Convert a CrossRef ``message`` object into the standard metadata dict.
 
@@ -115,14 +121,18 @@ def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
     The container-title routing depends on ``message.type``: proceedings
     or chapter types land in ``booktitle`` (and ``journal`` stays empty),
     everything else lands in ``journal`` (and ``booktitle`` stays empty).
+
+    Every string is cleaned here (``core/textclean.py``): CrossRef returns
+    what the publisher deposited, which can be line breaks, indentation and
+    ``<i>`` markup inside a title or a journal name.
     """
     title_list = message.get("title") or []
-    title = title_list[0] if title_list else ""
+    title = _text(title_list[0]) if title_list else ""
 
     authors: list[str] = []
     for a in message.get("author") or []:
-        family = (a.get("family") or "").strip()
-        given = (a.get("given") or "").strip()
+        family = _text(a.get("family"))
+        given = _text(a.get("given"))
         if family and given:
             authors.append(f"{family}, {given}")
         elif family:
@@ -131,7 +141,7 @@ def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
             authors.append(given)
 
     container_list = message.get("container-title") or []
-    container = container_list[0] if container_list else ""
+    container = _text(container_list[0]) if container_list else ""
 
     venue_type = message.get("type") or ""
     if venue_type in _NON_JOURNAL_VENUE_TYPES:
@@ -147,12 +157,12 @@ def parse_crossref(message: dict[str, Any]) -> dict[str, Any]:
         "year": _extract_year(message),
         "journal": journal,
         "doi": message.get("DOI", ""),
-        # M12.0 bib-oriented fields. Stored as raw CrossRef values; bib
-        # rendering (e.g. "45-67" -> "45--67") happens in the exporter.
-        "volume": message.get("volume", "") or "",
-        "issue": message.get("issue", "") or "",
-        "pages": message.get("page", "") or "",
-        "publisher": message.get("publisher", "") or "",
+        # Bib-oriented fields. Stored as CrossRef gives them, cleaned;
+        # bib rendering (e.g. "45-67" -> "45--67") happens in the exporter.
+        "volume": _text(message.get("volume")),
+        "issue": _text(message.get("issue")),
+        "pages": _text(message.get("page")),
+        "publisher": _text(message.get("publisher")),
         "venue-type": venue_type,
         "booktitle": booktitle,
     }

@@ -58,6 +58,7 @@ from litman.commands.add import (
 from litman.core.dedup import auto_suffix_id, canonicalize_doi, find_paper_by_doi
 from litman.core.doi_sniff import sniff_dois
 from litman.core.id import derive_id, id_segments, is_valid_id, suggest_id
+from litman.core.textclean import clean_metadata_text
 from litman.exceptions import (
     AddError,
     DuplicateDOIError,
@@ -449,9 +450,13 @@ async def post_ingest_derive_id(request: Request) -> dict[str, Any]:
     title = payload.get("title")
     year = payload.get("year")
     authors = payload.get("authors")
-    title = title.strip() if isinstance(title, str) else ""
+    # Cleaned as validate_candidate_metadata cleans them on the write, so a
+    # pasted title still carrying a line break or <i> previews the id it gets.
+    title = clean_metadata_text(title) if isinstance(title, str) else ""
     family = (
-        first_author_family([a for a in authors if isinstance(a, str)])
+        first_author_family(
+            [clean_metadata_text(a) for a in authors if isinstance(a, str)]
+        )
         if isinstance(authors, list)
         else ""
     )

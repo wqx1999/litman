@@ -56,6 +56,7 @@ from litman.core.dates import (
 from litman.core.dedup import normalize_doi
 from litman.core.document import library_paper_ids, malformed_list_fields
 from litman.core.id import (
+    derive_id,
     derive_keyword,
     family_segment,
     first_author_family,
@@ -82,6 +83,7 @@ from litman.core.relations import (
     relation_refs,
 )
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy
+from litman.core.textclean import dirty_text_fields
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
@@ -92,6 +94,7 @@ from litman.core.trash import (
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
     ConfigError,
+    IDError,
     MalformedMetadataError,
     VaultRegistryError,
 )
@@ -218,6 +221,13 @@ class CheckSpec:
 # half-pulled sync looks the same, so it is asked about too (default yes) —
 # and with no one to ask, both are left in the report with the explicit
 # command that would do it.
+#
+# ``dirty_metadata`` is lossless again: a title, venue or author name still
+# carrying line breaks, indentation or markup from a publisher's record is
+# rewritten as the plain line it reads as — every word kept, only the layout
+# and the tags gone. Never the id (the finding names the `lit rename` when the
+# id was made from the broken title), and notes.md only when its first line is
+# exactly the heading `lit add` wrote from that title.
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {
         "stale_staging",
@@ -228,8 +238,16 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
         "dangling_refs",
         "supplementary_missing",
         "supplementary_unrecorded",
+        "dirty_metadata",
     }
 )
+
+# Key under which apply_autofix reports the papers whose notes.md heading the
+# dirty_metadata arm left alone. Detail for the CLI to print, not a category.
+DIRTY_NOTES_KEPT = "dirty_metadata_notes_kept"
+# Same, for the (id, clean-derived id) pairs of papers whose id came from the
+# title that arm cleaned: the `lit rename` it leaves to the user.
+DIRTY_RENAMES = "dirty_metadata_renames"
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
 INBOX_STALE_DAYS = 14
@@ -633,6 +651,99 @@ def check_placeholder_metadata(
                         )
                     )
     return out
+
+
+def check_dirty_metadata(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Titles, venues and author names with line breaks, stray spaces or markup.
+
+    CrossRef returns what the publisher deposited, and some deposits are
+    pretty-printed XML: a title with line breaks and indentation inside it, an
+    ``<i>`` around one word. ``lit add`` cleans them at the door now
+    (``core/textclean.py``); these are the papers stored before it did. One
+    finding per field — title, journal, booktitle, publisher — and one for the
+    author list naming its dirty entries. The message shows the value with
+    ``repr`` so the line breaks are visible.
+
+    Warning, not error: nothing is inconsistent, the text just reads wrong.
+    Unlike the placeholder checks the repair is mechanical and loses no word,
+    so ``--fix`` makes it (:func:`litman.core.ripple.clean_dirty_metadata`,
+    reading the same :func:`~litman.core.textclean.dirty_text_fields`). It
+    never touches the id; when the id was derived from the broken title, the
+    title's hint adds the ``lit rename`` that would derive it from the clean
+    one.
+    """
+    out: list[Issue] = []
+    for p in papers:
+        dirty = dirty_text_fields(p)
+        if not dirty:
+            continue
+        pid = p.get("id") or "(unknown)"
+        for field, clean in dirty.items():
+            if field == "authors":
+                changed = [
+                    (a, c) for a, c in zip(p[field], clean, strict=True) if a != c
+                ]
+                stored = ", ".join(repr(a) for a, _ in changed)
+                written = ", ".join(repr(c) for _, c in changed)
+            else:
+                stored, written = repr(p[field]), repr(clean)
+            hint = f"`lit health-check --fix` writes {written}"
+            if field == "title":
+                target = _clean_title_rename_target(p, dirty)
+                if target is not None:
+                    hint += (
+                        f", then `lit rename {pid} {target}` if you want the "
+                        "id to match"
+                    )
+            out.append(
+                Issue(
+                    category="dirty_metadata",
+                    severity="warning",
+                    paper_id=pid,
+                    message=(
+                        f"{field} has line breaks, stray spaces or markup: "
+                        f"{stored}"
+                    ),
+                    hint=hint,
+                )
+            )
+    return out
+
+
+def _clean_title_rename_target(
+    paper: dict[str, Any], dirty: dict[str, Any]
+) -> str | None:
+    """The id the clean title derives, if the current id came from the dirty one.
+
+    Only an id ``derive_id`` produced from the stored title and authors is a
+    machine accident worth undoing; one that does not match was chosen by
+    hand (``--id``, a ``lit rename``) or carries a collision suffix, and is
+    left alone. So is an id the clean title would derive anyway — line breaks
+    alone never reached it, because the keyword is built from whitespace-split
+    words.
+    """
+    pid = paper.get("id")
+    if not isinstance(pid, str):
+        return None
+    authors = paper.get("authors")
+    if not isinstance(authors, list):
+        authors = []
+    if _derive_or_none(paper.get("year"), authors, paper["title"]) != pid:
+        return None
+    target = _derive_or_none(
+        paper.get("year"), dirty.get("authors", authors), dirty["title"]
+    )
+    return target if target != pid else None
+
+
+def _derive_or_none(year: Any, authors: list[Any], title: str) -> str | None:
+    family = first_author_family([a for a in authors if isinstance(a, str)])
+    try:
+        return derive_id(year, family, title)
+    except IDError:
+        return None
 
 
 def _rename_target(paper: dict[str, Any], parts: list[str]) -> tuple[str, bool]:
@@ -3558,6 +3669,12 @@ def check_code_clone_integrity(
 #
 # Tag rationale (mapped from spec §3 ledger + §3 non-drift-diagnostics table):
 #   schema — fixed-enum validity, truth-internal → klass=validity, report.
+#   dirty_metadata — a title / journal / booktitle / publisher / author name
+#       holding line breaks, indentation or markup, stored before the ingest
+#       boundary cleaned it → klass=validity (truth-internal, nothing derived
+#       disagrees), correction=regen through the validity-fix path
+#       (AUTO_FIXABLE_CATEGORIES): the rewrite is deterministic and keeps
+#       every word. Never the id.
 #   paper_dir_validity — truth-internal structural integrity (dir name / parseable
 #       metadata / id match / paper.pdf), directory-enumeration truth side →
 #       klass=validity, report. (M30 Phase 3: merges + replaces the old
@@ -3641,6 +3758,12 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "full",
         "validity",
         "report",
+    ),
+    # Same reads as placeholder_metadata, but the repair needs no one's
+    # knowledge — the clean text is already in the field — so, like
+    # discussion_scaffold, it rides the validity-fix path instead of reporting.
+    CheckSpec(
+        "dirty_metadata", check_dirty_metadata, "full", "validity", "regen"
     ),
     # The id half of placeholder_metadata, registered next to it so a legacy
     # vault reports both together. Never `regen`: renaming is a cascade over
@@ -3859,8 +3982,13 @@ def apply_autofix(
     issues: list[Issue],
     *,
     si_policy: SiFixPolicy | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Auto-clean fixable categories. Returns ``{category: n_fixed}``.
+
+    Plus, when the ``dirty_metadata`` arm left a notes.md alone, the folders
+    under :data:`DIRTY_NOTES_KEPT`, and when it cleaned a title an id was
+    derived from, the ``(id, clean-derived id)`` pairs under
+    :data:`DIRTY_RENAMES` — detail for the CLI, not categories.
 
     Currently fixes:
 
@@ -3884,13 +4012,17 @@ def apply_autofix(
     * ``dangling_refs`` — removes every relation edge naming a paper no longer
       in the library, forward and reverse. Also not lossless; see the same
       constant.
+    * ``dirty_metadata`` — rewrites titles, venues and author names that carry
+      line breaks, stray spaces or markup, and the notes.md heading ``lit add``
+      wrote from the old title (:func:`litman.core.ripple.clean_dirty_metadata`).
+      Lossless; never the id.
     * ``supplementary_missing`` / ``supplementary_unrecorded`` — drops the
       records of SI files that are gone and records files found in a paper's
       ``supplementary/`` folder (verified first), asking through
       ``si_policy``. Without one, nobody is asked: only files that verify are
       recorded, and the rest stays in the report.
     """
-    counts: dict[str, int] = {}
+    counts: dict[str, Any] = {}
 
     fixable_present = {i.category for i in issues if i.category in AUTO_FIXABLE_CATEGORIES}
 
@@ -3977,6 +4109,17 @@ def apply_autofix(
         from litman.core.ripple import drop_dangling_relations
 
         counts["dangling_refs"] = drop_dangling_relations(vault)
+
+    if "dirty_metadata" in fixable_present:
+        # Lazy for the same reason as the arm above.
+        from litman.core.ripple import clean_dirty_metadata
+
+        n_cleaned, notes_kept, renames = clean_dirty_metadata(vault)
+        counts["dirty_metadata"] = n_cleaned
+        if notes_kept:
+            counts[DIRTY_NOTES_KEPT] = notes_kept
+        if renames:
+            counts[DIRTY_RENAMES] = renames
 
     si_present = fixable_present & {
         "supplementary_missing",

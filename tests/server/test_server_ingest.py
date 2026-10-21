@@ -547,6 +547,32 @@ def test_derive_id_returns_what_the_write_would_produce(client: TestClient) -> N
     }
 
 
+def test_derive_id_previews_the_id_a_pasted_dirty_title_gets(
+    client: TestClient, vault: Path
+) -> None:
+    """A title pasted with its line breaks and <i> is cleaned on the write, so
+    the preview cleans it too — otherwise the line under the form shows the
+    `INi` id that the write no longer produces."""
+    meta = {
+        "title": "(\n  <i>N</i>\n  -Hydroxy)amide-Mediated\nRapid Cyclization",
+        "authors": ["<i>Zhang</i>, Yue"],
+        "year": 2026,
+    }
+    preview = _derive(client, **meta).json()
+    assert preview["id"] == "2026_Zhang_N-Hydroxyamide-Mediated-Rapid"
+
+    resp = _manual_confirm(client, meta)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == preview["id"]
+    written = _yaml.load(
+        (vault / "papers" / preview["id"] / "metadata.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert written["title"] == "(N-Hydroxy)amide-Mediated Rapid Cyclization"
+    assert written["authors"] == ["Zhang, Yue"]
+
+
 def test_derive_id_refuses_a_chinese_title_and_offers_nothing_bogus(
     client: TestClient,
 ) -> None:

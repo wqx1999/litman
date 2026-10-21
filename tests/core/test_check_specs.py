@@ -31,6 +31,7 @@ from litman.core.checks import (
 _EXPECTED_CATEGORIES = (
     "schema",
     "placeholder_metadata",
+    "dirty_metadata",
     "placeholder_id",
     "weak_id_keyword",
     "duplicate_doi",
@@ -63,7 +64,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 30
+    assert len(_CHECK_REGISTRY) == 31
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -103,9 +104,10 @@ def test_auto_fixable_categories_unchanged() -> None:
     refreshing it never touches files the user added), and two members that
     are NOT lossless, each admitted on the argument recorded beside the
     constant: the retired-field migration (ADR-025) and the removal of
-    relation edges that name a paper no longer in the library — and the SI
+    relation edges that name a paper no longer in the library — the SI
     pair, which records verified strays and drops records of missing files,
-    asking first. Broadening to klass-A regen is separate."""
+    asking first, and the lossless rewrite of text fields that carry line
+    breaks or markup. Broadening to klass-A regen is separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
         {
             "stale_staging",
@@ -116,8 +118,18 @@ def test_auto_fixable_categories_unchanged() -> None:
             "dangling_refs",
             "supplementary_missing",
             "supplementary_unrecorded",
+            "dirty_metadata",
         }
     )
+
+
+def test_dirty_metadata_is_full_validity_regen() -> None:
+    """Reads per-paper metadata (journal / publisher are not in the INDEX
+    projection, invariant #15), judges truth-internal content, and is
+    repaired by a deterministic rewrite through the validity-fix path."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "dirty_metadata")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "regen")
+    assert "dirty_metadata" in AUTO_FIXABLE_CATEGORIES
 
 
 def test_supplementary_is_full_b_auth_report() -> None:
