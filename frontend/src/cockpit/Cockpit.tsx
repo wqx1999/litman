@@ -99,6 +99,10 @@ interface Props {
   notify?: (msg: string, variant?: ToastVariant) => void
   /** Add SI: open the SI window for this paper (App hosts the one window). */
   onAddSi?: (paperId: string) => void
+  /** 'desktop': a plain click on an SI chip opens the file with the default
+   * app of the machine the server runs on; 'none': the chip is a plain link
+   * into the browser (GET /api/capabilities `open_files`). */
+  openFiles?: 'desktop' | 'none'
   /** Register/unregister the imperative handle the global keyboard shortcuts
    * (Phase 4) drive curation through. Null on unmount. */
   onRegisterHandle?: (handle: CockpitHandle | null) => void
@@ -1658,6 +1662,7 @@ function WriteCockpit({
   onRegisterHandle = () => {},
   onModalState = () => {},
   onAddSi = () => {},
+  openFiles = 'none',
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
@@ -2372,6 +2377,8 @@ function WriteCockpit({
                 paperId={paper.id}
                 value={paper.supplementary}
                 busy={writing}
+                openFiles={openFiles}
+                notify={notify}
                 onRemove={(record) => setPendingSi({ me: paper.id, record })}
                 onAdd={() => onAddSi(paper.id)}
               />

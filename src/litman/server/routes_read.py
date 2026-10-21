@@ -217,12 +217,19 @@ def get_whatsnew() -> dict[str, Any]:
 
 @router.get("/capabilities")
 def get_capabilities(request: Request) -> dict[str, Any]:
-    """What this host can do — currently just: which folder-link mechanism works.
+    """What this host can do: which folder-link mechanism works, and whether a
+    file can be opened on its screen.
 
     ``links`` is ``"symlink"`` (POSIX), ``"junction"`` (Windows) or ``"none"``
     (a drive that cannot hold links at all — FAT32 / exFAT, network shares).
     The SPA raises its advisory only on ``"none"``; both working mechanisms are
     silent, fully-functional states.
+
+    ``open_files`` is ``"desktop"`` when an SI file can be opened with this
+    machine's default app (``POST /api/paper/{id}/si/{file}/open``) and
+    ``"none"`` when nobody would see it (an SSH session, a headless box): the
+    SPA's SI chips then stay plain links into the browser
+    (:func:`litman.core.viewer.open_files_mode`).
 
     Cheap enough for the frontend to call on page load, which is the whole
     reason it is not folded into ``GET /health``: that endpoint is Tier-2 (it
@@ -242,11 +249,13 @@ def get_capabilities(request: Request) -> dict[str, Any]:
     """
     import sys
 
+    from litman.core import viewer
     from litman.core.portable_link import link_mechanism
 
     return {
         "links": link_mechanism(_vault(request)),
         "platform": sys.platform,
+        "open_files": viewer.open_files_mode(),
     }
 
 

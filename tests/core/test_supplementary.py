@@ -1472,3 +1472,148 @@ def test_recorded_si_file_refuses_a_linked_folder(vault: Path, tmp_path: Path) -
     _link_si_folder(vault, moved_away)
     with pytest.raises(SupplementaryError, match="is a link"):
         si_mod.recorded_si_file(vault, A_ID, "si-01.csv")
+
+
+# ---------------------------------------------------------------------------
+# is_runnable_si / original_label
+# ---------------------------------------------------------------------------
+
+# The red line's own list: opening any of these with the system's default app
+# runs it.
+_SPEC_RUNNABLE = [
+    "exe", "com", "bat", "cmd", "msi", "msp", "scr", "pif", "ps1", "vbs", "vbe",
+    "js", "jse", "wsf", "wsh", "hta", "lnk", "reg", "cpl", "msc",
+    "app", "command", "tool", "pkg", "scpt", "workflow",
+    "sh", "run", "desktop", "appimage", "bin",
+    "jar", "py",
+]
+
+
+@pytest.mark.parametrize("ext", _SPEC_RUNNABLE)
+def test_is_runnable_si_refuses_every_type_the_spec_names(ext: str) -> None:
+    assert si_mod.is_runnable_si(f"si-01.{ext}")
+    assert si_mod.is_runnable_si(f"si-01.{ext.upper()}")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "si-01.msix",
+        "si-02.application",
+        "si-03.url",
+        "si-04.chm",
+        "si-05.pyw",
+        "si-06.terminal",
+        "si-07.webloc",
+        "si-08.mobileconfig",
+        "si-09.bash",
+        "si-10.deb",
+        "si-11.flatpakref",
+        "si-12.pl",
+        "si-13.jnlp",
+        "si-01.pdf.exe",  # recorded by hand: the last suffix is what runs
+        "si-01",  # no suffix: what a script or a binary looks like
+        "si-01.",
+        ".bashrc",
+    ],
+)
+def test_is_runnable_si_refuses_what_would_run(name: str) -> None:
+    assert si_mod.is_runnable_si(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "si-01.pdf",
+        "si-02.xlsx",
+        "si-03.docx",
+        "si-04.docm",  # Office asks before it runs a macro
+        "si-05.zip",
+        "si-06.tar.gz",
+        "si-07.7z",
+        "si-08.dmg",
+        "si-09.iso",
+        "si-10.csv",
+        "si-11.html",
+        "si-12.svg",
+        "si-13.txt",
+        "si-14.ipynb",
+        "si-15.exe.pdf",
+    ],
+)
+def test_is_runnable_si_lets_documents_and_archives_open(name: str) -> None:
+    assert not si_mod.is_runnable_si(name)
+
+
+@pytest.mark.parametrize(
+    "original", ["x.appref-ms", "x.settingcontent-ms", "x.library-ms", "README"]
+)
+def test_an_si_stored_without_a_suffix_is_refused(original: str) -> None:
+    assert si_extension(original) == ""
+    assert si_mod.is_runnable_si(f"si-01{si_extension(original)}")
+
+
+@pytest.mark.parametrize(
+    ("record", "label"),
+    [
+        ({"original": "ci9b00237_si_001.pdf"}, "ci9b00237_si_001.pdf"),
+        ({"original": "Table S2 (final).xlsx"}, "Table S2 (final).xlsx"),
+        ({"original": "Table\tS2.xlsx"}, "Table S2.xlsx"),
+        ({"original": "Table\nS2.xlsx"}, "Table S2.xlsx"),
+        ({"original": "Table\r\nS2.xlsx"}, "Table  S2.xlsx"),
+        ({"original": "Table\u2028S2.xlsx"}, "Table S2.xlsx"),
+        ({"original": "fdp\u202e.exe"}, "fdp .exe"),
+        ({"original": "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645.pdf"},
+         "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645.pdf"),
+        ({"original": "  padded.csv\n"}, "padded.csv"),
+        ({"original": "\t\n\u202e"}, None),
+        ({"original": ""}, None),
+        ({"original": None}, None),
+        ({"original": 7}, None),
+        ({}, None),
+    ],
+    ids=[
+        "plain",
+        "spaces",
+        "tab",
+        "newline",
+        "crlf",
+        "line-separator",
+        "rtl-override",
+        "zero-width-non-joiner-kept",
+        "padding",
+        "only-control-characters",
+        "empty",
+        "null",
+        "not-text",
+        "missing",
+    ],
+)
+def test_original_label(record: dict[str, object], label: str | None) -> None:
+    assert si_mod.original_label(record) == label
+
+
+@pytest.mark.parametrize(
+    ("code", "unprintable"),
+    [
+        (0x09, True),  # tab
+        (0x0A, True),  # newline
+        (0x202E, True),  # right-to-left override
+        (0x2028, True),  # line separator
+        (0xDCFF, True),  # lone surrogate
+        (0x200C, False),  # zero-width non-joiner
+        (0x200D, False),  # zero-width joiner
+        (0x20, False),
+        (0x61, False),
+        (0x00E9, False),
+    ],
+)
+def test_is_unprintable(code: int, unprintable: bool) -> None:
+    assert si_mod.is_unprintable(chr(code)) is unprintable
+
+
+def test_an_undecodable_byte_in_an_original_becomes_a_space() -> None:
+    """A POSIX file name that is not UTF-8 reaches Python with a lone
+    surrogate in place of each bad byte, which no UTF-8 stream can print."""
+    original = b"Table\xffS2.xlsx".decode("utf-8", "surrogateescape")
+    assert si_mod.original_label({"original": original}) == "Table S2.xlsx"

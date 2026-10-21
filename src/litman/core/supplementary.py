@@ -99,6 +99,43 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMPOUND_EXTS: tuple[str, ...] = (".tar.gz", ".tar.bz2", ".tar.xz")
 _EXT_RE = re.compile(r"^[a-z0-9]{1,12}$")
 
+# Last suffixes the system's default app would run rather than show: opening
+# one with `open` / `os.startfile` / `xdg-open` executes it. A file with no
+# suffix at all counts too — that is what a script or a binary looks like.
+# Such a file still downloads in the browser.
+_RUNNABLE_EXTS: frozenset[str] = frozenset(
+    {
+        # Windows: programs, installers, scripts, shortcuts
+        "exe", "com", "bat", "cmd", "msi", "msp", "scr", "pif", "ps1", "vbs",
+        "vbe", "js", "jse", "wsf", "wsh", "hta", "lnk", "reg", "cpl", "msc",
+        "mst", "msu", "msix", "msixbundle", "appx", "appxbundle",
+        "application", "xbap", "gadget", "diagcab", "vb", "ws", "wsc", "sct",
+        "psm1", "psd1", "ps1xml", "psc1", "scf", "inf", "ins", "isp", "url",
+        "website", "wsb", "xll", "chm",
+        # macOS: apps, packages, scripts, links, configuration profiles
+        "app", "command", "tool", "pkg", "scpt", "workflow", "mpkg", "scptd",
+        "applescript", "action", "terminal", "webloc", "inetloc", "fileloc",
+        "mobileconfig",
+        # Linux: scripts, self-running binaries, packages
+        "sh", "run", "desktop", "appimage", "bin", "bash", "zsh", "csh",
+        "ksh", "tcsh", "fish", "deb", "rpm", "snap", "flatpak", "flatpakref",
+        "flatpakrepo",
+        # Programs for an interpreter the association starts
+        "jar", "py", "pyw", "pyz", "pyzw", "pyc", "pyo", "pl", "rb", "rbw",
+        "php", "tcl", "jnlp",
+    }
+)
+
+# Characters that break or disguise the line a name is printed on: control
+# characters (tab, newline), format marks such as U+202E (right-to-left
+# override, which makes "fdp.exe" read as "exe.pdf"), the line / paragraph
+# separators, and lone surrogates (what an undecodable byte in a POSIX file
+# name turns into) — but not the zero-width non-joiner and joiner, ordinary in
+# Persian and Indic names and in emoji sequences, and unable to reorder text
+# the way the bidi controls can.
+_UNPRINTABLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+_JOINERS = frozenset({"\u200c", "\u200d"})
+
 # The publisher's own running number inside a downloaded SI file name, most
 # specific pattern first. "-s001" must be exactly three digits so Elsevier's
 # "1-s2.0-S0022…" prefix never reads as one.
@@ -562,6 +599,36 @@ def si_extension(original: str) -> str:
     if not dot or not stem:
         return ""
     return f".{ext}" if _EXT_RE.match(ext) else ""
+
+
+def is_runnable_si(name: str) -> bool:
+    """Whether the system's default app would run the SI file ``name`` rather
+    than show it: its last suffix belongs to a program, a script or a
+    shortcut (``si-01.pdf.exe`` is an ``.exe``), or it has no suffix."""
+    stem, _dot, ext = name.rpartition(".")
+    return not stem or not ext or ext.lower() in _RUNNABLE_EXTS
+
+
+def is_unprintable(char: str) -> bool:
+    """Whether ``char`` would break or disguise the line a name is printed on
+    (``_UNPRINTABLE_CATEGORIES``). The GUI refuses a dropped file whose name
+    has one; :func:`original_label` turns each into a space."""
+    return unicodedata.category(char) in _UNPRINTABLE_CATEGORIES and char not in _JOINERS
+
+
+def original_label(record: Mapping[str, Any]) -> str | None:
+    """The record's ``original`` as one printable line; ``None`` when it
+    names nothing.
+
+    A control or format character — a tab, a newline, a right-to-left
+    override — or a lone surrogate becomes a space, so the name can neither
+    break the line it is printed on, nor pass for another, nor fail to print.
+    """
+    original = record.get("original")
+    if not isinstance(original, str):
+        return None
+    label = "".join(" " if is_unprintable(c) else c for c in original).strip()
+    return label or None
 
 
 def _publisher_seq(original: str) -> int | None:
@@ -1617,10 +1684,13 @@ __all__ = [
     "field_problems",
     "fix_supplementary",
     "has_checksum",
+    "is_runnable_si",
+    "is_unprintable",
     "list_supplementary",
     "mentions_supplementary",
     "name_matches",
     "official_link",
+    "original_label",
     "plan_names",
     "prepare_items",
     "recorded_si_file",

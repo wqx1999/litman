@@ -759,6 +759,17 @@ export function removeSiFile(
   return mutateJSON(siFileUrl(paperId, file), 'DELETE')
 }
 
+/** Open one recorded SI file with the default app of the machine the server
+ * runs on — `host` names it. Refused, the reason in the error's message, for
+ * a file that app would run, when that machine has no desktop, or when no app
+ * took the file; the caller then lets the browser have it. */
+export function openSiFile(
+  paperId: string,
+  file: string,
+): Promise<{ opened: boolean; file: string; host: string }> {
+  return mutateJSON(`${siFileUrl(paperId, file)}/open`, 'POST')
+}
+
 /** Kick off the one-click update: the server spawns a detached helper and
  * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
  * (ApiError with the human hint as its message) when litman cannot update
@@ -777,10 +788,16 @@ export function postSelfUpdate(): Promise<{ status: string; installer: string }>
  * not being created — the library itself is unaffected. A GUI-only user has no
  * other way to learn this: the CLI prints a warning to stderr, and the desktop
  * shortcut launches the console-less `litw` entry point, so that warning is
- * shown to nobody. */
+ * shown to nobody.
+ *
+ * `open_files` is whether a file opened on the server's machine reaches a
+ * screen: 'desktop' lets a plain click on an SI chip open it there
+ * (`openSiFile`); 'none' — an SSH session, a headless box — leaves the chips
+ * plain links into the browser, as does no answer at all. */
 export interface Capabilities {
   links: 'symlink' | 'junction' | 'none'
   platform: string
+  open_files?: 'desktop' | 'none'
 }
 
 export function fetchCapabilities(): Promise<Capabilities> {

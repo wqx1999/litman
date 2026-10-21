@@ -411,6 +411,11 @@ export default function App() {
   // it. Dismissable, and the dismissal sticks. Never shown for a working
   // mechanism ('symlink' / 'junction'): those are silent full-function states.
   const [linkNotice, setLinkNotice] = useState(false)
+  // Whether a plain click on an SI chip opens the file with the default app
+  // of the machine the server runs on ('desktop'), or the chip stays a link
+  // into the browser ('none': an SSH session, a headless box — and until the
+  // server has answered).
+  const [openFiles, setOpenFiles] = useState<'desktop' | 'none'>('none')
   // One place decides what a failed read means, so every catch site agrees.
   // Each verdict clears the other flag, so the banners are mutually exclusive
   // and the one showing is always the FRESHER fact: a 410 arrived over a
@@ -787,17 +792,20 @@ export default function App() {
         }, 3000)
       })
       .catch(() => {})
-    // Link-capability advisory: cheap (one cached probe server-side) so it runs
-    // inline with the rest of the boot fetches — unlike the Tier-2 health check,
-    // which also runs on load now but waits for idle. Best-effort — a failure
-    // just leaves the notice off; it must never block or error the boot path.
-    if (localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
-      fetchCapabilities()
-        .then((c) => {
-          if (c.links === 'none') setLinkNotice(true)
-        })
-        .catch(() => {})
-    }
+    // Host capabilities: cheap (one cached probe server-side) so they run
+    // inline with the rest of the boot fetches — unlike the Tier-2 health
+    // check, which also runs on load now but waits for idle. Read on every
+    // boot for the SI chips; the link advisory only while not dismissed.
+    // Best-effort — a failure leaves the notice off and the chips as links;
+    // it must never block or error the boot path.
+    fetchCapabilities()
+      .then((c) => {
+        setOpenFiles(c.open_files === 'desktop' ? 'desktop' : 'none')
+        if (c.links === 'none' && localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
+          setLinkNotice(true)
+        }
+      })
+      .catch(() => {})
     // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
     // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
     // resync never diffs against an empty baseline (which would log every paper
@@ -2535,6 +2543,7 @@ export default function App() {
               onRegisterHandle={registerCockpit}
               onModalState={setCockpitModalOpen}
               onAddSi={openAddSi}
+              openFiles={openFiles}
             />
           </>
         )}

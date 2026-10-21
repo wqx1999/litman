@@ -13,7 +13,8 @@ page's SI window adds files through the same core function the CLI uses
   upload stash and verified; ``DELETE …/files/{fid}`` — take a row out.
 * ``POST /api/si/requests/{rid}/confirm`` (Done) / ``…/cancel`` (Cancel).
 * ``GET`` / ``DELETE /api/paper/{paper_id}/si/{file}`` — open or remove one
-  recorded SI file (the cockpit's Supplementary row).
+  recorded SI file (the cockpit's Supplementary row); ``POST …/open`` — open
+  it with this machine's default app instead, when it has a desktop.
 
 Nothing reaches the library before Done. A dropped file waits in
 ``<vault>/.litman-upload/`` as ``si-<rid>-<fid>.<ext>`` — flat, so the 24 h
@@ -23,7 +24,8 @@ upload. The request table itself lives in memory
 
 GET never writes: the poll, the ping and serving a file only read. Every
 write is a POST or DELETE, so ``LocalPageGuard`` refuses one sent by another
-site. Request bodies and answers are camelCase like the rest of the API.
+site — and so is starting an app on this machine. Request bodies and answers
+are camelCase like the rest of the API.
 
 An SI file is served as itself only when it is a PDF; anything else downloads
 (``attachment``, ``application/octet-stream``, ``nosniff``). Opened inline, an
@@ -37,7 +39,6 @@ import errno
 import os
 import re
 import shutil
-import unicodedata
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
@@ -46,11 +47,13 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
 from litman import __version__
-from litman.core.config import CONFIG_FILENAME
+from litman.core import viewer
+from litman.core.config import CONFIG_FILENAME, load_config
 from litman.core.document import find_paper
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import APP_NAME, host_id
@@ -58,6 +61,8 @@ from litman.core.id import is_valid_id
 from litman.core.supplementary import (
     SiItem,
     add_supplementary,
+    is_runnable_si,
+    is_unprintable,
     list_supplementary,
     official_link,
     recorded_si_file,
@@ -67,7 +72,12 @@ from litman.core.supplementary import (
     verify_batch,
     verify_candidate,
 )
-from litman.exceptions import LitmanError, PaperNotFoundError, SupplementaryError
+from litman.exceptions import (
+    ConfigError,
+    LitmanError,
+    PaperNotFoundError,
+    SupplementaryError,
+)
 from litman.server.routes_ingest import _UPLOAD_DIRNAME, sweep_uploads
 from litman.server.si_requests import (
     ConfirmPlan,
@@ -94,15 +104,6 @@ _FREE_MARGIN = 64 << 20
 # checked again each time this much more has arrived.
 _FREE_CHECK_BYTES = 64 << 20
 _NAME_MAX = 255
-# Name characters refused besides the control ones: invisible format marks
-# such as U+202E (right-to-left override, which makes "fdp.exe" read as
-# "exe.pdf") and the line / paragraph separators. The name is recorded and
-# becomes the download name.
-_BAD_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
-# …except the zero-width non-joiner and joiner: ordinary in Persian and Indic
-# names and in emoji sequences, and unable to reorder text the way the bidi
-# controls (also format marks, and refused) can.
-_NAME_JOINERS = frozenset({"\u200c", "\u200d"})
 
 _NO_SPACE = "Not enough free disk space for this file. Free some space, then drop it again."
 _NO_SPACE_DONE = (
@@ -344,14 +345,13 @@ def _dropped_name(request: Request) -> str:
     except UnicodeDecodeError as exc:
         raise unusable from exc
     name = re.split(r"[\\/]", name)[-1].strip()
+    # The name is recorded and becomes the download name: nothing in it may
+    # break or disguise the line it is shown on.
     if (
         not name
         or name in (".", "..")
         or len(name) > _NAME_MAX
-        or any(
-            unicodedata.category(c) in _BAD_NAME_CATEGORIES and c not in _NAME_JOINERS
-            for c in name
-        )
+        or any(is_unprintable(c) for c in name)
     ):
         raise unusable
     return name
@@ -691,6 +691,71 @@ def get_si_file(request: Request, paper_id: str, file: str) -> FileResponse:
         content_disposition_type="inline" if inline else "attachment",
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
+
+
+def _config_problem(exc: ConfigError) -> str:
+    """lit-config.yaml's fault as one line for the page — the field, when one
+    is at fault — and the way out. No path: the page has no use for it."""
+    cause = exc.__cause__
+    if isinstance(cause, ValidationError) and cause.errors():
+        first = cause.errors()[0]
+        field = ".".join(str(part) for part in first["loc"]) or "top level"
+        problem = f"{CONFIG_FILENAME} is invalid ({field}: {first['msg']})"
+    else:
+        problem = f"{CONFIG_FILENAME} cannot be read (lit config show says why)"
+    return f"{problem} — fix it, or download the file instead"
+
+
+@router.post("/paper/{paper_id}/si/{file}/open")
+def post_si_file_open(request: Request, paper_id: str, file: str) -> dict[str, Any]:
+    """Open one recorded SI file with this machine's default app — a plain
+    click on its chip when ``GET /api/capabilities`` says ``open_files:
+    "desktop"``. When it cannot, the answer says to download the file, which
+    the page then does.
+
+    Only a recorded name, as for the GET. Never a file the default app would
+    run (403). A PDF goes to ``default_pdf_viewer`` when one is set, as in
+    ``lit open``. Waits up to ``viewer.OPEN_WAIT_S`` to hear whether an app
+    took the file — a plain ``def``, so the wait holds a worker thread, not
+    the event loop.
+    """
+    if not is_valid_id(paper_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Invalid paper id: {paper_id!r}. Open the file from the paper's page.",
+        )
+    vault: Path = request.app.state.vault
+    try:
+        path, _record = recorded_si_file(vault, paper_id, file)
+    except (PaperNotFoundError, SupplementaryError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    host = host_id()
+    if is_runnable_si(file):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{file} could be run, not viewed — download it instead",
+        )
+    if viewer.open_files_mode() == "none":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{host} has no desktop to open {file} on — download it instead",
+        )
+    configured: str | None = None
+    if file.endswith(".pdf"):
+        try:
+            configured = load_config(vault).default_pdf_viewer
+        except ConfigError as exc:
+            raise HTTPException(status_code=500, detail=_config_problem(exc)) from exc
+    try:
+        viewer.launch_file(path, configured)
+    except viewer.OpenFailed as exc:
+        detail = (
+            f"No app on {host} opened {file} — download it instead"
+            if exc.reason == "no-app"
+            else f"{host} could not start {exc.command} to open {file} — download it instead"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+    return {"opened": True, "file": file, "host": host}
 
 
 @router.delete("/paper/{paper_id}/si/{file}")

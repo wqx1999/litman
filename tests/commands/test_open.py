@@ -14,9 +14,11 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner
+from rich.console import Console
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.commands import open as open_mod
 from litman.core import viewer as viewer_mod
 from litman.core.library import create_vault
 from litman.core.viewer import (
@@ -155,7 +157,8 @@ def test_detect_linux_no_viewer_returns_none(
 
 
 class _PopenRecorder:
-    """Records arg-lists handed to subprocess.Popen across the test."""
+    """Records arg-lists handed to subprocess.Popen across the test. The
+    process it stands for exits 0 at once: the viewer opened."""
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
@@ -163,6 +166,9 @@ class _PopenRecorder:
     def __call__(self, args: list[str], **kwargs: Any) -> "_PopenRecorder":
         self.calls.append(list(args))
         return self
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
 
 
 def test_launch_pdf_uses_configured_viewer(
@@ -574,3 +580,34 @@ def test_open_id_and_doi_mutually_exclusive(
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
+
+
+def test_the_pdf_path_line_is_never_folded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Piped, the console is 80 columns wide, and a path folded across lines is
+    one nobody can paste. A Console of its own: rich fixes a console's width
+    at first use, so COLUMNS would not reach it."""
+    deep = tmp_path / "a-library-folder-with-a-long-name" / "and-another-level-below-it"
+    deep.mkdir(parents=True)
+    vault = create_vault(deep)
+    _write_paper(vault, "2024_Smith_Foo")
+    pdf = vault / "papers" / "2024_Smith_Foo" / "paper.pdf"
+    assert len(f"PDF path: {pdf}") > 80
+    monkeypatch.setattr(open_mod, "console", Console(width=80))
+    # No opener at all, faked through the seams rather than sys.platform.
+    monkeypatch.setattr(viewer_mod, "_platform", lambda: "linux")
+    monkeypatch.setattr(viewer_mod, "_which", lambda cmd: None)
+
+    result = CliRunner().invoke(
+        cli, ["open", "2024_Smith_Foo", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 2
+    lines = result.output.splitlines()
+    assert f"PDF path: {pdf}" in lines
+    assert (
+        "error: No platform PDF viewer available (xdg-open / wslview missing). "
+        "Install xdg-utils (Linux) or wslview (WSL), or set default_pdf_viewer "
+        "in lit-config.yaml."
+    ) in lines

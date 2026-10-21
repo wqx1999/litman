@@ -66,14 +66,15 @@ def test_list_commands_enumerates_without_importing() -> None:
 
 def test_si_reading_paths_leave_pypdf_unloaded() -> None:
     # The per-command drift hook imports litman.core.checks on every `lit`
-    # call, and `lit show` / `lit rm` / `lit trash` import the SI module: none
-    # of them may drag pypdf in at import time. It loads only when a PDF is
-    # actually read (SI verification).
+    # call, and `lit show` / `lit rm` / `lit trash` / `lit open` reach the SI
+    # module: none of them may drag pypdf in at import time. It loads only
+    # when a PDF is actually read (SI verification).
     code = (
         "import sys;"
         "import litman.core.checks, litman.core.supplementary;"
         "import litman.commands.show, litman.commands.rm, litman.commands.trash;"
         "import litman.commands.health, litman.commands.modify;"
+        "import litman.commands.open;"
         "assert 'pypdf' not in sys.modules, 'pypdf loaded at import';"
         "print('ok')"
     )

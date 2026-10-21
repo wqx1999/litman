@@ -147,6 +147,17 @@ def _si_path(vault: Path, name: str, paper_id: str = A_ID) -> Path:
     return (vault / "papers" / paper_id / "supplementary" / name).resolve()
 
 
+def _ready(lines: list[str]) -> list[tuple[Path, str]]:
+    """The file lines after ``SI ready``: each path, resolved, and the original
+    name after its tab."""
+    rows: list[tuple[Path, str]] = []
+    for line in lines:
+        path, tab, original = line.partition("\t")
+        assert tab, f"no tab in {line!r}"
+        rows.append((Path(path).resolve(), original))
+    return rows
+
+
 def _add_si_by_file(vault: Path, tmp_path: Path, name: str, table: str) -> None:
     source = tmp_path / name
     source.write_bytes(_si_pdf(A_TITLE, table))
@@ -445,7 +456,7 @@ def test_si_already_in_the_library_is_0_without_asking(
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s) (already in the library)"
-    assert [Path(line).resolve() for line in lines[1:]] == [_si_path(vault, "si-01.pdf")]
+    assert _ready(lines[1:]) == [(_si_path(vault, "si-01.pdf"), "ci9b00237_si_001.pdf")]
     assert gui.seen == []
 
 
@@ -463,7 +474,7 @@ def test_already_in_the_library_warns_about_a_missing_file(
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s) (already in the library)"
-    assert [Path(line).resolve() for line in lines[1:]] == [_si_path(vault, "si-02.pdf")]
+    assert _ready(lines[1:]) == [(_si_path(vault, "si-02.pdf"), "ci9b00237_si_002.pdf")]
     assert "si-01.pdf is missing" in result.stderr
     assert "lit health-check" in result.stderr
     assert gui.seen == []
@@ -496,7 +507,7 @@ def test_force_asks_the_gui_although_si_is_there(
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s)"
-    assert [Path(line).resolve() for line in lines[1:]] == [_si_path(vault, "si-02.pdf")]
+    assert _ready(lines[1:]) == [(_si_path(vault, "si-02.pdf"), "ci9b00237_si_002.pdf")]
 
 
 def test_a_text_that_never_mentions_si_is_13_and_the_gui_is_never_asked(
@@ -633,8 +644,10 @@ def test_done_in_the_page_is_0_with_the_new_paths(vault: Path, gui: Gui, clock: 
     lines = result.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s)"
     assert len(lines) == 2
-    assert Path(lines[1]).is_absolute()
-    assert Path(lines[1]).resolve() == _si_path(vault, "si-01.pdf")
+    path, original = lines[1].split("\t")
+    assert Path(path).is_absolute()
+    assert Path(path).resolve() == _si_path(vault, "si-01.pdf")
+    assert original == "ci9b00237_si_001.pdf"
     assert WAITING in result.stderr
     assert "Waiting" not in result.stdout
     assert gui.posts() == 1
@@ -696,7 +709,7 @@ def test_a_done_after_11_reaches_the_next_rerun_once(
     assert second.exit_code == 0, second.output
     lines = second.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s)"
-    assert [Path(line).resolve() for line in lines[1:]] == [_si_path(vault, "si-01.pdf")]
+    assert _ready(lines[1:]) == [(_si_path(vault, "si-01.pdf"), "ci9b00237_si_001.pdf")]
     assert "Waiting" not in second.stderr
     assert clock.sleeps == sleeps
     assert gui.polls() == []
@@ -756,7 +769,10 @@ def test_after_the_si_is_removed_the_same_command_opens_a_fresh_window(
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s)"
-    assert len(lines) == 2 and Path(lines[1]).is_file()
+    assert len(lines) == 2
+    path, original = lines[1].split("\t")
+    assert Path(path).is_file()
+    assert original == "ci9b00237_si_001.pdf"
     assert gui.posts() == 1
     assert len(gui.polls()) == 2
     assert f"/api/si/requests/{rid}" not in gui.polls()
@@ -1016,7 +1032,7 @@ def test_an_added_answer_prints_this_librarys_paths_and_the_warnings(
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert lines[0] == "SI ready: 1 file(s)"
-    assert [Path(line).resolve() for line in lines[1:]] == [_si_path(vault, "si-01.pdf")]
+    assert _ready(lines[1:]) == [(_si_path(vault, "si-01.pdf"), "ci9b00237_si_001.pdf")]
     assert "/somewhere/else" not in result.stdout
     assert "Warning: sync is behind" in result.stderr
 
@@ -1199,7 +1215,7 @@ def test_a_finished_result_wins_over_another_library_shown(
         assert result.exit_code == 0, result.output
         lines = result.stdout.splitlines()
         assert lines[0] == "SI ready: 1 file(s)"
-        assert [Path(line).resolve() for line in lines[1:]] == [_si_path(vault, "si-01.pdf")]
+        assert _ready(lines[1:]) == [(_si_path(vault, "si-01.pdf"), "ci9b00237_si_001.pdf")]
     else:
         assert result.exit_code == 10, result.output
         assert result.stdout == "SI request cancelled in the GUI\n"
@@ -1303,8 +1319,9 @@ def test_help_describes_the_third_form_and_its_exit_codes() -> None:
     assert "lit add --si PAPER FILE... lit add --si PAPER" in text
     assert "Asking the GUI (--si PAPER, no FILE)" in text
     for line in (
-        "0 SI ready: N file(s), then one path per line; the first line ends in "
-        "(already in the library) when the paper had SI already",
+        "0 SI ready: N file(s), then one line per file: its path, a tab and its "
+        "original name (the path alone when none is recorded); the first line "
+        "ends in (already in the library) when the paper had SI already",
         "1 an error, such as no such paper or a broken SI record",
         "10 the SI request was cancelled in the GUI",
         "11 still waiting: run the same command again to keep waiting",
@@ -1313,3 +1330,114 @@ def test_help_describes_the_third_form_and_its_exit_codes() -> None:
     ):
         assert line in text
     assert "With --si alone: ask the GUI" in text
+
+
+# ---------------------------------------------------------------------------
+# The SI ready lines: path, a tab, the name the file was added under
+# ---------------------------------------------------------------------------
+
+
+def _set_original(vault: Path, line: str) -> None:
+    """Rewrite the one ``original:`` line of paper A's metadata by hand."""
+    meta = vault / "papers" / A_ID / "metadata.yaml"
+    unlock_truth_file(meta)
+    text = meta.read_text(encoding="utf-8")
+    old = next(x for x in text.splitlines() if x.strip().startswith("original:"))
+    meta.write_text(text.replace(old + "\n", line), encoding="utf-8")
+
+
+def test_ready_lines_carry_each_original_after_a_tab(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    si_gui.print_si_ready(
+        [
+            (tmp_path / "si-01.pdf", {"file": "si-01.pdf", "original": "ci9b00237_si_001.pdf"}),
+            (tmp_path / "si-02.xlsx", {"file": "si-02.xlsx", "original": "Table S2 (v2).xlsx"}),
+        ]
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        "SI ready: 2 file(s)",
+        f"{tmp_path / 'si-01.pdf'}\tci9b00237_si_001.pdf",
+        f"{tmp_path / 'si-02.xlsx'}\tTable S2 (v2).xlsx",
+    ]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"file": "si-01.pdf"},
+        {"file": "si-01.pdf", "original": None},
+        {"file": "si-01.pdf", "original": ""},
+        {"file": "si-01.pdf", "original": 7},
+        {"file": "si-01.pdf", "original": "\t\n\u202e"},
+    ],
+    ids=["missing", "null", "empty", "not-text", "only-control-characters"],
+)
+def test_a_record_naming_no_original_prints_the_path_alone(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, record: dict[str, Any]
+) -> None:
+    si_gui.print_si_ready([(tmp_path / "si-01.pdf", record)], already=True)
+    assert capsys.readouterr().out.splitlines() == [
+        "SI ready: 1 file(s) (already in the library)",
+        str(tmp_path / "si-01.pdf"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "original",
+    ["Table\tS2.xlsx", "Table\nS2.xlsx", "Table\r\nS2.xlsx", "Table\u2028S2.xlsx"],
+    ids=["tab", "newline", "crlf", "line-separator"],
+)
+def test_an_original_with_a_tab_or_newline_stays_on_its_line(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path, original: str
+) -> None:
+    si_gui.print_si_ready([(tmp_path / "si-02.xlsx", {"original": original})])
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2
+    path, name = lines[1].split("\t")
+    assert path == str(tmp_path / "si-02.xlsx")
+    assert name.split() == ["Table", "S2.xlsx"]
+
+
+def test_an_undecodable_original_prints_without_raising(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A lone surrogate — what a non-UTF-8 byte in a POSIX file name becomes —
+    cannot be written to a UTF-8 stdout; the line carries a space instead."""
+    original = b"Table\xffS2.xlsx".decode("utf-8", "surrogateescape")
+
+    si_gui.print_si_ready([(tmp_path / "si-02.xlsx", {"original": original})])
+
+    assert capsys.readouterr().out.splitlines() == [
+        "SI ready: 1 file(s)",
+        f"{tmp_path / 'si-02.xlsx'}\tTable S2.xlsx",
+    ]
+
+
+def test_a_hand_edited_record_without_an_original_prints_the_path_alone(
+    vault: Path, gui: Gui, tmp_path: Path
+) -> None:
+    _add_si_by_file(vault, tmp_path, "ci9b00237_si_001.pdf", "Table S1")
+    _set_original(vault, "")
+
+    result = _run(vault, A_ID)
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == "SI ready: 1 file(s) (already in the library)"
+    assert "\t" not in lines[1]
+    assert Path(lines[1]).resolve() == _si_path(vault, "si-01.pdf")
+
+
+def test_a_hand_edited_original_with_a_tab_cannot_break_the_line(
+    vault: Path, gui: Gui, tmp_path: Path
+) -> None:
+    _add_si_by_file(vault, tmp_path, "ci9b00237_si_001.pdf", "Table S1")
+    _set_original(vault, '    original: "Table\\tS1\\nfinal.pdf"\n')
+
+    result = _run(vault, A_ID)
+
+    assert result.exit_code == 0, result.output
+    assert _ready(result.stdout.splitlines()[1:]) == [
+        (_si_path(vault, "si-01.pdf"), "Table S1 final.pdf")
+    ]

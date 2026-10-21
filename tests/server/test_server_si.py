@@ -1,5 +1,6 @@
 """SI window endpoints (task-supplementary-info M2): ping, requests, dropped
-files, Done / Cancel, and serving / removing a recorded SI file.
+files, Done / Cancel, and serving / removing a recorded SI file — or opening
+it with this machine's default app.
 
 Every write is checked on disk: TRUTH (``papers/<id>/supplementary/`` +
 ``metadata.yaml``) and the upload stash. Patches go on module objects
@@ -18,7 +19,7 @@ import stat
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import pytest
@@ -28,6 +29,7 @@ pytest.importorskip("fastapi")
 from starlette import requests as starlette_requests
 
 from litman.core import supplementary as si_mod
+from litman.core import viewer as viewer_mod
 from litman.core.config import CONFIG_FILENAME
 from litman.core.document import find_paper, list_papers
 from litman.core.gui_registry import host_id
@@ -107,6 +109,18 @@ def app(vault: Path) -> Any:
 @pytest.fixture
 def client(app: Any) -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_opener(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test here may start an app on this machine: the opener under the
+    open route fails the test unless the test puts its own in place."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"a test reached a real opener: {args!r}")
+
+    monkeypatch.setattr(viewer_mod, "_spawn", refuse)
+    monkeypatch.setattr(viewer_mod, "_startfile", refuse)
 
 
 def _si_pdf(title: str) -> bytes:
@@ -1271,3 +1285,302 @@ def test_reading_writes_nothing(client: TestClient, vault: Path, tmp_path: Path)
         assert client.get(path).status_code in (200, 404), path
 
     assert _tree(vault) == before
+
+
+# ---------------------------------------------------------------------------
+# Opening a recorded SI file with this machine's default app
+# ---------------------------------------------------------------------------
+
+
+class _Launch:
+    """Stands in for ``viewer.launch_file``: records what it was asked to
+    open, with which configured viewer, and fails when told to."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, str | None]] = []
+        self.error: Exception | None = None
+
+    def __call__(self, path: Path, configured_viewer: str | None = None) -> tuple[str, str]:
+        self.calls.append((path, configured_viewer))
+        if self.error is not None:
+            raise self.error
+        return ("xdg-open", "platform")
+
+
+@pytest.fixture
+def launch(monkeypatch: pytest.MonkeyPatch) -> _Launch:
+    """This machine has a desktop, and opening a file is recorded."""
+    fake = _Launch()
+    monkeypatch.setattr(viewer_mod, "open_files_mode", lambda: "desktop")
+    monkeypatch.setattr(viewer_mod, "launch_file", fake)
+    return fake
+
+
+def _post_open(client: TestClient, name: str, paper: str = A_ID, **kwargs: Any) -> Any:
+    return client.post(f"/api/paper/{paper}/si/{name}/open", **kwargs)
+
+
+def _si_file(vault: Path, name: str) -> Path:
+    return vault / "papers" / A_ID / "supplementary" / name
+
+
+def _configure_viewer(vault: Path, command: str) -> None:
+    config = vault / CONFIG_FILENAME
+    text = config.read_text(encoding="utf-8")
+    assert "default_pdf_viewer: null" in text
+    config.write_text(
+        text.replace("default_pdf_viewer: null", f"default_pdf_viewer: {command}"),
+        encoding="utf-8",
+    )
+
+
+def test_open_starts_the_default_app_on_this_machine(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+
+    response = _post_open(client, name)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"opened": True, "file": name, "host": host_id()}
+    assert launch.calls == [(_si_file(vault, name), None)]
+
+
+def test_only_a_pdf_goes_to_the_configured_viewer(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    _configure_viewer(vault, "zathura")
+    pdf = _add(vault, tmp_path, "ci9b00237_si_001.pdf", _si_pdf(A_TITLE))
+    sheet = _add(vault, tmp_path, "ci9b00237_si_002.xlsx", SHEET)
+
+    assert _post_open(client, pdf).status_code == 200
+    assert _post_open(client, sheet).status_code == 200
+    assert launch.calls == [
+        (_si_file(vault, pdf), "zathura"),
+        (_si_file(vault, sheet), None),
+    ]
+
+
+def test_without_a_desktop_nothing_starts(
+    client: TestClient,
+    vault: Path,
+    tmp_path: Path,
+    launch: _Launch,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(viewer_mod, "open_files_mode", lambda: "none")
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+
+    response = _post_open(client, name)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        f"{host_id()} has no desktop to open {name} on — download it instead"
+    )
+    assert launch.calls == []
+
+
+@pytest.mark.parametrize(
+    "original",
+    ["ci9b00237_tool.exe", "ci9b00237_setup.MSI", "ci9b00237_run.sh", "README", "x.appref-ms"],
+)
+def test_a_file_the_default_app_would_run_is_refused(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch, original: str
+) -> None:
+    name = _add(vault, tmp_path, original, b"MZ program")
+
+    response = _post_open(client, name)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        f"{name} could be run, not viewed — download it instead"
+    )
+    assert launch.calls == []
+    # It still downloads.
+    assert client.get(f"/api/paper/{A_ID}/si/{name}").status_code == 200
+
+
+def test_the_last_suffix_decides(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    archive = _add(vault, tmp_path, "ci9b00237_si_001.tar.gz", b"\x1f\x8b archive")
+    assert archive == "si-01.tar.gz"
+    # Recorded by hand: two suffixes, the last one runs.
+    disguised = "si-02.pdf.exe"
+    _si_file(vault, disguised).write_bytes(b"MZ program")
+    meta_path = vault / "papers" / A_ID / "metadata.yaml"
+    unlock_truth_file(meta_path)
+    text = meta_path.read_text(encoding="utf-8")
+    meta_path.write_text(
+        text.replace(
+            "supplementary:\n",
+            f"supplementary:\n  - file: {disguised}\n    original: tool.pdf.exe\n",
+        ),
+        encoding="utf-8",
+    )
+    assert disguised in [r["file"] for r in _records(vault)]
+
+    assert _post_open(client, disguised).status_code == 403
+    assert _post_open(client, archive).status_code == 200
+    assert launch.calls == [(_si_file(vault, archive), None)]
+
+
+def test_only_a_recorded_file_is_opened(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+    _si_file(vault, "si-09.csv").write_bytes(b"a stray nobody recorded")
+    for paper, file in (
+        (A_ID, "si-09.csv"),
+        (A_ID, "si-01"),
+        (A_ID, name.upper()),
+        ("2000_Nobody_Here", name),
+        (B_ID, name),
+    ):
+        response = _post_open(client, file, paper=paper)
+        assert response.status_code == 404, (paper, file)
+    # A path in disguise never reaches the route at all.
+    for file in ("..%2Fpaper.pdf", "%2e%2e", "..%5Cpaper.pdf"):
+        response = _post_open(client, file)
+        assert response.status_code in (404, 405), file
+    assert launch.calls == []
+
+
+def test_an_invalid_paper_id_is_404(client: TestClient, launch: _Launch) -> None:
+    response = _post_open(client, "si-01.pdf", paper="..x")
+    assert response.status_code == 404
+    assert response.json()["detail"].startswith("Invalid paper id: '..x'.")
+    assert launch.calls == []
+
+
+@pytest.mark.parametrize(
+    ("reason", "detail"),
+    [
+        ("no-app", "No app on {host} opened {file} — download it instead"),
+        ("not-started", "{host} could not start xdg-open to open {file} — download it instead"),
+    ],
+)
+def test_an_opener_that_fails_is_409_in_words(
+    client: TestClient,
+    vault: Path,
+    tmp_path: Path,
+    launch: _Launch,
+    reason: Literal["no-app", "not-started"],
+    detail: str,
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+    launch.error = viewer_mod.OpenFailed("no", command="xdg-open", reason=reason)
+
+    response = _post_open(client, name)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == detail.format(host=host_id(), file=name)
+
+
+def test_a_broken_config_stops_only_a_pdf(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    pdf = _add(vault, tmp_path, "ci9b00237_si_001.pdf", _si_pdf(A_TITLE))
+    sheet = _add(vault, tmp_path, "ci9b00237_si_002.xlsx", SHEET)
+    with (vault / CONFIG_FILENAME).open("a", encoding="utf-8") as f:
+        f.write("no_such_setting: 1\n")
+
+    response = _post_open(client, pdf)
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    # One line for a toast: the field at fault and the way out, no path.
+    assert detail.startswith("lit-config.yaml is invalid (no_such_setting: ")
+    assert detail.endswith(") — fix it, or download the file instead")
+    assert "\n" not in detail and str(vault) not in detail
+    assert len(detail) <= 130
+    assert _post_open(client, sheet).status_code == 200
+    assert launch.calls == [(_si_file(vault, sheet), None)]
+
+
+def test_an_unparsable_config_says_so_in_one_line(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    pdf = _add(vault, tmp_path, "ci9b00237_si_001.pdf", _si_pdf(A_TITLE))
+    (vault / CONFIG_FILENAME).write_text("library_name: [unclosed\n", encoding="utf-8")
+
+    response = _post_open(client, pdf)
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "lit-config.yaml cannot be read (lit config show says why) "
+        "— fix it, or download the file instead"
+    )
+    assert launch.calls == []
+
+
+def test_another_website_cannot_open_a_file(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+
+    refused = _post_open(client, name, headers={"Origin": FOREIGN})
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == (
+        "Only the litman page itself can send this request, not another website."
+    )
+    assert launch.calls == []
+
+    allowed = _post_open(client, name, headers={"Origin": GUI_URL})
+    assert allowed.status_code == 200, allowed.text
+    assert len(launch.calls) == 1
+
+
+def test_a_get_never_opens_anything(
+    client: TestClient, vault: Path, tmp_path: Path, launch: _Launch
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+    response = client.get(f"/api/paper/{A_ID}/si/{name}/open")
+    assert response.status_code in (404, 405)
+    assert launch.calls == []
+
+
+def test_open_waits_off_the_event_loop() -> None:
+    """The opener gets up to OPEN_WAIT_S to fail; on the event loop that wait
+    would stall every other request."""
+    assert not inspect.iscoroutinefunction(routes_si.post_si_file_open)
+
+
+def test_open_goes_through_the_real_launch_file(
+    client: TestClient, vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route's own default path: open_files_mode from the environment,
+    launch_file choosing xdg-open and waiting on its exit — only the process
+    itself is faked."""
+    for variable in ("SSH_CONNECTION", "SSH_CLIENT", "WAYLAND_DISPLAY"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(viewer_mod, "_platform", lambda: "linux")
+    monkeypatch.setattr(
+        viewer_mod, "_which", lambda cmd: "/usr/bin/xdg-open" if cmd == "xdg-open" else None
+    )
+    argvs: list[list[str]] = []
+    exit_code = [0]
+
+    class _Process:
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout == viewer_mod.OPEN_WAIT_S
+            return exit_code[0]
+
+    def spawn(argv: list[str]) -> _Process:
+        argvs.append(list(argv))
+        return _Process()
+
+    monkeypatch.setattr(viewer_mod, "_spawn", spawn)
+    name = _add(vault, tmp_path, "ci9b00237_si_001.xlsx", SHEET)
+
+    assert client.get("/api/capabilities").json()["open_files"] == "desktop"
+    assert _post_open(client, name).status_code == 200
+    assert argvs == [["xdg-open", str(_si_file(vault, name))]]
+
+    exit_code[0] = 3
+    failed = _post_open(client, name)
+    assert failed.status_code == 409
+    assert failed.json()["detail"] == (
+        f"No app on {host_id()} opened {name} — download it instead"
+    )

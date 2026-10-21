@@ -8,10 +8,11 @@ the caller (``POST /api/agent/launch``) degrades to copy-the-command mode on
 False, which is the normal outcome when ``lit gui`` serves from a remote box
 and the browser sits on the user's laptop.
 
-Platform dispatch mirrors ``core.viewer`` (fire-and-forget ``Popen`` with the
-stdio triple detached). Each Linux emulator gets its own exec syntax — they
-are not interchangeable (``gnome-terminal`` wants ``--``, ``xfce4-terminal``
-wants a single command string, the rest take ``-e`` + argv).
+Spawns are fire-and-forget ``Popen`` calls with the stdio triple detached —
+unlike ``core.viewer``, which waits a moment to hear its opener fail. Each
+Linux emulator gets its own exec syntax — they are not interchangeable
+(``gnome-terminal`` wants ``--``, ``xfce4-terminal`` wants a single command
+string, the rest take ``-e`` + argv).
 """
 
 from __future__ import annotations

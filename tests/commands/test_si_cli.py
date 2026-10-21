@@ -121,12 +121,13 @@ def test_add_si_moves_files_in_and_prints_only_the_paths(
 
     assert result.exit_code == 0, result.output
     # Numbered in publisher order (_si_001 before _si_002), not argument
-    # order — and listed by number, in stdout and in the metadata alike.
+    # order — and listed by number, in stdout and in the metadata alike, each
+    # path followed by a tab and the name the file was downloaded under.
     first, second = _si_dir(vault) / "si-01.pdf", _si_dir(vault) / "si-02.xlsx"
     assert result.stdout.splitlines() == [
         "SI ready: 2 file(s)",
-        str(first),
-        str(second),
+        f"{first}\tci9b00237_si_001.pdf",
+        f"{second}\tci9b00237_si_002.xlsx",
     ]
     assert "✓ ci9b00237_si_002.xlsx" in result.stderr
     assert first.is_file() and second.is_file()
@@ -385,8 +386,11 @@ def test_rm_si_round_trip_through_the_trash(vault: Path, tmp_path: Path) -> None
 
     back = _run(vault, "add", "--si", A_ID, str(trashed[0]))
     assert back.exit_code == 0, back.output
-    # A new number: 02 stays retired.
-    assert back.stdout.splitlines()[1] == str(_si_dir(vault) / "si-03.xlsx")
+    # A new number: 02 stays retired. The name it was first added under
+    # comes back with it.
+    assert back.stdout.splitlines()[1] == (
+        f"{_si_dir(vault) / 'si-03.xlsx'}\tci9b00237_si_002.xlsx"
+    )
     assert not trashed[0].exists()
     assert "(trash is empty)" in _run(vault, "trash", "list").output
 

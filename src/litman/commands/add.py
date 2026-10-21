@@ -309,11 +309,13 @@ def _add_si_files(
     """``lit add --si PAPER FILE...``: verify every file, then add all or none.
 
     Verdicts and warnings go to stderr; stdout carries only ``SI ready: N
-    file(s)`` and one absolute path per line, the shape an agent parses (the
-    same lines ``lit add --si PAPER`` prints). A rejected file is never added;
-    one that cannot be confirmed, or is over 100 MiB, needs a yes at a
-    terminal or ``--force`` — and any no adds nothing.
+    file(s)`` and per file its absolute path, a tab and its original name,
+    the shape an agent parses (the same lines ``lit add --si PAPER`` prints).
+    A rejected file is never added; one that cannot be confirmed, or is over
+    100 MiB, needs a yes at a terminal or ``--force`` — and any no adds
+    nothing.
     """
+    from litman.commands._si_gui import print_si_ready
     from litman.core.supplementary import (
         LARGE_FILE_BYTES,
         add_supplementary,
@@ -372,9 +374,7 @@ def _add_si_files(
     )
     for message in result.warnings:
         err.print(f"[yellow]Warning:[/] {escape(message)}", soft_wrap=True)
-    click.echo(f"SI ready: {len(result.paths)} file(s)")
-    for path in result.paths:
-        click.echo(str(path))
+    print_si_ready(zip(result.paths, result.records, strict=True))
 
 
 def _apply_add(
@@ -720,7 +720,8 @@ def add_cmd(
     DOI, first pages vs its title). All are added or none: a file that
     looks like another paper's SI, or is the article itself, is refused; one
     that cannot be confirmed, or is over 100 MiB, needs a yes (or --force).
-    Prints `SI ready: N file(s)` and the new paths.
+    Prints `SI ready: N file(s)` and the new paths, each followed by a tab
+    and the file's original name.
 
     Either way the source files are moved into the vault: the originals are
     removed after a successful add.
@@ -731,8 +732,10 @@ def add_cmd(
     exits with one of:
 
     \b
-      0   SI ready: N file(s), then one path per line; the first line ends
-          in (already in the library) when the paper had SI already
+      0   SI ready: N file(s), then one line per file: its path, a tab and
+          its original name (the path alone when none is recorded); the
+          first line ends in (already in the library) when the paper had
+          SI already
       1   an error, such as no such paper or a broken SI record
       10  the SI request was cancelled in the GUI
       11  still waiting: run the same command again to keep waiting

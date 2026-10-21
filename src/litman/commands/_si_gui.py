@@ -19,7 +19,8 @@ stdout carries the agent contract through ``click.echo`` — rich would wrap a
 long path at 80 columns when stdout is not a terminal — and everything else
 goes to stderr. Exit codes:
 
-    0   SI ready: N file(s), then one absolute path per line
+    0   SI ready: N file(s), then one line per file: its absolute path, a
+        tab and its original name (the path alone when none is recorded)
     10  SI request cancelled in the GUI
     11  still waiting in the GUI: run the same command again
     12  no GUI page open for this library: where to download, and the FILE form
@@ -36,7 +37,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -295,28 +296,37 @@ def _warn(err: Console, message: str) -> None:
     err.print(f"[yellow]Warning:[/] {escape(message)}", soft_wrap=True)
 
 
+def print_si_ready(
+    rows: Iterable[tuple[Path, Mapping[str, Any]]], *, already: bool = False
+) -> None:
+    """The exit-0 lines both ``lit add --si`` forms print: ``SI ready: N
+    file(s)``, then per file its absolute path, a tab and the name it was
+    added under — the path alone when the record names none."""
+    rows = list(rows)
+    suffix = " (already in the library)" if already else ""
+    click.echo(f"SI ready: {len(rows)} file(s){suffix}")
+    for path, record in rows:
+        label = supplementary.original_label(record)
+        click.echo(f"{path}\t{label}" if label else str(path))
+
+
 def _print_ready(
     err: Console, vault: Path, paper_id: str, names: list[str], *, already: bool
 ) -> None:
-    """``SI ready: N file(s)`` and one path per line, built from this
-    library's own path (the GUI may spell it differently)."""
-    paths: list[Path] = []
+    """:func:`print_si_ready` for the recorded ``names``, the paths built
+    from this library's own path (the GUI may spell it differently)."""
+    rows: list[tuple[Path, dict[str, Any]]] = []
     for name in names:
         try:
-            path, _record = supplementary.recorded_si_file(vault, paper_id, name)
+            rows.append(supplementary.recorded_si_file(vault, paper_id, name))
         except SupplementaryError as exc:
             _warn(err, str(exc))
-            continue
-        paths.append(path)
-    if names and not paths:
+    if names and not rows:
         raise SupplementaryError(
             f"None of the SI files recorded for {paper_id} can be read. "
             "`lit health-check` says how to fix it."
         )
-    suffix = " (already in the library)" if already else ""
-    click.echo(f"SI ready: {len(paths)} file(s){suffix}")
-    for path in paths:
-        click.echo(str(path))
+    print_si_ready(rows, already=already)
 
 
 def _fallback(paper_id: str, link: str | None) -> list[str]:
@@ -464,5 +474,6 @@ __all__ = [
     "WAIT_BUDGET_S",
     "GuiOutcome",
     "ask_gui",
+    "print_si_ready",
     "request_si",
 ]

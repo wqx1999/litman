@@ -1,7 +1,9 @@
-import { siFileUrl } from '../api'
+import { useRef, type MouseEvent } from 'react'
+import { openSiFile, siFileUrl } from '../api'
 import { formatBytes } from '../ui/bytes'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
+import type { ToastVariant } from '../ui/Toast'
 
 /** One recorded SI file, as far as the cockpit needs it. */
 export interface SiRecord {
@@ -46,14 +48,18 @@ const CHIP = 'rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700'
  *
  * Editable, each chip opens the file in a new tab (the browser's own viewer
  * for a PDF, a download under the original name for anything else) and has a
- * × at its end; "+ Add SI" at the end of the row opens the SI window. Read-only
- * (the trash inspector) the chips are plain: no route serves a trashed
- * paper's SI, so a link there would only lead to a 404. */
+ * × at its end; "+ Add SI" at the end of the row opens the SI window. When the
+ * server's machine has a desktop, a plain click opens the file there with its
+ * default app instead, and falls back to the new tab when that fails.
+ * Read-only (the trash inspector) the chips are plain: no route serves a
+ * trashed paper's SI, so a link there would only lead to a 404. */
 export function SupplementaryChips({
   paperId,
   value,
   readOnly = false,
   busy = false,
+  openFiles = 'none',
+  notify,
   onRemove,
   onAdd,
 }: {
@@ -63,10 +69,44 @@ export function SupplementaryChips({
   readOnly?: boolean
   /** A write is in flight — the × and Add SI stop taking clicks. */
   busy?: boolean
+  /** 'desktop': a plain click opens the file with the server machine's
+   * default app; 'none': the chip is only a link. */
+  openFiles?: 'desktop' | 'none'
+  notify?: (msg: string, variant?: ToastVariant) => void
   onRemove?: (record: SiRecord) => void
   onAdd?: () => void
 }) {
+  // `${paperId}/${file}` keys: opens still waiting for the server, and files
+  // whose open failed — the next plain click on one of those is left to the
+  // browser.
+  const opening = useRef(new Set<string>())
+  const fellBack = useRef(new Set<string>())
   const records = parseSupplementary(value)
+
+  function openOnServer(e: MouseEvent<HTMLAnchorElement>, file: string) {
+    // A click with Ctrl / Cmd / Shift / Alt keeps the browser's meaning (new
+    // tab, window, download); middle and right clicks never come here.
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    const key = `${paperId}/${file}`
+    if (fellBack.current.has(key)) return
+    e.preventDefault()
+    if (opening.current.has(key)) return
+    opening.current.add(key)
+    const href = siFileUrl(paperId, file)
+    openSiFile(paperId, file)
+      .then((r) => notify?.(`Opened ${r.file} on ${r.host}`, 'success'))
+      .catch((err: unknown) => {
+        fellBack.current.add(key)
+        notify?.(err instanceof Error ? err.message : String(err), 'error')
+        // Still within the click's user activation (the server waits only a
+        // moment for the app), so the browser lets this through. Opened with
+        // 'noopener' it would come back null, so the tie is cut by hand.
+        const w = window.open(href, '_blank')
+        if (w) w.opener = null
+      })
+      .finally(() => opening.current.delete(key))
+  }
+
   if (readOnly) {
     if (records.length === 0) return <span className="text-stone-400">—</span>
     return (
@@ -97,6 +137,7 @@ export function SupplementaryChips({
             target="_blank"
             rel="noreferrer"
             title={r.original ?? undefined}
+            onClick={openFiles === 'desktop' ? (e) => openOnServer(e, r.file) : undefined}
             className="rounded-l-md py-0.5 pl-2 transition-colors hover:text-stone-900"
           >
             {chipLabel(r)}

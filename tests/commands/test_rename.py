@@ -649,8 +649,8 @@ def test_rename_moves_the_removed_si_along(vault: Path, tmp_path: Path) -> None:
 
     back = _run(vault, "add", "--si", "2019_Yang_AI", str(moved))
     assert back.exit_code == 0, back.output
-    assert back.stdout.splitlines()[1] == str(
-        _si_dir(vault, "2019_Yang_AI") / "si-03.xlsx"
+    assert back.stdout.splitlines()[1] == (
+        f"{_si_dir(vault, '2019_Yang_AI') / 'si-03.xlsx'}\tci9b00237_si_002.xlsx"
     )
     assert not moved.exists()
     assert list_removed_si(vault) == []
@@ -670,8 +670,8 @@ def test_rename_keeps_removed_si_numbers_retired(
     added = _run(vault, "add", "--si", "2019_Yang_AI", str(fresh))
 
     assert added.exit_code == 0, added.output
-    assert added.stdout.splitlines()[1] == str(
-        _si_dir(vault, "2019_Yang_AI") / "si-03.csv"
+    assert added.stdout.splitlines()[1] == (
+        f"{_si_dir(vault, '2019_Yang_AI') / 'si-03.csv'}\tci9b00237_si_003.csv"
     )
 
 
