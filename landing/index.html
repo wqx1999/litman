@@ -940,16 +940,16 @@
             <div class="ex on" data-ex="0">
               <div class="msg you">Add the paper I just downloaded — it's about peptide binders.</div>
               <div class="tools">
-                <span class="tool"><span class="st"></span><code>lit add ~/Downloads/2310.19325v2.pdf</code></span>
-                <span class="tool"><span class="st"></span><code>lit modify 2024_Chen --add-tag topics=peptide-design --set priority=A</code></span>
+                <span class="tool"><span class="st"></span><code>lit add ~/Downloads/2310.19325.pdf --from-llm-json meta.json</code></span>
+                <span class="tool"><span class="st"></span><code>lit modify 2024_Chen --add-tag topics=peptide-design</code></span>
               </div>
-              <div class="msg bot">Filed under <b>peptide-design</b>, priority A, in <code>papers/2024_Chen_Diffusion-Peptide-Binders/</code>. It cites two papers already in your vault — link them?</div>
+              <div class="msg bot">Filed under the <b>peptide-design</b> topic, in <code>papers/2024_Chen_Diffusion-Peptide-Binders/</code>. It cites two papers already in your vault — link them?</div>
             </div>
 
             <div class="ex" data-ex="1">
               <div class="msg you">Which paper did I read on diffusion models for peptide design?</div>
               <div class="tools">
-                <span class="tool"><span class="st"></span><code>lit list --topic peptide-design --status read --sort recent</code></span>
+                <span class="tool"><span class="st"></span><code>lit list --topic peptide-design --status deep-read</code></span>
               </div>
               <div class="msg bot">That's <b>Chen 2024</b> — you read it three weeks ago. Your <code>notes.md</code> flags the sampler as the weak point. Open it?</div>
             </div>
@@ -957,19 +957,19 @@
             <div class="ex" data-ex="2">
               <div class="msg you">Clone this paper's code and check the training script runs.</div>
               <div class="tools">
-                <span class="tool"><span class="st"></span><code>lit code add 2024_Chen --repo github.com/chen-lab/diff-peptide</code></span>
-                <span class="tool"><span class="st"></span><code>cd codes/2024_Chen &amp;&amp; python train.py --dry-run</code></span>
+                <span class="tool"><span class="st"></span><code>lit code add https://github.com/chen-lab/pepdiff --paper 2024_Chen</code></span>
+                <span class="tool"><span class="st"></span><code>cd codes/pepdiff/repo &amp;&amp; python train.py --dry-run</code></span>
               </div>
-              <div class="msg bot">Cloned into <code>codes/2024_Chen/</code>. <code>train.py</code> needs torch 2.1 and a config they didn't ship — I drafted one and noted it in <code>discussion.md</code>.</div>
+              <div class="msg bot">Cloned into <code>codes/pepdiff/</code>. <code>train.py</code> needs torch 2.1 and a config they didn't ship — I drafted one and noted it in <code>discussion.md</code>.</div>
             </div>
 
             <div class="ex" data-ex="3">
               <div class="msg you">What else in my library connects to this one?</div>
               <div class="tools">
                 <span class="tool"><span class="st"></span><code>lit list --method diffusion --topic peptide-design</code></span>
-                <span class="tool"><span class="st"></span><code>lit relations 2024_Chen --add related=Watson2023,Ingraham2023</code></span>
+                <span class="tool"><span class="st"></span><code>lit modify 2024_Chen --add-tag related=2023_Watson_De-novo-design</code></span>
               </div>
-              <div class="msg bot">Three neighbours already in your vault: <b>Watson 2023 · Ingraham 2023 · Badrinarayanan 2024</b>. I linked the closest two as related.</div>
+              <div class="msg bot">Three neighbours already in your vault: <b>Watson 2023 · Ingraham 2023 · Badrinarayanan 2024</b>. I linked the closest one as related.</div>
             </div>
 
             <div class="thinking" id="thinking"><i></i><i></i><i></i></div>
