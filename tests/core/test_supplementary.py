@@ -60,6 +60,12 @@ _not_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="root ignores the permission bits these tests take away",
 )
+_undecodable_names = pytest.mark.skipif(
+    sys.platform != "linux" or sys.getfilesystemencoding() != "utf-8",
+    reason="needs Linux (APFS refuses a file name that is not UTF-8; a Windows "
+    "name is UTF-16) and a UTF-8 file-name encoding, under which a bad byte "
+    "becomes a lone surrogate",
+)
 
 A_ID = "2019_Yang_Concepts"
 A_DOI = "10.1021/acs.jcim.9b00237"
@@ -1617,3 +1623,51 @@ def test_an_undecodable_byte_in_an_original_becomes_a_space() -> None:
     surrogate in place of each bad byte, which no UTF-8 stream can print."""
     original = b"Table\xffS2.xlsx".decode("utf-8", "surrogateescape")
     assert si_mod.original_label({"original": original}) == "Table S2.xlsx"
+
+
+# ---------------------------------------------------------------------------
+# SiItem.original — a name metadata.yaml can hold
+# ---------------------------------------------------------------------------
+
+
+def test_si_item_records_a_lone_surrogate_as_a_replacement_character() -> None:
+    """A POSIX file name that is not UTF-8 reaches Python with a lone
+    surrogate in place of each bad byte, and metadata.yaml's reader rejects
+    one: the name to record carries U+FFFD instead. The path is left alone —
+    it still has to name the real file."""
+    path = Path("Downloads") / "caf\udce9.pdf"
+    item = SiItem(path, path.name, approved=True)
+    assert item.original == "caf\ufffd.pdf"
+    assert item.path == path
+    assert item.approved
+    assert SiItem(path, "Table\ud800S2.xlsx").original == "Table\ufffdS2.xlsx"
+    for name in (
+        "ci9b00237_si_001.pdf",
+        "\u8865\u5145\u6750\u6599 S1.pdf",
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645.pdf",
+        "\U0001f468\u200d\U0001f52c notes.csv",
+    ):
+        assert SiItem(path, name).original == name
+
+
+@_undecodable_names
+def test_fix_records_an_undecodable_stray_under_a_name_that_reads_back(
+    vault: Path,
+) -> None:
+    """``health-check --fix`` names a stray straight from the folder listing.
+    Recorded with its lone surrogate, the paper's metadata.yaml no longer
+    parsed: find_paper, lit show and the GUI all failed on it."""
+    si = vault / "papers" / A_ID / "supplementary"
+    si.mkdir()
+    raw = b"ci9b00237_si_003_caf\xe9.xlsx"
+    stray = _blob(si, os.fsdecode(raw))
+    assert raw in os.listdir(os.fsencode(si))  # the name on disk is not UTF-8
+    lock_truth_file(stray)  # what the health-check re-lock sweep does first
+
+    counts = si_mod.fix_supplementary(vault, [A_ID], policy=si_mod.NO_PROMPT_POLICY)
+
+    assert counts["supplementary_unrecorded"] == 1
+    (record,) = _meta(vault)["supplementary"]
+    assert record["original"] == "ci9b00237_si_003_caf\ufffd.xlsx"
+    assert record["file"] == "si-01.xlsx"
+    assert os.listdir(si) == ["si-01.xlsx"]

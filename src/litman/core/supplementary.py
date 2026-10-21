@@ -207,7 +207,10 @@ class SiItem:
 
     ``original`` is the name the publisher gave it — the file's own name, or
     for a file coming back from ``.trash/removed-si/`` the name recorded when
-    it was first added (its trash name carries no DOI number).
+    it was first added (its trash name carries no DOI number). A lone
+    surrogate in it (an undecodable byte of a POSIX file name) becomes
+    U+FFFD, since metadata.yaml's reader rejects one: the name is what the
+    user and the record see, while ``path`` still names the real file.
 
     ``approved`` is the user's "add anyway" for this one file: a file that
     cannot be confirmed goes in when it is set, as with ``allow_unverified``
@@ -218,6 +221,12 @@ class SiItem:
     path: Path
     original: str
     approved: bool = False
+
+    def __post_init__(self) -> None:
+        name = "".join(
+            "\ufffd" if unicodedata.category(c) == "Cs" else c for c in self.original
+        )
+        object.__setattr__(self, "original", name)
 
 
 @dataclass(frozen=True)

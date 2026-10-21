@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from litman import __version__
 from litman.exceptions import LitmanError
@@ -769,13 +770,18 @@ def _force_utf8_output() -> None:
     the terminal's. Reconfiguring both streams to UTF-8 here fixes both paths;
     the already-constructed ``Console`` objects read ``sys.stdout.encoding``
     lazily at print time, so doing this once before ``cli()`` is enough.
-    POSIX hosts are UTF-8 by default and unaffected.
+
+    The error handler is named because changing the encoding alone resets
+    it to strict. ``backslashreplace`` (what Python gives stderr anyway)
+    prints a character the stream cannot encode — a lone surrogate, which is
+    what a POSIX file name's undecodable bytes become — as ``\\udce9``
+    instead of raising, and keeps stdout valid UTF-8 for whatever reads it.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             try:
-                reconfigure(encoding="utf-8")
+                reconfigure(encoding="utf-8", errors="backslashreplace")
             except (ValueError, OSError):
                 pass
 
@@ -852,7 +858,7 @@ def main() -> None:
     try:
         cli()
     except LitmanError as e:
-        console.print(f"[bold red]error:[/] {e}")
+        console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
         sys.exit(1)
 
 

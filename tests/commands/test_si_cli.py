@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +21,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner, Result
 
+import litman
 from litman.cli import cli
 from litman.core import confirm as confirm_mod
 from litman.core import supplementary as si_mod
@@ -37,6 +39,12 @@ from litman.exceptions import (
 
 _posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+_undecodable_names = pytest.mark.skipif(
+    sys.platform != "linux" or sys.getfilesystemencoding() != "utf-8",
+    reason="needs Linux (APFS refuses a file name that is not UTF-8; a Windows "
+    "name is UTF-16) and a UTF-8 file-name encoding, under which a bad byte "
+    "becomes a lone surrogate",
 )
 
 A_ID = "2019_Yang_Concepts"
@@ -349,6 +357,114 @@ def test_add_help_describes_both_modes() -> None:
     assert "lit add PDF_PATH --doi DOI | --from-llm-json PATH" in result.output
     assert "lit add --si PAPER FILE..." in result.output
     assert "--force" in result.output
+
+
+@_undecodable_names
+def test_add_si_records_an_undecodable_name_as_text_that_reads_back(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A file name that is not UTF-8 reaches Python with a lone surrogate per
+    bad byte. Recorded as is, it left a metadata.yaml that no longer parsed
+    (lit show failed, the GUI's paper page answered 500). The record, the
+    verdict and the SI ready line carry U+FFFD instead; the move still finds
+    the file by its real name."""
+    raw = b"ci9b00237_si_002_caf\xe9.xlsx"
+    sheet = _blob(tmp_path, os.fsdecode(raw))
+    assert raw in os.listdir(os.fsencode(tmp_path))  # the name on disk is not UTF-8
+    shown = "ci9b00237_si_002_caf\ufffd.xlsx"
+
+    result = _run(vault, "add", "--si", A_ID, str(sheet))
+
+    assert result.exit_code == 0, result.output
+    assert [r["original"] for r in _records(vault)] == [shown]
+    assert result.stdout.splitlines() == [
+        "SI ready: 1 file(s)",
+        f"{_si_dir(vault) / 'si-01.xlsx'}\t{shown}",
+    ]
+    assert f"✓ {shown} (" in result.stderr
+    assert not sheet.exists()
+
+
+def _run_lit(vault: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """``lit ARGS --library VAULT`` as its own process, through the real
+    ``main()`` and the streams it sets up (CliRunner swaps both out): piped,
+    80 columns, no forced colour."""
+    env = os.environ.copy()
+    env.pop("FORCE_COLOR", None)
+    env["COLUMNS"] = "80"
+    src_dir = Path(litman.__file__).resolve().parents[1]
+    env["PYTHONPATH"] = str(src_dir) + os.pathsep + env.get("PYTHONPATH", "")
+    # Decoded strictly: what lit writes must be valid UTF-8.
+    return subprocess.run(
+        [sys.executable, "-m", "litman", *args, "--library", str(vault)],
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+
+
+@_undecodable_names
+def test_add_si_of_an_undecodable_name_prints_through_the_real_streams(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Through the real main(), which re-encodes both streams as UTF-8: the
+    verdict line used to raise on the lone surrogate there — a traceback, and
+    nothing added. It prints the name the record keeps."""
+    sheet = _blob(tmp_path, os.fsdecode(b"ci9b00237_si_002_caf\xe9.xlsx"))
+    shown = "ci9b00237_si_002_caf\ufffd.xlsx"
+
+    proc = _run_lit(vault, "add", "--si", A_ID, str(sheet))
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Traceback" not in proc.stdout + proc.stderr
+    assert f"✓ {shown} (" in proc.stderr
+    assert proc.stdout.splitlines() == [
+        "SI ready: 1 file(s)",
+        f"{_si_dir(vault) / 'si-01.xlsx'}\t{shown}",
+    ]
+
+
+@_undecodable_names
+def test_an_error_through_the_real_main_prints_as_one_line(
+    vault: Path, tmp_path: Path
+) -> None:
+    """main()'s error line, piped: not folded at column 80, a lowercase [tag]
+    in the path kept as text rather than eaten as markup, and the path's
+    undecodable byte printed as an escape rather than raising in the handler."""
+    missing = (
+        tmp_path / "Downloads" / "supporting-information-2019_Yang_Concepts"
+        / os.fsdecode(b"ci9b00237_si_001[final]_caf\xe9.pdf")
+    )
+    shown = str(missing).encode("utf-8", "backslashreplace").decode("utf-8")
+    assert shown.endswith("[final]_caf\\udce9.pdf")
+    assert len(shown) > 80
+
+    proc = _run_lit(vault, "add", "--si", A_ID, str(missing))
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout == f"error: No such file: {shown}\n"
+    assert "Traceback" not in proc.stderr
+
+
+@_undecodable_names
+def test_health_check_reports_an_undecodable_stray_through_the_real_streams(
+    vault: Path,
+) -> None:
+    """The report names a stray in supplementary/ by its name on disk. With
+    stdout strict UTF-8, the line naming one with an undecodable byte raised
+    in the middle of the report; it prints the byte as an escape instead."""
+    si = _si_dir(vault)
+    si.mkdir()
+    raw = b"ci9b00237_si_003_caf\xe9.xlsx"
+    _blob(si, os.fsdecode(raw))
+    assert raw in os.listdir(os.fsencode(si))  # the name on disk is not UTF-8
+
+    proc = _run_lit(vault, "health-check")
+
+    # No exit-code check: that is the business of whatever else it finds.
+    assert "Traceback" not in proc.stdout + proc.stderr
+    assert "ci9b00237_si_003_caf\\udce9.xlsx has no record" in proc.stdout
 
 
 # ---------------------------------------------------------------------------
