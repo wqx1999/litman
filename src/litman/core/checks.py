@@ -1413,7 +1413,7 @@ def check_dangling_wikilinks(
         rel = md_path.relative_to(vault)
         try:
             text = md_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             # No silent-skip (M30 / invariant #14): a notes file we cannot read
             # means its wikilinks go unchecked, which is itself a finding.
             out.append(

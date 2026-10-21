@@ -2381,6 +2381,30 @@ def test_dangling_wikilinks_unreadable_notes_is_a_finding(
     assert unreadable[0].severity == "warning"
 
 
+def test_a_notes_file_that_is_not_utf8_is_reported_not_a_crash(vault: Path) -> None:
+    """A Latin-1 byte in notes.md is a decode error, not an OSError: it must
+    land in the same "could not read" warning instead of a traceback."""
+    pid = "2024_Foo_Bar"
+    _write_paper(vault, pid)
+    (vault / "papers" / pid / "notes.md").write_bytes(b"caf\xe9 latin-1 line\n")
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+    assert result.exit_code == 1, result.output
+    notes_rel = str(Path("papers") / pid / "notes.md")
+    lines = [
+        line
+        for line in result.output.splitlines()
+        if "could not read notes file" in line
+    ]
+    assert len(lines) == 1, result.output
+    assert "warning" in lines[0]
+    assert notes_rel in lines[0]
+    assert "UnicodeDecodeError" in lines[0]
+
+
 # ===========================================================================
 # Orchestration + autofix
 # ===========================================================================
