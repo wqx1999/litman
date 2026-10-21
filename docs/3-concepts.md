@@ -38,18 +38,21 @@ This section is the field-by-field reference for each one, heaviest first.
 `<vault>/papers/<id>/metadata.yaml` holds one paper's structured data. `lit add`
 writes the **complete field skeleton**, filling every identity field CrossRef
 or the LLM resolved and leaving empty lists and `null`s for the rest, so a
-freshly added paper already contains every standard field. The schema is still
-**schema-less** at validation time: a field left empty, or removed entirely, is
+freshly added paper already contains every standard field — all but
+`supplementary`, which appears with the paper's first supplementary file. The
+schema is still **schema-less** at validation time: a field left empty, or removed entirely, is
 valid and read as "this dimension does not apply to this paper". What
 `lit health-check` insists on is narrow: `id`, `created-at`, and `updated-at`
 must be present and non-empty, and `status` must carry one of its enum values
 (`inbox` is the value for "not evaluated yet", so an empty `status` is an
-error), and a list field that is present must be a list (`topics: [peptide]`,
-not `topics: peptide`). Everything else may be empty or absent.
+error), a list field that is present must be a list (`topics: [peptide]`,
+not `topics: peptide`), and `supplementary`, when present, must be a list whose
+entries each name a different `si-NN` file. Everything else may be empty or
+absent.
 
 The whole file is **read-only locked** and every write is **atomic**. Edit it
-through `lit add`, `lit modify`, `lit link`, and the reading-lifecycle
-commands, never by hand.
+through `lit add`, `lit modify`, `lit link`, `lit add --si` / `lit rm --si`, and
+the reading-lifecycle commands, never by hand.
 
 #### Identity layer
 
@@ -181,6 +184,45 @@ carries them over, `lit project rm` removes them.
 
 A paper-level `priority` field existed until 1.3.6 and is retired; see the
 [changelog](changelog.md).
+
+#### Supplementary layer
+
+**Written by: machine.** A paper's supplementary information (SI) files live in
+`<vault>/papers/<id>/supplementary/`, and `supplementary` records them, one
+entry per file in number order. `lit add --si` (or the Web UI's SI window) adds
+entries, `lit rm --si` (or the × on an SI chip) removes them, and
+`lit health-check --fix` records a stray file or drops the record of one that is
+gone. `lit modify --set supplementary=…` is refused. `lit add` does not write
+the field: it appears with the paper's first SI file and goes again with the
+last. It is not in `INDEX.json`.
+
+| Key | Type | Notes |
+|---|---|---|
+| `file` | string | The file's name in `supplementary/`: `si-01.pdf`, `si-02.xlsx`, … |
+| `original` | string | The name the file had when it was added. |
+| `sha256` | string | Checksum of the content; `lit health-check` compares the file against it. |
+| `bytes` | integer | Size in bytes. |
+| `added` | string | When the file was added, ISO 8601 with a timezone offset. |
+| `check` | string enum | How the file was confirmed as this paper's SI: `filename` (its name carries the paper's DOI), `title` (its first pages carry the paper's title), or `user` (you added it anyway — **add anyway** in the Web UI, a yes at `lit add --si`'s prompt or to `lit health-check --fix`'s `Record it anyway?`, or `--force`). |
+
+```yaml
+supplementary:
+  - file: si-01.pdf
+    original: d4sc07642g1.pdf
+    sha256: fc0dcd10c0e9fa894da3372928e7908430559935ed763485498ce1782f00aa28
+    bytes: 1901635
+    added: '2026-10-21T19:46:19+02:00'
+    check: filename
+```
+
+The number in `si-NN` is litman's, not the publisher's: each new file takes the
+lowest free number (`si-01` … `si-99`, then `si-100`), so after you delete
+`si-01` the next file added becomes `si-01` again. The extension is the
+original's, lowercased (`.tar.gz` and the like kept whole). The files are
+read-only on disk, like `paper.pdf`. Deleting one is permanent — there is no
+trash for SI files; add the file again to get it back. Deleting the whole paper
+takes `supplementary/` into the trash with it, and `lit trash restore` brings it
+back.
 
 #### Full example
 
@@ -435,7 +477,7 @@ view with `lit config show`.
 | Field | Type | Default | Consumed by |
 |---|---|---|---|
 | `library_name` | string (required) | — | Human-readable label, conventionally the vault subdirectory name. |
-| `default_pdf_viewer` | string or null | `null` | `lit open`. `null` uses the platform default (`xdg-open`, `open`, `os.startfile`, `wslview`). |
+| `default_pdf_viewer` | string or null | `null` | `lit open`, and a PDF among a paper's SI files (`lit open --si`, a click on its chip in the Web UI). `null` uses the platform default (`xdg-open`, `open`, `os.startfile`, `wslview`). SI files of other types always open in the platform default app. |
 | `view_definitions` | list[string] | `["by-project", "by-topic", "by-method", "by-status"]` | Nothing — legacy key, parsed but never read; no longer written into new libraries. The hub set `lit refresh-views` builds is fixed in code. |
 | `unique_keys` | list[string] | `["doi", "arxiv-id"]` | Nothing — legacy key, parsed but never read; no longer written into new libraries. `lit add`'s DOI duplicate precheck is fixed in code. |
 | `default_clone_depth` | integer ≥ 0 | `1` | `lit code add`, `lit code restore-all`. `0` means full history. |
@@ -478,8 +520,8 @@ Each entry in `papers` is a **13-field projection** of `metadata.yaml`, not the
 whole record: `id`, `title`, `authors`, `year`, `type`, `status`,
 `topics`, `projects`, `methods`, `data`, `doi`, `read-date`, `updated-at`. The
 per-project fields (`relevance-<project>`, `priority-<project>`) are not in it —
-their names vary per project, so they cannot be columns. A
-consumer narrows the candidate set from this file, then opens a candidate's
+their names vary per project, so they cannot be columns — and neither is
+`supplementary`. A consumer narrows the candidate set from this file, then opens a candidate's
 `metadata.yaml` for any field not in the projection. `lit list --format json`
 emits the same per-paper projection, so its schema never drifts from the index.
 
@@ -497,7 +539,12 @@ papers of each library, keyed by vault name, and the version whose "What's new"
 card you have already seen. Pins live here rather than in `metadata.yaml`
 deliberately: writing a paper's metadata refreshes `updated-at`, which is the
 recency sort key, so a pin stored there would reorder the very list it exists to
-hold still.
+hold still. While `lit gui` runs, it also keeps a record of itself in a `gui/`
+folder there (`<host>-<pid>.json`: the machine, the port, the library it
+serves), so `lit add --si` on the same machine can find it; the record goes when
+the server stops. One left behind by a server that was killed is cleared the next
+time `lit add --si` on that machine looks for a server, and `lit uninstall`
+removes any that remain.
 
 Location, highest precedence first:
 
@@ -554,7 +601,7 @@ walking up from the current directory for a vault marker.
 **Paper folder.** Each paper lives in `<vault>/papers/<id>/`, containing
 `paper.pdf`, `metadata.yaml`, `notes.md`, and `discussion.md`. `lit add` creates
 all four; the two markdown files start empty apart from a comment stating how
-each is written.
+each is written. Once SI files are added, a `supplementary/` folder holds them.
 
 **Paper id.** The on-disk handle for a paper: both the folder name and the
 value other places use to refer to it. Default format `<year>_<Family>_<Keyword>`
@@ -580,6 +627,13 @@ atomically.
 cloned into `<vault>/codes/<name>/` and bound to one or more papers. The repo
 stays a single sync target inside the vault, and the binding is mirrored on
 both ends (the paper's `code-clones` and the repo's `papers`).
+
+**Supplementary information (SI).** The files a publisher puts beside an
+article — extra tables, methods, data — kept with the paper in
+`<vault>/papers/<id>/supplementary/` as `si-01.pdf`, `si-02.xlsx`, … and
+recorded in its `supplementary` field. litman never downloads them: you download
+them from the article's page and add them with `lit add --si` or the Web UI's SI
+window.
 
 **Wikilink.** A `[[<paper-id>]]` reference in a `notes.md`, with a
 `[[<vault-name>:<paper-id>]]` form for cross-vault references. `lit health-check`

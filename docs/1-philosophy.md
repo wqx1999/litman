@@ -61,9 +61,12 @@ and author order, and pinning the two or three papers you are currently working
 between to the top of the list. A paper can enter the library here as well:
 dragging its PDF onto the window imports it, one paper at a time, at the moment
 you decide it is worth keeping — which is the same deliberate act described
-above, with a shorter path to it. What the UI exposes is a subset of the CLI, and
-a growing one. Day to day, this is where you work, and you
-rarely need to think about commands at all.
+above, with a shorter path to it. Its supplementary files come in the same way:
+when your agent needs a paper's supplementary information (SI), the window asks
+you for it, and the files you download from the article's page and drop in are
+filed with the paper. What the UI exposes is a subset of the CLI, and a growing
+one. Day to day, this is where you work, and you rarely need to think about
+commands at all.
 
 **The CLI is the foundation everything else rests on.** Every operation on the
 library is a dedicated `lit` subcommand (see [4-commands.md](4-commands.md)), and
@@ -92,9 +95,9 @@ reaches disk rather than quietly corrupting the library.
 
 The library (the **vault**) is a plain directory of local source files. Every
 piece of knowledge about a paper lives inside it: the original PDF, the
-structured `metadata.yaml`, your `notes.md` and longer `discussion.md`, the
-links to other papers, and the code repositories cloned for it. Nothing about a
-paper is kept outside the vault.
+structured `metadata.yaml`, your `notes.md` and longer `discussion.md`, its
+supplementary files, the links to other papers, and the code repositories cloned
+for it. Nothing about a paper is kept outside the vault.
 
 Projects do not own papers. Linking a project to a paper creates a projection on
 the project side (a folder link back into the vault plus a generated reference list).
@@ -125,10 +128,11 @@ drift by hand, it prevents what it can and surfaces the rest.
    cascades the change across every referencing paper in one atomic operation.
    This is the first defence against the tag drift of problem 1.
 3. **The source-of-truth files are read-only.** `metadata.yaml`, `TAXONOMY.md`,
-   and the PDF are held read-only on disk, so a stray editor save cannot corrupt
-   them. The `lit` commands unlock, write, and re-lock. It is a speed bump
-   rather than a wall (you can still override it on purpose), enough to keep
-   accidental hand-edits from being what rots the library.
+   the PDF, and a paper's supplementary files are held read-only on disk, so a
+   stray editor save cannot corrupt them. The `lit` commands unlock, write, and
+   re-lock. It is a speed bump rather than a wall (you can still override it on
+   purpose), enough to keep accidental hand-edits from being what rots the
+   library.
 
 **Detection.** Whatever slips past prevention is surfaced, not left to fester.
 

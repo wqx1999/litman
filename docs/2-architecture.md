@@ -11,8 +11,9 @@ what they act on.
 
 The library is a single directory called the **vault**. It is plain local files
 with no database, so any tool can read it. Everything litman knows about a paper
-lives inside the vault: the PDF, the structured metadata, your notes and
-discussion, the links between papers, and the code repositories cloned for it.
+lives inside the vault: the PDF and its supplementary (SI) files, the structured
+metadata, your notes and discussion, the links between papers, and the code
+repositories cloned for it.
 
 ```
 <vault>/
@@ -25,7 +26,8 @@ discussion, the links between papers, and the code repositories cloned for it.
 │       ├── paper.pdf
 │       ├── metadata.yaml
 │       ├── notes.md
-│       └── discussion.md   # your discussion log, appended to over time
+│       ├── discussion.md   # your discussion log, appended to over time
+│       └── supplementary/  # SI files (si-01.pdf, si-02.xlsx, …); created with the first one
 │
 ├── codes/
 │   └── <repo-name>/
@@ -42,25 +44,25 @@ discussion, the links between papers, and the code repositories cloned for it.
 ├── .trash/                 # recoverable-delete bin (created on first delete)
 │   └── replaced-folders/   # project-hub folders kept by lit health-check --fix; cleared by lit trash empty
 ├── .litman-staging/        # atomic-op staging area; transient
-└── .litman-upload/         # PDFs dropped into the Web UI, awaiting confirmation; transient
+└── .litman-upload/         # files dropped into the Web UI (a paper's PDF, SI files), awaiting confirmation; transient
 ```
 
 The files split into two kinds:
 
 1. **Authored truth.** The source of truth: each paper's `metadata.yaml`,
-   `notes.md`, `discussion.md`, and `paper.pdf`, plus `TAXONOMY.md` and
-   `lit-config.yaml`.
+   `notes.md`, `discussion.md`, `paper.pdf`, and the files in its
+   `supplementary/`, plus `TAXONOMY.md` and `lit-config.yaml`.
 2. **Derived.** `INDEX.json` and everything under `views/` are generated from
    the authored files and can be rebuilt at any time. They are caches and
    projections, never edited by hand.
 
-You are not meant to hand-edit the vault. Three of the truth files
-(`metadata.yaml`, `TAXONOMY.md`, and `paper.pdf`) are held read-only on disk and
-change only through litman itself — a `lit` command, or the Web UI writing your
-PDF annotations — each of which unlocks the file, writes, and re-locks, so a
-stray editor save cannot corrupt them. The derived files regenerate
-themselves. That leaves `notes.md`, `discussion.md`, and `lit-config.yaml` as the
-files you edit directly.
+You are not meant to hand-edit the vault. Four kinds of truth file
+(`metadata.yaml`, `TAXONOMY.md`, `paper.pdf`, and the files in a paper's
+`supplementary/`) are held read-only on disk and change only through litman
+itself — a `lit` command, or the Web UI writing your PDF annotations — each of
+which unlocks the file, writes, and re-locks, so a stray editor save cannot
+corrupt them. The derived files regenerate themselves. That leaves `notes.md`,
+`discussion.md`, and `lit-config.yaml` as the files you edit directly.
 
 Two more structural facts. Code repositories cloned for a paper live inside the
 vault under `codes/` and are bound to the paper through its metadata, so the
@@ -113,13 +115,23 @@ the same command code paths a `lit` command would run, so the browser is never a
 second way to write to the vault. Importing a paper by dragging its PDF onto the
 window is the same arrangement rather than an exception: the drop lands in
 `.litman-upload/`, and confirming it calls the very function `lit add` calls, so
-a dragged-in paper and a typed one are validated and written identically. The only vault files it writes directly are a
-small whitelist — PDF annotations embedded in the paper, `notes.md`, and
+a dragged-in paper and a typed one are validated and written identically. SI
+files dropped into the SI window take the same route: they wait in
+`.litman-upload/` until **Done**, which calls the function `lit add --si` calls.
+The only vault files it writes directly are a small whitelist — PDF annotations embedded in the paper, `notes.md`, and
 `discussion.md` — each through the same atomic staged write. What the UI exposes
 is a subset of the CLI, and a growing one: the everyday operations have UI
 controls, while the rest stay on the `lit` command line (or the agent). The CLI
 remains the complete surface — unplug the Web UI and every operation still works
 from `lit`.
+
+One command reaches the other way. `lit add --si <paper>` with no files asks the
+Web UI for a paper's SI: every running `lit gui` records itself in a `gui/`
+folder next to the vault registry, the command finds the one serving the same
+library on the same machine, asks its open page to show the SI window, and waits
+up to 90 seconds for you to drop the files in and press **Done**. With no such
+page open, it prints the article's link and the `lit add --si <paper> <file>...`
+form instead.
 
 ## Agent orchestration (Layer 4)
 
@@ -177,8 +189,8 @@ agent gathering context) goes the other way and is ordered for cost:
    narrows the candidates.
 2. Open `papers/<id>/metadata.yaml` only for the candidates that survive the
    first pass.
-3. Fall through to `notes.md`, `discussion.md`, or the PDF only when their full
-   text is actually needed.
+3. Fall through to `notes.md`, `discussion.md`, the PDF, or an SI file only
+   when their full text is actually needed.
 
 This ordering is what keeps a large library fast to query. The common case never
 walks hundreds of metadata files, and it is the same path an agent follows to

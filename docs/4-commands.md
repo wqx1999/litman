@@ -222,13 +222,15 @@ Import a paper PDF into the vault. The metadata source is either `--doi`
 required, and the CLI refuses both at once. Derives a canonical id
 (`<year>_<Family>_<Keyword>`), refuses on duplicate DOI, and creates
 `papers/<id>/` with `paper.pdf`, `metadata.yaml`, an empty `notes.md`, and an
-empty `discussion.md`.
+empty `discussion.md`. With `--si`, it adds supplementary (SI) files to a paper
+already in the vault instead — see *Adding SI* below.
 
 The source PDF is **moved**, not copied: once the import succeeds, the file you
-passed in is gone from where it was. Hand `lit add` a copy if you want to keep
-the original in place. (Dragging a PDF into the Web UI is the one import that
-copies — the browser hands over the bytes and never the path, so there is nothing
-there to move.)
+passed in is gone from where it was. `lit add --si` moves its files the same
+way. Hand `lit add` a copy if you want to keep the original in place. (Files
+dragged into the Web UI — a paper's PDF, or SI files dropped into its SI window
+— are copied instead: the browser hands over the bytes and never the path, so
+there is nothing there to move.)
 
 Two identity fields are guarded at import, because both reach the paper id and an
 id outlives the mistake that made it. A first author or title given as a filler —
@@ -246,6 +248,8 @@ lit add <pdf> --doi <doi>
 lit add <pdf> --from-llm-json <path>
 lit add <pdf> --doi <doi> --id <id>
 lit add <pdf> --doi <doi> --auto-suffix
+lit add --si <paper> <file>... [--force]
+lit add --si <paper> [--force]
 ```
 
 | Flag | What it does |
@@ -254,9 +258,49 @@ lit add <pdf> --doi <doi> --auto-suffix
 | `--from-llm-json <path>` | Read metadata from a JSON file, or `-` for stdin. Used by the `lit-library` skill. Mutually exclusive with `--doi`. |
 | `--id <id>` | Override the auto-derived id, and the way past a title litman cannot turn into one. |
 | `--auto-suffix` | On id collision, auto-append `_b` / `_c` without prompting. Required for non-interactive (non-TTY) batch use. |
+| `--si <paper>` | Add SI files to `<paper>` (a full id or a unique id substring) instead of importing a paper. Not with `--doi`, `--from-llm-json`, `--id` or `--auto-suffix`. |
+| `--force` | Only with `--si`. With files: add a file that cannot be confirmed as the paper's SI, or is over 100 MiB, without asking — never a refused one. Without files: ask the Web UI even when the paper has SI already or its text never mentions any. |
 
 `lit add` writes a complete metadata skeleton (all fields, defaults filled); see
 [3-concepts.md](3-concepts.md) §1.1 for the schema.
+
+**Adding SI.** `lit add --si <paper> <file>...` adds the files you name to the
+paper's `supplementary/` folder as `si-01.pdf`, `si-02.xlsx`, … and records them
+in its `supplementary` field (see [3-concepts.md](3-concepts.md) §1.1). Each file
+is checked against the paper first, one line per file on stderr: `✓` when its
+name carries the paper's DOI or its first pages carry the paper's title, `?` when
+litman can't confirm it belongs to this paper, and `✕` when it is refused —
+already in the library, the article itself, or what looks like another paper's
+SI.
+
+```
+✓ d4sc07642g1.pdf (1.8 MiB) — name matches the paper's DOI
+```
+
+The add is all or nothing: one refused file and nothing is added, even with
+`--force`. A `?` file, or one over 100 MiB, needs a yes — asked file by file at a
+terminal (default N); off a terminal, pass `--force`. On success, stdout carries
+`SI ready: N file(s)`, then one line per file: its absolute path, a tab, and its
+original name.
+
+**Asking the Web UI for SI.** `lit add --si <paper>` with no files asks the Web
+UI instead: its open page shows the SI window, you download the files from the
+article's page and drop them in (see `lit gui` below), and the command waits up
+to 90 seconds for **Done**, printing
+`Waiting for the SI to be added in the litman GUI…` on stderr meanwhile. Run
+it on the same machine as the `lit gui` that serves this library. When the
+paper has SI already, it prints those files without asking; when the paper's
+text never mentions supplementary material, it exits 13 — `--force` asks the
+Web UI in both cases. The first line on stdout says how it ended:
+
+| Exit | First line on stdout | What it means |
+|---|---|---|
+| 0 | `SI ready: N file(s)` | The files are in. One line per file follows: its absolute path, a tab, its original name. A first line ending in `(already in the library)` means the paper had SI already and the Web UI was not asked. |
+| 10 | `SI request cancelled in the GUI` | **Cancel** (or Esc) was pressed in the SI window. |
+| 11 | `Still waiting in the GUI — run the same command again to keep waiting` | 90 seconds passed, or the wait was interrupted. The window stays open, and the same command run again picks up the same request. |
+| 12 | `No litman GUI page is open for this library` | No `lit gui` on this machine has a page open on this library (or it stopped answering, or shows another library). A line saying why follows when there is one, then the article's link and the `lit add --si <paper> <file>...` form. |
+| 13 | `The paper's text never mentions supplementary material` | Nothing was asked; `--force` asks anyway. |
+| 1 | `error: …` | No such paper, a broken SI record, and the like. |
 
 ### `lit list`
 
@@ -303,10 +347,11 @@ capped.
 
 ### `lit show`
 
-Print one paper's full metadata plus its PDF / notes paths. Accepts a full id, a
-unique case-insensitive id substring, or `--paper-doi`. With no argument, shows
-the paper you engaged with most recently — the one `lit list --sort recent` puts
-at the top — and names it on stderr, so `--format json` still emits only JSON.
+Print one paper's full metadata plus the paths of its PDF, notes, SI files, and
+code clones. Accepts a full id, a unique case-insensitive id substring, or
+`--paper-doi`. With no argument, shows the paper you engaged with most recently
+— the one `lit list --sort recent` puts at the top — and names it on stderr, so
+`--format json` still emits only JSON.
 
 ```
 lit show
@@ -320,12 +365,19 @@ lit show --paper-doi 10.1038/...
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. Mutually exclusive with the positional id. |
 | `--format [table\|json]` | `table` (default) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection). |
 
+Each SI file gets an `SI:` line with its path, original name and size, marked
+`(missing!)` when the file is gone:
+
+```
+SI:    /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/supplementary/si-01.pdf  (d4sc07642g1.pdf, 1.8 MiB)
+```
+
 ### `lit search`
 
 Case-insensitive substring search over your `notes.md` / `discussion.md` only —
-not the PDF full text, not trashed papers, not the `views/` links, and not the
-`<!-- -->` comments litman seeds into those two files. Each hit is one matched
-line. Defaults to JSON output (`{id, file, line, snippet}`).
+not the PDF full text or SI files, not trashed papers, not the `views/` links,
+and not the `<!-- -->` comments litman seeds into those two files. Each hit is
+one matched line. Defaults to JSON output (`{id, file, line, snippet}`).
 
 ```
 lit search <query>
@@ -365,20 +417,36 @@ lit related <id> --min-shared 2 --limit 10
 Open a paper's PDF in the configured viewer (or the platform default). Accepts a
 full id, a unique substring, or `--paper-doi`. Multiple substring matches print
 the candidate list and exit. With no argument, opens the paper you engaged with
-most recently — the one `lit list --sort recent` puts at the top.
+most recently — the one `lit list --sort recent` puts at the top. With `--si`, it
+opens one of the paper's SI files instead.
 
 ```
 lit open
 lit open <id>
 lit open <substring>
+lit open <id> --si si-02
 ```
 
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. |
+| `--si <name>` | Open this SI file (`si-02`, or `si-02.xlsx`) instead of the PDF, in this machine's default app. |
 
 The viewer comes from `default_pdf_viewer` in `lit-config.yaml`; `null` falls
-back to the platform opener. See [3-concepts.md](3-concepts.md) §1.4.
+back to the platform opener. See [3-concepts.md](3-concepts.md) §1.4. When
+nothing can open the PDF — no display, no viewer installed, or a viewer that
+fails as it starts — `lit open` says why, prints the file's path on a
+`PDF path:` line, and exits 2. It gives the viewer up to 1.5 seconds to report
+such a failure before printing `Opened`.
+
+With `--si`, the file opens in this machine's default app for its type; a PDF
+uses `default_pdf_viewer` when one is set, and the paper's own PDF need not
+exist. A file the default app would run rather than open — a program, a script,
+an installer, or a file with no extension — is refused with exit 1 and its path
+printed. In an ssh session it exits 2 and prints the file's path on an
+`SI path:` line instead, unless the file is a PDF and `default_pdf_viewer` is
+set; it does the same when no app can open the file. A name the paper does not
+have exits 1 with a list of the SI files it does have.
 
 ### `lit pdf-text`
 
@@ -459,6 +527,9 @@ is simply the absent key, so `--set priority-<P>=` is refused, and `lit unlink`
 is what drops a grade. Grading a project the paper is not linked to is refused
 too — `lit link <id> --project <P> --priority A` links and grades in one step.
 
+`supplementary` cannot be set at all: SI files are added with `lit add --si` and
+removed with `lit rm --si`.
+
 ### `lit rename`
 
 Change a paper id, rippling the change everywhere: the renamed paper's metadata
@@ -476,25 +547,42 @@ papers' relation fields and in notes wikilinks.
 
 ### `lit rm`
 
-Remove a paper. By default moves `papers/<id>/` to `<vault>/.trash/` (recoverable
-via `lit trash restore`); `--purge` deletes permanently. All external links to
-the paper (other papers' relation fields, repo bindings, project links) are
-torn down atomically; the paper's own fields ride into trash so a later restore
-can rebuild them. A `y/N` prompt guards the delete (default N).
+Remove a paper. By default moves `papers/<id>/`, SI files included, to
+`<vault>/.trash/` (recoverable via `lit trash restore`); `--purge` deletes
+permanently. All external links to the paper (other papers' relation fields,
+repo bindings, project links) are torn down atomically; the paper's own fields
+ride into trash so a later restore can rebuild them. A `y/N` prompt guards the
+delete (default N). With `--si`, it deletes one or more of the paper's SI files
+instead — see below.
 
 ```
 lit rm <id>
 lit rm <id> --dry-run
 lit rm <id> -y
 lit rm <id> --purge
+lit rm <id> --si si-02 [--si si-03]
+lit rm <id> --si si-02 --dry-run
 ```
 
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. |
 | `--purge` | Permanently delete instead of moving to `.trash/`. |
-| `-y`, `--yes` | Non-interactive force-delete: skip the prompt and tear down in one step. |
-| `--dry-run` | Preview the full impact set (the paper plus every link that would be cleared / unbound / orphaned), then exit without deleting. |
+| `-y`, `--yes` | Non-interactive force-delete: skip the prompt and tear down in one step (with `--si`, delete those SI files). |
+| `--dry-run` | Preview the full impact set (the paper plus every link that would be cleared / unbound / orphaned; with `--si`, the SI files and where your notes cite them), then exit without deleting. |
+| `--si <name>` | Delete this SI file (`si-02`, or `si-02.xlsx`) instead of the paper — for good. Repeatable. Not with `--purge`. |
+
+**Deleting an SI file.** `lit rm <id> --si si-02` deletes that file and its
+record and leaves the paper as it is. There is no trash for SI files: the
+deletion is permanent, and the way back is adding the file again with
+`lit add --si <id>`, where it takes the lowest free number — often its old
+one. Before anything goes, the confirmation lists each
+file with its original name and how often your `notes.md` and `discussion.md`
+cite it (`si-02.xlsx is cited 2× in discussion.md`), then asks `y/N` (default
+N); off a terminal it needs `--yes`, and `--dry-run` prints the same list
+without deleting. The result repeats any citation left behind
+(`still cited 2× in discussion.md — lit health-check lists the lines`). `--si`
+cannot be combined with `--purge` (exit 2).
 
 ---
 
@@ -688,9 +776,10 @@ Scan the whole vault for inconsistencies: dangling references, schema gaps, stal
 staging dirs, missing PDFs, missing discussion logs, dangling wikilinks, dangling
 vault-registry entries, missing project directories, real folders sitting where
 a project's links belong (a project directory copied from another machine), a
-paper still carrying the retired paper-level `priority`, and installed agent
-skills that are out of date with the running litman. Exits 0 on a clean vault, 1
-if any error or warning is found (so it can gate cron / CI). `info` findings —
+paper still carrying the retired paper-level `priority`, SI files that do not
+match their records, SI citations in your notes that no longer match, and
+installed agent skills that are out of date with the running litman. Exits 0 on
+a clean vault, 1 if any error or warning is found (so it can gate cron / CI). `info` findings —
 notes about the host, such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
 
@@ -703,6 +792,28 @@ about the paper, the `2018_Zhang_A` left behind by a title the derivation could
 not read. Each finding comes with the command that fixes it, complete and ready
 to paste.
 
+Seven categories cover a paper's SI files and the notes that cite them, printed
+under these headings:
+
+| Heading | Severity | `--fix` |
+|---|---|---|
+| `SI records (the supplementary field in metadata.yaml)` | error | — |
+| `SI files recorded but missing` | error | Drops the record. |
+| `SI files whose content changed` | error | — |
+| `Files in supplementary/ with no record` | warning | Records the file once it checks out as the paper's SI. |
+| `SI folder layout litman will not change (links, files, folders)` | error or warning | — |
+| `SI litman cannot check (unreadable, or no checksum on record)` | warning | — |
+| `SI citations in notes / discussion that no longer match` | warning | — |
+
+The last reads `notes.md` and `discussion.md` for SI citations such as
+`si-01.pdf (d4sc07642g1.pdf)` and reports, with the file and line, one that
+names a file the paper no longer has, one whose name in brackets is not the
+file that number holds now, and — in a dated section of `discussion.md` — one without a
+name, written before the file now holding that number was added. Each finding
+says what to change. These are warnings: `lit health-check` exits 1 until the
+line is changed, but they do not hold up `lit sync push`, while the SI errors
+above do, like any other error.
+
 ```
 lit health-check
 lit health-check --fix
@@ -711,7 +822,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Three repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; and where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision). With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), and refresh out-of-date installed agent skills (files you added next to them are kept). Four repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of
@@ -843,7 +954,9 @@ websites are refused. When your session has a display, the UI also opens in
 your browser automatically; on a headless box (HPC) it never tries — it prints a
 ready-to-paste `ssh -L` tunnel line so you can open the printed URL in your
 local browser. If the default port is busy it walks upward to the next free
-one (Jupyter-style) and prints the port it landed on.
+one (Jupyter-style) and prints the port it landed on. Each running `lit gui`
+records itself next to the vault registry, so `lit add --si <paper>` run on the
+same machine can reach its open page.
 
 ```
 lit gui
@@ -890,6 +1003,24 @@ the top of the browse list — a per-library convenience kept outside the vault,
 which is why it has no `lit` command. And the first time the app opens on a new
 version it shows a short "What's new" card; the litman mark in the top-left corner
 reopens it whenever you want it again.
+
+A paper's supplementary files sit in the context panel's **Supplementary** row,
+one chip per file (`si-01.pdf · 1.8 MB`, the original name on hover). When the
+server runs on a machine with a desktop, a click opens the file there in its
+default app and the toast names that machine; if no app takes it, the toast
+says why and the browser takes the file instead. In an ssh session, or on
+a machine with no display, the chip is a plain link: a PDF opens in the browser
+and anything else downloads under its original name. Ctrl-click (Cmd-click on
+macOS) or a middle click always leaves it to the browser. The × that appears on
+hover deletes the file — for good, after a confirmation that says how often your
+notes cite it. **+ Add SI** at the end of the row opens the SI window, the same
+one that opens by itself when your agent runs `lit add --si <paper>` (while you
+are typing, or another dialog is open, it waits). In it, **Open website ↗**
+opens the article's page in a new tab; download the SI there and drop the files
+onto the window. Each file is checked as it lands: `✓` goes in, `?` goes in only
+with **add anyway** ticked, and `✕` never does; a file over 100 MB waits for a
+click on **Upload**. **Done** adds them all at once, and **Cancel** (or Esc)
+adds nothing.
 
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server

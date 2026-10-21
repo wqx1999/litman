@@ -735,7 +735,8 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     default=False,
     help=(
         "Non-interactive force-delete: skip the confirmation and tear down "
-        "all external links in one step (script / agent path)."
+        "all external links in one step (script / agent path); with --si, "
+        "delete those SI files."
     ),
 )
 @click.option(
@@ -743,7 +744,8 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     is_flag=True,
     default=False,
     help="Preview only — list the paper plus every external link that would "
-    "be cleared / unbound / orphaned, then exit without deleting anything.",
+    "be cleared / unbound / orphaned (with --si: the SI files and how often "
+    "the notes cite them), then exit without deleting anything.",
 )
 @click.option(
     "--si",

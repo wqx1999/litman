@@ -1419,6 +1419,9 @@ def gui_cmd(
     (--no-browser to skip; --window for a standalone app window). On HPC,
     tunnel the printed port with ``ssh -L`` and open the URL in your local
     browser.
+
+    The page also shows the SI window that lit add --si PAPER asks for, and
+    each paper's Supplementary row.
     """
     if no_browser and window:
         raise click.UsageError(

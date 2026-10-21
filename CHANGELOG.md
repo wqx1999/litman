@@ -11,7 +11,103 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ## Unreleased
 
+### Added
+
+- **When your agent needs a paper's supplementary information, litman asks you
+  for it.** Ask about a detail the article leaves to its SI and the agent runs
+  `lit add --si <paper>`: the web UI opens an SI window, **Open website ↗**
+  takes you to the article's page, and the files you download there and drop
+  into the window are checked against the paper — the DOI in their names, or
+  the title on their first pages — and added together when you press
+  **Done**. A file that looks like another paper's SI, or is the article
+  itself, is refused; one litman cannot confirm goes in only if you tick
+  **add anyway**. The files land in the paper's own `supplementary/` folder as
+  `si-01.pdf`, `si-02.xlsx` and so on, read-only like its PDF and recorded in
+  its `metadata.yaml` with the names they were downloaded under, and the agent
+  answers with the file and the page it found the answer on. litman never
+  downloads the SI itself. With no web UI open, the command prints the
+  article's link and the way to add the files yourself; it has to run on the
+  machine the web UI's server runs on.
+
+- **SI you already have goes in from the command line.**
+  `lit add --si <paper> <file>...` runs the same check, one line per file, and
+  adds all the files or none: a refused file stops the whole add, even with
+  `--force`. One litman cannot confirm, or one over 100 MiB, needs a yes at the
+  terminal, or `--force`. Like `lit add`, it moves the files into the library.
+  `lit show` lists a paper's SI files below its PDF and notes, with each file's
+  original name and size.
+
+- **A Supplementary row in the cockpit.** Each SI file is a chip —
+  `si-01.pdf · 7.6 MB`, with the original name on hover — and **+ Add SI**
+  opens the SI window without waiting to be asked. When the web UI's server
+  runs on a machine with a desktop, clicking a chip opens the file there in the
+  system's default app, and the toast names the machine;
+  `lit open <paper> --si si-02` does the same from the command line. In an ssh
+  session, or on a machine without a display, the chip stays a link that opens
+  a PDF in the browser and downloads anything else, and `lit open --si` prints
+  the file's path. A Ctrl- or Cmd-click still leaves it to the browser. A file
+  that would run rather than open — a program, a script, an installer — is
+  never handed to the system.
+
+- **`lit rm <paper> --si si-02` deletes an SI file for good,** and so does the
+  × on its chip. The confirmation lists how often your notes cite the file, and
+  `--dry-run` shows the same without deleting. There is no trash for SI files:
+  add the file again to get it back, and it takes the lowest free number —
+  often its old one. Deleting the whole paper still takes its SI files into
+  the trash with it, and `lit trash restore` brings them back.
+
+- **`lit health-check` checks SI files and the notes that cite them.** It
+  reports a recorded file that is missing or whose content changed, a file in
+  `supplementary/` with no record, a malformed `supplementary` field, links or
+  folders inside `supplementary/` that litman will not touch, and a file it
+  cannot check. `lit health-check --fix` records a stray file that checks out
+  as the paper's SI and, after asking at a terminal, drops the record of one
+  that is gone; off a terminal it drops no record, records only the files that
+  check out, and prints the command for the rest. It never deletes an SI file.
+  A line in `notes.md` or `discussion.md` that cites `si-01.pdf` after that
+  file was deleted, or whose name in brackets is not the file that number holds
+  now, is listed with its file and line and what to change. That is a
+  warning: `lit health-check` exits 1 until the line is changed, but
+  `lit sync push` is not held up.
+
+### Changed
+
+- **The small uppercase labels are one shade darker.** The titles over each
+  field in the cockpit (METADATA, AUTHORS, STATUS…), the group titles in the
+  left panel and the field names in dialogs were faint on a bright screen; they
+  now read clearly, in light and dark mode alike.
+
+- **`lit open` no longer says `Opened` when nothing opened.** When the viewer
+  fails as it starts — a display that is set but no longer reachable, or no
+  app for PDFs — `lit open` now says why, prints the PDF's path and exits 2,
+  as it already did with no display at all. It gives the viewer up to 1.5
+  seconds to report such a failure, so a viewer that stays in the foreground
+  (zathura, evince) opens at once and the command returns 1.5 seconds later.
+
 ### Fixed
+
+- **A file name that is not valid UTF-8 no longer stops `lit`.** On Linux, a
+  name from an old archive or another system's encoding (GBK, Latin-1) made
+  any `lit` command that printed it stop with a Python error. It now prints,
+  with each byte that cannot be read shown as an escape such as `\udce9`.
+
+- **Long error messages stay on one line.** Piped into another program or a
+  log, a `lit` error longer than 80 characters was broken across lines, which
+  split the paths inside it. It now prints on one line. A path holding a
+  bracketed word, such as `draft[v2].pdf`, keeps it too — it was taken for
+  formatting and dropped.
+
+- **`lit health-check` no longer stops at a notes file that is not UTF-8.** A
+  `notes.md` or `discussion.md` saved in another encoding by another editor
+  made `lit health-check` stop with a Python error, and the health panel in
+  the web UI fail to load. The file is now reported as one that could not be
+  read, and the rest of the check runs.
+
+- **The path `lit open` prints is no longer split across lines.** When
+  `lit open` cannot open a PDF, the `PDF path:` line it prints broke at the
+  edge of a narrow terminal, or at 80 characters when piped, and so did its
+  other messages. Each now prints on one line however narrow the terminal, so
+  the path can be pasted as it stands.
 
 - **`lit uninstall` no longer leaves litman's own files behind.** It removed
   the vault registry and the agent preferences but kept the update-check cache

@@ -50,8 +50,8 @@ console = Console()
     type=click.Choice(["table", "json"]),
     default="table",
     help="Output format. 'table' (default) renders a Panel of metadata.yaml + "
-    "file paths; 'json' emits the FULL metadata dict (every field, not the "
-    "INDEX projection) for agent bounded retrieval.",
+    "the PDF, notes, SI and code paths; 'json' emits the FULL metadata dict "
+    "(every field, not the INDEX projection) for agent bounded retrieval.",
 )
 @library_option
 @vault_option
@@ -62,7 +62,10 @@ def show_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Show one paper's metadata.yaml plus PDF / notes paths.
+    """Show one paper's metadata.yaml plus its file paths.
+
+    Below the metadata come the paths of its PDF, notes, SI files (one SI:
+    line per file, with its original name and size) and code clones.
 
     With no argument, shows the paper you engaged with most recently — the
     same paper `lit list --sort recent` puts at the top. The paper id
