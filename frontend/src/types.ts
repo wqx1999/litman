@@ -58,6 +58,11 @@ export interface PaperMeta extends IndexPaper {
    * codes/<name>/ is gone on disk, so the cockpit can mark them as missing.
    * Absent on the trash-inspector path (that endpoint does not annotate it). */
   'code-clones-missing'?: string[]
+  /** The paper's SI files, as metadata.yaml records them (task-supplementary-
+   * info): a list of `{file, original, sha256, bytes, added, check}`. Typed
+   * loosely on purpose — the field is hand-editable, so the cockpit reads it
+   * through `parseSupplementary`, which drops what core would drop. */
+  supplementary?: unknown
   /** Per-project grade (ADR-025): `priority-<project>`, A/B/C, one key per
    * project the paper is linked to. Absent = linked but not graded yet, which
    * is a legal state — the link happens at ingest, the grade after reading.

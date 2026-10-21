@@ -37,11 +37,14 @@ import {
   postRevisit,
   postUnread,
   putMetadata,
+  removeSiFile,
   renameTaxonomyValue,
   unlinkProject,
 } from '../api'
 import type { MetadataWrite } from '../api'
 import AuthorRows from '../ui/AuthorRows'
+import type { ToastVariant } from '../ui/Toast'
+import { SiRemoveConfirm, SupplementaryChips, type SiRecord } from './Supplementary'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { isYearShape, YEAR_HINT } from '../ui/year'
 import {
@@ -93,7 +96,9 @@ interface Props {
    * /api/projects, keeping the dropdowns/autocomplete current (3c-1). */
   onVocabChanged?: () => void
   /** Toast a message (used to surface the backend's raw error verbatim). */
-  notify?: (msg: string) => void
+  notify?: (msg: string, variant?: ToastVariant) => void
+  /** Add SI: open the SI window for this paper (App hosts the one window). */
+  onAddSi?: (paperId: string) => void
   /** Register/unregister the imperative handle the global keyboard shortcuts
    * (Phase 4) drive curation through. Null on unmount. */
   onRegisterHandle?: (handle: CockpitHandle | null) => void
@@ -1625,6 +1630,9 @@ function ReadOnlyCockpit({
                 missing={paper['code-clones-missing']}
               />
             </Field>
+            <Field label="Supplementary">
+              <SupplementaryChips paperId={paper.id} value={paper.supplementary} readOnly />
+            </Field>
           </div>
         )}
       </aside>
@@ -1649,6 +1657,7 @@ function WriteCockpit({
   notify = () => {},
   onRegisterHandle = () => {},
   onModalState = () => {},
+  onAddSi = () => {},
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
@@ -1680,6 +1689,11 @@ function WriteCockpit({
     rel: RelField
     id: string
   } | null>(null)
+  // The SI file asked to go to the trash, frozen with its paper like
+  // `pendingRel` above.
+  const [pendingSi, setPendingSi] = useState<{ me: string; record: SiRecord } | null>(
+    null,
+  )
   // The currently-open pill in the Tags group (topics/methods/data/projects), or
   // null. One field at a time: opening one collapses the others (problem 1/3).
   const [openField, setOpenField] = useState<string | null>(null)
@@ -1705,6 +1719,7 @@ function WriteCockpit({
     setShowUnread(false)
     setShowDrop(false)
     setPendingRel(null)
+    setPendingSi(null)
     setOpenField(null)
     setManageField(null)
     setEditingMeta(false)
@@ -1833,6 +1848,18 @@ function WriteCockpit({
     } else {
       runWrite(() => putMetadata(me, { rmTag: { [rel]: [other] } }))
     }
+  }
+
+  // Move the confirmed SI file to `.trash/removed-si/` through the `lit rm
+  // --si` backend. The confirm stays up until the move answers.
+  async function doRemoveSi() {
+    if (!pendingSi) return
+    const { me, record } = pendingSi
+    await runWrite(async () => {
+      await removeSiFile(me, record.file)
+      notify(`Moved ${record.file} to trash`, 'success')
+    })
+    setPendingSi(null)
   }
 
   // Inline-create: register the new taxonomy value first (invariant #2), then
@@ -2000,6 +2027,7 @@ function WriteCockpit({
     showUnread ||
     showDrop ||
     pendingRel != null ||
+    pendingSi != null ||
     manageField != null ||
     openField != null
   useEffect(() => {
@@ -2339,6 +2367,15 @@ function WriteCockpit({
                 missing={paper['code-clones-missing']}
               />
             </Field>
+            <Field label="Supplementary">
+              <SupplementaryChips
+                paperId={paper.id}
+                value={paper.supplementary}
+                busy={writing}
+                onRemove={(record) => setPendingSi({ me: paper.id, record })}
+                onAdd={() => onAddSi(paper.id)}
+              />
+            </Field>
           </div>
         )}
       </aside>
@@ -2371,6 +2408,15 @@ function WriteCockpit({
           busy={writing}
           onCancel={() => setPendingRel(null)}
           onConfirm={doRemoveRelation}
+        />
+      )}
+
+      {pendingSi && (
+        <SiRemoveConfirm
+          record={pendingSi.record}
+          busy={writing}
+          onCancel={() => setPendingSi(null)}
+          onConfirm={() => void doRemoveSi()}
         />
       )}
 

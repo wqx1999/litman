@@ -242,9 +242,18 @@ export function fetchDocMtimes(): Promise<DocMtimes> {
 /** An opaque token that changes iff the vault changed on disk (stat-only, a few
  * dozen bytes). The live-refresh poll compares it against the last one it saw
  * and runs the real 7-request resync sweep ONLY when they differ — which is why
- * this must never be treated as anything but an equality check. */
-export function fetchVaultVersion(): Promise<{ version: string }> {
-  return getJSON<{ version: string }>('/api/vault-version')
+ * this must never be treated as anything but an equality check.
+ *
+ * `siRequest` rides along: the oldest SI request still open for this library
+ * (`lit add --si` waiting, or a page's own Add SI), or null. Not part of the
+ * token. Older servers leave it out. */
+export function fetchVaultVersion(): Promise<{
+  version: string
+  siRequest?: SiRequestSeed | null
+}> {
+  return getJSON<{ version: string; siRequest?: SiRequestSeed | null }>(
+    '/api/vault-version',
+  )
 }
 
 /** The status/type whitelists (+ allowsNone) backing the cockpit
@@ -588,6 +597,166 @@ export function discardIngest(handle: string): Promise<void> {
     () => undefined,
     () => undefined,
   )
+}
+
+// --- SI window (task-supplementary-info) ------------------------------------
+
+/** One file dropped into the SI window, as the server checked it.
+ * `ok` = ✓ (counts on Done), `unverified` = ? (only when ticked "add anyway"),
+ * `rejected` = ✕ (can never be added; `reason` says why). */
+export interface SiRow {
+  id: string
+  name: string
+  bytes: number
+  verdict: 'ok' | 'unverified' | 'rejected'
+  check: 'filename' | 'title' | null
+  reason: string
+  otherId: string | null
+}
+
+/** A file Done put into the library. */
+export interface SiAdded {
+  file: string
+  path: string
+  original: string
+  bytes: number
+  check: string
+}
+
+/** The whole state of one SI request — every `/api/si/requests*` answer
+ * carries it. `vaultServed` is false when the GUI now shows another library. */
+export interface SiSnapshot {
+  id: string
+  paperId: string
+  title: string
+  link: string | null
+  status: 'pending' | 'confirming' | 'added' | 'cancelled'
+  vaultServed: boolean
+  rows: SiRow[]
+  added: SiAdded[]
+  warnings: string[]
+}
+
+/** What the poll hands over (`/api/vault-version`): enough to open the window. */
+export interface SiRequestSeed {
+  id: string
+  paperId: string
+  title: string
+  link: string | null
+}
+
+/** A failed SI call. A conflict (409) also carries the request as it now is,
+ * so the window can show the rows the server holds instead of guessing. */
+export class SiApiError extends ApiError {
+  readonly request: SiSnapshot | null
+
+  constructor(message: string, status: number, request: SiSnapshot | null) {
+    super(message, status)
+    this.name = 'SiApiError'
+    this.request = request
+  }
+}
+
+/** `mutateJSON`'s error handling, keeping the 409 body's `request` too. */
+async function siFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const resp = await apiFetch(url, init)
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    let request: SiSnapshot | null = null
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown; request?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+      if (parsed.request && typeof parsed.request === 'object') {
+        request = parsed.request as SiSnapshot
+      }
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    throw new SiApiError(detail, resp.status, request)
+  }
+  return (await resp.json()) as T
+}
+
+function siJSON<T>(url: string, body: unknown): Promise<T> {
+  return siFetch<T>(url, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+const siRequestUrl = (rid: string) => `/api/si/requests/${encodeURIComponent(rid)}`
+
+/** Add SI from the cockpit: opens the paper's request, or rejoins the one
+ * already open (the server never keeps two for one paper). */
+export async function createSiRequest(paperId: string): Promise<SiSnapshot> {
+  const r = await siJSON<{ request: SiSnapshot }>('/api/si/requests', {
+    paperId,
+    source: 'page',
+  })
+  return r.request
+}
+
+/** The request as it is now. Never `?collect=1`: collecting is how the CLI
+ * marks a result as seen, and the page reading it must not take it away. */
+export async function fetchSiRequest(rid: string): Promise<SiSnapshot> {
+  const r = await siFetch<{ request: SiSnapshot }>(siRequestUrl(rid))
+  return r.request
+}
+
+/** One dropped file, raw bytes in, its checked row out. The name rides in a
+ * header, percent-encoded so any name survives HTTP. */
+export function uploadSiFile(
+  rid: string,
+  file: File,
+  signal?: AbortSignal,
+): Promise<{ row: SiRow; request: SiSnapshot }> {
+  return siFetch(`${siRequestUrl(rid)}/files`, {
+    method: 'POST',
+    body: file,
+    headers: { 'X-Litman-Filename': encodeURIComponent(file.name) },
+    signal,
+  })
+}
+
+/** Take one row out of the window; its stashed upload goes with it. */
+export function removeSiRow(
+  rid: string,
+  fid: string,
+): Promise<{ removed: boolean; request: SiSnapshot }> {
+  return siFetch(`${siRequestUrl(rid)}/files/${encodeURIComponent(fid)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** Done: every ✓ row plus the ? rows in `addAnyway`, in one write. */
+export async function confirmSi(rid: string, addAnyway: string[]): Promise<SiSnapshot> {
+  const r = await siJSON<{ request: SiSnapshot }>(`${siRequestUrl(rid)}/confirm`, {
+    addAnyway,
+  })
+  return r.request
+}
+
+/** Cancel: the request ends and every dropped file is thrown away. */
+export async function cancelSi(rid: string): Promise<SiSnapshot> {
+  const r = await siFetch<{ request: SiSnapshot }>(`${siRequestUrl(rid)}/cancel`, {
+    method: 'POST',
+  })
+  return r.request
+}
+
+/** Where one recorded SI file is served: a PDF opens in the browser, anything
+ * else downloads under the name it was added with. */
+export function siFileUrl(paperId: string, file: string): string {
+  return `/api/paper/${encodeURIComponent(paperId)}/si/${encodeURIComponent(file)}`
+}
+
+/** Move one SI file to `.trash/removed-si/` — what `lit rm --si` does. */
+export function removeSiFile(
+  paperId: string,
+  file: string,
+): Promise<{ file: string; trashedTo: string | null }> {
+  return mutateJSON(siFileUrl(paperId, file), 'DELETE')
 }
 
 /** Kick off the one-click update: the server spawns a detached helper and

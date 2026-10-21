@@ -64,6 +64,15 @@ function sync() {
   }
 }
 
+/** Whether any layer is registered — some dialog or popover is on screen.
+ *
+ * For a layer that opens on its own rather than from a click (the SI window,
+ * popped by the poll): it waits until this is false, which keeps the ordering
+ * constraint above trivially true and never stacks it over someone's dialog. */
+export function escapeLayerOpen(): boolean {
+  return stack.length > 0
+}
+
 /** Claim Escape while `mounted`, ordered above any layer already registered.
  *
  * Pass `null` for `onEscape` to hold the layer without acting on the key — the
