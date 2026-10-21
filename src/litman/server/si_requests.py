@@ -33,7 +33,8 @@ opened or joined the request: a plain ``lit add --si`` that found the files
 already in the library never collects the result, and a later ``--force``
 run means "show the window again". And an ``added`` result none of whose
 files is still recorded for the paper is moot — the user removed them — so
-it is marked delivered instead.
+it is marked delivered instead. Still recorded means the same content under
+the same name: a deleted file's number is given again, to another file.
 
 Everything here is memory: one lock, held only to read or change state. The
 routes do every disk operation — stash writes and deletes, verification, the
@@ -48,7 +49,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections.abc import Collection
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -139,16 +140,30 @@ class SiRequest:
     force: bool = False
     # SiRequestTable.mark() as of its Done.
     done_mark: int = 0
+    # file → sha256 of what Done added; internal, never in a snapshot.
+    added_sha256: dict[str, str] = field(default_factory=dict)
 
-    def is_moot(self, recorded: Collection[str], read_mark: int) -> bool:
-        """An ``added`` result none of whose files the paper records, by a
-        read begun at ``read_mark`` — after its Done, or the read may predate
-        the files."""
+    def is_moot(self, recorded: Mapping[str, str | None], read_mark: int) -> bool:
+        """An ``added`` result none of whose files the paper still records,
+        by a read begun at ``read_mark`` — after its Done, or the read may
+        predate the files. ``recorded`` maps each recorded name to its
+        sha256 (``None`` without one). A name now holding other content does
+        not count: the number was given again, to another file. Without a
+        checksum on either side the name alone decides."""
         return (
             self.status == ADDED
             and self.done_mark <= read_mark
-            and not any(entry.get("file") in recorded for entry in self.added)
+            and not any(
+                self._still_recorded(entry.get("file"), recorded)
+                for entry in self.added
+            )
         )
+
+    def _still_recorded(self, name: Any, recorded: Mapping[str, str | None]) -> bool:
+        if name not in recorded:
+            return False
+        now, then = recorded[name], self.added_sha256.get(name)
+        return now is None or then is None or now == then
 
     @property
     def is_open(self) -> bool:
@@ -245,7 +260,7 @@ class SiRequestTable:
         title: str,
         link: str | None,
         source: str,
-        recorded: Collection[str],
+        recorded: Mapping[str, str | None],
         read_mark: int,
         force: bool = False,
     ) -> dict[str, Any]:
@@ -260,8 +275,8 @@ class SiRequestTable:
            delivered — the result a timed out ``lit add --si`` never saw,
            page-made ones included once a CLI joined them. Handing it over
            delivers it. An ``added`` one none of whose files is among
-           ``recorded`` (the paper's SI file names, read from :meth:`mark`
-           ``read_mark`` on) is delivered unseen.
+           ``recorded`` (the paper's SI file names and their sha256, read
+           from :meth:`mark` ``read_mark`` on) is delivered unseen.
         3. Otherwise a new one. For the CLI it replaces every result of the
            paper the agent has not read, so at most one is ever unread.
 
@@ -461,13 +476,18 @@ class SiRequestTable:
         served: Anchor | None,
         added: list[dict[str, Any]],
         warnings: list[str],
+        *,
+        sha256s: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """``confirming`` → ``added``."""
+        """``confirming`` → ``added``. ``sha256s`` (file → checksum of what
+        was added) lets :meth:`SiRequest.is_moot` tell a file from another
+        one given the same number later."""
         with self._lock:
             now = _clock()
             req = self._requests[rid]
             req.status = ADDED
             req.added = [dict(entry) for entry in added]
+            req.added_sha256 = dict(sha256s or {})
             req.warnings = list(warnings)
             req.finished = now
             req.touched = now

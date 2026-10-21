@@ -33,21 +33,11 @@ sidecar.
 The trash directory is at the vault root (alongside ``papers/`` and
 ``.litman-staging/``), so ``list_papers(vault / 'papers')`` never sees
 trashed entries — they are absent from INDEX.json and views/.
-
-Two containers live beside the entries and are not entries themselves:
-``replaced-folders/`` (hub folders ``lit health-check --fix`` kept) and
-``removed-si/`` (SI files ``lit rm --si`` took out of a paper)::
-
-    <vault>/.trash/removed-si/<paper-id>/
-    ├── 20261020T083000Z-si-02.xlsx                 # the removed file
-    └── 20261020T083000Z-si-02.xlsx.meta.yaml       # sidecar (its record)
 """
 
 from __future__ import annotations
 
-import contextlib
 import io
-import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -61,7 +51,6 @@ from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import now_iso
 from litman.core.document import load_yaml_or_raise
-from litman.core.fs_identity import same_entry
 from litman.core.locking import rmtree
 from litman.core.notes import (
     deannotate_deleted_wikilinks,
@@ -88,21 +77,6 @@ from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TrashError
 
 TRASH_DIRNAME = ".trash"
-
-# Where `lit rm --si` puts a paper's removed SI files. Like replaced-folders/
-# it is a container, not an entry: `lit trash restore` never sees it (an SI
-# file goes back through `lit add --si`, which re-verifies it and gives it a
-# new number), `lit trash list` shows it in a section of its own, and
-# `lit trash empty` clears it with everything else.
-REMOVED_SI_DIRNAME = "removed-si"
-
-# "<UTC timestamp>[-<hex4>]-<si-NN.ext>": the name a removed SI file gets in
-# .trash/removed-si/<paper-id>/. The hex disambiguator mirrors move_to_trash.
-_REMOVED_SI_NAME_RE = re.compile(
-    r"^(\d{8}T\d{6}Z)(?:-[0-9a-f]{4})?-(si-\d{2,}(?:\.[a-z0-9]+){0,2})$"
-)
-# A trash entry's sidecar is "<entry>" + this; so is a removed SI file's.
-SIDECAR_SUFFIX = ".meta.yaml"
 
 # Count-based ring eviction: keep at most the N most-recently-deleted
 # entries. When `move_to_trash` pushes past N, the oldest are permanently
@@ -166,17 +140,6 @@ class TrashEntry:
     entry_name: str          # e.g. "2024_Foo-20260510T184612Z"
     entry_path: Path         # absolute path to the trashed dir
     orphan_repos: dict[str, str]  # {repo_name: upstream_url} hard-deleted on rm
-
-
-@dataclass
-class RemovedSi:
-    """One SI file in ``.trash/removed-si/`` (a `lit trash list` row)."""
-
-    paper_id: str
-    file: str                # the si-NN.ext name it had in the paper
-    original: str | None     # the name it was added under, from the sidecar
-    removed_at: str          # ISO 8601, or "(unknown)" without a sidecar
-    path: Path               # absolute path of the file in the trash
 
 
 @dataclass
@@ -331,214 +294,6 @@ def move_to_trash(
         raise
 
     return entry_path
-
-
-def removed_si_dir(vault: Path, paper_id: str) -> Path:
-    """``.trash/removed-si/<paper_id>/`` — may not exist."""
-    return _trash_dir(vault) / REMOVED_SI_DIRNAME / paper_id
-
-
-def removed_si_file_name(name: str) -> str | None:
-    """The ``si-NN.ext`` a removed-SI trash file was called in its paper."""
-    m = _REMOVED_SI_NAME_RE.match(name)
-    return m.group(2) if m else None
-
-
-def move_si_to_trash(
-    vault: Path, paper_id: str, src: Path, record: dict[str, Any]
-) -> Path:
-    """Move one SI file into ``.trash/removed-si/<paper_id>/``.
-
-    Same order as :func:`move_to_trash`: the sidecar (the metadata record the
-    file is leaving behind) is written first and dropped again if the move
-    fails, so no sidecar is ever left without its file. The caller unlocks
-    ``src`` first; the trashed copy stays writable. Returns the new path.
-    """
-    target_dir = removed_si_dir(vault, paper_id)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    stamp = _utc_compact_now()
-    target = target_dir / f"{stamp}-{src.name}"
-    if target.exists():
-        import uuid
-        target = target_dir / f"{stamp}-{uuid.uuid4().hex[:4]}-{src.name}"
-    sidecar = target.parent / f"{target.name}{SIDECAR_SUFFIX}"
-    buf = io.StringIO()
-    _yaml_dump.dump(
-        {
-            "paper_id": paper_id,
-            "removed_at": now_iso(),
-            "record": dict(record),
-        },
-        buf,
-    )
-    sidecar.write_text(buf.getvalue(), encoding="utf-8")
-    try:
-        shutil.move(str(src), str(target))
-    except Exception:
-        sidecar.unlink(missing_ok=True)
-        raise
-    return target
-
-
-def read_removed_si_sidecar(path: Path) -> dict[str, Any]:
-    """The sidecar next to a removed-SI trash file, ``{}`` if absent/unreadable."""
-    sidecar = path.parent / f"{path.name}{SIDECAR_SUFFIX}"
-    if not sidecar.is_file():
-        return {}
-    try:
-        data = _yaml.load(sidecar.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def list_removed_si(vault: Path) -> list[RemovedSi]:
-    """Every file in ``.trash/removed-si/``, newest removal first.
-
-    A file whose name or sidecar is not litman's own is still listed (and
-    still cleared by `lit trash empty`) — under its bare name.
-    """
-    root = _trash_dir(vault) / REMOVED_SI_DIRNAME
-    if not root.is_dir():
-        return []
-    rows: list[RemovedSi] = []
-    for paper_dir in root.iterdir():
-        if not paper_dir.is_dir():
-            continue
-        for child in paper_dir.iterdir():
-            if not child.is_file() or child.name.endswith(SIDECAR_SUFFIX):
-                continue
-            data = read_removed_si_sidecar(child)
-            record = data.get("record")
-            original = (
-                record.get("original") if isinstance(record, dict) else None
-            )
-            rows.append(
-                RemovedSi(
-                    paper_id=paper_dir.name,
-                    file=removed_si_file_name(child.name) or child.name,
-                    original=str(original) if original else None,
-                    removed_at=str(data.get("removed_at") or "(unknown)"),
-                    path=child,
-                )
-            )
-    rows.sort(key=lambda r: (r.path.name, r.paper_id), reverse=True)
-    return rows
-
-
-def count_removed_si(vault: Path) -> int:
-    """How many SI files sit in ``.trash/removed-si/`` (sidecars not counted)."""
-    return len(list_removed_si(vault))
-
-
-def rename_removed_si(vault: Path, old: str, new: str) -> int:
-    """Move a renamed paper's removed SI to ``.trash/removed-si/<new>/``.
-
-    The folder moves whole when ``<new>/`` is not there yet. When it is (left
-    by an earlier paper with that id), the files are merged in, each together
-    with its sidecar; a name already taken there gets a fresh ``-<hex4>``
-    after its stamp, as in :func:`move_si_to_trash`. Every moved sidecar's
-    ``paper_id`` is then set to ``new``, best effort. Returns how many SI files
-    moved, sidecars not counted.
-
-    Raises:
-        OSError: a move failed. What had not moved yet is still in ``<old>/``,
-            and no file is ever parted from its sidecar.
-    """
-    src = removed_si_dir(vault, old)
-    dst = removed_si_dir(vault, new)
-    if not src.is_dir():
-        return 0
-    if not dst.exists():
-        moved = os.listdir(src)
-        os.rename(src, dst)
-    elif same_entry(src, dst):
-        # Both names reach one folder (a case-only rename on a
-        # case-insensitive disk): merging it into itself would rename every file.
-        return 0
-    else:
-        moved = _merge_removed_si(src, dst)
-    for name in moved:
-        if name.endswith(SIDECAR_SUFFIX):
-            _repoint_removed_si_sidecar(dst / name, new)
-    return sum(
-        1
-        for name in moved
-        if not name.endswith(SIDECAR_SUFFIX) and (dst / name).is_file()
-    )
-
-
-def _merge_removed_si(src: Path, dst: Path) -> list[str]:
-    """Move everything in ``src`` into ``dst``, then drop ``src``.
-
-    A file and its sidecar move as one, under a name free for both. Returns
-    the names the moved entries have in ``dst``.
-    """
-    pairs: dict[str, list[str]] = {}
-    for name in sorted(os.listdir(src)):  # a file sorts before its sidecar
-        stem = name[: -len(SIDECAR_SUFFIX)] if name.endswith(SIDECAR_SUFFIX) else name
-        pairs.setdefault(stem, []).append(name)
-    moved: list[str] = []
-    for stem, names in pairs.items():
-        target = _unused_removed_si_name(dst, stem)
-        done: list[tuple[Path, Path]] = []
-        try:
-            for name in names:
-                there = dst / f"{target}{name[len(stem):]}"
-                os.rename(src / name, there)
-                done.append((src / name, there))
-        except OSError:
-            for here, there in reversed(done):
-                os.rename(there, here)
-            raise
-        moved.extend(there.name for _, there in done)
-    # A folder that will not go (something new landed in it) loses nothing.
-    with contextlib.suppress(OSError):
-        src.rmdir()
-    return moved
-
-
-def _unused_removed_si_name(folder: Path, name: str) -> str:
-    """``name``, or a fresh variant when ``folder`` already holds it or its
-    sidecar: ``-<hex4>`` after the stamp of a litman name, in front of any
-    other."""
-    import uuid
-
-    m = _REMOVED_SI_NAME_RE.match(name)
-    candidate = name
-    while os.path.lexists(folder / candidate) or os.path.lexists(
-        folder / f"{candidate}{SIDECAR_SUFFIX}"
-    ):
-        hex4 = uuid.uuid4().hex[:4]
-        candidate = f"{m.group(1)}-{hex4}-{m.group(2)}" if m else f"{hex4}-{name}"
-    return candidate
-
-
-def _repoint_removed_si_sidecar(sidecar: Path, paper_id: str) -> None:
-    """Set a removed-SI sidecar's ``paper_id``, leaving the rest as written.
-
-    Best effort: nothing reads the field back (the folder name says whose SI
-    it is), so a sidecar that cannot be read or rewritten keeps the old id.
-    The sidecar is the only copy of the record, so the new text is written
-    beside it and swapped in whole; that file's name ends like a sidecar's,
-    so even one a crash strands is never listed as a removed SI file.
-    """
-    import uuid
-
-    tmp = sidecar.with_name(
-        f".{sidecar.name}.{uuid.uuid4().hex[:8]}.tmp{SIDECAR_SUFFIX}"
-    )
-    try:
-        data = _yaml_rt.load(sidecar.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            data["paper_id"] = paper_id
-            tmp.write_text(_dump_rt_to_string(data), encoding="utf-8")
-            os.replace(tmp, sidecar)
-    except (OSError, UnicodeError, YAMLError):
-        pass  # keeps the old id
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
 
 
 def count_replaced_folders(vault: Path) -> int:
@@ -1048,9 +803,9 @@ def empty_trash(vault: Path) -> int:
     stays in ``.trash/`` and is retried on the next ``lit trash empty``.
 
     ``.trash/`` may also hold ``replaced-folders/`` — hub folders preserved by
-    ``lit health-check --fix`` — and ``removed-si/``. One recycle bin, one way
-    to empty it: the containers go with everything else, but they are not
-    entries and are not counted.
+    ``lit health-check --fix``. One recycle bin, one way to empty it: the
+    container goes with everything else, but it is not an entry and is not
+    counted.
     """
     trash_root = _trash_dir(vault)
     if not trash_root.is_dir():

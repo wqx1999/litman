@@ -1694,8 +1694,8 @@ function WriteCockpit({
     rel: RelField
     id: string
   } | null>(null)
-  // The SI file asked to go to the trash, frozen with its paper like
-  // `pendingRel` above.
+  // The SI file asked to be deleted, frozen with its paper like `pendingRel`
+  // above.
   const [pendingSi, setPendingSi] = useState<{ me: string; record: SiRecord } | null>(
     null,
   )
@@ -1855,14 +1855,15 @@ function WriteCockpit({
     }
   }
 
-  // Move the confirmed SI file to `.trash/removed-si/` through the `lit rm
-  // --si` backend. The confirm stays up until the move answers.
+  // Delete the confirmed SI file through the `lit rm --si` backend. The
+  // confirm stays up until the delete answers.
   async function doRemoveSi() {
     if (!pendingSi) return
     const { me, record } = pendingSi
     await runWrite(async () => {
-      await removeSiFile(me, record.file)
-      notify(`Moved ${record.file} to trash`, 'success')
+      const { warnings } = await removeSiFile(me, record.file)
+      if (warnings.length) notify(`Deleted ${record.file} · ${warnings.join(' · ')}`, 'warning')
+      else notify(`Deleted ${record.file}`, 'success')
     })
     setPendingSi(null)
   }
@@ -2420,6 +2421,7 @@ function WriteCockpit({
 
       {pendingSi && (
         <SiRemoveConfirm
+          paperId={pendingSi.me}
           record={pendingSi.record}
           busy={writing}
           onCancel={() => setPendingSi(null)}

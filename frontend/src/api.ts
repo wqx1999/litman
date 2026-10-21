@@ -751,11 +751,26 @@ export function siFileUrl(paperId: string, file: string): string {
   return `/api/paper/${encodeURIComponent(paperId)}/si/${encodeURIComponent(file)}`
 }
 
-/** Move one SI file to `.trash/removed-si/` — what `lit rm --si` does. */
+/** Where the paper's notes cite one SI file, for the delete confirm: lines
+ * per notes file (`cited`, only files citing it) and the notes files that
+ * could not be read (`unchecked`). `lit rm --si` lists the same. */
+export interface SiRmPreview {
+  file: string
+  cited: { name: string; count: number }[]
+  unchecked: string[]
+}
+
+/** Read-only; the error carries the server's reason. */
+export function fetchSiRmPreview(paperId: string, file: string): Promise<SiRmPreview> {
+  return getJSONDetailed<SiRmPreview>(`${siFileUrl(paperId, file)}/rm-preview`)
+}
+
+/** Delete one SI file for good — what `lit rm --si` does; there is no trash
+ * for SI. `warnings`: a view rebuild that failed after the delete. */
 export function removeSiFile(
   paperId: string,
   file: string,
-): Promise<{ file: string; trashedTo: string | null }> {
+): Promise<{ file: string; warnings: string[] }> {
   return mutateJSON(siFileUrl(paperId, file), 'DELETE')
 }
 

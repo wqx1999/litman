@@ -9,10 +9,6 @@ Three subcommands:
   hard-deleted at rm time
 * ``empty``   — permanently delete every entry (with y/N confirmation)
 
-SI files removed with ``lit rm --si`` wait in ``.trash/removed-si/``: ``list``
-shows them in a section of their own (with the command that puts each back),
-``empty`` clears them too, ``restore`` never touches them.
-
 Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 """
 
@@ -44,13 +40,10 @@ from litman.core.correctors import reconcile_derived
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.trash import (
-    RemovedSi,
     RestoreResult,
     TrashEntry,
-    count_removed_si,
     count_replaced_folders,
     empty_trash,
-    list_removed_si,
     list_trash,
     resolve_trash_entry,
     restore_from_trash,
@@ -90,26 +83,6 @@ def _trash_row(e: TrashEntry) -> dict[str, Any]:
     }
 
 
-def _print_removed_si(removed: list[RemovedSi]) -> None:
-    """The removed-SI section of `lit trash list`: one file, one way back."""
-    from litman.core.supplementary import restore_command
-
-    n = len(removed)
-    console.print(f"[bold]Removed SI files[/] [dim]({n})[/]")
-    for row in removed:
-        original = f" [dim]({escape(row.original)})[/]" if row.original else ""
-        console.print(
-            f"  {escape(row.paper_id)}  {escape(row.file)}{original}  "
-            f"[dim]removed {escape(row.removed_at)}[/]",
-            soft_wrap=True,
-        )
-        console.print(
-            f"    [dim]put it back:[/] "
-            f"{escape(restore_command(row.paper_id, row.path))}",
-            soft_wrap=True,
-        )
-
-
 @trash_group.command("list")
 @format_option
 @library_option
@@ -117,8 +90,7 @@ def _print_removed_si(removed: list[RemovedSi]) -> None:
 def trash_list_cmd(
     output_format: str, library: Path | None, vault_name: str | None
 ) -> None:
-    """Show trash entries, newest first, then any SI files removed with
-    `lit rm --si` (table output only)."""
+    """Show trash entries, newest first."""
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     entries = list_trash(vault)
 
@@ -129,12 +101,8 @@ def trash_list_cmd(
         )
         return
 
-    removed_si = list_removed_si(vault)
     if not entries:
-        if removed_si:
-            _print_removed_si(removed_si)
-        else:
-            console.print("[dim](trash is empty)[/]")
+        console.print("[dim](trash is empty)[/]")
         return
 
     table = Table(
@@ -162,9 +130,6 @@ def trash_list_cmd(
         "[dim]Restore via `lit trash restore <paper_id>` "
         "(or pass full entry_name to disambiguate).[/]"
     )
-    if removed_si:
-        console.print()
-        _print_removed_si(removed_si)
 
 
 # ---------------------------------------------------------------------------
@@ -371,15 +336,13 @@ def trash_restore_cmd(
 # ---------------------------------------------------------------------------
 
 
-def _empty_subject(n_entries: int, n_kept: int, n_si: int = 0) -> str:
+def _empty_subject(n_entries: int, n_kept: int) -> str:
     """Name what `lit trash empty` is about to remove.
 
-    Three kinds of thing live in ``.trash/``: deleted papers, which can be
-    restored; folders `lit health-check --fix` moved out of a project hub,
-    which cannot; and SI files `lit rm --si` removed, which go back through
-    `lit add --si`. One phrase, used by the dry-run header, the confirmation
-    and the success line, so those three lines can never disagree about the
-    count.
+    Two kinds of thing live in ``.trash/``: deleted papers, which can be
+    restored, and folders `lit health-check --fix` moved out of a project hub,
+    which cannot. One phrase, used by the dry-run header, the confirmation and
+    the success line, so the three can never disagree about the count.
     """
     parts = []
     if n_entries:
@@ -388,8 +351,6 @@ def _empty_subject(n_entries: int, n_kept: int, n_si: int = 0) -> str:
         parts.append(
             f"{n_kept} replaced project folder{'' if n_kept == 1 else 's'}"
         )
-    if n_si:
-        parts.append(f"{n_si} removed SI file{'' if n_si == 1 else 's'}")
     # Total on purpose: a caller that reaches zero of both still has to render
     # a sentence, and an empty one reads as "( removed)".
     return " + ".join(parts) or "nothing"
@@ -419,8 +380,7 @@ def trash_empty_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """Permanently delete every trash entry, and any SI files removed with
-    `lit rm --si`.
+    """Permanently delete every trash entry.
 
     --dry-run lists every entry that would be removed (no truncation) and
     exits without emptying the trash.
@@ -432,27 +392,19 @@ def trash_empty_cmd(
     # that can clear them — it must not report an empty trash while they sit
     # there (and, for a code hub, sync a whole repo checkout to the cloud).
     n_kept = count_replaced_folders(vault)
-    removed_si = list_removed_si(vault)
-    n_si = len(removed_si)
-    if not entries and not n_kept and not n_si:
+    if not entries and not n_kept:
         console.print("[dim](trash is already empty)[/]")
         return
 
     if dry_run:
         console.print(
             f"[bold]Would permanently delete[/] "
-            f"{_empty_subject(len(entries), n_kept, n_si)} "
+            f"{_empty_subject(len(entries), n_kept)} "
             "[dim](dry-run)[/]"
         )
         for e in entries:
             console.print(
                 f"  - {escape(e.paper_id)} [dim]({escape(e.deleted_at)})[/]"
-            )
-        for row in removed_si:
-            console.print(
-                f"  - SI {escape(row.paper_id)}/{escape(row.file)} "
-                f"[dim]({escape(row.removed_at)})[/]",
-                soft_wrap=True,
             )
         console.print(
             "[dim]Dry-run only — nothing deleted. "
@@ -467,7 +419,7 @@ def trash_empty_cmd(
     # the warning block + a default-No prompt.
     warning_lines = [
         f"[bold yellow]About to permanently delete[/] "
-        f"{_empty_subject(len(entries), n_kept, n_si)}:"
+        f"{_empty_subject(len(entries), n_kept)}:"
     ]
     for e in entries[:10]:
         warning_lines.append(
@@ -484,8 +436,7 @@ def trash_empty_cmd(
     # Recounted, not assumed: empty_trash is best-effort per child, and the
     # count it reports is what actually went. The folders answer the same way.
     n_kept_removed = n_kept - count_replaced_folders(vault)
-    n_si_removed = n_si - count_removed_si(vault)
-    if not n and not n_kept_removed and not n_si_removed:
+    if not n and not n_kept_removed:
         # A green tick over an empty trash that is still full is the one thing
         # this must never print.
         console.print(
@@ -497,5 +448,5 @@ def trash_empty_cmd(
         return
     console.print(
         f"[bold green]✓ Emptied[/] trash "
-        f"[dim]({_empty_subject(n, n_kept_removed, n_si_removed)} removed)[/]"
+        f"[dim]({_empty_subject(n, n_kept_removed)} removed)[/]"
     )

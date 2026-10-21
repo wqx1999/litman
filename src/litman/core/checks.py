@@ -97,6 +97,7 @@ from litman.exceptions import (
 )
 
 if TYPE_CHECKING:
+    from litman.core.si_citations import CitationProblem
     from litman.core.supplementary import SiFixPolicy
 
 _yaml = ThreadLocalYAML(typ="safe")
@@ -3148,8 +3149,9 @@ def check_supplementary(
             add(
                 "supplementary_changed", "error", paper_id,
                 f"{where}/{name} no longer matches its recorded checksum",
-                f"put the original back, or `lit rm {paper_id} --si "
-                f"{si_stem(name)}` and add the right file",
+                "put the original back; to keep this one, copy it out, "
+                f"`lit rm {paper_id} --si {si_stem(name)} --yes`, then "
+                f"`lit add --si {paper_id}` the copy",
             )
         for name, kind in drift.odd_recorded:
             add(
@@ -3180,8 +3182,9 @@ def check_supplementary(
                     "supplementary_unchecked", "warning", paper_id,
                     f"{where}/{name} has no sha256 / bytes on record — its "
                     "content can't be verified",
-                    f"`lit rm {paper_id} --si {si_stem(name)}`, then `lit add "
-                    "--si` the trashed copy to record them",
+                    f"copy it out, `lit rm {paper_id} --si {si_stem(name)} "
+                    f"--yes`, then `lit add --si {paper_id}` the copy to record "
+                    "its checksum",
                 )
             else:
                 path = f"{where}/{name}" if name else where
@@ -3190,6 +3193,127 @@ def check_supplementary(
                     f"{path} cannot be read ({why}); litman can't check it",
                     "fix its permissions, then rerun `lit health-check`",
                 )
+    return out
+
+
+def _cited_finding(paper_id: str, problem: CitationProblem) -> tuple[str, str]:
+    """Message and hint for one stale SI citation (see check_supplementary_cited)."""
+    from litman.core.supplementary import original_label
+
+    citation = problem.citation
+    where = f"{citation.file}:{citation.line}"
+    record = problem.record
+    if problem.kind == "predates" and record is not None:
+        section = citation.section.isoformat() if citation.section else "?"
+        when = (
+            f"added later ({problem.added.isoformat()})"
+            if problem.added is not None
+            else "whose added date can't be read"
+        )
+        message = (
+            f"{where} (§{section}) cites {citation.token}, {when} — may refer "
+            "to a file since replaced"
+        )
+        label = original_label(record)
+        hint = (
+            f"if it means this file, write its name after it: "
+            f"{record['file']}（{label}）"
+            if label
+            else f"check which file it means — `lit show {paper_id}` lists "
+            "each SI with its original name"
+        )
+        return message, hint
+    if record is None:
+        message = f"{where} cites {citation.token}, which this paper no longer has"
+        hint = (
+            f"point it at the right file (`lit show {paper_id}` lists the SI), "
+            "or remove it"
+        )
+    else:
+        now = original_label(record) or record.get("original")
+        # Read from the user's notes: shown through the same filter as a
+        # record's name, so a tab or a bidi mark cannot garble the line.
+        cited_as = original_label({"original": citation.original}) or "?"
+        message = (
+            f"{where} cites {citation.token} as {cited_as}, but "
+            f"{record['file']} is now {now}"
+        )
+        hint = (
+            f"check which file it means — `lit show {paper_id}` lists each SI "
+            "with its original name"
+        )
+    if problem.moved_to:
+        message += f" — that file is now {problem.moved_to}"
+        hint = f"change it to {problem.moved_to}"
+    return message, hint
+
+
+def check_supplementary_cited(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``si-NN`` citations in each paper's notes.md / discussion.md ↔ its
+    ``supplementary`` records (``supplementary_cited``, warning).
+
+    A deleted file's number is given again, so a citation can outlive its
+    file or come to name another one. Each finding names the file and line:
+
+    * the paper has no file by that number (or by that exact name);
+    * the original name written after it is not the one on record — and,
+      when another record holds that name, the number it has now;
+    * in discussion.md, written without an original name in a section dated
+      before the record was added, or the record's ``added`` cannot be read:
+      it may mean a file since replaced.
+
+    A notes file that cannot be read is a finding too (invariant #14).
+    Report only, never ``--fix``: the text is the user's. Kept out of the
+    ``lit sync push`` gate (see _PUSH_GATE_EXCLUDED_CATEGORIES). A paper
+    whose ``supplementary`` field is malformed is skipped — it already gets
+    ``supplementary_field``. Full tier: it reads every paper's notes
+    (invariant #15).
+    """
+    # Lazy, like check_supplementary: this module loads on every `lit` call.
+    from litman.core.si_citations import (
+        NOTE_FILES,
+        citation_problems,
+        read_si_citations,
+    )
+    from litman.core.supplementary import (
+        SUPPLEMENTARY_FIELD,
+        field_problems,
+        list_supplementary,
+    )
+
+    out: list[Issue] = []
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        paper_id = str(paper_id)
+        if field_problems(paper.get(SUPPLEMENTARY_FIELD)):
+            continue
+        citations, unreadable = read_si_citations(vault / "papers" / paper_id)
+        found: list[tuple[int, int, Issue]] = []
+        for name, why in unreadable:
+            found.append((
+                NOTE_FILES.index(name),
+                0,
+                Issue(
+                    "supplementary_cited", "warning", paper_id,
+                    f"{name} cannot be read ({why}); its SI citations went "
+                    "unchecked",
+                    "save it as UTF-8 (or fix its permissions), then rerun "
+                    "`lit health-check`",
+                ),
+            ))
+        for problem in citation_problems(citations, list_supplementary(paper)):
+            message, hint = _cited_finding(paper_id, problem)
+            citation = problem.citation
+            found.append((
+                NOTE_FILES.index(citation.file),
+                citation.line,
+                Issue("supplementary_cited", "warning", paper_id, message, hint),
+            ))
+        out.extend(issue for _, _, issue in sorted(found, key=lambda f: f[:2]))
     return out
 
 
@@ -3501,6 +3625,11 @@ def check_code_clone_integrity(
 #       missing / unrecorded are `--fix`able, with consent (see
 #       AUTO_FIXABLE_CATEGORIES); field / changed / layout / unchecked need
 #       a person.
+#   supplementary_cited (#14) — si-NN citations in notes.md / discussion.md
+#       ↔ the supplementary records (number, original name; a discussion
+#       section's date against the record's `added`) → klass=B-auth, report
+#       (warning, never --fix: the text is the user's); tier=full (reads every
+#       paper's notes); outside the push gate.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
     # Same shape as schema (metadata read, nothing derived to regenerate), but
@@ -3610,6 +3739,9 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "resolve",
     ),
     CheckSpec("supplementary", check_supplementary, "full", "B-auth", "report"),
+    CheckSpec(
+        "supplementary_cited", check_supplementary_cited, "full", "B-auth", "report"
+    ),
 )
 
 
@@ -3661,8 +3793,15 @@ def run_all_checks(
 #     readable and its grade intact, so an unmigrated vault mirrors losslessly
 #     — and the backup has to stay available across the upgrade window, which
 #     is exactly when the user has not run `--fix` yet (ADR-025).
+#   - supplementary_cited: warnings only, so it could never block; listed so
+#     a push does not read every paper's notes.md / discussion.md for nothing.
 _PUSH_GATE_EXCLUDED_CATEGORIES: frozenset[str] = frozenset(
-    {"vault_registry_drift", "dangling_wikilinks", "retired_priority"}
+    {
+        "vault_registry_drift",
+        "dangling_wikilinks",
+        "retired_priority",
+        "supplementary_cited",
+    }
 )
 
 

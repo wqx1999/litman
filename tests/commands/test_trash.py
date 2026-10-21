@@ -766,98 +766,40 @@ def test_trash_empty_that_removes_nothing_does_not_claim_success(
 
 
 # ===========================================================================
-# .trash/removed-si/ — SI files `lit rm --si` took out of a paper
+# SI in the trash: only inside a deleted paper's folder
 # ===========================================================================
 
 
-def _plant_removed_si(vault: Path, paper_id: str, name: str = "si-02.xlsx") -> Path:
-    """What `lit rm --si` leaves behind: the file plus its record as a sidecar."""
-    folder = vault / TRASH_DIRNAME / "removed-si" / paper_id
-    folder.mkdir(parents=True, exist_ok=True)
-    trashed = folder / f"20261020T083000Z-{name}"
-    trashed.write_bytes(b"sheet")
-    (folder / f"{trashed.name}.meta.yaml").write_text(
-        f"paper_id: {paper_id}\n"
-        "removed_at: '2026-10-20T10:30:00+02:00'\n"
-        f"record:\n  file: {name}\n  original: Table_S2.xlsx\n",
-        encoding="utf-8",
-    )
-    return trashed
-
-
-def test_removed_si_container_is_not_a_trash_entry(vault: Path) -> None:
-    """`lit trash restore` never sees it, and its nested sidecars are not
-    orphans: the trash health check walks the trash root only."""
+def test_a_leftover_removed_si_folder_is_ignored(vault: Path) -> None:
+    """``lit rm --si`` deletes for good. A ``.trash/removed-si/`` left by an
+    earlier development build is no entry: list, restore, empty and the
+    trash health check all pass it by."""
     from litman.core.checks import check_trash_health
     from litman.core.trash import is_trash_entry_name
 
-    _plant_removed_si(vault, "2024_Foo")
+    folder = vault / TRASH_DIRNAME / "removed-si" / "2024_Foo"
+    folder.mkdir(parents=True)
+    leftover = folder / "20261020T083000Z-si-02.xlsx"
+    leftover.write_bytes(b"sheet")
+    (folder / f"{leftover.name}.meta.yaml").write_text(
+        "paper_id: 2024_Foo\nrecord:\n  file: si-02.xlsx\n", encoding="utf-8"
+    )
+    runner = CliRunner()
+
     assert not is_trash_entry_name("removed-si")
     assert list_trash(vault) == []
     assert check_trash_health(vault, []) == []
-
-
-def test_trash_list_shows_removed_si_in_a_section_of_its_own(vault: Path) -> None:
-    _write_paper(vault, "2024_Bar")
-    runner = CliRunner()
-    runner.invoke(cli, ["rm", "2024_Bar", "--yes", "--library", str(vault)])
-    trashed = _plant_removed_si(vault, "2024_Foo")
-
-    result = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
-
-    assert result.exit_code == 0, result.output
-    assert "2024_Bar" in result.output  # the entry table is still there
-    assert "Removed SI files (1)" in result.output
-    assert "si-02.xlsx" in result.output
-    assert "(Table_S2.xlsx)" in result.output
-    assert "removed 2026-10-20T10:30:00+02:00" in result.output
-    assert f"lit add --si 2024_Foo {trashed}" in result.output
-
-    # JSON stays the entry rows it always was: removed SI is not an entry.
-    rows = json.loads(
-        runner.invoke(
-            cli, ["trash", "list", "--format", "json", "--library", str(vault)]
-        ).stdout
-    )
-    assert [r["paper_id"] for r in rows] == ["2024_Bar"]
-
-
-def test_trash_list_with_only_removed_si_is_not_empty(vault: Path) -> None:
-    _plant_removed_si(vault, "2024_Foo")
-    runner = CliRunner()
-    result = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
-    assert result.exit_code == 0, result.output
-    assert "(trash is empty)" not in result.output
-    assert "Removed SI files (1)" in result.output
+    listed = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    assert listed.exit_code == 0, listed.output
+    assert "(trash is empty)" in listed.output
     rows = runner.invoke(
         cli, ["trash", "list", "--format", "json", "--library", str(vault)]
     )
     assert json.loads(rows.stdout) == []
-
-
-def test_trash_empty_clears_removed_si(vault: Path) -> None:
-    from litman.core.trash import count_removed_si
-
-    trashed = _plant_removed_si(vault, "2024_Foo")
-    _plant_removed_si(vault, "2024_Baz", "si-01.pdf")
-    assert count_removed_si(vault) == 2
-    runner = CliRunner()
-
-    dry = runner.invoke(
-        cli, ["trash", "empty", "--dry-run", "--library", str(vault)]
-    )
-    assert dry.exit_code == 0, dry.output
-    assert "2 removed SI files" in dry.output
-    assert "SI 2024_Foo/si-02.xlsx" in dry.output
-    assert trashed.exists()  # dry-run deletes nothing
-
-    result = runner.invoke(
-        cli, ["trash", "empty", "--yes", "--library", str(vault)]
-    )
-    assert result.exit_code == 0, result.output
-    assert "already empty" not in result.output
-    assert "2 removed SI files removed" in result.output
-    assert list((vault / TRASH_DIRNAME).iterdir()) == []
+    emptied = runner.invoke(cli, ["trash", "empty", "--yes", "--library", str(vault)])
+    assert emptied.exit_code == 0, emptied.output
+    assert "(trash is already empty)" in emptied.output
+    assert leftover.read_bytes() == b"sheet"
 
 
 def test_rm_paper_takes_its_si_along_and_restore_brings_it_back(

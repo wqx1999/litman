@@ -1,5 +1,5 @@
-import { useRef, type MouseEvent } from 'react'
-import { openSiFile, siFileUrl } from '../api'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { fetchSiRmPreview, openSiFile, siFileUrl, type SiRmPreview } from '../api'
 import { formatBytes } from '../ui/bytes'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
@@ -169,22 +169,48 @@ export function SupplementaryChips({
   )
 }
 
-/** Confirm before an SI file goes to the trash — the relation-remove confirm's
- * shape. It stays up while the move runs, holding Escape without acting on
- * it. The file can come back (`lit add --si` with its path in the trash), so
- * no "cannot be undone". */
+/** "Cited 2× in discussion.md." / "Cited 1× in notes.md and 2× in discussion.md." */
+function citedLine(cited: SiRmPreview['cited']): string {
+  return `Cited ${cited.map((c) => `${c.count}× in ${c.name}`).join(' and ')}.`
+}
+
+/** Confirm before an SI file is deleted — the relation-remove confirm's
+ * shape. It first asks the server where the paper's notes cite the file (the
+ * lines `lit rm --si` lists) and says so; that only informs: Delete stays
+ * allowed, also when the check fails, and waits only while it runs. There is
+ * no trash for SI — the way back is adding the file again. The dialog stays
+ * up while the delete runs, holding Escape without acting on it. */
 export function SiRemoveConfirm({
+  paperId,
   record,
   busy,
   onCancel,
   onConfirm,
 }: {
+  paperId: string
   record: SiRecord
   busy: boolean
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const [preview, setPreview] = useState<SiRmPreview | null>(null)
+  const [failed, setFailed] = useState(false)
   useEscapeLayer(true, busy ? null : onCancel)
+
+  // The `alive` guard drops a late answer if the dialog closed first.
+  useEffect(() => {
+    let alive = true
+    setPreview(null)
+    setFailed(false)
+    fetchSiRmPreview(paperId, record.file)
+      .then((p) => alive && setPreview(p))
+      .catch(() => alive && setFailed(true))
+    return () => {
+      alive = false
+    }
+  }, [paperId, record.file])
+  const checking = preview === null && !failed
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -193,12 +219,10 @@ export function SiRemoveConfirm({
       <div
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Move this SI file to trash?"
+        aria-label="Delete this SI file?"
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">
-          Move this SI file to trash?
-        </h2>
+        <h2 className="text-sm font-semibold text-stone-900">Delete this SI file?</h2>
         <p className="mt-1.5 font-mono text-xs leading-relaxed text-stone-600">
           {record.file}
         </p>
@@ -207,6 +231,19 @@ export function SiRemoveConfirm({
             {record.original}
           </p>
         )}
+        <div className="mt-3 space-y-1 text-xs leading-relaxed">
+          {checking && <p className="text-stone-400">Checking the notes for citations…</p>}
+          {failed && <p className="text-stone-500">Couldn't check the notes for citations.</p>}
+          {preview && preview.cited.length > 0 && (
+            <p className="text-amber-700 dark:text-amber-400">{citedLine(preview.cited)}</p>
+          )}
+          {preview && preview.unchecked.length > 0 && (
+            <p className="text-stone-500">
+              Couldn't check {preview.unchecked.join(' and ')} for citations.
+            </p>
+          )}
+          <p className="text-stone-600">This can't be undone — add it again with Add SI.</p>
+        </div>
         <div className="mt-5 flex justify-end gap-2">
           <button
             autoFocus
@@ -218,10 +255,10 @@ export function SiRemoveConfirm({
           </button>
           <button
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || checking}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Move to trash
+            Delete
           </button>
         </div>
       </div>

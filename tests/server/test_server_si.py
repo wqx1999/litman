@@ -425,6 +425,37 @@ def test_an_added_result_with_a_file_still_recorded_is_handed_over(
     assert handed["id"] == rid and handed["status"] == "added"
 
 
+def _page_adds(client: TestClient, name: str, body: bytes) -> list[str]:
+    """The page's own Add SI, Done included."""
+    return _done(client, _open(client, source="page")["id"], (name, body))
+
+
+def test_a_result_whose_number_now_holds_another_file_is_not_handed_over(
+    client: TestClient,
+) -> None:
+    """A deleted file's number is given again: the result names si-01.xlsx,
+    the library has an si-01.xlsx, but it is another file."""
+    rid = _open(client, source="cli", force=True)["id"]
+    (first,) = _done(client, rid, ("ci9b00237_si_001.xlsx", SHEET))
+    assert client.delete(f"/api/paper/{A_ID}/si/{first}").status_code == 200
+    assert _page_adds(client, "ci9b00237_si_002.xlsx", OTHER_SHEET) == [first]
+
+    fresh = _open(client, source="cli", force=True)
+
+    assert fresh["id"] != rid and fresh["status"] == "pending"
+
+
+def test_a_result_re_added_unchanged_is_handed_over(client: TestClient) -> None:
+    rid = _open(client, source="cli", force=True)["id"]
+    (first,) = _done(client, rid, ("ci9b00237_si_001.xlsx", SHEET))
+    assert client.delete(f"/api/paper/{A_ID}/si/{first}").status_code == 200
+    assert _page_adds(client, "ci9b00237_si_001.xlsx", SHEET) == [first]
+
+    handed = _open(client, source="cli", force=True)
+
+    assert handed["id"] == rid and handed["status"] == "added"
+
+
 @pytest.mark.parametrize("rid", ["f" * 32, "not-an-id", "F" * 32, "a" * 31])
 def test_status_of_an_unknown_request(client: TestClient, rid: str) -> None:
     assert client.get(f"/api/si/requests/{rid}").status_code == 404
@@ -1159,7 +1190,7 @@ def test_a_linked_folder_is_not_served(client: TestClient, vault: Path, tmp_path
         (PermissionError(errno.EACCES, "file in use"), 500),
         (OSError(errno.ENOSPC, "No space left on device"), 507),
     ],
-    ids=["concurrent-write", "in-use", "disk-full"],
+    ids=["concurrent-write", "commit-failed", "disk-full"],
 )
 def test_a_failed_removal_answers_in_words(
     client: TestClient,
@@ -1179,9 +1210,119 @@ def test_a_failed_removal_answers_in_words(
     assert response.status_code == status
     assert response.json()["detail"]
     assert [r["file"] for r in _records(vault)] == [name]
+    if status == 500:
+        assert response.json()["detail"] == (
+            f"Could not delete {name} (PermissionError); nothing was changed. "
+            "Check that the library's disk is writable, then try again."
+        )
 
 
-def test_removing_a_file_moves_it_to_the_trash(
+def test_a_file_that_cannot_be_deleted_keeps_its_record(
+    client: TestClient, vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.csv", b"1,2\n")
+
+    def in_use(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError(errno.EACCES, "in use (mocked)")
+
+    monkeypatch.setattr(si_mod, "_delete_si_entry", in_use)
+    response = client.delete(f"/api/paper/{A_ID}/si/{name}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        f"Could not delete {name} (PermissionError); its record is back. "
+        "Close anything that has it open, then retry."
+    )
+    assert [r["file"] for r in _records(vault)] == [name]
+    assert (vault / "papers" / A_ID / "supplementary" / name).exists()
+
+
+# ---------------------------------------------------------------------------
+# rm-preview: where the notes cite a file, for the delete dialog
+# ---------------------------------------------------------------------------
+
+
+def _write_notes(vault: Path, notes: str | bytes, discussion: str = "") -> None:
+    paper = vault / "papers" / A_ID
+    if isinstance(notes, bytes):
+        (paper / "notes.md").write_bytes(notes)
+    else:
+        (paper / "notes.md").write_text(notes, encoding="utf-8")
+    (paper / "discussion.md").write_text(discussion, encoding="utf-8")
+
+
+def test_rm_preview_counts_the_lines_citing_only_this_file(
+    client: TestClient, vault: Path, tmp_path: Path
+) -> None:
+    first = _add(vault, tmp_path, "ci9b00237_si_001.csv", b"1,2\n")
+    second = _add(vault, tmp_path, "ci9b00237_si_002.xlsx", SHEET)
+    _write_notes(
+        vault,
+        "# Notes\nsi-02.xlsx（ci9b00237_si_002.xlsx）\nsi-01 only\n",
+        "# Discussion log\n\n## 2026-10-20 10:00\n"
+        "si-02 and si-02.xlsx on one line\n"
+        "si-02.xlsx (Table_S9.xlsx) is some other file\n"
+        "si-02 once more\n",
+    )
+
+    response = client.get(f"/api/paper/{A_ID}/si/{second}/rm-preview")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "file": second,
+        "cited": [
+            {"name": "notes.md", "count": 1},
+            {"name": "discussion.md", "count": 2},
+        ],
+        "unchecked": [],
+    }
+    assert client.get(f"/api/paper/{A_ID}/si/{first}/rm-preview").json()["cited"] == [
+        {"name": "notes.md", "count": 1}
+    ]
+
+
+def test_rm_preview_names_a_notes_file_it_cannot_read(
+    client: TestClient, vault: Path, tmp_path: Path
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.csv", b"1,2\n")
+    _write_notes(vault, b"si-01 caf\xe9\n")
+
+    response = client.get(f"/api/paper/{A_ID}/si/{name}/rm-preview")
+
+    assert response.json() == {"file": name, "cited": [], "unchecked": ["notes.md"]}
+
+
+def test_rm_preview_answers_only_for_a_recorded_name(
+    client: TestClient, vault: Path, tmp_path: Path
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.csv", b"1,2\n")
+    for path in (
+        f"/api/paper/{A_ID}/si/si-01/rm-preview",
+        f"/api/paper/{A_ID}/si/si-09.csv/rm-preview",
+        f"/api/paper/2000_Nobody_Here/si/{name}/rm-preview",
+        f"/api/paper/..x/si/{name}/rm-preview",
+    ):
+        assert client.get(path).status_code == 404, path
+
+
+def test_rm_preview_refuses_as_the_delete_would(
+    client: TestClient, vault: Path, tmp_path: Path
+) -> None:
+    name = _add(vault, tmp_path, "ci9b00237_si_001.csv", b"1,2\n")
+    target = vault / "papers" / A_ID / "supplementary" / name
+    unlock_truth_file(target)
+    target.unlink()
+    target.mkdir()
+
+    response = client.get(f"/api/paper/{A_ID}/si/{name}/rm-preview")
+
+    assert response.status_code == 409
+    assert "is a folder, not the recorded file" in response.json()["detail"]
+    assert client.delete(f"/api/paper/{A_ID}/si/{name}").status_code == 409
+    assert target.is_dir()
+
+
+def test_removing_a_file_deletes_it(
     client: TestClient, vault: Path, tmp_path: Path
 ) -> None:
     first = _add(vault, tmp_path, "ci9b00237_si_001.csv", b"1,2\n")
@@ -1190,12 +1331,9 @@ def test_removing_a_file_moves_it_to_the_trash(
     response = client.delete(f"/api/paper/{A_ID}/si/{second}")
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["file"] == second
-    trashed = Path(payload["trashedTo"])
-    assert trashed.parent == vault / ".trash" / "removed-si" / A_ID
-    assert trashed.read_bytes() == SHEET
+    assert response.json() == {"file": second, "warnings": []}
     assert not (vault / "papers" / A_ID / "supplementary" / second).exists()
+    assert not (vault / ".trash" / "removed-si").exists()
     assert [r["file"] for r in _records(vault)] == [first]
     for path in (
         f"/api/paper/{A_ID}/si/{second}",
@@ -1280,6 +1418,8 @@ def test_reading_writes_nothing(client: TestClient, vault: Path, tmp_path: Path)
         f"/api/paper/{A_ID}/si/{pdf}",
         f"/api/paper/{A_ID}/si/{sheet}",
         f"/api/paper/{A_ID}/si/si-77.pdf",
+        f"/api/paper/{A_ID}/si/{sheet}/rm-preview",
+        f"/api/paper/{A_ID}/si/si-77.pdf/rm-preview",
         f"/api/paper/{A_ID}",
     ):
         assert client.get(path).status_code in (200, 404), path

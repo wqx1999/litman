@@ -12,9 +12,11 @@ page's SI window adds files through the same core function the CLI uses
 * ``POST /api/si/requests/{rid}/files`` — one dropped file, streamed to the
   upload stash and verified; ``DELETE …/files/{fid}`` — take a row out.
 * ``POST /api/si/requests/{rid}/confirm`` (Done) / ``…/cancel`` (Cancel).
-* ``GET`` / ``DELETE /api/paper/{paper_id}/si/{file}`` — open or remove one
+* ``GET`` / ``DELETE /api/paper/{paper_id}/si/{file}`` — open or delete one
   recorded SI file (the cockpit's Supplementary row); ``POST …/open`` — open
-  it with this machine's default app instead, when it has a desktop.
+  it with this machine's default app instead, when it has a desktop;
+  ``GET …/rm-preview`` — where the paper's notes cite it, for the delete
+  dialog.
 
 Nothing reaches the library before Done. A dropped file waits in
 ``<vault>/.litman-upload/`` as ``si-<rid>-<fid>.<ext>`` — flat, so the 24 h
@@ -61,10 +63,12 @@ from litman.core.id import is_valid_id
 from litman.core.supplementary import (
     SiItem,
     add_supplementary,
+    has_checksum,
     is_runnable_si,
     is_unprintable,
     list_supplementary,
     official_link,
+    preview_si_removal,
     recorded_si_file,
     remove_supplementary,
     si_extension,
@@ -264,7 +268,10 @@ def _open_request(
         title=title,
         link=official_link(meta),
         source=source,
-        recorded=[record["file"] for record in list_supplementary(meta)],
+        recorded={
+            record["file"]: str(record["sha256"]) if has_checksum(record) else None
+            for record in list_supplementary(meta)
+        },
         read_mark=read_mark,
         force=force,
     )
@@ -599,7 +606,11 @@ async def _carry_out(
                 ),
             ) from exc
         snapshot = table.finish_confirm(
-            rid, served, _added_entries(result), result.warnings
+            rid,
+            served,
+            _added_entries(result),
+            result.warnings,
+            sha256s={record["file"]: record["sha256"] for record in result.records},
         )
         settled = True
     finally:
@@ -758,11 +769,13 @@ def post_si_file_open(request: Request, paper_id: str, file: str) -> dict[str, A
     return {"opened": True, "file": file, "host": host}
 
 
-@router.delete("/paper/{paper_id}/si/{file}")
-def delete_si_file(request: Request, paper_id: str, file: str) -> dict[str, Any]:
-    """Move one SI file to ``.trash/removed-si/`` and drop its record — what
-    ``lit rm --si`` does."""
-    vault: Path = request.app.state.vault
+def _recorded_or_404(vault: Path, paper_id: str, file: str) -> None:
+    """404 unless ``file`` is exactly a name the paper records."""
+    if not is_valid_id(paper_id):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Invalid paper id: {paper_id!r}. Open the file from the paper's page.",
+        )
     try:
         meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
@@ -772,8 +785,43 @@ def delete_si_file(request: Request, paper_id: str, file: str) -> dict[str, Any]
             status_code=404,
             detail=f"{paper_id} has no SI file {file!r}. `lit show {paper_id}` lists them.",
         )
+
+
+@router.get("/paper/{paper_id}/si/{file}/rm-preview")
+def get_si_rm_preview(request: Request, paper_id: str, file: str) -> dict[str, Any]:
+    """Where the paper's notes cite one SI file, for the delete dialog — the
+    counts ``lit rm --si`` prints before it asks. Reads only.
+
+    ``{file, cited: [{name, count}], unchecked: [name]}``: ``count`` is the
+    lines of that notes file citing it; ``unchecked`` names a notes file that
+    could not be read. 409 when the delete itself would be refused.
+    """
+    vault: Path = request.app.state.vault
+    _recorded_or_404(vault, paper_id, file)
     try:
-        ((name, trashed),) = remove_supplementary(vault, paper_id, [file])
+        preview = preview_si_removal(vault, paper_id, [file])
+    except PaperNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SupplementaryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "file": file,
+        "cited": [
+            {"name": name, "count": count}
+            for name, count in preview.cited.get(file, {}).items()
+        ],
+        "unchecked": [name for name, _why in preview.unchecked],
+    }
+
+
+@router.delete("/paper/{paper_id}/si/{file}")
+def delete_si_file(request: Request, paper_id: str, file: str) -> dict[str, Any]:
+    """Delete one SI file for good and drop its record — what ``lit rm --si``
+    does. ``warnings``: a derived-view rebuild that failed afterwards."""
+    vault: Path = request.app.state.vault
+    _recorded_or_404(vault, paper_id, file)
+    try:
+        result = remove_supplementary(vault, paper_id, [file])
     except SupplementaryError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileExistsError as exc:
@@ -784,11 +832,12 @@ def delete_si_file(request: Request, paper_id: str, file: str) -> dict[str, Any]
     except OSError as exc:
         if exc.errno == errno.ENOSPC:
             raise HTTPException(status_code=507, detail=_NO_SPACE_REMOVE) from exc
+        # Only the records' commit raises one, before anything was deleted.
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Could not move {file} to the trash ({exc.__class__.__name__}). "
-                "Close anything that has it open, then try again."
+                f"Could not delete {file} ({exc.__class__.__name__}); nothing was "
+                "changed. Check that the library's disk is writable, then try again."
             ),
         ) from exc
-    return {"file": name, "trashedTo": str(trashed) if trashed is not None else None}
+    return {"file": file, "warnings": result.warnings}

@@ -67,11 +67,12 @@ def _open(
     paper: str = PAPER,
     *,
     force: bool = False,
-    recorded: tuple[str, ...] = ("si-01.pdf",),
+    recorded: tuple[str, ...] | dict[str, str | None] = ("si-01.pdf",),
     read_mark: int | None = None,
 ) -> dict[str, Any]:
     """``recorded``: the SI files the paper records, by default the one
-    :func:`_finish` adds, read from ``read_mark`` (by default: now) on."""
+    :func:`_finish` adds, read from ``read_mark`` (by default: now) on. A
+    tuple names files with no checksum; a dict maps each to its sha256."""
     return table.open(
         vault=vault,
         anchor=Anchor.of(vault),
@@ -79,7 +80,11 @@ def _open(
         title="A title",
         link="https://doi.org/10.1/x",
         source=source,
-        recorded=recorded,
+        recorded=(
+            recorded
+            if isinstance(recorded, dict)
+            else dict.fromkeys(recorded)
+        ),
         read_mark=table.mark() if read_mark is None else read_mark,
         force=force,
     )
@@ -337,6 +342,64 @@ def test_rule_2_a_result_done_while_the_files_were_read_is_not_moot(
     handed = _open(table, one, recorded=(), read_mark=read_mark)
 
     assert handed["id"] == rid and handed["status"] == ADDED
+
+
+def _done_with_sums(
+    table: SiRequestTable, vault: Path, sums: dict[str, str]
+) -> str:
+    rid = _open(table, vault)["id"]
+    served = Anchor.of(vault)
+    table.add_row(rid, served, _row("a" * 32))
+    table.begin_confirm(rid, served, [])
+    table.finish_confirm(
+        rid, served, [{"file": name} for name in sums], [], sha256s=sums
+    )
+    return rid
+
+
+@pytest.mark.parametrize(
+    ("recorded", "moot"),
+    [
+        ({"si-01.pdf": "1" * 64}, False),  # the same file
+        ({"si-01.pdf": "9" * 64}, True),  # its number, given to another file
+        ({"si-01.pdf": None}, False),  # no checksum on record: the name decides
+        ({"si-02.pdf": "1" * 64}, True),  # its name is gone
+        ({}, True),
+    ],
+    ids=["same", "other-content", "no-checksum", "other-name", "none"],
+)
+def test_rule_2_moot_compares_content_not_just_the_name(
+    table: SiRequestTable,
+    libs: tuple[Path, Path],
+    clock: FakeClock,
+    recorded: dict[str, str | None],
+    moot: bool,
+) -> None:
+    one, _two = libs
+    rid = _done_with_sums(table, one, {"si-01.pdf": "1" * 64})
+    assert table._requests[rid].is_moot(recorded, table.mark()) is moot
+
+    handed = _open(table, one, recorded=recorded)
+    assert (handed["id"] != rid) is moot
+
+
+def test_rule_2_a_result_without_checksums_is_judged_by_name(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    one, _two = libs
+    rid = _open(table, one)["id"]
+    _finish(table, rid, one)  # no sha256s handed over
+    assert not table._requests[rid].is_moot({"si-01.pdf": "9" * 64}, table.mark())
+
+
+def test_the_checksums_stay_out_of_the_snapshot(
+    table: SiRequestTable, libs: tuple[Path, Path], clock: FakeClock
+) -> None:
+    one, _two = libs
+    rid = _done_with_sums(table, one, {"si-01.pdf": "1" * 64})
+    snapshot = table.snapshot(rid, Anchor.of(one))
+    assert snapshot["added"] == [{"file": "si-01.pdf"}]
+    assert "1" * 64 not in repr(snapshot)
 
 
 def test_rule_3_a_new_window_for_the_cli_replaces_every_unread_result(

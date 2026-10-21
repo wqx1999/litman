@@ -139,6 +139,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "supplementary_unrecorded": "Files in supplementary/ with no record",
     "supplementary_layout": "SI folder layout litman will not change (links, files, folders)",
     "supplementary_unchecked": "SI litman cannot check (unreadable, or no checksum on record)",
+    "supplementary_cited": "SI citations in notes / discussion that no longer match",
 }
 
 

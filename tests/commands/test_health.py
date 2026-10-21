@@ -3594,3 +3594,238 @@ def test_health_check_reports_an_unreadable_si_folder(
     flat = " ".join(result.output.split())
     assert "SI litman cannot check" in flat
     assert "cannot be read (PermissionError)" in flat
+
+
+# ===========================================================================
+# supplementary_cited — si-NN citations in notes ↔ SI records (ledger #14)
+# ===========================================================================
+
+
+def _cited_issues(vault: Path) -> list[Any]:
+    from litman.core.checks import check_supplementary_cited
+
+    return check_supplementary_cited(vault, list_papers(vault))
+
+
+def _added_day(vault: Path) -> str:
+    from litman.core.document import find_paper
+
+    return str(find_paper(vault, _SI_PAPER)["supplementary"][0]["added"])[:10]
+
+
+def test_supplementary_cited_reports_each_case_with_its_line(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=2)  # si-01.csv, si-02.csv, added today
+    paper = vault / "papers" / _SI_PAPER
+    (paper / "notes.md").write_text(
+        "# Notes\n"
+        "si-01.csv（ci9b00237_si_001.csv） is still right\n"
+        "si-02.csv（other.csv）\n"
+        "si-01.csv（ci9b00237_si_002.csv）\n"
+        "si-05\n",
+        encoding="utf-8",
+    )
+    (paper / "discussion.md").write_text(
+        f"# Discussion log for {_SI_PAPER}\n\n"
+        "## 2026-01-02 10:00\n"
+        "si-01 was read before it was added\n"
+        "si-02.csv（ci9b00237_si_002.csv） names its file\n",
+        encoding="utf-8",
+    )
+
+    issues = _cited_issues(vault)
+
+    assert {(i.category, i.severity, i.paper_id) for i in issues} == {
+        ("supplementary_cited", "warning", _SI_PAPER)
+    }
+    assert [(i.message, i.hint) for i in issues] == [
+        (
+            "notes.md:3 cites si-02.csv as other.csv, but si-02.csv is now "
+            "ci9b00237_si_002.csv",
+            f"check which file it means — `lit show {_SI_PAPER}` lists each SI "
+            "with its original name",
+        ),
+        (
+            "notes.md:4 cites si-01.csv as ci9b00237_si_002.csv, but si-01.csv "
+            "is now ci9b00237_si_001.csv — that file is now si-02.csv",
+            "change it to si-02.csv",
+        ),
+        (
+            "notes.md:5 cites si-05, which this paper no longer has",
+            f"point it at the right file (`lit show {_SI_PAPER}` lists the SI), "
+            "or remove it",
+        ),
+        (
+            f"discussion.md:4 (§2026-01-02) cites si-01, added later "
+            f"({_added_day(vault)}) — may refer to a file since replaced",
+            "if it means this file, write its name after it: "
+            "si-01.csv（ci9b00237_si_001.csv）",
+        ),
+    ]
+
+
+def test_an_original_from_the_notes_is_shown_printable(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "notes.md").write_text(
+        "si-01.csv（evil\u202eftp.csv）\n", encoding="utf-8"
+    )
+    (issue,) = _cited_issues(vault)
+    assert issue.message == (
+        "notes.md:1 cites si-01.csv as evil ftp.csv, but si-01.csv is now "
+        "ci9b00237_si_001.csv"
+    )
+
+
+def test_a_citation_in_a_paper_with_no_si_is_reported(vault: Path) -> None:
+    _write_paper(vault, "2020_No_Si", notes="# N\n\nsee si-01.pdf\n")
+    (issue,) = _cited_issues(vault)
+    assert (issue.paper_id, issue.message) == (
+        "2020_No_Si",
+        "notes.md:3 cites si-01.pdf, which this paper no longer has",
+    )
+
+
+def test_health_check_lists_stale_citations_under_their_header(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "discussion.md").write_text(
+        "# Discussion log\n\nsee si-07.csv\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exit_code == 1
+    header = next(
+        line for line in result.output.splitlines()
+        if line.startswith("SI citations in notes / discussion that no longer match")
+    )
+    assert "fixable via --fix" not in header
+    line = next(
+        line for line in result.output.splitlines() if "cites si-07.csv" in line
+    )
+    assert line.split() == [
+        "warning", _SI_PAPER, "discussion.md:3", "cites", "si-07.csv,", "which",
+        "this", "paper", "no", "longer", "has",
+    ]
+
+
+def test_a_notes_file_that_is_not_utf8_leaves_its_si_citations_unchecked(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "notes.md").write_bytes(b"si-01 caf\xe9\n")
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+    (issue,) = _cited_issues(vault)
+    assert (issue.paper_id, issue.message, issue.hint) == (
+        _SI_PAPER,
+        "notes.md cannot be read (UnicodeDecodeError); its SI citations went "
+        "unchecked",
+        "save it as UTF-8 (or fix its permissions), then rerun `lit health-check`",
+    )
+    assert issue.message in result.output
+
+
+def test_a_malformed_si_field_gets_no_citation_findings(vault: Path) -> None:
+    """Which files the paper has is unknown until the field parses: it gets
+    supplementary_field, and its citations wait."""
+    _write_paper(vault, "2020_Bad_Field", notes="si-01 and si-02.pdf\n")
+    _append_metadata(vault, "2020_Bad_Field", "supplementary: si-01.pdf\n")
+
+    assert _cited_issues(vault) == []
+    categories = {
+        i.category
+        for i in run_all_checks(vault, list_papers(vault))
+        if i.paper_id == "2020_Bad_Field"
+    }
+    assert "supplementary_field" in categories
+    assert "supplementary_cited" not in categories
+
+
+def test_fix_never_edits_a_stale_citation(vault: Path, tmp_path: Path) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    notes = vault / "papers" / _SI_PAPER / "notes.md"
+    notes.write_text("# N\n\nsi-09 is gone\n", encoding="utf-8")
+    before = notes.read_bytes()
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert "supplementary_cited" not in AUTO_FIXABLE_CATEGORIES
+    assert notes.read_bytes() == before
+    assert [i.message for i in _cited_issues(vault)] == [
+        "notes.md:3 cites si-09, which this paper no longer has"
+    ]
+    assert result.exit_code == 1
+
+
+def test_the_push_gate_never_reads_the_notes(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale citation is a warning, which never blocks a push; the gate
+    skips the check rather than read every notes file for nothing."""
+    from litman.core.checks import run_push_integrity_errors
+
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "notes.md").write_text(
+        "si-09\n", encoding="utf-8"
+    )
+    papers = list_papers(vault)
+    read: list[str] = []
+    real_read_text = Path.read_text
+
+    def spy(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+        read.append(self.name)
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    # Control: the spy does see the check read notes.md.
+    assert len(_cited_issues(vault)) == 1
+    assert "notes.md" in read
+    read.clear()
+
+    assert run_push_integrity_errors(vault, papers) == []
+    assert "notes.md" not in read
+
+
+def test_an_unreadable_added_date_is_a_finding_not_a_skip(vault: Path) -> None:
+    """Invariant #14: a record whose ``added`` cannot be read cannot clear a
+    dated citation either. A record with no original name cannot be named in
+    the hint, which then points at `lit show`."""
+    _write_paper(vault, "2020_Hand_Made")
+    _append_metadata(
+        vault,
+        "2020_Hand_Made",
+        "supplementary:\n"
+        "  - file: si-01.pdf\n"
+        "    original: Table_S1.pdf\n"
+        "    added: sometime last week\n"
+        "  - file: si-02.csv\n"
+        "    added: '2026-10-21T10:00:00+02:00'\n",
+    )
+    (vault / "papers" / "2020_Hand_Made" / "discussion.md").write_text(
+        "# Discussion log\n\n## 2026-09-02 10:00\nsi-01 and si-02\n",
+        encoding="utf-8",
+    )
+
+    assert [(i.message, i.hint) for i in _cited_issues(vault)] == [
+        (
+            "discussion.md:4 (§2026-09-02) cites si-01, whose added date can't "
+            "be read — may refer to a file since replaced",
+            "if it means this file, write its name after it: si-01.pdf（Table_S1.pdf）",
+        ),
+        (
+            "discussion.md:4 (§2026-09-02) cites si-02, added later (2026-10-21) — "
+            "may refer to a file since replaced",
+            "check which file it means — `lit show 2020_Hand_Made` lists each SI "
+            "with its original name",
+        ),
+    ]

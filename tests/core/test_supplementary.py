@@ -46,7 +46,7 @@ from litman.core.supplementary import (
     supplementary_drift,
     verify_batch,
 )
-from litman.core.trash import TRASH_DIRNAME, is_trash_entry_name
+from litman.core.trash import TRASH_DIRNAME
 from litman.core.views import write_index
 from litman.exceptions import PaperNotFoundError, SupplementaryError
 
@@ -466,11 +466,21 @@ def test_plan_names_keeps_given_order_when_nothing_is_recognised() -> None:
     assert plan_names([], ["b.csv", "a.csv"]) == ["si-01.csv", "si-02.csv"]
 
 
-def test_plan_names_continues_past_every_taken_number() -> None:
-    # Recorded, on disk (any case), or waiting in the trash: never reused.
+def test_plan_names_fills_the_lowest_free_numbers() -> None:
+    # Recorded or on disk (any case) holds a number; a gap is given again.
     taken = ["si-01.pdf", "si-07.zip", "SI-09.PDF", "notes.txt"]
-    assert plan_names(taken, ["a.pdf"]) == ["si-10.pdf"]
-    assert plan_names(["si-99.pdf"], ["a.pdf"]) == ["si-100.pdf"]
+    assert plan_names(taken, ["a.pdf"]) == ["si-02.pdf"]
+    assert plan_names(["si-99.pdf"], ["a.pdf"]) == ["si-01.pdf"]
+    gaps = ["si-01.pdf", "si-03.csv", "SI-05.txt"]
+    assert plan_names(gaps, ["a.csv", "b.csv", "c.csv"]) == [
+        "si-02.csv", "si-04.csv", "si-06.csv"
+    ]
+    # The publisher's own order still decides who gets the lower gap.
+    assert plan_names(
+        gaps, ["notes.xlsx", "ci9b00237_si_002.pdf", "ci9b00237_si_001.pdf"]
+    ) == ["si-06.xlsx", "si-04.pdf", "si-02.pdf"]
+    # No gap: the next number up.
+    assert plan_names(["si-01.pdf", "si-02.csv"], ["a.pdf"]) == ["si-03.pdf"]
 
 
 # ---------------------------------------------------------------------------
@@ -731,21 +741,28 @@ def _add_two(vault: Path, tmp_path: Path) -> None:
     )
 
 
-def test_remove_moves_to_the_trash_with_its_record(vault: Path, tmp_path: Path) -> None:
-    _add_two(vault, tmp_path)
-    ((name, dest),) = remove_supplementary(vault, A_ID, ["si-02"])
+def _all_files(root: Path) -> set[Path]:
+    return {p for p in root.rglob("*") if p.is_file()}
 
-    assert name == "si-02.xlsx"
-    assert dest is not None and dest.read_bytes() == b"2"
-    assert dest.parent == vault / TRASH_DIRNAME / "removed-si" / A_ID
-    assert dest.name.endswith("-si-02.xlsx")
-    assert os.access(dest, os.W_OK)  # trashed copies are not locked
-    sidecar = dest.parent / f"{dest.name}.meta.yaml"
-    assert "original: ci9b00237_si_002.xlsx" in sidecar.read_text(encoding="utf-8")
+
+def test_remove_deletes_the_file_and_its_record(vault: Path, tmp_path: Path) -> None:
+    _add_two(vault, tmp_path)
+    before = _all_files(vault)
+
+    result = remove_supplementary(vault, A_ID, ["si-02"])
+
+    assert [r["file"] for r in result.records] == ["si-02.xlsx"]
+    assert result.records[0]["original"] == "ci9b00237_si_002.xlsx"
+    assert (result.gone, result.warnings) == ([], [])
     assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-01.csv"]
-    assert not (vault / "papers" / A_ID / "supplementary" / "si-02.xlsx").exists()
-    # The container is not a trash entry: `lit trash restore` never sees it.
-    assert not is_trash_entry_name("removed-si")
+    gone = vault / "papers" / A_ID / "supplementary" / "si-02.xlsx"
+    assert not gone.exists()
+    # Deleted, not moved: no copy of it turned up anywhere in the library.
+    new = {p.relative_to(vault).as_posix() for p in _all_files(vault) - before}
+    assert not {n for n in new if not n.startswith((".litman-staging", "views/"))}
+    assert not (vault / TRASH_DIRNAME).exists() or not any(
+        (vault / TRASH_DIRNAME).iterdir()
+    )
 
 
 def test_remove_last_drops_key_and_folder(vault: Path, tmp_path: Path) -> None:
@@ -763,7 +780,9 @@ def test_remove_of_a_missing_file_drops_only_the_record(
     gone = vault / "papers" / A_ID / "supplementary" / "si-01.csv"
     unlock_truth_file(gone)
     gone.unlink()
-    assert remove_supplementary(vault, A_ID, ["si-01"]) == [("si-01.csv", None)]
+    result = remove_supplementary(vault, A_ID, ["si-01"])
+    assert [r["file"] for r in result.records] == ["si-01.csv"]
+    assert result.gone == ["si-01.csv"]
     assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-02.xlsx"]
 
 
@@ -775,20 +794,25 @@ def test_remove_unknown_name(vault: Path, tmp_path: Path, name: str) -> None:
     assert len(_meta(vault)["supplementary"]) == 2
 
 
-def test_remove_failed_move_puts_the_record_back(
+def _stuck_delete(*_args: object, **_kwargs: object) -> None:
+    raise PermissionError(13, "in use by another program (mocked)")
+
+
+def test_remove_failed_unlink_puts_the_record_back(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _add_two(vault, tmp_path)
+    monkeypatch.setattr(si_mod, "_delete_si_entry", _stuck_delete)
 
-    def stuck(*_args: object, **_kwargs: object) -> Path:
-        raise PermissionError(13, "in use by another program (mocked)")
+    with pytest.raises(SupplementaryError) as raised:
+        remove_supplementary(vault, A_ID, ["si-01", "si-02"])
 
-    monkeypatch.setattr(si_mod, "move_si_to_trash", stuck)
-    with pytest.raises(SupplementaryError, match="its record is back"):
-        remove_supplementary(vault, A_ID, ["si-02"])
-
+    assert str(raised.value) == (
+        "Could not delete si-01.csv, si-02.xlsx (PermissionError); their records "
+        "are back. Close anything that has them open, then retry."
+    )
     target = vault / "papers" / A_ID / "supplementary" / "si-02.xlsx"
-    assert target.exists()
+    assert target.read_bytes() == b"2"
     assert sorted(r["file"] for r in _meta(vault)["supplementary"]) == [
         "si-01.csv", "si-02.xlsx"
     ]
@@ -796,30 +820,358 @@ def test_remove_failed_move_puts_the_record_back(
         assert not os.access(target, os.W_OK)  # locked again
 
 
-def test_put_back_from_the_trash_gets_a_new_number(vault: Path, tmp_path: Path) -> None:
+@_posix_only
+def test_a_file_that_will_not_go_is_locked_again(vault: Path, tmp_path: Path) -> None:
+    """The real deleting seam: a read-only folder refuses the unlink, and the
+    file it unlocked first is locked again with its record back."""
     _add_two(vault, tmp_path)
-    ((_name, dest),) = remove_supplementary(vault, A_ID, ["si-02"])
-    assert dest is not None
+    si = vault / "papers" / A_ID / "supplementary"
+    os.chmod(si, 0o555)
+    try:
+        if os.access(si, os.W_OK):
+            pytest.skip("this user can write a read-only folder (root)")
+        with pytest.raises(SupplementaryError, match="its record is back"):
+            remove_supplementary(vault, A_ID, ["si-02"])
+    finally:
+        os.chmod(si, 0o755)
+    assert not os.access(si / "si-02.xlsx", os.W_OK)
+    assert len(_meta(vault)["supplementary"]) == 2
 
-    items = prepare_items(vault, A_ID, [dest])
-    # Judged by the name it was first added under: the trash name has no DOI.
-    assert items[0].original == "ci9b00237_si_002.xlsx"
-    result = add_supplementary(vault, A_ID, items, allow_unverified=False)
 
-    assert [p.name for p in result.paths] == ["si-03.xlsx"]  # 02 is not reused
-    assert not dest.exists()
-    assert not (dest.parent / f"{dest.name}.meta.yaml").exists()
-    assert result.records[0]["check"] == "filename"
+def test_a_partly_done_delete_names_what_went(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_two(vault, tmp_path)
+    real = si_mod._delete_si_entry
+
+    def only_csv(path: Path, kind: str) -> None:
+        if path.name == "si-02.xlsx":
+            _stuck_delete()
+        real(path, kind)
+
+    monkeypatch.setattr(si_mod, "_delete_si_entry", only_csv)
+    with pytest.raises(SupplementaryError, match=r"record is back\..* Deleted: si-01\.csv\.$"):
+        remove_supplementary(vault, A_ID, ["si-01", "si-02"])
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-02.xlsx"]
+    assert not (vault / "papers" / A_ID / "supplementary" / "si-01.csv").exists()
 
 
-def test_numbering_skips_numbers_waiting_in_the_trash(
+def test_a_failed_views_rebuild_after_a_failed_delete_keeps_the_real_message(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_two(vault, tmp_path)
+    monkeypatch.setattr(si_mod, "_delete_si_entry", _stuck_delete)
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("views (mocked)")
+
+    monkeypatch.setattr(si_mod, "_reconcile", broken)
+    with pytest.raises(SupplementaryError) as raised:
+        remove_supplementary(vault, A_ID, ["si-02"])
+
+    assert str(raised.value) == (
+        "Could not delete si-02.xlsx (PermissionError); its record is back. "
+        "Close anything that has it open, then retry. INDEX/views rebuild failed "
+        "(RuntimeError); run `lit refresh-views` to reconcile."
+    )
+    assert len(_meta(vault)["supplementary"]) == 2
+
+
+@_posix_only
+@_not_root
+def test_a_link_that_will_not_go_names_the_real_error(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The directory fallback for a junction must not hide why the link
+    stayed: a read-only folder says PermissionError, not NotADirectoryError."""
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    _outside, personal = _outside_folder(tmp_path)
+    unlock_truth_file(si / "si-02.xlsx")
+    (si / "si-02.xlsx").unlink()
+    (si / "si-02.xlsx").symlink_to(personal)
+    os.chmod(si, 0o555)
+    try:
+        with pytest.raises(SupplementaryError, match=r"\(PermissionError\); its record"):
+            remove_supplementary(vault, A_ID, ["si-02"])
+    finally:
+        os.chmod(si, 0o755)
+    assert (si / "si-02.xlsx").is_symlink()
+    assert personal.read_bytes() == b"mine"
+
+
+def test_deleting_a_folder_link_leaves_the_folder_it_points_at(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A symlink on POSIX, a junction on Windows: the link goes, the folder
+    behind it and everything in it stay."""
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    outside, personal = _outside_folder(tmp_path)
+    unlock_truth_file(si / "si-02.xlsx")
+    (si / "si-02.xlsx").unlink()
+    if not make_portable_link(si / "si-02.xlsx", outside):
+        pytest.skip("this filesystem cannot hold folder links")
+
+    remove_supplementary(vault, A_ID, ["si-02"])
+
+    assert not os.path.lexists(si / "si-02.xlsx")
+    assert personal.read_bytes() == b"mine"
+    assert sorted(os.listdir(outside)) == ["personal.docx"]
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-01.csv"]
+
+
+def test_a_double_failure_on_several_files_speaks_of_them(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_two(vault, tmp_path)
+    monkeypatch.setattr(si_mod, "_delete_si_entry", _stuck_delete)
+    real_commit = si_mod._commit_metadata
+
+    def undo_fails(vault_: Path, paper_id: str, meta: object, op_id: str, *a: object):
+        if op_id.startswith("si-rm-undo-"):
+            raise OSError(28, "No space left on device (mocked)")
+        return real_commit(vault_, paper_id, meta, op_id, *a)
+
+    monkeypatch.setattr(si_mod, "_commit_metadata", undo_fails)
+    with pytest.raises(SupplementaryError) as raised:
+        remove_supplementary(vault, A_ID, ["si-01", "si-02"])
+
+    assert str(raised.value) == (
+        "Could not delete si-01.csv, si-02.xlsx (PermissionError), nor put their "
+        "records back (OSError): the files are still in supplementary/. Run "
+        "`lit health-check --fix` to record them again."
+    )
+
+
+def test_a_failed_delete_whose_record_cannot_go_back_says_how_to_record_it(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both writes failed: the file stays without a record — the one
+    inconsistency allowed, a warning `--fix` records again — never a record
+    without its file."""
+    _add_two(vault, tmp_path)
+    monkeypatch.setattr(si_mod, "_delete_si_entry", _stuck_delete)
+    real_commit = si_mod._commit_metadata
+
+    def undo_fails(vault_: Path, paper_id: str, meta: object, op_id: str, *a: object):
+        if op_id.startswith("si-rm-undo-"):
+            raise OSError(28, "No space left on device (mocked)")
+        return real_commit(vault_, paper_id, meta, op_id, *a)
+
+    monkeypatch.setattr(si_mod, "_commit_metadata", undo_fails)
+    with pytest.raises(SupplementaryError) as raised:
+        remove_supplementary(vault, A_ID, ["si-02"])
+
+    assert str(raised.value) == (
+        "Could not delete si-02.xlsx (PermissionError), nor put its record back "
+        "(OSError): the file is still in supplementary/. Run `lit health-check "
+        "--fix` to record it again."
+    )
+    assert (vault / "papers" / A_ID / "supplementary" / "si-02.xlsx").exists()
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-01.csv"]
+    drift = supplementary_drift(vault, A_ID, _meta(vault))
+    assert (drift.unrecorded, drift.missing) == (["si-02.xlsx"], [])
+
+
+def test_a_folder_at_a_recorded_name_is_refused_before_anything_is_written(
     vault: Path, tmp_path: Path
 ) -> None:
     _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    unlock_truth_file(si / "si-02.xlsx")
+    (si / "si-02.xlsx").unlink()
+    (si / "si-02.xlsx").mkdir()
+    (si / "si-02.xlsx" / "mine.txt").write_bytes(b"the user's")
+    meta_file = vault / "papers" / A_ID / "metadata.yaml"
+    before = meta_file.read_bytes()
+
+    for attempt in (
+        lambda: si_mod.preview_si_removal(vault, A_ID, ["si-01", "si-02"]),
+        lambda: remove_supplementary(vault, A_ID, ["si-01", "si-02"]),
+    ):
+        with pytest.raises(SupplementaryError) as raised:
+            attempt()
+        assert str(raised.value) == (
+            f"papers/{A_ID}/supplementary/si-02.xlsx is a folder, not the "
+            "recorded file — nothing was deleted. Move it out of "
+            "supplementary/, then retry."
+        )
+
+    assert meta_file.read_bytes() == before
+    assert (si / "si-01.csv").exists()
+    assert (si / "si-02.xlsx" / "mine.txt").read_bytes() == b"the user's"
+
+
+@_posix_only
+def test_deleting_a_link_removes_the_link_not_its_target(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    _outside, personal = _outside_folder(tmp_path)
+    unlock_truth_file(si / "si-02.xlsx")
+    (si / "si-02.xlsx").unlink()
+    (si / "si-02.xlsx").symlink_to(personal)
+
     remove_supplementary(vault, A_ID, ["si-02"])
-    new = _blob(tmp_path, "ci9b00237_si_009.pdf", b"9")
-    result = add_supplementary(vault, A_ID, [SiItem(new, new.name)], allow_unverified=False)
-    assert [p.name for p in result.paths] == ["si-03.pdf"]
+
+    assert not os.path.lexists(si / "si-02.xlsx")
+    assert personal.read_bytes() == b"mine"
+    assert os.access(personal, os.W_OK)  # never chmod-ed through the link
+
+
+def test_a_failed_views_rebuild_is_a_warning(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _add_two(vault, tmp_path)
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("views (mocked)")
+
+    monkeypatch.setattr(si_mod, "_reconcile", broken)
+    result = remove_supplementary(vault, A_ID, ["si-02"])
+
+    assert result.warnings == [
+        "INDEX/views rebuild failed (RuntimeError); the SI file was deleted. "
+        "Run `lit refresh-views` to reconcile."
+    ]
+    assert not (vault / "papers" / A_ID / "supplementary" / "si-02.xlsx").exists()
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-01.csv"]
+
+
+def test_a_deleted_number_is_given_again(vault: Path, tmp_path: Path) -> None:
+    _add_two(vault, tmp_path)
+    remove_supplementary(vault, A_ID, ["si-01"])
+
+    same = _blob(tmp_path, "ci9b00237_si_001.csv", b"1")
+    result = add_supplementary(vault, A_ID, [SiItem(same, same.name)], allow_unverified=False)
+    assert [p.name for p in result.paths] == ["si-01.csv"]
+
+    remove_supplementary(vault, A_ID, ["si-01"])
+    other = _blob(tmp_path, "ci9b00237_si_009.pdf", b"9")
+    result = add_supplementary(vault, A_ID, [SiItem(other, other.name)], allow_unverified=False)
+    assert [p.name for p in result.paths] == ["si-01.pdf"]
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == [
+        "si-01.pdf", "si-02.xlsx"
+    ]
+
+
+def test_drop_missing_records_keeps_a_record_whose_file_came_back(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+
+    assert si_mod.drop_missing_records(vault, A_ID, ["si-01.csv", "si-02.xlsx"]) == [
+        "si-01.csv"
+    ]
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-02.xlsx"]
+    assert (si / "si-02.xlsx").read_bytes() == b"2"
+
+
+def test_fix_never_deletes_a_file_that_came_back_while_it_asked(
+    vault: Path, tmp_path: Path
+) -> None:
+    """`--fix` asks before dropping a dead record; a file put back during the
+    question keeps its record and is not touched."""
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    unlock_truth_file(si / "si-02.xlsx")
+    (si / "si-02.xlsx").unlink()
+
+    def put_back_then_agree(paper_id: str, names: list[str]) -> bool:
+        assert (paper_id, names) == (A_ID, ["si-02.xlsx"])
+        (si / "si-02.xlsx").write_bytes(b"2")
+        return True
+
+    policy = si_mod.SiFixPolicy(
+        confirm_drop=put_back_then_agree, confirm_unverified=lambda *_a: False
+    )
+    counts = si_mod.fix_supplementary(vault, [A_ID], policy=policy)
+
+    assert counts["supplementary_missing"] == 0
+    assert (si / "si-02.xlsx").read_bytes() == b"2"
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == [
+        "si-01.csv", "si-02.xlsx"
+    ]
+
+
+def test_fix_drops_only_the_record_of_a_missing_file(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    si = vault / "papers" / A_ID / "supplementary"
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    policy = si_mod.SiFixPolicy(
+        confirm_drop=lambda *_a: True, confirm_unverified=lambda *_a: False
+    )
+
+    counts = si_mod.fix_supplementary(vault, [A_ID], policy=policy)
+
+    assert counts["supplementary_missing"] == 1
+    assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-02.xlsx"]
+    assert (si / "si-02.xlsx").read_bytes() == b"2"
+
+
+def test_preview_counts_the_lines_citing_each_file(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    paper = vault / "papers" / A_ID
+    (paper / "notes.md").write_text(
+        "# Notes\nsee si-02.xlsx（ci9b00237_si_002.xlsx）\n", encoding="utf-8"
+    )
+    (paper / "discussion.md").write_text(
+        "# Discussion log\n\n## 2026-10-20 10:00\n"
+        "si-02 twice: si-02.xlsx and si-02 on one line\n"
+        "si-02.xlsx (another_name.xlsx) is some other file\n"
+        "si-02 again\n",
+        encoding="utf-8",
+    )
+    before = {p: p.read_bytes() for p in _all_files(vault)}
+
+    preview = si_mod.preview_si_removal(vault, A_ID, ["si-01", "si-02.xlsx"])
+
+    assert [r["file"] for r in preview.records] == ["si-01.csv", "si-02.xlsx"]
+    assert preview.cited == {"si-02.xlsx": {"notes.md": 1, "discussion.md": 2}}
+    assert preview.unchecked == []
+    assert {p: p.read_bytes() for p in _all_files(vault)} == before  # reads only
+
+
+def test_preview_names_a_notes_file_it_cannot_even_look_at(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lit rm --si` asks for this before its prompt: a notes file in a folder
+    that cannot be searched is unchecked, never a traceback."""
+    _add_two(vault, tmp_path)
+    (vault / "papers" / A_ID / "notes.md").write_text("si-01\n", encoding="utf-8")
+    real_is_file = Path.is_file
+
+    def denied(self: Path) -> bool:
+        if self.name == "notes.md":
+            raise PermissionError(13, "Permission denied (mocked)")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", denied)
+    preview = si_mod.preview_si_removal(vault, A_ID, ["si-01"])
+
+    assert preview.unchecked == [("notes.md", "PermissionError")]
+
+
+def test_preview_names_a_notes_file_it_cannot_read(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    (vault / "papers" / A_ID / "notes.md").write_bytes(b"si-01 caf\xe9\n")
+
+    preview = si_mod.preview_si_removal(vault, A_ID, ["si-01"])
+
+    assert preview.cited == {}
+    assert preview.unchecked == [("notes.md", "UnicodeDecodeError")]
 
 
 # ---------------------------------------------------------------------------
@@ -1003,14 +1355,15 @@ def test_add_refuses_when_supplementary_is_a_file(vault: Path, tmp_path: Path) -
 def test_a_stray_keeps_its_number_only_while_it_is_free(
     vault: Path, tmp_path: Path
 ) -> None:
-    """W3: a record, a removed file in the trash, or an earlier stray of the
-    same batch holding the number means the stray is renumbered instead."""
+    """W3: a record or an earlier stray of the same batch holding the number
+    means the stray is renumbered instead — into the lowest free number. A
+    deleted file's number is free again."""
     _add_two(vault, tmp_path)  # si-01.csv, si-02.xlsx
-    remove_supplementary(vault, A_ID, ["si-02"])  # 02 now waits in the trash
+    remove_supplementary(vault, A_ID, ["si-02"])  # 02 is free again
     si = vault / "papers" / A_ID / "supplementary"
     strays = [
         _blob(si, "si-01.txt", b"recorded number"),
-        _blob(si, "si-02.pdf", b"number in the trash"),
+        _blob(si, "si-02.pdf", b"number deleted"),
         _blob(si, "si-05.csv", b"free number"),
         _blob(si, "si-05.txt", b"same number, same batch"),
     ]
@@ -1019,7 +1372,7 @@ def test_a_stray_keeps_its_number_only_while_it_is_free(
         vault, A_ID, prepare_items(vault, A_ID, strays), allow_unverified=True
     )
 
-    expected = ["si-01.csv", "si-05.csv", "si-06.txt", "si-07.pdf", "si-08.txt"]
+    expected = ["si-01.csv", "si-02.pdf", "si-03.txt", "si-04.txt", "si-05.csv"]
     assert [r["file"] for r in _meta(vault)["supplementary"]] == expected
     assert sorted(os.listdir(si)) == sorted(expected)
 
@@ -1038,53 +1391,24 @@ def test_records_are_kept_in_number_order(vault: Path, tmp_path: Path) -> None:
     ]
 
 
-def test_only_removed_si_files_come_back_from_the_trash(
+def test_a_file_in_a_leftover_removed_si_folder_is_inside_the_library(
     vault: Path, tmp_path: Path
 ) -> None:
-    """S3: a sidecar, or a file sitting loose in the container, is refused."""
-    _add_two(vault, tmp_path)
-    ((_name, dest),) = remove_supplementary(vault, A_ID, ["si-02"])
-    assert dest is not None
-    sidecar = dest.parent / f"{dest.name}.meta.yaml"
-    loose = _blob(vault / TRASH_DIRNAME / "removed-si", "loose.csv", b"loose")
-    for path in (sidecar, loose):
-        with pytest.raises(SupplementaryError, match="inside the library"):
-            prepare_items(vault, A_ID, [path])
-        assert path.exists()
+    """``.trash/removed-si/`` means nothing any more: a file found there is
+    like any other in the library — the move would delete it."""
+    folder = vault / TRASH_DIRNAME / "removed-si" / A_ID
+    folder.mkdir(parents=True)
+    leftover = _blob(folder, "20261020T083000Z-si-02.xlsx", b"2")
+    _blob(folder, "20261020T083000Z-si-02.xlsx.meta.yaml", b"record: {}\n")
 
-
-@_posix_only
-def test_a_link_into_the_trash_takes_the_file_with_its_sidecar(
-    vault: Path, tmp_path: Path
-) -> None:
-    """S3: the real trashed file and its sidecar go together, not just the
-    link (which used to leave the file behind without its record)."""
-    _add_two(vault, tmp_path)
-    ((_name, dest),) = remove_supplementary(vault, A_ID, ["si-02"])
-    assert dest is not None
-    link = tmp_path / "back.xlsx"
-    link.symlink_to(dest)
-
-    items = prepare_items(vault, A_ID, [link])
-    assert items[0].original == "ci9b00237_si_002.xlsx"
-    add_supplementary(vault, A_ID, items, allow_unverified=False)
-
-    assert not dest.exists()
-    assert not (dest.parent / f"{dest.name}.meta.yaml").exists()
-    assert not link.is_symlink()
-
-
-def test_putting_the_last_file_back_prunes_no_higher_than_the_container(
-    vault: Path, tmp_path: Path
-) -> None:
-    _add_two(vault, tmp_path)
-    ((_name, dest),) = remove_supplementary(vault, A_ID, ["si-02"])
-    assert dest is not None
-    add_supplementary(
-        vault, A_ID, prepare_items(vault, A_ID, [dest]), allow_unverified=False
-    )
-    assert not (vault / TRASH_DIRNAME / "removed-si").exists()
-    assert (vault / TRASH_DIRNAME).is_dir()
+    with pytest.raises(SupplementaryError, match="inside the library"):
+        prepare_items(vault, A_ID, [leftover])
+    with pytest.raises(SupplementaryError, match="inside the library"):
+        add_supplementary(
+            vault, A_ID, [SiItem(leftover, leftover.name)], allow_unverified=True
+        )
+    assert leftover.read_bytes() == b"2"
+    assert "supplementary" not in _meta(vault)
 
 
 def test_inside_the_library_is_decided_by_identity_not_spelling(

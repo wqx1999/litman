@@ -8,27 +8,15 @@ views/ rebuild, atomic directory rename, and pre-flight validation.
 from __future__ import annotations
 
 import json
-import os
-import re
 from pathlib import Path
 from typing import Any
 
 import pytest
-from click.testing import CliRunner, Result
+from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
-from litman.core import trash as trash_mod
 from litman.core.library import create_vault
-from litman.core.trash import (
-    REMOVED_SI_DIRNAME,
-    SIDECAR_SUFFIX,
-    list_removed_si,
-    move_si_to_trash,
-    read_removed_si_sidecar,
-    removed_si_dir,
-    rename_removed_si,
-)
 from litman.exceptions import (
     CorruptMetadataError,
     PaperNotFoundError,
@@ -574,315 +562,27 @@ def test_rename_reports_a_moved_aside_folder(
     assert is_portable_link(proj / "litman_reflib" / "2024_Foo_Baz")
 
 
-# ===========================================================================
-# Removed SI in the trash follows the paper
-# ===========================================================================
-
-# The SI file names below carry this DOI's number, so `lit add --si` verifies
-# them by name and needs no --force.
-_SI_DOI = "10.1021/acs.jcim.9b00237"
-_STAMP = "20261020T083000Z"
-
-
-def _run(vault: Path, *args: str) -> Result:
-    return CliRunner().invoke(cli, [*args, "--library", str(vault)])
-
-
-def _si_dir(vault: Path, paper_id: str) -> Path:
-    return vault / "papers" / paper_id / "supplementary"
-
-
-def _paper_with_removed_si(vault: Path, tmp_path: Path, paper_id: str) -> Path:
-    """A paper holding si-01 whose si-02 `lit rm --si` moved to the trash."""
-    _write_paper(vault, paper_id, doi=_SI_DOI)
-    one = tmp_path / "ci9b00237_si_001.csv"
-    one.write_bytes(b"1,2\n")
-    two = tmp_path / "ci9b00237_si_002.xlsx"
-    two.write_bytes(b"sheet")
-    added = _run(vault, "add", "--si", paper_id, str(one), str(two))
-    assert added.exit_code == 0, added.output
-    removed = _run(vault, "rm", paper_id, "--si", "si-02", "--yes")
-    assert removed.exit_code == 0, removed.output
-    (trashed,) = removed_si_dir(vault, paper_id).glob("*-si-02.xlsx")
-    return trashed
-
-
-def _plant_removed_si(
-    vault: Path, tmp_path: Path, paper_id: str, name: str, payload: bytes
-) -> Path:
-    """A removed SI file and its sidecar, through the call `lit rm --si` makes.
-    The record's ``original`` names the payload, so a pair is recognisable."""
-    source = tmp_path / "planted" / paper_id / name
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_bytes(payload)
-    record = {"file": name, "original": f"{payload.decode()}.dat"}
-    return move_si_to_trash(vault, paper_id, source, record)
-
-
-def _contents(folder: Path) -> dict[str, bytes] | None:
-    if not folder.is_dir():
-        return None
-    return {p.name: p.read_bytes() for p in folder.iterdir()}
-
-
-def test_rename_moves_the_removed_si_along(vault: Path, tmp_path: Path) -> None:
-    trashed = _paper_with_removed_si(vault, tmp_path, "2019_Yang_Concepts")
-    sidecar_before = read_removed_si_sidecar(trashed)
-
-    result = _run(vault, "rename", "2019_Yang_Concepts", "2019_Yang_AI")
-
-    assert result.exit_code == 0, result.output
-    assert "Moved 1 removed SI file in the trash to the new id" in result.output
-    assert not removed_si_dir(vault, "2019_Yang_Concepts").exists()
-    moved = removed_si_dir(vault, "2019_Yang_AI") / trashed.name
-    assert moved.read_bytes() == b"sheet"
-    # Only the id changes; when it was removed and its record stay as written.
-    assert read_removed_si_sidecar(moved) == {
-        **sidecar_before,
-        "paper_id": "2019_Yang_AI",
-    }
-
-    listed = _run(vault, "trash", "list")
-    assert listed.exit_code == 0, listed.output
-    assert f"lit add --si 2019_Yang_AI {moved}" in listed.output
-    assert "lit add --si 2019_Yang_Concepts" not in listed.output
-
-    back = _run(vault, "add", "--si", "2019_Yang_AI", str(moved))
-    assert back.exit_code == 0, back.output
-    assert back.stdout.splitlines()[1] == (
-        f"{_si_dir(vault, '2019_Yang_AI') / 'si-03.xlsx'}\tci9b00237_si_002.xlsx"
-    )
-    assert not moved.exists()
-    assert list_removed_si(vault) == []
-
-
-def test_rename_keeps_removed_si_numbers_retired(
-    vault: Path, tmp_path: Path
-) -> None:
-    """The next SI added under the new id numbers past the removed si-02, as
-    it would have under the old id."""
-    _paper_with_removed_si(vault, tmp_path, "2019_Yang_Concepts")
-    renamed = _run(vault, "rename", "2019_Yang_Concepts", "2019_Yang_AI")
-    assert renamed.exit_code == 0, renamed.output
-    fresh = tmp_path / "ci9b00237_si_003.csv"
-    fresh.write_bytes(b"3,4\n")
-
-    added = _run(vault, "add", "--si", "2019_Yang_AI", str(fresh))
-
-    assert added.exit_code == 0, added.output
-    assert added.stdout.splitlines()[1] == (
-        f"{_si_dir(vault, '2019_Yang_AI') / 'si-03.csv'}\tci9b00237_si_003.csv"
-    )
-
-
-def test_rename_merges_into_removed_si_left_under_the_new_id(
-    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An earlier paper called 2024_Foo_Baz left removed SI behind. The
-    renamed paper's files join it, each with its own sidecar, and a name
-    already taken there gets a fresh one instead of overwriting it."""
-    monkeypatch.setattr(trash_mod, "_utc_compact_now", lambda: _STAMP)
+def test_rename_leaves_a_leftover_removed_si_folder_alone(vault: Path) -> None:
+    """``lit rm --si`` deletes for good, so ``.trash/removed-si/`` means
+    nothing: a folder an earlier development build left there under the old
+    id is neither moved nor reported."""
     _write_paper(vault, "2024_Foo_Bar")
-    _plant_removed_si(vault, tmp_path, "2024_Foo_Baz", "si-02.xlsx", b"earlier")
-    _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"clash")
-    _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-03.csv", b"own")
-    # A record whose file was deleted by hand goes along too.
-    stray = removed_si_dir(vault, "2024_Foo_Bar") / f"{_STAMP}-si-04.pdf{SIDECAR_SUFFIX}"
-    stray.write_text("paper_id: 2024_Foo_Bar\n", encoding="utf-8")
+    folder = vault / ".trash" / "removed-si" / "2024_Foo_Bar"
+    folder.mkdir(parents=True)
+    leftover = folder / "20261020T083000Z-si-02.xlsx"
+    leftover.write_bytes(b"sheet")
 
-    result = _run(vault, "rename", "2024_Foo_Bar", "2024_Foo_Baz")
-
-    assert result.exit_code == 0, result.output
-    assert "Moved 2 removed SI files in the trash to the new id" in result.output
-    assert not removed_si_dir(vault, "2024_Foo_Bar").exists()
-    folder = removed_si_dir(vault, "2024_Foo_Baz")
-    assert len(os.listdir(folder)) == 7  # 3 files, 3 sidecars, the stray record
-    rows = {row.path.read_bytes(): row for row in list_removed_si(vault)}
-    assert sorted(rows) == [b"clash", b"earlier", b"own"]
-    assert rows[b"earlier"].path.name == f"{_STAMP}-si-02.xlsx"
-    assert re.fullmatch(
-        rf"{_STAMP}-[0-9a-f]{{4}}-si-02\.xlsx", rows[b"clash"].path.name
+    result = CliRunner().invoke(
+        cli,
+        ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)],
     )
-    assert rows[b"own"].path.name == f"{_STAMP}-si-03.csv"
-    for payload, row in rows.items():
-        assert row.paper_id == "2024_Foo_Baz"
-        assert row.original == f"{payload.decode()}.dat"  # its own record
-        assert read_removed_si_sidecar(row.path)["paper_id"] == "2024_Foo_Baz"
-    assert _yaml.load((folder / stray.name).read_text(encoding="utf-8")) == {
-        "paper_id": "2024_Foo_Baz"
-    }
-
-
-@pytest.mark.parametrize("others", [False, True], ids=["no-trash", "others-si"])
-def test_rename_without_removed_si_prints_what_it_always_did(
-    vault: Path, tmp_path: Path, others: bool
-) -> None:
-    _write_paper(vault, "2024_Foo_Bar")
-    if others:
-        # Another paper's, and some an earlier 2024_Foo_Baz left behind.
-        _plant_removed_si(vault, tmp_path, "2024_Other", "si-01.pdf", b"other")
-        _plant_removed_si(vault, tmp_path, "2024_Foo_Baz", "si-01.pdf", b"left")
-    before = {
-        pid: _contents(removed_si_dir(vault, pid))
-        for pid in ("2024_Other", "2024_Foo_Baz")
-    }
-
-    result = _run(vault, "rename", "2024_Foo_Bar", "2024_Foo_Baz")
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines() == [
         "✓ Renamed 2024_Foo_Bar → 2024_Foo_Baz",
         "INDEX.json + views/ refreshed.",
     ]
-    assert {
-        pid: _contents(removed_si_dir(vault, pid))
-        for pid in ("2024_Other", "2024_Foo_Baz")
-    } == before
-
-
-@pytest.mark.parametrize("merge", [False, True], ids=["folder-move", "merge"])
-def test_rename_survives_a_failed_removed_si_move(
-    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, merge: bool
-) -> None:
-    """The rename has committed by then: a failed move is a warning, and every
-    removed file stays where it was, next to its sidecar."""
-    _write_paper(vault, "2024_Foo_Bar")
-    _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
-    if merge:
-        _plant_removed_si(vault, tmp_path, "2024_Foo_Baz", "si-05.pdf", b"earlier")
-    ids = ("2024_Foo_Bar", "2024_Foo_Baz")
-    before = {pid: _contents(removed_si_dir(vault, pid)) for pid in ids}
-    real_rename = trash_mod.os.rename
-
-    def failing_rename(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
-        # trash_mod.os is the os module itself: the paper's own folder rename
-        # comes through here too and must go on. In a merge the file moves and
-        # its sidecar fails, so the file has to be moved back.
-        path = Path(src)
-        if REMOVED_SI_DIRNAME in path.parts and (
-            not merge or path.name.endswith(SIDECAR_SUFFIX)
-        ):
-            raise PermissionError("simulated")
-        real_rename(src, dst, *args, **kwargs)
-
-    monkeypatch.setattr(trash_mod.os, "rename", failing_rename)
-
-    result = _run(vault, "rename", "2024_Foo_Bar", "2024_Foo_Baz")
-
-    assert result.exit_code == 0, result.output
-    assert (vault / "papers" / "2024_Foo_Baz").is_dir()
-    assert not (vault / "papers" / "2024_Foo_Bar").exists()
-    flat = " ".join(result.output.split())
-    assert (
-        "warning: removed SI stayed in .trash/removed-si/2024_Foo_Bar/ "
-        "(PermissionError). Move its files to .trash/removed-si/2024_Foo_Baz/ "
-        "by hand."
-    ) in flat
-    assert "Moved" not in flat
-    assert {pid: _contents(removed_si_dir(vault, pid)) for pid in ids} == before
-
-
-def _fs_ignores_case(where: Path) -> bool:
-    """Probed, not read off sys.platform (as in core/test_supplementary.py)."""
-    probe = where / "LitmanCaseProbe"
-    probe.mkdir()
-    try:
-        return (where / "LITMANCASEPROBE").is_dir()
-    finally:
-        probe.rmdir()
-
-
-@pytest.mark.parametrize(
-    "new", ["2024_Foo_Bar", "2024_foo_bar"], ids=["same-name", "case-variant"]
-)
-def test_rename_removed_si_leaves_a_folder_reached_by_both_names(
-    vault: Path, tmp_path: Path, new: str
-) -> None:
-    """A case-only rename on a case-insensitive disk reaches one folder under
-    both names; merging it into itself would rename every file in it."""
-    if new != "2024_Foo_Bar" and not _fs_ignores_case(tmp_path):
-        pytest.skip(
-            "Only where the filesystem itself ignores case do two spellings "
-            "name one folder; here they are two different directories."
-        )
-    trashed = _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
-    before = _contents(trashed.parent)
-
-    assert rename_removed_si(vault, "2024_Foo_Bar", new) == 0
-    assert _contents(trashed.parent) == before
-
-
-@pytest.mark.parametrize(
-    "failure", ["replace", "write"], ids=["replace-fails", "write-dies-halfway"]
-)
-def test_rename_removed_si_never_cuts_a_sidecar_short(
-    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
-    """The sidecar is the only copy of the removed file's record: a rewrite
-    that fails part-way keeps the old text whole and leaves no temp file."""
-    trashed = _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
-    sidecar_name = f"{trashed.name}{SIDECAR_SUFFIX}"
-    before = (trashed.parent / sidecar_name).read_bytes()
-
-    def in_removed_si(path: Any) -> bool:
-        p = Path(path)
-        return REMOVED_SI_DIRNAME in p.parts and p.name.endswith(SIDECAR_SUFFIX)
-
-    if failure == "replace":
-        real_replace = trash_mod.os.replace
-
-        def failing_replace(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
-            # trash_mod.os is the os module itself: fail only the sidecar swap.
-            if in_removed_si(dst):
-                raise PermissionError("simulated")
-            real_replace(src, dst, *args, **kwargs)
-
-        monkeypatch.setattr(trash_mod.os, "replace", failing_replace)
-    else:
-        real_write_text = Path.write_text
-
-        def dying_write_text(self: Path, data: str, *args: Any, **kwargs: Any) -> int:
-            if in_removed_si(self):
-                real_write_text(self, data[: len(data) // 2], *args, **kwargs)
-                raise OSError("simulated: disk full")
-            return real_write_text(self, data, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "write_text", dying_write_text)
-
-    assert rename_removed_si(vault, "2024_Foo_Bar", "2024_Foo_Baz") == 1
-
-    folder = removed_si_dir(vault, "2024_Foo_Baz")
-    assert sorted(os.listdir(folder)) == [trashed.name, sidecar_name]
-    assert (folder / sidecar_name).read_bytes() == before
-
-
-def test_rename_removed_si_merges_on_a_disk_without_inodes(
-    vault: Path, tmp_path: Path, no_inodes: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two different folders: compared by inode 0 they looked like one, and
-    nothing moved, without a word."""
-    _plant_removed_si(vault, tmp_path, "2024_Foo_Baz", "si-01.pdf", b"earlier")
-    _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
-    # The same disk as the stdlib sees it, so a return to os.path.samefile
-    # (inode 0 on both sides: "same file") fails here too. Patched only now:
-    # planting moves files, and shutil asks samefile on the way.
-    monkeypatch.setattr(
-        os.path, "samefile", lambda a, b: os.stat(a).st_dev == os.stat(b).st_dev
-    )
-
-    assert rename_removed_si(vault, "2024_Foo_Bar", "2024_Foo_Baz") == 1
-
-    assert not removed_si_dir(vault, "2024_Foo_Bar").exists()
-    rows = {row.path.read_bytes(): row for row in list_removed_si(vault)}
-    assert sorted(rows) == [b"earlier", b"own"]
-    assert {row.paper_id for row in rows.values()} == {"2024_Foo_Baz"}
-
-
-def test_rename_removed_si_to_the_same_name_on_a_disk_without_inodes(
-    vault: Path, tmp_path: Path, no_inodes: None
-) -> None:
-    trashed = _plant_removed_si(vault, tmp_path, "2024_Foo_Bar", "si-02.xlsx", b"own")
-    before = _contents(trashed.parent)
-
-    assert rename_removed_si(vault, "2024_Foo_Bar", "2024_Foo_Bar") == 0
-    assert _contents(trashed.parent) == before
+    assert leftover.read_bytes() == b"sheet"
+    assert sorted(p.name for p in (vault / ".trash" / "removed-si").iterdir()) == [
+        "2024_Foo_Bar"
+    ]

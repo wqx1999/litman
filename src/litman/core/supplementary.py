@@ -6,8 +6,10 @@ SI files live in ``papers/<id>/supplementary/`` as ``si-01.pdf``,
 ``added`` / ``check``) and read-only locked like ``paper.pdf``. Nothing here
 fetches anything: the user downloads SI from the publisher and hands the files
 over (ADR-027). Every add and remove — ``lit add --si``, ``lit rm --si``,
-``lit health-check --fix`` and later the GUI's SI window — goes through
-:func:`add_supplementary` / :func:`remove_supplementary` (invariant #16).
+``lit health-check --fix`` and the GUI — goes through
+:func:`add_supplementary` / :func:`remove_supplementary` /
+:func:`drop_missing_records` (invariant #16). A removed file is deleted, not
+trashed: adding it again is the way back.
 
 Before anything is written, :func:`verify_batch` decides whether each file
 belongs to the paper:
@@ -56,15 +58,6 @@ from litman.core.locking import (
     lock_truth_file,
     unlock_truth_file,
 )
-from litman.core.trash import (
-    REMOVED_SI_DIRNAME,
-    SIDECAR_SUFFIX,
-    TRASH_DIRNAME,
-    move_si_to_trash,
-    read_removed_si_sidecar,
-    removed_si_dir,
-    removed_si_file_name,
-)
 from litman.core.views import (
     load_index_papers,
     papers_for_index,
@@ -90,8 +83,8 @@ _UPLOAD_DIRNAME = ".litman-upload"
 # A recorded SI file name: "si-" + at least two digits + up to two lowercase
 # alphanumeric extension segments ("si-07.tar.gz").
 _SI_NAME_RE = re.compile(r"^si-(\d{2,})((?:\.[a-z0-9]+){0,2})$")
-# Lenient on purpose: numbering continues past ANY "si-<n>…" name in the
-# folder, so a hand-copied "si-09.PDF" still keeps 09 from being handed out.
+# Lenient on purpose: ANY "si-<n>…" name in the folder holds its number, so a
+# hand-copied "si-09.PDF" still keeps 09 from being handed out.
 _SI_NUMBER_RE = re.compile(r"^si-(\d+)", re.IGNORECASE)
 _SI_ARG_RE = re.compile(r"^si-(\d+)(\..+)?$", re.IGNORECASE)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -205,10 +198,8 @@ _yaml_rt = ThreadLocalYAML(
 class SiItem:
     """One file offered as SI: where it is, and the name to judge it by.
 
-    ``original`` is the name the publisher gave it — the file's own name, or
-    for a file coming back from ``.trash/removed-si/`` the name recorded when
-    it was first added (its trash name carries no DOI number). A lone
-    surrogate in it (an undecodable byte of a POSIX file name) becomes
+    ``original`` is the name the publisher gave it — the file's own name. A
+    lone surrogate in it (an undecodable byte of a POSIX file name) becomes
     U+FFFD, since metadata.yaml's reader rejects one: the name is what the
     user and the record see, while ``path`` still names the real file.
 
@@ -250,6 +241,31 @@ class SiAddResult:
     # Post-commit best-effort hiccups (INDEX lag, a source that could not be
     # removed); the SI is in the library either way.
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SiRemoveResult:
+    """What :func:`remove_supplementary` did."""
+
+    records: list[dict[str, Any]]
+    # Recorded files that were already gone: only their record was dropped.
+    gone: list[str] = field(default_factory=list)
+    # A derived-view rebuild that failed afterwards; the files are gone anyway.
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SiRemovalPreview:
+    """What deleting some SI files would touch (:func:`preview_si_removal`).
+
+    ``cited`` maps each file the notes cite to ``{notes file: lines citing
+    it}``; ``unchecked`` holds ``(notes file, why)`` for one that could not be
+    read, so its citations went uncounted.
+    """
+
+    records: list[dict[str, Any]]
+    cited: dict[str, dict[str, int]]
+    unchecked: list[tuple[str, str]]
 
 
 @dataclass
@@ -404,11 +420,6 @@ def shell_path(path: Path | str) -> str:
     """A path as it can be pasted into a shell command."""
     text = str(path)
     return f'"{text}"' if any(c.isspace() for c in text) else text
-
-
-def restore_command(paper_id: str, path: Path | str) -> str:
-    """The command that puts a removed SI file back into its paper."""
-    return f"lit add --si {paper_id} {shell_path(path)}"
 
 
 # ---------------------------------------------------------------------------
@@ -652,60 +663,38 @@ def _publisher_seq(original: str) -> int | None:
 def plan_names(taken: Iterable[str], originals: Sequence[str]) -> list[str]:
     """``si-NN.ext`` names for a batch, aligned with ``originals``.
 
-    Numbering continues after the highest number in ``taken`` — every name
-    the paper has used: recorded, on disk, or waiting in
-    ``.trash/removed-si/``. Within the batch, files carrying the publisher's
-    own running number (``_si_001``, ``MOESM1``, ``mmc1``, ``media-1``,
-    ``-s001``, ``-sup-0001``) come first in that order; the rest follow in
-    the order given.
+    Each file gets the lowest number from 1 up that no name in ``taken`` —
+    recorded, or on disk in any case — holds, so a deleted file's number is
+    given again: to the same file added back, or to the next one. Within the
+    batch, files carrying the publisher's own running number (``_si_001``,
+    ``MOESM1``, ``mmc1``, ``media-1``, ``-s001``, ``-sup-0001``) come first
+    in that order; the rest follow in the order given.
     """
-    high = max(
-        (n for n in (_number_of(name) for name in taken) if n is not None),
-        default=0,
-    )
+    used = _numbers_in(taken)
     seqs = [_publisher_seq(name) for name in originals]
     order = sorted(
         range(len(originals)),
         key=lambda i: (seqs[i] is None, seqs[i] or 0, i),
     )
     names = [""] * len(originals)
-    for offset, index in enumerate(order, start=1):
-        names[index] = f"si-{high + offset:02d}{si_extension(originals[index])}"
+    number = 0
+    for index in order:
+        number += 1
+        while number in used:
+            number += 1
+        names[index] = f"si-{number:02d}{si_extension(originals[index])}"
     return names
 
 
-def _taken_names(
-    si_dir: Path, records: list[dict[str, Any]], trash_dir: Path
-) -> list[str]:
+def _taken_names(si_dir: Path, records: list[dict[str, Any]]) -> list[str]:
     names = [rec["file"] for rec in records]
-    for folder, from_trash in ((si_dir, False), (trash_dir, True)):
-        try:
-            entries = os.listdir(folder)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        for name in entries:
-            if from_trash:
-                si_name = removed_si_file_name(name)
-                if si_name is not None:
-                    names.append(si_name)
-            else:
-                names.append(name)
+    with contextlib.suppress(FileNotFoundError, NotADirectoryError):
+        names.extend(os.listdir(si_dir))
     return names
 
 
 def _numbers_in(names: Iterable[str]) -> set[int]:
     return {n for n in (_number_of(name) for name in names) if n is not None}
-
-
-def _trash_numbers(vault: Path, paper_id: str) -> set[int]:
-    """Numbers waiting in ``.trash/removed-si/<paper_id>/`` — not to be reused."""
-    try:
-        names = os.listdir(removed_si_dir(vault, paper_id))
-    except OSError:
-        return set()
-    return _numbers_in(
-        si_name for si_name in map(removed_si_file_name, names) if si_name
-    )
 
 
 def _sorted_records(entries: Iterable[Any]) -> list[Any]:
@@ -1006,28 +995,16 @@ def _vault_parts(vault: Anchor, path: Path) -> tuple[str, ...] | None:
         current = current.parent
 
 
-def _is_removed_si_file(parts: tuple[str, ...] | None) -> bool:
-    """``.trash/removed-si/<paper-id>/<file>`` — a removed SI file, and
-    neither its sidecar nor anything placed elsewhere in the container."""
-    return (
-        parts is not None
-        and len(parts) == 4
-        and parts[:2] == (TRASH_DIRNAME, REMOVED_SI_DIRNAME)
-        and not parts[3].endswith(SIDECAR_SUFFIX)
-    )
-
-
 def _source_problem(
     vault: Anchor, paper_id: str, path: Path, recorded: set[str]
 ) -> str | None:
     """Why ``path`` may not be taken in, or ``None``.
 
-    Outside the library anything goes. Inside it, only three places hold
-    files that are meant to move into a paper's SI: a removed SI file in
-    ``.trash/removed-si/<paper-id>/`` (putting it back), the GUI's upload
-    stash, and this paper's own ``supplementary/`` folder for a file nobody
-    recorded yet. Anything else — another paper's PDF, a trashed paper, a
-    sidecar — would be deleted by the move. Links are resolved first, so a
+    Outside the library anything goes. Inside it, only two places hold files
+    that are meant to move into a paper's SI: the GUI's upload stash, and
+    this paper's own ``supplementary/`` folder for a file nobody recorded
+    yet. Anything else — another paper's PDF, a trashed paper, a sidecar —
+    would be deleted by the move. Links are resolved first, so a
     project's ``litman_reflib/<paper>/paper.pdf`` counts as inside.
     """
     if not path.exists():
@@ -1035,7 +1012,7 @@ def _source_problem(
     if path.is_dir():
         return f"{path} is a folder — add its files one by one, or zip it first."
     parts = _vault_parts(vault, path)
-    if parts is None or _is_removed_si_file(parts):
+    if parts is None:
         return None
     if len(parts) == 2 and parts[0] == _UPLOAD_DIRNAME:
         return None
@@ -1047,14 +1024,6 @@ def _source_problem(
     ):
         return None
     return f"{path} is inside the library — copy it somewhere outside first."
-
-
-def _original_name(vault: Anchor, path: Path) -> str:
-    if _is_removed_si_file(_vault_parts(vault, path)):
-        record = read_removed_si_sidecar(path.resolve()).get("record")
-        if isinstance(record, Mapping) and record.get("original"):
-            return str(record["original"])
-    return path.name
 
 
 def prepare_items(
@@ -1077,7 +1046,7 @@ def prepare_items(
         problem = _source_problem(anchor, paper_id, path, recorded)
         if problem:
             raise SupplementaryError(problem)
-        items.append(SiItem(path, _original_name(anchor, path)))
+        items.append(SiItem(path, path.name))
     return items
 
 
@@ -1240,17 +1209,6 @@ def _stamp_mtime(path: Path, timestamp: float) -> None:
     os.utime(path, (timestamp, timestamp))
 
 
-def _prune_removed_si(vault: Path, paper_dir_name: str) -> None:
-    """Drop ``.trash/removed-si/<paper>/`` once it is empty, then the
-    container itself — and never anything above it."""
-    container = vault / TRASH_DIRNAME / REMOVED_SI_DIRNAME
-    for folder in (container / paper_dir_name, container):
-        try:
-            folder.rmdir()
-        except OSError:
-            return
-
-
 def _refusal(verdicts: list[tuple[SiItem, Verdict]]) -> str:
     detail = "; ".join(f"{item.original}: {v.reason}" for item, v in verdicts)
     noun = "file" if len(verdicts) == 1 else "files"
@@ -1270,8 +1228,8 @@ def add_supplementary(
     metadata records land together with the re-rendered INDEX, or none of
     them do. The promotion locks each SI file read-only. A stray already named
     ``si-NN.*`` in the paper's own folder is recorded where it is, keeping the
-    number notes may already cite — unless a record, a removed file in the
-    trash or another stray of the batch holds that number. Records are kept
+    number notes may already cite — unless a record or another stray of the
+    batch holds that number. Records are kept
     in number order. Sources are removed only after the commit (``lit add``'s
     mv semantics); one that cannot be is a warning.
 
@@ -1314,7 +1272,7 @@ def add_supplementary(
 
     si_dir = vault / "papers" / paper_id / SI_DIRNAME
     si_dir_resolved = si_dir.resolve()
-    taken_numbers = _numbers_in(recorded) | _trash_numbers(vault, paper_id)
+    taken_numbers = _numbers_in(recorded)
     in_place: dict[int, str] = {}
     for index, item in enumerate(items):
         resolved = item.path.resolve()
@@ -1330,7 +1288,7 @@ def add_supplementary(
         in_place[index] = resolved.name
     moving = [i for i in range(len(items)) if i not in in_place]
     planned = plan_names(
-        _taken_names(si_dir, records, removed_si_dir(vault, paper_id)),
+        _taken_names(si_dir, records),
         [items[i].original for i in moving],
     )
     names = dict(in_place)
@@ -1395,17 +1353,6 @@ def add_supplementary(
         try:
             resolved = source.resolve()
             parts = _vault_parts(anchor, source)
-            if parts is not None and _is_removed_si_file(parts):
-                # The real file goes with its sidecar, even when the path given
-                # was a link to it: removing only the link would strand the
-                # trashed copy without its record.
-                resolved.unlink()
-                sidecar = resolved.parent / f"{resolved.name}{SIDECAR_SUFFIX}"
-                sidecar.unlink(missing_ok=True)
-                if source.is_symlink():
-                    source.unlink()
-                _prune_removed_si(vault, parts[2])
-                continue
             if parts is not None:
                 # From inside the library (the upload stash, or a stray in
                 # this paper's own folder), possibly through a link: the real
@@ -1434,29 +1381,32 @@ def add_supplementary(
     )
 
 
-def remove_supplementary(
-    vault: Path, paper_id: str, names: Iterable[str]
-) -> list[tuple[str, Path | None]]:
-    """Move SI files to ``.trash/removed-si/<paper_id>/`` and drop their records.
+def _refuse_folders(
+    paper_id: str, si_dir: Path, records: Iterable[Mapping[str, Any]]
+) -> None:
+    """Refuse up front to delete a recorded name that now holds a folder.
 
-    The records go first, in one staged write with the INDEX; then each file
-    is unlocked and moved next to a sidecar holding its record. A file that is
-    already gone just loses its record (``None`` in the result). If a move
-    fails, the file is locked again and its record written back, so no record
-    ever points at nothing. The folder is removed once nothing but
-    file-manager droppings is left in it; any other file keeps it.
-
-    Raises:
-        SupplementaryError: an unknown name, a malformed field,
-            ``supplementary`` being a link or a file, or a file that could not
-            be moved (its record is restored).
+    Deleting it would take whatever the user put in there; deleting nothing
+    but its record would hide it.
     """
-    meta = _load_rt(vault, paper_id)
-    _refuse_bad_folder(vault, paper_id)
-    chosen = resolve_si_records(paper_id, meta, names)
-    if not chosen:
-        return []
-    files = {rec["file"] for rec in chosen}
+    for rec in records:
+        where = f"papers/{paper_id}/{SI_DIRNAME}/{rec['file']}"
+        try:
+            kind = _entry_kind(si_dir / rec["file"])
+        except OSError as exc:
+            raise SupplementaryError(
+                f"{where} cannot be read ({exc.__class__.__name__}). "
+                "Fix its permissions, then retry."
+            ) from exc
+        if kind == "dir":
+            raise SupplementaryError(
+                f"{where} is a folder, not the recorded file — nothing was "
+                "deleted. Move it out of supplementary/, then retry."
+            )
+
+
+def _drop_records(meta: Any, files: set[str]) -> bool:
+    """Take the records of ``files`` out of ``meta``; whether any are left."""
     keep = [
         entry
         for entry in meta[SUPPLEMENTARY_FIELD]
@@ -1467,34 +1417,124 @@ def remove_supplementary(
     else:
         del meta[SUPPLEMENTARY_FIELD]
     meta["updated-at"] = now_iso()
+    return bool(keep)
+
+
+def _delete_si_entry(path: Path, kind: str) -> None:
+    """Delete one recorded SI entry for good (``kind`` from :func:`_entry_kind`).
+
+    A plain file is unlocked first — Windows refuses to delete a read-only
+    file — and locked again when it still cannot go. A link is removed, never
+    what it points at; a Windows junction only goes as a directory.
+    """
+    if kind == "file":
+        unlock_truth_file(path)
+        try:
+            path.unlink()
+        except OSError:
+            lock_truth_file(path)
+            raise
+        return
+    if kind == "link":
+        try:
+            path.unlink()
+        except OSError as exc:
+            # The rmdir is only for a junction; when it fails too, the
+            # unlink's error is the one that says why.
+            try:
+                path.rmdir()
+            except OSError:
+                raise exc from None
+        return
+    if kind == "dir":
+        raise IsADirectoryError(f"{path} is a folder")
+    path.unlink()
+
+
+def preview_si_removal(
+    vault: Path, paper_id: str, names: Iterable[str]
+) -> SiRemovalPreview:
+    """What :func:`remove_supplementary` would delete, and where the notes cite it.
+
+    Read-only. Refuses as the delete would before writing anything — an
+    unknown name, a malformed field, ``supplementary`` being a link or a file,
+    a folder at a recorded name — so no confirmation is ever shown for a
+    delete that cannot happen.
+
+    Raises:
+        PaperNotFoundError / CorruptMetadataError: no such paper, or its
+            metadata does not parse.
+        SupplementaryError: as above.
+    """
+    from litman.core.si_citations import count_citations, read_si_citations
+
+    meta = _load_rt(vault, paper_id)
+    _refuse_bad_folder(vault, paper_id)
+    records = resolve_si_records(paper_id, meta, names)
+    paper_dir = vault / "papers" / paper_id
+    _refuse_folders(paper_id, paper_dir / SI_DIRNAME, records)
+    citations, unchecked = read_si_citations(paper_dir)
+    cited: dict[str, dict[str, int]] = {}
+    for rec in records:
+        counts = count_citations(citations, rec)
+        if counts:
+            cited[rec["file"]] = counts
+    return SiRemovalPreview(records=records, cited=cited, unchecked=unchecked)
+
+
+def remove_supplementary(
+    vault: Path, paper_id: str, names: Iterable[str]
+) -> SiRemoveResult:
+    """Delete SI files for good and drop their records.
+
+    There is no trash for SI: the way back is adding the file again. The
+    records go first, in one staged write with the INDEX; then each file is
+    deleted (a link is removed, never followed). A file that is already gone
+    just loses its record. If a file cannot be deleted, it is locked again and
+    its record written back, so no record ever points at nothing. The folder
+    is removed once nothing but file-manager droppings is left in it; any
+    other file keeps it.
+
+    Raises:
+        SupplementaryError: an unknown name, a malformed field,
+            ``supplementary`` being a link or a file, or a folder at a
+            recorded name (nothing is written); or a file that could not be
+            deleted (its record is restored).
+    """
+    meta = _load_rt(vault, paper_id)
+    _refuse_bad_folder(vault, paper_id)
+    chosen = resolve_si_records(paper_id, meta, names)
+    if not chosen:
+        return SiRemoveResult(records=[])
+    si_dir = vault / "papers" / paper_id / SI_DIRNAME
+    _refuse_folders(paper_id, si_dir, chosen)
+    # Records before files: the likeliest failures — another write holding
+    # this paper's staging op, a full disk — hit this commit, before anything
+    # is destroyed. A delete that fails after it is undone by writing the
+    # record back; only a second failure leaves a file without its record
+    # (a warning `--fix` records again), never a record without its file.
+    kept = _drop_records(meta, {rec["file"] for rec in chosen})
     all_papers = _commit_metadata(vault, paper_id, meta, f"si-rm-{paper_id}")
 
-    si_dir = vault / "papers" / paper_id / SI_DIRNAME
-    results: list[tuple[str, Path | None]] = []
+    deleted: list[str] = []
+    gone: list[str] = []
     failed: list[tuple[dict[str, Any], OSError]] = []
     for rec in chosen:
-        source = si_dir / rec["file"]
-        kind = ""
+        path = si_dir / rec["file"]
         try:
-            kind = _entry_kind(source)
+            kind = _entry_kind(path)
             if kind == "missing":
-                results.append((rec["file"], None))
+                gone.append(rec["file"])
                 continue
-            # Anything but a plain file (a link put in its place) moves as it
-            # is: unlocking it would chmod whatever it points at.
-            if kind == "file":
-                unlock_truth_file(source)
-            results.append(
-                (rec["file"], move_si_to_trash(vault, paper_id, source, rec))
-            )
+            _delete_si_entry(path, kind)
+            deleted.append(rec["file"])
         except OSError as exc:
-            if kind == "file":
-                lock_truth_file(source)
             failed.append((rec, exc))
 
     if failed:
-        moved = ", ".join(name for name, _ in results) or "nothing"
         names_failed = ", ".join(rec["file"] for rec, _ in failed)
+        first = failed[0][1]
+        one = len(failed) == 1
         try:
             restored = _load_rt(vault, paper_id)
             current = restored.get(SUPPLEMENTARY_FIELD)
@@ -1511,21 +1551,68 @@ def remove_supplementary(
             meta = restored
         except Exception as exc:
             raise SupplementaryError(
-                f"Could not move {names_failed} to the trash, nor restore its "
-                f"record ({exc.__class__.__name__}): the file is still in "
-                "supplementary/. Run `lit health-check --fix` to record it."
+                f"Could not delete {names_failed} ({first.__class__.__name__}), "
+                f"nor put {'its record' if one else 'their records'} back "
+                f"({exc.__class__.__name__}): the "
+                f"{'file is' if one else 'files are'} still in supplementary/. "
+                "Run `lit health-check --fix` to record "
+                f"{'it' if one else 'them'} again."
             ) from exc
-        _reconcile(vault, paper_id, meta, all_papers)
+        went = f" Deleted: {', '.join(deleted)}." if deleted else ""
+        try:
+            _reconcile(vault, paper_id, meta, all_papers)
+        except Exception as exc:
+            went += (
+                f" INDEX/views rebuild failed ({exc.__class__.__name__}); run "
+                "`lit refresh-views` to reconcile."
+            )
         raise SupplementaryError(
-            f"Could not move {names_failed} to the trash "
-            f"({failed[0][1].__class__.__name__}); its record is back. "
-            f"Removed: {moved}."
-        )
+            f"Could not delete {names_failed} ({first.__class__.__name__}); "
+            f"{'its record is' if one else 'their records are'} back. Close "
+            f"anything that has {'it' if one else 'them'} open, then retry."
+            f"{went}"
+        ) from first
 
-    if not keep:
+    if not kept:
+        _remove_empty_folder(si_dir)
+    warnings: list[str] = []
+    try:
+        _reconcile(vault, paper_id, meta, all_papers)
+    except Exception as exc:
+        what = "file was" if len(chosen) == 1 else "files were"
+        warnings.append(
+            f"INDEX/views rebuild failed ({exc.__class__.__name__}); the SI "
+            f"{what} deleted. Run `lit refresh-views` to reconcile."
+        )
+    return SiRemoveResult(records=chosen, gone=gone, warnings=warnings)
+
+
+def drop_missing_records(
+    vault: Path, paper_id: str, names: Iterable[str]
+) -> list[str]:
+    """Drop the records of SI files that are gone; never delete a file.
+
+    ``health-check --fix`` asks before dropping, and a file can come back
+    while it waits for the answer, so each one is looked at again just before
+    the commit: a record whose file is back is kept. Returns the names
+    dropped.
+    """
+    meta = _load_rt(vault, paper_id)
+    _refuse_bad_folder(vault, paper_id)
+    si_dir = vault / "papers" / paper_id / SI_DIRNAME
+    dead = [
+        rec["file"]
+        for rec in resolve_si_records(paper_id, meta, names)
+        if _entry_kind(si_dir / rec["file"]) == "missing"
+    ]
+    if not dead:
+        return []
+    kept = _drop_records(meta, set(dead))
+    all_papers = _commit_metadata(vault, paper_id, meta, f"si-rm-{paper_id}")
+    if not kept:
         _remove_empty_folder(si_dir)
     _reconcile(vault, paper_id, meta, all_papers)
-    return results
+    return dead
 
 
 def _remove_empty_folder(si_dir: Path) -> None:
@@ -1533,7 +1620,7 @@ def _remove_empty_folder(si_dir: Path) -> None:
 
     Those (``.DS_Store``, ``._*``, ``Thumbs.db``, ``desktop.ini``) are the
     only files deleted with it. Anything else — a hidden note of the user's
-    included — keeps the folder: nothing here goes through the trash.
+    included — keeps the folder: what is deleted here cannot be got back.
     """
     try:
         leftovers = os.listdir(si_dir)
@@ -1631,9 +1718,11 @@ def fix_supplementary(
     """``health-check --fix`` for SI: drop dead records, record strays.
 
     Per paper: records whose file is gone are dropped if
-    ``policy.confirm_drop`` agrees. Each stray plain file is verified — ✓ is
-    recorded, ? only if ``policy.confirm_unverified`` agrees, ✕ never (the
-    policy hears about it). A paper whose field is malformed, or whose
+    ``policy.confirm_drop`` agrees — the records only: a file that is back by
+    then keeps its record, and no SI file is ever deleted here. Each stray
+    plain file is verified — ✓ is recorded, ? only if
+    ``policy.confirm_unverified`` agrees, ✕ never (the policy hears about
+    it). A paper whose field is malformed, or whose
     ``supplementary`` is a link or a file, is skipped, and so is anything in
     the folder that is not a plain file; their findings stay. Best-effort
     per paper, like the other ``--fix`` arms.
@@ -1647,7 +1736,7 @@ def fix_supplementary(
                 continue
             if drift.missing and policy.confirm_drop(paper_id, drift.missing):
                 dropped += len(
-                    remove_supplementary(vault, paper_id, drift.missing)
+                    drop_missing_records(vault, paper_id, drift.missing)
                 )
             si_dir = vault / "papers" / paper_id / SI_DIRNAME
             strays = [SiItem(si_dir / name, name) for name in drift.unrecorded]
@@ -1687,9 +1776,12 @@ __all__ = [
     "SiDrift",
     "SiFixPolicy",
     "SiItem",
+    "SiRemovalPreview",
+    "SiRemoveResult",
     "Verdict",
     "add_supplementary",
     "doi_tokens",
+    "drop_missing_records",
     "field_problems",
     "fix_supplementary",
     "has_checksum",
@@ -1702,10 +1794,10 @@ __all__ = [
     "original_label",
     "plan_names",
     "prepare_items",
+    "preview_si_removal",
     "recorded_si_file",
     "remove_supplementary",
     "resolve_si_records",
-    "restore_command",
     "shell_path",
     "si_extension",
     "si_stem",

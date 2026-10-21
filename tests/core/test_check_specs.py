@@ -58,11 +58,12 @@ _EXPECTED_CATEGORIES = (
     "skill_drift",
     "code_clone_integrity",
     "supplementary",
+    "supplementary_cited",
 )
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 29
+    assert len(_CHECK_REGISTRY) == 30
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -125,6 +126,15 @@ def test_supplementary_is_full_b_auth_report() -> None:
     in the full tier (invariant #15)."""
     spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary")
     assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
+
+
+def test_supplementary_cited_is_full_b_auth_report() -> None:
+    """Ledger #14: si-NN citations in notes / discussion ↔ SI records. Both
+    sides are authored, the text is the user's (report, never --fix), and it
+    reads every paper's notes (full tier, invariant #15)."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary_cited")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
+    assert "supplementary_cited" not in AUTO_FIXABLE_CATEGORIES
 
 
 def test_cheap_checks_returns_only_cheap_tier() -> None:

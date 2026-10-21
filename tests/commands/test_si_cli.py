@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner, Result
+from rich.console import Console
 
 import litman
 from litman.cli import cli
@@ -29,7 +30,6 @@ from litman.core.document import find_paper, list_papers
 from litman.core.library import create_vault
 from litman.core.locking import unlock_truth_file
 from litman.core.portable_link import make_portable_link
-from litman.core.trash import TRASH_DIRNAME
 from litman.core.views import write_index
 from litman.exceptions import (
     ModifyError,
@@ -468,7 +468,7 @@ def test_health_check_reports_an_undecodable_stray_through_the_real_streams(
 
 
 # ---------------------------------------------------------------------------
-# lit rm PAPER --si NAME, the trash, and putting a file back
+# lit rm PAPER --si NAME: deleted for good, added again to get it back
 # ---------------------------------------------------------------------------
 
 
@@ -479,36 +479,65 @@ def _add_two(vault: Path, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_rm_si_round_trip_through_the_trash(vault: Path, tmp_path: Path) -> None:
+def _cite_si_02(vault: Path) -> None:
+    """notes.md cites si-02 once, discussion.md on two lines."""
+    paper = vault / "papers" / A_ID
+    (paper / "notes.md").write_text(
+        "# Notes\n\nsi-02.xlsx（ci9b00237_si_002.xlsx）\n", encoding="utf-8"
+    )
+    (paper / "discussion.md").write_text(
+        "# Discussion log\n\n## 2026-10-20 10:00\n"
+        "si-02.xlsx（ci9b00237_si_002.xlsx）, Table 3\nand si-02 again\n",
+        encoding="utf-8",
+    )
+
+
+def test_rm_si_deletes_and_says_how_to_add_it_again(
+    vault: Path, tmp_path: Path
+) -> None:
     _add_two(vault, tmp_path)
 
     removed = _run(vault, "rm", A_ID, "--si", "si-02", "--yes")
 
     assert removed.exit_code == 0, removed.output
-    assert "✓ Moved si-02.xlsx to the trash" in removed.output
-    trashed = list((vault / TRASH_DIRNAME / "removed-si" / A_ID).glob("*-si-02.xlsx"))
-    assert len(trashed) == 1
-    assert f"lit add --si {A_ID} {trashed[0]}" in removed.output
+    assert removed.stdout.splitlines() == [
+        "✓ Deleted si-02.xlsx (ci9b00237_si_002.xlsx)",
+        f"To add it again: lit add --si {A_ID}",
+        "metadata.yaml + INDEX.json updated.",
+    ]
+    assert not (_si_dir(vault) / "si-02.xlsx").exists()
     assert [r["file"] for r in _records(vault)] == ["si-01.csv"]
     assert (vault / "papers" / A_ID / "paper.pdf").is_file()  # the paper stays
-
-    listed = _run(vault, "trash", "list")
-    assert listed.exit_code == 0, listed.output
-    assert "Removed SI files" in listed.output
-    assert "si-02.xlsx" in listed.output
-    assert "(ci9b00237_si_002.xlsx)" in listed.output
-    assert f"lit add --si {A_ID} {trashed[0]}" in listed.output
-    assert "(trash is empty)" not in listed.output
-
-    back = _run(vault, "add", "--si", A_ID, str(trashed[0]))
-    assert back.exit_code == 0, back.output
-    # A new number: 02 stays retired. The name it was first added under
-    # comes back with it.
-    assert back.stdout.splitlines()[1] == (
-        f"{_si_dir(vault) / 'si-03.xlsx'}\tci9b00237_si_002.xlsx"
-    )
-    assert not trashed[0].exists()
+    # No trash for SI.
     assert "(trash is empty)" in _run(vault, "trash", "list").output
+
+    again = _blob(tmp_path, "ci9b00237_si_002.xlsx", b"sheet")
+    back = _run(vault, "add", "--si", A_ID, str(again))
+    assert back.exit_code == 0, back.output
+    # The number is free again, and the same file gets it back.
+    assert back.stdout.splitlines()[1] == (
+        f"{_si_dir(vault) / 'si-02.xlsx'}\tci9b00237_si_002.xlsx"
+    )
+
+
+def test_rm_si_with_yes_still_says_where_the_notes_cite_it(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    _cite_si_02(vault)
+
+    removed = _run(vault, "rm", A_ID, "--si", "si-02", "--si", "si-01", "--yes")
+
+    assert removed.exit_code == 0, removed.output
+    assert removed.stdout.splitlines() == [
+        "✓ Deleted si-02.xlsx (ci9b00237_si_002.xlsx)",
+        "  still cited 1× in notes.md and 2× in discussion.md — lit health-check "
+        "lists the lines",
+        "✓ Deleted si-01.csv (ci9b00237_si_001.csv)",
+        f"To add them again: lit add --si {A_ID}",
+        "metadata.yaml + INDEX.json updated.",
+    ]
+    assert "supplementary" not in find_paper(vault, A_ID)
 
 
 def test_rm_si_and_purge_are_exclusive(vault: Path, tmp_path: Path) -> None:
@@ -523,10 +552,68 @@ def test_rm_si_dry_run_touches_nothing(vault: Path, tmp_path: Path) -> None:
     _add_two(vault, tmp_path)
     result = _run(vault, "rm", A_ID, "--si", "si-01", "--si", "si-02.xlsx", "--dry-run")
     assert result.exit_code == 0, result.output
-    assert "Would move to .trash/removed-si/" in result.output
-    assert "si-01.csv" in result.output and "si-02.xlsx" in result.output
+    assert result.stdout.splitlines() == [
+        f"Would delete from {A_ID} (dry-run):",
+        "  si-01.csv (ci9b00237_si_001.csv)",
+        "  si-02.xlsx (ci9b00237_si_002.xlsx)",
+        "Dry-run only — nothing deleted. Drop --dry-run to delete for real.",
+    ]
     assert len(_records(vault)) == 2
-    assert not (vault / TRASH_DIRNAME / "removed-si").exists()
+    assert sorted(os.listdir(_si_dir(vault))) == ["si-01.csv", "si-02.xlsx"]
+
+
+def test_rm_si_with_yes_says_when_a_notes_file_went_unchecked(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    (vault / "papers" / A_ID / "notes.md").write_bytes(b"si-02 caf\xe9\n")
+
+    removed = _run(vault, "rm", A_ID, "--si", "si-02", "--yes")
+
+    assert removed.exit_code == 0, removed.output
+    assert removed.stdout.splitlines() == [
+        "✓ Deleted si-02.xlsx (ci9b00237_si_002.xlsx)",
+        "  couldn't check notes.md for citations (UnicodeDecodeError)",
+        f"To add it again: lit add --si {A_ID}",
+        "metadata.yaml + INDEX.json updated.",
+    ]
+
+
+def test_rm_si_dry_run_lists_citations_and_a_notes_file_it_cannot_read(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    _cite_si_02(vault)
+    (vault / "papers" / A_ID / "notes.md").write_bytes(b"si-02 caf\xe9\n")
+
+    result = _run(vault, "rm", A_ID, "--si", "si-02", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        f"Would delete from {A_ID} (dry-run):",
+        "  si-02.xlsx (ci9b00237_si_002.xlsx)",
+        "  si-02.xlsx is cited 2× in discussion.md",
+        "  couldn't check notes.md for citations (UnicodeDecodeError)",
+        "Dry-run only — nothing deleted. Drop --dry-run to delete for real.",
+    ]
+    assert len(_records(vault)) == 2
+
+
+def test_rm_si_names_a_file_with_no_original_bare(
+    vault: Path, tmp_path: Path
+) -> None:
+    _add_two(vault, tmp_path)
+    meta_file = vault / "papers" / A_ID / "metadata.yaml"
+    unlock_truth_file(meta_file)
+    lines = meta_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [line for line in lines if "original: ci9b00237_si_001.csv" not in line]
+    assert len(kept) == len(lines) - 1
+    meta_file.write_text("".join(kept), encoding="utf-8")
+
+    result = _run(vault, "rm", A_ID, "--si", "si-01", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[1] == "  si-01.csv"
 
 
 def test_rm_si_needs_yes_without_a_terminal(vault: Path, tmp_path: Path) -> None:
@@ -535,6 +622,53 @@ def test_rm_si_needs_yes_without_a_terminal(vault: Path, tmp_path: Path) -> None
     assert result.exit_code != 0
     assert "pass --yes" in result.output
     assert len(_records(vault)) == 2
+
+
+def test_rm_si_confirm_lists_the_citations(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    # Pinned to a stock terminal's 80 columns (rich caches a console's width
+    # the first time anything reads it): the command must not fold.
+    monkeypatch.setattr(confirm_mod, "console", Console(width=80))
+    _add_two(vault, tmp_path)
+    _cite_si_02(vault)
+
+    declined = _run(vault, "rm", A_ID, "--si", "si-02", input="n\n")
+
+    assert declined.exit_code == 0, declined.output
+    assert declined.stdout.splitlines()[:5] == [
+        f"About to delete from {A_ID}:",
+        "  si-02.xlsx (ci9b00237_si_002.xlsx)",
+        "  si-02.xlsx is cited 1× in notes.md and 2× in discussion.md",
+        "This can't be undone — to get a file back, add it again:",
+        f"  lit add --si {A_ID}",
+    ]
+    assert "Continue? [y/N]" in declined.stdout
+    assert "Aborted. No changes made." in declined.stdout
+    assert len(_records(vault)) == 2
+
+
+def test_rm_si_refuses_a_folder_at_a_recorded_name_before_asking(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    _add_two(vault, tmp_path)
+    si = _si_dir(vault)
+    unlock_truth_file(si / "si-02.xlsx")
+    (si / "si-02.xlsx").unlink()
+    (si / "si-02.xlsx").mkdir()
+
+    result = _run(vault, "rm", A_ID, "--si", "si-02", input="y\n")
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SupplementaryError)
+    assert "is a folder, not the recorded file — nothing was deleted" in str(
+        result.exception
+    )
+    assert "Continue?" not in result.output
+    assert len(_records(vault)) == 2
+    assert (si / "si-02.xlsx").is_dir()
 
 
 def test_rm_si_confirms_at_a_terminal(

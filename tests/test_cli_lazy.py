@@ -72,6 +72,7 @@ def test_si_reading_paths_leave_pypdf_unloaded() -> None:
     code = (
         "import sys;"
         "import litman.core.checks, litman.core.supplementary;"
+        "import litman.core.si_citations;"
         "import litman.commands.show, litman.commands.rm, litman.commands.trash;"
         "import litman.commands.health, litman.commands.modify;"
         "import litman.commands.open;"

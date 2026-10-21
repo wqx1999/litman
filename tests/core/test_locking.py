@@ -166,7 +166,8 @@ def test_is_truth_lockable_covers_si_files(tmp_path: Path) -> None:
         si / "desktop.ini",
         si / "sub" / "si-01.pdf",
         vault / "papers" / "2024_x" / "supplements" / "si-01.pdf",
-        vault / ".trash" / "removed-si" / "2024_x" / "20261020T083000Z-si-02.pdf",
+        # A deleted paper's SI rides into the trash with it, unlocked there.
+        vault / ".trash" / "2024_x-20261020T083000Z" / "supplementary" / "si-02.pdf",
     ):
         assert not is_truth_lockable(vault, p), p
 

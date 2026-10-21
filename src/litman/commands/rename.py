@@ -13,9 +13,7 @@ metadata.yaml ``id`` field, the value used in other papers'
    literal substring ``[[<old>]]``.
 4. ``INDEX.json`` (regenerated from the post-rename paper list).
 5. The directory itself: ``papers/<old>/`` → ``papers/<new>/``.
-6. The SI ``lit rm --si`` took out of it: ``.trash/removed-si/<old>/`` →
-   ``.trash/removed-si/<new>/``, each sidecar's ``paper_id`` included.
-7. ``views/by-*/`` symlink hubs (rebuilt afterward).
+6. ``views/by-*/`` symlink hubs (rebuilt afterward).
 
 Atomicity layers:
 
@@ -26,8 +24,6 @@ Atomicity layers:
   while the dir name is still ``<old>`` — detectable and recoverable
   (re-run rename, or rename the dir manually). ``lit health-check`` (M2.8)
   flags the mismatch.
-* Moving the removed SI (6) is best-effort: the rename has committed by
-  then, so a failure is a warning naming the folder to move by hand.
 
 The ``related`` / ``contradicts`` / ``extends`` fields hold plain string
 ids (not ``[[id]]`` wikilinks). Wikilinks are a notes-only convention.
@@ -56,7 +52,6 @@ from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import enumerate_markdown_files
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.relations import ALL_REF_FIELDS
-from litman.core.trash import rename_removed_si
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import PaperNotFoundError, RenameError
@@ -331,17 +326,6 @@ def rename_cmd(
     # `lit health-check` (M2.8) flags this mismatch.
     os.rename(old_dir, new_dir)
 
-    # ----- Removed SI follows the paper (best-effort) -----
-    # .trash/removed-si/ is keyed by paper id. Left under <old>, the put-back
-    # commands `lit trash list` prints would name a paper that is gone, and
-    # <new> could hand out a removed file's number again. The rename has
-    # committed, so a failure here is a warning, never an error.
-    si_moved, si_error = 0, ""
-    try:
-        si_moved = rename_removed_si(vault, old, new)
-    except Exception as exc:
-        si_error = exc.__class__.__name__
-
     # ----- Post-commit derived rebuild through the shared funnel (M30 Phase 4) -----
     # INDEX + views recomputed together; the staged INDEX.json above remains
     # the crash-safety layer.
@@ -378,18 +362,6 @@ def rename_cmd(
         n = len(note_updates)
         console.print(
             f"  Updated [bold]{n}[/] notes file{'s' if n != 1 else ''}"
-        )
-    if si_moved:
-        console.print(
-            f"  Moved [bold]{si_moved}[/] removed SI "
-            f"file{'s' if si_moved != 1 else ''} in the trash to the new id"
-        )
-    if si_error:
-        console.print(
-            f"  [yellow]warning:[/] removed SI stayed in "
-            f".trash/removed-si/{escape(old)}/ ({si_error}). Move its files "
-            f"to .trash/removed-si/{escape(new)}/ by hand.",
-            soft_wrap=True,
         )
     # Renaming a linked paper rebuilds the project hubs, which can move a
     # folder out of the user's own directory (see commands/_hub_report).

@@ -53,9 +53,10 @@ Atomicity layers:
   the staged commit. A failure there leaves INDEX.json claiming the paper is
   gone while the dir is still on disk — ``lit health-check`` flags this.
 
-``lit rm <paper> --si si-02`` removes one of the paper's SI files instead of
-the paper: :func:`litman.core.supplementary.remove_supplementary` moves it to
-``.trash/removed-si/`` and drops its record; the paper is untouched.
+``lit rm <paper> --si si-02`` deletes one of the paper's SI files instead of
+the paper: :func:`litman.core.supplementary.remove_supplementary` deletes it
+for good (there is no trash for SI) and drops its record; the paper is
+untouched.
 """
 
 from __future__ import annotations
@@ -76,7 +77,7 @@ from litman.core.config import load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
-from litman.core.document import find_paper, load_yaml_or_raise
+from litman.core.document import load_yaml_or_raise
 from litman.core.id import is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
@@ -374,6 +375,20 @@ class RmResult:
     warnings: list[str]
 
 
+def _si_name(record: dict[str, Any]) -> str:
+    """``si-02.xlsx (ci9b00237_si_002.xlsx)``, or the bare name with no original."""
+    from litman.core.supplementary import original_label
+
+    label = original_label(record)
+    name = escape(record["file"])
+    return f"{name} [dim]({escape(label)})[/]" if label else name
+
+
+def _cited_phrase(counts: dict[str, int]) -> str:
+    """``2× in discussion.md``, or ``1× in notes.md and 2× in discussion.md``."""
+    return " and ".join(f"{n}× in {escape(file)}" for file, n in counts.items())
+
+
 def _rm_si(
     vault: Path,
     paper_id: str,
@@ -382,61 +397,88 @@ def _rm_si(
     skip_confirm: bool,
     dry_run: bool,
 ) -> None:
-    """``lit rm PAPER --si NAME...``: move SI files to .trash/removed-si/.
+    """``lit rm PAPER --si NAME...``: delete SI files for good.
 
     Same confirmation contract as deleting a paper (``--yes`` / non-tty refusal
-    / default-No prompt) and the same ``--dry-run``. Each moved file prints the
-    command that puts it back.
+    / default-No prompt) and the same ``--dry-run``. Both list where the
+    paper's notes cite each file; so does the result, which is printed with
+    ``--yes`` too. There is no trash for SI: adding the file again is the way
+    back.
     """
     from litman.core.supplementary import (
+        preview_si_removal,
         remove_supplementary,
-        resolve_si_records,
-        restore_command,
     )
 
-    records = resolve_si_records(paper_id, find_paper(vault, paper_id), names)
-    listing = [
-        f"  {escape(rec['file'])} [dim]({escape(str(rec.get('original') or '?'))})[/]"
-        for rec in records
+    preview = preview_si_removal(vault, paper_id, names)
+    listing = [f"  {_si_name(rec)}" for rec in preview.records]
+    for rec in preview.records:
+        counts = preview.cited.get(rec["file"])
+        if counts:
+            listing.append(
+                f"  [yellow]{escape(rec['file'])} is cited "
+                f"{_cited_phrase(counts)}[/]"
+            )
+    unchecked = [
+        f"  couldn't check {escape(file)} for citations ({escape(why)})"
+        for file, why in preview.unchecked
     ]
+    listing.extend(unchecked)
     if dry_run:
         console.print(
-            f"[bold]Would move to .trash/removed-si/:[/] SI of "
-            f"{escape(paper_id)} [dim](dry-run)[/]",
+            f"[bold]Would delete from[/] {escape(paper_id)} [dim](dry-run)[/]:",
             soft_wrap=True,
         )
         for line in listing:
             console.print(line, soft_wrap=True)
         console.print(
             "[dim]Dry-run only — nothing deleted. "
-            "Drop --dry-run to remove for real.[/]"
+            "Drop --dry-run to delete for real.[/]"
         )
         return
 
+    # The command on a line of its own: printed without soft wrap, a long id
+    # would otherwise fold it at the terminal's edge, mid-command.
     warning_lines = [
-        f"[bold yellow]About to move to .trash/removed-si/:[/] SI of "
-        f"{escape(paper_id)}",
+        f"[bold yellow]About to delete from[/] {escape(paper_id)}:",
         *listing,
-        "Put one back with [bold]lit add --si[/] and its path in the trash.",
+        "This can't be undone — to get a file back, add it again:",
+        f"  [bold]lit add --si {escape(paper_id)}[/]",
     ]
     if not _confirm_destructive(warning_lines, yes=skip_confirm):
         console.print("[dim]Aborted. No changes made.[/]")
         return
 
-    for name, dest in remove_supplementary(
-        vault, paper_id, [rec["file"] for rec in records]
-    ):
-        if dest is None:
+    result = remove_supplementary(
+        vault, paper_id, [rec["file"] for rec in preview.records]
+    )
+    for rec in result.records:
+        if rec["file"] in result.gone:
             console.print(
-                f"[bold green]✓ Dropped the record[/] of {escape(name)} "
-                "[dim](the file was already gone)[/]"
+                f"[bold green]✓ Dropped the record[/] of {_si_name(rec)} "
+                "— the file was already gone",
+                soft_wrap=True,
             )
-            continue
-        console.print(f"[bold green]✓ Moved[/] {escape(name)} to the trash")
-        console.print(
-            f"  [dim]put it back:[/] {escape(restore_command(paper_id, dest))}",
-            soft_wrap=True,
-        )
+        else:
+            console.print(
+                f"[bold green]✓ Deleted[/] {_si_name(rec)}", soft_wrap=True
+            )
+        counts = preview.cited.get(rec["file"])
+        if counts:
+            console.print(
+                f"  [yellow]still cited {_cited_phrase(counts)}[/] "
+                "[dim]— lit health-check lists the lines[/]",
+                soft_wrap=True,
+            )
+    for line in unchecked:
+        console.print(line, soft_wrap=True)
+    it = "it" if len(result.records) == 1 else "them"
+    console.print(
+        f"To add {it} again: [bold]lit add --si {escape(paper_id)}[/]",
+        soft_wrap=True,
+    )
+    for message in result.warnings:
+        console.print(f"[yellow]Warning:[/] {escape(message)}", soft_wrap=True)
     console.print("[dim]metadata.yaml + INDEX.json updated.[/]")
 
 
@@ -709,9 +751,9 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     multiple=True,
     metavar="NAME",
     help=(
-        "Remove one of the paper's SI files (si-02, or si-02.xlsx) instead of "
-        "the paper. Repeatable. It moves to .trash/removed-si/; "
-        "`lit add --si <paper> <that path>` puts it back. Not with --purge."
+        "Delete one of the paper's SI files (si-02, or si-02.xlsx) instead of "
+        "the paper. Repeatable. There is no trash for SI: lit add --si <paper> "
+        "adds a file again. Not with --purge."
     ),
 )
 @library_option
@@ -742,12 +784,12 @@ def rm_cmd(
     non-interactively. --dry-run previews the full impact set (the paper plus
     every link that would be cleared / unbound / orphaned) without deleting.
 
-    With --si NAME only that SI file goes (to .trash/removed-si/), under the
-    same confirmation and --dry-run; the paper stays.
+    With --si NAME only that SI file is deleted, for good, under the same
+    confirmation and --dry-run; the paper stays.
     """
     if si_names and purge:
         raise click.UsageError(
-            "--si moves SI files to the trash; it cannot be combined with "
+            "--si deletes SI files, not the paper; it cannot be combined with "
             "--purge."
         )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
