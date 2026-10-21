@@ -140,7 +140,7 @@ export default function PaperIdField({
   }
 
   const label = (
-    <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+    <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
       Paper ID {proposedId === null && <span className="text-red-500">*</span>}
       {/* The charset sits on the label, not on the hint line below, because
           that line is spoken for whenever `error` is set — which is exactly

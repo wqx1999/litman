@@ -348,7 +348,7 @@ export default function AddPaper({
               </button>
             </div>
             <label className="block">
-              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                 Title <span className="text-red-500">*</span>
               </span>
               <input
@@ -363,7 +363,7 @@ export default function AddPaper({
 
             <div className="grid grid-cols-3 gap-2.5">
               <label className="block">
-                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   Year <span className="text-red-500">*</span>
                   {/* Same reasoning as the Paper ID charset: the rule has to
                       be readable before the first keystroke. Add going grey is
@@ -383,7 +383,7 @@ export default function AddPaper({
                 />
               </label>
               <label className="col-span-2 block">
-                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   Journal / venue
                 </span>
                 <input
@@ -398,7 +398,7 @@ export default function AddPaper({
 
             <div className="grid grid-cols-2 gap-2.5">
               <label className="block">
-                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   DOI
                 </span>
                 <input
@@ -412,7 +412,7 @@ export default function AddPaper({
                 />
               </label>
               <label className="block">
-                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   Type
                 </span>
                 <select

@@ -697,7 +697,7 @@ export default function BrowsePanel({
                     <div key={dim.key}>
                       <button
                         onClick={() => toggleGroup(dim.key)}
-                        className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-stone-500 transition-colors hover:bg-stone-200"
+                        className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-stone-600 transition-colors hover:bg-stone-200"
                       >
                         <span>
                           {dim.label}
@@ -798,7 +798,7 @@ export default function BrowsePanel({
                       one explains why these rows jumped the ranking. It is the
                       answer to "was it already at the top, or did I put it
                       there?" — the per-row halo answers the rest. */}
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                     📌 Pinned{pinnedRows.length > 0 && ` · ${pinnedRows.length}`}
                   </span>
                   <button

@@ -1393,7 +1393,7 @@ function SetProjectPathDialog({
           the folder — move it yourself first, then paste the new location here.
         </p>
         <label className="mt-4 flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             Absolute path
           </span>
           <PathField
@@ -1489,7 +1489,7 @@ function NewProjectDialog({
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Name
             </span>
             <input
@@ -1503,7 +1503,7 @@ function NewProjectDialog({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Absolute path
             </span>
             <PathField
@@ -1887,7 +1887,7 @@ function LocateVaultDialog({
           a lit-config.yaml.
         </p>
         <label className="mt-4 flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             New vault path
           </span>
           <PathField
@@ -1995,7 +1995,7 @@ function RegisterVaultDialog({
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Name
             </span>
             <input
@@ -2009,7 +2009,7 @@ function RegisterVaultDialog({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Vault path
             </span>
             <PathField
@@ -2171,7 +2171,7 @@ function CreateVaultDialog({
             </div>
           </div>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Location
             </span>
             <PathField
@@ -2187,7 +2187,7 @@ function CreateVaultDialog({
             </span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Name
             </span>
             <input
@@ -2350,7 +2350,7 @@ function HealthPanel({
                 key={category}
                 className="border-b border-stone-100 last:border-b-0"
               >
-                <div className="bg-stone-50 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                <div className="bg-stone-50 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   {category} · {bucket.length}
                 </div>
                 {bucket.map((issue, i) => (

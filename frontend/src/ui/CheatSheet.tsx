@@ -175,7 +175,7 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
         <div className="columns-1 gap-8 sm:columns-2">
           {SECTIONS.map((section) => (
             <section key={section.title} className="mb-5 break-inside-avoid">
-              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                 {section.title}
               </h3>
               {section.note && (

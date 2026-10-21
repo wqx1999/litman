@@ -200,7 +200,7 @@ function formatAuthors(authors: string[]): string {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-3.5">
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         {label}
       </div>
       <div className="text-sm text-stone-800">{children}</div>
@@ -640,7 +640,7 @@ function TagGroup({
 
   return (
     <div ref={rootRef} className="mb-3.5">
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         Tags
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -1204,7 +1204,7 @@ function MetadataEditDialog({
               key={f.key}
               className={f.wide ? 'col-span-2 block' : 'block'}
             >
-              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                 {f.label}
                 {f.hint && (
                   <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-400">
@@ -1526,7 +1526,7 @@ function ReadOnlyCockpit({
         }`}
       >
         <div className="mb-3 flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             Trashed paper
           </span>
           <button
@@ -2063,7 +2063,7 @@ function WriteCockpit({
         }`}
       >
         <div className="mb-3 flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             Metadata
           </span>
           <div className="flex items-center gap-2.5">
