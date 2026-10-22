@@ -64,6 +64,7 @@ from litman.core.project_refs import (
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
+    read_taxonomy_text,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
@@ -104,7 +105,7 @@ def _config_with_projects(vault: Path, projects: dict[str, str]) -> str:
 
 
 def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     return text, parse_taxonomy(text)
 
 

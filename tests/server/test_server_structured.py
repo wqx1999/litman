@@ -2073,3 +2073,57 @@ def test_put_metadata_drop_dangling_on_a_hand_edited_scalar_names_the_file(
     assert str(meta_file) in resp.json()["detail"]
     assert "write it as `extended-by: ['2025_Gone_Paper']`" in resp.json()["detail"]
     assert _meta_bytes(vault, survivor) == before
+
+
+# ---------------------------------------------------------------------------
+# A TAXONOMY.md that is not UTF-8
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "body"),
+    [
+        ("POST", "/api/taxonomy/topics", {"value": "spps"}),
+        ("PUT", "/api/taxonomy/topics", {"old": "peptide", "new": "peptides"}),
+        ("DELETE", "/api/taxonomy/topics?value=peptide", None),
+        ("PUT", "/api/paper/{id}/metadata", {"addTag": {"topics": ["spps"]}}),
+        ("POST", "/api/projects", {"name": "pepforge", "path": "<dir>"}),
+        ("PUT", "/api/projects/pepforge", {"new": "pepforge2"}),
+        ("DELETE", "/api/projects/pepforge", None),
+    ],
+    ids=[
+        "taxonomy-add",
+        "taxonomy-rename",
+        "taxonomy-rm",
+        "modify-add-tag",
+        "project-add",
+        "project-rename",
+        "project-rm",
+    ],
+)
+def test_a_write_on_a_taxonomy_that_is_not_utf8_is_a_described_500(
+    vault_with_paper: tuple[Path, str],
+    tmp_path: Path,
+    method: str,
+    url: str,
+    body: dict | None,
+) -> None:
+    """An editor set to Latin-1 saved the topic `peptidé` on line 14: the toast
+    names the file, the line and the way out, and nothing is written."""
+    vault, paper_id = vault_with_paper
+    path = vault / "TAXONOMY.md"
+    head, tail = path.read_text(encoding="utf-8").split("## topics\n\n(empty)\n")
+    data = head.encode("utf-8") + b"## topics\n\n- peptid\xe9\n" + tail.encode("utf-8")
+    locking.unlock_truth_file(path)
+    path.write_bytes(data)
+    locking.lock_truth_file(path)
+    if body is not None and body.get("path") == "<dir>":
+        body = {**body, "path": str(tmp_path)}
+
+    resp = _client(vault).request(method, url.format(id=paper_id), json=body)
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == (
+        f"Cannot read {path}: line 14 is not UTF-8. Re-save it as UTF-8, then retry."
+    )
+    assert path.read_bytes() == data

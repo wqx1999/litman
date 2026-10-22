@@ -51,6 +51,7 @@ from litman.core.taxonomy import (
     count_usage,
     find_referencing_papers,
     parse_taxonomy,
+    read_taxonomy_text,
     remove_taxonomy_value,
     rename_taxonomy_value,
     update_user_dict_section,
@@ -69,8 +70,7 @@ console = Console()
 
 def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
     """Read TAXONOMY.md and return (raw_text, parsed_dict)."""
-    path = vault / "TAXONOMY.md"
-    text = path.read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     return text, parse_taxonomy(text)
 
 

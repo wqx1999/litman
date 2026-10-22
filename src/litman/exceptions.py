@@ -157,6 +157,36 @@ class TaxonomySimilarError(TaxonomyError):
         super().__init__("\n".join(lines))
 
 
+class UnreadableTaxonomyError(LitmanError):
+    """TAXONOMY.md cannot be read: it is missing, unreadable, or not UTF-8.
+
+    Raised by :func:`litman.core.taxonomy.read_taxonomy_text`, the reader
+    every command, check and web UI write goes through, so each names the
+    file and the way out instead of stopping on a raw ``UnicodeDecodeError``
+    or ``OSError``. ``reason`` is the short cause (``line 14 is not UTF-8``,
+    ``Permission denied``) that health-check's finding repeats, and
+    ``not_utf8`` picks its hint. litman never guesses another encoding: the
+    same bytes decode to different text under each guess, and the person who
+    saved the file is the one who knows which it was.
+
+    Not a :class:`TaxonomyError`: the web UI turns those into a 400 for a bad
+    request, and a damaged file is not one.
+    """
+
+    def __init__(self, path: object, reason: str, *, not_utf8: bool) -> None:
+        self.path = path
+        self.reason = reason
+        self.not_utf8 = not_utf8
+        if not_utf8:
+            message = f"Cannot read {path}: {reason}. Re-save it as UTF-8, then retry."
+        else:
+            message = (
+                f"Cannot read {path} ({reason}). "
+                "Run `lit health-check` to see how to fix it."
+            )
+        super().__init__(message)
+
+
 class RenameError(LitmanError):
     """`lit rename` rejected an op: invalid new id, name collision,
     identical old/new, or attempting to rename a non-existent paper.

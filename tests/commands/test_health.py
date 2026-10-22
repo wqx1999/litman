@@ -1770,6 +1770,60 @@ def test_vocabulary_checks_stay_silent_without_a_taxonomy(
         assert check(vault, papers) == []
 
 
+def _append_latin1_line(vault: Path) -> int:
+    """End TAXONOMY.md with a line an editor set to Latin-1 wrote: its é is
+    the single byte 0xE9. Returns that line's number."""
+    path = vault / "TAXONOMY.md"
+    data = path.read_bytes()
+    unlock_truth_file(path)
+    path.write_bytes(data + b"- caf\xe9\n")
+    locking.lock_truth_file(path)
+    return data.count(b"\n") + 1
+
+
+def test_a_taxonomy_that_is_not_utf8_is_one_error_naming_its_line(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drift check reports it; the checks that read the same file stay
+    silent; --fix leaves the file as it is."""
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core.correctors import regen
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    _vocab_library(vault)
+    regen(vault)
+    papers = list_papers(vault)
+    # Control: the same library reports all three while TAXONOMY.md reads.
+    assert all(_by_category(run_all_checks(vault, papers)).values())
+    line = _append_latin1_line(vault)
+    data = (vault / "TAXONOMY.md").read_bytes()
+
+    issues = run_all_checks(vault, papers)
+
+    message = (
+        f"TAXONOMY.md is present but unreadable (line {line} is not UTF-8): "
+        "taxonomy drift cannot be checked"
+    )
+    # One finding from the five checks that read TAXONOMY.md: the vocabulary
+    # checks and project_config_consistency leave it to taxonomy_drift.
+    readers = {"taxonomy_drift", *_VOCAB_CATEGORIES, "project_config_consistency"}
+    assert [
+        (i.category, i.severity, i.message, i.hint) for i in issues if i.category in readers
+    ] == [("taxonomy_drift", "error", message, "re-save TAXONOMY.md as UTF-8, then re-run")]
+
+    for args in (["health-check"], ["health-check", "--fix"]):
+        result = CliRunner().invoke(cli, [*args, "--library", str(vault)])
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), result.exception
+        assert message in result.output
+        assert "Look-alike vocabulary values" not in result.output
+        assert (vault / "TAXONOMY.md").read_bytes() == data
+
+
 def test_vocabulary_findings_survive_fix_and_do_not_gate_the_exit_code(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

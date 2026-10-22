@@ -64,7 +64,7 @@ from litman.core.relations import (
     relation_refs,
 )
 from litman.core.supplementary import SUPPLEMENTARY_FIELD
-from litman.core.taxonomy import USER_DICTS, parse_taxonomy
+from litman.core.taxonomy import USER_DICTS, parse_taxonomy, read_taxonomy_text
 from litman.core.textclean import TEXT_FIELDS, clean_metadata_text
 from litman.core.views import (
     load_index_papers,
@@ -351,9 +351,7 @@ def _apply_add_tag(
     if not value:
         raise ModifyError(f"--add-tag {key}= got empty value.")
     if key in USER_DICTS:
-        registered = parse_taxonomy(
-            (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-        )[key]
+        registered = parse_taxonomy(read_taxonomy_text(vault))[key]
         if value not in registered:
             if key == "projects":
                 hint = (

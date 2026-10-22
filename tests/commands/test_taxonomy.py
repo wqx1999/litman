@@ -14,15 +14,21 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.locking import lock_truth_file, unlock_truth_file
 from litman.core.taxonomy import (
     ALL_DICTS,
     FIXED_DICTS,
     USER_DICTS,
     add_taxonomy_values,
     parse_taxonomy,
+    read_taxonomy_text,
     update_user_dict_section,
 )
-from litman.exceptions import TaxonomyError, TaxonomySimilarError
+from litman.exceptions import (
+    TaxonomyError,
+    TaxonomySimilarError,
+    UnreadableTaxonomyError,
+)
 from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
@@ -1131,3 +1137,142 @@ def test_list_single_dict_shows_each_value_with_its_count(
     assert "  - docking  1" in lines
     assert "  - peptide  2" in lines
     assert "  - spps     0" in lines
+
+
+# ===========================================================================
+# A TAXONOMY.md that is not UTF-8
+# ===========================================================================
+
+
+def _resave_with_latin1_topic(vault: Path) -> bytes:
+    """TAXONOMY.md after an editor set to Latin-1 added the topic ``peptidé``:
+    line 14, its é the single byte 0xE9, the rest of the file still UTF-8.
+    Returns the bytes on disk."""
+    path = vault / "TAXONOMY.md"
+    head, tail = path.read_text(encoding="utf-8").split("## topics\n\n(empty)\n")
+    data = head.encode("utf-8") + b"## topics\n\n- peptid\xe9\n" + tail.encode("utf-8")
+    unlock_truth_file(path)
+    path.write_bytes(data)
+    lock_truth_file(path)
+    return data
+
+
+def _not_utf8_message(vault: Path, line: int) -> str:
+    return (
+        f"Cannot read {vault / 'TAXONOMY.md'}: line {line} is not UTF-8. "
+        "Re-save it as UTF-8, then retry."
+    )
+
+
+def _write_taxonomy_bytes(vault: Path, data: bytes) -> None:
+    path = vault / "TAXONOMY.md"
+    unlock_truth_file(path)
+    path.write_bytes(data)
+
+
+def test_read_taxonomy_text_names_the_line_that_is_not_utf8(vault: Path) -> None:
+    _resave_with_latin1_topic(vault)
+
+    with pytest.raises(UnreadableTaxonomyError) as info:
+        read_taxonomy_text(vault)
+
+    assert str(info.value) == _not_utf8_message(vault, 14)
+    assert info.value.reason == "line 14 is not UTF-8"
+    assert info.value.not_utf8
+    assert info.value.path == vault / "TAXONOMY.md"
+
+
+def test_read_taxonomy_text_counts_the_line_from_the_top_of_a_long_file(
+    vault: Path,
+) -> None:
+    # Several times a text reader's 8 KiB buffer: the line is counted from
+    # the top of the file, should a reader ever decode it piece by piece.
+    lines = ["# Literature Taxonomy", "", "## topics", ""]
+    lines += [f"- topic-{i:03d}-{'x' * 50}" for i in range(500)]
+    data = ("\n".join(lines) + "\n").encode("utf-8") + b"- caf\xe9\n"
+    assert len(data) > 3 * 8192
+    _write_taxonomy_bytes(vault, data)
+
+    with pytest.raises(UnreadableTaxonomyError) as info:
+        read_taxonomy_text(vault)
+
+    assert str(info.value) == _not_utf8_message(vault, len(lines) + 1)
+
+
+def test_read_taxonomy_text_refuses_utf16_at_line_1(vault: Path) -> None:
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    _write_taxonomy_bytes(vault, text.encode("utf-16"))
+
+    with pytest.raises(UnreadableTaxonomyError) as info:
+        read_taxonomy_text(vault)
+
+    assert str(info.value) == _not_utf8_message(vault, 1)
+
+
+def test_read_taxonomy_text_reads_utf8_with_a_bom(vault: Path) -> None:
+    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8").replace(
+        "## topics\n\n(empty)", "## topics\n\n- peptidé"
+    )
+    _write_taxonomy_bytes(vault, b"\xef\xbb\xbf" + text.encode("utf-8"))
+
+    assert parse_taxonomy(read_taxonomy_text(vault))["topics"] == ["peptidé"]
+
+
+def test_read_taxonomy_text_names_a_missing_file(vault: Path) -> None:
+    path = vault / "TAXONOMY.md"
+    unlock_truth_file(path)
+    path.unlink()
+
+    with pytest.raises(UnreadableTaxonomyError) as info:
+        read_taxonomy_text(vault)
+
+    message = str(info.value)
+    assert message.startswith(f"Cannot read {path} (")
+    assert message.endswith("). Run `lit health-check` to see how to fix it.")
+    assert not info.value.not_utf8
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["taxonomy", "list"],
+        ["taxonomy", "add", "topics", "spps"],
+        ["taxonomy", "rename", "topics", "peptide", "peptides"],
+        ["taxonomy", "merge", "topics", "peptide", "--into", "spps", "--yes"],
+        ["taxonomy", "rm", "topics", "peptide", "--yes"],
+        ["project", "list"],
+        ["project", "add", "pepforge", "--path", "<dir>"],
+        ["project", "rename", "pepforge", "pepforge2"],
+        ["project", "rm", "pepforge", "--yes"],
+        ["modify", "2024_Foo_Bar", "--add-tag", "topics=spps"],
+    ],
+    ids=lambda args: "-".join(args[:2]),
+)
+def test_a_command_on_a_taxonomy_that_is_not_utf8_names_the_line(
+    vault: Path, tmp_path: Path, args: list[str]
+) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    data = _resave_with_latin1_topic(vault)
+    args = [str(tmp_path) if a == "<dir>" else a for a in args]
+
+    result = CliRunner().invoke(cli, [*args, "--library", str(vault)])
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, UnreadableTaxonomyError)
+    assert str(result.exception) == _not_utf8_message(vault, 14)
+    assert (vault / "TAXONOMY.md").read_bytes() == data
+
+
+def test_a_taxonomy_that_is_not_utf8_is_one_error_line_through_the_real_main(
+    vault: Path,
+) -> None:
+    from tests.commands.test_si_cli import _run_lit
+
+    data = _resave_with_latin1_topic(vault)
+
+    proc = _run_lit(vault, "taxonomy", "add", "topics", "spps")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "Traceback" not in proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [f"error: {_not_utf8_message(vault, 14)}"]
+    assert (vault / "TAXONOMY.md").read_bytes() == data

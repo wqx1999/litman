@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
-from litman.exceptions import CorruptMetadataError
+from litman.exceptions import CorruptMetadataError, UnreadableTaxonomyError
 from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
@@ -313,6 +313,15 @@ def create_app(vault: Path | None) -> FastAPI:
         for every route. A write reaches files the user did not name — pairing
         a relation loads the other paper — and without this the toast would say
         "Internal Server Error" instead of which file to fix and how."""
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.exception_handler(UnreadableTaxonomyError)
+    async def _unreadable_taxonomy(
+        request: Request, exc: UnreadableTaxonomyError
+    ) -> JSONResponse:
+        """TAXONOMY.md cannot be read: a 500 naming the file and the way out,
+        for every write that reads it — registering a value, tagging a paper,
+        adding or renaming a project — instead of "Internal Server Error"."""
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     app.include_router(read_router)

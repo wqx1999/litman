@@ -124,6 +124,14 @@ own entry. Read those before you upgrade, whatever the number says.
   the web UI fail to load. The file is now reported as one that could not be
   read, and the rest of the check runs.
 
+- **A `TAXONOMY.md` saved in another encoding no longer stops litman.**
+  Re-saved by another editor as Latin-1, GBK or UTF-16, it made
+  `lit taxonomy`, `lit project`, `lit modify --add-tag`, `lit health-check` and
+  `lit sync push` stop with a Python error, the web UI's health panel fail to
+  load, and the web UI answer "Internal Server Error" when you tagged a paper or
+  added a topic or project. They now name the line that is not UTF-8 and ask you
+  to re-save the file as UTF-8; litman leaves the file as it is.
+
 - **The path `lit open` prints is no longer split across lines.** When
   `lit open` cannot open a PDF, the `PDF path:` line it prints broke at the
   edge of a narrow terminal, or at 80 characters when piped, and so did its

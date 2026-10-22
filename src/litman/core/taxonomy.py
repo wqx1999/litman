@@ -40,7 +40,11 @@ from litman.core.views import (
     render_index,
     view_fields_snapshot,
 )
-from litman.exceptions import TaxonomyError, TaxonomySimilarError
+from litman.exceptions import (
+    TaxonomyError,
+    TaxonomySimilarError,
+    UnreadableTaxonomyError,
+)
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
 FIXED_DICTS: tuple[str, ...] = ("type", "status")
@@ -80,6 +84,27 @@ def parse_taxonomy(text: str) -> dict[str, list[str]]:
                 result[current].append(value)
 
     return result
+
+
+def read_taxonomy_text(vault: Path) -> str:
+    """TAXONOMY.md's text, for every command, check and web UI write that reads it.
+
+    Raises:
+        UnreadableTaxonomyError: the file is missing or unreadable, or holds
+            bytes that are not UTF-8 (the message names the first such line).
+    """
+    path = vault / "TAXONOMY.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        line = exc.object.count(b"\n", 0, exc.start) + 1
+        raise UnreadableTaxonomyError(
+            path, f"line {line} is not UTF-8", not_utf8=True
+        ) from exc
+    except OSError as exc:
+        raise UnreadableTaxonomyError(
+            path, exc.strerror or exc.__class__.__name__, not_utf8=False
+        ) from exc
 
 
 def render_user_dict_body(values: list[str]) -> list[str]:
@@ -307,7 +332,7 @@ def add_taxonomy_values(
     reject_projects_write(dict_name)
     validate_user_dict(dict_name)
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     current = parse_taxonomy(text)[dict_name]
 
     added: list[str] = []
@@ -373,7 +398,7 @@ def remove_taxonomy_value(
     reject_projects_write(dict_name)
     validate_user_dict(dict_name)
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     current = parse_taxonomy(text)[dict_name]
     if value not in current:
         raise TaxonomyError(f"{value!r} is not registered in {dict_name}.")
@@ -483,7 +508,7 @@ def rename_taxonomy_value(
     if not new.strip():
         raise TaxonomyError("`new` value cannot be empty.")
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     current = parse_taxonomy(text)[dict_name]
     if old not in current:
         raise TaxonomyError(

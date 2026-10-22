@@ -83,7 +83,12 @@ from litman.core.relations import (
     dangling_relation_edges,
     relation_refs,
 )
-from litman.core.taxonomy import USER_DICTS, count_usage, parse_taxonomy
+from litman.core.taxonomy import (
+    USER_DICTS,
+    count_usage,
+    parse_taxonomy,
+    read_taxonomy_text,
+)
 from litman.core.taxonomy_similarity import similar_values
 from litman.core.textclean import dirty_text_fields
 from litman.core.trash import (
@@ -98,6 +103,7 @@ from litman.exceptions import (
     ConfigError,
     IDError,
     MalformedMetadataError,
+    UnreadableTaxonomyError,
     VaultRegistryError,
 )
 
@@ -1832,8 +1838,8 @@ def check_taxonomy_drift(
             )
         ]
     try:
-        registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
-    except OSError as exc:
+        registered = parse_taxonomy(read_taxonomy_text(vault))
+    except UnreadableTaxonomyError as exc:
         # No silent-skip (invariant #14): the file is present but unreadable
         # (permissions, non-UTF-8, dropped mount). Swallowing it would report a
         # clean vault while taxonomy governance is actually un-checkable — and
@@ -1844,11 +1850,14 @@ def check_taxonomy_drift(
                 severity="error",
                 paper_id=None,
                 message=(
-                    f"TAXONOMY.md is present but unreadable "
-                    f"({exc.__class__.__name__}): taxonomy drift cannot be "
-                    "checked"
+                    f"TAXONOMY.md is present but unreadable ({exc.reason}): "
+                    "taxonomy drift cannot be checked"
                 ),
-                hint="fix the file's permissions / encoding, then re-run",
+                hint=(
+                    "re-save TAXONOMY.md as UTF-8, then re-run"
+                    if exc.not_utf8
+                    else "make TAXONOMY.md readable, then re-run"
+                ),
             )
         ]
     out: list[Issue] = []
@@ -1896,8 +1905,8 @@ def _registered_vocab(vault: Path) -> dict[str, list[str]] | None:
     silent rather than report it again.
     """
     try:
-        text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        text = read_taxonomy_text(vault)
+    except UnreadableTaxonomyError:
         return None
     return parse_taxonomy(text)
 
@@ -2094,8 +2103,8 @@ def check_project_config_consistency(
     if not taxonomy_file.is_file():
         return []
     try:
-        registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
-    except OSError:
+        registered = parse_taxonomy(read_taxonomy_text(vault))
+    except UnreadableTaxonomyError:
         # Unreadable TAXONOMY.md is OWNED by check_taxonomy_drift (it emits the
         # error); deferring here keeps it a single report (invariant #14 is
         # satisfied by the other check, not violated by this return []).

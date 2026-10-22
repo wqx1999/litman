@@ -57,6 +57,7 @@ from litman.core.project_refs import (
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
+    read_taxonomy_text,
     update_user_dict_section,
 )
 from litman.core.views import (
@@ -1018,7 +1019,7 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     if not path.is_dir():
         raise TaxonomyError(f"Path {str(path)!r} is not a directory.")
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     parsed = parse_taxonomy(text)
     config = load_config(vault)
 
@@ -1086,7 +1087,7 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     from litman.core.ripple import _ripple_removals
 
     name = name.strip()
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     parsed = parse_taxonomy(text)
     config = load_config(vault)
 
@@ -1211,7 +1212,7 @@ def rename_project(
     if old == new:
         raise TaxonomyError("`old` and `new` are identical — nothing to do.")
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     parsed = parse_taxonomy(text)
     config = load_config(vault)
 
