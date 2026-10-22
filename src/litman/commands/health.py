@@ -124,6 +124,9 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "relevance_orphan": "Orphan relevance-<project> annotations",
     "priority_orphan": "Orphan priority-<project> grades",
     "taxonomy_drift": "Taxonomy drift (unregistered values)",
+    "taxonomy_similar": "Look-alike vocabulary values (topics / methods / data)",
+    "taxonomy_unused": "Vocabulary values no paper uses",
+    "taxonomy_singletons": "Vocabularies mostly made of values used by one paper",
     "project_config_consistency": (
         "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"
     ),
@@ -248,8 +251,8 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
         "and put links back where a copied project folder left real "
         "folders (one that does "
         "not match the vault is kept under .trash/replaced-folders/). "
-        "Registry / project / taxonomy / code-clone drift stays report-only "
-        "(it needs a per-case decision; --fix never picks a side)."
+        "Registry / project / code-clone drift and every taxonomy finding stay "
+        "report-only (each needs a per-case decision; --fix never picks a side)."
     ),
 )
 @click.option(

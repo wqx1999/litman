@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -82,7 +83,8 @@ from litman.core.relations import (
     dangling_relation_edges,
     relation_refs,
 )
-from litman.core.taxonomy import USER_DICTS, parse_taxonomy
+from litman.core.taxonomy import USER_DICTS, count_usage, parse_taxonomy
+from litman.core.taxonomy_similarity import similar_values
 from litman.core.textclean import dirty_text_fields
 from litman.core.trash import (
     TRASH_DIRNAME,
@@ -1871,6 +1873,131 @@ def check_taxonomy_drift(
                             ),
                         )
                     )
+    return out
+
+
+# The dicts the vocabulary checks below read: the words the user made up. An
+# unused project is normal (a new one has no papers yet), and the fixed enums
+# are not the user's vocabulary.
+_VOCAB_DICTS: tuple[str, ...] = ("topics", "methods", "data")
+
+# taxonomy_singletons fires when at least this many values of a dict are used
+# by exactly one paper each AND they are at least this share of the dict. The
+# share alone would fire on any small library (7 of 9 methods in an 18-paper
+# one), the count alone on any large one.
+SINGLETON_MIN = 10
+SINGLETON_PERCENT = 30
+
+
+def _registered_vocab(vault: Path) -> dict[str, list[str]] | None:
+    """TAXONOMY.md's dicts, or None when the file is missing or unreadable.
+
+    Either case is check_taxonomy_drift's finding; the vocabulary checks stay
+    silent rather than report it again.
+    """
+    try:
+        text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return parse_taxonomy(text)
+
+
+def check_taxonomy_similar(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Pairs of registered topics / methods / data values that look alike.
+
+    One finding per pair, worded and ranked by
+    :func:`~litman.core.taxonomy_similarity.similar_values`. The hint merges
+    the less-used value into the more-used one (alphabetical on a tie); which
+    name to keep, or whether to keep both, is the user's call — so this
+    reports and never fixes.
+    """
+    registered = _registered_vocab(vault)
+    if registered is None:
+        return []
+    out: list[Issue] = []
+    for dict_name in _VOCAB_DICTS:
+        values = registered[dict_name]
+        used_by = count_usage(papers, dict_name, values)
+        for i, value in enumerate(values):
+            for other, reason in similar_values(value, values[i + 1 :]):
+                keep, drop = sorted((value, other), key=lambda v: (-used_by[v], v))
+                out.append(
+                    Issue(
+                        category="taxonomy_similar",
+                        severity="info",
+                        paper_id=None,
+                        message=f"{dict_name}: {drop!r} looks like {keep!r} ({reason})",
+                        hint=(
+                            f"merge with `lit taxonomy merge {dict_name} "
+                            f"{shlex.quote(drop)} --into {shlex.quote(keep)}`"
+                        ),
+                    )
+                )
+    return out
+
+
+def check_taxonomy_unused(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Registered topics / methods / data values that no paper uses.
+
+    Report-only: a value can be registered ahead of the papers it is for.
+    """
+    registered = _registered_vocab(vault)
+    if registered is None:
+        return []
+    out: list[Issue] = []
+    for dict_name in _VOCAB_DICTS:
+        used_by = count_usage(papers, dict_name, registered[dict_name])
+        for value, n in used_by.items():
+            if n == 0:
+                out.append(
+                    Issue(
+                        category="taxonomy_unused",
+                        severity="info",
+                        paper_id=None,
+                        message=f"{dict_name}: {value!r} is used by no paper",
+                        hint=f"remove with `lit taxonomy rm {dict_name} {shlex.quote(value)}`",
+                    )
+                )
+    return out
+
+
+def check_taxonomy_singletons(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Dicts where many values are each used by a single paper.
+
+    One finding per dict past :data:`SINGLETON_MIN` and
+    :data:`SINGLETON_PERCENT`. Which of those values belong together is a
+    judgment about meaning, so the hint hands it to the agent's vocabulary
+    review rather than naming a command.
+    """
+    registered = _registered_vocab(vault)
+    if registered is None:
+        return []
+    out: list[Issue] = []
+    for dict_name in _VOCAB_DICTS:
+        values = registered[dict_name]
+        used_by = count_usage(papers, dict_name, values)
+        once = sum(1 for n in used_by.values() if n == 1)
+        if once >= SINGLETON_MIN and once * 100 >= SINGLETON_PERCENT * len(values):
+            out.append(
+                Issue(
+                    category="taxonomy_singletons",
+                    severity="info",
+                    paper_id=None,
+                    message=(
+                        f"{dict_name}: {once} of {len(values)} values are used by one paper"
+                    ),
+                    hint=(
+                        f"see the counts with `lit taxonomy list {dict_name}`, "
+                        "then ask your agent to tidy the vocabulary"
+                    ),
+                )
+            )
     return out
 
 
@@ -3726,6 +3853,14 @@ def check_code_clone_integrity(
 #       litman cannot pick a side → klass=B-ext, correction=resolve. #6d is the
 #       symmetric forward check: repo-meta.papers names a live paper whose
 #       code-clones does not list the repo back (one-sided binding).
+#   taxonomy_similar / taxonomy_unused / taxonomy_singletons — the shape of
+#       the topics / methods / data vocabulary itself (look-alike pairs, values
+#       no paper uses, dicts mostly made of once-used values). Nothing is
+#       inconsistent, so klass=validity, report, severity=info (health-check
+#       does not gate its exit code on them: a pair kept on purpose would
+#       otherwise fail every run). Never --fix: which name survives a merge,
+#       and whether a value is registered ahead of its papers, is the user's.
+#       tier=full (they count usage over every paper).
 #   vault_registry_drift (#4) — truth↔external dir, machine-level (registry ↔
 #       vault dir), bounded-stat only, no per-paper metadata → tier=cheap,
 #       klass=B-ext, resolve. (M30 Phase 2: detection moved here from the two
@@ -3820,6 +3955,11 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "priority_orphan", check_priority_orphan, "full", "B-auth", "report"
     ),
     CheckSpec("taxonomy_drift", check_taxonomy_drift, "full", "B-ext", "resolve"),
+    CheckSpec("taxonomy_similar", check_taxonomy_similar, "full", "validity", "report"),
+    CheckSpec("taxonomy_unused", check_taxonomy_unused, "full", "validity", "report"),
+    CheckSpec(
+        "taxonomy_singletons", check_taxonomy_singletons, "full", "validity", "report"
+    ),
     CheckSpec(
         "project_config_consistency",
         check_project_config_consistency,
@@ -3918,12 +4058,17 @@ def run_all_checks(
 #     is exactly when the user has not run `--fix` yet (ADR-025).
 #   - supplementary_cited: warnings only, so it could never block; listed so
 #     a push does not read every paper's notes.md / discussion.md for nothing.
+#   - taxonomy_similar / taxonomy_unused / taxonomy_singletons: info only, so
+#     they can never block; listed so a push skips the pairwise value scan.
 _PUSH_GATE_EXCLUDED_CATEGORIES: frozenset[str] = frozenset(
     {
         "vault_registry_drift",
         "dangling_wikilinks",
         "retired_priority",
         "supplementary_cited",
+        "taxonomy_similar",
+        "taxonomy_unused",
+        "taxonomy_singletons",
     }
 )
 

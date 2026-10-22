@@ -6,7 +6,8 @@ vaults.yaml behind the CLI's back — the thing ADR-007 exists to prevent.
 
 Two rules bind every one of them:
 
-* the table output is byte-for-byte what it always was, and
+* adding JSON left the table output as it was (the taxonomy table has since
+  gained each value's paper count, the numbers JSON carries as ``used_by``), and
 * stdout under `--format json` is *only* JSON — an empty result is `[]`,
   never the human "(trash is empty)" line, or an agent's parser breaks on
   the one case it is most likely to hit first.
@@ -142,6 +143,7 @@ def test_taxonomy_json_lists_every_dict(vault: Path) -> None:
         "kind": "user",
         "count": 1,
         "values": ["docking"],
+        "used_by": {"docking": 0},
     }
     assert next(r for r in rows if r["dict"] == "status")["kind"] == "fixed"
     # `priority` was retired (ADR-025), so it is not enumerable at all.
@@ -161,7 +163,13 @@ def test_taxonomy_json_for_one_dict_keeps_the_same_row_shape(vault: Path) -> Non
         )
     )
     assert rows == [
-        {"dict": "methods", "kind": "user", "count": 1, "values": ["transformer"]}
+        {
+            "dict": "methods",
+            "kind": "user",
+            "count": 1,
+            "values": ["transformer"],
+            "used_by": {"transformer": 0},
+        }
     ]
 
 

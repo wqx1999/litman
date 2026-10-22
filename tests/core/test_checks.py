@@ -417,6 +417,33 @@ def test_push_gate_excludes_the_retired_priority_field(vault: Path) -> None:
     assert run_push_integrity_errors(vault, papers) == []
 
 
+def test_push_gate_does_not_run_the_vocabulary_checks(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """They report `info` only, so they could never block a push, and their
+    pairwise scan of every dict is not worth paying on each one."""
+    from dataclasses import replace
+    from typing import Any
+
+    from litman.core import checks
+    from litman.core.checks import Issue
+
+    def _must_not_run(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
+        raise AssertionError("a vocabulary check ran")
+
+    vocab = {"taxonomy_similar", "taxonomy_unused", "taxonomy_singletons"}
+    registry = tuple(
+        replace(spec, fn=_must_not_run) if spec.category in vocab else spec
+        for spec in checks._CHECK_REGISTRY
+    )
+    monkeypatch.setattr(checks, "_CHECK_REGISTRY", registry)
+    # Control: the stand-ins are wired in, so a full run does reach them.
+    with pytest.raises(AssertionError, match="a vocabulary check ran"):
+        run_all_checks(vault, [])
+
+    assert run_push_integrity_errors(vault, []) == []
+
+
 def test_push_gate_still_blocks_a_broken_schema(vault: Path) -> None:
     """The control for the exclusion above: a real schema error still blocks.
 

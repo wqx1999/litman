@@ -18,10 +18,11 @@ from litman.core.taxonomy import (
     ALL_DICTS,
     FIXED_DICTS,
     USER_DICTS,
+    add_taxonomy_values,
     parse_taxonomy,
     update_user_dict_section,
 )
-from litman.exceptions import TaxonomyError
+from litman.exceptions import TaxonomyError, TaxonomySimilarError
 from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
@@ -772,8 +773,10 @@ def test_taxonomy_merge_referenced_prompt(
     )
     _write_paper(vault, "2024_A", topics=["transformers"])
     runner = CliRunner()
+    # The pair is a near-duplicate by design (it is what merge is for), so
+    # registering both takes --force.
     runner.invoke(cli, ["taxonomy", "add", "topics", "transformers",
-                        "transformer", "--library", str(vault)])
+                        "transformer", "--force", "--library", str(vault)])
     result = runner.invoke(
         cli,
         ["taxonomy", "merge", "topics", "transformers", "--into",
@@ -849,3 +852,282 @@ def test_taxonomy_rm_atomicity_rollback_on_staged_write_failure(
     assert result.exit_code != 0
     assert calls["n"] >= 2
     assert _vault_snapshot(vault) == before
+
+
+# ===========================================================================
+# add: near-duplicate guard
+# ===========================================================================
+
+
+def _add(vault: Path, *args: str) -> Any:
+    return CliRunner().invoke(
+        cli, ["taxonomy", "add", *args, "--library", str(vault)]
+    )
+
+
+def _taxonomy_bytes(vault: Path) -> bytes:
+    return (vault / "TAXONOMY.md").read_bytes()
+
+
+def test_add_refuses_a_near_duplicate_and_writes_nothing(vault: Path) -> None:
+    assert _add(vault, "topics", "peptide").exit_code == 0
+    before = _taxonomy_bytes(vault)
+
+    result = _add(vault, "topics", "peptidedrug")
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, TaxonomySimilarError)
+    message = str(result.exception)
+    assert "'peptidedrug' looks like 'peptide' (prefix)." in message
+    assert "--force" in message
+    assert _taxonomy_bytes(vault) == before
+
+
+def test_add_refuses_two_near_duplicates_given_together(vault: Path) -> None:
+    before = _taxonomy_bytes(vault)
+
+    result = _add(vault, "topics", "transformer", "transformers")
+
+    assert isinstance(result.exception, TaxonomySimilarError)
+    assert "'transformers' looks like 'transformer' (same after normalisation)." in str(
+        result.exception
+    )
+    assert _taxonomy_bytes(vault) == before
+
+
+def test_refusal_within_one_command_does_not_call_the_match_existing(
+    vault: Path,
+) -> None:
+    """The match is the other value given in the same command, so nothing
+    the message says may claim it is already registered."""
+    with pytest.raises(TaxonomySimilarError) as caught:
+        add_taxonomy_values(vault, "topics", ("transformer", "transformers"))
+
+    assert str(caught.value).splitlines() == [
+        "'transformers' looks like 'transformer' (same after normalisation).",
+        "Use the matching value, or add --force to register it anyway.",
+    ]
+    assert "existing" not in str(caught.value)
+    assert _read_taxonomy(vault)["topics"] == []
+
+
+def test_add_is_all_or_nothing(vault: Path) -> None:
+    """A clean value given beside a refused one is not registered either."""
+    _add(vault, "topics", "peptide")
+    before = _taxonomy_bytes(vault)
+
+    result = _add(vault, "topics", "docking", "peptidedrug")
+
+    assert isinstance(result.exception, TaxonomySimilarError)
+    assert result.exception.similar == {"peptidedrug": [("peptide", "prefix")]}
+    assert _taxonomy_bytes(vault) == before
+    assert _read_taxonomy(vault)["topics"] == ["peptide"]
+
+
+def test_add_force_registers_a_near_duplicate(vault: Path) -> None:
+    _add(vault, "topics", "peptide")
+
+    result = _add(vault, "topics", "peptidedrug", "--force")
+
+    assert result.exit_code == 0, result.output
+    assert _read_taxonomy(vault)["topics"] == ["peptide", "peptidedrug"]
+
+
+def test_add_force_is_documented() -> None:
+    result = CliRunner().invoke(cli, ["taxonomy", "add", "--help"])
+    assert result.exit_code == 0
+    assert "--force" in result.output
+
+
+def test_add_exact_duplicate_stays_a_no_op_beside_look_alikes(vault: Path) -> None:
+    """Re-adding a registered value is skipped before the look-alike check."""
+    _add(vault, "topics", "peptide", "peptidedrug", "--force")
+    before = _taxonomy_bytes(vault)
+
+    result = _add(vault, "topics", "peptide")
+
+    assert result.exit_code == 0, result.output
+    assert "No-op" in result.output
+    assert _taxonomy_bytes(vault) == before
+
+
+def test_refusal_names_the_closest_match_and_counts_the_rest(vault: Path) -> None:
+    for value in (
+        "peptide-design",
+        "peptide-descriptors",
+        "peptide-permeability",
+        "peptide-property-prediction",
+        "peptide-synthesis",
+    ):
+        _add(vault, "topics", value)
+
+    with pytest.raises(TaxonomySimilarError) as caught:
+        add_taxonomy_values(vault, "topics", ("peptide",))
+
+    lines = str(caught.value).splitlines()
+    assert lines == [
+        "'peptide' looks like 'peptide-design' (prefix) (+4 more).",
+        "Use the matching value, or add --force to register it anyway.",
+    ]
+    assert all(len(line) <= 120 for line in lines)
+    assert caught.value.similar == {
+        "peptide": [
+            ("peptide-design", "prefix"),
+            ("peptide-synthesis", "prefix"),
+            ("peptide-descriptors", "prefix"),
+            ("peptide-permeability", "prefix"),
+            ("peptide-property-prediction", "prefix"),
+        ]
+    }
+
+
+def test_tagging_with_registered_look_alikes_is_not_guarded(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_X")
+    _add(vault, "topics", "peptide", "peptidedrug", "--force")
+
+    result = CliRunner().invoke(
+        cli,
+        ["modify", "2024_Foo_X", "--add-tag", "topics=peptide",
+         "--add-tag", "topics=peptidedrug", "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, "2024_Foo_X")["topics"] == ["peptide", "peptidedrug"]
+
+
+def test_rename_and_merge_onto_a_look_alike_are_not_guarded(vault: Path) -> None:
+    _add(vault, "topics", "peptide", "alpha", "beta")
+    runner = CliRunner()
+
+    renamed = runner.invoke(
+        cli,
+        ["taxonomy", "rename", "topics", "alpha", "peptides",
+         "--library", str(vault)],
+    )
+    merged = runner.invoke(
+        cli,
+        ["taxonomy", "merge", "topics", "beta", "--into", "peptidedrug",
+         "--yes", "--library", str(vault)],
+    )
+
+    assert renamed.exit_code == 0, renamed.output
+    assert merged.exit_code == 0, merged.output
+    assert _read_taxonomy(vault)["topics"] == ["peptide", "peptidedrug", "peptides"]
+
+
+# ===========================================================================
+# list: usage counts
+# ===========================================================================
+
+
+def _usage_library(vault: Path) -> None:
+    _write_paper(vault, "2024_A", topics=["peptide", "docking"], methods=["MD"])
+    _write_paper(vault, "2024_B", topics=["peptide"], status="deep-read")
+    _write_paper(vault, "2024_C", topics=["ghost"], type="review")
+    _add(vault, "topics", "docking", "peptide", "spps")
+    _add(vault, "methods", "MD")
+
+
+def _list_json(vault: Path, *args: str) -> list[dict[str, Any]]:
+    result = CliRunner().invoke(
+        cli,
+        ["taxonomy", "list", *args, "--format", "json", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    rows: list[dict[str, Any]] = json.loads(result.stdout)
+    return rows
+
+
+def test_list_json_counts_the_papers_using_each_value(vault: Path) -> None:
+    from litman.core.views import load_index_papers
+
+    _usage_library(vault)
+    # No fresh INDEX here: the counts come from the metadata scan.
+    assert load_index_papers(vault) is None
+
+    rows = {r["dict"]: r for r in _list_json(vault)}
+
+    assert rows["topics"]["used_by"] == {"docking": 1, "peptide": 2, "spps": 0}
+    assert rows["methods"]["used_by"] == {"MD": 1}
+    assert rows["data"]["used_by"] == {}
+    assert rows["projects"]["used_by"] == {}
+    # Scalar fields count the papers set to each value.
+    assert rows["status"]["used_by"] == {
+        "deep-read": 1, "skim": 0, "inbox": 2, "dropped": 0,
+    }
+    assert rows["type"]["used_by"]["research"] == 2
+    assert rows["type"]["used_by"]["review"] == 1
+    assert set(rows["type"]["used_by"]) == set(rows["type"]["values"])
+    # An unregistered value in a paper is taxonomy_drift's, not a key here.
+    assert "ghost" not in rows["topics"]["used_by"]
+
+
+def test_list_json_counts_agree_with_the_index(vault: Path) -> None:
+    from litman.core.correctors import regen
+
+    _usage_library(vault)
+    regen(vault)
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+
+    row = _list_json(vault, "topics")[0]
+
+    for value in row["values"]:
+        expected = sum(1 for p in index["papers"] if value in p["topics"])
+        assert row["used_by"][value] == expected, value
+
+
+def test_list_counts_come_from_a_fresh_index_without_a_scan(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.commands import taxonomy as taxonomy_cmd
+    from litman.core.correctors import regen
+
+    _usage_library(vault)
+    regen(vault)
+
+    def _no_scan(vault: Path) -> list[dict[str, Any]]:
+        raise AssertionError("metadata scanned although INDEX.json is fresh")
+
+    monkeypatch.setattr(taxonomy_cmd, "list_papers", _no_scan)
+
+    rows = {r["dict"]: r for r in _list_json(vault)}
+
+    assert rows["topics"]["used_by"] == {"docking": 1, "peptide": 2, "spps": 0}
+
+
+def test_list_table_shows_each_value_with_its_count(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import taxonomy as taxonomy_cmd
+
+    monkeypatch.setattr(taxonomy_cmd, "console", Console(width=200))
+    _usage_library(vault)
+
+    result = CliRunner().invoke(cli, ["taxonomy", "list", "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert "docking·1, peptide·2, spps·0" in result.output
+    assert "MD·1" in result.output
+
+
+def test_list_single_dict_shows_each_value_with_its_count(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import taxonomy as taxonomy_cmd
+
+    monkeypatch.setattr(taxonomy_cmd, "console", Console(width=200))
+    _usage_library(vault)
+
+    result = CliRunner().invoke(
+        cli, ["taxonomy", "list", "topics", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert "  - docking  1" in lines
+    assert "  - peptide  2" in lines
+    assert "  - spps     0" in lines

@@ -1,6 +1,6 @@
 ---
 name: lit-library
-description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper (or its SI files) to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry (link/unlink papers to projects), govern the TAXONOMY, delete or restore a paper, or rebuild the vault's derived views. Triggers: 'add to lit library', '加到文献库', 'lit add', SI files ('把这些 SI 加到这篇', 'add these SI files', '删掉 si-02'), 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'); delete a paper ('把这篇删了', '删掉这篇论文', 'delete/remove this paper', 'lit rm'); rebuild the vault's derived views ('views 乱了', '重建视图/索引', 'refresh-views', 'rebuild my views'); unlink a paper from a project ('把 X 从这个项目里拿出来/移出', 'unlink this paper from the project'); clone/add a code repo to a paper ('把代码 clone 下来', 'clone this repo', 'add the github repo', 'lit code add'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
+description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper (or its SI files) to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry (link/unlink papers to projects), govern the TAXONOMY, delete or restore a paper, or rebuild the vault's derived views. Triggers: 'add to lit library', '加到文献库', 'lit add', SI files ('把这些 SI 加到这篇', 'add these SI files', '删掉 si-02'), 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method', '我的 topic 是不是太碎了', 'tidy my tags'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'); delete a paper ('把这篇删了', '删掉这篇论文', 'delete/remove this paper', 'lit rm'); rebuild the vault's derived views ('views 乱了', '重建视图/索引', 'refresh-views'); unlink a paper from a project ('把 X 从这个项目里拿出来/移出', 'unlink this paper from the project'); clone/add a code repo to a paper ('把代码 clone 下来', 'clone this repo', 'add the github repo', 'lit code add'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
 ---
 
 # lit-library — Global Literature Vault Skill
@@ -30,7 +30,7 @@ Classify every action before you take it.
 |---|---|---|---|
 | 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, `lit cite`, scan a PDF, query INDEX via `lit list --format json`, `lit project list`, `lit code list`, `lit trash list`, `lit taxonomy list`, `lit vault list` (all five take `--format json`), `lit health-check` |
 | 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority-<P>=A` *(only for a project the paper is linked to)*, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit modify --set-author "…"` *(ordered author rewrite)*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=`, `lit add --si <id> FILE...` *(files the user handed you — say first that they will be moved into the vault; [L])* |
-| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add <pdf>` (a new paper; confirm — [A]/[B]), **`lit rename <old> <new>`** *(paper id — cascades into other papers' ref lists, every `[[id]]` in notes, project links; see [A]'s standalone-rename rule)*, `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
+| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add <pdf>` (a new paper; confirm — [A]/[B]), **`lit rename <old> <new>`** *(paper id — cascades into other papers' ref lists, every `[[id]]` in notes, project links; see [A]'s standalone-rename rule)*, `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value; `taxonomy add` refuses a look-alike of a registered value — `--force` only when the user, having seen the match, still wants the new one — [E] Flow B), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
 
 The CLI hard-rejects unregistered controlled-vocabulary values, so your job is to **not invent values**.
 
@@ -106,7 +106,7 @@ If the user has both a project `References/` and a global vault, ask which one t
 - **[G] Export bib for writing** — project vault → `.bib`.
 - **[H] Project operations** — register / link / unlink / list / rename / delete / set-path.
 - **[I] Restore a trashed paper** — execute the restore lit-reading B13 confirmed.
-- **[J] TAXONOMY governance** — merge / rename / remove a controlled value.
+- **[J] TAXONOMY governance** — merge / rename / remove a controlled value; tidy a fragmented vocabulary.
 - **[K] Repair a legacy library** — health-check reports filler metadata / filler ids in bulk on a vault filled before the guards existed.
 - **[L] A paper's SI files** — add the files the user hands you, delete one, add one back. Asking the GUI for SI while reading is lit-reading B15.
 
@@ -317,7 +317,7 @@ Every tag goes through Flow A or Flow B.
 
 Propose candidates **only from registered values** → user picks → `lit modify --add-tag`. Sources:
 
-- `topics` / `methods` / `data` → `lit taxonomy list <dict> --format json` (`{dict, kind, count, values}` — the registered set, structured; never hand-parse `TAXONOMY.md`).
+- `topics` / `methods` / `data` → `lit taxonomy list <dict> --format json` (`{dict, kind, count, values, used_by}` — the registered set, structured, with `used_by` = papers per value across the library; never hand-parse `TAXONOMY.md`).
 - `projects` → `lit project list` is canonical. A file read alone is incomplete; see [H].
 
 ```bash
@@ -329,7 +329,9 @@ While enumerating candidates you MAY **propose** a TAXONOMY merge if you spot ne
 
 ### Flow B — user names a value ("add tokenization")
 
-Check if it is registered. **Registered → apply.** **Not registered → the CLI HARD-REJECTS** (no escape hatch); say so and route registration by dict:
+Check if it is registered. **Registered → apply.** **Not registered → the CLI HARD-REJECTS** (no escape hatch); say so and route registration by dict.
+
+**Before proposing a new value, look for a near-duplicate in the list** — same words once case, `-` / `_` / spaces and a plural `s` are set aside (`Peptide Design` / `peptide-design`), a prefix (`peptidedrug` / `peptide`), a near spelling (`tokenisation` / `tokenization`), or a value that means the same. Report it with its `used_by` ("`peptide` is already there, on 6 papers — use it?"); your judgment, no command. `lit taxonomy add` refuses a look-alike on its own: `'peptidedrug' looks like 'peptide' (prefix).` — relay it and offer the existing value; rerun with `--force` only when the user, having seen the match, still wants the new one.
 
 ```bash
 # topics / methods / data — register via lit taxonomy:
@@ -476,7 +478,7 @@ Then run the whole batch and report. The user scans, corrects the few they care 
 
 ## [J] TAXONOMY governance
 
-Maintain the controlled vocabulary. Trigger keywords: "合并这两个 topic" / "merge X into Y", "把 X 改名" / "rename", "删掉这个 topic/method/值" / "remove this value".
+Maintain the controlled vocabulary. Trigger keywords: "合并这两个 topic" / "merge X into Y", "把 X 改名" / "rename", "删掉这个 topic/method/值" / "remove this value", "我的 topic 是不是太碎了" / "整理词表" / "tidy my tags".
 
 Commands (verify exact flag spelling with `lit taxonomy <verb> --help`):
 
@@ -494,6 +496,14 @@ Rules:
   After running, **re-run `lit taxonomy list <dict> --format json`** to reload the vocabulary.
 - **Never decide a consolidation yourself** — which values "mean the same thing" is a vocabulary judgment the user owns. You MAY propose a merge when you spot near-duplicates (e.g. in Flow A), but propose only.
 - **dict routing**: these verbs operate on `topics` / `methods` / `data`. The `projects` dict is governed through `lit project` ([H]), not `lit taxonomy`.
+
+### Tidy the vocabulary (整理词表)
+
+Trigger: "我的 topic 是不是太碎了" / "整理一下词表" / "tidy my tags" / "my topics are a mess".
+
+1. Run `lit health-check --all` (Tier 1; without `--all` each category stops after 5) and `lit taxonomy list --format json`. Read three `info` findings — report-only, never `--fix`, they do not change the exit code: `taxonomy_similar` (two values that look alike; the hint is the merge, the less-used value into the more-used), `taxonomy_unused` (registered, used by no paper — may be registered ahead on purpose; a value only a trashed paper uses shows here too, so if `lit trash list` is not empty, say that restoring a paper could bring the value back unregistered), `taxonomy_singletons` (a dict where many values tag one paper each). Add your own reading of `used_by`: values that mean the same without looking alike, once-used values that belong under a broader one.
+2. Propose **one** list: each merge (`<drop> → <keep>`, with both counts) and each removal, as the commands you would run.
+3. Run `lit taxonomy merge <dict> <drop> --into <keep> --yes` / `lit taxonomy rm <dict> <value> --yes` **only for the items the user approves** (Tier 3 — the list is the one ask). Then re-run `lit taxonomy list --format json`.
 
 ## [L] A paper's SI files (supplementary information)
 
@@ -545,7 +555,7 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit modify <id> --set k=v --add-tag list=v` | Edit fields / tag ([E]) |
 | `lit modify <id> --set-author "Family, Given" …` | Rewrite the author list (repeatable flag; flag order = stored order). The ONLY way to reorder authors or fix a non-final name in place — `--add-tag` appends | 
 | `lit read / revisit / drop / promote / skim <id>` | Status & date sugar ([E]) |
-| `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Topics/methods/data vocab; `list` takes `--format json`; merge/rm prompt — pass `--yes` non-interactively ([J]) |
+| `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Topics/methods/data vocab; `list` takes `--format json` (rows carry `used_by`); `add` refuses a look-alike value — `--force` on the user's yes ([E] Flow B); merge/rm prompt — pass `--yes` non-interactively ([J]) |
 | `lit project {add,list,rename,set-path,rm} [args]` | Project registry ([H]); `list` takes `--format json`; `rm` prompts — pass `--yes` non-interactively |
 | `lit link <id> --project <name> [--priority A] [--relevance "…"]` / `lit unlink <id> --project <name>` | Bind / unbind paper↔project ([H]); unlink drops that project's grade + relevance |
 | `lit export (--project <p> \| --all) [filters] [-o file]` | Project vault → `.bib` ([G]) |

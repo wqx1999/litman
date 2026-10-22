@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from litman.commands.init import apply_init
 from litman.commands.modify import ORDERED_LIST_FIELDS, _apply_modify
@@ -61,6 +62,7 @@ from litman.exceptions import (
     PaperNotFoundError,
     RmError,
     TaxonomyError,
+    TaxonomySimilarError,
     VaultRegistryError,
 )
 
@@ -561,21 +563,27 @@ async def post_projects(request: Request) -> dict[str, object]:
     return {"ok": True, "name": summary["name"], "path": summary["path"]}
 
 
-@router.post("/taxonomy/{key}")
-async def post_taxonomy(request: Request, key: str) -> dict[str, object]:
+@router.post("/taxonomy/{key}", response_model=None)
+async def post_taxonomy(request: Request, key: str) -> dict[str, object] | JSONResponse:
     """Register a new controlled-vocabulary value through the ``lit taxonomy add``
     backend (register-first per invariant #2).
 
-    Body JSON ``{"value": str}``. Reaches the filesystem only through
-    :func:`litman.core.taxonomy.add_taxonomy_values` (the same core the CLI
-    calls), which registers the value in TAXONOMY.md atomically — it does NOT
-    attach the value to any paper. The frontend's inline-create then makes the
-    separate ``PUT /metadata`` addTag call to attach it (two steps: register,
-    then tag).
+    Body JSON ``{"value": str, "force"?: bool}``. Reaches the filesystem only
+    through :func:`litman.core.taxonomy.add_taxonomy_values` (the same core the
+    CLI calls), which registers the value in TAXONOMY.md atomically — it does
+    NOT attach the value to any paper. The frontend's inline-create then makes
+    the separate ``PUT /metadata`` addTag call to attach it (two steps:
+    register, then tag).
+
+    A value that looks like one already registered is refused with **409**
+    ``{"detail": str, "similar": [[existing value, reason], …]}`` (closest
+    first) and nothing is written; resending with ``"force": true`` registers
+    it anyway (``lit taxonomy add --force``).
 
     ``key`` must be a user-extensible dict (topics / methods / data); an unknown
     key, a fixed-enum key, ``projects`` (path-bound, use ``POST /api/projects``),
-    or an empty value surface as TaxonomyError → 400.
+    or an empty value surface as TaxonomyError → 400. A ``force`` that is not a
+    boolean is a client bug → 400.
     """
     try:
         payload = await request.json()
@@ -587,10 +595,22 @@ async def post_taxonomy(request: Request, key: str) -> dict[str, object]:
     value = payload.get("value")
     if not isinstance(value, str) or not value.strip():
         raise HTTPException(status_code=400, detail="value must be a non-empty string.")
+    force = payload.get("force", False)
+    if not isinstance(force, bool):
+        raise HTTPException(status_code=400, detail="force must be a boolean.")
 
     vault = request.app.state.vault
     try:
-        added, skipped = add_taxonomy_values(vault, key, (value,))
+        added, skipped = add_taxonomy_values(vault, key, (value,), force=force)
+    except TaxonomySimilarError as exc:
+        similar = [
+            [existing, reason]
+            for matches in exc.similar.values()
+            for existing, reason in matches
+        ]
+        return JSONResponse(
+            status_code=409, content={"detail": str(exc), "similar": similar}
+        )
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "added": added, "skipped": skipped}

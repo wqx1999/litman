@@ -177,7 +177,7 @@ All stay read-only — never `grep` the vault or `cat` INDEX.json; route notes/d
 
 ## Phase 2 — Load paper context (lazy)
 
-On **entering a reading session**, load the registered vocabulary once: `lit taxonomy list --format json` (one array, all four dicts — never `cat TAXONOMY.md`). Flow A (lit-library [E]) needs it to enumerate registered values; Flow B needs it to validate. After the user runs `lit taxonomy {add,rename,merge,rm}` (or `lit project add`) during the session, **re-run it**.
+On **entering a reading session**, load the registered vocabulary once: `lit taxonomy list --format json` (one array, all four dicts — never `cat TAXONOMY.md`; each row's `used_by` counts the papers per value). Flow A (lit-library [E]) needs it to enumerate registered values; Flow B needs it to validate. After the user runs `lit taxonomy {add,rename,merge,rm}` (or `lit project add`) during the session, **re-run it**.
 
 Then, once you have an id, load just enough paper context. Read in this order, stopping when you have enough:
 
@@ -342,6 +342,8 @@ At a natural moment (occasionally at session start / after a batch of operations
 
 **`supplementary_cited`** (warning, never `--fix`) — a line in notes.md / discussion.md cites an SI file that no longer matches: `notes.md:7 cites si-01.pdf, which this paper no longer has`, `… cites si-01.pdf as <X>, but si-01.pdf is now <Y>` (`— that file is now si-03.pdf` when the name moved), or, in discussion.md, a bare number written before the file was added (`… added later (<date>) — may refer to a file since replaced`). Relay the file:line and the hint. On the user's go, regenerate notes.md as usual; in discussion.md change only the citation (core rule 5). It does not hold up `lit sync push`, but `lit health-check` exits 1 until the line changes.
 
+**Vocabulary shape** (`info`, report-only, never `--fix`): `taxonomy_similar` (two topics / methods / data values that look alike — the hint is the merge), `taxonomy_unused` (registered, used by no paper — may be registered ahead on purpose), `taxonomy_singletons` (a dict where many values tag one paper each). Relay them (`lit health-check --all` lists every pair; a category stops after 5 without it); any merge or removal goes through lit-library [J]'s tidy-the-vocabulary SOP (整理词表), on the user's nod. They do not change the exit code. A new value the user names that looks like a registered one: `lit taxonomy add` refuses it (lit-library [E] Flow B; `--force` only on the user's yes).
+
 **The `env` class has no remedy — never invent one.** `links_unsupported` (severity `info`) reports a host capability, not damage: the drive holding the library (FAT32 / exFAT / some network shares) cannot hold folder links; nothing drifted, nothing is broken. Relay the CLI's own hint — keep the library on an internal drive; after moving it, `lit health-check --fix` backfills the skipped links — and stop there. **Never suggest Developer Mode, administrator / elevated shells, WSL, or any Windows system setting**: the cause is the drive's filesystem, and none of those change it. `info` findings do not gate the exit code — `lit health-check` exiting 0 while printing an info line is a healthy library. Any warning does gate it, `supplementary_cited` included.
 
 **Staleness nudges.** `lit` may append a dim `tip:` line after a command. Relay it and offer to run the named command — never auto-run. Two variants: (1) `tip: no lit health-check in 14+ days...` → offer `lit health-check`; (2) `tip: no lit sync push in 7+ days...` → offer `lit sync push` (backs the vault up to the configured remote; appears only when a remote is configured).
@@ -415,7 +417,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 | `lit vault list [--format json]` | enumerate registered vaults when a `[[v:id]]` cross-vault link surfaces | 1 (read) |
 | `lit project list [--format json]` | canonical source for the registered project set AND each project's path | 1 (read) |
 | `lit trash list [--format json]` | enumerate the bin for mis-deletion recovery (B13) | 1 (read) |
-| `lit taxonomy list [<dict>] [--format json]` | the registered vocabulary (all four dicts, or one) — the Phase 2 session load | 1 (read) |
+| `lit taxonomy list [<dict>] [--format json]` | the registered vocabulary (all four dicts, or one) with each value's `used_by` paper count — the Phase 2 session load | 1 (read) |
 | `lit health-check [--fix] [--all]` | translate the report + propose per-finding remedies (B12); categories fold past the first few findings, `--all` prints every one; `--fix` = bulk repair, run only on the user's nod — not all of it lossless (B12: retired-priority migration, links to missing papers, hub folder copies). Bulk filler-metadata / filler-id repair is lit-library [K] | 1 (read); `--fix` 2 |
 | `lit read` / `lit promote` / `lit skim` / `lit drop` / `lit revisit` | the reading verdict — evaluation stamps lit-reading owns (B10) | 2 (inline) |
 | `lit modify --set priority-<P>=` / `lit modify --set type=` | the per-project grade / type verdicts — evaluation stamps lit-reading owns (B10) | 2 (inline) |

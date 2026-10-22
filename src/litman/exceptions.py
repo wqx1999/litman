@@ -136,6 +136,27 @@ class TaxonomyError(LitmanError):
     """
 
 
+class TaxonomySimilarError(TaxonomyError):
+    """`lit taxonomy add` refused a new value that looks like one already in
+    the dict (or like another new value of the same call).
+
+    Carries ``similar``: each refused value mapped to its ``(matching value,
+    reason)`` matches, closest first, so the web UI can name the match
+    without parsing the message. The message lists the closest match
+    per refused value, then how to proceed.
+    """
+
+    def __init__(self, similar: dict[str, list[tuple[str, str]]]) -> None:
+        self.similar = similar
+        lines = []
+        for value, matches in similar.items():
+            closest, reason = matches[0]
+            more = f" (+{len(matches) - 1} more)" if len(matches) > 1 else ""
+            lines.append(f"{value!r} looks like {closest!r} ({reason}){more}.")
+        lines.append("Use the matching value, or add --force to register it anyway.")
+        super().__init__("\n".join(lines))
+
+
 class RenameError(LitmanError):
     """`lit rename` rejected an op: invalid new id, name collision,
     identical old/new, or attempting to rename a non-existent paper.

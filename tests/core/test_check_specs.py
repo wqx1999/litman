@@ -47,6 +47,9 @@ _EXPECTED_CATEGORIES = (
     "relevance_orphan",
     "priority_orphan",
     "taxonomy_drift",
+    "taxonomy_similar",
+    "taxonomy_unused",
+    "taxonomy_singletons",
     "project_config_consistency",
     "config_unreadable",
     "vault_registry_drift",
@@ -64,7 +67,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 31
+    assert len(_CHECK_REGISTRY) == 34
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -130,6 +133,16 @@ def test_dirty_metadata_is_full_validity_regen() -> None:
     spec = next(s for s in _CHECK_REGISTRY if s.category == "dirty_metadata")
     assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "regen")
     assert "dirty_metadata" in AUTO_FIXABLE_CATEGORIES
+
+
+def test_vocabulary_checks_are_full_validity_report_and_never_fixed() -> None:
+    """The three vocabulary-shape checks count usage over every paper (full
+    tier), judge nothing derived (validity), and leave every decision to the
+    user: never in ``--fix``."""
+    for category in ("taxonomy_similar", "taxonomy_unused", "taxonomy_singletons"):
+        spec = next(s for s in _CHECK_REGISTRY if s.category == category)
+        assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "report")
+        assert category not in AUTO_FIXABLE_CATEGORIES
 
 
 def test_supplementary_is_full_b_auth_report() -> None:

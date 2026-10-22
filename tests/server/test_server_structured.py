@@ -851,6 +851,58 @@ def test_post_taxonomy_empty_value_400(
     assert resp.status_code == 400
 
 
+def test_post_taxonomy_look_alike_409_names_the_existing_value(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """A value that looks like a registered one is refused with 409 and the
+    match, so the page can offer the existing value; nothing is written."""
+    vault, _ = vault_with_paper
+    _register_topic(vault, "peptide")
+    before = (vault / "TAXONOMY.md").read_bytes()
+
+    resp = _client(vault).post("/api/taxonomy/topics", json={"value": "peptidedrug"})
+
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["similar"] == [["peptide", "prefix"]]
+    assert "looks like 'peptide'" in body["detail"]
+    assert (vault / "TAXONOMY.md").read_bytes() == before
+
+
+def test_post_taxonomy_force_registers_the_look_alike(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    from litman.core.taxonomy import parse_taxonomy
+
+    vault, _ = vault_with_paper
+    _register_topic(vault, "peptide")
+
+    resp = _client(vault).post(
+        "/api/taxonomy/topics", json={"value": "peptidedrug", "force": True}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["added"] == ["peptidedrug"]
+    parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text(encoding="utf-8"))
+    assert parsed["topics"] == ["peptide", "peptidedrug"]
+
+
+def test_post_taxonomy_force_must_be_a_boolean_400(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    vault, _ = vault_with_paper
+    _register_topic(vault, "peptide")
+    before = (vault / "TAXONOMY.md").read_bytes()
+
+    resp = _client(vault).post(
+        "/api/taxonomy/topics", json={"value": "peptidedrug", "force": "yes"}
+    )
+
+    assert resp.status_code == 400
+    assert "force" in resp.json()["detail"]
+    assert (vault / "TAXONOMY.md").read_bytes() == before
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/taxonomy/{key}?value=X — remove a controlled value (P2)
 # ---------------------------------------------------------------------------

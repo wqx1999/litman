@@ -42,6 +42,9 @@ from litman.core.checks import (
     check_skill_drift,
     check_stale_staging,
     check_taxonomy_drift,
+    check_taxonomy_singletons,
+    check_taxonomy_similar,
+    check_taxonomy_unused,
     check_trash_health,
     run_all_checks,
 )
@@ -1616,6 +1619,194 @@ def test_taxonomy_drift_missing_taxonomy_file(vault: Path) -> None:
     issues = check_taxonomy_drift(vault, [])
     assert len(issues) == 1
     assert "TAXONOMY.md" in issues[0].message
+
+
+# --- taxonomy_similar / taxonomy_unused / taxonomy_singletons --------------
+
+_VOCAB_CATEGORIES = ("taxonomy_similar", "taxonomy_unused", "taxonomy_singletons")
+
+# Twelve methods with nothing alike between any two of them.
+_METHODS = [
+    "BERT", "GNN", "MCTS", "MD", "MPNN", "RL",
+    "VAE", "alphafold", "diffusion", "docking", "random-forest", "transformer",
+]
+
+
+def _vocab_library(vault: Path, *, methods_once: int = 10) -> None:
+    """A library with one look-alike pair, one unused value, and a methods
+    dict of 12 values of which ``methods_once`` are used by one paper each
+    (the rest by two). Its one project has no papers, which is normal for a
+    project and must not count as unused vocabulary."""
+    from litman.core.project_link import add_project
+    from litman.core.taxonomy import add_taxonomy_values
+
+    project_dir = vault.parent / "pepforge"
+    project_dir.mkdir()
+    add_project(vault, "pepforge", project_dir)
+    add_taxonomy_values(vault, "topics", ("peptide", "peptidedrug", "spps"), force=True)
+    add_taxonomy_values(vault, "methods", tuple(_METHODS))
+    once, twice = _METHODS[:methods_once], _METHODS[methods_once:]
+    _write_paper(vault, "2024_A_a", topics=["peptide"], methods=once[0::2] + twice)
+    _write_paper(vault, "2024_B_b", topics=["peptide"], methods=once[1::2] + twice)
+    _write_paper(vault, "2024_C_c", topics=["peptidedrug"])
+
+
+def _by_category(issues: list[Any]) -> dict[str, list[Any]]:
+    out: dict[str, list[Any]] = {c: [] for c in _VOCAB_CATEGORIES}
+    for issue in issues:
+        if issue.category in out:
+            out[issue.category].append(issue)
+    return out
+
+
+def test_vocabulary_checks_report_each_finding_once(vault: Path) -> None:
+    _vocab_library(vault)
+
+    found = _by_category(run_all_checks(vault, list_papers(vault)))
+
+    similar, unused, singletons = (found[c] for c in _VOCAB_CATEGORIES)
+    assert len(similar) == 1
+    assert similar[0].message == "topics: 'peptidedrug' looks like 'peptide' (prefix)"
+    # The less-used value folds into the more-used one.
+    assert similar[0].hint == "merge with `lit taxonomy merge topics peptidedrug --into peptide`"
+    assert len(unused) == 1
+    assert unused[0].message == "topics: 'spps' is used by no paper"
+    assert unused[0].hint == "remove with `lit taxonomy rm topics spps`"
+    assert len(singletons) == 1
+    assert singletons[0].message == "methods: 10 of 12 values are used by one paper"
+    assert "`lit taxonomy list methods`" in (singletons[0].hint or "")
+    for issue in similar + unused + singletons:
+        assert issue.severity == "info"
+        assert issue.paper_id is None
+        assert len(issue.hint or "") <= 120
+
+
+def test_similar_keeps_the_value_more_papers_use(vault: Path) -> None:
+    """Usage decides before the alphabet: here the kept value sorts last."""
+    from litman.core.taxonomy import add_taxonomy_values
+
+    add_taxonomy_values(vault, "topics", ("alpha-model", "alpha-models"), force=True)
+    papers = [
+        {"id": "2024_A_a", "topics": ["alpha-model"]},
+        {"id": "2024_B_b", "topics": ["alpha-models"]},
+        {"id": "2024_C_c", "topics": ["alpha-models"]},
+    ]
+
+    issues = check_taxonomy_similar(vault, papers)
+
+    assert [(i.message, i.hint) for i in issues] == [
+        (
+            "topics: 'alpha-model' looks like 'alpha-models' (same after normalisation)",
+            "merge with `lit taxonomy merge topics alpha-model --into alpha-models`",
+        )
+    ]
+
+
+def test_similar_keeps_the_alphabetically_first_value_on_a_tie(vault: Path) -> None:
+    from litman.core.taxonomy import add_taxonomy_values
+
+    add_taxonomy_values(vault, "topics", ("language model", "language-models"), force=True)
+
+    issues = check_taxonomy_similar(vault, [])
+
+    assert [i.hint for i in issues] == [
+        "merge with `lit taxonomy merge topics language-models --into 'language model'`"
+    ]
+
+
+def test_singletons_need_ten_values_used_once(vault: Path) -> None:
+    _vocab_library(vault, methods_once=9)
+
+    assert check_taxonomy_singletons(vault, list_papers(vault)) == []
+
+
+@pytest.mark.parametrize(
+    ("once", "size", "fires"), [(10, 33, True), (10, 34, False), (12, 40, True)]
+)
+def test_singletons_need_thirty_percent_of_the_dict(
+    vault: Path, once: int, size: int, fires: bool
+) -> None:
+    """10 of 33 is 30.3 %, 10 of 34 is 29.4 %, and exactly 30 % (12 of 40) fires."""
+    from litman.core.taxonomy import add_taxonomy_values
+
+    values = [f"value {chr(ord('a') + i // 26)}{chr(ord('a') + i % 26)}" for i in range(size)]
+    add_taxonomy_values(vault, "data", tuple(values), force=True)
+    papers = [{"id": f"2024_P_{i}", "data": [v]} for i, v in enumerate(values[:once])]
+
+    issues = check_taxonomy_singletons(vault, papers)
+
+    assert [i.message for i in issues] == (
+        [f"data: {once} of {size} values are used by one paper"] if fires else []
+    )
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreadable"])
+def test_vocabulary_checks_stay_silent_without_a_taxonomy(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    """taxonomy_drift owns a missing or unreadable TAXONOMY.md."""
+    _vocab_library(vault)
+    papers = list_papers(vault)
+    # Control: the same library reports all three while TAXONOMY.md reads.
+    assert all(_by_category(run_all_checks(vault, papers)).values())
+    if damage == "missing":
+        unlock_truth_file(vault / "TAXONOMY.md")
+        (vault / "TAXONOMY.md").unlink()
+    else:
+        real_read_text = Path.read_text
+
+        def _refuse(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self.name == "TAXONOMY.md":
+                raise PermissionError("simulated unreadable TAXONOMY.md")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _refuse)
+
+    issues = run_all_checks(vault, papers)
+
+    assert _by_category(issues) == {c: [] for c in _VOCAB_CATEGORIES}
+    assert [i.category for i in issues if i.category == "taxonomy_drift"]
+    for check in (check_taxonomy_similar, check_taxonomy_unused, check_taxonomy_singletons):
+        assert check(vault, papers) == []
+
+
+def test_vocabulary_findings_survive_fix_and_do_not_gate_the_exit_code(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core.correctors import regen
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    _vocab_library(vault)
+    regen(vault)
+
+    def snapshot() -> dict[str, bytes]:
+        return {
+            str(p.relative_to(vault)): p.read_bytes()
+            for p in sorted(vault.rglob("*"))
+            if p.is_file() and ".litman-staging" not in p.parts
+        }
+
+    before = snapshot()
+    runner = CliRunner()
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert fix.exit_code == 0, fix.output
+    assert snapshot() == before
+    for header in (
+        "Look-alike vocabulary values (topics / methods / data) (1 issue)",
+        "Vocabulary values no paper uses (1 issue)",
+        "Vocabularies mostly made of values used by one paper (1 issue)",
+    ):
+        assert header in fix.output
+    assert "lit taxonomy merge topics peptidedrug --into peptide" in fix.output
+    assert "lit taxonomy rm topics spps" in fix.output
+    assert "(fixable via --fix)" not in fix.output
+    assert "Auto-fix:" not in fix.output
 
 
 # --- inbox_staleness --------------------------------------------------------
