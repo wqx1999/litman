@@ -631,6 +631,9 @@ export default function App() {
   // Modal-open flags reported up from the children, so the dispatcher's modal
   // guard can suppress global shortcuts while a blocking surface is open.
   const [cockpitModalOpen, setCockpitModalOpen] = useState(false)
+  // A facet popover in the browse panel — the left-hand twin of the cockpit's
+  // Tags panels, which cockpitModalOpen already covers.
+  const [facetPopoverOpen, setFacetPopoverOpen] = useState(false)
   const [projectsOpen, setProjectsOpen] = useState(false)
   // True while either observability panel (activity log / health) is open, so
   // the shortcut dispatcher's modal guard suppresses global write-shortcuts
@@ -2245,6 +2248,7 @@ export default function App() {
     pendingRemove !== null ||
     pendingVault !== null ||
     cockpitModalOpen ||
+    facetPopoverOpen ||
     projectsOpen ||
     observabilityOpen ||
     vaultManagerOpen ||
@@ -2478,6 +2482,8 @@ export default function App() {
           <>
             <BrowsePanel
               scoped={scoped}
+              universe={allPapers}
+              onPopoverChange={setFacetPopoverOpen}
               visible={visible}
               pinnedRows={pinnedVisible}
               pinnedHiddenCount={pins.length - pinnedVisible.length}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
+import VocabPopover from '../ui/VocabPopover'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
 export type ListMode = 'all' | 'reading' | 'recent-read'
@@ -29,8 +30,13 @@ export function emptyFilters(): Filters {
 }
 
 interface Props {
-  /** Papers in scope (project-filtered only) — used for facet counts. */
+  /** Papers in scope (the Show view, project-filtered) — used for facet counts. */
   scoped: IndexPaper[]
+  /** Every paper in the INDEX — decides which values a facet lists, so a value
+   * no paper in scope uses still shows (greyed) instead of dropping out. */
+  universe: IndexPaper[]
+  /** A facet popover opened or closed, for App's shortcut guard. */
+  onPopoverChange?: (open: boolean) => void
   /** Papers to render in the list (all filters applied in App). */
   visible: IndexPaper[]
   /** The pinned papers present in `visible`, in PIN order (oldest first) —
@@ -207,13 +213,17 @@ function orderedEntries(
 }
 
 /** Merged left panel: compact toolbar (project dropdown + smart-list segmented
- * control + per-dimension collapsible facet groups) on top of a one-line-per-
- * paper list whose selected row inline-expands to title + PDF/notes/discussion
- * actions. Collapses to a narrow strip via an animated width. Every disclosure
- * (Filter level-1, each dimension level-2, the selected row) grows fluidly with
- * the shared `ease-fluid` curve. Read-only (write controls are a later phase). */
+ * control + one header per facet dimension, each opening a popover of all its
+ * values) on top of a one-line-per-paper list whose selected row
+ * inline-expands to title + PDF/notes/discussion actions. Collapses to a narrow
+ * strip via an animated width. The Filter section and the selected row grow
+ * fluidly with the shared `ease-fluid` curve; the popovers sit over the panel,
+ * so opening one never changes its height. Read-only (write controls are a
+ * later phase). */
 export default function BrowsePanel({
   scoped,
+  universe,
+  onPopoverChange,
   visible,
   pinnedRows,
   pinnedHiddenCount,
@@ -245,9 +255,10 @@ export default function BrowsePanel({
   // panel stays clean — the labelled "Filter" row is still an obvious entry.
   const [filterOpen, setFilterOpen] = useState(false)
 
-  // Level-2 disclosure: which dimension groups are expanded. Empty = all
-  // collapsed (the default).
-  const [openGroups, setOpenGroups] = useState<Set<FacetKey>>(new Set())
+  // The dimension whose value popover is open, or null. One at a time.
+  const [openDim, setOpenDim] = useState<FacetKey | null>(null)
+  // Each dimension header, for its popover to line up with.
+  const headerEls = useRef<Partial<Record<FacetKey, HTMLButtonElement | null>>>({})
 
   // Keep the selection visible when it moves (the J/K keyboard navigation, or
   // a click near the list's lower edge): nudge the selected row into view.
@@ -300,16 +311,9 @@ export default function BrowsePanel({
     return () => onRegisterReveal(null)
   }, [onRegisterReveal, revealSelected])
 
-  const toggleGroup = (key: FacetKey) =>
-    setOpenGroups((prev) => {
-      const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
-      return next
-    })
-
   // Live counts per dimension over the scoped set (project-scoped, pre-filter).
   // Single-value fields count `p[key]` when non-null; array fields count each
-  // element. A dimension with an empty map is hidden entirely below.
+  // element.
   const counts = useMemo(() => {
     const out = new Map<FacetKey, Map<string, number>>()
     for (const dim of DIMENSIONS) out.set(dim.key, new Map())
@@ -329,20 +333,56 @@ export default function BrowsePanel({
     return out
   }, [scoped])
 
+  // Every value some paper in the library uses, per dimension, by the same
+  // reading as `counts`.
+  const seen = useMemo(() => {
+    const out = new Map<FacetKey, Set<string>>()
+    for (const dim of DIMENSIONS) out.set(dim.key, new Set())
+    for (const p of universe) {
+      for (const dim of DIMENSIONS) {
+        const s = out.get(dim.key)!
+        if (dim.kind === 'single') {
+          const v = p[dim.key] as string | null
+          if (v != null) s.add(v)
+        } else {
+          for (const v of (p[dim.key] as string[]) || []) s.add(v)
+        }
+      }
+    }
+    return out
+  }, [universe])
+
+  // What each dimension lists: its in-scope values with their counts, plus every
+  // value used anywhere in the library and every selected one at 0. A 0 is
+  // shown greyed, so switching to a narrower view never makes a value vanish
+  // from the list (out of sight, it gets made again under a new name).
+  const entries = useMemo(() => {
+    const out = new Map<FacetKey, Array<[string, number]>>()
+    for (const dim of DIMENSIONS) {
+      const merged = new Map(counts.get(dim.key)!)
+      for (const v of seen.get(dim.key)!) if (!merged.has(v)) merged.set(v, 0)
+      for (const v of filters[dim.key]) if (!merged.has(v)) merged.set(v, 0)
+      out.set(dim.key, orderedEntries(merged, dim.order))
+    }
+    return out
+  }, [counts, seen, filters])
+
   const activeCount = DIMENSIONS.reduce(
     (sum, dim) => sum + filters[dim.key].size,
     0,
   )
 
-  // Dimensions that actually have values in the current scope. Empty ones are
-  // hidden; if none have values (e.g. an all-untagged vault) we show a hint so
-  // the Filter region never reads as a broken/empty box.
-  const visibleDims = DIMENSIONS.filter((dim) => counts.get(dim.key)!.size > 0)
-
-  // One-click fold/unfold for every level-2 field group at once.
-  const anyGroupOpen = openGroups.size > 0
-  const setAllGroups = (open: boolean) =>
-    setOpenGroups(open ? new Set(visibleDims.map((dim) => dim.key)) : new Set())
+  // Dimensions no paper in the library has a value in are hidden; if that is
+  // all of them (e.g. an all-untagged vault) we show a hint so the Filter
+  // region never reads as a broken/empty box.
+  const visibleDims = DIMENSIONS.filter((dim) => entries.get(dim.key)!.length > 0)
+  const openDimension = visibleDims.find((dim) => dim.key === openDim) ?? null
+  const popoverOpen = openDimension != null
+  useEffect(() => {
+    onPopoverChange?.(popoverOpen)
+    // Also on unmount: trash mode takes the whole panel away.
+    return () => onPopoverChange?.(false)
+  }, [popoverOpen, onPopoverChange])
 
   // Index of the active smart-list — drives the sliding segmented indicator.
   const listIndex = Math.max(
@@ -563,7 +603,10 @@ export default function BrowsePanel({
                 ))}
               </select>
               <button
-                onClick={onToggle}
+                onClick={() => {
+                  setOpenDim(null)
+                  onToggle()
+                }}
                 title="Collapse browse panel"
                 className="shrink-0 rounded-md px-1.5 py-1 text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-800"
               >
@@ -602,13 +645,15 @@ export default function BrowsePanel({
             </div>
           </div>
 
-          {/* Filter region — level-1 collapsible. The labelled "Filter" row is the
-              first disclosure level; each dimension below is the second level.
-              Both default collapsed for a clean panel. */}
+          {/* Filter region — collapsible, default collapsed for a clean panel.
+              Each dimension below it opens a popover of its values. */}
           <div className="shrink-0 border-t border-stone-200 bg-stone-200/40">
             <div className="flex items-center justify-between">
               <button
-                onClick={() => setFilterOpen((o) => !o)}
+                onClick={() => {
+                  setOpenDim(null)
+                  setFilterOpen((o) => !o)
+                }}
                 className="flex flex-1 items-center gap-1.5 px-2.5 py-1.5 text-sm font-semibold uppercase tracking-wider text-stone-600 transition-colors hover:bg-stone-200"
               >
                 <span
@@ -626,15 +671,6 @@ export default function BrowsePanel({
                 )}
               </button>
               <div className="flex shrink-0 items-center">
-                {filterOpen && visibleDims.length > 0 && (
-                  <button
-                    onClick={() => setAllGroups(!anyGroupOpen)}
-                    title={anyGroupOpen ? 'Collapse all fields' : 'Expand all fields'}
-                    className="px-2 py-1 text-[11px] normal-case text-stone-500 transition-colors hover:text-stone-800"
-                  >
-                    {anyGroupOpen ? 'Collapse all' : 'Expand all'}
-                  </button>
-                )}
                 {activeCount > 0 && (
                   <button
                     onClick={onClearFilters}
@@ -673,10 +709,11 @@ export default function BrowsePanel({
             )}
           </div>
 
-          {/* Per-dimension facet groups (level 2) — the whole region grows
-              fluidly (0fr→1fr) when Filter opens. Each dimension is itself a
-              fluid disclosure; one with no values in `scoped` is hidden, and if
-              none has any value we show a hint instead of an empty box. */}
+          {/* Per-dimension headers — the whole region grows fluidly (0fr→1fr)
+              when Filter opens. A header opens its dimension's popover, which
+              sits over the panel instead of growing it; a dimension no
+              paper has a value in is hidden, and if none has any value we show
+              a hint instead of an empty box. */}
           <div
             className={`grid transition-[grid-template-rows] duration-300 ease-fluid ${
               filterOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
@@ -690,13 +727,17 @@ export default function BrowsePanel({
                   </div>
                 )}
                 {visibleDims.map((dim) => {
-                  const entries = orderedEntries(counts.get(dim.key)!, dim.order)
                   const sel = filters[dim.key]
-                  const open = openGroups.has(dim.key)
+                  const open = openDim === dim.key
                   return (
                     <div key={dim.key}>
                       <button
-                        onClick={() => toggleGroup(dim.key)}
+                        ref={(el) => {
+                          headerEls.current[dim.key] = el
+                        }}
+                        onClick={() => setOpenDim((d) => (d === dim.key ? null : dim.key))}
+                        aria-haspopup="dialog"
+                        aria-expanded={open}
                         className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-stone-600 transition-colors hover:bg-stone-200"
                       >
                         <span>
@@ -715,53 +756,31 @@ export default function BrowsePanel({
                           ▸
                         </span>
                       </button>
-                      <div
-                        className={`grid transition-[grid-template-rows] duration-300 ease-fluid ${
-                          open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
-                        }`}
-                      >
-                        <div className="overflow-hidden">
-                          <div
-                            className={`space-y-0.5 pb-1 transition-opacity duration-200 ${
-                              open ? 'opacity-100' : 'opacity-0'
-                            }`}
-                          >
-                            {entries.map(([value, count]) => {
-                              const active = sel.has(value)
-                              return (
-                                <button
-                                  key={value}
-                                  onClick={() => onToggleFilter(dim.key, value)}
-                                  className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors ${
-                                    active
-                                      ? 'bg-accent-100 font-medium text-accent-700'
-                                      : 'text-stone-600 hover:bg-stone-200'
-                                  }`}
-                                >
-                                  {dim.key === 'status' && (
-                                    <span
-                                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotClass(
-                                        value,
-                                      )}`}
-                                    />
-                                  )}
-                                  <span className="truncate">{value}</span>
-                                  <span
-                                    className={`ml-auto ${
-                                      active ? 'text-accent-500' : 'text-stone-400'
-                                    }`}
-                                  >
-                                    {count}
-                                  </span>
-                                </button>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      </div>
                     </div>
                   )
                 })}
+                {openDimension && (
+                  <VocabPopover
+                    key={openDimension.key}
+                    label={openDimension.label}
+                    noun={openDimension.label.toLowerCase()}
+                    values={entries.get(openDimension.key)!.map(([value, count]) => ({
+                      value,
+                      count,
+                      on: filters[openDimension.key].has(value),
+                      dimmed: count === 0,
+                      dotClass:
+                        openDimension.key === 'status' ? statusDotClass(value) : undefined,
+                    }))}
+                    anchor={() => headerEls.current[openDimension.key] ?? null}
+                    align="left"
+                    // Status and type are a handful of values; a search box over
+                    // four statuses is noise.
+                    searchable={entries.get(openDimension.key)!.length > 18}
+                    onToggle={(v) => onToggleFilter(openDimension.key, v)}
+                    onClose={() => setOpenDim(null)}
+                  />
+                )}
               </div>
             </div>
           </div>

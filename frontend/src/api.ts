@@ -1069,14 +1069,67 @@ export function setProjectPath(
   })
 }
 
+/** A registered value a new one looks like, and why: `[value, reason]`. */
+export type SimilarPair = [string, string]
+
+/** The server refused a new value because it looks like a registered one (409).
+ * The message is the CLI's sentence and tells the reader to add `--force`, which
+ * means nothing in the GUI: never show it. Show `similar` (closest first) and
+ * offer to create the value anyway instead. */
+export class TaxonomySimilarError extends ApiError {
+  readonly similar: SimilarPair[]
+
+  constructor(message: string, similar: SimilarPair[]) {
+    super(message, 409)
+    this.name = 'TaxonomySimilarError'
+    this.similar = similar
+  }
+}
+
+function isSimilarPair(x: unknown): x is SimilarPair {
+  return (
+    Array.isArray(x) &&
+    x.length === 2 &&
+    typeof x[0] === 'string' &&
+    typeof x[1] === 'string'
+  )
+}
+
 /** Register a new controlled-vocab value through the `lit taxonomy add` backend
  * (register-first per invariant #2). This only registers the value; the caller
- * then attaches it via `putMetadata` addTag (two-step inline-create). */
-export function addTaxonomyValue(
+ * then attaches it via `putMetadata` addTag (two-step inline-create).
+ *
+ * A near-duplicate of a registered value is refused unless `force` is set; that
+ * refusal throws `TaxonomySimilarError`. Every other failure throws `ApiError`
+ * with the backend's message, as `mutateJSON` does. */
+export async function addTaxonomyValue(
   key: string,
   value: string,
+  force = false,
 ): Promise<{ ok: boolean; added: string[]; skipped: string[] }> {
-  return mutateJSON(`/api/taxonomy/${encodeURIComponent(key)}`, 'POST', { value })
+  const resp = await apiFetch(`/api/taxonomy/${encodeURIComponent(key)}`, {
+    method: 'POST',
+    body: JSON.stringify(force ? { value, force: true } : { value }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    let similar: SimilarPair[] = []
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown; similar?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+      if (Array.isArray(parsed.similar) && parsed.similar.every(isSimilarPair)) {
+        similar = parsed.similar
+      }
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    if (resp.status === 409 && similar.length > 0) {
+      throw new TaxonomySimilarError(detail, similar)
+    }
+    throw new ApiError(detail, resp.status)
+  }
+  return (await resp.json()) as { ok: boolean; added: string[]; skipped: string[] }
 }
 
 /** Remove a controlled-vocab value through the `lit taxonomy rm` backend
