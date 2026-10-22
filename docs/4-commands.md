@@ -747,7 +747,7 @@ in one staged write).
 
 ```
 lit taxonomy list [<dict>] [--format json]
-lit taxonomy add <dict> <value>...
+lit taxonomy add <dict> <value>... [--force]
 lit taxonomy rename <dict> <old> <new>
 lit taxonomy merge <dict> <src>... --into <dest> [-y]
 lit taxonomy rm <dict> <value> [-y]
@@ -755,11 +755,23 @@ lit taxonomy rm <dict> <value> [-y]
 
 | Subcommand | What it does |
 |---|---|
-| `list [<dict>]` | Show one dict, or all dicts when no name is given. `--format json` emits `{dict, kind, count, values}` per dict. |
-| `add <dict> <value>...` | Register one or more values in a user dict. Already-present values are silent no-ops; the dict is kept sorted. |
+| `list [<dict>]` | Show one dict, or all dicts when no name is given, with how many papers use each value (`peptide-design·3` in the table of all dicts, one value and its count per line for a single dict). `--format json` emits `{dict, kind, count, values, used_by}` per dict; `used_by` maps each value to its paper count, 0 included. |
+| `add <dict> <value>...` | Register one or more values in a user dict. Already-present values are silent no-ops; the dict is kept sorted. A value that looks like one already registered, or like another value in the same command, is refused and nothing is registered; `--force` registers it anyway. |
 | `rename <dict> <old> <new>` | Rename a value and ripple to every referencing paper. No prompt (semantics-preserving). |
 | `merge <dict> <src>... --into <dest>` | Fold sources into a destination value (existing or new), cascading. `--into` **required**; `-y` skips the prompt. |
 | `rm <dict> <value>` | Remove a value, cascading the removal to every referencing paper. Lists them and prompts `y/N`; `-y` skips. With zero referencing papers it removes straight away — nothing cascades, and re-adding the value undoes it. |
+
+Two values look alike when they are the same once case, `-`, `_`, spaces,
+punctuation and a plural `s` are set aside (`Peptide_Design` / `peptide-design`),
+when one starts with the other and the shorter has at least 6 characters
+(`peptidedrug` / `peptide`), or when they are one or two letters apart and the
+shorter has at least 8 (`tokenisation` / `tokenization`). The refusal names the
+match:
+
+```
+error: 'peptidedrug' looks like 'peptide' (prefix).
+Use the matching value, or add --force to register it anyway.
+```
 
 `projects` is not managed here — use `lit project` (it carries an on-disk path).
 The two fixed-enum dicts (`type`, `status`) are read-only through
@@ -780,8 +792,14 @@ paper still carrying the retired paper-level `priority`, SI files that do not
 match their records, SI citations in your notes that no longer match, and
 installed agent skills that are out of date with the running litman. Exits 0 on
 a clean vault, 1 if any error or warning is found (so it can gate cron / CI). `info` findings —
-notes about the host, such as a drive that cannot hold folder links — are
+notes such as a drive that cannot hold folder links — are
 reported but do not gate: a structurally clean library exits 0.
+
+Three `info` findings watch the `topics`, `methods` and `data` vocabularies:
+two values that look alike, with the `lit taxonomy merge` that folds the
+less-used one into the other; a value no paper uses; and a dictionary where
+at least 10 values are each used by one paper and make up 30% or more of it.
+`--fix` leaves them alone.
 
 Four of the checks look for papers that entered the library before litman
 guarded the door, so they matter most on one you have been keeping a while. One

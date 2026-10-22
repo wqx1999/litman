@@ -70,6 +70,36 @@ own entry. Read those before you upgrade, whatever the number says.
   warning: `lit health-check` exits 1 until the line is changed, but
   `lit sync push` is not held up.
 
+- **Filters and tags open in one panel that lays the values side by side.**
+  The Status, Type, Topics, Methods and Data headings in the left panel, and
+  the Tags pills in the cockpit, open the same panel: the values in up to
+  three columns, scrolling only past that, each with the number of papers
+  that use it — in the current view on the left, in the whole library in the
+  cockpit, where a project shows the paper's grade instead. A search box
+  narrows the list (on the left, once there are more than 18 values); Esc or
+  a click outside closes it. On the left, a value that papers elsewhere in
+  the library use, but none in the view, stays in the list, greyed, with a
+  dash. The short scrolling lists and **Expand all / Collapse all** are gone.
+
+- **litman asks before you create a value that looks like one you have.**
+  With `peptide` registered, `lit taxonomy add topics peptidedrug` is refused
+  and names `peptide`; `--force` adds it anyway. In the web UI, creating such
+  a tag opens a confirmation that lists the similar values: click one to tag
+  the paper with it, or **Create anyway**. Two values look alike when they
+  differ only in case, `-` / `_`, spaces, punctuation or a plural `s`, when
+  one starts with the other (6 characters or more), or when they are a letter
+  or two apart (8 characters or more).
+
+- **See how many papers use each value, and what to tidy.**
+  `lit taxonomy list` shows the count next to each value, and
+  `--format json` gives it as `used_by`. In topics, methods and data,
+  `lit health-check` notes values that look alike, with the
+  `lit taxonomy merge` that would fold them, values no paper uses, and a
+  vocabulary where many values are each used by one paper. They are notes:
+  they do not change the exit code, and `--fix` leaves them alone. Ask your
+  agent to tidy your tags, and it proposes the merges and removals for you
+  to approve.
+
 ### Changed
 
 - **The small uppercase labels are one shade darker.** The titles over each

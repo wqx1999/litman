@@ -412,7 +412,7 @@ vocabulary scannable and metadata grep-friendly:
 
 | Command | Refuses when |
 |---|---|
-| `lit taxonomy add <dict> <value>` | `dict` is a fixed enum. An already-registered value is not a refusal — it is a silent no-op. |
+| `lit taxonomy add <dict> <value>` | `dict` is a fixed enum, or `value` looks like a registered value or like another value in the same command (the rules are under `lit taxonomy` in [4-commands.md](4-commands.md)); `--force` registers it anyway. An already-registered value is not a refusal — it is a silent no-op. |
 | `lit taxonomy rename <dict> <old> <new>` | `dict` is a fixed enum, `old` not registered, or `new` already registered. |
 | `lit taxonomy merge <dict> <src>… --into <dest>` | `dict` is a fixed enum, or any `src` not registered. `dest` may be new — an unregistered destination is created by the merge. |
 | `lit taxonomy rm <dict> <value>` | `dict` is a fixed enum. When a paper still uses `value`, it does not refuse — it shows the affected-paper count and prompts (default `N`). |
@@ -420,6 +420,12 @@ vocabulary scannable and metadata grep-friendly:
 `rm` and `merge` are confirm-and-cascade: on confirmation the value is removed
 from `TAXONOMY.md`, from every referencing `metadata.yaml`, and from
 `INDEX.json` in one atomic transaction.
+
+`lit taxonomy list` shows how many papers use each value. In `topics`,
+`methods` and `data`, `lit health-check` notes values that look alike, values
+no paper uses, and a dictionary where many values are each used by one paper.
+It never changes them: merging and removing stay with `lit taxonomy merge`
+and `rm`.
 
 #### Initial seed
 

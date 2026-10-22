@@ -345,8 +345,10 @@ summary. This is the everyday curation the Web UI is built for.
 
 🖥️ **Web UI:** in the paper's context panel, set `type` from its dropdown and
 add `topics` / `methods` tags — type a new value and it is
-registered in the TAXONOMY on the spot. Write the summary straight into the notes
-tab (`Shift+N` opens it). You are already reading the PDF right there, so nothing
+registered in the TAXONOMY on the spot; one that looks like a value you already
+have asks first, listing the look-alikes so you can pick one instead. Write the
+summary straight into the notes tab (`Shift+N` opens it). You are already
+reading the PDF right there, so nothing
 pulls you out of the paper. The bibliographic fields live behind the pencil in the
 METADATA header:
 open it to correct a title the import garbled, fill in a missing journal, or fix

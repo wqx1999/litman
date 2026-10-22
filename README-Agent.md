@@ -63,7 +63,7 @@ is by intent, not by read-vs-write: `lit-reading` writes too.
 | Add SI files the human gave you | `lit add --si <id> <file>...` |
 | Browse / inspect | `lit list` · `lit show <id>` |
 | Search notes / find related | `lit search <query>` · `lit related <id>` |
-| Tag — register the value, then apply it | `lit taxonomy add topics <value>` → `lit modify <id> --add-tag topics=<value>` |
+| Tag — reuse a registered value, or register one, then apply it | `lit taxonomy list topics --format json` (`used_by` = papers per value) → `lit taxonomy add topics <value>` → `lit modify <id> --add-tag topics=<value>`. `add` refuses a value that looks like a registered one; rerun with `--force` only when the human, having seen the match, still wants the new value. |
 | Link a paper to a project | `lit link <id> --project <name>` |
 | Bind a code repo to a paper | `lit code add <url>` (see `lit code --help`) |
 | Export a bibliography | `lit export --project <name>` (or `--all -o refs.bib`) |
