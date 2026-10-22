@@ -236,7 +236,7 @@ $ lit add ~/Downloads/pepinvent.pdf --doi 10.1039/D4SC07642G --id 2025_Geylan_Pe
 
 Code candidates (full-text scan):
 [code_candidates]
-no code repo URL found in full text
+https://github.com/MolecularAI/PepINVENT (p14, ×1)
 [/code_candidates]
 ```
 
@@ -248,8 +248,9 @@ Japanese or Korean cannot produce one on its own — litman says so and stops,
 rather than invent a handle you would then be stuck with, and you pass `--id`
 yourself. Only the id is ASCII: the title, authors and journal are stored exactly
 as they were written. The `code_candidates` block at the end lists any
-code-repository links litman found in the PDF's text, for the agent to pick up;
-this PDF gave none.
+code-repository links litman found in the PDF's text, with the page each first
+appears on and how many times, for the agent to pick up; here it is the
+PepINVENT repository that step 9 clones.
 
 One thing to know before you run it on a paper you care about: `lit add` *moves*
 the PDF into the vault, so the original in `~/Downloads` is gone once the import

@@ -100,6 +100,13 @@ own entry. Read those before you upgrade, whatever the number says.
   changes a paper id; when an id was made from a broken title, the report and
   the `--fix` output give the `lit rename` that would make it match.
 
+- **Code links that `lit add` finds in a PDF are no longer cut off at a line
+  break.** When the PDF broke a repository link across lines, `lit add` missed
+  it, or listed only the part before the break — a user page such as
+  `https://github.com/dfwlab`, or a bare `https://github.com`. It now finds the
+  whole link (`https://github.com/dfwlab/cyclicpeptide`) and no longer lists the
+  cut-off part.
+
 - **A file name that is not valid UTF-8 no longer stops `lit`.** On Linux, a
   name from an old archive or another system's encoding (GBK, Latin-1) made
   any `lit` command that printed it stop with a Python error. It now prints,
