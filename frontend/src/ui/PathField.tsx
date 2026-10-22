@@ -10,7 +10,7 @@ import { basename } from './path'
  * ramp + `.dark .bg-white`. */
 const INPUT =
   'w-full min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 ' +
-  'text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+  'text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ' +
   'disabled:opacity-50'
 
 interface PathFieldProps {

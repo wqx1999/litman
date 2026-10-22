@@ -260,7 +260,7 @@ export default function DirectoryPicker({
   const DRIVE = 'rounded-md px-2 py-0.5 text-xs transition-colors'
   const ADDRESS_INPUT =
     'w-full min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 ' +
-    'font-mono text-xs text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400'
+    'font-mono text-xs text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500'
 
   return createPortal(
     <div
@@ -278,7 +278,7 @@ export default function DirectoryPicker({
               type="checkbox"
               checked={showHidden}
               onChange={(e) => toggleHidden(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-400"
+              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-500"
             />
             Show hidden
           </label>
@@ -412,7 +412,7 @@ export default function DirectoryPicker({
                       submitNewFolder()
                     }
                   }}
-                  className="w-full min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-xs text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400"
+                  className="w-full min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-xs text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500"
                 />
                 <button
                   type="button"

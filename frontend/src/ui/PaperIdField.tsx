@@ -131,7 +131,7 @@ export default function PaperIdField({
           }}
           disabled={disabled}
           title="Click to choose the id yourself"
-          className="rounded font-mono text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-2 transition duration-200 ease-fluid hover:text-accent-600 hover:decoration-accent-400 disabled:opacity-40"
+          className="rounded font-mono text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-2 transition duration-200 ease-fluid hover:text-accent-600 hover:decoration-accent-500 disabled:opacity-40"
         >
           {proposedId}
         </button>

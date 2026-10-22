@@ -217,7 +217,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const SELECT_CLASS =
   'w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 ' +
   'shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 ' +
-  'focus:ring-accent-400 disabled:opacity-50'
+  'focus:ring-accent-500 disabled:opacity-50'
 
 /** A single fixed-enum dropdown (status / type), and the per-project grade
  * picker in the Projects panel. Options come from `fixedEnums` for the former
@@ -320,15 +320,15 @@ function TagPill({
       aria-expanded={active}
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50 ${
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:opacity-50 ${
         filled
-          ? 'border-accent-300 bg-accent-50 text-accent-700 hover:bg-accent-100'
+          ? 'border-accent-200 bg-accent-50 text-accent-700 hover:bg-accent-100'
           : 'border-stone-300 bg-white text-stone-500 hover:bg-stone-50'
-      } ${active ? 'ring-1 ring-accent-400' : ''}`}
+      } ${active ? 'ring-1 ring-accent-500' : ''}`}
     >
       <span>{label}</span>
       {filled && (
-        <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent-200 px-1 text-[10px] font-bold text-accent-800">
+        <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent-200 px-1 text-[10px] font-bold text-accent-700">
           {count}
         </span>
       )}
@@ -898,7 +898,7 @@ function RenameValueDialog({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
           }}
-          className="mt-3 w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+          className="mt-3 w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:opacity-50"
         />
         {collides && (
           <p className="mt-1.5 text-[11px] text-rose-500">

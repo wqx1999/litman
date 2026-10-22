@@ -259,7 +259,7 @@ export default function VocabPopover({
           // input drops focus, and the next keys would reach the app.
           readOnly={busy}
           onChange={(e) => setDraft(e.target.value)}
-          className={`mb-1 w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ${
+          className={`mb-1 w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ${
             busy ? 'opacity-50' : ''
           }`}
         />

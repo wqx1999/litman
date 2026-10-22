@@ -473,7 +473,7 @@ export default function BrowsePanel({
           >
             <span
               className={`truncate font-mono text-xs transition-colors ${
-                selected ? 'font-medium text-accent-800' : 'text-stone-700'
+                selected ? 'font-medium text-accent-700' : 'text-stone-700'
               }`}
             >
               {p.id}
@@ -520,19 +520,19 @@ export default function BrowsePanel({
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => onOpenPdf(p.id)}
-                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                 >
                   📄 PDF
                 </button>
                 <button
                   onClick={() => onOpenDoc(p.id, 'notes')}
-                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                 >
                   📝 notes
                 </button>
                 <button
                   onClick={() => onOpenDoc(p.id, 'discussion')}
-                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                  className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                 >
                   💬 discussion
                 </button>

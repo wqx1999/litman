@@ -145,6 +145,12 @@ own entry. Read those before you upgrade, whatever the number says.
   stayed on disk. Those files now go too, and so does the folder once nothing
   of yours is left in it.
 
+- **Focus rings in the web UI are blue.** Text boxes and the tag search box had
+  a near-black ring (near-white in dark mode); a few other outlines were off too.
+
+- **Notices in the web UI go away on time.** A notice at the bottom stayed up
+  while you kept working, moving through the list or typing a search.
+
 ## 1.3.7 — 2026-10-05
 
 ### Added

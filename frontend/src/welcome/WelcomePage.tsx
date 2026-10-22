@@ -25,7 +25,7 @@ import logoUrl from '../assets/logo.svg'
  * page never suggests adding papers from the GUI. */
 const INPUT =
   'w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm ' +
-  'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+  'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ' +
   'disabled:opacity-50'
 
 export default function WelcomePage({

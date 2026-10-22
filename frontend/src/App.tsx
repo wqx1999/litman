@@ -468,12 +468,18 @@ export default function App() {
   const searchToken = useRef(0)
 
   // A single transient toast (dangling wikilink, failed save, project linked).
-  // Last write wins; `variant` tints the dot (default neutral 'info').
+  // Last write wins; `variant` tints the dot (default neutral 'info'). `id` is
+  // the Toast's key: every notify mounts a new one with its own timer, even when
+  // the message repeats.
   const [toast, setToast] = useState<{
+    id: number
     message: string
     variant: ToastVariant
     sticky?: boolean
   } | null>(null)
+  const toastSeq = useRef(0)
+  // One identity for the app's lifetime, so an App re-render never restarts the timer.
+  const dismissToast = useCallback(() => setToast(null), [])
   // Session activity log: every notify (toast) also appends here so a GUI-only
   // user has a scrollback the last-write-wins toast can't give. In-memory ring
   // (cap 200, newest kept), cleared on refresh (AC4 — no persistence, no second
@@ -483,7 +489,8 @@ export default function App() {
   const [logUnread, setLogUnread] = useState(false)
   const notify = useCallback(
     (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) => {
-      setToast({ message: msg, variant, sticky: opts?.sticky })
+      toastSeq.current += 1
+      setToast({ id: toastSeq.current, message: msg, variant, sticky: opts?.sticky })
       setActivityLog((prev) =>
         [...prev, { ts: Date.now(), variant, message: msg }].slice(-200),
       )
@@ -2620,10 +2627,11 @@ export default function App() {
       )}
       {toast && (
         <Toast
+          key={toast.id}
           message={toast.message}
           variant={toast.variant}
           sticky={toast.sticky}
-          onDismiss={() => setToast(null)}
+          onDismiss={dismissToast}
         />
       )}
     </div>
