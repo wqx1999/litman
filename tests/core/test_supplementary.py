@@ -367,13 +367,112 @@ def test_f_another_papers_title(vault: Path, make_text_pdf: MakePdf) -> None:
     assert v.reason == f"looks like the SI of {B_ID}"
 
 
-def test_f_only_when_this_title_is_not_covered(
+def test_f_only_when_this_title_is_not_on_the_page(
     vault: Path, make_text_pdf: MakePdf
 ) -> None:
     # An SI that also cites another paper's title is still this paper's.
     both = make_text_pdf([["Supporting Information", A_TITLE, B_TITLE]], name="si.pdf")
     v = _verdict(vault, A_ID, both)
     assert (v.status, v.check) == ("ok", "title")
+
+
+def test_e_title_words_scattered_do_not_confirm(
+    vault: Path, make_text_pdf: MakePdf
+) -> None:
+    """Every word of A's title, but not as the title: any paper from the
+    same field has them."""
+    scattered = make_text_pdf(
+        [
+            [
+                "Supporting Information",
+                "Drug discovery concepts, revisited",
+                "Computer assisted screening meets artificial intelligence",
+            ]
+        ],
+        name="media-1.pdf",
+    )
+    v = _verdict(vault, A_ID, scattered)
+    assert (v.status, v.check) == ("unverified", None)
+
+
+def test_e_title_broken_by_a_line_end_hyphen(
+    vault: Path, make_text_pdf: MakePdf
+) -> None:
+    broken = make_text_pdf(
+        [
+            [
+                "Supporting Information",
+                "Concepts of Artificial Intelligence for Computer-Assis-",
+                "ted Drug Discovery",
+                "Table S1 lists every training hyperparameter we tuned",
+            ]
+        ],
+        name="media-1.pdf",
+    )
+    v = _verdict(vault, A_ID, broken)
+    assert (v.status, v.check) == ("ok", "title")
+
+
+def test_e_stored_title_with_markup(vault: Path, make_text_pdf: MakePdf) -> None:
+    """The page shows the title without the markup Crossref stored."""
+    _write_paper(
+        vault, make_text_pdf, "2022_Kim_Methylated", doi="10.1039/d2cb00123k",
+        title="<i>N</i>-Methylated cyclic peptides resist proteolysis in human serum",
+    )
+    write_index(vault, list_papers(vault))
+    media = _si_pdf(
+        make_text_pdf, "media-1.pdf",
+        "N-Methylated Cyclic Peptides Resist Proteolysis in Human Serum",
+    )
+    v = _verdict(vault, "2022_Kim_Methylated", media)
+    assert (v.status, v.check) == ("ok", "title")
+
+
+def test_title_key_ignores_how_an_accent_is_set() -> None:
+    """A TeX-made PDF gives an accent as its own character before the letter."""
+    assert si_mod._title_key("Schr\u00a8odinger equation") == si_mod._title_key(
+        "Schr\u00f6dinger Equation"
+    )
+    assert si_mod._title_key("r\u00f4le") == si_mod._title_key("ro\u02c6le")
+    assert si_mod._title_key("Caf\u00e9") == si_mod._title_key("Cafe\u0301")
+
+
+def test_f_another_papers_title_words_scattered_do_not_reject(
+    vault: Path, make_text_pdf: MakePdf
+) -> None:
+    scattered = make_text_pdf(
+        [
+            [
+                "Supporting Information",
+                "Peptides were screened for binding to each protein",
+                "Deep generative models design cyclic scaffolds",
+                "Targets are listed in Table S1",
+            ]
+        ],
+        name="media-1.pdf",
+    )
+    v = _verdict(vault, A_ID, scattered)
+    assert (v.status, v.other_id) == ("unverified", None)
+
+
+# One id sorts before D, one after: neither the first nor the last title
+# found may decide.
+@pytest.mark.parametrize("longer_id", ["2018_Wu_Hydrocarbon", "2024_Wu_Hydrocarbon"])
+def test_f_names_the_paper_whose_title_contains_the_other(
+    vault: Path, make_text_pdf: MakePdf, longer_id: str
+) -> None:
+    """D's title is inside this longer one, so the page carries both."""
+    longer = "Hydrocarbon peptide stapling chemistry reviewed across many recent studies"
+    _write_paper(
+        vault, make_text_pdf, longer_id, doi="10.1021/acs.jmedchem.4c01234",
+        title=longer,
+    )
+    write_index(vault, list_papers(vault))
+    media = _si_pdf(make_text_pdf, "media-1.pdf", longer)
+    v = _verdict(vault, A_ID, media)
+    assert v.status == "rejected"
+    assert v.reason == f"looks like the SI of {longer_id}"
+    assert v.other_id == longer_id
 
 
 def test_g_cannot_confirm(vault: Path, make_text_pdf: MakePdf, tmp_path: Path) -> None:
@@ -388,7 +487,7 @@ def test_g_cannot_confirm(vault: Path, make_text_pdf: MakePdf, tmp_path: Path) -
 
 def test_short_own_title_decides_nothing(vault: Path, make_text_pdf: MakePdf) -> None:
     """Q1: a title of under five content words neither confirms (e) nor —
-    since "this title is not covered" cannot be judged — rejects (f)."""
+    since "this title is not on the page" cannot be judged — rejects (f)."""
     own = _si_pdf(make_text_pdf, "own.pdf", C_TITLE)
     assert _verdict(vault, C_ID, own).status == "unverified"
     other = _si_pdf(make_text_pdf, "other.pdf", B_TITLE)

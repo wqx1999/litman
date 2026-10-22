@@ -58,6 +58,7 @@ from litman.core.locking import (
     lock_truth_file,
     unlock_truth_file,
 )
+from litman.core.textclean import clean_metadata_text
 from litman.core.views import (
     load_index_papers,
     papers_for_index,
@@ -152,18 +153,22 @@ _MENTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Thresholds measured on a real 28-paper library (spec §核验 3): a real SI's
-# first pages cover its own title fully and the article's first page by at
-# most 0.20 Jaccard; another copy of the article itself scores 0.92.
-_TITLE_COVERAGE = 0.8
+# Measured on a real 28-paper library (spec §核验 3): a real SI's first page
+# shares at most 0.20 Jaccard with the article's first page; another copy of
+# the article itself scores 0.92.
 _ARTICLE_JACCARD = 0.6
-# A title this short is matched by any SI from the same field.
+# A title counts only as a phrase (:func:`_title_key`): its words, scattered,
+# are on any paper from the same field. A title under this many content words
+# is matched by any SI from that field.
 _MIN_TITLE_WORDS = 5
 # Coarsest common mtime granularity (FAT / some Windows paths): within this,
 # an SI file whose size still matches its record is taken as unchanged.
 _MTIME_SLACK_S = 2.0
 
 _WORD_RE = re.compile(r"[^\W_]+")
+# A title key also skips the spacing modifier letters (U+02B0-02FF): a
+# TeX-made PDF sets a circumflex or caron as its own character.
+_KEY_RE = re.compile(r"[^\W_\u02b0-\u02ff]+")
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 _SPRINGER_DOI_RE = re.compile(r"^s(\d{5})-\d{3}-(\d+)-[0-9a-z]$")
 _SPRINGER_FILE_RE = re.compile(r"(?<!\d)(\d{5})_\d{4}_(\d+)_moesm\d+")
@@ -385,8 +390,16 @@ def _content_words(text: str) -> frozenset[str]:
     return frozenset(_words(text) - _STOPWORDS)
 
 
-def _coverage(title_words: frozenset[str], page_words: set[str]) -> float:
-    return len(title_words & page_words) / len(title_words)
+def _title_key(text: str) -> str:
+    """``text`` as one run of lowercase letters and digits, accents dropped.
+
+    A title is on a page when its key is inside the page's: line breaks,
+    line-end hyphens, missing spaces and accents (a TeX-made PDF gives
+    ``Schr¨odinger``) drop out, while the words must still come in order,
+    unbroken.
+    """
+    decomposed = unicodedata.normalize("NFKD", text).lower()
+    return "".join(_KEY_RE.findall(decomposed))
 
 
 def _is_digit(char: str) -> bool:
@@ -747,6 +760,16 @@ class _Paper:
     paper_id: str
     key: _DoiKey
     title_words: frozenset[str]
+    title_key: str
+
+    @classmethod
+    def of(cls, paper_id: str, doi: Any, title: Any) -> _Paper:
+        # A stored title may still carry Crossref markup (`<i>…</i>`),
+        # which the page does not show.
+        text = clean_metadata_text(str(title or ""))
+        return cls(
+            paper_id, _DoiKey.of(doi), _content_words(text), _title_key(text)
+        )
 
 
 class _Context:
@@ -759,11 +782,7 @@ class _Context:
         meta: Mapping[str, Any],
         index_papers: Sequence[Mapping[str, Any]] | None,
     ) -> None:
-        self.paper = _Paper(
-            paper_id,
-            _DoiKey.of(meta.get("doi")),
-            _content_words(str(meta.get("title") or "")),
-        )
+        self.paper = _Paper.of(paper_id, meta.get("doi"), meta.get("title"))
         self.recorded_shas = {
             str(rec["sha256"])
             for rec in list_supplementary(meta)
@@ -772,11 +791,7 @@ class _Context:
         if index_papers is None:
             index_papers = load_index_papers(vault) or list_papers(vault)
         self.others = [
-            _Paper(
-                str(p.get("id")),
-                _DoiKey.of(p.get("doi")),
-                _content_words(str(p.get("title") or "")),
-            )
+            _Paper.of(str(p.get("id")), p.get("doi"), p.get("title"))
             for p in index_papers
             if p.get("id") and str(p.get("id")) != paper_id
         ]
@@ -830,6 +845,7 @@ def _verdict_for(
 
     pages = _pdf_text(item.path, [1, 2]) if _looks_like_pdf(item.path) else None
     page_words = _words(" ".join(pages)) if pages else set()
+    page_key = _title_key(" ".join(pages)) if pages else ""
 
     # d — the article itself. Before the name rules: a downloaded article is
     # usually named after its DOI and would otherwise pass as SI under c.
@@ -858,19 +874,20 @@ def _verdict_for(
     # e / f — the title on the first pages. A short title is matched by any SI
     # from the same field, so it decides nothing either way.
     if page_words and len(ctx.paper.title_words) >= _MIN_TITLE_WORDS:
-        if _coverage(ctx.paper.title_words, page_words) >= _TITLE_COVERAGE:
+        if ctx.paper.title_key in page_key:
             return Verdict(
                 "ok", "title", "first pages carry the paper's title",
                 None, sha, size,
             )
-        titled_other, best_coverage = None, 0.0
+        # The longest title found: a title inside a longer one is on the page
+        # whenever that one is.
+        titled_other, longest = None, 0
         for other in ctx.others:
             if len(other.title_words) < _MIN_TITLE_WORDS:
                 continue
-            cov = _coverage(other.title_words, page_words)
-            if cov > best_coverage:
-                titled_other, best_coverage = other.paper_id, cov
-        if titled_other is not None and best_coverage >= _TITLE_COVERAGE:
+            if other.title_key in page_key and len(other.title_key) > longest:
+                titled_other, longest = other.paper_id, len(other.title_key)
+        if titled_other is not None:
             return rejected(f"looks like the SI of {titled_other}", titled_other)
 
     # g
