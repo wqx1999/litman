@@ -384,6 +384,13 @@ class LitGroup(click.Group):
         * **non-TTY** (agent / automation): report-only to stderr, NO mutation
           (spec §6 — even lossless A-class regen does not auto-mutate without
           consent in automation). The user/agent runs an explicit fix.
+        * **nothing at all** while ``.litman-staging/`` holds an entry: the
+          vault-open recovery that runs after this hook settles it and says
+          so, and a rename caught mid-move looks exactly like a deletion.
+        * **report-only at a TTY too** when a folder INDEX does not know is on
+          disk: a vanished id beside an un-indexed folder may be a paper
+          renamed, not deleted, and tagging its links ``(deleted)`` would mark
+          live links dead.
         * **TTY, > 5 vanished** (bulk manual delete / restored backup): drop all
           dead ids from INDEX once (metadata-free) and print ONE line deferring
           all wikilink annotation to ``lit health-check``; do NOT per-id
@@ -392,6 +399,7 @@ class LitGroup(click.Group):
           wikilink annotate (``[[id]] (deleted)``, grep-narrowed).
         """
         from litman.commands._drift import _default_tty_probe
+        from litman.core.atomic import _STAGING_DIRNAME, _staging_is_empty
         from litman.core.correctors import annotate, regen_index_drop_ids
 
         vanished = sorted(
@@ -406,8 +414,15 @@ class LitGroup(click.Group):
         if not vanished:
             return
 
-        if not _default_tty_probe():
-            # Automation: report-only, never mutate without consent.
+        staging = vault / _STAGING_DIRNAME
+        if staging.is_dir() and not _staging_is_empty(staging):
+            return
+        if not _default_tty_probe() or any(
+            i.category == "index_vs_disk" and i.severity == "warning"
+            for i in issues
+        ):
+            # Report-only, never mutate: without consent (automation), or
+            # when a vanished id may not be a deleted paper (docstring).
             err = Console(stderr=True)
             joined = ", ".join(vanished)
             err.print(

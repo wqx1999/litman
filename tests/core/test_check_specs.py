@@ -109,8 +109,9 @@ def test_auto_fixable_categories_unchanged() -> None:
     constant: the retired-field migration (ADR-025) and the removal of
     relation edges that name a paper no longer in the library — the SI
     pair, which records verified strays and drops records of missing files,
-    asking first, and the lossless rewrite of text fields that carry line
-    breaks or markup. Broadening to klass-A regen is separate."""
+    asking first, the lossless rewrite of text fields that carry line
+    breaks or markup, and the lossless rename of a folder to the id its
+    metadata.yaml holds. Broadening to klass-A regen is separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
         {
             "stale_staging",
@@ -122,6 +123,7 @@ def test_auto_fixable_categories_unchanged() -> None:
             "supplementary_missing",
             "supplementary_unrecorded",
             "dirty_metadata",
+            "unfinished_rename",
         }
     )
 

@@ -39,8 +39,10 @@ from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     DIRTY_NOTES_KEPT,
     DIRTY_RENAMES,
+    UNFINISHED_RENAME_LEFT,
     Issue,
     apply_autofix,
+    finish_unfinished_renames,
     group_by_category,
     klass_a_checks,
     run_all_checks,
@@ -110,6 +112,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "paper_dir_validity": (
         "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
     ),
+    "unfinished_rename": "Half-finished renames (folder name vs metadata id)",
     "duplicate_doi": "Duplicate DOIs (--paper-doi lookups become ambiguous)",
     "discussion_scaffold": "Discussion log scaffold (discussion.md + its format header)",
     "index_vs_disk": "INDEX.json vs papers/ on disk",
@@ -239,7 +242,8 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     help=(
         "Auto-regenerate all derived artifacts from metadata, clean stale "
         "staging dirs / orphan trash sidecars, refresh stale installed agent "
-        "skills, migrate the retired paper-level `priority` onto "
+        "skills, rename a paper folder to the id in its metadata.yaml when a "
+        "rename stopped halfway, migrate the retired paper-level `priority` onto "
         "priority-<project> (a paper in no project loses it), drop relation "
         "links to papers no longer in the library (deleted, lost, or in the "
         "trash), rewrite titles, journal names and authors that carry line "
@@ -325,10 +329,12 @@ def health_check_cmd(
                 # hub_* carry detail about the project-link rebuild, not a
                 # per-category count; they render under project_references.
                 # The kept notes.md and rename lists render under
-                # dirty_metadata.
+                # dirty_metadata, the folders left as they were under
+                # unfinished_rename.
                 if cat.startswith("hub_") or cat in (
                     DIRTY_NOTES_KEPT,
                     DIRTY_RENAMES,
+                    UNFINISHED_RENAME_LEFT,
                 ):
                     continue
                 if n > 0:
@@ -342,6 +348,8 @@ def health_check_cmd(
                 if cat == "dirty_metadata":
                     _report_notes_kept(applied)
                     _report_renames(applied)
+                if cat == "unfinished_rename":
+                    _report_renames_left(applied)
             if not hub_reported:
                 # The rebuild can settle hub folders while some OTHER klass-A
                 # category is what fired it.
@@ -442,6 +450,22 @@ def _report_renames(applied: dict[str, Any]) -> None:
         )
 
 
+def _report_renames_left(applied: dict[str, Any]) -> None:
+    """Name each folder the ``unfinished_rename`` arm could not rename.
+
+    The finding stays in the report after the fix, but the reason the move
+    failed is known only now.
+    """
+    left = applied.get(UNFINISHED_RENAME_LEFT)
+    for folder, target, reason in left if isinstance(left, list) else []:
+        console.print(
+            f"    [yellow]left[/] papers/{escape(folder)}/: could not rename it "
+            f"to papers/{escape(target)}/ ({escape(reason)}); close any file "
+            "open from it and run --fix again",
+            soft_wrap=True,
+        )
+
+
 def _si_fix_policy() -> SiFixPolicy:
     """How ``--fix`` settles the SI cases it must not decide alone.
 
@@ -505,7 +529,8 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     * **klass-A regen** — any klass-A category present (derived↔truth drift)
       triggers a single full ``regen`` (drop INDEX.json + views, recompute from
       metadata). Lossless. Reported under each fired klass-A category for
-      transparency.
+      transparency. A half-renamed paper's folder is renamed before it
+      (``unfinished_rename``), and a folder that moved triggers the regen too.
     * **validity** — ``stale_staging`` roll-back/forward and
       ``orphan_trash_sidecar`` removal stay routed through
       :func:`apply_autofix`, unchanged, alongside the scaffold / skill / retired
@@ -519,14 +544,27 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     about the project-link rebuild, not categories — and, from the
     ``dirty_metadata`` arm, ``dirty_metadata_notes_kept`` /
     ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_KEPT`` /
-    ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name.
+    ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name, and
+    ``unfinished_rename_left`` (``checks.UNFINISHED_RENAME_LEFT``) when a
+    folder could not be renamed.
     """
     counts: dict[str, Any] = {}
+
+    # Folders first. Until a half-renamed paper's folder carries its metadata
+    # id, the rebuild links views and project hubs to a folder that is not
+    # there — on Windows that fails and reads as "cannot hold folder links".
+    moved = 0
+    if any(i.category == "unfinished_rename" for i in issues):
+        moved, left = finish_unfinished_renames(vault)
+        counts["unfinished_rename"] = moved
+        if left:
+            counts[UNFINISHED_RENAME_LEFT] = left
+        issues = [i for i in issues if i.category != "unfinished_rename"]
 
     klass_a_present = {
         i.category for i in issues if i.category in _KLASS_A_CATEGORIES
     }
-    if klass_a_present:
+    if klass_a_present or moved:
         regenerated = regen(vault, issues)
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.

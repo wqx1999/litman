@@ -368,7 +368,7 @@ def test_paper_dir_validity_dir_vs_metadata_mismatch(vault: Path) -> None:
     issues = check_paper_dir_validity(vault, list_papers(vault))
     mismatch = [i for i in issues if "metadata id" in i.message]
     assert len(mismatch) == 1
-    assert mismatch[0].category == "paper_dir_validity"
+    assert mismatch[0].category == "unfinished_rename"
     assert mismatch[0].severity == "error"
     assert "2024_Foo_Bar" in mismatch[0].message
     assert "2024_Foo_Baz" in mismatch[0].message
@@ -451,6 +451,422 @@ def test_paper_dir_validity_ignores_authored_markdown(vault: Path) -> None:
     assert not (paper_dir / "notes.md").exists()
     assert not (paper_dir / "discussion.md").exists()
     assert check_paper_dir_validity(vault, list_papers(vault)) == []
+
+
+# --- unfinished_rename: a folder whose name lags its metadata id -----------
+
+
+def _half_renamed(vault: Path) -> None:
+    """A clean `lit rename`, then its folder moved back by hand — the state an
+    older `lit rename` left when the folder could not be renamed."""
+    from litman.core.correctors import regen
+
+    _write_paper(
+        vault, "2024_Foo_Bar", related=["2024_Other"],
+        notes="# Foo Bar\n\nSee [[2024_Foo_Bar]].\n",
+    )
+    _write_paper(
+        vault, "2024_Other", related=["2024_Foo_Bar"],
+        notes="Compare with [[2024_Foo_Bar]].\n",
+    )
+    regen(vault)
+    result = CliRunner().invoke(
+        cli, ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    os.rename(vault / "papers" / "2024_Foo_Baz", vault / "papers" / "2024_Foo_Bar")
+
+
+def test_fix_renames_a_half_renamed_folder_and_the_library_agrees(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding's own hint, run as written, leaves nothing to report."""
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    _half_renamed(vault)
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, [])
+        if "metadata id" in i.message
+    ]
+    assert issue.category == "unfinished_rename"
+    assert issue.severity == "error"
+    assert issue.paper_id == "2024_Foo_Bar"
+    assert issue.message == (
+        "directory name '2024_Foo_Bar' != metadata id '2024_Foo_Baz' "
+        "(likely a half-finished rename)"
+    )
+    assert issue.hint == (
+        "`lit health-check --fix` renames the folder to papers/2024_Foo_Baz/"
+    )
+    command = shlex.split((issue.hint or "").split("`")[1])
+    assert command[0] == "lit"
+
+    fixed = CliRunner().invoke(cli, [*command[1:], "--library", str(vault)])
+
+    assert fixed.exit_code == 0, fixed.output
+    assert "unfinished_rename: cleaned 1 item" in fixed.output
+    again = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert again.exit_code == 0, again.output
+    assert "All checks passed" in again.output
+
+    folder = vault / "papers" / "2024_Foo_Baz"
+    assert not (vault / "papers" / "2024_Foo_Bar").exists()
+    assert (folder / "paper.pdf").is_file()
+    assert _meta(vault, "2024_Foo_Baz")["id"] == "2024_Foo_Baz"
+    assert _meta(vault, "2024_Other")["related"] == ["2024_Foo_Baz"]
+    assert "[[2024_Foo_Baz]]" in (
+        vault / "papers" / "2024_Other" / "notes.md"
+    ).read_text(encoding="utf-8")
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert sorted(p["id"] for p in index["papers"]) == ["2024_Foo_Baz", "2024_Other"]
+    link = vault / "views" / "by-status" / "deep-read" / "2024_Foo_Baz"
+    assert is_portable_link(link)
+    assert link.resolve() == folder.resolve()
+    assert list((vault / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("case", "hint"),
+    [
+        (
+            "target exists",
+            "papers/2024_Foo_Baz/ exists too: compare the two folders and keep "
+            "one by hand",
+        ),
+        (
+            "case only",
+            "the two differ only in case: rename the folder to "
+            "papers/2024_Foo_Baz/ by hand",
+        ),
+        (
+            "invalid id",
+            "'2024 Foo Baz' is not a valid paper id: set id in metadata.yaml "
+            "back to '2024_Foo_Bar' by hand",
+        ),
+        (
+            "case-fold clash",
+            "papers/2024_foo_baz/ differs from '2024_Foo_Baz' only in case: keep "
+            "one of the two by hand",
+        ),
+    ],
+)
+def test_a_mismatch_fix_cannot_settle_stays_for_a_person(
+    vault: Path, case: str, hint: str
+) -> None:
+    """Same verdict on every platform: where the filesystem ignores case,
+    papers/2024_Foo_Baz "exists" in the last two cases as well, and the case
+    questions are asked before the disk is."""
+    from litman.core.checks import finish_unfinished_renames
+
+    folder = "2024_foo_baz" if case == "case only" else "2024_Foo_Bar"
+    meta_id = "2024 Foo Baz" if case == "invalid id" else "2024_Foo_Baz"
+    _write_paper(vault, folder, override_id=meta_id)
+    if case == "target exists":
+        _write_paper(vault, "2024_Foo_Baz")
+    if case == "case-fold clash":
+        _write_paper(vault, "2024_foo_baz")
+
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, [])
+        if "metadata id" in i.message
+    ]
+    assert issue.category == "paper_dir_validity"
+    assert issue.severity == "error"
+    assert issue.paper_id == folder
+    assert issue.hint == hint
+
+    def tree() -> list[tuple[str, bytes]]:
+        return [
+            (p.relative_to(vault).as_posix(), p.read_bytes())
+            for p in sorted((vault / "papers").rglob("*"))
+            if p.is_file()
+        ]
+
+    before = tree()
+    # The mover reads the disk itself and asks the same question.
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert tree() == before
+
+
+def test_fix_whose_move_fails_leaves_the_folder_and_says_why(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import atomic as atomic_mod
+
+    _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
+
+    def refuse(src: Path, dst: Path) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(atomic_mod, "_rename_dir", refuse)
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "left papers/2024_Foo_Bar/: could not rename it to papers/2024_Foo_Baz/ "
+        "(Access is denied); close any file open from it and run --fix again"
+    ) in " ".join(result.output.split())
+    assert (vault / "papers" / "2024_Foo_Bar" / "paper.pdf").is_file()
+    assert not (vault / "papers" / "2024_Foo_Baz").exists()
+    assert list((vault / ".litman-staging").iterdir()) == []
+
+
+def test_fix_renames_the_folder_before_any_arm_looks_a_paper_up_by_id(
+    vault: Path,
+) -> None:
+    """Until the folder carries its metadata id, an arm that finds a paper by
+    id sees it as missing: the discussion log the scaffold arm would create
+    would never be created, and a later run would still report it. Renaming
+    first lets every arm act on the moved folder in the same pass."""
+    from litman.commands.health import _apply_fixes
+
+    _write_paper(
+        vault, "2024_Foo_Bar", override_id="2024_Foo_Baz",
+        title="Foo\n   bar", no_discussion=True,
+    )
+    issues = run_all_checks(vault, list_papers(vault))
+    assert {"unfinished_rename", "discussion_scaffold", "dirty_metadata"} <= {
+        i.category for i in issues
+    }
+
+    counts = _apply_fixes(vault, issues)
+
+    assert counts["unfinished_rename"] == 1
+    assert sorted(p.name for p in (vault / "papers").iterdir()) == ["2024_Foo_Baz"]
+    folder = vault / "papers" / "2024_Foo_Baz"
+    assert (folder / "paper.pdf").is_file()
+    assert (folder / "discussion.md").is_file()
+    assert _meta(vault, "2024_Foo_Baz")["title"] == "Foo bar"
+    after = {i.category for i in run_all_checks(vault, list_papers(vault))}
+    assert not after & {"unfinished_rename", "discussion_scaffold", "dirty_metadata"}
+
+
+def test_fix_renames_the_folder_before_the_derived_rebuild(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Until the folder carries its metadata id, the rebuild links views and
+    project hubs to a folder that is not there — on Windows that fails and
+    reads as "this filesystem cannot hold folder links". So the folder is
+    renamed first, and the library is rebuilt once."""
+    from litman.commands import health as health_mod
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    _half_renamed(vault)
+    real_regen = health_mod.regen
+    calls: list[bool] = []
+
+    def regen_after_the_rename(vault_arg: Path, issues: Any = None) -> Any:
+        calls.append((vault / "papers" / "2024_Foo_Baz").is_dir())
+        return real_regen(vault_arg, issues)
+
+    monkeypatch.setattr(health_mod, "regen", regen_after_the_rename)
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [True]
+    again = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert again.exit_code == 0, again.output
+    assert "All checks passed" in again.output
+
+
+def _derived_files_name_the_folder(vault: Path) -> None:
+    """Half-renamed with INDEX.json and views/ still built for the folder name
+    — an id edited by hand, or a rename that stopped before its rebuild."""
+    from litman.core.correctors import regen
+
+    _write_paper(vault, "2024_Foo_Bar")
+    regen(vault)
+    _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
+
+
+def test_a_moved_folder_is_rebuilt_even_with_no_derived_finding(
+    vault: Path,
+) -> None:
+    """The views still point at the old folder name after the move, whether or
+    not the report happened to name them."""
+    from litman.commands.health import _apply_fixes
+
+    _derived_files_name_the_folder(vault)
+    only_rename = [
+        i for i in run_all_checks(vault, list_papers(vault))
+        if i.category == "unfinished_rename"
+    ]
+
+    counts = _apply_fixes(vault, only_rename)
+
+    assert counts["unfinished_rename"] == 1
+    link = vault / "views" / "by-status" / "deep-read" / "2024_Foo_Baz"
+    assert is_portable_link(link)
+    assert link.resolve() == (vault / "papers" / "2024_Foo_Baz").resolve()
+    after = {i.category for i in run_all_checks(vault, list_papers(vault))}
+    assert not after & {"unfinished_rename", "index_vs_disk", "views_vs_metadata"}
+
+
+def _mismatch(vault: Path, folder: str) -> Any:
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, list_papers(vault))
+        if i.paper_id == folder and "metadata id" in i.message
+    ]
+    return issue
+
+
+@pytest.mark.parametrize(
+    ("kind", "where"),
+    [
+        ("relation", "2021_C_x's related"),
+        ("wikilink", "papers/2021_C_x/notes.md"),
+        ("repo", "codes/myrepo/repo-meta.yaml"),
+    ],
+)
+def test_a_folder_the_library_still_names_is_left_for_a_person(
+    vault: Path, kind: str, where: str
+) -> None:
+    """An id edited by hand, not a rename that stopped halfway: moving the
+    folder would leave the link that still names it dangling."""
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(
+        vault, "2020_A_x", override_id="2020_B_x",
+        code_clones=["myrepo"] if kind == "repo" else [],
+    )
+    _write_paper(
+        vault, "2021_C_x",
+        related=["2020_A_x"] if kind == "relation" else [],
+        notes="See [[2020_A_x]].\n" if kind == "wikilink" else None,
+    )
+    if kind == "repo":
+        _write_repo_meta(vault, "myrepo", ["2020_A_x"])
+
+    issue = _mismatch(vault, "2020_A_x")
+
+    assert issue.category == "paper_dir_validity"
+    assert issue.hint == (
+        f"{where} still names '2020_A_x': set id in metadata.yaml back to "
+        "'2020_A_x' by hand, then `lit rename 2020_A_x 2020_B_x`"
+    )
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert (vault / "papers" / "2020_A_x").is_dir()
+
+
+def test_fix_keeps_a_link_to_a_folder_whose_id_was_edited_by_hand(
+    vault: Path,
+) -> None:
+    """Renamed, A's folder would leave C's edge to it dangling, and the same
+    --fix drops dangling edges (D's is a real one)."""
+    _write_paper(vault, "2020_A_x", override_id="2020_B_x", related=["2021_C_x"])
+    _write_paper(vault, "2021_C_x", related=["2020_A_x"])
+    _write_paper(vault, "2022_D_x", related=["2019_Ghost_x"])
+
+    for _ in range(2):
+        CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert _meta(vault, "2021_C_x")["related"] == ["2020_A_x"]
+    assert _meta(vault, "2022_D_x")["related"] == []
+    assert sorted(p.name for p in (vault / "papers").iterdir()) == [
+        "2020_A_x", "2021_C_x", "2022_D_x"
+    ]
+    assert _mismatch(vault, "2020_A_x").category == "paper_dir_validity"
+
+
+def test_a_folder_a_leftover_commit_moves_is_left_to_that_commit(
+    vault: Path,
+) -> None:
+    """A rename killed after its commit point: the folder already carries the
+    new name, its metadata still the old id, and the commit's own recovery is
+    what finishes it. --fix must not move the folder back."""
+    from litman.core.atomic import StagedWrite
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(vault, "2020_Old_A")
+    stage = StagedWrite(vault, op_id="rename-2020_Old_A-to-2024_New_C")
+    stage.__enter__()
+    stage.move_dir("papers/2020_Old_A", "papers/2024_New_C")
+    stage.write_text("papers/2024_New_C/metadata.yaml", "id: 2024_New_C\n")
+    stage._fsync_staged_files()
+    stage._write_manifest()
+    stage._move_dirs()
+    stage._write_sentinel()
+
+    issue = _mismatch(vault, "2024_New_C")
+
+    assert issue.category == "paper_dir_validity"
+    assert issue.hint == (
+        ".litman-staging/rename-2020_Old_A-to-2024_New_C/ still moves this "
+        "folder: settle that finding first"
+    )
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert (vault / "papers" / "2024_New_C").is_dir()
+    assert not (vault / "papers" / "2020_Old_A").exists()
+
+
+def test_a_fix_rename_whose_commit_is_still_kept_is_left_with_the_reason(
+    vault: Path,
+) -> None:
+    """A kept op under the id the --fix rename would use: no traceback, the
+    folder is left and the reason named."""
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
+    op_dir = vault / ".litman-staging" / "fix-rename-2024_Foo_Bar-to-2024_Foo_Baz"
+    op_dir.mkdir()
+    (op_dir / "MANIFEST.json").write_text(
+        json.dumps({"op_id": op_dir.name, "files": ["lost.md"]}), encoding="utf-8"
+    )
+    (op_dir / "COMMITTED").write_bytes(b"")
+
+    assert finish_unfinished_renames(vault) == (
+        0,
+        [(
+            "2024_Foo_Bar",
+            "2024_Foo_Baz",
+            ".litman-staging/fix-rename-2024_Foo_Bar-to-2024_Foo_Baz/ is still there",
+        )],
+    )
+    assert (vault / "papers" / "2024_Foo_Bar").is_dir()
+
+
+def test_a_half_renamed_folder_reads_no_other_metadata_without_a_twin(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whether another folder claims the id is counted from the paper list;
+    the folders are read only to name one."""
+    from litman.core import checks as checks_mod
+
+    _write_paper(vault, "2020_A_x", override_id="2020_B_x")
+    _write_paper(vault, "2021_C_x")
+    _write_paper(vault, "2022_D_x")
+
+    def no_scan(paper_dir: Path) -> object:
+        raise AssertionError(f"read {paper_dir} with no twin to name")
+
+    monkeypatch.setattr(checks_mod, "_declared_id", no_scan)
+
+    assert _mismatch(vault, "2020_A_x").category == "unfinished_rename"
+
+
+def test_two_folders_claiming_one_id_are_both_left_for_a_person(
+    vault: Path,
+) -> None:
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(vault, "2020_A_x", override_id="2020_B_x")
+    _write_paper(vault, "2020_C_x", override_id="2020_B_x")
+
+    assert _mismatch(vault, "2020_A_x").hint == (
+        "papers/2020_A_x/ and papers/2020_C_x/ both claim '2020_B_x': decide "
+        "by hand which one keeps it"
+    )
+    assert _mismatch(vault, "2020_C_x").hint == (
+        "papers/2020_C_x/ and papers/2020_A_x/ both claim '2020_B_x': decide "
+        "by hand which one keeps it"
+    )
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert sorted(p.name for p in (vault / "papers").iterdir()) == [
+        "2020_A_x", "2020_C_x"
+    ]
 
 
 # --- discussion_scaffold -----------------------------------------------------
@@ -2707,6 +3123,7 @@ def test_auto_fixable_categories_constant() -> None:
             "supplementary_missing",
             "supplementary_unrecorded",
             "dirty_metadata",
+            "unfinished_rename",
         }
     )
 

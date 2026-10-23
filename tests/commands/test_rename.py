@@ -8,6 +8,7 @@ views/ rebuild, atomic directory rename, and pre-flight validation.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,18 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.commands import _drift
+from litman.commands import rename as rename_mod
+from litman.core import atomic as atomic_mod
+from litman.core import locking
+from litman.core import viewer as viewer_mod
+from litman.core import views as views_mod
+from litman.core.atomic import StagedWrite
+from litman.core.checks import run_all_checks
+from litman.core.document import list_papers
 from litman.core.library import create_vault
+from litman.core.notes import discussion_scaffold
+from litman.core.vault_registry import VaultEntry, VaultRegistry, save_registry
 from litman.exceptions import (
     CorruptMetadataError,
     PaperNotFoundError,
@@ -586,3 +598,540 @@ def test_rename_leaves_a_leftover_removed_si_folder_alone(vault: Path) -> None:
     assert sorted(p.name for p in (vault / ".trash" / "removed-si").iterdir()) == [
         "2024_Foo_Bar"
     ]
+
+
+# ===========================================================================
+# The folder move is part of the transaction
+#
+# A rename whose folder cannot be moved (on Windows, a file in it open in
+# another program) must change nothing, and a rename killed at any step must
+# leave the library entirely old or entirely new once the next command has
+# run its recovery. Time is pinned on the module objects so two libraries
+# that went through the same rename compare byte for byte.
+# ===========================================================================
+
+_PINNED = "2026-10-23T12:00:00+02:00"
+_OLD, _NEW, _OTHER = "2024_Foo_Bar", "2024_Foo_Baz", "2024_Other"
+# What a crash may never leave behind, once the next command has recovered.
+_TORN = {
+    "stale_staging",
+    "stale_staging_unrecoverable",
+    "paper_dir_validity",
+    "unfinished_rename",
+    "index_vs_disk",
+    "dangling_refs",
+    "bidirectional_refs",
+    "dangling_wikilinks",
+}
+
+
+class _Killed(BaseException):
+    """A hard kill: nothing after the crash point runs, _cleanup included."""
+
+
+def _library_of_two(parent: Path) -> Path:
+    """A and B relate to each other, B's notes link A, A's notes link itself."""
+    vault = create_vault(parent)
+    _write_paper(
+        vault, _OLD, related=[_OTHER], status="deep-read",
+        notes=f"# Foo Bar\n\nSee [[{_OLD}]] for context.\n",
+    )
+    _write_paper(
+        vault, _OTHER, related=[_OLD], status="deep-read",
+        notes=f"Compare with [[{_OLD}]].\n",
+    )
+    for pid in (_OLD, _OTHER):
+        (vault / "papers" / pid / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
+        (vault / "papers" / pid / "discussion.md").write_text(
+            discussion_scaffold(pid), encoding="utf-8"
+        )
+    result = CliRunner().invoke(cli, ["refresh-views", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    return vault
+
+
+def _library(vault: Path) -> dict[str, Any]:
+    """Every file outside views/ and the staging area, byte for byte.
+
+    INDEX.json is compared parsed: the post-commit rebuild writes it in text
+    mode and a staged write as bytes, so on Windows the two differ in line
+    endings alone.
+    """
+    snap: dict[str, Any] = {}
+    for path in sorted(vault.rglob("*")):
+        rel = path.relative_to(vault)
+        if rel.parts[0] in ("views", ".litman-staging") or path.is_dir():
+            continue
+        if rel.as_posix() == "INDEX.json":
+            snap["INDEX.json"] = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            snap[rel.as_posix()] = path.read_bytes()
+    return snap
+
+
+def _pin_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rename_mod, "now_iso", lambda: _PINNED)
+    monkeypatch.setattr(views_mod, "now_iso", lambda: _PINNED)
+
+
+def _rename(vault: Path) -> Any:
+    return CliRunner().invoke(cli, ["rename", _OLD, _NEW, "--library", str(vault)])
+
+
+def _staging_is_empty(vault: Path) -> bool:
+    return list((vault / ".litman-staging").iterdir()) == []
+
+
+def test_rename_whose_folder_cannot_be_moved_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = _library_of_two(tmp_path)
+    before = _library(vault)
+
+    def refuse(src: Path, dst: Path) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(atomic_mod, "_rename_dir", refuse)
+    result = _rename(vault)
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RenameError)
+    assert str(result.exception) == (
+        f"Could not rename papers/{_OLD}/ (Access is denied). "
+        "Close any file open from that folder, then retry."
+    )
+    assert _library(vault) == before
+    assert (vault / "papers" / _OLD).is_dir()
+    assert not (vault / "papers" / _NEW).exists()
+    assert _staging_is_empty(vault)
+
+
+def test_rename_stages_the_papers_own_files_at_the_new_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its metadata and the notes holding its self-link land in the moved
+    folder; nothing is left at, or recreates, papers/<old>/."""
+    vault = _library_of_two(tmp_path)
+    _pin_time(monkeypatch)
+
+    result = _rename(vault)
+
+    assert result.exit_code == 0, result.output
+    assert not (vault / "papers" / _OLD).exists()
+    new = vault / "papers" / _NEW
+    assert (new / "notes.md").read_text(encoding="utf-8") == (
+        f"# Foo Bar\n\nSee [[{_NEW}]] for context.\n"
+    )
+    assert _read_meta(vault, _NEW)["id"] == _NEW
+    assert _read_meta(vault, _NEW)["updated-at"] == _PINNED
+    assert _staging_is_empty(vault)
+
+
+def _crash_at(point: str, m: pytest.MonkeyPatch) -> None:
+    """Patch StagedWrite so the rename dies at ``point`` like a killed process."""
+    m.setattr(StagedWrite, "_cleanup", lambda self: None)
+
+    def kill(self: StagedWrite) -> None:
+        raise _Killed
+
+    if point == "move fails":
+
+        def refuse(src: Path, dst: Path) -> None:
+            raise PermissionError(13, "Access is denied")
+
+        m.setattr(atomic_mod, "_rename_dir", refuse)
+    elif point == "after manifest":
+        m.setattr(StagedWrite, "_move_dirs", kill)
+    elif point == "after move":
+        m.setattr(StagedWrite, "_write_sentinel", kill)
+    elif point == "after commit":
+        m.setattr(StagedWrite, "_promote", kill)
+    else:
+        real_promote = StagedWrite._promote
+
+        def half_promote(self: StagedWrite) -> None:
+            self._staged = dict(list(self._staged.items())[:2])
+            real_promote(self)
+            raise _Killed
+
+        m.setattr(StagedWrite, "_promote", half_promote)
+
+
+@pytest.mark.parametrize(
+    ("point", "outcome"),
+    [
+        ("move fails", "old"),
+        ("after manifest", "old"),
+        ("after move", "old"),
+        ("after commit", "new"),
+        ("mid promote", "new"),
+    ],
+)
+def test_a_rename_killed_anywhere_leaves_the_library_old_or_new(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str, outcome: str
+) -> None:
+    _pin_time(monkeypatch)
+    ref_parent = tmp_path / "ref"
+    ref_parent.mkdir()
+    reference = _library_of_two(ref_parent)
+    assert _rename(reference).exit_code == 0
+    new_library = _library(reference)
+
+    vault = _library_of_two(tmp_path)
+    old_library = _library(vault)
+
+    with monkeypatch.context() as m:
+        _crash_at(point, m)
+        if point == "move fails":
+            assert isinstance(_rename(vault).exception, RenameError)
+        else:
+            with pytest.raises(_Killed):
+                _rename(vault)
+    assert not _staging_is_empty(vault)
+
+    result = CliRunner().invoke(cli, ["list", "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert _staging_is_empty(vault)
+    assert _library(vault) == (old_library if outcome == "old" else new_library)
+    # A clean abort is silent; a folder moved back or a commit finished is not.
+    recovered = [
+        line for line in result.stderr.splitlines()
+        if line.startswith("recovered:")
+    ]
+    silent = point in ("move fails", "after manifest")
+    assert len(recovered) == (0 if silent else 1)
+    found = {i.category for i in run_all_checks(vault, list_papers(vault))}
+    assert not found & _TORN
+    if outcome == "old":
+        assert "views_vs_metadata" not in found
+        return
+    # Views and project links are rebuilt by --fix, as after any write
+    # command that died past its commit.
+    assert "views_vs_metadata" in found
+    fixed = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    assert fixed.exception is None or isinstance(fixed.exception, SystemExit), (
+        fixed.output
+    )
+    found = {i.category for i in run_all_checks(vault, list_papers(vault))}
+    assert not found & (_TORN | {"views_vs_metadata"})
+
+
+def _folder_with_open_file_can_be_renamed(where: Path) -> bool:
+    """Probed, not read off sys.platform: Windows refuses to rename a folder
+    while a file in it is open; Linux and macOS allow it."""
+    probe = where / "lock-probe"
+    probe.mkdir()
+    held = probe / "held.txt"
+    held.write_text("x", encoding="utf-8")
+    with held.open("rb"):
+        try:
+            os.rename(probe, where / "lock-probe-moved")
+        except OSError:
+            return False
+    os.rename(where / "lock-probe-moved", probe)
+    return True
+
+
+def test_rename_with_a_file_open_in_the_folder_is_refused_cleanly(
+    tmp_path: Path,
+) -> None:
+    """The real lock, not a simulated one: a file in papers/<old>/ held open
+    by this process while lit rename runs."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    if _folder_with_open_file_can_be_renamed(probe_dir):
+        pytest.skip("this OS lets a folder with an open file be renamed")
+    vault = _library_of_two(tmp_path)
+    before = _library(vault)
+
+    with (vault / "papers" / _OLD / "paper.pdf").open("rb"):
+        result = _rename(vault)
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RenameError)
+    message = str(result.exception)
+    assert "\n" not in message
+    assert message.startswith(f"Could not rename papers/{_OLD}/ (")
+    assert message.endswith("Close any file open from that folder, then retry.")
+    assert _library(vault) == before
+    assert _staging_is_empty(vault)
+
+
+def test_rename_onto_a_dangling_link_is_refused_as_taken(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    try:
+        os.symlink(vault / "nowhere", vault / "papers" / "2024_Foo_Baz")
+    except OSError:
+        pytest.skip("this machine cannot create a symlink")
+
+    result = CliRunner().invoke(
+        cli, ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)]
+    )
+
+    assert isinstance(result.exception, RenameError)
+    assert "already exists" in str(result.exception)
+    assert (vault / "papers" / "2024_Foo_Bar").is_dir()
+
+
+# ===========================================================================
+# The startup INDEX repair at a terminal
+#
+# Before every command, at a terminal, litman drops ids INDEX.json lists but
+# papers/ no longer holds, and tags their links "(deleted)". A rename caught
+# mid-move, or left half-done by an older litman, looks exactly like that,
+# so the repair only reports while a write is unfinished or while a folder
+# INDEX does not know is on disk.
+# ===========================================================================
+
+
+def _make_active(vault: Path) -> None:
+    save_registry(
+        VaultRegistry(vaults=[VaultEntry(name="lib", path=str(vault), is_active=True)])
+    )
+
+
+def _at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    # A terminal also gets the once-a-day update check; keep it off the net.
+    monkeypatch.setenv("LITMAN_NO_UPDATE_CHECK", "1")
+
+
+def _notes(vault: Path) -> str:
+    return "".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((vault / "papers").rglob("*.md"))
+    )
+
+
+def test_a_terminal_command_after_a_crash_mid_rename_tags_nothing_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = _library_of_two(tmp_path)
+    _make_active(vault)
+    old_library = _library(vault)
+    with monkeypatch.context() as m:
+        _crash_at("after move", m)
+        with pytest.raises(_Killed):
+            _rename(vault)
+    _at_a_terminal(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["list"])
+
+    assert result.exit_code == 0, result.output
+    assert _library(vault) == old_library
+    assert "(deleted)" not in _notes(vault)
+    # The recovery says what happened; the INDEX repair says nothing.
+    assert "recovered: rolled back unfinished commit" in result.stderr
+    assert "INDEX.json lists" not in result.stderr
+
+
+def test_a_terminal_command_leaves_index_alone_while_a_write_is_unfinished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with no stray folder: the recovery that runs after this repair
+    settles the write, and only then is INDEX worth correcting."""
+    vault = _library_of_two(tmp_path)
+    _make_active(vault)
+    locking.rmtree(vault / "papers" / _OTHER)
+    leftover = StagedWrite(vault, op_id="op-unfinished")
+    leftover.__enter__()
+    leftover.write_text("INDEX.json", "{}\n")
+    leftover._fsync_staged_files()
+    leftover._write_manifest()
+    _at_a_terminal(monkeypatch)
+
+    def index_ids() -> list[str]:
+        payload = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+        return sorted(p["id"] for p in payload["papers"])
+
+    first = CliRunner().invoke(cli, ["list"])
+
+    assert first.exit_code == 0, first.output
+    assert index_ids() == [_OLD, _OTHER]
+    assert "INDEX.json lists" not in first.stderr
+    assert _staging_is_empty(vault)
+    second = CliRunner().invoke(cli, ["list"])
+    assert second.exit_code == 0, second.output
+    assert index_ids() == [_OLD]
+
+
+def test_a_terminal_command_tags_nothing_in_a_half_renamed_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Left by an older lit rename: metadata, links and INDEX say the new id,
+    the folder kept the old name. Then --fix puts it right."""
+    vault = _library_of_two(tmp_path)
+    _make_active(vault)
+    assert _rename(vault).exit_code == 0
+    os.rename(vault / "papers" / _NEW, vault / "papers" / _OLD)
+    before = _library(vault)
+    _at_a_terminal(monkeypatch)
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+
+    listed = CliRunner().invoke(cli, ["list"])
+
+    assert listed.exit_code == 0, listed.output
+    assert _library(vault) == before
+    assert "(deleted)" not in _notes(vault)
+    assert (
+        f"INDEX.json lists 1 paper(s) no longer on disk: {_NEW}."
+        in " ".join(listed.stderr.split())
+    )
+    fixed = CliRunner().invoke(cli, ["health-check", "--fix"])
+    assert fixed.exit_code == 0, fixed.output
+    again = CliRunner().invoke(cli, ["health-check"])
+    assert again.exit_code == 0, again.output
+    assert "All checks passed" in again.output
+
+
+
+# ===========================================================================
+# A finished rename whose teardown stops partway
+#
+# Removing the op dir can stop partway: a file in it held open by another
+# program (Windows), a crash. What is left must never be read as a folder
+# move still to make or undo. _remove_tree is the module's one deletion seam.
+# ===========================================================================
+
+
+def _tear_down_all_but(m: pytest.MonkeyPatch, *kept: str) -> None:
+    """Make every op-dir removal leave the named top-level files behind."""
+
+    def remove(path: Path) -> None:
+        for child in path.iterdir():
+            if child.name in kept:
+                continue
+            if child.is_dir():
+                locking.rmtree(child)
+            else:
+                child.unlink()
+
+    m.setattr(atomic_mod, "_remove_tree", remove)
+
+
+def _folders(vault: Path) -> dict[str, str]:
+    return {
+        p.name: _read_meta(vault, p.name)["id"]
+        for p in sorted((vault / "papers").iterdir())
+    }
+
+
+def test_a_left_manifest_never_moves_a_renamed_folder_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pin_time(monkeypatch)
+    ref_parent = tmp_path / "ref"
+    ref_parent.mkdir()
+    reference = _library_of_two(ref_parent)
+    assert _rename(reference).exit_code == 0
+    vault = _library_of_two(tmp_path)
+    op_dir = vault / ".litman-staging" / f"rename-{_OLD}-to-{_NEW}"
+
+    with monkeypatch.context() as m:
+        _tear_down_all_but(m, "MANIFEST.json")
+        assert _rename(vault).exit_code == 0
+    manifest = json.loads((op_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert "dirs" not in manifest
+
+    result = CliRunner().invoke(cli, ["list", "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert not op_dir.exists()
+    assert _library(vault) == _library(reference)
+
+
+@pytest.mark.parametrize("stuck_for", ["every command", "the first rename"])
+def test_a_left_commit_record_never_moves_a_folder_after_a_rename_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stuck_for: str
+) -> None:
+    """COMMITTED and MANIFEST.json cannot be deleted. Renaming back must not
+    be followed by the first rename's folder move."""
+    vault = _library_of_two(tmp_path)
+
+    with monkeypatch.context() as m:
+        _tear_down_all_but(m, "COMMITTED", "MANIFEST.json")
+        assert _rename(vault).exit_code == 0
+    if stuck_for == "every command":
+        _tear_down_all_but(monkeypatch, "COMMITTED", "MANIFEST.json")
+    assert _folders(vault) == {_NEW: _NEW, _OTHER: _OTHER}
+
+    CliRunner().invoke(cli, ["list", "--library", str(vault)])
+    assert _folders(vault) == {_NEW: _NEW, _OTHER: _OTHER}
+    back = CliRunner().invoke(cli, ["rename", _NEW, _OLD, "--library", str(vault)])
+    assert back.exit_code == 0, back.output
+    assert _folders(vault) == {_OLD: _OLD, _OTHER: _OTHER}
+    CliRunner().invoke(cli, ["list", "--library", str(vault)])
+    assert _folders(vault) == {_OLD: _OLD, _OTHER: _OTHER}
+    assert _read_meta(vault, _OTHER)["related"] == [_OLD]
+
+
+def test_a_commit_record_that_stays_for_good_is_inert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """COMMITTED and MANIFEST.json never go away. After a rename and a rename
+    back, later commands report nothing and move nothing."""
+    vault = _library_of_two(tmp_path)
+    _tear_down_all_but(monkeypatch, "COMMITTED", "MANIFEST.json")
+    assert _rename(vault).exit_code == 0
+    back = CliRunner().invoke(cli, ["rename", _NEW, _OLD, "--library", str(vault)])
+    assert back.exit_code == 0, back.output
+
+    for _ in range(2):
+        result = CliRunner().invoke(cli, ["list", "--library", str(vault)])
+        assert result.exit_code == 0, result.output
+        assert "error:" not in result.stderr
+        assert _folders(vault) == {_OLD: _OLD, _OTHER: _OTHER}
+
+
+def _kept_as_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A rename killed after its commit point, one of its files then lost on
+    both sides: recovery moves the folder, then keeps the op as evidence."""
+    vault = _library_of_two(tmp_path)
+    with monkeypatch.context() as m:
+        _crash_at("after commit", m)
+        with pytest.raises(_Killed):
+            _rename(vault)
+    op_dir = vault / ".litman-staging" / f"rename-{_OLD}-to-{_NEW}"
+    (op_dir / "papers" / _OTHER / "notes.md").unlink()
+    (vault / "papers" / _OTHER / "notes.md").unlink()
+    CliRunner().invoke(cli, ["list", "--library", str(vault)])
+    assert op_dir.is_dir()
+    return vault
+
+
+def test_retrying_a_rename_whose_commit_is_kept_is_refused_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = _kept_as_evidence(tmp_path, monkeypatch)
+    os.rename(vault / "papers" / _NEW, vault / "papers" / _OLD)
+    before = _library(vault)
+
+    result = _rename(vault)
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RenameError)
+    assert str(result.exception) == (
+        f"An unfinished write in .litman-staging/rename-{_OLD}-to-{_NEW}/ moves "
+        "this paper's folder. Settle it with `lit health-check` first."
+    )
+    assert _library(vault) == before
+
+
+def test_a_rename_is_refused_while_a_commit_record_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    """Its folder moves cannot be read, so it may move either folder."""
+    vault = _library_of_two(tmp_path)
+    op_dir = vault / ".litman-staging" / "op-garbled"
+    op_dir.mkdir()
+    (op_dir / "MANIFEST.json").write_text("{not json", encoding="utf-8")
+    (op_dir / "COMMITTED").write_bytes(b"")
+
+    result = _rename(vault)
+
+    assert isinstance(result.exception, RenameError)
+    assert ".litman-staging/op-garbled/" in str(result.exception)
+    assert (vault / "papers" / _OLD).is_dir()

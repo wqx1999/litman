@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from litman.core.atomic import (
+    DirMoveError,
     StagedWrite,
     cleanup_stale_staging,
     staged_write,
@@ -1078,3 +1079,809 @@ def test_dir_fsync_on_windows_is_a_silent_noop(
     atomic._fsync_dir(tmp_path)
 
     assert warn_calls == []
+
+
+# ===========================================================================
+# Folder moves inside a staged write (move_dir)
+#
+# `lit rename` moves papers/<old>/ to papers/<new>/ between the manifest and
+# the COMMITTED sentinel. Same crash-matrix shape as T1–T15: drive the commit
+# steps by hand to stop at a precise point (a hard kill runs no _cleanup),
+# then recover and compare the vault byte for byte with the state before the
+# op or the state after a clean one. A failing move is simulated by patching
+# the module's own _rename_dir, never os.
+# ===========================================================================
+
+_MOVE_SRC = "papers/2024_A_b"
+_MOVE_DST = "papers/2024_A_c"
+_MOVE_PAYLOAD: dict[str, str] = {
+    "papers/2024_A_c/metadata.yaml": "id: 2024_A_c\n",
+    "INDEX.json": '{"moved": true}\n',
+}
+
+
+def _seed_folder(vault: Path) -> None:
+    folder = vault / _MOVE_SRC
+    folder.mkdir(parents=True)
+    (folder / "metadata.yaml").write_text("id: 2024_A_b\n", encoding="utf-8")
+    (folder / "paper.pdf").write_bytes(b"%PDF-1.4 stub\n")
+
+
+def _stage_move(vault: Path, op_id: str) -> StagedWrite:
+    """Open a StagedWrite that moves the seeded folder, without committing."""
+    sw = StagedWrite(vault, op_id=op_id)
+    sw.__enter__()
+    sw.move_dir(_MOVE_SRC, _MOVE_DST)
+    for rel, content in _MOVE_PAYLOAD.items():
+        sw.write_text(rel, content)
+    return sw
+
+
+def _moved_reference(tmp_path: Path) -> dict[str, bytes]:
+    """Snapshot of a vault where the move + payload committed cleanly."""
+    parent = tmp_path / "moved_ref"
+    parent.mkdir()
+    ref = create_vault(parent)
+    _seed_folder(ref)
+    with staged_write(ref) as stage:
+        stage.move_dir(_MOVE_SRC, _MOVE_DST)
+        for rel, content in _MOVE_PAYLOAD.items():
+            stage.write_text(rel, content)
+    return _snapshot(ref)
+
+
+def _refuse(*_args: object) -> None:
+    raise PermissionError(13, "Access is denied")
+
+
+@pytest.fixture
+def seeded(vault: Path) -> Path:
+    _seed_folder(vault)
+    return vault
+
+
+def test_move_dir_happy_path_moves_then_promotes_into_the_new_folder(
+    seeded: Path, tmp_path: Path
+) -> None:
+    with staged_write(seeded) as stage:
+        stage.move_dir(_MOVE_SRC, _MOVE_DST)
+        for rel, content in _MOVE_PAYLOAD.items():
+            stage.write_text(rel, content)
+
+    assert not (seeded / _MOVE_SRC).exists()
+    assert (seeded / _MOVE_DST / "paper.pdf").read_bytes() == b"%PDF-1.4 stub\n"
+    assert (seeded / _MOVE_DST / "metadata.yaml").read_text(
+        encoding="utf-8"
+    ) == "id: 2024_A_c\n"
+    assert list((seeded / ".litman-staging").iterdir()) == []
+    assert _snapshot(seeded) == _moved_reference(tmp_path)
+
+
+def test_a_file_staged_inside_the_folder_being_moved_is_refused(
+    seeded: Path,
+) -> None:
+    """It would be promoted into a folder that no longer exists by that name;
+    the caller must stage it at the new path. Refused before anything moves."""
+    before = _snapshot(seeded)
+    with pytest.raises(ValueError, match="stage it at its new path"):
+        with staged_write(seeded) as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            stage.write_text(f"{_MOVE_SRC}/notes.md", "x")
+    assert _snapshot(seeded) == before
+    assert list((seeded / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("src", "dst"),
+    [("papers/A", "papers/A"), ("../out", "papers/A"), ("papers/A", "/etc/x")],
+)
+def test_move_dir_refuses_a_move_onto_itself_or_out_of_the_vault(
+    vault: Path, src: str, dst: str
+) -> None:
+    with pytest.raises(ValueError):
+        with staged_write(vault) as stage:
+            stage.move_dir(src, dst)
+
+
+# --- 1: a write that moves nothing keeps the old manifest ------------------
+
+
+def test_manifest_without_moves_is_exactly_op_id_and_files(vault: Path) -> None:
+    sw = _stage_payload(vault, "op-M1")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    manifest = _json.loads(
+        (sw.staging_root / "MANIFEST.json").read_text(encoding="utf-8")
+    )
+    assert manifest == {"op_id": "op-M1", "files": list(_PAYLOAD)}
+
+
+def test_manifest_lists_the_moves_when_there_are_some(seeded: Path) -> None:
+    sw = _stage_move(seeded, "op-M1b")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    manifest = _json.loads(
+        (sw.staging_root / "MANIFEST.json").read_text(encoding="utf-8")
+    )
+    assert manifest["dirs"] == [[_MOVE_SRC, _MOVE_DST]]
+    assert manifest["files"] == list(_MOVE_PAYLOAD)
+
+
+# --- 2: an op left by an older litman (no "dirs") recovers as before -------
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_old_format_manifest_recovers_as_before(
+    vault: Path, committed: bool
+) -> None:
+    before = (vault / "INDEX.json").read_bytes()
+    op_dir = vault / ".litman-staging" / "op-old"
+    op_dir.mkdir()
+    (op_dir / "INDEX.json").write_text('{"old": true}\n', encoding="utf-8")
+    (op_dir / "MANIFEST.json").write_text(
+        '{"op_id": "op-old", "files": ["INDEX.json"]}', encoding="utf-8"
+    )
+    if committed:
+        (op_dir / "COMMITTED").write_bytes(b"")
+
+    results = recover_staging(vault)
+
+    assert not op_dir.exists()
+    if committed:
+        assert [r.kind for r in results] == ["rolled_forward"]
+        assert (vault / "INDEX.json").read_text(
+            encoding="utf-8"
+        ) == '{"old": true}\n'
+    else:
+        assert results == []
+        assert (vault / "INDEX.json").read_bytes() == before
+
+
+# --- 3: the move fails → nothing changed ------------------------------------
+
+
+def test_a_failing_move_raises_dir_move_error_and_changes_nothing(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = _snapshot(seeded)
+    monkeypatch.setattr(_atomic, "_rename_dir", _refuse)
+
+    with pytest.raises(DirMoveError) as caught:
+        with staged_write(seeded, op_id="op-M3") as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            for rel, content in _MOVE_PAYLOAD.items():
+                stage.write_text(rel, content)
+
+    assert isinstance(caught.value, OSError)
+    assert (caught.value.src_rel, caught.value.reason) == (
+        _MOVE_SRC,
+        "Access is denied",
+    )
+    assert _snapshot(seeded) == before
+    assert list((seeded / ".litman-staging").iterdir()) == []
+
+
+def test_an_existing_destination_is_refused_not_replaced(seeded: Path) -> None:
+    """POSIX rename would quietly replace an empty destination folder."""
+    (seeded / _MOVE_DST).mkdir()
+    before = _snapshot(seeded)
+    with pytest.raises(DirMoveError, match="destination exists"):
+        with staged_write(seeded) as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+    assert _snapshot(seeded) == before
+    assert (seeded / _MOVE_SRC / "paper.pdf").is_file()
+
+
+# --- 4: the sentinel write fails after the move → moved back ----------------
+
+
+def test_sentinel_failure_after_the_move_moves_the_folder_back(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = _snapshot(seeded)
+
+    def no_sentinel(self: StagedWrite) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_atomic.StagedWrite, "_write_sentinel", no_sentinel)
+
+    with pytest.raises(OSError, match="disk full"):
+        with staged_write(seeded, op_id="op-M4") as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            for rel, content in _MOVE_PAYLOAD.items():
+                stage.write_text(rel, content)
+
+    assert _snapshot(seeded) == before
+    assert (seeded / _MOVE_SRC).is_dir()
+    assert not (seeded / _MOVE_DST).exists()
+    assert list((seeded / ".litman-staging").iterdir()) == []
+
+
+# --- 5: ... and moving back fails too → the next recovery does it ----------
+
+
+def test_when_moving_back_fails_the_record_stays_for_recovery(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = _snapshot(seeded)
+    real_rename_dir = _atomic._rename_dir
+    calls = {"n": 0}
+
+    def forward_only(src: Path, dst: Path) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            _refuse()
+        real_rename_dir(src, dst)
+
+    def no_sentinel(self: StagedWrite) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_atomic, "_rename_dir", forward_only)
+    monkeypatch.setattr(_atomic.StagedWrite, "_write_sentinel", no_sentinel)
+    with pytest.raises(OSError, match="disk full"):
+        with staged_write(seeded, op_id="op-M5") as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            for rel, content in _MOVE_PAYLOAD.items():
+                stage.write_text(rel, content)
+    monkeypatch.undo()
+
+    op_dir = seeded / ".litman-staging" / "op-M5"
+    assert op_dir.is_dir()
+    assert not (op_dir / "COMMITTED").exists()
+    assert (seeded / _MOVE_DST).is_dir()
+
+    results = recover_staging(seeded)
+
+    assert len(results) == 1
+    assert results[0].kind == "rolled_back"
+    assert results[0].message == (
+        "rolled back unfinished commit op-M5: moved papers/2024_A_c/ back to "
+        "papers/2024_A_b/. The command that started it did not take effect."
+    )
+    assert not op_dir.exists()
+    assert _snapshot(seeded) == before
+
+
+# --- 6: crash after the manifest, before the move → silent rollback -------
+
+
+def test_crash_after_manifest_before_move_rolls_back_silently(
+    seeded: Path,
+) -> None:
+    before = _snapshot(seeded)
+    sw = _stage_move(seeded, "op-M6")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    # killed here: the folder never moved
+
+    assert recover_staging(seeded) == []
+    assert not (seeded / ".litman-staging" / "op-M6").exists()
+    assert _snapshot(seeded) == before
+
+
+# --- 7: crash after the move, before COMMITTED → moved back, reported -----
+
+
+def test_crash_after_move_before_sentinel_is_moved_back_with_one_line(
+    seeded: Path,
+) -> None:
+    from click.testing import CliRunner
+
+    from litman.cli import cli
+
+    before = _snapshot(seeded)
+    sw = _stage_move(seeded, "op-M7")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    # killed here: the folder moved, nothing decided
+    assert (seeded / _MOVE_DST).is_dir()
+
+    result = CliRunner().invoke(cli, ["list", "--library", str(seeded)])
+
+    assert result.exit_code == 0, result.output
+    lines = [ln for ln in result.stderr.splitlines() if "op-M7" in ln]
+    assert len(lines) == 1
+    assert lines[0].startswith("recovered: rolled back unfinished commit op-M7")
+    assert "op-M7" not in result.stdout
+    assert not (seeded / ".litman-staging" / "op-M7").exists()
+    assert _snapshot(seeded) == before
+
+
+# --- 8: crash after COMMITTED (before / mid promote) → rolled forward -----
+
+
+@pytest.mark.parametrize("promoted_first", [0, 1])
+def test_crash_after_sentinel_rolls_the_move_forward(
+    seeded: Path, tmp_path: Path, promoted_first: int
+) -> None:
+    ref = _moved_reference(tmp_path)
+    sw = _stage_move(seeded, "op-M8")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    sw._write_sentinel()
+    if promoted_first:
+        # Mid-promote: the first file made it, the kill came before the next.
+        sw._staged = dict(list(sw._staged.items())[:promoted_first])
+        sw._promote()
+
+    results = recover_staging(seeded)
+
+    assert [r.kind for r in results] == ["rolled_forward"]
+    assert not (seeded / ".litman-staging" / "op-M8").exists()
+    assert _snapshot(seeded) == ref
+
+
+# --- 9: COMMITTED, but the folder was put back by hand → moved forward ----
+
+
+def test_committed_op_whose_folder_is_back_is_moved_forward_first(
+    seeded: Path, tmp_path: Path
+) -> None:
+    ref = _moved_reference(tmp_path)
+    sw = _stage_move(seeded, "op-M9")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    sw._write_sentinel()
+    _os.rename(seeded / _MOVE_DST, seeded / _MOVE_SRC)
+
+    results = recover_staging(seeded)
+
+    assert [r.kind for r in results] == ["rolled_forward"]
+    assert _snapshot(seeded) == ref
+
+
+# --- 10: a recovery move that fails is kept and retried, never raised -----
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_a_recovery_move_that_fails_keeps_the_op_and_never_raises(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch, committed: bool
+) -> None:
+    from click.testing import CliRunner
+
+    from litman.cli import cli
+
+    sw = _stage_move(seeded, "op-M10")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    if committed:
+        sw._write_sentinel()
+        # Needs moving forward again before any file may be promoted.
+        _os.rename(seeded / _MOVE_DST, seeded / _MOVE_SRC)
+    folder_now = _MOVE_SRC if committed else _MOVE_DST
+    before = _snapshot(seeded)
+    op_dir = seeded / ".litman-staging" / "op-M10"
+    monkeypatch.setattr(_atomic, "_rename_dir", _refuse)
+
+    results = recover_staging(seeded)
+
+    assert len(results) == 1
+    assert results[0].kind == "unrecoverable"
+    assert "could not move" in (results[0].message or "")
+    assert "Access is denied" in (results[0].message or "")
+    assert op_dir.is_dir()
+    assert (seeded / folder_now).is_dir()
+    # Nothing promoted into a second folder beside the first.
+    assert _snapshot(seeded) == before
+
+    result = CliRunner().invoke(cli, ["list", "--library", str(seeded)])
+    assert result.exit_code == 0, result.output
+    assert "error: commit op-M10 could not move" in result.stderr
+    assert op_dir.is_dir()
+
+    monkeypatch.undo()
+    recover_staging(seeded)
+    assert not op_dir.exists()
+    assert (seeded / (_MOVE_DST if committed else _MOVE_SRC)).is_dir()
+
+
+# --- 11: both folders there, or neither → a person decides ----------------
+
+
+@pytest.mark.parametrize("committed", [False, True])
+@pytest.mark.parametrize("state", ["both", "neither"])
+def test_both_or_neither_folder_is_unrecoverable_and_keeps_evidence(
+    seeded: Path, committed: bool, state: str
+) -> None:
+    sw = _stage_move(seeded, "op-M11")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    if committed:
+        sw._write_sentinel()
+    if state == "both":
+        (seeded / _MOVE_SRC).mkdir()
+    else:
+        import shutil
+
+        shutil.rmtree(seeded / _MOVE_DST)
+    before = _snapshot(seeded)
+
+    results = recover_staging(seeded)
+
+    assert len(results) == 1
+    assert results[0].kind == "unrecoverable"
+    expected = (
+        "papers/2024_A_b/ and papers/2024_A_c/ both exist"
+        if state == "both"
+        else "neither papers/2024_A_b/ nor papers/2024_A_c/ exists"
+    )
+    assert expected in (results[0].message or "")
+    assert (results[0].message or "").endswith(
+        "Settle the folders by hand, then remove .litman-staging/op-M11/."
+    )
+    assert (seeded / ".litman-staging" / "op-M11").is_dir()
+    assert _snapshot(seeded) == before
+
+    # Someone then puts one folder right. Whatever the folders look like now,
+    # the op that could not tell never moves one, nor promotes into one.
+    if state == "both":
+        (seeded / _MOVE_SRC).rmdir()
+    else:
+        (seeded / (_MOVE_SRC if committed else _MOVE_DST)).mkdir()
+    before = _snapshot(seeded)
+    folders = sorted(p.name for p in (seeded / "papers").iterdir())
+
+    again = recover_staging(seeded)
+
+    assert [(r.kind, r.message) for r in again] == [
+        ("unrecoverable", results[0].message)
+    ]
+    assert sorted(p.name for p in (seeded / "papers").iterdir()) == folders
+    assert _snapshot(seeded) == before
+
+
+# --- 12: health-check reads the op dir the same way -----------------------
+
+
+def test_check_stale_staging_says_the_folder_will_be_moved_back(
+    seeded: Path,
+) -> None:
+    from litman.core.checks import (
+        AUTO_FIXABLE_CATEGORIES,
+        apply_autofix,
+        check_stale_staging,
+    )
+
+    before = _snapshot(seeded)
+    sw = _stage_move(seeded, "op-M12")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+
+    issues = check_stale_staging(seeded, [])
+
+    assert len(issues) == 1
+    assert issues[0].category == "stale_staging"
+    assert issues[0].category in AUTO_FIXABLE_CATEGORIES
+    assert issues[0].message == (
+        "unfinished commit op-M12 will move papers/2024_A_c/ back to "
+        "papers/2024_A_b/. The command that started it did not take effect."
+    )
+    # The read-only probe moved nothing.
+    assert (seeded / _MOVE_DST).is_dir()
+
+    counts = apply_autofix(seeded, issues)
+
+    assert counts["stale_staging"] == 1
+    assert _snapshot(seeded) == before
+    assert list((seeded / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_check_stale_staging_reports_both_folders_as_unrecoverable(
+    seeded: Path, committed: bool
+) -> None:
+    from litman.core.checks import AUTO_FIXABLE_CATEGORIES, check_stale_staging
+
+    sw = _stage_move(seeded, "op-M12b")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    if committed:
+        sw._write_sentinel()
+    (seeded / _MOVE_SRC).mkdir()
+
+    issues = check_stale_staging(seeded, [])
+
+    assert len(issues) == 1
+    assert issues[0].category == "stale_staging_unrecoverable"
+    assert issues[0].category not in AUTO_FIXABLE_CATEGORIES
+    assert issues[0].severity == "error"
+    assert "both exist" in issues[0].message
+    assert issues[0].hint == (
+        "settle the folders it names by hand, then remove "
+        ".litman-staging/op-M12b/ — NOT auto-fixed"
+    )
+
+
+# --- a committed op's folders are moved once -------------------------------
+
+
+def test_a_settled_commit_never_moves_its_folder_again(seeded: Path) -> None:
+    """The op is kept as evidence (a file was lost), and someone then moves
+    the folder back by hand: no later pass moves it forward again."""
+    from litman.core.checks import check_stale_staging
+
+    sw = _stage_move(seeded, "op-R3")
+    sw.write_text("subdir/lost.md", "# lost\n")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    sw._write_sentinel()
+    (sw.staging_root / "subdir" / "lost.md").unlink()
+
+    first = recover_staging(seeded)
+
+    assert [r.kind for r in first] == ["unrecoverable"]
+    assert "subdir/lost.md" in (first[0].message or "")
+    assert (seeded / _MOVE_DST).is_dir()
+    _os.rename(seeded / _MOVE_DST, seeded / _MOVE_SRC)
+    before = _snapshot(seeded)
+
+    again = recover_staging(seeded)
+
+    assert [r.kind for r in again] == ["unrecoverable"]
+    assert "papers/2024_A_c/ is gone and papers/2024_A_b/ exists again" in (
+        again[0].message or ""
+    )
+    assert (seeded / _MOVE_SRC).is_dir()
+    assert not (seeded / _MOVE_DST).exists()
+    assert _snapshot(seeded) == before
+    (issue,) = check_stale_staging(seeded, [])
+    assert issue.category == "stale_staging_unrecoverable"
+    assert issue.message == again[0].message
+
+
+def test_classifier_finds_a_promoted_file_in_a_folder_not_moved_yet(
+    seeded: Path, tmp_path: Path
+) -> None:
+    """A file promoted into the moved folder, which was then put back by hand,
+    is not lost: recovery moves the folder forward and finds it there."""
+    from litman.core.checks import check_stale_staging
+
+    ref = _moved_reference(tmp_path)
+    sw = _stage_move(seeded, "op-R7")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    sw._write_sentinel()
+    sw._staged = dict(list(sw._staged.items())[:1])
+    sw._promote()
+    _os.rename(seeded / _MOVE_DST, seeded / _MOVE_SRC)
+
+    (issue,) = check_stale_staging(seeded, [])
+
+    assert issue.category == "stale_staging"
+    assert issue.message == (
+        ".litman-staging/op-R7/ — torn commit, roll-forward pending "
+        "(moves papers/2024_A_b/ to papers/2024_A_c/)"
+    )
+    assert [r.kind for r in recover_staging(seeded)] == ["rolled_forward"]
+    assert _snapshot(seeded) == ref
+
+
+def test_an_interrupt_right_after_the_move_still_moves_the_folder_back(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C landing after the rename returned, before the write noted it."""
+    before = _snapshot(seeded)
+    real_rename_dir = _atomic._rename_dir
+    calls = {"n": 0}
+
+    def rename_then_interrupt(src: Path, dst: Path) -> None:
+        real_rename_dir(src, dst)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(_atomic, "_rename_dir", rename_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        with staged_write(seeded, op_id="op-R8") as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            for rel, content in _MOVE_PAYLOAD.items():
+                stage.write_text(rel, content)
+
+    assert (seeded / _MOVE_SRC).is_dir()
+    assert not (seeded / _MOVE_DST).exists()
+    assert _snapshot(seeded) == before
+    assert list((seeded / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "bad", ["papers/a\x00", "/etc", "C:/x", "papers/../..", ""]
+)
+@pytest.mark.parametrize("committed", [False, True])
+def test_a_manifest_moving_a_path_outside_the_vault_is_kept_as_evidence(
+    seeded: Path, bad: str, committed: bool
+) -> None:
+    from click.testing import CliRunner
+
+    from litman.cli import cli
+
+    op_dir = seeded / ".litman-staging" / "op-R9"
+    op_dir.mkdir()
+    (op_dir / "MANIFEST.json").write_text(
+        _json.dumps({"op_id": "op-R9", "files": [], "dirs": [[bad, _MOVE_SRC]]}),
+        encoding="utf-8",
+    )
+    if committed:
+        (op_dir / "COMMITTED").write_bytes(b"")
+    before = _snapshot(seeded)
+
+    results = recover_staging(seeded)
+
+    assert [r.kind for r in results] == ["unrecoverable"]
+    assert "MANIFEST.json is unreadable" in (results[0].message or "")
+    assert op_dir.is_dir()
+    assert _snapshot(seeded) == before
+    result = CliRunner().invoke(cli, ["list", "--library", str(seeded)])
+    assert result.exit_code == 0, result.output
+    assert (seeded / _MOVE_SRC).is_dir()
+
+
+def _sentinel_reaches_disk_then_fails(self: StagedWrite) -> None:
+    (self.staging_root / "COMMITTED").write_bytes(b"")
+    raise OSError("fsync failed")
+
+
+def test_a_sentinel_that_reached_disk_is_removed_before_moving_back(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gone first, so a crash between the move back and the cleanup cannot
+    leave it beside a folder already back in place."""
+    before = _snapshot(seeded)
+    monkeypatch.setattr(
+        _atomic.StagedWrite, "_write_sentinel", _sentinel_reaches_disk_then_fails
+    )
+    real_undo = _atomic.StagedWrite._undo_moves
+    sentinel_at_undo: list[bool] = []
+
+    def undo(self: StagedWrite) -> bool:
+        sentinel_at_undo.append((self.staging_root / "COMMITTED").exists())
+        return real_undo(self)
+
+    monkeypatch.setattr(_atomic.StagedWrite, "_undo_moves", undo)
+
+    with pytest.raises(OSError, match="fsync failed"):
+        with staged_write(seeded, op_id="op-R10") as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            for rel, content in _MOVE_PAYLOAD.items():
+                stage.write_text(rel, content)
+
+    assert sentinel_at_undo == [False]
+    assert _snapshot(seeded) == before
+    assert list((seeded / ".litman-staging").iterdir()) == []
+    assert recover_staging(seeded) == []
+
+
+def test_a_sentinel_that_cannot_be_removed_rolls_the_op_forward_whole(
+    seeded: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving the folder back beside a COMMITTED that stays would let the next
+    pass roll it forward again over half a rollback; nothing is undone."""
+    ref = _moved_reference(tmp_path)
+    monkeypatch.setattr(
+        _atomic.StagedWrite, "_write_sentinel", _sentinel_reaches_disk_then_fails
+    )
+    monkeypatch.setattr(_atomic.StagedWrite, "_drop_sentinel", lambda self: False)
+
+    with pytest.raises(OSError, match="fsync failed"):
+        with staged_write(seeded, op_id="op-R10b") as stage:
+            stage.move_dir(_MOVE_SRC, _MOVE_DST)
+            for rel, content in _MOVE_PAYLOAD.items():
+                stage.write_text(rel, content)
+    monkeypatch.undo()
+
+    assert (seeded / _MOVE_DST).is_dir()
+    assert (seeded / ".litman-staging" / "op-R10b" / "COMMITTED").is_file()
+    assert [r.kind for r in recover_staging(seeded)] == ["rolled_forward"]
+    assert _snapshot(seeded) == ref
+
+
+
+def test_an_empty_unclear_marker_still_reports_what_the_folders_show(
+    seeded: Path,
+) -> None:
+    """Writing the marker can fail after creating it (disk full)."""
+    sw = _stage_move(seeded, "op-R3b")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    (seeded / _MOVE_SRC).mkdir()
+    (sw.staging_root / "DIRS_UNCLEAR").write_bytes(b"")
+
+    (result,) = recover_staging(seeded)
+
+    assert result.kind == "unrecoverable"
+    assert result.message == (
+        "commit op-R3b cannot be recovered automatically: papers/2024_A_b/ and "
+        "papers/2024_A_c/ both exist. Settle the folders by hand, then remove "
+        ".litman-staging/op-R3b/."
+    )
+
+
+def test_a_folder_that_cannot_be_looked_at_is_retried_not_judged(
+    seeded: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A passing stat error is not "neither folder exists": nothing is marked,
+    and the next pass moves the folder back as it should."""
+    from litman.core.checks import check_stale_staging
+
+    before = _snapshot(seeded)
+    sw = _stage_move(seeded, "op-R4")
+    sw._fsync_staged_files()
+    sw._write_manifest()
+    sw._move_dirs()
+    real_exists = _atomic._exists
+
+    def flicker(path: Path) -> bool:
+        if path == seeded / _MOVE_DST:
+            raise PermissionError(13, "Permission denied")
+        return real_exists(path)
+
+    monkeypatch.setattr(_atomic, "_exists", flicker)
+    (result,) = recover_staging(seeded)
+    (issue,) = check_stale_staging(seeded, [])
+    monkeypatch.undo()
+
+    assert result.kind == "unrecoverable"
+    assert result.message == (
+        "commit op-R4 could not check its folders (Permission denied). "
+        "Kept .litman-staging/op-R4/; the next lit command retries."
+    )
+    assert issue.message == result.message
+    assert not (sw.staging_root / "DIRS_UNCLEAR").exists()
+    assert [r.kind for r in recover_staging(seeded)] == ["rolled_back"]
+    assert _snapshot(seeded) == before
+
+
+def test_a_teardown_that_cannot_drop_the_moves_keeps_the_whole_op(
+    seeded: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Half a teardown is never left: either the manifest stops listing the
+    move first, or every file stays and the next pass finishes the job."""
+    ref = _moved_reference(tmp_path)
+
+    def cannot_rewrite(op_dir: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_atomic, "_drop_dir_moves", cannot_rewrite)
+    with staged_write(seeded, op_id="op-R1") as stage:
+        stage.move_dir(_MOVE_SRC, _MOVE_DST)
+        for rel, content in _MOVE_PAYLOAD.items():
+            stage.write_text(rel, content)
+    op_dir = seeded / ".litman-staging" / "op-R1"
+    assert (op_dir / "COMMITTED").is_file()
+    manifest = _json.loads((op_dir / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["dirs"] == [[_MOVE_SRC, _MOVE_DST]]
+    monkeypatch.undo()
+
+    assert [r.kind for r in recover_staging(seeded)] == ["rolled_forward"]
+    assert not op_dir.exists()
+    assert _snapshot(seeded) == ref
+
+
+@pytest.mark.skipif(
+    (hasattr(_os, "geteuid") and _os.geteuid() == 0) or _sys.platform == "win32",
+    reason=(
+        "root bypasses directory permission bits; chmod 000 would not deny. "
+        "On Windows chmod never applies to a directory, so nothing is denied."
+    ),
+)
+def test_a_folder_behind_a_permission_error_is_not_read_as_missing(
+    tmp_path: Path,
+) -> None:
+    locked = tmp_path / "locked"
+    (locked / "inside").mkdir(parents=True)
+    locked.chmod(0o000)
+    try:
+        assert _atomic._exists(tmp_path / "nowhere") is False
+        with pytest.raises(PermissionError):
+            _atomic._exists(locked / "inside")
+    finally:
+        locked.chmod(0o700)

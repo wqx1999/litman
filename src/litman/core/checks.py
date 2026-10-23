@@ -21,9 +21,11 @@ Cross-references:
 
 * M2.0 added ``created-at`` / ``updated-at``. M2.8 enforces them.
 * M2.3 added ``.litman-staging/``. M2.8 surfaces leftovers.
-* M2.6 ``lit rename`` is two-phase (file content via staged_write, then
-  ``os.rename`` of the dir). A failure between phases leaves dir name and
-  metadata id out of sync — caught by :func:`check_paper_dir_validity`.
+* ``lit rename`` moves the paper's folder inside its staged_write, so a
+  failed rename leaves the library as it was. A dir name that still differs
+  from its metadata id (a library an older ``lit rename`` left halfway, or a
+  hand edit) is caught by :func:`check_paper_dir_validity`,
+  and ``--fix`` renames the folder when that is safe (``unfinished_rename``).
 * M2.7 ``lit rm`` is also two-phase; orphan paper dirs (file commit
   succeeded but ``move_to_trash`` failed) surface via
   :func:`check_paper_dir_validity` (structural) and
@@ -47,7 +49,12 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
 
 from ruamel.yaml import YAMLError
 
-from litman.core.atomic import cleanup_stale_staging
+from litman.core.atomic import (
+    DirMoveError,
+    cleanup_stale_staging,
+    op_moving_folders,
+    staged_write,
+)
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import (
     date_ordering_violations,
@@ -55,12 +62,17 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.dedup import normalize_doi
-from litman.core.document import library_paper_ids, malformed_list_fields
+from litman.core.document import (
+    library_paper_ids,
+    list_papers,
+    malformed_list_fields,
+)
 from litman.core.id import (
     derive_id,
     derive_id_without_transliteration,
     derive_keyword,
     family_segment,
+    find_case_fold_collision,
     first_author_family,
     is_valid_id,
     is_weak_keyword,
@@ -79,6 +91,7 @@ from litman.core.portable_link import (
     links_unsupported_hint,
 )
 from litman.core.relations import (
+    ALL_REF_FIELDS,
     RELATION_PAIRS,
     REVERSE_REF_FIELDS,
     dangling_relation_edges,
@@ -237,6 +250,15 @@ class CheckSpec:
 # and the tags gone. Never the id (the finding names the `lit rename` when the
 # id was made from the broken title), and notes.md only when its first line is
 # exactly the heading `lit add` wrote from that title.
+#
+# ``unfinished_rename`` is lossless where it is offered: it moves a paper's
+# folder to the id its metadata.yaml holds and writes no content. It is
+# offered only when that id is valid and free, no other folder claims it, no
+# unfinished write in .litman-staging/ moves either folder, and nothing in the
+# library — a relation field, a wikilink, a bound repo — still names the
+# folder (_unfinished_rename_blocker). Any other mismatch stays a
+# `paper_dir_validity` finding for a person. `lit health-check --fix` runs it
+# itself, before the derived rebuild (commands/health.py, _apply_fixes).
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {
         "stale_staging",
@@ -248,6 +270,7 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
         "supplementary_missing",
         "supplementary_unrecorded",
         "dirty_metadata",
+        "unfinished_rename",
     }
 )
 
@@ -257,6 +280,9 @@ DIRTY_NOTES_KEPT = "dirty_metadata_notes_kept"
 # Same, for the (id, clean-derived id) pairs of papers whose id came from the
 # title that arm cleaned: the `lit rename` it leaves to the user.
 DIRTY_RENAMES = "dirty_metadata_renames"
+# Key under which `lit health-check --fix` reports the (folder, metadata id,
+# reason) of each folder finish_unfinished_renames could not move.
+UNFINISHED_RENAME_LEFT = "unfinished_rename_left"
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
 INBOX_STALE_DAYS = 14
@@ -945,6 +971,125 @@ def check_weak_id_keyword(
     return out
 
 
+def _unfinished_rename_blocker(
+    vault: Path,
+    folder: str,
+    metadata: dict[str, Any],
+    papers: list[dict[str, Any]],
+) -> str | None:
+    """Why ``--fix`` must not rename ``papers/<folder>/`` to its metadata id.
+
+    ``None`` when it may: the metadata id is a valid id, it differs from the
+    folder name by more than case, no other entry under ``papers/`` is a case
+    variant of it, ``papers/<id>`` does not exist, no leftover op in
+    ``.litman-staging/`` moves either folder, no other paper in ``papers``
+    claims the id, and nothing in the library still names the folder. Otherwise the
+    hint saying what to do by hand. The check and the fix both ask here, so
+    ``--fix`` renames exactly the folders the report offered.
+
+    The case questions come before the disk is asked: where the filesystem
+    ignores case, ``papers/<id>`` "exists" whenever a case variant does, and
+    asking them first gives the same verdict on every platform.
+
+    The last question is what makes the move lossless. A folder the library
+    still calls by its name — an id edited by hand rather than a rename that
+    stopped halfway — would leave every such link dangling, and the next
+    ``--fix`` would drop them.
+    """
+    meta_id = metadata.get("id")
+    if not isinstance(meta_id, str) or not is_valid_id(meta_id):
+        return (
+            f"{meta_id!r} is not a valid paper id: set id in metadata.yaml "
+            f"back to {folder!r} by hand"
+        )
+    if meta_id.casefold() == folder.casefold():
+        return (
+            "the two differ only in case: rename the folder to "
+            f"papers/{meta_id}/ by hand"
+        )
+    papers_dir = vault / "papers"
+    others = [p.name for p in papers_dir.iterdir() if p.name != folder]
+    clash = find_case_fold_collision(others, meta_id)
+    if clash is not None:
+        return (
+            f"papers/{clash}/ differs from {meta_id!r} only in case: keep one "
+            "of the two by hand"
+        )
+    if os.path.lexists(papers_dir / meta_id):
+        return (
+            f"papers/{meta_id}/ exists too: compare the two folders and keep "
+            "one by hand"
+        )
+    op = op_moving_folders(vault, {f"papers/{folder}", f"papers/{meta_id}"})
+    if op is not None:
+        return (
+            f".litman-staging/{op}/ still moves this folder: settle that "
+            "finding first"
+        )
+    if sum(1 for paper in papers if paper.get("id") == meta_id) > 1:
+        # Counted from the list in memory; the disk is read only to name it.
+        twin = next(
+            (n for n in others if _declared_id(papers_dir / n) == meta_id),
+            "another folder",
+        )
+        return (
+            f"papers/{folder}/ and papers/{twin}/ both claim {meta_id!r}: "
+            "decide by hand which one keeps it"
+        )
+    where = _still_naming(vault, folder, metadata, papers)
+    if where is not None:
+        return (
+            f"{where} still names {folder!r}: set id in metadata.yaml back to "
+            f"{folder!r} by hand, then `lit rename {folder} {meta_id}`"
+        )
+    return None
+
+
+def _declared_id(paper_dir: Path) -> object:
+    """The ``id`` a folder's metadata.yaml declares, or ``None`` if unreadable."""
+    try:
+        data = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
+    except (OSError, YAMLError, UnicodeDecodeError):
+        return None
+    return data.get("id") if isinstance(data, dict) else None
+
+
+def _still_naming(
+    vault: Path,
+    folder: str,
+    metadata: dict[str, Any],
+    papers: list[dict[str, Any]],
+) -> str | None:
+    """Where the library still names ``folder`` as a paper id, or ``None``.
+
+    Relation fields come from ``papers`` (already in memory), the bound
+    repos from the paper's own ``code-clones``; the notes are read last, and
+    only because a mismatch was found.
+    """
+    for paper in papers:
+        for field in ALL_REF_FIELDS:
+            if folder in relation_refs(paper.get(field)):
+                return f"{paper.get('id')}'s {field}"
+    for repo in relation_refs(metadata.get("code-clones")):
+        repo_meta = vault / CODES_DIRNAME / repo / REPO_META_FILENAME
+        try:
+            bound = _yaml.load(repo_meta.read_text(encoding="utf-8"))
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if isinstance(bound, dict) and folder in relation_refs(bound.get("papers")):
+            return f"{CODES_DIRNAME}/{repo}/{REPO_META_FILENAME}"
+    for md_path in enumerate_markdown_files(vault):
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for m in _WIKILINK_RE.finditer(_HTML_COMMENT_RE.sub("", text)):
+            vault_prefix, target = parse_wikilink_target(m.group(1))
+            if vault_prefix is None and target == folder:
+                return md_path.relative_to(vault).as_posix()
+    return None
+
+
 def check_paper_dir_validity(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -967,7 +1112,10 @@ def check_paper_dir_validity(
       field that holds something else — the paper is invisible to
       ``list_papers``, ``INDEX``, and every metadata-keyed check, so it is
       reported here instead of vanishing silently;
-    * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename);
+    * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename)
+      — under ``unfinished_rename`` instead when ``--fix`` can rename the
+      folder (:func:`_unfinished_rename_blocker`), so one check emits two
+      categories, as :func:`check_schema` does;
     * ``paper.pdf`` missing (``lit open`` depends on it; irreplaceable).
 
     ``notes.md`` absence is NOT checked — empty/deleted is a legitimate state
@@ -1086,18 +1234,26 @@ def check_paper_dir_validity(
             else:
                 meta_id = data.get("id")
                 if meta_id and meta_id != child.name:
+                    blocker = _unfinished_rename_blocker(
+                        vault, child.name, data, papers
+                    )
                     out.append(
                         Issue(
-                            category="paper_dir_validity",
+                            category=(
+                                "unfinished_rename"
+                                if blocker is None
+                                else "paper_dir_validity"
+                            ),
                             severity="error",
                             paper_id=child.name,
                             message=(
                                 f"directory name {child.name!r} != metadata id "
                                 f"{meta_id!r} (likely a half-finished rename)"
                             ),
-                            hint=(
-                                f"reconcile manually: rename dir or "
-                                f"`lit modify {child.name} --set id={child.name}`"
+                            hint=blocker
+                            or (
+                                "`lit health-check --fix` renames the folder "
+                                f"to papers/{meta_id}/"
                             ),
                         )
                     )
@@ -2900,7 +3056,9 @@ def check_stale_staging(
 
     * No ``COMMITTED`` sentinel → clean abort before the commit decision
       point. Normal, recoverable via roll-back → ``info`` severity, in
-      ``AUTO_FIXABLE_CATEGORIES`` (``--fix`` rolls it back).
+      ``AUTO_FIXABLE_CATEGORIES`` (``--fix`` rolls it back). When its
+      manifest lists a folder already moved, the finding says the folder
+      will be moved back — the roll-back is more than deleting the dir.
     * ``COMMITTED`` present, manifest fully replayable → torn commit that
       roll-forward can finish → ``info`` severity, auto-fixable. (In
       practice the vault-open hook has already healed this before
@@ -2914,7 +3072,16 @@ def check_stale_staging(
     recovery classifier without mutating anything (``--fix`` performs the
     actual roll-back / roll-forward through ``cleanup_stale_staging``).
     """
-    from litman.core.atomic import _SENTINEL_FILENAME, RecoveryResult
+    from litman.core.atomic import (
+        _SENTINEL_FILENAME,
+        RecoveryResult,
+        _dir_move_plan,
+        _folders_unreadable_message,
+        _manifest_unreadable_message,
+        _moved_back_message,
+        _os_reason,
+        _read_manifest_dir_moves,
+    )
 
     out: list[Issue] = []
     staging = vault / ".litman-staging"
@@ -2935,20 +3102,81 @@ def check_stale_staging(
             )
             continue
 
-        sentinel = child / _SENTINEL_FILENAME
-        if not sentinel.is_file():
+        committed = (child / _SENTINEL_FILENAME).is_file()
+        # Same reading of the folder moves as the recoverer (_recover_one_op).
+        moves = _read_manifest_dir_moves(child)
+        try:
+            back, blocked = (
+                _dir_move_plan(child, vault, moves, committed=committed)
+                if moves is not None
+                else ([], None)
+            )
+        except OSError as err:
             out.append(
                 Issue(
-                    category="stale_staging",
-                    severity="info",
+                    category="stale_staging_unrecoverable",
+                    severity="error",
                     paper_id=None,
-                    message=(
-                        f".litman-staging/{child.name}/ — leftover op dir "
-                        "(clean abort, no commit record)"
+                    message=_folders_unreadable_message(
+                        child.name, _os_reason(err)
                     ),
-                    hint="run `lit health-check --fix` to clean",
+                    hint="the next lit command retries; check again after it",
                 )
             )
+            continue
+        if blocked is not None:
+            out.append(
+                Issue(
+                    category="stale_staging_unrecoverable",
+                    severity="error",
+                    paper_id=None,
+                    message=blocked,
+                    hint=(
+                        "settle the folders it names by hand, then remove "
+                        f".litman-staging/{child.name}/ — NOT auto-fixed"
+                    ),
+                )
+            )
+            continue
+        if not committed:
+            if moves is None:
+                out.append(
+                    Issue(
+                        category="stale_staging_unrecoverable",
+                        severity="error",
+                        paper_id=None,
+                        message=_manifest_unreadable_message(child.name),
+                        hint=(
+                            f"inspect .litman-staging/{child.name}/ by hand, "
+                            "then remove it — NOT auto-fixed"
+                        ),
+                    )
+                )
+            elif back:
+                out.append(
+                    Issue(
+                        category="stale_staging",
+                        severity="info",
+                        paper_id=None,
+                        message=_moved_back_message(
+                            child.name, back, mode="pending"
+                        ),
+                        hint="run `lit health-check --fix` to move it back",
+                    )
+                )
+            else:
+                out.append(
+                    Issue(
+                        category="stale_staging",
+                        severity="info",
+                        paper_id=None,
+                        message=(
+                            f".litman-staging/{child.name}/ — leftover op dir "
+                            "(clean abort, no commit record)"
+                        ),
+                        hint="run `lit health-check --fix` to clean",
+                    )
+                )
             continue
 
         result = _classify_torn_op(child, vault, RecoveryResult)
@@ -2978,6 +3206,7 @@ def check_stale_staging(
                     message=(
                         f".litman-staging/{child.name}/ — torn commit, "
                         "roll-forward pending"
+                        + (f" (moves {result.message})" if result.message else "")
                     ),
                     hint="run `lit health-check --fix` to roll forward",
                 )
@@ -2993,37 +3222,64 @@ def _classify_torn_op(
     """Read-only classification of a ``COMMITTED`` op dir.
 
     Returns a :class:`RecoveryResult`-shaped object with ``kind`` of
-    ``rolled_forward`` (all files replayable) or ``unrecoverable`` (some
-    manifested relpath lost from both sides, or manifest unreadable).
-    Performs no filesystem mutation — health-check must be able to report
-    without changing state.
+    ``rolled_forward`` (all files replayable; ``message`` names the folder
+    moves still to make, or is ``None``) or ``unrecoverable`` (some
+    manifested relpath lost from both sides, folders the op cannot settle,
+    or manifest unreadable). A file already promoted into a folder that is
+    not moved yet is looked for where that folder is now. Performs no
+    filesystem mutation — health-check must be able to report without
+    changing state.
     """
     # Shared, side-effect-free helpers from the recoverer so the
     # unrecoverable-detection predicate AND the Chinese data-loss-path
     # message strings have a single source of truth and cannot drift
     # between the read-only classifier and the mutating recoverer.
     from litman.core.atomic import (
+        _dir_move_plan,
+        _folders_unreadable_message,
         _manifest_unreadable_message,
+        _os_reason,
+        _read_manifest_dir_moves,
         _read_manifest_relpaths,
         _unrecoverable_message,
     )
 
     op_id = op_dir.name
     relpaths = _read_manifest_relpaths(op_dir)
-    if relpaths is None:
+    moves = _read_manifest_dir_moves(op_dir)
+    if relpaths is None or moves is None:
         return result_cls(
             op_id=op_id,
             kind="unrecoverable",
             n_files=0,
             message=_manifest_unreadable_message(op_id),
         )
+    try:
+        forward, blocked = _dir_move_plan(op_dir, vault, moves, committed=True)
+    except OSError as err:
+        blocked = _folders_unreadable_message(op_id, _os_reason(err))
+    if blocked is not None:
+        return result_cls(
+            op_id=op_id, kind="unrecoverable", n_files=0, message=blocked
+        )
+
+    def promoted_before_the_move(relpath: str) -> bool:
+        rel = Path(relpath)
+        for src, dst in forward:
+            if rel.is_relative_to(dst):
+                return (vault / src / rel.relative_to(dst)).exists()
+        return False
 
     recoverable = 0
     unrecoverable: list[str] = []
     for relpath in relpaths:
         staging_path = op_dir / relpath
         target_path = vault / relpath
-        if staging_path.exists() or target_path.exists():
+        if (
+            staging_path.exists()
+            or target_path.exists()
+            or promoted_before_the_move(relpath)
+        ):
             recoverable += 1
         else:
             unrecoverable.append(relpath)
@@ -3044,7 +3300,11 @@ def _classify_torn_op(
         op_id=op_id,
         kind="rolled_forward",
         n_files=recoverable,
-        message=None,
+        message=(
+            ", ".join(f"{src}/ to {dst}/" for src, dst in forward)
+            if forward
+            else None
+        ),
     )
 
 
@@ -3832,7 +4092,9 @@ def check_code_clone_integrity(
 #       metadata / id match / paper.pdf), directory-enumeration truth side →
 #       klass=validity, report. (M30 Phase 3: merges + replaces the old
 #       id_consistency + invalid_paper_dirs and kills their except: continue
-#       silent skips, invariant #14.)
+#       silent skips, invariant #14.) An id mismatch `--fix` can settle by
+#       renaming the folder is emitted as `unfinished_rename` instead, which
+#       rides the validity-fix path (AUTO_FIXABLE_CATEGORIES).
 #   index_vs_disk (#1) — INDEX.json (derived) ↔ papers/ dir → klass=A, regen.
 #       Cheap: reads only INDEX ids + papers/ listing, no per-paper metadata
 #       (invariant #15) → tier=cheap. Tier-1 repairs it metadata-free.
@@ -4148,6 +4410,58 @@ def group_by_category(issues: Iterable[Issue]) -> dict[str, list[Issue]]:
     return grouped
 
 
+def finish_unfinished_renames(
+    vault: Path,
+) -> tuple[int, list[tuple[str, str, str]]]:
+    """Rename every folder whose metadata id names where it belongs.
+
+    Re-reads ``papers/`` rather than trusting the issue list, and asks
+    :func:`_unfinished_rename_blocker` again right before each move (an
+    earlier move can take the name a later folder wants). Each move is its
+    own ``staged_write``, so a crash mid-move is settled by the next command.
+    A folder that cannot be moved is left and returned as
+    ``(folder, metadata id, reason)``; the rest still move.
+
+    Returns ``(moved, left)`` and rebuilds nothing: the caller runs the one
+    derived rebuild, after every folder is in place.
+    """
+    papers_dir = vault / "papers"
+    if not papers_dir.is_dir():
+        return 0, []
+    papers = list_papers(vault)
+    moved = 0
+    left: list[tuple[str, str, str]] = []
+    for child in sorted(papers_dir.iterdir()):
+        meta_file = child / "metadata.yaml"
+        if not is_valid_id(child.name) or not meta_file.is_file():
+            continue
+        try:
+            data = _yaml.load(meta_file.read_text(encoding="utf-8"))
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        meta_id = data.get("id")
+        if not meta_id or meta_id == child.name:
+            continue
+        if _unfinished_rename_blocker(vault, child.name, data, papers) is not None:
+            continue
+        op_id = f"fix-rename-{child.name}-to-{meta_id}"
+        if os.path.lexists(vault / ".litman-staging" / op_id):
+            left.append(
+                (child.name, meta_id, f".litman-staging/{op_id}/ is still there")
+            )
+            continue
+        try:
+            with staged_write(vault, op_id=op_id) as stage:
+                stage.move_dir(f"papers/{child.name}", f"papers/{meta_id}")
+        except DirMoveError as err:
+            left.append((child.name, meta_id, err.reason))
+            continue
+        moved += 1
+    return moved, left
+
+
 def apply_autofix(
     vault: Path,
     issues: list[Issue],
@@ -4160,6 +4474,11 @@ def apply_autofix(
     under :data:`DIRTY_NOTES_KEPT`, and when it cleaned a title an id was
     derived from, the ``(id, clean-derived id)`` pairs under
     :data:`DIRTY_RENAMES` — detail for the CLI, not categories.
+
+    ``unfinished_rename`` is not fixed here: ``lit health-check --fix``
+    renames those folders itself (:func:`finish_unfinished_renames`), before
+    the derived rebuild and before every arm below, since until a folder
+    carries its id the arms that look a paper up by id see it as missing.
 
     Currently fixes:
 

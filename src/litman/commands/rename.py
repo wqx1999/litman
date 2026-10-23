@@ -17,13 +17,16 @@ metadata.yaml ``id`` field, the value used in other papers'
 
 Atomicity layers:
 
-* All file content updates (1–4) go through one ``staged_write`` so they
-  either all land or all roll back.
-* The directory rename (5) is a single ``os.rename`` after the file
-  commit. A failure here leaves the on-disk metadata pointing at ``<new>``
-  while the dir name is still ``<old>`` — detectable and recoverable
-  (re-run rename, or rename the dir manually). ``lit health-check`` (M2.8)
-  flags the mismatch.
+* The file updates (1–4) and the directory rename (5) are one
+  ``staged_write``. The renamed paper's own files are staged at their new
+  path, ``papers/<new>/``; the folder is moved after the manifest is durable
+  and before the commit point, so a folder that cannot be renamed (on
+  Windows, a file in it open in another program) stops the rename with
+  nothing changed. A crash at any step is rolled back or forward as a whole
+  by the next ``lit`` command.
+* The derived rebuild (6) runs after the commit. A crash between the two
+  leaves ``views/`` and project links stale, as after any write command;
+  ``lit health-check --fix`` rebuilds them.
 
 The ``related`` / ``contradicts`` / ``extends`` fields hold plain string
 ids (not ``[[id]]`` wikilinks). Wikilinks are a notes-only convention.
@@ -42,7 +45,7 @@ from rich.markup import escape
 
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
-from litman.core.atomic import staged_write
+from litman.core.atomic import DirMoveError, op_moving_folders, staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
 from litman.core.correctors import moved_aside_from, reconcile_derived
 from litman.core.dates import now_iso
@@ -158,7 +161,7 @@ def rename_cmd(
             f"No paper with id {old!r} in vault {vault}. "
             "Run `lit list` to see available ids."
         )
-    if new_dir.exists():
+    if os.path.lexists(new_dir):
         raise RenameError(
             f"A paper with id {new!r} already exists at {new_dir}. "
             "Pick a different id or remove the existing paper first."
@@ -181,6 +184,18 @@ def rename_cmd(
             f"New id {new!r} differs only in case from existing paper "
             f"{case_clash!r} — the two collide on Windows and macOS. "
             "Pick a more distinct id."
+        )
+
+    # A kept op that moves either folder is settled by its own recovery; a
+    # second move now would make that recovery act on the wrong folder.
+    op_id = f"rename-{old}-to-{new}"
+    pending = op_moving_folders(vault, {f"papers/{old}", f"papers/{new}"})
+    if pending is None and (vault / ".litman-staging" / op_id).exists():
+        pending = op_id
+    if pending is not None:
+        raise RenameError(
+            f"An unfinished write in .litman-staging/{pending}/ moves this "
+            "paper's folder. Settle it with `lit health-check` first."
         )
 
     now = now_iso()
@@ -300,31 +315,32 @@ def rename_cmd(
             # wikilink rewrite is surfaced by health-check.
             continue
         if needle in text:
-            note_updates[str(md_path.relative_to(vault))] = text.replace(
-                needle, replacement
-            )
+            rel = md_path.relative_to(vault)
+            # The renamed paper's own notes move with its folder.
+            if rel.parts[:2] == ("papers", old):
+                rel = Path("papers", new, *rel.parts[2:])
+            note_updates[str(rel)] = text.replace(needle, replacement)
 
     # ----- INDEX.json -----
     new_index = render_index(safe_papers, now)
 
-    # ----- Stage everything as one transactional write -----
-    rel_renamed_meta = f"papers/{old}/metadata.yaml"
-    with staged_write(vault, op_id=f"rename-{old}-to-{new}") as stage:
-        stage.write_text(rel_renamed_meta, renamed_yaml)
-        for pid, content in other_updates.items():
-            stage.write_text(f"papers/{pid}/metadata.yaml", content)
-        for relpath, content in repo_meta_updates.items():
-            stage.write_text(relpath, content)
-        for relpath, content in note_updates.items():
-            stage.write_text(relpath, content)
-        stage.write_text("INDEX.json", new_index)
-
-    # ----- Atomic directory rename -----
-    # POSIX guarantees atomicity here: target was pre-validated as
-    # non-existent. Failure modes (disk full, permissions) are rare and
-    # leave on-disk metadata pointing at <new> while dir is still <old>.
-    # `lit health-check` (M2.8) flags this mismatch.
-    os.rename(old_dir, new_dir)
+    # ----- Stage everything, the folder move included, as one write -----
+    try:
+        with staged_write(vault, op_id=op_id) as stage:
+            stage.move_dir(f"papers/{old}", f"papers/{new}")
+            stage.write_text(f"papers/{new}/metadata.yaml", renamed_yaml)
+            for pid, content in other_updates.items():
+                stage.write_text(f"papers/{pid}/metadata.yaml", content)
+            for relpath, content in repo_meta_updates.items():
+                stage.write_text(relpath, content)
+            for relpath, content in note_updates.items():
+                stage.write_text(relpath, content)
+            stage.write_text("INDEX.json", new_index)
+    except DirMoveError as err:
+        raise RenameError(
+            f"Could not rename papers/{old}/ ({err.reason}). "
+            "Close any file open from that folder, then retry."
+        ) from err
 
     # ----- Post-commit derived rebuild through the shared funnel (M30 Phase 4) -----
     # INDEX + views recomputed together; the staged INDEX.json above remains
