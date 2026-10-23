@@ -30,7 +30,9 @@ that does not use spaces arrives as one token and slugs down to whatever Latin
 fragment it happened to contain. ``关于化合物A的合成方法`` produced ``2018_Zhang_A``
 this way, silently, and a wrong id is permanent in a way a wrong field is not.
 Titles below the ratio are refused instead, and ``suggest_id`` offers the
-candidate an explicit ``--id`` can start from.
+candidate an explicit ``--id`` can start from. An accented Latin letter is
+written without its accent (``Brüssow`` → ``Brussow``) and counts as surviving;
+letters it cannot map, such as Chinese or Greek, are still dropped.
 
 Module API:
 
@@ -38,6 +40,9 @@ Module API:
 - ``derive_keyword_alternatives(title, n)``: generate offset-shifted
   alternatives for the interactive id-collision fallback in ``lit add``.
 - ``derive_id(year, family, title)``: assemble the canonical id.
+- ``derive_id_without_transliteration(year, family, title)``: the id the
+  rule gave before accented letters were transliterated, for telling whether
+  an existing id was derived.
 - ``suggest_id(year, family, title)``: a candidate id for a title
   ``derive_id`` refuses — what the CLI error and the GUI's Paper ID field
   offer as a starting point.
@@ -54,6 +59,7 @@ All keyword helpers raise ``IDError`` on inputs that cannot yield a valid id.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from litman.exceptions import IDError
@@ -144,18 +150,40 @@ def find_case_fold_collision(
     return None
 
 
+# Latin letters that NFKD leaves whole, because they are letters of their own
+# rather than a base letter plus an accent.
+_TRANSLITERATION = str.maketrans({
+    "ø": "o", "Ø": "O", "ß": "ss", "ẞ": "SS", "æ": "ae", "Æ": "AE",
+    "œ": "oe", "Œ": "OE", "đ": "d", "Đ": "D", "ð": "d", "Ð": "D",
+    "ł": "l", "Ł": "L", "þ": "th", "Þ": "Th", "ı": "i",
+})
+
+
+def _without_accents(text: str) -> str:
+    """Write accented Latin letters as plain ones: ``Brüssow`` → ``Brussow``.
+
+    NFKD splits ``ü`` into ``u`` and a combining accent, and turns ligatures
+    and other compatibility forms into the letters they stand for (``ﬁ`` →
+    ``fi``). Dropping the accents here, not only in the slug, is what lets an
+    accented word be checked against the stop words: ``à`` is ``a``.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    bare = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    return bare.translate(_TRANSLITERATION)
+
+
 def _slug(text: str) -> str:
-    """Strip everything except ASCII alphanumerics and hyphens."""
-    return re.sub(r"[^A-Za-z0-9-]+", "", text)
+    """Keep ASCII alphanumerics and hyphens, accented letters without accents."""
+    return re.sub(r"[^A-Za-z0-9-]+", "", _without_accents(text))
 
 
 def _slug_no_hyphen(text: str) -> str:
-    """Strip everything except ASCII alphanumerics (hyphens removed too).
+    """Like :func:`_slug`, with the hyphens removed too.
 
     Used for the post-colon word in the colon special-case path so that
     ``Pre-training`` reads as ``Pretraining`` in the assembled keyword.
     """
-    return re.sub(r"[^A-Za-z0-9]+", "", text)
+    return re.sub(r"[^A-Za-z0-9]+", "", _without_accents(text))
 
 
 def _capitalize_first(s: str) -> str:
@@ -184,12 +212,13 @@ def _truncate_at_hyphen(s: str, max_len: int) -> str:
 def _significant_tokens(text: str) -> list[str]:
     """Tokenize on whitespace, drop stop words, slug each (preserves hyphens).
 
-    Returns the list of cleaned tokens in original order. Empty / non-ASCII /
-    pure-punctuation tokens are dropped.
+    Returns the list of cleaned tokens in original order. A token is matched
+    against the stop words without its accents (``à`` is ``a``); one that slugs
+    to nothing — punctuation, a script the slug cannot map — is dropped.
     """
     out: list[str] = []
     for token in text.split():
-        if token.lower() in _STOP_WORDS:
+        if _without_accents(token).lower() in _STOP_WORDS:
             continue
         slug = _slug(token)
         if slug:
@@ -201,7 +230,8 @@ def _top_n_keyword(title: str) -> str:
     """Build a keyword from the top-N significant words of the full title."""
     words = _significant_tokens(title)
     if not words:
-        # All stop words or non-ASCII — fall back to raw first whitespace token.
+        # All stop words or nothing the slug can map — fall back to the raw
+        # first whitespace token.
         raw_tokens = title.split()
         if not raw_tokens:
             return "untitled"
@@ -232,7 +262,7 @@ def _colon_special_case(title: str) -> str | None:
         return None
 
     for token in post.split():
-        if token.lower() in _STOP_WORDS:
+        if _without_accents(token).lower() in _STOP_WORDS:
             continue
         no_hyphen = _slug_no_hyphen(token)
         if len(no_hyphen) >= _KEYWORD_COLON_POST_MIN:
@@ -484,6 +514,31 @@ def derive_id(year: int | None, first_author_family: str, title: str) -> str:
         raise IDError(_no_keyword_message(year, family, title))
 
     return f"{year}_{family}_{keyword}"
+
+
+def derive_id_without_transliteration(
+    year: int | None, first_author_family: str, title: str
+) -> str:
+    """The id :func:`derive_id` gave before accented letters were transliterated.
+
+    That rule dropped them: ``Brüssow`` made ``2026_Brssow_…``. Ids already in
+    a vault keep the old form, so this answers only whether such an id was
+    derived at all — the health check's rename hint asks that — and never
+    names a new one.
+
+    Masking every non-ASCII character except whitespace, which is what splits
+    a title into words, reproduces the old rule exactly: the slug drops the
+    mask the way it used to drop the letter, and the ASCII ratio counts it
+    the same way too.
+    """
+    return derive_id(
+        year, _mask_non_ascii(first_author_family), _mask_non_ascii(title)
+    )
+
+
+def _mask_non_ascii(text: str) -> str:
+    """Replace each non-ASCII character but whitespace with U+FFFD."""
+    return "".join(c if c.isascii() or c.isspace() else "\ufffd" for c in text)
 
 
 def _no_keyword_message(year: int, family: str, title: str) -> str:

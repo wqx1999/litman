@@ -908,6 +908,67 @@ def test_dirty_metadata_suggests_a_rename_when_the_id_came_from_the_dirty_title(
     )
 
 
+_DIRTY_D = "<i>Nostoc</i> lanthipeptides promote symbiosis"
+
+
+def test_dirty_metadata_suggests_a_rename_for_an_id_from_before_transliteration() -> None:
+    """`Müller` used to lose its `ü`, so the id derived back then reads `Mller`.
+
+    It still came from the dirty title, so the hint still offers the rename —
+    to the id the current rule derives from the clean title.
+    """
+    pid = "2021_Mller_INostoci-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid, title=_DIRTY_D, authors=["Müller, Hans"], year=2021
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert (
+        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+    )
+
+
+def test_dirty_metadata_suggests_a_rename_for_an_id_from_the_current_rule() -> None:
+    pid = "2021_Muller_INostoci-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid, title=_DIRTY_D, authors=["Müller, Hans"], year=2021
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert (
+        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+    )
+
+
+def test_dirty_metadata_leaves_an_old_rule_id_the_dirt_never_reached() -> None:
+    """Line breaks alone never reached `2021_Mller_…`; renaming it to `Muller`
+    would be about the old rule, not about the dirty title."""
+    pid = "2021_Mller_Nostoc-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid,
+        title="Nostoc lanthipeptides\n  promote symbiosis",
+        authors=["Müller, Hans"],
+        year=2021,
+    )
+    found = _dirty_findings(paper)
+    assert set(found) == {"title"}
+    assert "lit rename" not in (found["title"].hint or "")
+
+
+def test_dirty_metadata_judges_an_id_by_the_clean_author_name() -> None:
+    """The entity in `M&uuml;ller` did reach the id, though the title's line
+    break did not — so the clean name decides, and the hint stays."""
+    pid = "2021_Muumlller_Nostoc-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid,
+        title="Nostoc lanthipeptides\n  promote symbiosis",
+        authors=["M&uuml;ller, Hans"],
+        year=2021,
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert (
+        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+    )
+
+
 def test_dirty_metadata_leaves_a_hand_given_id_alone() -> None:
     """Sample C: its id was given by hand, so nothing suggests renaming it."""
     paper = _minimal_paper(

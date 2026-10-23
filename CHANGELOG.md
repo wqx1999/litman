@@ -181,6 +181,12 @@ own entry. Read those before you upgrade, whatever the number says.
 - **Notices in the web UI go away on time.** A notice at the bottom stayed up
   while you kept working, moving through the list or typing a search.
 
+- **Accented letters in a paper id are no longer dropped.** The first author
+  `Brüssow` gave an id `…_Brssow_…`, `Søren` gave `Sren`. Such letters are now
+  written plainly — `Brussow`, `Soren`, `Gosswein`, `Lukasiewicz` — in the
+  author's name and in the title words, from `lit add` and from the web UI.
+  Ids already in your library stay as they are.
+
 ## 1.3.7 — 2026-10-05
 
 ### Added

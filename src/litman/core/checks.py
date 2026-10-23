@@ -58,6 +58,7 @@ from litman.core.dedup import normalize_doi
 from litman.core.document import library_paper_ids, malformed_list_fields
 from litman.core.id import (
     derive_id,
+    derive_id_without_transliteration,
     derive_keyword,
     family_segment,
     first_author_family,
@@ -730,7 +731,10 @@ def _clean_title_rename_target(
     hand (``--id``, a ``lit rename``) or carries a collision suffix, and is
     left alone. So is an id the clean title would derive anyway — line breaks
     alone never reached it, because the keyword is built from whitespace-split
-    words.
+    words. An id from before accented letters were transliterated
+    (``2021_Mller_…`` for ``Müller``) counts as derived too, and is held to the
+    same test under the rule that made it; the target is always what the
+    current rule derives.
     """
     pid = paper.get("id")
     if not isinstance(pid, str):
@@ -738,18 +742,31 @@ def _clean_title_rename_target(
     authors = paper.get("authors")
     if not isinstance(authors, list):
         authors = []
-    if _derive_or_none(paper.get("year"), authors, paper["title"]) != pid:
+    year = paper.get("year")
+    clean_authors = dirty.get("authors", authors)
+    rules = [
+        derive
+        for derive in (derive_id, derive_id_without_transliteration)
+        if _derive_or_none(derive, year, authors, paper["title"]) == pid
+    ]
+    if not rules or any(
+        _derive_or_none(derive, year, clean_authors, dirty["title"]) == pid
+        for derive in rules
+    ):
         return None
-    target = _derive_or_none(
-        paper.get("year"), dirty.get("authors", authors), dirty["title"]
-    )
+    target = _derive_or_none(derive_id, year, clean_authors, dirty["title"])
     return target if target != pid else None
 
 
-def _derive_or_none(year: Any, authors: list[Any], title: str) -> str | None:
+def _derive_or_none(
+    derive: Callable[[Any, str, str], str],
+    year: Any,
+    authors: list[Any],
+    title: str,
+) -> str | None:
     family = first_author_family([a for a in authors if isinstance(a, str)])
     try:
-        return derive_id(year, family, title)
+        return derive(year, family, title)
     except IDError:
         return None
 

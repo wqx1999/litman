@@ -61,7 +61,7 @@ JSON (`lit add --from-llm-json`). You rarely touch these after add.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `id` | string | required | Folder name. Format `<year>_<Family>_<Keyword>`, ASCII only — it has to be a directory name on Windows, macOS and Linux alike. A title that cannot yield an ASCII keyword is refused at add rather than reduced to a nonsense one; `lit add --id` is the way past. Change it only via `lit rename`, which rewrites every back-reference. |
+| `id` | string | required | Folder name. Format `<year>_<Family>_<Keyword>`, ASCII only — it has to be a directory name on Windows, macOS and Linux alike. Accented letters lose the accent (Brüssow → `Brussow`). A title that cannot yield an ASCII keyword is refused at add rather than reduced to a nonsense one; `lit add --id` is the way past. Change it only via `lit rename`, which rewrites every back-reference. |
 | `title` | string | required at add time | The paper's title, in whatever script it was written in. Line breaks, stray spaces and markup such as `<i>` or `&amp;` are cleaned out when it is stored; nothing else is changed. A filler value (`Unknown`, `untitled`) is refused at add. |
 | `authors` | list[string] | `[]` | Each entry `"Family, Given"`. The first entry's family name drives id derivation, so a filler there is refused at add; further down the list it is accepted with a warning, since it never reaches the id. Rewrite the list in order with `lit modify --set-author`. |
 | `year` | integer or null | null | Publication year. |
