@@ -27,7 +27,7 @@ from litman.core.fs_identity import Anchor
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
 from litman.core.search import search_notes
-from litman.core.taxonomy import parse_taxonomy
+from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.core.trash import TRASH_DIRNAME
 from litman.core.vault_registry import find_active, load_registry, registry_path
 from litman.core.views import (
@@ -622,37 +622,16 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
         ) from exc
 
 
-def _taxonomy_text(vault: Path) -> str:
-    """TAXONOMY.md's text, or a described 500 when it cannot be served.
-
-    A missing / non-UTF-8 TAXONOMY.md is damaged TRUTH (health-check's beat
-    on the CLI side). Left unguarded it took down /api/taxonomy AND
-    /api/projects with raw tracebacks, which the frontend swallows into a
-    silently empty panel.
-    """
-    path = vault / "TAXONOMY.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "TAXONOMY.md is missing from this library — run "
-                "`lit health-check` to diagnose."
-            ),
-        ) from exc
-    except (OSError, UnicodeDecodeError) as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"TAXONOMY.md cannot be read (not UTF-8, or unreadable): {exc}",
-        ) from exc
-
-
 @router.get("/taxonomy")
 def get_taxonomy(request: Request) -> dict[str, list[str]]:
-    """The TAXONOMY controlled vocabulary, one list per dict key."""
+    """The TAXONOMY controlled vocabulary, one list per dict key.
+
+    Read through the CLI's reader: a missing, unreadable or non-UTF-8
+    TAXONOMY.md is the app-wide ``UnreadableTaxonomyError`` 500, worded as
+    the CLI words it.
+    """
     vault = _vault(request)
-    return parse_taxonomy(_taxonomy_text(vault))
+    return parse_taxonomy(read_taxonomy_text(vault))
 
 
 @router.get("/fixed-enums")
@@ -684,12 +663,13 @@ def get_projects(request: Request) -> list[dict[str, str]]:
     """Registered projects (name / path / status).
 
     Same JOIN of TAXONOMY.md's projects section and the lit-config.yaml
-    projects map that backs ``lit project list``.
+    projects map that backs ``lit project list``, read through the same
+    reader.
     """
     from litman.core.config import load_config
 
     vault = _vault(request)
-    taxonomy_names = set(parse_taxonomy(_taxonomy_text(vault))["projects"])
+    taxonomy_names = set(parse_taxonomy(read_taxonomy_text(vault))["projects"])
     config_map = load_config(vault).projects
     config_names = set(config_map)
 

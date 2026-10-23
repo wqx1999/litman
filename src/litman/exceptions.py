@@ -161,7 +161,7 @@ class UnreadableTaxonomyError(LitmanError):
     """TAXONOMY.md cannot be read: it is missing, unreadable, or not UTF-8.
 
     Raised by :func:`litman.core.taxonomy.read_taxonomy_text`, the reader
-    every command, check and web UI write goes through, so each names the
+    every command, check and web UI route goes through, so each names the
     file and the way out instead of stopping on a raw ``UnicodeDecodeError``
     or ``OSError``. ``reason`` is the short cause (``line 14 is not UTF-8``,
     ``Permission denied``) that health-check's finding repeats, and

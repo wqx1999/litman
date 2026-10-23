@@ -87,7 +87,7 @@ def parse_taxonomy(text: str) -> dict[str, list[str]]:
 
 
 def read_taxonomy_text(vault: Path) -> str:
-    """TAXONOMY.md's text, for every command, check and web UI write that reads it.
+    """TAXONOMY.md's text, for every command, check and web UI route that reads it.
 
     Raises:
         UnreadableTaxonomyError: the file is missing or unreadable, or holds

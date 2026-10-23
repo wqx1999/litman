@@ -320,8 +320,9 @@ def create_app(vault: Path | None) -> FastAPI:
         request: Request, exc: UnreadableTaxonomyError
     ) -> JSONResponse:
         """TAXONOMY.md cannot be read: a 500 naming the file and the way out,
-        for every write that reads it — registering a value, tagging a paper,
-        adding or renaming a project — instead of "Internal Server Error"."""
+        for every route that reads it — the vocabulary and project lists,
+        registering a value, tagging a paper, adding or renaming a project —
+        worded as the CLI words it, instead of "Internal Server Error"."""
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     app.include_router(read_router)
