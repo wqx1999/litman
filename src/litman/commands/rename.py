@@ -194,8 +194,8 @@ def rename_cmd(
         pending = op_id
     if pending is not None:
         raise RenameError(
-            f"An unfinished write in .litman-staging/{pending}/ moves this "
-            "paper's folder. Settle it with `lit health-check` first."
+            "An unfinished command still moves this paper's folder. "
+            "Settle it with `lit health-check` first."
         )
 
     now = now_iso()
@@ -339,7 +339,7 @@ def rename_cmd(
     except DirMoveError as err:
         raise RenameError(
             f"Could not rename papers/{old}/ ({err.reason}). "
-            "Close any file open from that folder, then retry."
+            "Close any file open from it, then retry."
         ) from err
 
     # ----- Post-commit derived rebuild through the shared funnel (M30 Phase 4) -----

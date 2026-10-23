@@ -698,7 +698,7 @@ def test_rename_whose_folder_cannot_be_moved_changes_nothing(
     assert isinstance(result.exception, RenameError)
     assert str(result.exception) == (
         f"Could not rename papers/{_OLD}/ (Access is denied). "
-        "Close any file open from that folder, then retry."
+        "Close any file open from it, then retry."
     )
     assert _library(vault) == before
     assert (vault / "papers" / _OLD).is_dir()
@@ -855,7 +855,7 @@ def test_rename_with_a_file_open_in_the_folder_is_refused_cleanly(
     message = str(result.exception)
     assert "\n" not in message
     assert message.startswith(f"Could not rename papers/{_OLD}/ (")
-    assert message.endswith("Close any file open from that folder, then retry.")
+    assert message.endswith("Close any file open from it, then retry.")
     assert _library(vault) == before
     assert _staging_is_empty(vault)
 
@@ -924,7 +924,7 @@ def test_a_terminal_command_after_a_crash_mid_rename_tags_nothing_deleted(
     assert _library(vault) == old_library
     assert "(deleted)" not in _notes(vault)
     # The recovery says what happened; the INDEX repair says nothing.
-    assert "recovered: rolled back unfinished commit" in result.stderr
+    assert "recovered: Undid an unfinished command" in result.stderr
     assert "INDEX.json lists" not in result.stderr
 
 
@@ -1114,8 +1114,8 @@ def test_retrying_a_rename_whose_commit_is_kept_is_refused_cleanly(
     assert result.exit_code == 1
     assert isinstance(result.exception, RenameError)
     assert str(result.exception) == (
-        f"An unfinished write in .litman-staging/rename-{_OLD}-to-{_NEW}/ moves "
-        "this paper's folder. Settle it with `lit health-check` first."
+        "An unfinished command still moves this paper's folder. "
+        "Settle it with `lit health-check` first."
     )
     assert _library(vault) == before
 
@@ -1124,6 +1124,8 @@ def test_a_rename_is_refused_while_a_commit_record_cannot_be_read(
     tmp_path: Path,
 ) -> None:
     """Its folder moves cannot be read, so it may move either folder."""
+    from litman.core.checks import check_stale_staging
+
     vault = _library_of_two(tmp_path)
     op_dir = vault / ".litman-staging" / "op-garbled"
     op_dir.mkdir()
@@ -1133,5 +1135,13 @@ def test_a_rename_is_refused_while_a_commit_record_cannot_be_read(
     result = _rename(vault)
 
     assert isinstance(result.exception, RenameError)
-    assert ".litman-staging/op-garbled/" in str(result.exception)
+    assert str(result.exception) == (
+        "An unfinished command still moves this paper's folder. "
+        "Settle it with `lit health-check` first."
+    )
+    # health-check names the op dir to settle.
+    assert any(
+        ".litman-staging/op-garbled/" in issue.hint
+        for issue in check_stale_staging(vault, [])
+    )
     assert (vault / "papers" / _OLD).is_dir()

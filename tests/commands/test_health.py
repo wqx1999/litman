@@ -604,8 +604,8 @@ def test_fix_whose_move_fails_leaves_the_folder_and_says_why(
 
     assert result.exit_code == 1
     assert (
-        "left papers/2024_Foo_Bar/: could not rename it to papers/2024_Foo_Baz/ "
-        "(Access is denied); close any file open from it and run --fix again"
+        "left papers/2024_Foo_Bar/: Access is denied; "
+        "close any file open from it and run --fix again"
     ) in " ".join(result.output.split())
     assert (vault / "papers" / "2024_Foo_Bar" / "paper.pdf").is_file()
     assert not (vault / "papers" / "2024_Foo_Baz").exists()
@@ -822,7 +822,7 @@ def test_a_fix_rename_whose_commit_is_still_kept_is_left_with_the_reason(
         [(
             "2024_Foo_Bar",
             "2024_Foo_Baz",
-            ".litman-staging/fix-rename-2024_Foo_Bar-to-2024_Foo_Baz/ is still there",
+            "its earlier --fix is kept in .litman-staging/; settle that finding first",
         )],
     )
     assert (vault / "papers" / "2024_Foo_Bar").is_dir()

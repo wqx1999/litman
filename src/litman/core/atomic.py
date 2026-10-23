@@ -438,19 +438,18 @@ def _dir_move_plan(
         except (OSError, ValueError):
             noted = ""
         # Empty when writing it failed halfway: say what the folders show now.
-        return [], noted or _dir_moves_unclear_message(op_dir.name, unclear)
+        return [], noted or _dir_moves_unclear_message(unclear)
     if committed and os.path.lexists(op_dir / _DIRS_DONE_FILENAME):
         unclear += [(src, dst, "gone") for src, dst in not_moved]
         not_moved = []
     if unclear:
-        return [], _dir_moves_unclear_message(op_dir.name, unclear)
+        return [], _dir_moves_unclear_message(unclear)
     if committed:
         return not_moved, None
     return [(dst, src) for src, dst in reversed(moved)], None
 
 
 def _moved_back_message(
-    op_id: str,
     moves: list[tuple[str, str]],
     mode: Literal["done", "pending"] = "done",
 ) -> str:
@@ -460,71 +459,86 @@ def _moved_back_message(
     the op stopped before its decision point, so nothing it meant to change
     took effect. ``done`` for the recoverer, ``pending`` for the read-only
     classifier.
+
+    Each folder is named once and the op id not at all: a rename's op id
+    carries both paper ids, which put the line past 300 characters. Nobody
+    has to act on the op dir — recovery removes it.
     """
-    pairs = ", ".join(f"{frm}/ back to {to}/" for frm, to in moves)
+    back = ", ".join(f"{to}/" for _, to in moves)
     if mode == "done":
-        return (
-            f"rolled back unfinished commit {op_id}: moved {pairs}. "
-            "The command that started it did not take effect."
-        )
-    return (
-        f"unfinished commit {op_id} will move {pairs}. "
-        "The command that started it did not take effect."
-    )
+        verb = "is" if len(moves) == 1 else "are"
+        return f"Undid an unfinished command: {back} {verb} back. Rerun it if still needed."
+    folders = "its folder" if len(moves) == 1 else "its folders"
+    return f"An unfinished command will be undone, moving {folders} back to {back}."
 
 
-def _dir_moves_unclear_message(
-    op_id: str, unclear: list[tuple[str, str, str]]
-) -> str:
-    """User-facing line for an op whose folder move nobody can settle.
+# What a command prints, every time, while an op's folders stay unsettled:
+# the folders and the op dir to remove are health-check's to name, so the
+# line stays short however long the paper ids are.
+_UNSETTLED_LINE = (
+    "An unfinished command left folders it cannot settle. "
+    "Run `lit health-check` to see which."
+)
+
+
+def _dir_moves_unclear_message(unclear: list[tuple[str, str, str]]) -> str:
+    """What the folders of an op whose move nobody can settle show.
 
     Both folders there, or neither, or (after the op had put it in place) the
     moved folder gone again: the op cannot tell which is right, so it touches
-    nothing and keeps its record for a person to read.
+    nothing and keeps its record for a person to read. Kept in the op's
+    ``DIRS_UNCLEAR`` marker and shown by health-check, whose hint names the
+    op dir to remove; a command prints :data:`_UNSETTLED_LINE` instead.
     """
     parts = []
     for src, dst, state in unclear:
         if state == "both":
             parts.append(f"{src}/ and {dst}/ both exist")
         elif state == "neither":
-            parts.append(f"neither {src}/ nor {dst}/ exists")
+            parts.append(f"{src}/ and {dst}/ are both missing")
         else:
-            parts.append(f"{dst}/ is gone and {src}/ exists again")
-    found = f": {'; '.join(parts)}" if parts else ""
-    return (
-        f"commit {op_id} cannot be recovered automatically{found}. "
-        f"Settle the folders by hand, then remove .litman-staging/{op_id}/."
-    )
+            parts.append(f"{dst}/ is gone and {src}/ is back")
+    if not parts:
+        return "An unfinished command left folders it cannot settle."
+    return f"{'; '.join(parts)} after an unfinished command."
 
 
-def _dir_move_failed_message(
-    op_id: str, src_rel: str, dst_rel: str, reason: str
-) -> str:
+def _dir_move_failed_message(src_rel: str, reason: str) -> str:
     """User-facing line for a recovery folder move that failed this pass.
 
     Like :func:`_promote_failed_message`: nothing is lost, the move is
     retried by the next ``lit`` command. On Windows the usual cause is a file
     in the folder open in another program, so the line says to close it.
+    Names only the folder that would not move, and no op id, to stay one line.
     """
     return (
-        f"commit {op_id} could not move {src_rel}/ to {dst_rel}/ ({reason}). "
-        "Close any file open from that folder; the next lit command retries."
+        f"Could not move {src_rel}/ ({reason}). "
+        "Close any file open from it, then run lit again."
     )
 
 
-def _folders_unreadable_message(op_id: str, reason: str) -> str:
-    """User-facing line when recovery cannot look at an op's folders."""
-    return (
-        f"commit {op_id} could not check its folders ({reason}). "
-        f"Kept .litman-staging/{op_id}/; the next lit command retries."
-    )
+def _folders_unreadable_message(vault: Path, err: OSError) -> str:
+    """User-facing line when recovery cannot look at an op's folders.
+
+    Names the folder that could not be looked at, when the error says which,
+    so a fault that persists can be traced to it; never the op id.
+    """
+    reason = _os_reason(err)
+    try:
+        folder = Path(err.filename).relative_to(vault).as_posix()
+    except (TypeError, ValueError):
+        return (
+            f"Could not check the folders of an unfinished command ({reason}). "
+            "The next lit command retries."
+        )
+    return f"Could not check {folder}/ ({reason}). The next lit command retries."
 
 
-def _marker_failed_message(op_id: str, reason: str) -> str:
+def _marker_failed_message(reason: str) -> str:
     """User-facing line when recovery cannot record that a folder moved."""
     return (
-        f"commit {op_id} could not record that its folder moved ({reason}). "
-        f"Kept .litman-staging/{op_id}/; the next lit command retries."
+        f"Could not record an unfinished command's folder move ({reason}). "
+        "The next lit command retries."
     )
 
 
@@ -1046,7 +1060,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
         try:
             back, blocked = _dir_move_plan(op_dir, vault, moves, committed=False)
         except OSError as err:
-            return _folders_unreadable_result(op_id, err)
+            return _folders_unreadable_result(op_id, vault, err)
         if blocked is not None:
             return _blocked_result(op_dir, blocked)
         for frm, to in back:
@@ -1059,7 +1073,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
             op_id=op_id,
             kind="rolled_back",
             n_files=0,
-            message=_moved_back_message(op_id, back) if back else None,
+            message=_moved_back_message(back) if back else None,
         )
 
     relpaths = _read_manifest_relpaths(op_dir)
@@ -1077,7 +1091,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
     try:
         forward, blocked = _dir_move_plan(op_dir, vault, moves, committed=True)
     except OSError as err:
-        return _folders_unreadable_result(op_id, err)
+        return _folders_unreadable_result(op_id, vault, err)
     if blocked is not None:
         return _blocked_result(op_dir, blocked)
     for frm, to in forward:
@@ -1092,7 +1106,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
                 op_id=op_id,
                 kind="unrecoverable",
                 n_files=0,
-                message=_marker_failed_message(op_id, _os_reason(err)),
+                message=_marker_failed_message(_os_reason(err)),
             )
 
     promoted = 0
@@ -1163,19 +1177,23 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
     )
 
 
-def _folders_unreadable_result(op_id: str, err: OSError) -> RecoveryResult:
+def _folders_unreadable_result(
+    op_id: str, vault: Path, err: OSError
+) -> RecoveryResult:
     """Keep an op whose folders could not be looked at; retried next pass."""
     return RecoveryResult(
         op_id=op_id,
         kind="unrecoverable",
         n_files=0,
-        message=_folders_unreadable_message(op_id, _os_reason(err)),
+        message=_folders_unreadable_message(vault, err),
     )
 
 
 def _blocked_result(op_dir: Path, blocked: str) -> RecoveryResult:
     """Keep an op whose folders cannot be settled, marked so it stays that way.
 
+    The marker keeps ``blocked`` — what the folders showed — for
+    health-check to name; the command prints :data:`_UNSETTLED_LINE`.
     Writing the marker is best effort: without it the next pass finds the
     same folders and reports the same line.
     """
@@ -1185,7 +1203,7 @@ def _blocked_result(op_dir: Path, blocked: str) -> RecoveryResult:
         except OSError:
             pass
     return RecoveryResult(
-        op_id=op_dir.name, kind="unrecoverable", n_files=0, message=blocked
+        op_id=op_dir.name, kind="unrecoverable", n_files=0, message=_UNSETTLED_LINE
     )
 
 
@@ -1206,9 +1224,7 @@ def _settle_dir_move(
             kind="unrecoverable",
             n_files=0,
             message=_dir_move_failed_message(
-                op_id,
                 src_rel,
-                dst_rel,
                 _os_reason(err) if isinstance(err, OSError) else str(err),
             ),
         )

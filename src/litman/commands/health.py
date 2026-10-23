@@ -457,11 +457,11 @@ def _report_renames_left(applied: dict[str, Any]) -> None:
     failed is known only now.
     """
     left = applied.get(UNFINISHED_RENAME_LEFT)
-    for folder, target, reason in left if isinstance(left, list) else []:
+    for folder, _target, reason in left if isinstance(left, list) else []:
+        # The finding above names the id it was to take; this line says why
+        # not and what to do, and names no op id.
         console.print(
-            f"    [yellow]left[/] papers/{escape(folder)}/: could not rename it "
-            f"to papers/{escape(target)}/ ({escape(reason)}); close any file "
-            "open from it and run --fix again",
+            f"    [yellow]left[/] papers/{escape(folder)}/: {escape(reason)}",
             soft_wrap=True,
         )
 

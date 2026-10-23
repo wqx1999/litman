@@ -1092,6 +1092,12 @@ def test_dir_fsync_on_windows_is_a_silent_noop(
 # the module's own _rename_dir, never os.
 # ===========================================================================
 
+# What a command prints while an op's folders stay unsettled; health-check
+# names the folders.
+_UNSETTLED = (
+    "An unfinished command left folders it cannot settle. "
+    "Run `lit health-check` to see which."
+)
 _MOVE_SRC = "papers/2024_A_b"
 _MOVE_DST = "papers/2024_A_c"
 _MOVE_PAYLOAD: dict[str, str] = {
@@ -1335,8 +1341,7 @@ def test_when_moving_back_fails_the_record_stays_for_recovery(
     assert len(results) == 1
     assert results[0].kind == "rolled_back"
     assert results[0].message == (
-        "rolled back unfinished commit op-M5: moved papers/2024_A_c/ back to "
-        "papers/2024_A_b/. The command that started it did not take effect."
+        "Undid an unfinished command: papers/2024_A_b/ is back. Rerun it if still needed."
     )
     assert not op_dir.exists()
     assert _snapshot(seeded) == before
@@ -1380,10 +1385,12 @@ def test_crash_after_move_before_sentinel_is_moved_back_with_one_line(
     result = CliRunner().invoke(cli, ["list", "--library", str(seeded)])
 
     assert result.exit_code == 0, result.output
-    lines = [ln for ln in result.stderr.splitlines() if "op-M7" in ln]
+    lines = [ln for ln in result.stderr.splitlines() if ln.startswith("recovered:")]
     assert len(lines) == 1
-    assert lines[0].startswith("recovered: rolled back unfinished commit op-M7")
-    assert "op-M7" not in result.stdout
+    assert lines[0].startswith(
+        "recovered: Undid an unfinished command: papers/2024_A_b/ is back."
+    )
+    assert "Undid" not in result.stdout
     assert not (seeded / ".litman-staging" / "op-M7").exists()
     assert _snapshot(seeded) == before
 
@@ -1461,8 +1468,10 @@ def test_a_recovery_move_that_fails_keeps_the_op_and_never_raises(
 
     assert len(results) == 1
     assert results[0].kind == "unrecoverable"
-    assert "could not move" in (results[0].message or "")
-    assert "Access is denied" in (results[0].message or "")
+    assert results[0].message == (
+        f"Could not move {folder_now}/ (Access is denied). "
+        "Close any file open from it, then run lit again."
+    )
     assert op_dir.is_dir()
     assert (seeded / folder_now).is_dir()
     # Nothing promoted into a second folder beside the first.
@@ -1470,7 +1479,7 @@ def test_a_recovery_move_that_fails_keeps_the_op_and_never_raises(
 
     result = CliRunner().invoke(cli, ["list", "--library", str(seeded)])
     assert result.exit_code == 0, result.output
-    assert "error: commit op-M10 could not move" in result.stderr
+    assert f"error: Could not move {folder_now}/" in result.stderr
     assert op_dir.is_dir()
 
     monkeypatch.undo()
@@ -1487,6 +1496,8 @@ def test_a_recovery_move_that_fails_keeps_the_op_and_never_raises(
 def test_both_or_neither_folder_is_unrecoverable_and_keeps_evidence(
     seeded: Path, committed: bool, state: str
 ) -> None:
+    from litman.core.checks import check_stale_staging
+
     sw = _stage_move(seeded, "op-M11")
     sw._fsync_staged_files()
     sw._write_manifest()
@@ -1505,14 +1516,18 @@ def test_both_or_neither_folder_is_unrecoverable_and_keeps_evidence(
 
     assert len(results) == 1
     assert results[0].kind == "unrecoverable"
-    expected = (
+    # The command says only that; health-check names the folders.
+    assert results[0].message == _UNSETTLED
+    (issue,) = check_stale_staging(seeded, [])
+    found = (
         "papers/2024_A_b/ and papers/2024_A_c/ both exist"
         if state == "both"
-        else "neither papers/2024_A_b/ nor papers/2024_A_c/ exists"
+        else "papers/2024_A_b/ and papers/2024_A_c/ are both missing"
     )
-    assert expected in (results[0].message or "")
-    assert (results[0].message or "").endswith(
-        "Settle the folders by hand, then remove .litman-staging/op-M11/."
+    assert issue.message == f"{found} after an unfinished command."
+    assert issue.hint == (
+        "settle the folders it names by hand, then remove "
+        ".litman-staging/op-M11/ — NOT auto-fixed"
     )
     assert (seeded / ".litman-staging" / "op-M11").is_dir()
     assert _snapshot(seeded) == before
@@ -1531,6 +1546,8 @@ def test_both_or_neither_folder_is_unrecoverable_and_keeps_evidence(
     assert [(r.kind, r.message) for r in again] == [
         ("unrecoverable", results[0].message)
     ]
+    # health-check still names what the folders showed when it was judged.
+    assert [i.message for i in check_stale_staging(seeded, [])] == [issue.message]
     assert sorted(p.name for p in (seeded / "papers").iterdir()) == folders
     assert _snapshot(seeded) == before
 
@@ -1559,8 +1576,7 @@ def test_check_stale_staging_says_the_folder_will_be_moved_back(
     assert issues[0].category == "stale_staging"
     assert issues[0].category in AUTO_FIXABLE_CATEGORIES
     assert issues[0].message == (
-        "unfinished commit op-M12 will move papers/2024_A_c/ back to "
-        "papers/2024_A_b/. The command that started it did not take effect."
+        "An unfinished command will be undone, moving its folder back to papers/2024_A_b/."
     )
     # The read-only probe moved nothing.
     assert (seeded / _MOVE_DST).is_dir()
@@ -1625,16 +1641,15 @@ def test_a_settled_commit_never_moves_its_folder_again(seeded: Path) -> None:
 
     again = recover_staging(seeded)
 
-    assert [r.kind for r in again] == ["unrecoverable"]
-    assert "papers/2024_A_c/ is gone and papers/2024_A_b/ exists again" in (
-        again[0].message or ""
-    )
+    assert [(r.kind, r.message) for r in again] == [("unrecoverable", _UNSETTLED)]
     assert (seeded / _MOVE_SRC).is_dir()
     assert not (seeded / _MOVE_DST).exists()
     assert _snapshot(seeded) == before
     (issue,) = check_stale_staging(seeded, [])
     assert issue.category == "stale_staging_unrecoverable"
-    assert issue.message == again[0].message
+    assert issue.message == (
+        "papers/2024_A_c/ is gone and papers/2024_A_b/ is back after an unfinished command."
+    )
 
 
 def test_classifier_finds_a_promoted_file_in_a_folder_not_moved_yet(
@@ -1788,6 +1803,8 @@ def test_an_empty_unclear_marker_still_reports_what_the_folders_show(
     seeded: Path,
 ) -> None:
     """Writing the marker can fail after creating it (disk full)."""
+    from litman.core.checks import check_stale_staging
+
     sw = _stage_move(seeded, "op-R3b")
     sw._fsync_staged_files()
     sw._write_manifest()
@@ -1796,12 +1813,12 @@ def test_an_empty_unclear_marker_still_reports_what_the_folders_show(
     (sw.staging_root / "DIRS_UNCLEAR").write_bytes(b"")
 
     (result,) = recover_staging(seeded)
+    (issue,) = check_stale_staging(seeded, [])
 
     assert result.kind == "unrecoverable"
-    assert result.message == (
-        "commit op-R3b cannot be recovered automatically: papers/2024_A_b/ and "
-        "papers/2024_A_c/ both exist. Settle the folders by hand, then remove "
-        ".litman-staging/op-R3b/."
+    assert result.message == _UNSETTLED
+    assert issue.message == (
+        "papers/2024_A_b/ and papers/2024_A_c/ both exist after an unfinished command."
     )
 
 
@@ -1821,7 +1838,7 @@ def test_a_folder_that_cannot_be_looked_at_is_retried_not_judged(
 
     def flicker(path: Path) -> bool:
         if path == seeded / _MOVE_DST:
-            raise PermissionError(13, "Permission denied")
+            raise PermissionError(13, "Permission denied", str(path))
         return real_exists(path)
 
     monkeypatch.setattr(_atomic, "_exists", flicker)
@@ -1830,9 +1847,10 @@ def test_a_folder_that_cannot_be_looked_at_is_retried_not_judged(
     monkeypatch.undo()
 
     assert result.kind == "unrecoverable"
+    # Names the folder it could not look at, never the op id.
     assert result.message == (
-        "commit op-R4 could not check its folders (Permission denied). "
-        "Kept .litman-staging/op-R4/; the next lit command retries."
+        "Could not check papers/2024_A_c/ (Permission denied). "
+        "The next lit command retries."
     )
     assert issue.message == result.message
     assert not (sw.staging_root / "DIRS_UNCLEAR").exists()
@@ -1885,3 +1903,35 @@ def test_a_folder_behind_a_permission_error_is_not_read_as_missing(
             _atomic._exists(locked / "inside")
     finally:
         locked.chmod(0o700)
+
+
+def test_recovery_lines_stay_short_with_ids_as_long_as_real_ones() -> None:
+    """A rename's op id is ``rename-<old>-to-<new>``: repeating it beside both
+    folders put these lines past 300 characters. A command's line names one
+    folder at most and the op id never; health-check's finding names the two
+    folders, and its hint the op dir a person has to remove."""
+    old = "papers/2026_Oberkampf_" + "a" * 32
+    new = "papers/2026_Oberkampf_" + "b" * 32
+    assert len(old) - len("papers/") == 47  # the longest id in a real library
+    op_id = f"rename-{old[7:]}-to-{new[7:]}"
+    reason = "Permission denied"
+
+    vault = Path("vault")
+    looked_at = PermissionError(13, reason, str(vault / old))
+    at_a_terminal = [
+        _atomic._moved_back_message([(new, old)]),
+        _atomic._moved_back_message([(new, old)], mode="pending"),
+        _atomic._UNSETTLED_LINE,
+        _atomic._dir_move_failed_message(old, reason),
+        _atomic._folders_unreadable_message(vault, looked_at),
+        _atomic._folders_unreadable_message(vault, PermissionError(13, reason)),
+        _atomic._marker_failed_message(reason),
+    ]
+    for line in at_a_terminal:
+        assert len(line) <= 140, line
+        assert op_id not in line
+        assert line.count(old) + line.count(new) <= 1, line
+
+    unsettled = _atomic._dir_moves_unclear_message([(old, new, "both")])
+    assert unsettled == f"{old}/ and {new}/ both exist after an unfinished command."
+    assert op_id not in unsettled

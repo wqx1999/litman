@@ -281,7 +281,7 @@ DIRTY_NOTES_KEPT = "dirty_metadata_notes_kept"
 # title that arm cleaned: the `lit rename` it leaves to the user.
 DIRTY_RENAMES = "dirty_metadata_renames"
 # Key under which `lit health-check --fix` reports the (folder, metadata id,
-# reason) of each folder finish_unfinished_renames could not move.
+# why and what to do) of each folder finish_unfinished_renames could not move.
 UNFINISHED_RENAME_LEFT = "unfinished_rename_left"
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
@@ -3079,7 +3079,6 @@ def check_stale_staging(
         _folders_unreadable_message,
         _manifest_unreadable_message,
         _moved_back_message,
-        _os_reason,
         _read_manifest_dir_moves,
     )
 
@@ -3117,9 +3116,7 @@ def check_stale_staging(
                     category="stale_staging_unrecoverable",
                     severity="error",
                     paper_id=None,
-                    message=_folders_unreadable_message(
-                        child.name, _os_reason(err)
-                    ),
+                    message=_folders_unreadable_message(vault, err),
                     hint="the next lit command retries; check again after it",
                 )
             )
@@ -3158,9 +3155,7 @@ def check_stale_staging(
                         category="stale_staging",
                         severity="info",
                         paper_id=None,
-                        message=_moved_back_message(
-                            child.name, back, mode="pending"
-                        ),
+                        message=_moved_back_message(back, mode="pending"),
                         hint="run `lit health-check --fix` to move it back",
                     )
                 )
@@ -3238,7 +3233,6 @@ def _classify_torn_op(
         _dir_move_plan,
         _folders_unreadable_message,
         _manifest_unreadable_message,
-        _os_reason,
         _read_manifest_dir_moves,
         _read_manifest_relpaths,
         _unrecoverable_message,
@@ -3257,7 +3251,7 @@ def _classify_torn_op(
     try:
         forward, blocked = _dir_move_plan(op_dir, vault, moves, committed=True)
     except OSError as err:
-        blocked = _folders_unreadable_message(op_id, _os_reason(err))
+        blocked = _folders_unreadable_message(vault, err)
     if blocked is not None:
         return result_cls(
             op_id=op_id, kind="unrecoverable", n_files=0, message=blocked
@@ -4420,7 +4414,7 @@ def finish_unfinished_renames(
     earlier move can take the name a later folder wants). Each move is its
     own ``staged_write``, so a crash mid-move is settled by the next command.
     A folder that cannot be moved is left and returned as
-    ``(folder, metadata id, reason)``; the rest still move.
+    ``(folder, metadata id, why and what to do)``; the rest still move.
 
     Returns ``(moved, left)`` and rebuilds nothing: the caller runs the one
     derived rebuild, after every folder is in place.
@@ -4449,14 +4443,25 @@ def finish_unfinished_renames(
         op_id = f"fix-rename-{child.name}-to-{meta_id}"
         if os.path.lexists(vault / ".litman-staging" / op_id):
             left.append(
-                (child.name, meta_id, f".litman-staging/{op_id}/ is still there")
+                (
+                    child.name,
+                    meta_id,
+                    "its earlier --fix is kept in .litman-staging/; "
+                    "settle that finding first",
+                )
             )
             continue
         try:
             with staged_write(vault, op_id=op_id) as stage:
                 stage.move_dir(f"papers/{child.name}", f"papers/{meta_id}")
         except DirMoveError as err:
-            left.append((child.name, meta_id, err.reason))
+            left.append(
+                (
+                    child.name,
+                    meta_id,
+                    f"{err.reason}; close any file open from it and run --fix again",
+                )
+            )
             continue
         moved += 1
     return moved, left
