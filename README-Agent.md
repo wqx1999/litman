@@ -57,7 +57,7 @@ is by intent, not by read-vs-write: `lit-reading` writes too.
 | One-shot setup (completion, skills, vault, sync, desktop shortcut) | `lit setup` |
 | Open the human's web UI | `lit gui` |
 | Start the human's AI agent in the vault | `lit agent` |
-| Reverse setup (remove skills/shortcut/completion/registry/agent prefs) | `lit uninstall` |
+| Reverse setup (remove skills, shortcut, completion, litman's settings files) | `lit uninstall` |
 | Add a paper | `lit add <pdf-path> --doi <doi>` |
 | Get a paper's SI (check `lit show <id>` first; the human drops the files into the open web UI) | `lit add --si <id>` |
 | Add SI files the human gave you | `lit add --si <id> <file>...` |

@@ -163,7 +163,7 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
 
    **Post-ingest curation is lit-reading's, not yours.** Status verdict (`deep-read` / `skim` / `dropped`), `read-date`, and the metadata completeness self-check all live in **lit-reading B10** — lit-library deliberately does not run them after add (SOP-1). If, right after confirming, the user starts reading or evaluating the paper ("读完了" / "这篇一般" / "done with this" / "what does it say about X"), **hand off to lit-reading** (see A2-out) — do not stop dead and do not absorb the reading verdict here.
 
-**Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id).
+**Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id). With no DOI, the same paper is caught by the id check instead (next list).
 
 **An SI file is not a paper.** A PDF named like `*_si_001.pdf` / `*_MOESM1_ESM.pdf`, or headed "Supporting Information", is the SI of a paper. If the user hands you one to add, tell them so before running anything: when its paper is in the vault, offer `lit add --si <id> <file>` ([L]); otherwise ask for the article's own PDF. Never switch commands silently.
 
@@ -184,6 +184,7 @@ Unknown keys are rejected. Topics/methods/data are **NOT** in this schema — cl
 ### When `lit add --from-llm-json` errors
 
 - **`DuplicateDOIError` / "DOI 'x' already registered"** → see Duplicate-add path above.
+- **"Paper id 'X' already exists … Pass --auto-suffix … or --id"** → `lit show X` first. The same paper → the duplicate-add path above; a different one → propose an `--id` to the user and stop. 🔴 Never `--auto-suffix`: it files another copy under an id nobody chose.
 - **"Metadata from LLM JSON has no year"** → re-read the PDF (page 1, header/footer, DOI landing page), ask the user, or pass `--id <year>_<Family>_<Keyword>` explicitly. 🔴 **Never substitute the download year, the file's date, or the current year.** The year is baked into the id and into every exported citation; a guessed one passes every later check and is only findable by hand, years on.
 - **"field 'title': String should have at least 1 character"** → re-extract.
 - **"This title cannot produce a paper id"** → the title is in a script the id cannot carry. Ids are ASCII (they are folder names on Windows, macOS and Linux alike), and both keyword paths split on whitespace — so a Chinese, Japanese or Korean title arrives as one token and slugs down to whatever stray Latin fragment was inside it (`关于化合物A的合成方法` → `2018_Zhang_A`). That id is refused rather than written, because short of `lit rename` it is permanent. **Pass `--id <year>_<Family>_<Keyword>`.** The error names a candidate when the title held a usable fragment (`--id 2018_Zhang_PROTAC`); otherwise the keyword is **yours to invent** — the paper's English title if it has one (most Chinese journals print it), a transliteration otherwise. 🔴 **Say so and stop.** Report the id you chose *as invented*, not derived ("这个关键词是我起的,不是从标题算出来的 —— 用 `2018_Zhang_Green-synthesis` 可以吗?"), and let the user replace it before you run the add. Nothing in the vault records that an id was guessed, and short of `lit rename` it is permanent; one line now costs less than a handle nobody recognises. The keyword does **not** have to match the stored title, and the stored title stays in its own script: only the handle is ASCII. 🔴 **Never translate the `title` field to make the id easier** — the id is a door plate, not a translation, and rewriting the stored title to English destroys the paper's actual name. 🔴 The first author's family name has the same constraint — write it in pinyin/romanised form (`Zhang, Tianshun`), which is also what CrossRef and every .bib consumer expect.
@@ -274,7 +275,7 @@ Before unbinding, read the repo's `papers:` reverse list with `lit code list --f
 
 - **Reverse list now empty** (current paper is the last citer) → retire the whole repo to avoid an orphan clone:
   ```bash
-  lit code rm <repo> --cascade        # strips every binding, then removes the directory
+  lit code rm <repo> --cascade --yes  # strips every binding, then removes the directory
   ```
   Directory removal is destructive → **ask the user before running.**
 - **Reverse list still non-empty** → unbind this paper only, keep the directory:
@@ -444,7 +445,7 @@ Agent behavior:
 
 ## [K] Repair a legacy library (filler metadata / filler ids)
 
-Trigger: `lit health-check` reports `placeholder_metadata`, `placeholder_id` or `weak_id_keyword` — typically dozens or hundreds at once, on a vault filled before those guards existed. The user's phrasing is usually "库里好多 Unknown" / "clean up these bad ids".
+Trigger: `lit health-check` reports `placeholder_metadata`, `placeholder_id`, `weak_id_keyword` or `dirty_metadata` (the `rename <id>` lines `--fix` prints) — typically dozens or hundreds at once, on a vault filled before those guards existed. The user's phrasing is usually "库里好多 Unknown" / "clean up these bad ids".
 
 **Get the whole list first.** The report caps each category at its first few findings; **`lit health-check --all`** prints every one. Working from the capped view silently repairs 5 papers and reports the category done.
 
@@ -524,7 +525,7 @@ SI files live in `papers/<id>/supplementary/` as `si-01.pdf`, `si-02.xlsx`, …,
 
 ## Architecture Invariants (do not violate)
 
-1. **Never** write `papers/<id>/metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `codes/<name>/repo-meta.yaml` directly, and never write, copy, rename or delete anything in `papers/<id>/supplementary/`. Always go through `lit add` / `lit modify` / `lit taxonomy` / `lit project` / `lit code …` (SI: `lit add --si` / `lit rm <id> --si`). That holds even when a command stops with `Cannot use <file>: '<field>' is not a list; write it as …`: a hand edit broke that file and no command will rewrite it. Relay the file and the line to the user and stop — never unlock or edit it yourself.
+1. **Never** write `papers/<id>/metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `codes/<name>/repo-meta.yaml` directly, and never write, copy, rename or delete anything in `papers/<id>/supplementary/`. Always go through `lit add` / `lit modify` / `lit taxonomy` / `lit project` / `lit code …` (SI: `lit add --si` / `lit rm <id> --si`). That holds even when a command stops with `Cannot use <file>: '<field>' is not a list; write it as …`: a hand edit broke that file and no command will rewrite it. Relay the file and the line to the user and stop — never unlock or edit it yourself. The same goes for every message that leaves the act to the user — `… by hand`, `Re-save it as UTF-8`, `Rename the folder, then retry`, SI's `move it out of supplementary/`, `could not read notes file … — skipped`: relay it verbatim and stop; never edit metadata, move or rename a folder, re-encode a file, or rewrite that notes.md.
 2. **Never** suggest hand-editing `TAXONOMY.md` or `lit-config.yaml`'s `projects:` map. Use `lit taxonomy {rm,rename,merge}` for topics/methods/data ([J]) and `lit project {add,rename,set-path,rm}` for projects ([H]). Tagging requires the value registered first.
 3. **Never** assume the vault is git-tracked. It is deliberately not.
 4. **Never** store API keys in `lit-config.yaml`. The CLI calls no LLM API — that's the agent's job, via the JSON-file bridge.
@@ -534,7 +535,7 @@ SI files live in `papers/<id>/supplementary/` as `si-01.pdf`, `si-02.xlsx`, …,
 
 If unsure whether an operation respects these, run `lit health-check` after — it surfaces vault drift and the user inspects before acting.
 
-**Staleness nudges.** `lit` may append a dim `tip:` line after a command. Relay it and offer to run the named command — never auto-run. Two variants: (1) `tip: no lit health-check in 14+ days...` → offer `lit health-check`; (2) `tip: no lit sync push in 7+ days...` → offer `lit sync push` (backs the vault up to the configured remote; appears only when a remote is configured).
+**Staleness nudges.** `lit` may append a dim `tip:` line after a command. Relay it and offer to run the named command — never auto-run. Two variants: (1) `tip: no lit health-check in 14+ days...` → offer `lit health-check`; (2) `tip: no lit sync push in 7+ days...` → offer `lit sync push` (backs the vault up to the configured remote; appears only when a remote is configured). A first push prints a size preview and stops for `--yes`: relay the preview, re-run with `--yes` on the user's go.
 
 ---
 
@@ -563,8 +564,8 @@ If unsure whether an operation respects these, run `lit health-check` after — 
 | `lit code link <repo> --paper <id>` | Bind an existing vault repo (1:N — [C.2]) |
 | `lit code unlink <repo> --paper <id>` | Unbind one paper, keep the clone ([C.3]) |
 | `lit code list [--paper <id>] [--orphan] [--format json]` | Browse code repos; `--format json` emits each `repo-meta.yaml` (incl. the `papers` reverse list) |
-| `lit code rm <repo> --cascade` | Retire a repo (last citer only — [C.3]) |
-| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` = bulk repair (user's nod first), not all of it lossless: it migrates the retired paper-level `priority` (a paper in no project loses its grade), removes relation links to papers no longer in the library (trash included), and moves unmatched hub folder copies to `.trash/replaced-folders/` — procedure in lit-reading B12; for SI it records files that check out and never deletes one |
+| `lit code rm <repo> --cascade --yes` | Retire a repo (last citer only, user's nod first — [C.3]) |
+| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` = bulk repair (user's nod first), not all of it lossless: it migrates the retired paper-level `priority` (a paper in no project loses its grade), removes relation links to papers no longer in the library (trash included), and moves unmatched hub folder copies to `.trash/replaced-folders/` — procedure in lit-reading B12; it also cleans title / journal / author text and renames a folder left behind by a rename (its `rename <id>` lines go through [K]); for SI it records files that check out and never deletes one |
 | `lit rename <old> <new>` | Atomic id rename with cascade |
 | `lit cite <id-or-substring>` | Paste-ready ACS citation on stdout (caveats → stderr; `--paper-doi` supported) |
 | `lit rm <id> [--dry-run\|--yes\|--purge]` | Soft-delete (trash) or purge; `--dry-run` previews the impact set, a non-tty run needs `--yes`; `--si si-NN` deletes one SI file for good instead (no trash — to get it back, `lit add --si <id> FILE`; not with `--purge`; A3) |
