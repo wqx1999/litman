@@ -220,7 +220,7 @@ own entry. Read those before you upgrade, whatever the number says.
   Ids already in your library stay as they are.
 
 - **`lit rename` no longer leaves a paper half-renamed.** When the paper's
-  folder could not be renamed — on Windows an SI file open in Excel is
+  folder could not be renamed — on Windows a PDF open in Acrobat is
   enough — its id had already changed everywhere else and the folder kept the
   old name. The folder is now renamed first; if that fails nothing changes and
   `lit rename` says to close the file. A library already left this way is put
