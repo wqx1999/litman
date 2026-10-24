@@ -1175,9 +1175,12 @@ def test_cli_code_rm_cascade_strips_papers(vault: Path) -> None:
     assert after_p2["code-clones"] == []
 
 
-def test_cli_code_rm_aborts_on_n_prompt(vault: Path) -> None:
+def test_cli_code_rm_aborts_on_n_prompt(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without --yes, type 'n' at the prompt → no deletion."""
     _make_repo(vault, "Keep")
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -1185,6 +1188,17 @@ def test_cli_code_rm_aborts_on_n_prompt(vault: Path) -> None:
         input="n\n",
     )
     assert result.exit_code != 0  # click.confirm(abort=True) exits non-zero
+    assert (vault / "codes" / "Keep").exists()
+
+
+def test_cli_code_rm_without_a_terminal_asks_for_yes(vault: Path) -> None:
+    """Nobody is asked, so a stray "y" on stdin does not delete the repo."""
+    _make_repo(vault, "Keep")
+    result = CliRunner().invoke(
+        cli, ["code", "rm", "Keep", "--library", str(vault)], input="y\n"
+    )
+    assert result.exit_code == 1
+    assert "pass --yes to confirm" in result.output
     assert (vault / "codes" / "Keep").exists()
 
 

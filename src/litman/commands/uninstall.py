@@ -46,6 +46,7 @@ from litman.commands.install_completion import (
 )
 from litman.core.agent_prefs import prefs_path, remove_prefs
 from litman.core.agents import skills_parent_dirs
+from litman.core.confirm import refuse_without_terminal
 from litman.core.gui_registry import (
     gui_dir,
     gui_dir_is_empty,
@@ -207,6 +208,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
         return
 
     if not yes:
+        refuse_without_terminal("pass --yes to confirm")
         click.confirm("Remove the items listed above?", default=False, abort=True)
 
     done: list[str] = []

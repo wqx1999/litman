@@ -887,7 +887,7 @@ lit trash empty [--dry-run] [-y]
 | Subcommand | What it does |
 |---|---|
 | `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. Kept project folders are not listed. |
-| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting). |
+| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y` it is skipped, and the `lit code add` that clones it is printed. |
 | `empty` | Permanently delete every trash entry and every kept project folder. `--dry-run` lists the entries and counts the folders; `-y` skips the prompt. |
 
 ### `lit sync`

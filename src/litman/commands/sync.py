@@ -31,6 +31,7 @@ from rich.table import Table
 from litman.commands._options import library_option, vault_option
 from litman.core.checks import run_push_integrity_errors
 from litman.core.config import CONFIG_FILENAME, load_config
+from litman.core.confirm import refuse_without_terminal
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.sync import (
@@ -81,7 +82,8 @@ def sync_group() -> None:
     default=None,
     help=(
         "Use an already-registered rclone remote by name and skip the "
-        "interactive rclone config step. Validated via rclone listremotes."
+        "interactive rclone config step. Validated via rclone listremotes. "
+        "Required with no terminal."
     ),
 )
 @click.option(
@@ -90,7 +92,8 @@ def sync_group() -> None:
     default=None,
     help=(
         "Path inside the remote where the vault is mirrored "
-        "(e.g. 'litman-vault/'). Prompted interactively if omitted."
+        "(e.g. 'litman-vault/'). Prompted interactively if omitted; "
+        "required with no terminal."
     ),
 )
 @library_option
@@ -114,6 +117,14 @@ def sync_setup_cmd(
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     config_path = vault / CONFIG_FILENAME
+    # rclone config and the two questions below all need someone at a terminal.
+    missing = [
+        flag
+        for flag, value in (("--remote NAME", remote_arg), ("--path PATH", path_arg))
+        if value is None
+    ]
+    if missing:
+        refuse_without_terminal("pass " + " and ".join(missing))
 
     # If the user didn't pre-supply a remote, hand the TTY to rclone config
     # so the OAuth dance can run. We don't try to automate this step.
@@ -452,6 +463,7 @@ def sync_push_cmd(
     if is_first_push and not dry_run:
         _render_size_preview(vault, extra_excludes, exclude_repos)
         if not yes:
+            refuse_without_terminal("pass --yes to confirm")
             click.confirm(
                 "Continue with first push to "
                 f"{target}?",

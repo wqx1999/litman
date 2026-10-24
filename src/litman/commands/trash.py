@@ -25,6 +25,7 @@ from rich.table import Table
 
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import format_option, library_option, vault_option
+from litman.core import confirm as confirm_mod
 from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
@@ -195,10 +196,11 @@ def _handle_missing_repos(
 
     With ``-y`` (``skip_confirm``) the re-clone is auto-attempted with no
     prompt; otherwise the user is prompted per repo (the only interactive
-    point in restore). On refuse OR failure the binding A.code-clones:[X] is
-    KEPT and a warning is emitted — re-clone is never a precondition for the
-    restore's success (decision #2/#3); health-check backstops the dangling
-    code ref.
+    point in restore), and with no terminal to ask it counts as a refusal
+    that also prints the ``lit code add`` doing the clone. On refuse OR
+    failure the binding A.code-clones:[X] is KEPT and a warning is emitted —
+    re-clone is never a precondition for the restore's success (decision
+    #2/#3); health-check backstops the dangling code ref.
     """
     for repo_name, upstream in sorted(result.missing_repos.items()):
         # The trash sidecar (sole on-disk record of this 1:1 orphan's upstream
@@ -207,6 +209,25 @@ def _handle_missing_repos(
         # good (review F20). `upstream` is carried in result.missing_repos, so
         # we always have it here even with -y (no prompt shown).
         url_note = f" [dim](upstream: {escape(upstream)})[/]" if upstream else ""
+        if not skip_confirm and not confirm_mod._stdin_is_tty():
+            # Nobody to ask: no clone, as with a "no", and never read stdin.
+            # The command carries the upstream; a local import is recorded as
+            # local:<path>, and code add takes the path.
+            from litman.core.supplementary import shell_path
+
+            source = upstream.removeprefix("local:") if upstream else ""
+            how = (
+                f"lit code add {shell_path(source)} --paper {result.paper_id} "
+                f"--name {repo_name}"
+                if source
+                else "lit health-check"
+            )
+            console.print(
+                f"  [yellow]Kept binding to '{escape(repo_name)}' without "
+                f"re-clone[/] [dim](run `{escape(how)}`)[/]",
+                soft_wrap=True,
+            )
+            continue
         if not skip_confirm:
             do_clone = click.confirm(
                 f"Repo '{repo_name}' was hard-deleted; re-clone from "
@@ -248,7 +269,8 @@ def _handle_missing_repos(
     default=False,
     help=(
         "Non-interactive: auto-attempt the re-clone of any hard-deleted "
-        "repo without prompting (script / agent path)."
+        "repo without prompting (script / agent path). Without it and with "
+        "no terminal, the re-clone is skipped and the command for it printed."
     ),
 )
 @library_option
@@ -265,7 +287,8 @@ def trash_restore_cmd(
     (<id>-<UTC-timestamp>). The paper's sealed fields drive a symmetric
     rebuild: opposite papers' paired reverse edges, surviving repo bindings,
     and project links + REFERENCES.md are re-created. A 1:1 repo that was
-    hard-deleted at rm time is re-cloned (prompted, or auto with -y); an edge
+    hard-deleted at rm time is re-cloned (prompted, auto with -y, skipped
+    with no terminal); an edge
     whose opposite is no longer in the library is silently dropped.
     Refreshes INDEX.json and views/.
     """

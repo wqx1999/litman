@@ -33,6 +33,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.supplementary import shell_path
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import TrashError
 from litman.core.portable_link import is_portable_link
@@ -350,7 +351,9 @@ def test_restore_reclone_success_rebuilds_repo_meta(
     assert "Re-cloned" in result.output
 
 
-def test_restore_reclone_refused_keeps_binding(vault: Path, tmp_path: Path) -> None:
+def test_restore_reclone_refused_keeps_binding(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     upstream = _git_local_upstream(tmp_path, "upstream-y")
     _write_paper(vault, "2024_Target", code_clones=["RepoY"])
     _make_fake_repo(
@@ -360,6 +363,7 @@ def test_restore_reclone_refused_keeps_binding(vault: Path, tmp_path: Path) -> N
     runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
 
     # Interactive: answer "n" to the re-clone prompt → keep binding, warn.
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     result = runner.invoke(
         cli,
         ["trash", "restore", "2024_Target", "--library", str(vault)],
@@ -370,6 +374,74 @@ def test_restore_reclone_refused_keeps_binding(vault: Path, tmp_path: Path) -> N
     assert not (vault / "codes" / "RepoY").exists()
     assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoY"]
     assert "Kept binding" in result.output
+
+
+def test_restore_without_a_terminal_skips_the_clone_and_prints_it(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Nobody to ask: the paper is restored (exit 0), the clone is skipped as on
+    a "no" — a stray "y" on stdin is not an answer — and the line names the
+    upstream, which is now on record nowhere else, in the command that clones
+    it."""
+    upstream = _git_local_upstream(tmp_path, "upstream-nt")
+    _write_paper(vault, "2024_Target", code_clones=["RepoNT"])
+    _make_fake_repo(
+        vault, "RepoNT", papers=["2024_Target"], upstream=str(upstream)
+    )
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+
+    result = runner.invoke(
+        cli,
+        ["trash", "restore", "2024_Target", "--library", str(vault)],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (vault / "papers" / "2024_Target").is_dir()
+    assert "re-clone from" not in result.output  # the question was not asked
+    assert not (vault / "codes" / "RepoNT").exists()
+    assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoNT"]
+    clone = f"lit code add {shell_path(upstream)} --paper 2024_Target --name RepoNT"
+    assert clone in result.output
+
+    # The printed command does the clone that was skipped.
+    added = runner.invoke(
+        cli,
+        [
+            "code", "add", str(upstream),
+            "--paper", "2024_Target",
+            "--name", "RepoNT",
+            "--library", str(vault),
+        ],
+    )
+    assert added.exit_code == 0, added.output
+    assert (vault / "codes" / "RepoNT" / "repo" / "README.md").is_file()
+    assert _read_repo_meta(vault, "RepoNT")["papers"] == ["2024_Target"]
+    assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoNT"]
+
+
+def test_restore_without_a_terminal_prints_the_path_of_a_local_import(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A repo added from a local folder is recorded as ``local:<path>``; the
+    printed command takes the path, quoted when it holds a space."""
+    source = tmp_path / "my code"
+    source.mkdir()
+    _write_paper(vault, "2024_Target", code_clones=["RepoL"])
+    _make_fake_repo(
+        vault, "RepoL", papers=["2024_Target"], upstream=f"local:{source}"
+    )
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f'lit code add "{source}" --paper 2024_Target --name RepoL' in result.output
+    assert "local:" not in result.output
 
 
 def test_restore_reclone_failure_keeps_binding(vault: Path) -> None:

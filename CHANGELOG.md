@@ -235,6 +235,17 @@ own entry. Read those before you upgrade, whatever the number says.
   --from-llm-json -` with nothing piped in says that, not that the JSON could
   not be read.
 
+- **Commands with no one to answer them no longer take stray input for a
+  yes.** `lit self-update`, the first `lit sync push`, `lit vault remove`,
+  `lit uninstall` and `lit code rm` without `--yes`, and `lit sync setup`
+  without `--remote` or `--path`, asked their question even when no one was
+  at a terminal: they stopped at a bare `Aborted!`, or took a `y` piped in as
+  the answer. They now say which option to pass and change nothing. With no
+  terminal, `lit trash restore` without `-y` restores the paper and skips
+  cloning a deleted code repository again, printing the `lit code add` that
+  clones it; it used to stop with an error there, and the repository's
+  address was lost.
+
 ## 1.3.7 — 2026-10-05
 
 ### Added

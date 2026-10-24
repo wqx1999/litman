@@ -86,6 +86,8 @@ def test_lit_list_triggers_drift_prompt(
     # `lit vault remove` confirmation. (Blank/Enter would SKIP — see
     # test_registry_drift_enter_skips_instead_of_deleting.)
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    # `lit vault remove` asks for itself, at the same terminal.
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     monkeypatch.setattr(click, "prompt", lambda *a, **kw: "rm")
     monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
 

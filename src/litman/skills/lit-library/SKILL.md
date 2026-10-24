@@ -436,7 +436,7 @@ Behavior:
 Agent behavior:
 
 - Before running, surface the re-clone target(s) to the user up front: `lit trash list --format json` carries `orphan_repos` (`{repo: upstream}`) per entry (tier 1 read).
-- **TTY caveat**: driving `lit trash restore <id>` without `-y` hangs/aborts at the interactive re-clone confirm on a non-TTY stdin. Agent path: surface the re-clone target(s) → get the user's nod → run `lit trash restore <id> -y`. No `--no-reclone` flag today — if the user wants restore but skip re-clone, relay that and let them run it themselves.
+- **Without `-y` on a non-TTY stdin**, `lit trash restore <id>` restores the paper but skips the re-clone, as on a refusal, and prints the `lit code add <url> --paper <id> --name <repo>` that does it (`lit health-check` when no url was kept). Agent path: surface the re-clone target(s) → get the user's nod → run `lit trash restore <id> -y`; if the user wants the restore without the re-clone, run it without `-y` and relay the printed `lit code add` line.
 - **Tier 2** (local, reversible, single-paper). **Trigger = the user-confirmed identity from B13** — never restore on your own initiative, never pick the candidate for the user.
 - **Relay the CLI's result summary verbatim** (reverse edges rebuilt in N papers, re-bound to N repos, re-linked into N projects), including any `kept N folder(s) that do not match the vault` line ([H]).
 

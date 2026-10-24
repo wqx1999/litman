@@ -46,6 +46,7 @@ from litman.core.code import (
     write_repo_meta,
 )
 from litman.core.config import load_config
+from litman.core.confirm import refuse_without_terminal
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
@@ -722,6 +723,7 @@ def code_rm_cmd(
         )
 
     if not yes:
+        refuse_without_terminal("pass --yes to confirm")
         plan = f"Delete {repo_root}"
         if bound_papers:
             plan += (

@@ -86,6 +86,7 @@ def test_rm_without_yes_says_pass_yes(vault_with_paper: tuple[Path, str], tmp_pa
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0, out
     assert "pass --yes to confirm" in out
+    assert "Aborted!" not in out
     # The warning block belongs to the interactive branch only.
     assert "About to move to .trash/" not in out
     assert (vault / "papers" / paper_id).is_dir()

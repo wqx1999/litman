@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -797,6 +798,36 @@ def test_cli_sync_setup_rejects_unknown_remote(
     assert "not registered" in str(result.exception)
 
 
+@pytest.mark.parametrize(
+    ("given", "named"),
+    [
+        ([], "pass --remote NAME and --path PATH"),
+        (["--remote", "fake-cloud"], "pass --path PATH"),
+        (["--path", "p/"], "pass --remote NAME"),
+    ],
+)
+def test_cli_sync_setup_without_a_terminal_names_what_to_pass(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, given: list[str], named: str
+) -> None:
+    """No rclone config (it needs a terminal) and no questions: the missing
+    flags are named instead."""
+    launched: list[object] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda args, *a, **k: launched.append(args)
+        or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    result = CliRunner().invoke(
+        cli, ["sync", "setup", *given, "--library", str(vault)], input="y\n"
+    )
+    assert result.exit_code == 1
+    assert "Non-interactive environment" in result.output
+    assert f"{named}." in result.output
+    assert launched == []
+    assert load_config(vault).sync is None
+
+
 def test_cli_sync_setup_help() -> None:
     runner = CliRunner()
     result = runner.invoke(cli, ["sync", "setup", "--help"])
@@ -1108,12 +1139,15 @@ def test_push_includes_repo_dirs_by_default(
 
 
 def test_cli_sync_push_first_time_prompts(
-    configured_vault: tuple[Path, str], fake_rclone_env: Path
+    configured_vault: tuple[Path, str],
+    fake_rclone_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without --yes, the first push surfaces the size-preview prompt; 'n'
     aborts and nothing is transferred."""
     vault, target = configured_vault
     _seed_paper(vault, "p1")
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     runner = CliRunner()
     result = runner.invoke(
         cli, ["sync", "push", "--library", str(vault)], input="n\n"
@@ -1124,6 +1158,22 @@ def test_cli_sync_push_first_time_prompts(
     # Nothing was uploaded.
     assert not (fake_rclone_env / "papers" / "p1" / "summary.md").exists()
     # No stamp was recorded either.
+    assert read_sync_state(vault).last_push is None
+
+
+def test_cli_sync_push_first_time_without_a_terminal_asks_for_yes(
+    configured_vault: tuple[Path, str], fake_rclone_env: Path
+) -> None:
+    """The preview still prints; a stray "y" on stdin is not an answer."""
+    vault, _target = configured_vault
+    _seed_paper(vault, "p1")
+    result = CliRunner().invoke(
+        cli, ["sync", "push", "--library", str(vault)], input="y\n"
+    )
+    assert result.exit_code == 1
+    assert "First-push size preview" in result.output
+    assert "pass --yes to confirm" in result.output
+    assert not (fake_rclone_env / "papers" / "p1" / "summary.md").exists()
     assert read_sync_state(vault).last_push is None
 
 

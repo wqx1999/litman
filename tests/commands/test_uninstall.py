@@ -258,10 +258,30 @@ def test_uninstall_decline_aborts_without_removing(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
     _seed_artifacts(tmp_path)
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
 
     result = CliRunner().invoke(cli, ["uninstall"], input="n\n")
 
     assert result.exit_code != 0  # click.Abort on a declined confirm
+    assert (tmp_path / ".claude" / "skills" / "lit-library").exists()
+    assert completion_installed("bash", tmp_path)
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_without_a_terminal_asks_for_yes_and_removes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The list of what would go still prints; a stray "y" on stdin is not an
+    answer."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path / "cfg"))
+    _seed_artifacts(tmp_path)
+
+    result = CliRunner().invoke(cli, ["uninstall"], input="y\n")
+
+    assert result.exit_code == 1
+    assert "pass --yes to confirm" in result.output
+    assert "Remove the items listed above?" not in result.output
     assert (tmp_path / ".claude" / "skills" / "lit-library").exists()
     assert completion_installed("bash", tmp_path)
 

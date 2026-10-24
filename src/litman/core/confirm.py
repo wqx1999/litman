@@ -80,6 +80,18 @@ def _stdin_is_tty() -> bool:
     return is_interactive(sys.stdin)
 
 
+def refuse_without_terminal(how: str) -> None:
+    """Stop before a prompt that nobody can answer, without reading stdin.
+
+    ``how`` names the way out, e.g. ``"pass --yes to confirm"``. Exits 1 with
+    that one line and no ``Aborted!`` after it.
+    """
+    if _stdin_is_tty():
+        return
+    click.echo(f"Non-interactive environment — {how}.", err=True)
+    raise click.exceptions.Exit(1)
+
+
 def _confirm_destructive(warning_lines: list[str], *, yes: bool) -> bool:
     """Gate a data-losing operation behind a confirmation.
 
@@ -88,9 +100,8 @@ def _confirm_destructive(warning_lines: list[str], *, yes: bool) -> bool:
     1. ``yes`` (``--yes`` / ``-y`` was passed) → return ``True`` silently;
        the caller proceeds without rendering the warning block.
     2. stdin is not a tty (pipe / redirect / CI) and ``--yes`` absent →
-       print a stderr hint and raise ``click.Abort`` *without reading
-       stdin* so a stray ``y\\n`` on a pipe cannot bypass the confirmation
-       and the command exits non-zero.
+       print a stderr hint and exit 1 *without reading stdin* so a stray
+       ``y\\n`` on a pipe cannot bypass the confirmation.
     3. Interactive tty → render the warning block, then a default-No
        ``Continue?`` prompt. Returns the user's choice.
 
@@ -104,7 +115,7 @@ def _confirm_destructive(warning_lines: list[str], *, yes: bool) -> bool:
         declined at the interactive prompt.
 
     Raises:
-        click.Abort: non-interactive environment without ``--yes``.
+        click.exceptions.Exit: non-interactive environment without ``--yes``.
     """
     if yes:
         return True
@@ -113,12 +124,7 @@ def _confirm_destructive(warning_lines: list[str], *, yes: bool) -> bool:
     # upstream output); if we let click.confirm read those, a non-interactive
     # invocation with no --yes would silently proceed with a cascade delete.
     # The spec ("不读不存在的 stdin") forbids reading stdin at all here.
-    if not _stdin_is_tty():
-        click.echo(
-            "Non-interactive environment — pass --yes to confirm.",
-            err=True,
-        )
-        raise click.Abort()
+    refuse_without_terminal("pass --yes to confirm")
     for line in warning_lines:
         console.print(line)
     try:
