@@ -21,7 +21,7 @@ public repository so the code-binding step works for real. A second paper,
 have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
-> **Tested with** litman 1.3.3 on Unix (Linux and macOS), August 2026, with Claude
+> **Tested with** litman 1.3.8 on Unix (Linux and macOS), October 2026, with Claude
 > Sonnet 5 driving the agent path in Claude Code. The command output shown
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.

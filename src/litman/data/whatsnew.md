@@ -19,6 +19,14 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.8
+
+- When your AI needs a paper's SI, litman asks you to drop it in.
+- See and open a paper's supplementary files next to the paper.
+- Pick tags and filters from one panel that shows them all.
+- litman asks before creating a tag like one you already have.
+- Links in the desktop app open in your own browser.
+
 ## 1.3.7
 
 - Shift+N and Shift+D open the selected paper's notes and discussion.
