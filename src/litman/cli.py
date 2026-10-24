@@ -25,6 +25,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from litman import __version__
+from litman.core.undecodable import text_refusal
 from litman.exceptions import LitmanError
 
 console = Console()
@@ -878,6 +879,16 @@ def main() -> None:
         cli()
     except LitmanError as e:
         console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
+        sys.exit(1)
+    except UnicodeEncodeError as e:
+        # Text holding a byte that is not UTF-8 (a value typed on the command
+        # line, a --from-llm-json field) reached a writer, which raises before
+        # writing it (core/yaml_pool); the paths litman records are refused
+        # earlier still, with their own message.
+        if e.reason != "surrogates not allowed" or not isinstance(e.object, str):
+            raise
+        message = text_refusal(e.object, e.start)
+        console.print(f"[bold red]error:[/] {escape(message)}", soft_wrap=True)
         sys.exit(1)
 
 

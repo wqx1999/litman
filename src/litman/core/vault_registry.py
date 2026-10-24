@@ -75,6 +75,7 @@ from pydantic import (
 )
 
 from litman.core.id import find_case_fold_collision
+from litman.core.undecodable import config_refusal, printable, refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import VaultRegistryError
 
@@ -241,6 +242,14 @@ class VaultEntry(BaseModel):
             )
         return v
 
+    @field_validator("imported_from")
+    @classmethod
+    def _printable_provenance(cls, v: str | None) -> str | None:
+        # A note only shown, never read as a path: a byte that is not UTF-8
+        # (typed with --import-from) is kept as U+FFFD, as ``lit code add``
+        # keeps its upstream, and a registry that already holds one heals.
+        return printable(v) if v is not None else None
+
 
 class VaultRegistry(BaseModel):
     """Root of ``~/.config/litman/vaults.yaml``.
@@ -321,12 +330,19 @@ def save_registry(reg: VaultRegistry) -> None:
     Creates the parent directory if it does not yet exist (fresh install
     case). Writes via tmp-file + ``Path.replace`` so a crash mid-write
     cannot leave a half-serialized registry on disk.
+
+    Raises:
+        VaultRegistryError: a value is not UTF-8 text (``--import-from``
+            typed with such a byte); nothing is written.
     """
-    path = registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {
         "vaults": [v.model_dump(mode="python") for v in reg.vaults],
     }
+    message = config_refusal(payload, "vaults.yaml")
+    if message is not None:
+        raise VaultRegistryError(message)
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     buf = io.StringIO()
     buf.write(
         "# litman vault registry. Managed by `lit vault {add,use,remove}`.\n"
@@ -509,15 +525,20 @@ def add_vault(
     - Otherwise the new entry's ``is_active`` defaults to ``False``.
 
     Raises:
-        VaultRegistryError: invalid name shape, duplicate name, missing
-            directory, directory not a vault (no lit-config.yaml), or a
-            directory already registered under another name.
+        VaultRegistryError: invalid name shape, duplicate name, a path that
+            is not UTF-8 text, missing directory, directory not a vault (no
+            lit-config.yaml), or a directory already registered under another
+            name.
     """
     # Name-level checks (shape / duplicate / case-fold) live in the shared
     # helper so ``lit init`` can run them before creating the vault dir.
     ensure_name_registrable(reg, name)
 
     abs_path = Path(path).expanduser().resolve()
+    # First: the messages below show the path, and the registry cannot hold it.
+    message = refusal(abs_path)
+    if message is not None:
+        raise VaultRegistryError(message)
     if not abs_path.is_dir():
         raise VaultRegistryError(
             f"Cannot register {name!r}: {abs_path} is not an existing "
@@ -648,8 +669,8 @@ def set_vault_path(
 
     Raises:
         VaultRegistryError: ``name`` is not in the registry, or ``new_path`` is
-            not an existing directory, or that directory is not a litman vault,
-            or it is already registered under another name.
+            not UTF-8 text, or not an existing directory, or that directory is
+            not a litman vault, or it is already registered under another name.
     """
     if not any(v.name == name for v in reg.vaults):
         raise VaultRegistryError(
@@ -657,6 +678,9 @@ def set_vault_path(
             "to see what's registered."
         )
     abs_path = Path(new_path).expanduser().resolve()
+    message = refusal(abs_path)
+    if message is not None:
+        raise VaultRegistryError(message)
     if not abs_path.is_dir():
         raise VaultRegistryError(
             f"Cannot re-point {name!r}: {abs_path} is not an existing "

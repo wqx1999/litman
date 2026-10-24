@@ -141,6 +141,24 @@ own entry. Read those before you upgrade, whatever the number says.
   name from an old archive or another system's encoding (GBK, Latin-1) made
   any `lit` command that printed it stop with a Python error. It now prints,
   with each byte that cannot be read shown as an escape such as `\udce9`.
+  Such a name, or text with such a byte, is no longer written into a file
+  litman cannot read back. `lit project add`, `lit project set-path` and
+  `lit sync setup --path` recorded such a folder in `lit-config.yaml`, and
+  `lit vault set-path` in the vault registry, after which every command that
+  reads them failed until the line was edited by hand; `lit modify --set` and
+  `lit add --from-llm-json` wrote such text into a paper's `metadata.yaml`,
+  after which litman could no longer read that paper. They now refuse it before
+  writing anything, and so do `lit vault add`, which stopped with a Python
+  error, and `lit init`, which stopped with one after creating the library
+  (with `--no-register` it created one that could never be registered). Rename
+  the folder and run the command again; other text is named in a one-line
+  error. `lit code add` imports such a folder (given `--name`) and a
+  repository whose origin holds such a byte, noting where it came from with
+  `�` for each byte it cannot read, as `lit vault add --import-from` now does
+  for its note, and a vault registry whose note already holds one is fixed on
+  its own. Any other file an earlier version wrote such a name into is still
+  reported by name (`lit health-check` lists a `metadata.yaml` it cannot
+  read); edit that line by hand.
 
 - **Long error messages stay on one line.** Piped into another program or a
   log, a `lit` error longer than 80 characters was broken across lines, which

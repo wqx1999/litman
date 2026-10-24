@@ -66,6 +66,7 @@ from litman.core.taxonomy import (
     parse_taxonomy,
     read_taxonomy_text,
 )
+from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
@@ -86,6 +87,9 @@ _PROJECTS_DICT = "projects"
 
 
 def _dump_config_yaml(config_map: dict[str, Any]) -> str:
+    message = config_refusal(config_map)
+    if message is not None:
+        raise TaxonomyError(message)
     buf = io.StringIO()
     _yaml.dump(config_map, buf)
     return buf.getvalue()

@@ -26,6 +26,10 @@ class VaultExistsError(LitmanError):
     """`lit init` target vault path already exists and is non-empty."""
 
 
+class UndecodablePathError(LitmanError):
+    """`lit init` target vault path is not UTF-8 text (see core/undecodable.py)."""
+
+
 class ImporterError(LitmanError):
     """An importer (CrossRef / arXiv / PDF) failed to fetch or parse metadata."""
 

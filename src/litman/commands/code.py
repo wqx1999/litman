@@ -49,6 +49,7 @@ from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.undecodable import printable
 from litman.exceptions import CodeError, PaperNotFoundError
 
 console = Console()
@@ -305,7 +306,8 @@ def code_add_cmd(
     else:
         verb = "moved" if move_src else "copied"
         provenance_line = f"[bold]Local import:[/] {verb}"
-        path_rows.append(("From:", src_path))
+        # Shown the way Upstream records it: a byte that is not UTF-8 as U+FFFD.
+        path_rows.append(("From:", printable(str(src_path))))
     path_rows.append(("Upstream:", meta.get("upstream") or "(none)"))
 
     console.print(

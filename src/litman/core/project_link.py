@@ -60,6 +60,7 @@ from litman.core.taxonomy import (
     read_taxonomy_text,
     update_user_dict_section,
 )
+from litman.core.undecodable import config_refusal, refusal
 from litman.core.views import (
     papers_for_index,
     render_index,
@@ -97,6 +98,10 @@ class LinkError(LitmanError):
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
+    """YAML text for ``data``; refuses a value that is not UTF-8 text."""
+    message = config_refusal(data)
+    if message is not None:
+        raise TaxonomyError(message)
     buf = io.StringIO()
     _yaml.dump(data, buf)
     return buf.getvalue()
@@ -1011,6 +1016,9 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
             "Give the full path to the folder, starting from '/'."
         )
     path = path.resolve()
+    message = refusal(path)
+    if message is not None:
+        raise TaxonomyError(message)
     if not path.exists():
         raise TaxonomyError(
             f"Path {str(path)!r} does not exist. "
@@ -1306,6 +1314,10 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
             "Give the full path to the folder, starting from '/'."
         )
     new_path = new_path.resolve()
+    # First: the messages below show the path, and the config cannot hold it.
+    message = refusal(new_path)
+    if message is not None:
+        raise TaxonomyError(message)
     if not new_path.exists():
         raise TaxonomyError(
             f"Path {str(new_path)!r} does not exist. "

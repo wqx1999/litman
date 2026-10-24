@@ -59,6 +59,7 @@ from litman.core.locking import (
     unlock_truth_file,
 )
 from litman.core.textclean import clean_metadata_text
+from litman.core.undecodable import printable
 from litman.core.views import (
     load_index_papers,
     papers_for_index,
@@ -219,10 +220,7 @@ class SiItem:
     approved: bool = False
 
     def __post_init__(self) -> None:
-        name = "".join(
-            "\ufffd" if unicodedata.category(c) == "Cs" else c for c in self.original
-        )
-        object.__setattr__(self, "original", name)
+        object.__setattr__(self, "original", printable(self.original))
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,7 @@ from typing import Any
 
 from litman.core.dates import now_iso
 from litman.core.locking import ensure_truth_locked
+from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import SyncError
 
@@ -618,7 +619,8 @@ def write_sync_to_config(config_path: Path, payload: SetupPayload) -> None:
         SyncError: file missing or unparseable. The caller (CLI) usually
             guards this with ``find_vault`` + ``load_config`` already, so
             this only fires under truly broken state (manual yaml edit gone
-            wrong, mid-edit by another process, etc.).
+            wrong, mid-edit by another process, etc.). Also when a value
+            is not UTF-8 text, which the config could not be read back with.
     """
     if not config_path.is_file():
         raise SyncError(
@@ -639,6 +641,9 @@ def write_sync_to_config(config_path: Path, payload: SetupPayload) -> None:
         "path": payload.path,
         "exclude_repos": payload.exclude_repos,
     }
+    message = config_refusal(data)
+    if message is not None:
+        raise SyncError(message)
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         _yaml.dump(data, f)
