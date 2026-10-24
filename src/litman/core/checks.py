@@ -112,6 +112,7 @@ from litman.core.trash import (
     is_trash_entry_name,
     list_trash,
 )
+from litman.core.undecodable import printable
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
     ConfigError,
@@ -3616,7 +3617,9 @@ def check_supplementary(
     out: list[Issue] = []
 
     def add(category: str, severity: str, paper_id: str, message: str, hint: str) -> None:
-        out.append(Issue(category, severity, paper_id, message, hint))
+        # A name read off the folder can hold a byte that is not UTF-8; it is
+        # shown as U+FFFD, the form the record keeps once the file is added.
+        out.append(Issue(category, severity, paper_id, printable(message), printable(hint)))
 
     for paper in papers:
         paper_id = paper.get("id")

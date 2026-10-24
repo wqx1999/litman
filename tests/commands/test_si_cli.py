@@ -453,7 +453,8 @@ def test_health_check_reports_an_undecodable_stray_through_the_real_streams(
 ) -> None:
     """The report names a stray in supplementary/ by its name on disk. With
     stdout strict UTF-8, the line naming one with an undecodable byte raised
-    in the middle of the report; it prints the byte as an escape instead."""
+    in the middle of the report; it shows the byte as U+FFFD instead, the way
+    ``lit add --si`` names such a file."""
     si = _si_dir(vault)
     si.mkdir()
     raw = b"ci9b00237_si_003_caf\xe9.xlsx"
@@ -464,7 +465,7 @@ def test_health_check_reports_an_undecodable_stray_through_the_real_streams(
 
     # No exit-code check: that is the business of whatever else it finds.
     assert "Traceback" not in proc.stdout + proc.stderr
-    assert "ci9b00237_si_003_caf\\udce9.xlsx has no record" in proc.stdout
+    assert "ci9b00237_si_003_caf\ufffd.xlsx has no record" in proc.stdout
 
 
 # ---------------------------------------------------------------------------

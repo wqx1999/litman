@@ -159,6 +159,12 @@ own entry. Read those before you upgrade, whatever the number says.
   its own. Any other file an earlier version wrote such a name into is still
   reported by name (`lit health-check` lists a `metadata.yaml` it cannot
   read); edit that line by hand.
+  The web UI no longer fails on such a name either: the folder picker lists
+  the folder greyed out (rename it to open it), and the health-check panel,
+  search and the page's live refresh carry on, showing the name with `�`.
+  `lit health-check` names such an SI file the same way, and the
+  `lit add --si` command its `--fix` prints for one pastes back into bash or
+  zsh.
 
 - **Long error messages stay on one line.** Piped into another program or a
   log, a `lit` error longer than 80 characters was broken across lines, which

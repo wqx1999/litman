@@ -59,7 +59,7 @@ from litman.core.locking import (
     unlock_truth_file,
 )
 from litman.core.textclean import clean_metadata_text
-from litman.core.undecodable import printable
+from litman.core.undecodable import has_undecodable, printable
 from litman.core.views import (
     load_index_papers,
     papers_for_index,
@@ -428,9 +428,28 @@ def si_stem(name: str) -> str:
 
 
 def shell_path(path: Path | str) -> str:
-    """A path as it can be pasted into a shell command."""
+    """A path as it can be pasted into a shell command.
+
+    One holding a byte that is not UTF-8 text goes in ``$'…'`` quoting with
+    that byte as ``\\xNN``, so the shell finds the very file: bash and zsh
+    read it, plain ``sh`` and fish do not.
+    """
     text = str(path)
+    if has_undecodable(text):
+        return "$'" + "".join(_ansi_c(c) for c in text) + "'"
     return f'"{text}"' if any(c.isspace() for c in text) else text
+
+
+def _ansi_c(char: str) -> str:
+    """One character of a path inside ``$'…'`` quoting."""
+    code = ord(char)
+    if 0xDC80 <= code <= 0xDCFF:  # an undecodable byte, as os.fsdecode keeps it
+        return f"\\x{code - 0xDC00:02x}"
+    if char in "\\'":
+        return "\\" + char
+    if code < 0x20 or code == 0x7F:
+        return f"\\x{code:02x}"
+    return char
 
 
 # ---------------------------------------------------------------------------

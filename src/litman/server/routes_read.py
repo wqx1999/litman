@@ -29,6 +29,7 @@ from litman.core.query import recency_key
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.core.trash import TRASH_DIRNAME
+from litman.core.undecodable import has_undecodable, printable, printable_tree, refusal
 from litman.core.vault_registry import find_active, load_registry, registry_path
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
@@ -281,7 +282,10 @@ def get_health(request: Request) -> list[dict[str, Any]]:
     vault = _vault(request)
     papers = list_papers(vault)
     issues = run_all_checks(vault, papers)
-    return [dataclasses.asdict(i) for i in issues]
+    # A message can carry a name read off the disk that is not UTF-8 text (a
+    # paper folder, an SI file), which no JSON response can hold: shown as
+    # U+FFFD, the panel lists it instead of the whole check failing.
+    return printable_tree([dataclasses.asdict(i) for i in issues])  # type: ignore[return-value]
 
 
 def _stat_mtime(path: Path) -> float | None:
@@ -387,7 +391,10 @@ def get_vault_version(request: Request) -> dict[str, Any]:
     digest = hashlib.blake2b(digest_size=12)
 
     def feed(label: str, path: Path) -> None:
-        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8"))
+        # surrogatepass: a paper folder whose name is not UTF-8 text (any lone
+        # surrogate, whatever the platform) still feeds the hash instead of
+        # failing every poll.
+        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8", "surrogatepass"))
 
     for name in _VAULT_VERSION_FILES:
         feed(name, vault / name)
@@ -481,7 +488,8 @@ def get_search(
         }
         for h in best.values()
     ]
-    return {"query": q, "hits": hits}
+    # A hit's id is its folder's name, which can be one that is not UTF-8 text.
+    return {"query": q, "hits": printable_tree(hits)}
 
 
 @router.get("/paper/{paper_id}")
@@ -814,7 +822,16 @@ def _directory_listing(target: Path, show_hidden: bool = False) -> dict[str, Any
     spirit: the two fs endpoints share one listing path, not two copies).
     ``target`` must already be a resolved, existing directory; each caller does
     the path resolution / validation appropriate to its own input.
+
+    A name that is not UTF-8 text cannot travel in the JSON response, and its
+    path could not be recorded anywhere if picked (``core/undecodable.py``). A
+    subfolder with one is still listed — ``name`` with U+FFFD, ``path`` null,
+    ``undecodable`` true — so the picker can show why it cannot be opened; a
+    ``target`` that itself resolves to one (through a link) is a 400.
     """
+    message = refusal(target)
+    if message is not None:
+        raise HTTPException(status_code=400, detail=message)
     entries: list[dict[str, Any]] = []
     denied = False
     try:
@@ -825,6 +842,16 @@ def _directory_listing(target: Path, show_hidden: bool = False) -> dict[str, Any
                     if not show_hidden and name.startswith("."):
                         continue
                     if not entry.is_dir():  # follows symlinks; files skipped
+                        continue
+                    if has_undecodable(name):
+                        entries.append(
+                            {
+                                "name": printable(name),
+                                "path": None,
+                                "is_vault": False,
+                                "undecodable": True,
+                            }
+                        )
                         continue
                     child = Path(entry.path)
                     entries.append(

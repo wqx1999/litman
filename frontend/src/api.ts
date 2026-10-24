@@ -1166,11 +1166,15 @@ export function renameTaxonomyValue(
 // --- Filesystem directory picker (read-only) — backs the path fields' Browse --
 
 /** One subdirectory row from GET /api/fs/list. `is_vault` is true when the
- * folder holds a lit-config.yaml (drives the picker's ✓ library badge). */
+ * folder holds a lit-config.yaml (drives the picker's ✓ library badge).
+ * `undecodable` marks a folder whose name is not UTF-8 text: listed with
+ * U+FFFD in `name` so the user sees it, with no `path`, since none could be
+ * sent back or recorded. */
 export interface FsEntry {
   name: string
-  path: string
+  path: string | null
   is_vault: boolean
+  undecodable?: boolean
 }
 
 /** A standard one-click location (Home / Desktop / Documents / Downloads) — only

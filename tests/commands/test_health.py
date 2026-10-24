@@ -4170,6 +4170,76 @@ def test_fix_at_a_terminal_defaults(
     assert (si / "unsure.csv").exists()
 
 
+_undecodable_names = pytest.mark.skipif(
+    sys.platform != "linux" or sys.getfilesystemencoding() != "utf-8",
+    reason="needs Linux (APFS refuses a file name that is not UTF-8; a Windows "
+    "name is UTF-16) and a UTF-8 file-name encoding, under which a bad byte "
+    "becomes a lone surrogate",
+)
+
+
+def _undecodable_stray(si: Path) -> Path:
+    """``Table S2 caf\\xe9.xlsx`` in ``si``: no DOI, so litman can't confirm it."""
+    raw = os.fsencode(si) + b"/Table S2 caf\xe9.xlsx"
+    with open(raw, "wb") as fh:
+        fh.write(b"PK sheet")
+    return Path(os.fsdecode(raw))
+
+
+@_undecodable_names
+def test_fix_without_a_terminal_names_an_undecodable_stray_so_it_pastes_back(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The line names the file as its record would (U+FFFD for the byte that
+    is not UTF-8); the command carries the real byte, so bash finds the file."""
+    import subprocess
+
+    from litman.core.supplementary import shell_path
+
+    si = _si_paper(vault, tmp_path, n=1)
+    stray = _undecodable_stray(si)
+    assert [i.message for i in _si_issues(vault)] == [
+        f"papers/{_SI_PAPER}/supplementary/Table S2 caf\ufffd.xlsx has no record "
+        "in metadata.yaml"
+    ]
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    out = result.output
+    assert f"left {si}/Table S2 caf\ufffd.xlsx: can't confirm it belongs" in out
+    quoted = shell_path(stray)
+    assert quoted == f"$'{si}/Table S2 caf\\xe9.xlsx'"
+    assert f"lit add --si {_SI_PAPER} {quoted} --force" in out
+    assert subprocess.run(["bash", "-c", f"test -f {quoted}"]).returncode == 0
+    assert stray.exists()
+
+
+@_undecodable_names
+def test_fix_at_a_terminal_asks_about_an_undecodable_stray_by_its_recorded_name(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    si = _si_paper(vault, tmp_path, n=1)
+    _undecodable_stray(si)
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)], input="y\n"
+    )
+
+    assert "can't confirm Table S2 caf\ufffd.xlsx belongs to it." in result.output
+    from litman.core.document import find_paper
+
+    records = find_paper(vault, _SI_PAPER).get("supplementary") or []
+    assert [r["original"] for r in records] == [
+        "ci9b00237_si_001.csv",
+        "Table S2 caf\ufffd.xlsx",
+    ]
+
+
 def test_apply_autofix_without_a_policy_asks_nobody(
     vault: Path, tmp_path: Path
 ) -> None:

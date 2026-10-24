@@ -461,25 +461,44 @@ export default function DirectoryPicker({
               No subfolders here.
             </div>
           ) : (
-            entries.map((entry) => (
-              <button
-                key={entry.path}
-                type="button"
-                onClick={() => go(entry.path)}
-                className="flex w-full items-center gap-2.5 border-b border-stone-100 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-stone-100"
-              >
-                <FolderIcon className="h-[18px] w-[18px] shrink-0 text-stone-400" />
-                <span className="min-w-0 flex-1 truncate text-sm text-stone-800">
-                  {entry.name}
-                </span>
-                {entry.is_vault && (
-                  <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-                    <CheckIcon className="h-3 w-3 text-emerald-600" />
-                    litman library
+            entries.map((entry, i) => {
+              const { path } = entry
+              if (path === null) {
+                // A name that is not UTF-8 text: shown so it is no mystery,
+                // never entered (no path could be recorded from it).
+                return (
+                  <div
+                    key={`undecodable-${i}`}
+                    title="This folder’s name is not UTF-8 text. Rename it to open it here."
+                    className="flex w-full cursor-not-allowed items-center gap-2.5 border-b border-stone-100 px-3 py-2 last:border-b-0"
+                  >
+                    <FolderIcon className="h-[18px] w-[18px] shrink-0 text-stone-300" />
+                    <span className="min-w-0 flex-1 truncate text-sm text-stone-400">
+                      {entry.name}
+                    </span>
+                  </div>
+                )
+              }
+              return (
+                <button
+                  key={path}
+                  type="button"
+                  onClick={() => go(path)}
+                  className="flex w-full items-center gap-2.5 border-b border-stone-100 px-3 py-2 text-left transition-colors last:border-b-0 hover:bg-stone-100"
+                >
+                  <FolderIcon className="h-[18px] w-[18px] shrink-0 text-stone-400" />
+                  <span className="min-w-0 flex-1 truncate text-sm text-stone-800">
+                    {entry.name}
                   </span>
-                )}
-              </button>
-            ))
+                  {entry.is_vault && (
+                    <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                      <CheckIcon className="h-3 w-3 text-emerald-600" />
+                      litman library
+                    </span>
+                  )}
+                </button>
+              )
+            })
           )}
         </div>
 

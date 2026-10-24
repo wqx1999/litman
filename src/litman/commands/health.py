@@ -475,6 +475,7 @@ def _si_fix_policy() -> SiFixPolicy:
     does neither and prints the command that would.
     """
     from litman.core.supplementary import SiFixPolicy, shell_path, si_stem
+    from litman.core.undecodable import printable
 
     interactive = confirm_mod._stdin_is_tty()
 
@@ -496,16 +497,18 @@ def _si_fix_policy() -> SiFixPolicy:
         )
         return False
 
+    # A name that is not UTF-8 text is shown with U+FFFD, as its record will
+    # hold it; the command carries the real bytes (shell_path), so it pastes back.
     def confirm_unverified(paper_id: str, path: Path, verdict: Any) -> bool:
         if interactive:
             return click.confirm(
-                f"{paper_id}: can't confirm {path.name} belongs to it. "
+                f"{paper_id}: can't confirm {printable(path.name)} belongs to it. "
                 "Record it anyway?",
                 default=False,
             )
         command = f"lit add --si {paper_id} {shell_path(path)} --force"
         console.print(
-            f"  [yellow]left[/] {escape(str(path))}: can't confirm it belongs "
+            f"  [yellow]left[/] {escape(printable(str(path)))}: can't confirm it belongs "
             f"to {escape(paper_id)} [dim](record it: `{escape(command)}`)[/]",
             soft_wrap=True,
         )
@@ -513,7 +516,7 @@ def _si_fix_policy() -> SiFixPolicy:
 
     def on_rejected(paper_id: str, path: Path, verdict: Any) -> None:
         console.print(
-            f"  [yellow]left[/] {escape(str(path))}: {escape(verdict.reason)} "
+            f"  [yellow]left[/] {escape(printable(str(path)))}: {escape(verdict.reason)} "
             "[dim](move it out of supplementary/)[/]",
             soft_wrap=True,
         )
