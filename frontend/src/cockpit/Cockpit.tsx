@@ -1954,9 +1954,9 @@ function WriteCockpit({
   // vocabulary refresh keeps the new value in autocomplete for other papers.
   //
   // A value too close to a registered one comes back as the list of those
-  // values, for the panel's confirm to ask about; nothing was written, so there
-  // is nothing to refresh, and the server's sentence (written for the CLI) is
-  // never toasted. `force` is the confirm's "Create anyway".
+  // values, for the panel's confirm to ask about; the server's sentence
+  // (written for the CLI, it names --force) is never toasted. `force` is the
+  // confirm's "Create anyway".
   async function createTag(
     field: 'topics' | 'methods' | 'data',
     value: string,
@@ -1969,8 +1969,22 @@ function WriteCockpit({
       await addTaxonomyValue(field, value, force)
     } catch (err) {
       setWriting(false)
+      // A 409 says the vocabulary on disk has a value like this one, which this
+      // page may not have loaded yet (made by the CLI or an agent since):
+      // refresh it, so a match used from the confirm shows up ticked in the
+      // popover. Not awaited: the confirm lists the server's matches.
+      const refused = err instanceof ApiError && err.status === 409
+      if (refused) onVocabChanged()
       if (err instanceof TaxonomySimilarError) return err.similar
-      notify(err instanceof Error ? err.message : String(err))
+      // Without the matches there is nothing to ask about, and the server's
+      // sentence is still the CLI's.
+      notify(
+        refused
+          ? `“${value}” looks like an existing value. Look for it in the list.`
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      )
       return null
     }
     setWriting(false)
