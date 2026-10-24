@@ -384,7 +384,7 @@ The agent **suggests** `lit open <id>` by default, but **runs it on an explicit 
 
    A paper that has SI already returns at once (`… (already in the library)`); when the user says a file is missing, `lit add --si <id> --force` opens the window anyway.
 3. **The user hands you files** → `lit add --si <id> FILE...`. Each file gets a line on stderr — `✓` / `?` / `✕`, its original name, size and the reason — and all are added or none:
-   - `✕` (`this is the article itself`, `looks like the SI of <other-id>`, `already in the library`, `same file as <name>`) is refused and cannot be added, even with `--force`. Relay it.
+   - `✕` (`empty file`, `this is the article itself`, `looks like the SI of <other-id>`, `already in the library`, `same file as <name>`) is refused and cannot be added, even with `--force`. Relay it.
    - `?` (`can't confirm it belongs to this paper`), or a file over 100 MiB, needs a yes: the run stops with `… a yes — nothing was added`. Ask the user; add `--force` only on their yes.
    - The files are **moved** into the library — the originals leave Downloads. Say so before you run it.
 

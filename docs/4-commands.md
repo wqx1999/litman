@@ -270,8 +270,8 @@ in its `supplementary` field (see [3-concepts.md](3-concepts.md) §1.1). Each fi
 is checked against the paper first, one line per file on stderr: `✓` when its
 name carries the paper's DOI or its first pages carry the paper's title, `?` when
 litman can't confirm it belongs to this paper, and `✕` when it is refused —
-already in the library, the article itself, or what looks like another paper's
-SI.
+empty, already in the library, the article itself, or what looks like another
+paper's SI.
 
 ```
 ✓ d4sc07642g1.pdf (1.8 MiB) — name matches the paper's DOI

@@ -260,6 +260,25 @@ def test_add_si_force_never_releases_a_refused_file(
     assert len(_records(vault)) == 1
 
 
+def test_add_si_refuses_an_empty_file_and_adds_nothing(
+    vault: Path, tmp_path: Path
+) -> None:
+    sheet = _blob(tmp_path, "ci9b00237_si_002.xlsx")
+    one = _blob(tmp_path, "test.dat", b"")
+    two = _blob(tmp_path, "New Microsoft Word Document.docx", b"")
+
+    result = _run(vault, "add", "--si", A_ID, str(sheet), str(one), str(two), "--force")
+
+    assert result.exit_code == 1
+    assert "✓ ci9b00237_si_002.xlsx" in result.stderr
+    assert "✕ test.dat (0 B) — empty file" in result.stderr
+    assert "✕ New Microsoft Word Document.docx (0 B) — empty file" in result.stderr
+    assert "same file as" not in result.stderr
+    assert "Refused 2 files" in str(result.exception)
+    assert sheet.exists() and one.exists() and two.exists()
+    assert _records(vault) == []
+
+
 @pytest.mark.parametrize(
     "extra",
     [["--doi", "10.1/x"], ["--id", "2024_X_y"], ["--auto-suffix"], ["--from-llm-json"]],

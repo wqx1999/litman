@@ -420,11 +420,11 @@ browser); download the SI there and drag the files
 from the browser's download bar or your Downloads folder onto the window. Each
 file is checked as it lands: `✓` when its name carries the paper's DOI or its
 first pages carry the paper's title, `?` when litman cannot tell (tick
-**add anyway** if you know it belongs), `✕` when it is another paper's SI or the
-article itself. **Done** adds them. Like dragging in the PDF, this copies: the
-downloads stay where they are. To add SI before anyone asks, click **+ Add SI**
-in the context panel's **Supplementary** row; the files appear in that row as
-chips (`si-01.pdf · 1.8 MB`), and a click opens one.
+**add anyway** if you know it belongs), `✕` when it is empty, another paper's SI
+or the article itself. **Done** adds them. Like dragging in the PDF, this
+copies: the downloads stay where they are. To add SI before anyone asks, click
+**+ Add SI** in the context panel's **Supplementary** row; the files appear in
+that row as chips (`si-01.pdf · 1.8 MB`), and a click opens one.
 
 ⌨️ **CLI:** when you already have the file, hand it to `lit add --si`:
 

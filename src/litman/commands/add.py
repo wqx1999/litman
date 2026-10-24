@@ -717,11 +717,11 @@ def add_cmd(
     notes.md, and an empty discussion.md.
 
     Adding SI: every FILE is checked against PAPER first (file name vs its
-    DOI, first pages vs its title). All are added or none: a file that
-    looks like another paper's SI, or is the article itself, is refused; one
-    that cannot be confirmed, or is over 100 MiB, needs a yes (or --force).
-    Prints `SI ready: N file(s)` and the new paths, each followed by a tab
-    and the file's original name.
+    DOI, first pages vs its title). All are added or none: a file that is
+    empty, looks like another paper's SI, or is the article itself is
+    refused; one that cannot be confirmed, or is over 100 MiB, needs a yes
+    (or --force). Prints `SI ready: N file(s)` and the new paths, each
+    followed by a tab and the file's original name.
 
     Either way the source files are moved into the vault: the originals are
     removed after a successful add.

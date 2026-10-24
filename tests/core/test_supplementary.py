@@ -297,6 +297,28 @@ def test_a_second_identical_file_in_one_batch(vault: Path, tmp_path: Path) -> No
     assert second.reason == "same file as ci9b00237_si_001.csv"
 
 
+def test_an_empty_file_is_refused_whatever_its_name(vault: Path, tmp_path: Path) -> None:
+    """An empty file is a download that never finished; the DOI in its name
+    does not save it."""
+    empty = _blob(tmp_path, "ci9b00237_si_001.pdf", b"")
+    v = _verdict(vault, A_ID, empty)
+    assert (v.status, v.reason, v.size) == ("rejected", "empty file", 0)
+
+
+def test_two_empty_files_are_each_refused_as_empty(vault: Path, tmp_path: Path) -> None:
+    """Two empty files share a sha256, yet neither is a copy of the other; a
+    file next to them is judged as usual."""
+    one = _blob(tmp_path, "test.dat", b"")
+    two = _blob(tmp_path, "New Microsoft Word Document.docx", b"")
+    sheet = _blob(tmp_path, "ci9b00237_si_002.xlsx")
+    verdicts = verify_batch(vault, A_ID, [SiItem(p, p.name) for p in (one, two, sheet)])
+    assert [(v.status, v.reason) for v in verdicts] == [
+        ("rejected", "empty file"),
+        ("rejected", "empty file"),
+        ("ok", "name matches the paper's DOI"),
+    ]
+
+
 def test_d_the_article_itself_even_when_named_by_its_doi(
     vault: Path, make_text_pdf: MakePdf
 ) -> None:
@@ -692,6 +714,19 @@ def test_add_never_takes_a_rejected_file(vault: Path, tmp_path: Path) -> None:
             vault, A_ID, [SiItem(duplicate, duplicate.name)], allow_unverified=True
         )
     assert duplicate.exists()
+
+
+def test_add_never_takes_an_empty_file(vault: Path, tmp_path: Path) -> None:
+    sheet = _blob(tmp_path, "ci9b00237_si_002.xlsx")
+    empty = _blob(tmp_path, "ci9b00237_si_003.xlsx", b"")
+    items = [SiItem(sheet, sheet.name), SiItem(empty, empty.name, approved=True)]
+    with pytest.raises(
+        SupplementaryError,
+        match=r"^Refused 1 file \(ci9b00237_si_003\.xlsx: empty file\)\. Nothing was added\.$",
+    ):
+        add_supplementary(vault, A_ID, items, allow_unverified=True)
+    assert sheet.exists() and empty.exists()
+    assert not (vault / "papers" / A_ID / "supplementary").exists()
 
 
 def test_add_unverified_needs_consent(vault: Path, tmp_path: Path) -> None:
@@ -1214,6 +1249,25 @@ def test_fix_drops_only_the_record_of_a_missing_file(
     assert counts["supplementary_missing"] == 1
     assert [r["file"] for r in _meta(vault)["supplementary"]] == ["si-02.xlsx"]
     assert (si / "si-02.xlsx").read_bytes() == b"2"
+
+
+def test_fix_leaves_an_empty_stray_where_it_is(vault: Path) -> None:
+    si = vault / "papers" / A_ID / "supplementary"
+    si.mkdir()
+    _blob(si, "ci9b00237_si_004.pdf", b"")
+    refused: list[tuple[str, str, str]] = []
+    policy = si_mod.SiFixPolicy(
+        confirm_drop=lambda *_a: True,
+        confirm_unverified=lambda *_a: True,
+        on_rejected=lambda paper_id, path, v: refused.append((paper_id, path.name, v.reason)),
+    )
+
+    counts = si_mod.fix_supplementary(vault, [A_ID], policy=policy)
+
+    assert counts["supplementary_unrecorded"] == 0
+    assert refused == [(A_ID, "ci9b00237_si_004.pdf", "empty file")]
+    assert os.listdir(si) == ["ci9b00237_si_004.pdf"]
+    assert not _meta(vault).get("supplementary")
 
 
 def test_preview_counts_the_lines_citing_each_file(

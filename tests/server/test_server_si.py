@@ -396,6 +396,37 @@ def _done(client: TestClient, rid: str, *drops: tuple[str, bytes]) -> list[str]:
     return [entry["file"] for entry in response.json()["request"]["added"]]
 
 
+def test_an_empty_drop_is_refused_as_empty(client: TestClient, vault: Path) -> None:
+    rid = _open(client)["id"]
+
+    one = _row(client, rid, "test.dat", b"")
+    two = _row(client, rid, "New Microsoft Word Document.docx", b"")
+    sheet = _row(client, rid, "ci9b00237_si_001.xlsx", SHEET)
+
+    assert [(r["verdict"], r["reason"]) for r in (one, two)] == [
+        ("rejected", "empty file"),
+        ("rejected", "empty file"),
+    ]
+    assert sheet["verdict"] == "ok"
+    assert _stashes(vault) == [f"si-{rid}-{sheet['id']}.xlsx"]
+
+
+def test_done_never_adds_an_empty_drop_even_ticked(client: TestClient, vault: Path) -> None:
+    rid = _open(client)["id"]
+    empty = _row(client, rid, "test.dat", b"")
+
+    ticked = client.post(f"/api/si/requests/{rid}/confirm", json={"addAnyway": [empty["id"]]})
+    assert (ticked.status_code, ticked.json()["detail"]) == (
+        400,
+        "test.dat was refused (empty file). Untick it, then press Done.",
+    )
+    assert _records(vault) == []
+
+    added = _done(client, rid, ("ci9b00237_si_001.xlsx", SHEET))
+    assert added == ["si-01.xlsx"]
+    assert [r["original"] for r in _records(vault)] == ["ci9b00237_si_001.xlsx"]
+
+
 def test_an_added_result_whose_files_were_all_removed_is_not_handed_over(
     client: TestClient,
 ) -> None:

@@ -18,9 +18,9 @@ belongs to the paper:
   carry the paper's title;
 * ? ``unverified`` — nothing tells either way (a scanned PDF, a spreadsheet
   named by the authors); it goes in only on the user's say-so;
-* ✕ ``rejected`` — already in the library, the article itself, or another
-  paper's SI. No entry point can add one: :func:`add_supplementary` verifies
-  again and refuses, whatever its caller decided.
+* ✕ ``rejected`` — empty, already in the library, the article itself, or
+  another paper's SI. No entry point can add one: :func:`add_supplementary`
+  verifies again and refuses, whatever its caller decided.
 
 Import cost: pypdf (through :mod:`litman.core.pdf_text`) and the derived
 rebuild are imported inside the functions that use them. ``lit show`` and the
@@ -848,6 +848,11 @@ def _verdict_for(
     def rejected(reason: str, other: str | None = None) -> Verdict:
         return Verdict("rejected", None, reason, other, sha, size)
 
+    # Empty: a download that never finished. Before a, so two empty files are
+    # each refused as empty, not as copies of each other.
+    if size == 0:
+        return rejected("empty file")
+
     # a — already here (recorded, or earlier in this same batch)
     if sha in ctx.recorded_shas:
         return rejected("already in the library")
@@ -921,7 +926,8 @@ def verify_batch(
     *,
     index_papers: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[Verdict]:
-    """One :class:`Verdict` per item, in order (rules a → d → b → c → e → f → g).
+    """One :class:`Verdict` per item, in order (an empty file first, then rules
+    a → d → b → c → e → f → g).
 
     The second of two identical files in one batch is rejected. Other papers'
     DOIs and titles come from ``index_papers`` (INDEX projections suffice);

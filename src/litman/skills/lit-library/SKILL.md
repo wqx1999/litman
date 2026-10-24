@@ -510,7 +510,7 @@ Trigger: "我的 topic 是不是太碎了" / "整理一下词表" / "tidy my tag
 SI files live in `papers/<id>/supplementary/` as `si-01.pdf`, `si-02.xlsx`, …, each recorded in `metadata.yaml` with the name it was added under. `si-NN` is litman's own numbering (the lowest free number), not the publisher's.
 
 - **Add files the user hands you** → `lit add --si <id> FILE...` (**Tier 2**). Every file is checked against the paper first; stderr shows one line per file — `✓` / `?` / `✕`, its original name, size and the reason — and **all are added or none**:
-  - `✕` is refused (`this is the article itself`, `looks like the SI of <other-id>`, `already in the library`, `same file as <name>`) and cannot be added, even with `--force`. Relay the reason.
+  - `✕` is refused (`empty file`, `this is the article itself`, `looks like the SI of <other-id>`, `already in the library`, `same file as <name>`) and cannot be added, even with `--force`. Relay the reason.
   - `?` (`can't confirm it belongs to this paper`), or a file over 100 MiB, stops the run: `1 file needs a yes — nothing was added. Pass --force to add it anyway.` Ask the user; pass `--force` only on their yes.
   - The files are **moved** into the vault, like `lit add`'s PDF — the originals leave Downloads. Say so before you run it.
   - Success prints `SI ready: N file(s)`, then per file its absolute path, a tab and its original name.

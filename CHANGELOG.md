@@ -19,8 +19,8 @@ own entry. Read those before you upgrade, whatever the number says.
   takes you to the article's page, and the files you download there and drop
   into the window are checked against the paper — the DOI in their names, or
   the title on their first pages — and added together when you press
-  **Done**. A file that looks like another paper's SI, or is the article
-  itself, is refused; one litman cannot confirm goes in only if you tick
+  **Done**. A file that is empty, looks like another paper's SI, or is the
+  article itself is refused; one litman cannot confirm goes in only if you tick
   **add anyway**. The files land in the paper's own `supplementary/` folder as
   `si-01.pdf`, `si-02.xlsx` and so on, read-only like its PDF and recorded in
   its `metadata.yaml` with the names they were downloaded under, and the agent
