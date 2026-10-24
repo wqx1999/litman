@@ -229,11 +229,11 @@ own entry. Read those before you upgrade, whatever the number says.
 
 - **On Windows, a command your agent runs no longer stops at a bare
   `Aborted!`.** When the command needed an answer — `lit install-skill` over
-  an older skill, `lit add` onto an id already taken, `lit rm` without
-  `--yes` — it asked anyway, got no answer and printed only `Aborted!`. It now
-  says which option to pass, as it does on macOS and Linux. `lit add
-  --from-llm-json -` with nothing piped in says that, not that the JSON could
-  not be read.
+  an older skill, `lit add` onto an id already taken — it asked anyway, got
+  no answer and printed only `Aborted!`. It now says which option to pass, as
+  it does on macOS and Linux, and the first `lit init` uses the default
+  registry location instead of stopping at its question. `lit add
+  --from-llm-json -` with nothing piped in now says so, on every system.
 
 - **Commands with no one to answer them no longer take stray input for a
   yes.** `lit self-update`, the first `lit sync push`, `lit vault remove`,
