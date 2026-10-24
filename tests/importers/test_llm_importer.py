@@ -681,6 +681,31 @@ def test_cli_add_from_llm_json_stdin_tty_no_pipe_errors(
     assert "stdin is a terminal" in str(result.exception)
 
 
+@pytest.mark.parametrize("piped", ["", " \n"])
+def test_cli_add_from_llm_json_stdin_empty_says_nothing_was_read(
+    vault: Path, fake_pdf: Path, piped: str
+) -> None:
+    """Nothing on stdin (the null device, an empty pipe) is named as such, not
+    as a JSON parse error."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", "-",
+            "--library", str(vault),
+        ],
+        input=piped,
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, AddError)
+    assert str(result.exception) == (
+        "--from-llm-json - read nothing on stdin. Pipe the JSON in, or pass a "
+        "file path instead."
+    )
+    assert fake_pdf.exists()
+
+
 def test_cli_add_from_llm_json_stdin_mutually_exclusive_with_doi(
     vault: Path, fake_pdf: Path
 ) -> None:

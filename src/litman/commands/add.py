@@ -194,7 +194,7 @@ def _resolve_collision(
     if auto_suffix:
         return auto_suffix_id(vault, primary_id)
 
-    if sys.stdin is None or not sys.stdin.isatty():
+    if not confirm_mod.is_interactive(sys.stdin):
         raise AddError(
             f"Paper id {primary_id!r} already exists at "
             f"{vault / 'papers' / primary_id} and stdin is not a TTY. "
@@ -821,7 +821,7 @@ def add_cmd(
             # Guard the human-misuse case: `--from-llm-json -` with nothing
             # piped would block forever on .read() waiting for EOF. The skill
             # always pipes, so a TTY here means someone typed the flag by hand.
-            if stdin_stream.isatty():
+            if confirm_mod.is_interactive(stdin_stream):
                 raise AddError(
                     "--from-llm-json - expects the metadata JSON piped on "
                     "stdin, but stdin is a terminal (nothing piped). Pipe the "
@@ -829,6 +829,11 @@ def add_cmd(
                     "or pass a file path instead."
                 )
             raw_text = stdin_stream.read()
+            if not raw_text.strip():
+                raise AddError(
+                    "--from-llm-json - read nothing on stdin. Pipe the JSON "
+                    "in, or pass a file path instead."
+                )
             parsed = parse_llm_json_text(raw_text, source="<stdin>")
         else:
             parsed = parse_llm_json(from_llm_json)

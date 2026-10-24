@@ -25,6 +25,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from litman import __version__
+from litman.core.confirm import is_interactive
 from litman.core.undecodable import text_refusal
 from litman.exceptions import LitmanError
 
@@ -866,9 +867,7 @@ def _launched_without_console() -> bool:
     shows the ``console.print`` feedback, so no splash there. ``gui.py`` reads
     this to decide whether a ``--window`` launch should show a splash.
     """
-    return _LAUNCHED_HEADLESS or not (
-        sys.__stdout__ is not None and sys.__stdout__.isatty()
-    )
+    return _LAUNCHED_HEADLESS or not is_interactive(sys.__stdout__)
 
 
 def main() -> None:

@@ -227,6 +227,14 @@ own entry. Read those before you upgrade, whatever the number says.
   right by `lit health-check --fix`, and at a terminal litman no longer marks
   that paper's links `(deleted)` in the meantime.
 
+- **On Windows, a command your agent runs no longer stops at a bare
+  `Aborted!`.** When the command needed an answer — `lit install-skill` over
+  an older skill, `lit add` onto an id already taken, `lit rm` without
+  `--yes` — it asked anyway, got no answer and printed only `Aborted!`. It now
+  says which option to pass, as it does on macOS and Linux. `lit add
+  --from-llm-json -` with nothing piped in says that, not that the JSON could
+  not be read.
+
 ## 1.3.7 — 2026-10-05
 
 ### Added

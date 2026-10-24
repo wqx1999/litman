@@ -21,6 +21,7 @@ from rich.panel import Panel
 
 from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
+from litman.core.confirm import is_interactive
 from litman.core.library import DEFAULT_VAULT_NAME, create_vault
 from litman.core.undecodable import has_undecodable, printable, refusal
 from litman.core.vault_registry import (
@@ -85,7 +86,7 @@ def apply_init(
 
 def _stdin_isatty() -> bool:
     """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
-    return sys.stdin is not None and sys.stdin.isatty()
+    return is_interactive(sys.stdin)
 
 
 @click.command("init")

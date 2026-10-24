@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
+from litman.core.confirm import is_interactive
 from litman.core.vault_registry import (
     REGISTRY_ENV_VAR,
     registry_path,
@@ -31,7 +32,7 @@ def maybe_first_time_registry_prompt() -> None:
         return
     if os.environ.get(REGISTRY_ENV_VAR, "").strip():
         return
-    if sys.stdin is None or not sys.stdin.isatty():
+    if not is_interactive(sys.stdin):
         return
 
     default_path = registry_path_default()

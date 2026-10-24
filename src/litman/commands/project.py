@@ -46,7 +46,7 @@ from litman.commands._paper_count import (
     plural_papers,
 )
 from litman.core.config import config_to_yaml_dict, load_config
-from litman.core.confirm import _confirm_destructive
+from litman.core.confirm import _confirm_destructive, is_interactive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_link import (
@@ -75,7 +75,7 @@ console = Console()
 
 def _stdin_isatty() -> bool:
     """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
-    return sys.stdin is not None and sys.stdin.isatty()
+    return is_interactive(sys.stdin)
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},

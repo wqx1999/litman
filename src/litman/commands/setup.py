@@ -36,6 +36,7 @@ from litman.commands.install_skill import install_skill_cmd
 from litman.commands.sync import sync_setup_cmd
 from litman.core import agent_prefs, agents
 from litman.core.config import load_config
+from litman.core.confirm import is_interactive
 from litman.core.library import DEFAULT_VAULT_NAME, find_vault
 from litman.core.skill import (
     refresh_stale_copies,
@@ -55,7 +56,7 @@ console = Console()
 def _stdin_is_tty() -> bool:
     """Indirection so tests can force the interactive branch. ``lit setup``
     is TTY-only; automation calls the standalone commands instead."""
-    return sys.stdin is not None and sys.stdin.isatty()
+    return is_interactive(sys.stdin)
 
 
 @click.command("setup")
