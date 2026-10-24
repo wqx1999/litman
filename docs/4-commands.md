@@ -996,7 +996,8 @@ lit gui --make-shortcut    # create a desktop shortcut, then exit
 In `--window` mode the app window *is* the application: closing it stops the
 server (on Windows and Linux, Ctrl-C stops the server and closes the window
 too). When a browser holds the window it runs against a browser profile of its
-own, not your everyday one (`lit uninstall` removes that profile). A plain
+own, not your everyday one (`lit uninstall` removes that profile); links to
+other sites open in your default browser, not in that window. A plain
 `lit gui` in a terminal keeps the ordinary contract — the tab is just a tab,
 and Ctrl-C in the terminal is what stops the server. On Windows the desktop
 shortcut targets `litw`, the console-less twin of `lit`, so double-clicking it
@@ -1037,7 +1038,8 @@ hover deletes the file — for good, after a confirmation that says how often yo
 notes cite it. **+ Add SI** at the end of the row opens the SI window, the same
 one that opens by itself when your agent runs `lit add --si <paper>` (while you
 are typing, or another dialog is open, it waits). In it, **Open website ↗**
-opens the article's page in a new tab; download the SI there and drop the files
+opens the article's page in a new tab (from the desktop app, in your default
+browser); download the SI there and drop the files
 onto the window. Each file is checked as it lands: `✓` goes in, `?` goes in only
 with **add anyway** ticked, and `✕` never does; a file over 100 MB waits for a
 click on **Upload**. **Done** adds them all at once, and **Cancel** (or Esc)

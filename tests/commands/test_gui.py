@@ -114,6 +114,15 @@ def _no_real_native_window(request, monkeypatch) -> None:
     monkeypatch.setattr(_mac_shell, "load_webview", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _a_desktop_to_open_links_on(monkeypatch) -> None:
+    """Answer ``viewer.open_files_mode`` as a machine showing the app window
+    does — "desktop" — so whether the window's start address is marked never
+    rides on the runner (an SSH session, a CI box without xdg-open). The few
+    tests about the other answer patch it themselves."""
+    monkeypatch.setattr(gui.viewer, "open_files_mode", lambda: "desktop")
+
+
 # ---------------------------------------------------------------------------
 # A1(a) — importing the CLI must not pull fastapi into the process
 # ---------------------------------------------------------------------------
@@ -390,7 +399,7 @@ def test_gui_window_uses_chromium_app_mode(
     assert len(procs) == 1
     argv = procs[0].argv
     assert argv[0] == "/usr/bin/google-chrome"
-    assert f"--app={_served_url(result.output)}" in argv
+    assert f"--app={_served_url(result.output)}/?window=app" in argv
 
 
 def test_gui_window_gives_the_browser_a_profile_of_its_own(
@@ -606,6 +615,90 @@ def test_gui_tab_mode_never_ties_the_server_to_a_browser(
     (server,) = _FakeServer.instances
     assert server.should_exit is False
     assert "Close the window" not in result.output
+
+
+def test_app_window_url_is_marked_only_where_a_browser_can_be_shown(monkeypatch) -> None:
+    # The page routes links to the default browser only when it finds this
+    # mark; with nobody to see that browser, it keeps them in the window.
+    url = "http://127.0.0.1:8765"
+    assert gui._app_window_url(url) == f"{url}/?window=app"
+    monkeypatch.setattr(gui.viewer, "open_files_mode", lambda: "none")
+    assert gui._app_window_url(url) == url
+
+
+def test_gui_window_without_a_desktop_starts_unmarked(
+    monkeypatch, gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui.viewer, "open_files_mode", lambda: "none")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert f"--app={_served_url(result.output)}" in procs[0].argv
+
+
+def test_a_browser_that_will_not_start_falls_back_to_the_plain_address(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # The tab is the user's own browser: it must never carry the window's mark,
+    # or every link in it would be sent off to a second copy of that browser.
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui, "display_available", lambda: True)
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(gui, "_shed_darwin_app_identity", lambda: False)
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+
+    tried: list[list[str]] = []
+
+    def _no_browser(argv, **kw):
+        tried.append(list(argv))
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "Popen", _no_browser)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    url = _served_url(result.output)
+    assert tried == [["chromium", f"--app={url}/?window=app"]]
+    assert opened == [url]
+
+
+def test_a_window_that_dies_before_loading_falls_back_to_the_plain_address(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui, "display_available", lambda: True)
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(gui, "_shed_darwin_app_identity", lambda: False)
+    monkeypatch.setattr(gui, "_brand_windows_taskbar", lambda stop_event: None)
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+    fell_back = threading.Event()
+
+    def _window_died(proc, *a, on_launch_failed=None, **k):
+        on_launch_failed()
+        fell_back.set()
+
+    # The server "runs" until the watcher has given up on the window, so the
+    # fallback lands while the run is live — not after its own teardown.
+    monkeypatch.setattr(gui, "_stop_server_when_window_closes", _window_died)
+    monkeypatch.setattr(_FakeServer, "run", lambda self: fell_back.wait(5))
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert fell_back.is_set()
+    url = _served_url(result.output)
+    assert procs[0].argv == ["chromium", f"--app={url}/?window=app"]
+    assert opened == [url]
 
 
 def test_gui_window_falls_back_to_tab_when_no_chromium(
@@ -2687,7 +2780,7 @@ def test_gui_window_darwin_shell_failure_falls_back_to_the_browser_unchanged(
     (proc,) = procs
     assert proc.argv == [
         str(binary),
-        f"--app={url}",
+        f"--app={url}/?window=app",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -2721,7 +2814,7 @@ def test_gui_window_darwin_window_layer_failure_falls_back_to_the_browser(
     (fake_server,) = _FakeServer.instances
     assert fake_server.ran  # gui_cmd still ran the server itself
     (proc,) = procs
-    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}/?window=app"]
     assert opened == []
 
 
@@ -2854,7 +2947,7 @@ def test_gui_window_darwin_respawn_failure_serves_in_place(
     (fake_server,) = _FakeServer.instances
     assert fake_server.ran  # the launch stayed here and served
     (proc,) = procs
-    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}/?window=app"]
     assert opened == []
 
 
@@ -2901,7 +2994,7 @@ def test_gui_window_linux_argv_is_unchanged_by_the_native_shell(
     (proc,) = procs
     assert proc.argv == [
         "/usr/bin/google-chrome",
-        f"--app={url}",
+        f"--app={url}/?window=app",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -2944,7 +3037,7 @@ def test_gui_window_win32_argv_is_unchanged_by_the_native_shell(
     (proc,) = procs
     assert proc.argv == [
         "C:\\browsers\\google-chrome",
-        f"--app={url}",
+        f"--app={url}/?window=app",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",

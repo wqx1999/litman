@@ -68,6 +68,7 @@ from rich.console import Console
 
 from litman.cli import _launched_without_console
 from litman.commands._options import library_option, vault_option
+from litman.core import viewer
 from litman.core.gui_registry import unregister_gui
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
@@ -425,6 +426,24 @@ def _migrate_legacy_http_cache(profile: Path) -> None:
         return
     with contextlib.suppress(OSError):
         marker.touch(exist_ok=True)
+
+
+# What the app window's start address carries, so the page knows it is in
+# that window (frontend/src/externalLinks.ts): there, a link to another site
+# goes to the default browser through POST /api/open-url, not into litman's
+# own profile. Only the window gets it — every tab fallback opens the plain
+# address, and a tab keeps its links where they are.
+# In the query, never the path: Windows groups the window on the taskbar by
+# host + path (_win_taskbar._AUMID_MARK), and Chromium leaves the query out.
+_APP_WINDOW_QUERY = "window=app"
+
+
+def _app_window_url(url: str) -> str:
+    """The app window's start address: ``url``, marked when this machine can
+    show the default browser (:func:`litman.core.viewer.open_files_mode`)."""
+    if viewer.open_files_mode() == "none":
+        return url
+    return f"{url}/?{_APP_WINDOW_QUERY}"
 
 
 def _app_window_argv(url: str) -> list[str] | None:
@@ -1607,7 +1626,7 @@ def gui_cmd(
         owned: list[subprocess.Popen[bytes]] = []
 
         if not no_browser and display_available():
-            app_argv = _app_window_argv(url) if window else None
+            app_argv = _app_window_argv(_app_window_url(url)) if window else None
             if window and app_argv is None:
                 console.print(
                     "[dim]No Chrome/Edge/Chromium found for --window; opening a "

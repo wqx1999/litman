@@ -99,6 +99,10 @@ _VAULTLESS_ALLOWED = frozenset(
         # "alive"; refused here, a GUI with no library (or a gone one) would
         # answer 409/410 and read as a GUI the CLI cannot identify.
         ("GET", "/api/si/ping"),
+        # Hands a link clicked in the app window to the default browser and
+        # touches no vault. A library gone mid-session leaves the main view up,
+        # DOI and what's-new links and all.
+        ("POST", "/api/open-url"),
     }
 )
 

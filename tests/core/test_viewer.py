@@ -555,3 +555,160 @@ def test_the_real_spawn_leaves_a_running_opener_in_its_own_session(
         ]
     finally:
         os.kill(pid, signal.SIGKILL)
+
+
+# ---------------------------------------------------------------------------
+# launch_url — a web page to the default browser
+# ---------------------------------------------------------------------------
+
+_PAGE = "https://pubs.acs.org/doi/10.1021/acs.jmedchem.4c00001?ref=pdf#si"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        _PAGE,
+        "http://example.org",
+        "HTTPS://Example.ORG/Path",
+        "https://user@example.org:8443/a?b=c",
+        "https://a%40b@example.org/x%20y?q=%5C#%25",
+        "https://1.2.3.4/x",
+        "https://[2001:db8::1]/x",
+        "https://xn--caf-dma.example/",
+    ],
+)
+def test_a_web_page_on_another_machine_is_accepted(url: str) -> None:
+    assert viewer.web_address_problem(url) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "problem"),
+    [
+        ("javascript:alert(1)", "Only an http or https link can go to your browser"),
+        ("file:///C:/Windows/notepad.exe", "Only an http or https link can go to your browser"),
+        ("data:text/html,<b>x</b>", "Only an http or https link can go to your browser"),
+        ("zotero://select/items/1", "Only an http or https link can go to your browser"),
+        ("ftp://example.org/x", "Only an http or https link can go to your browser"),
+        ("mailto:someone@example.org", "Only an http or https link can go to your browser"),
+        ("//example.org/x", "Only an http or https link can go to your browser"),
+        ("", "The link is not a single web address"),
+        ("https://", "The link is not a single web address"),
+        ("https://exa mple.org/", "The link is not a single web address"),
+        ("https://example.org/\nx", "The link is not a single web address"),
+        ("https://example.org/\x00", "The link is not a single web address"),
+        ("https://café.example/", "The link is not a single web address"),
+        ("https://[::1/x", "The link is not a single web address"),
+        ("http://127.1/", "The link is not a single web address"),
+        ("http://0x7f.1/", "The link is not a single web address"),
+        ("http://2130706433/", "The link is not a single web address"),
+        # Python and a browser would read these as two different machines.
+        ("http://127.0.0.1:8765\\@example.org/", "The link is not a single web address"),
+        ("http://example.org\\x/", "The link is not a single web address"),
+        ("http://127.0.0.%31:8765/", "The link is not a single web address"),
+        ("http://%6c%6fcalhost:8765/", "The link is not a single web address"),
+        ("http://localhost%2e/", "The link is not a single web address"),
+        ("http://127.0.0.1:8765/api/vaults", "The link points at this computer, not the web"),
+        ("http://127.8.9.10/", "The link points at this computer, not the web"),
+        ("http://localhost:8765/", "The link points at this computer, not the web"),
+        ("http://LOCALHOST./", "The link points at this computer, not the web"),
+        ("http://app.localhost/", "The link points at this computer, not the web"),
+        ("http://[::1]:8765/", "The link points at this computer, not the web"),
+        ("http://[::ffff:127.0.0.1]/", "The link points at this computer, not the web"),
+        ("http://0.0.0.0:8765/", "The link points at this computer, not the web"),
+    ],
+)
+def test_anything_else_is_refused(url: str, problem: str) -> None:
+    assert viewer.web_address_problem(url) == problem
+
+
+def test_a_refused_address_reaches_no_opener(monkeypatch: pytest.MonkeyPatch) -> None:
+    _desktop_linux(monkeypatch)
+    opener = _opener(monkeypatch, 0)
+    with pytest.raises(ValueError, match="Only an http or https link"):
+        viewer.launch_url("file:///etc/passwd")
+    assert opener.argvs == []
+
+
+def test_linux_hands_the_page_to_xdg_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    _desktop_linux(monkeypatch)
+    opener = _opener(monkeypatch, 0)
+    assert viewer.launch_url(_PAGE) == "xdg-open"
+    assert opener.argvs == [["xdg-open", _PAGE]]
+    assert opener.timeouts == [viewer.OPEN_WAIT_S]
+
+
+def test_mac_hands_the_page_to_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch)
+    _host(monkeypatch, "darwin")
+    opener = _opener(monkeypatch, 0)
+    assert viewer.launch_url(_PAGE) == "open"
+    assert opener.argvs == [["open", _PAGE]]
+
+
+def test_windows_hands_the_page_to_startfile(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch)
+    _host(monkeypatch, "win32")
+    started: list[str] = []
+    monkeypatch.setattr(viewer, "_startfile", started.append)
+    assert viewer.launch_url(_PAGE) == "os.startfile"
+    assert started == [_PAGE]
+
+
+def test_windows_without_a_default_browser_found_no_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _env(monkeypatch)
+    _host(monkeypatch, "win32")
+    monkeypatch.setattr(viewer, "_startfile", _no_association)
+    with pytest.raises(viewer.OpenFailed) as caught:
+        viewer.launch_url(_PAGE)
+    assert (caught.value.reason, caught.value.command) == ("no-app", "os.startfile")
+
+
+def test_an_opener_that_takes_no_page_found_no_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _desktop_linux(monkeypatch)
+    _opener(monkeypatch, 3)
+    with pytest.raises(viewer.OpenFailed) as caught:
+        viewer.launch_url(_PAGE)
+    assert (caught.value.reason, caught.value.command) == ("no-app", "xdg-open")
+    assert str(caught.value) == (
+        "No app opened the link (xdg-open exited 3). Set a default browser."
+    )
+
+
+def test_a_browser_opener_that_will_not_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    _desktop_linux(monkeypatch)
+    _opener(monkeypatch, error=PermissionError(13, "Permission denied"))
+    with pytest.raises(viewer.OpenFailed) as caught:
+        viewer.launch_url(_PAGE)
+    assert (caught.value.reason, caught.value.command) == ("not-started", "xdg-open")
+
+
+def test_a_page_without_a_display_spawns_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch)
+    _host(monkeypatch, "linux", "xdg-open")
+    opener = _opener(monkeypatch, 0)
+    with pytest.raises(viewer.OpenFailed) as caught:
+        viewer.launch_url(_PAGE)
+    assert (caught.value.reason, caught.value.command) == ("not-started", "xdg-open")
+    assert opener.argvs == []
+
+
+def test_a_page_without_a_display_goes_to_wslview(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch)
+    _host(monkeypatch, "linux", "xdg-open", "wslview")
+    opener = _opener(monkeypatch, 0)
+    assert viewer.launch_url(_PAGE) == "wslview"
+    assert opener.argvs == [["/usr/bin/wslview", _PAGE]]
+
+
+def test_a_page_with_no_opener_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _env(monkeypatch, DISPLAY=":0")
+    _host(monkeypatch, "linux")
+    opener = _opener(monkeypatch, 0)
+    with pytest.raises(viewer.OpenFailed) as caught:
+        viewer.launch_url(_PAGE)
+    assert caught.value.reason == "not-started"
+    assert opener.argvs == []

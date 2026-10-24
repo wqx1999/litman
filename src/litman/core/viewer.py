@@ -13,7 +13,8 @@ Two responsibilities, kept here so the CLI command stays a thin wrapper:
   :data:`OPEN_WAIT_S` to report that no app took the file — never longer,
   and no output is captured, so the user's terminal never blocks until the
   viewer closes. :func:`open_files_mode` tells the GUI whether opening a
-  file here reaches a screen at all.
+  file here reaches a screen at all, and :func:`launch_url` hands a web page
+  to the default browser with the same openers.
 
 Pure reads. No state file. Importable from ``core/checks.py`` so the
 health-check viewer-availability probe can reuse :func:`detect_platform_viewer`
@@ -25,12 +26,14 @@ state machine).
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from litman.exceptions import AmbiguousPaperIdError, PaperNotFoundError
 
@@ -218,7 +221,7 @@ def _install_hint(path: Path) -> str:
 
 def _wait_for(
     proc: subprocess.Popen[bytes],
-    path: Path,
+    name: str,
     command: str,
     wait_s: float,
     way_out: str,
@@ -230,7 +233,7 @@ def _wait_for(
         return
     if code != 0:
         raise OpenFailed(
-            f"No app opened {path.name} ({command} exited {code}). {way_out}",
+            f"No app opened {name} ({command} exited {code}). {way_out}",
             command=command,
             reason="no-app",
         )
@@ -291,7 +294,7 @@ def launch_file(
             ) from e
         _wait_for(
             proc,
-            path,
+            path.name,
             configured_viewer,
             wait_s,
             "Check default_pdf_viewer in lit-config.yaml.",
@@ -367,7 +370,7 @@ def launch_file(
             reason="not-started",
         ) from e
     _wait_for(
-        proc, path, viewer, wait_s, _PDF_WAY_OUT if is_pdf else _install_hint(path)
+        proc, path.name, viewer, wait_s, _PDF_WAY_OUT if is_pdf else _install_hint(path)
     )
     return (viewer, source)
 
@@ -381,3 +384,114 @@ def launch_pdf(
     failed launch exits 2 with the path instead of claiming it opened.
     """
     return launch_file(pdf_path, configured_viewer)
+
+
+_NOT_ONE_ADDRESS = "The link is not a single web address"
+
+
+def _ends_in_number(host: str) -> bool:
+    """Whether a browser reads ``host`` as an IPv4 address: its last label is
+    a decimal or ``0x`` number, as in ``127.1``, ``0x7f.1`` or ``2130706433``
+    (the WHATWG URL standard's "ends in a number")."""
+    labels = host.split(".")
+    if len(labels) > 1 and labels[-1] == "":
+        labels.pop()
+    last = labels[-1]
+    if last.isascii() and last.isdigit():
+        return True
+    return last[:2].lower() == "0x" and all(c in "0123456789abcdefABCDEF" for c in last[2:])
+
+
+def web_address_problem(url: str) -> str | None:
+    """Why :func:`launch_url` will not hand ``url`` to the browser, as the
+    first half of a refusal; ``None`` when it will.
+
+    Only an ``http`` or ``https`` page on another machine, written the way a
+    browser writes a link out (printable ASCII, no spaces, no ``\\`` before
+    the path, no ``%`` in the host). This computer is refused under any name:
+    ``localhost``, ``127.0.0.0/8``, ``::1``, and a host ending in a number that
+    is not a plain IP address, which a browser would read as one (``127.1`` is
+    ``127.0.0.1``).
+    """
+    if not url or not all(33 <= ord(c) <= 126 for c in url):
+        return _NOT_ONE_ADDRESS
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return _NOT_ONE_ADDRESS
+    if parts.scheme not in ("http", "https"):
+        return "Only an http or https link can go to your browser"
+    # A browser ends the authority at a backslash as well and decodes %XX in
+    # the host, so with either it would go to another machine than ``host``.
+    if not host or "\\" in parts.netloc or "%" in parts.netloc.rpartition("@")[2]:
+        return _NOT_ONE_ADDRESS
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        if _ends_in_number(host):
+            return _NOT_ONE_ADDRESS
+        here = host == "localhost" or host.endswith(".localhost")
+    else:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        here = ip.is_loopback or ip.is_unspecified
+    if here:
+        return "The link points at this computer, not the web"
+    return None
+
+
+def launch_url(url: str, *, wait_s: float = OPEN_WAIT_S) -> str:
+    """Open the web page ``url`` in this machine's default browser and return
+    the opener that took it.
+
+    The platform's own opener, as for a file — ``os.startfile`` on Windows,
+    ``open`` on macOS, ``xdg-open`` (WSL: ``wslview``) elsewhere — so the page
+    lands in the browser the user chose, signed in as they are there. The
+    opener gets ``wait_s`` to report failure, as in :func:`launch_file`.
+
+    Raises:
+        ValueError: :func:`web_address_problem` refuses ``url``; nothing ran.
+        OpenFailed: No opener in this session (none installed, or
+            ``xdg-open`` without a display), one that could not be started,
+            or one that reported failure.
+    """
+    problem = web_address_problem(url)
+    if problem is not None:
+        raise ValueError(problem)
+    viewer = detect_platform_viewer()
+    if viewer == WINDOWS_STARTFILE_SENTINEL:
+        try:
+            _startfile(url)
+        except OSError as e:
+            raise OpenFailed(
+                "Windows has no default browser, or refused to start it. "
+                "Set one in Settings > Apps > Default apps.",
+                command="os.startfile",
+                reason="no-app",
+            ) from e
+        return "os.startfile"
+    command = viewer
+    if viewer == "xdg-open" and is_headless():
+        # As in launch_file: WSL opens on the Windows host whatever the Linux
+        # display, and a headless xdg-open is never spawned.
+        command = _which("wslview")
+        viewer = "wslview" if command is not None else None
+    if viewer is None or command is None:
+        raise OpenFailed(
+            "No browser can be opened in this session (no display, or no "
+            "xdg-open / wslview). Run litman from a desktop session.",
+            command="xdg-open",
+            reason="not-started",
+        )
+    try:
+        proc = _spawn([command, url])
+    except OSError as e:
+        raise OpenFailed(
+            f"{viewer} was found but could not be started "
+            f"({e.__class__.__name__}). Open the link yourself.",
+            command=viewer,
+            reason="not-started",
+        ) from e
+    _wait_for(proc, "the link", viewer, wait_s, "Set a default browser.")
+    return viewer

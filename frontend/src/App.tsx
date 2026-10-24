@@ -41,6 +41,7 @@ import type { PdfHandle } from './pdf/PdfView'
 import type { MdDraft } from './md/MdView'
 import type { CockpitHandle } from './cockpit/Cockpit'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
+import { inAppWindow, routeExternalLinks } from './externalLinks'
 import CheatSheet from './ui/CheatSheet'
 import WhatsNew from './ui/WhatsNew'
 import DropZone from './ui/DropZone'
@@ -499,6 +500,10 @@ export default function App() {
     [],
   )
   const markLogRead = useCallback(() => setLogUnread(false), [])
+
+  // In the --window app window only: links to other sites go to the default
+  // browser, where the user is signed in (externalLinks.ts). A tab never routes.
+  useEffect(() => (inAppWindow() ? routeExternalLinks(notify) : undefined), [notify])
 
   // Silent log sink for resync-diff entries: appends to the same ring + lights
   // the unread dot like notify, but does NOT toast (a resync can yield dozens of

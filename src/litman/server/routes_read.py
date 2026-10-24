@@ -17,13 +17,16 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
+from litman.core import viewer
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
 from litman.core.config import CONFIG_FILENAME
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
 from litman.core.fs_identity import Anchor
+from litman.core.gui_registry import host_id
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
 from litman.core.search import search_notes
@@ -250,7 +253,6 @@ def get_capabilities(request: Request) -> dict[str, Any]:
     """
     import sys
 
-    from litman.core import viewer
     from litman.core.portable_link import link_mechanism
 
     return {
@@ -258,6 +260,62 @@ def get_capabilities(request: Request) -> dict[str, Any]:
         "platform": sys.platform,
         "open_files": viewer.open_files_mode(),
     }
+
+
+@router.post("/open-url")
+async def post_open_url(request: Request) -> dict[str, Any]:
+    """Open a web page in this machine's default browser, for a link clicked
+    in the ``lit gui --window`` app window.
+
+    That window runs on a browser profile of litman's own (see
+    ``commands/gui.py`` ``browser_profile_dir``), so a link opened inside it
+    has none of the user's sign-ins or extensions, and the page cannot send
+    it to their own browser by itself. Only the page in that window calls
+    this: ``gui.py`` marks the window's start address, and any refusal below
+    sends the page back to opening the link where it is.
+
+    Body JSON ``{"url": "<http(s) address>"}``. 400 for anything
+    ``viewer.web_address_problem`` refuses (another scheme, this computer
+    under any name — litman itself included); 409 when nobody would see a
+    browser (``viewer.open_files_mode``) or the opener failed. A foreign
+    page never gets this far: it is a POST, so ``local_guard`` checks its
+    Origin. Not a vault route, and allowed without one — the what's-new card
+    on the welcome page has a link too.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    url = payload.get("url") if isinstance(payload, dict) else None
+    if not isinstance(url, str):
+        raise HTTPException(
+            status_code=400, detail='Body must be a JSON object with a "url" string.'
+        )
+    problem = viewer.web_address_problem(url)
+    if problem is not None:
+        raise HTTPException(
+            status_code=400, detail=f"{problem} — opening it in this window instead"
+        )
+    host = host_id()
+    if viewer.open_files_mode() == "none":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{host} has no desktop to show your browser on — "
+            "opening it in this window instead",
+        )
+    try:
+        # The opener gets a moment to report failure; that wait holds a
+        # worker thread, not the event loop.
+        await run_in_threadpool(viewer.launch_url, url)
+    except viewer.OpenFailed as exc:
+        detail = (
+            f"No browser on {host} took the link — opening it in this window instead"
+            if exc.reason == "no-app"
+            else f"{host} could not start {exc.command} for the link — "
+            "opening it in this window instead"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+    return {"opened": True, "host": host}
 
 
 @router.get("/health")

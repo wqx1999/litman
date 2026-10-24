@@ -415,7 +415,8 @@ link and the command for adding the files yourself.
 
 🖥️ **Web UI:** the SI window opens by itself within a few seconds — in a
 background tab, the moment you switch to it. Click **Open website ↗** and the
-article's page opens in a new tab; download the SI there and drag the files
+article's page opens in a new tab (from the desktop app, in your default
+browser); download the SI there and drag the files
 from the browser's download bar or your Downloads folder onto the window. Each
 file is checked as it lands: `✓` when its name carries the paper's DOI or its
 first pages carry the paper's title, `?` when litman cannot tell (tick

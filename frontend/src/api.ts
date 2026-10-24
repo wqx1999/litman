@@ -785,6 +785,14 @@ export function openSiFile(
   return mutateJSON(`${siFileUrl(paperId, file)}/open`, 'POST')
 }
 
+/** Hand a web page to the default browser on the server's machine — a click on
+ * a link to another site in the --window app window (externalLinks.ts). An
+ * ApiError carries the server's one-line reason when it cannot; the caller
+ * then opens the link where it is. */
+export function openUrlOutside(url: string): Promise<{ opened: boolean; host: string }> {
+  return mutateJSON('/api/open-url', 'POST', { url })
+}
+
 /** Kick off the one-click update: the server spawns a detached helper and
  * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
  * (ApiError with the human hint as its message) when litman cannot update

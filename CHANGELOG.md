@@ -205,6 +205,14 @@ own entry. Read those before you upgrade, whatever the number says.
 - **Notices in the web UI go away on time.** A notice at the bottom stayed up
   while you kept working, moving through the list or typing a search.
 
+- **Links in the desktop app open in your own browser.** In the window the
+  desktop shortcut opens (`lit gui --window`) on Windows and Linux, a link to
+  another site — Open website in the SI window, a paper's DOI, a link in your
+  notes, in a PDF or in What's new, an agent's install link — opened in a
+  browser window with none of your sign-ins or extensions, so SI behind a
+  login could not be downloaded. These links now open in your default
+  browser. `lit gui` in a browser tab is unchanged.
+
 - **Accented letters in a paper id are no longer dropped.** The first author
   `Brüssow` gave an id `…_Brssow_…`, `Søren` gave `Sren`. Such letters are now
   written plainly — `Brussow`, `Soren`, `Gosswein`, `Lukasiewicz` — in the
