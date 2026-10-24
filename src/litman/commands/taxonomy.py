@@ -48,8 +48,10 @@ from litman.core.taxonomy import (
     USER_DICT_TO_METADATA_FIELD,
     USER_DICTS,
     add_taxonomy_values,
+    count_usage,
     find_referencing_papers,
     parse_taxonomy,
+    read_taxonomy_text,
     remove_taxonomy_value,
     rename_taxonomy_value,
     update_user_dict_section,
@@ -60,7 +62,7 @@ from litman.core.taxonomy import (
 from litman.core.taxonomy import (
     validate_user_dict as _validate_user_dict,
 )
-from litman.core.views import render_index
+from litman.core.views import load_index_papers, render_index
 from litman.exceptions import TaxonomyError
 
 console = Console()
@@ -68,8 +70,7 @@ console = Console()
 
 def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
     """Read TAXONOMY.md and return (raw_text, parsed_dict)."""
-    path = vault / "TAXONOMY.md"
-    text = path.read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     return text, parse_taxonomy(text)
 
 
@@ -98,13 +99,16 @@ def taxonomy_group() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _dict_row(name: str, values: list[str]) -> dict[str, Any]:
-    """One taxonomy dict as a JSON row — the table's four columns."""
+def _dict_row(
+    name: str, values: list[str], used_by: dict[str, int]
+) -> dict[str, Any]:
+    """One taxonomy dict as a JSON row — the table's four columns + usage."""
     return {
         "dict": name,
         "kind": "user" if name in USER_DICTS else "fixed",
         "count": len(values),
         "values": values,
+        "used_by": used_by,
     }
 
 
@@ -119,7 +123,11 @@ def taxonomy_list_cmd(
     library: Path | None,
     vault_name: str | None,
 ) -> None:
-    """List values in one dict (or all dicts when no name given)."""
+    """List values in one dict (or all dicts when no name given).
+
+    Each value is shown with the number of papers that use it (used_by in the
+    JSON rows).
+    """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     _, parsed = _load_taxonomy(vault)
 
@@ -129,20 +137,25 @@ def taxonomy_list_cmd(
             f"Known dicts: {', '.join(ALL_DICTS)}."
         )
 
+    # Counted over the whole library: INDEX projections when fresh (every
+    # dict's field is projected), one metadata scan otherwise.
+    papers = load_index_papers(vault) or list_papers(vault)
+    names = [dict_name] if dict_name is not None else list(ALL_DICTS)
+    used_by = {n: count_usage(papers, n, parsed.get(n, [])) for n in names}
+
     if output_format == "json":
         # One row shape whether a dict was named or not, so an agent reads
         # both with the same parser (`.[0].values` after naming one).
-        names = [dict_name] if dict_name is not None else list(ALL_DICTS)
         click.echo(
             json.dumps(
-                [_dict_row(n, parsed.get(n, [])) for n in names],
+                [_dict_row(n, parsed.get(n, []), used_by[n]) for n in names],
                 ensure_ascii=False,
             )
         )
         return
 
     if dict_name is not None:
-        _print_single_dict(dict_name, parsed.get(dict_name, []))
+        _print_single_dict(dict_name, parsed.get(dict_name, []), used_by[dict_name])
         return
 
     table = Table(title="Taxonomy", show_header=True, header_style="bold")
@@ -153,19 +166,26 @@ def taxonomy_list_cmd(
     for name in ALL_DICTS:
         kind = "user" if name in USER_DICTS else "fixed"
         values = parsed.get(name, [])
-        rendered = ", ".join(values) if values else "[dim]—[/]"
+        rendered = (
+            ", ".join(f"{escape(v)}·{used_by[name][v]}" for v in values)
+            if values
+            else "[dim]—[/]"
+        )
         table.add_row(name, kind, str(len(values)), rendered)
     console.print(table)
 
 
-def _print_single_dict(name: str, values: list[str]) -> None:
+def _print_single_dict(
+    name: str, values: list[str], used_by: dict[str, int]
+) -> None:
     kind = "user-extensible" if name in USER_DICTS else "fixed enum"
     console.print(f"[bold]{escape(name)}[/] [dim]({kind})[/]")
     if not values:
         console.print("  [dim](empty)[/]")
         return
+    width = max(len(v) for v in values)
     for v in values:
-        console.print(f"  - {escape(v)}")
+        console.print(f"  - {escape(f'{v:<{width}}')}  {used_by[v]}")
 
 
 # ---------------------------------------------------------------------------
@@ -176,21 +196,30 @@ def _print_single_dict(name: str, values: list[str]) -> None:
 @taxonomy_group.command("add")
 @click.argument("dict_name")
 @click.argument("values", nargs=-1, required=True)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Register the values even if one looks like a value already in the dict.",
+)
 @library_option
 @vault_option
 def taxonomy_add_cmd(
     dict_name: str,
     values: tuple[str, ...],
+    force: bool,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
     """Register new value(s) in a user dict.
 
-    Already-present values are silent no-ops. The dict body is rewritten
-    in sorted order regardless of the input order.
+    Already-present values are silent no-ops. A value that looks like one
+    already in the dict (or like another value given here) is refused and
+    nothing is registered; --force registers it anyway. The dict body is
+    rewritten in sorted order regardless of the input order.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
-    added, skipped = add_taxonomy_values(vault, dict_name, values)
+    added, skipped = add_taxonomy_values(vault, dict_name, values, force=force)
 
     if not added:
         console.print(

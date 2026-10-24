@@ -114,7 +114,7 @@ yours is older; `lit hello` tells you every time you ask.
 Two steps, in order, while the `lit` command still exists:
 
 ```bash
-lit uninstall              # bundled skills, desktop shortcut, shell completion, vault registry, agent preferences, app-window browser profile
+lit uninstall              # bundled skills, desktop shortcut, shell completion, litman's settings files, app-window browser profile
 uv tool uninstall litman   # or: pipx uninstall litman
 ```
 

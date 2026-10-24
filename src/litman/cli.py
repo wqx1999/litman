@@ -22,8 +22,11 @@ from typing import Any, ClassVar
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from litman import __version__
+from litman.core.confirm import is_interactive
+from litman.core.undecodable import text_refusal
 from litman.exceptions import LitmanError
 
 console = Console()
@@ -99,8 +102,12 @@ class LitGroup(click.Group):
     # answer — it stays exempt only from the interactive drift prompt above.
     # `self-update` skips for the opposite reason: the running process still
     # carries the pre-upgrade version, so right after a successful upgrade the
-    # tip would advertise the very release it just installed.
-    _NUDGE_SKIP: frozenset[str | None] = frozenset({"help", "self-update", None})
+    # tip would advertise the very release it just installed. `uninstall` skips
+    # because the update tip's refresh would write update-check.json straight
+    # back into the config dir the command just emptied.
+    _NUDGE_SKIP: frozenset[str | None] = frozenset(
+        {"help", "self-update", "uninstall", None}
+    )
 
     # Commands that report an available update every single time, ignoring the
     # once-a-day cap that keeps the tip from trailing every command in a
@@ -379,6 +386,13 @@ class LitGroup(click.Group):
         * **non-TTY** (agent / automation): report-only to stderr, NO mutation
           (spec §6 — even lossless A-class regen does not auto-mutate without
           consent in automation). The user/agent runs an explicit fix.
+        * **nothing at all** while ``.litman-staging/`` holds an entry: the
+          vault-open recovery that runs after this hook settles it and says
+          so, and a rename caught mid-move looks exactly like a deletion.
+        * **report-only at a TTY too** when a folder INDEX does not know is on
+          disk: a vanished id beside an un-indexed folder may be a paper
+          renamed, not deleted, and tagging its links ``(deleted)`` would mark
+          live links dead.
         * **TTY, > 5 vanished** (bulk manual delete / restored backup): drop all
           dead ids from INDEX once (metadata-free) and print ONE line deferring
           all wikilink annotation to ``lit health-check``; do NOT per-id
@@ -387,6 +401,7 @@ class LitGroup(click.Group):
           wikilink annotate (``[[id]] (deleted)``, grep-narrowed).
         """
         from litman.commands._drift import _default_tty_probe
+        from litman.core.atomic import _STAGING_DIRNAME, _staging_is_empty
         from litman.core.correctors import annotate, regen_index_drop_ids
 
         vanished = sorted(
@@ -401,8 +416,15 @@ class LitGroup(click.Group):
         if not vanished:
             return
 
-        if not _default_tty_probe():
-            # Automation: report-only, never mutate without consent.
+        staging = vault / _STAGING_DIRNAME
+        if staging.is_dir() and not _staging_is_empty(staging):
+            return
+        if not _default_tty_probe() or any(
+            i.category == "index_vs_disk" and i.severity == "warning"
+            for i in issues
+        ):
+            # Report-only, never mutate: without consent (automation), or
+            # when a vanished id may not be a deleted paper (docstring).
             err = Console(stderr=True)
             joined = ", ".join(vanished)
             err.print(
@@ -769,13 +791,18 @@ def _force_utf8_output() -> None:
     the terminal's. Reconfiguring both streams to UTF-8 here fixes both paths;
     the already-constructed ``Console`` objects read ``sys.stdout.encoding``
     lazily at print time, so doing this once before ``cli()`` is enough.
-    POSIX hosts are UTF-8 by default and unaffected.
+
+    The error handler is named because changing the encoding alone resets
+    it to strict. ``backslashreplace`` (what Python gives stderr anyway)
+    prints a character the stream cannot encode — a lone surrogate, which is
+    what a POSIX file name's undecodable bytes become — as ``\\udce9``
+    instead of raising, and keeps stdout valid UTF-8 for whatever reads it.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             try:
-                reconfigure(encoding="utf-8")
+                reconfigure(encoding="utf-8", errors="backslashreplace")
             except (ValueError, OSError):
                 pass
 
@@ -840,9 +867,7 @@ def _launched_without_console() -> bool:
     shows the ``console.print`` feedback, so no splash there. ``gui.py`` reads
     this to decide whether a ``--window`` launch should show a splash.
     """
-    return _LAUNCHED_HEADLESS or not (
-        sys.__stdout__ is not None and sys.__stdout__.isatty()
-    )
+    return _LAUNCHED_HEADLESS or not is_interactive(sys.__stdout__)
 
 
 def main() -> None:
@@ -852,7 +877,17 @@ def main() -> None:
     try:
         cli()
     except LitmanError as e:
-        console.print(f"[bold red]error:[/] {e}")
+        console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
+        sys.exit(1)
+    except UnicodeEncodeError as e:
+        # Text holding a byte that is not UTF-8 (a value typed on the command
+        # line, a --from-llm-json field) reached a writer, which raises before
+        # writing it (core/yaml_pool); the paths litman records are refused
+        # earlier still, with their own message.
+        if e.reason != "surrogates not allowed" or not isinstance(e.object, str):
+            raise
+        message = text_refusal(e.object, e.start)
+        console.print(f"[bold red]error:[/] {escape(message)}", soft_wrap=True)
         sys.exit(1)
 
 

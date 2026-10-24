@@ -7,6 +7,7 @@ code, and ``--fix`` round-trip.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import sys
@@ -30,6 +31,7 @@ from litman.core.checks import (
     check_code_clone_integrity,
     check_dangling_refs,
     check_dangling_wikilinks,
+    check_dirty_metadata,
     check_inbox_staleness,
     check_discussion_scaffold,
     check_paper_dir_validity,
@@ -40,11 +42,15 @@ from litman.core.checks import (
     check_skill_drift,
     check_stale_staging,
     check_taxonomy_drift,
+    check_taxonomy_singletons,
+    check_taxonomy_similar,
+    check_taxonomy_unused,
     check_trash_health,
     run_all_checks,
 )
 from litman.core.document import list_papers
-from litman.core.ripple import drop_dangling_relations
+from litman.core.id import derive_id
+from litman.core.ripple import clean_dirty_metadata, drop_dangling_relations
 from litman.core.library import create_vault
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.portable_link import is_portable_link
@@ -362,7 +368,7 @@ def test_paper_dir_validity_dir_vs_metadata_mismatch(vault: Path) -> None:
     issues = check_paper_dir_validity(vault, list_papers(vault))
     mismatch = [i for i in issues if "metadata id" in i.message]
     assert len(mismatch) == 1
-    assert mismatch[0].category == "paper_dir_validity"
+    assert mismatch[0].category == "unfinished_rename"
     assert mismatch[0].severity == "error"
     assert "2024_Foo_Bar" in mismatch[0].message
     assert "2024_Foo_Baz" in mismatch[0].message
@@ -445,6 +451,422 @@ def test_paper_dir_validity_ignores_authored_markdown(vault: Path) -> None:
     assert not (paper_dir / "notes.md").exists()
     assert not (paper_dir / "discussion.md").exists()
     assert check_paper_dir_validity(vault, list_papers(vault)) == []
+
+
+# --- unfinished_rename: a folder whose name lags its metadata id -----------
+
+
+def _half_renamed(vault: Path) -> None:
+    """A clean `lit rename`, then its folder moved back by hand — the state an
+    older `lit rename` left when the folder could not be renamed."""
+    from litman.core.correctors import regen
+
+    _write_paper(
+        vault, "2024_Foo_Bar", related=["2024_Other"],
+        notes="# Foo Bar\n\nSee [[2024_Foo_Bar]].\n",
+    )
+    _write_paper(
+        vault, "2024_Other", related=["2024_Foo_Bar"],
+        notes="Compare with [[2024_Foo_Bar]].\n",
+    )
+    regen(vault)
+    result = CliRunner().invoke(
+        cli, ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    os.rename(vault / "papers" / "2024_Foo_Baz", vault / "papers" / "2024_Foo_Bar")
+
+
+def test_fix_renames_a_half_renamed_folder_and_the_library_agrees(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding's own hint, run as written, leaves nothing to report."""
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    _half_renamed(vault)
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, [])
+        if "metadata id" in i.message
+    ]
+    assert issue.category == "unfinished_rename"
+    assert issue.severity == "error"
+    assert issue.paper_id == "2024_Foo_Bar"
+    assert issue.message == (
+        "directory name '2024_Foo_Bar' != metadata id '2024_Foo_Baz' "
+        "(likely a half-finished rename)"
+    )
+    assert issue.hint == (
+        "`lit health-check --fix` renames the folder to papers/2024_Foo_Baz/"
+    )
+    command = shlex.split((issue.hint or "").split("`")[1])
+    assert command[0] == "lit"
+
+    fixed = CliRunner().invoke(cli, [*command[1:], "--library", str(vault)])
+
+    assert fixed.exit_code == 0, fixed.output
+    assert "unfinished_rename: cleaned 1 item" in fixed.output
+    again = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert again.exit_code == 0, again.output
+    assert "All checks passed" in again.output
+
+    folder = vault / "papers" / "2024_Foo_Baz"
+    assert not (vault / "papers" / "2024_Foo_Bar").exists()
+    assert (folder / "paper.pdf").is_file()
+    assert _meta(vault, "2024_Foo_Baz")["id"] == "2024_Foo_Baz"
+    assert _meta(vault, "2024_Other")["related"] == ["2024_Foo_Baz"]
+    assert "[[2024_Foo_Baz]]" in (
+        vault / "papers" / "2024_Other" / "notes.md"
+    ).read_text(encoding="utf-8")
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert sorted(p["id"] for p in index["papers"]) == ["2024_Foo_Baz", "2024_Other"]
+    link = vault / "views" / "by-status" / "deep-read" / "2024_Foo_Baz"
+    assert is_portable_link(link)
+    assert link.resolve() == folder.resolve()
+    assert list((vault / ".litman-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("case", "hint"),
+    [
+        (
+            "target exists",
+            "papers/2024_Foo_Baz/ exists too: compare the two folders and keep "
+            "one by hand",
+        ),
+        (
+            "case only",
+            "the two differ only in case: rename the folder to "
+            "papers/2024_Foo_Baz/ by hand",
+        ),
+        (
+            "invalid id",
+            "'2024 Foo Baz' is not a valid paper id: set id in metadata.yaml "
+            "back to '2024_Foo_Bar' by hand",
+        ),
+        (
+            "case-fold clash",
+            "papers/2024_foo_baz/ differs from '2024_Foo_Baz' only in case: keep "
+            "one of the two by hand",
+        ),
+    ],
+)
+def test_a_mismatch_fix_cannot_settle_stays_for_a_person(
+    vault: Path, case: str, hint: str
+) -> None:
+    """Same verdict on every platform: where the filesystem ignores case,
+    papers/2024_Foo_Baz "exists" in the last two cases as well, and the case
+    questions are asked before the disk is."""
+    from litman.core.checks import finish_unfinished_renames
+
+    folder = "2024_foo_baz" if case == "case only" else "2024_Foo_Bar"
+    meta_id = "2024 Foo Baz" if case == "invalid id" else "2024_Foo_Baz"
+    _write_paper(vault, folder, override_id=meta_id)
+    if case == "target exists":
+        _write_paper(vault, "2024_Foo_Baz")
+    if case == "case-fold clash":
+        _write_paper(vault, "2024_foo_baz")
+
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, [])
+        if "metadata id" in i.message
+    ]
+    assert issue.category == "paper_dir_validity"
+    assert issue.severity == "error"
+    assert issue.paper_id == folder
+    assert issue.hint == hint
+
+    def tree() -> list[tuple[str, bytes]]:
+        return [
+            (p.relative_to(vault).as_posix(), p.read_bytes())
+            for p in sorted((vault / "papers").rglob("*"))
+            if p.is_file()
+        ]
+
+    before = tree()
+    # The mover reads the disk itself and asks the same question.
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert tree() == before
+
+
+def test_fix_whose_move_fails_leaves_the_folder_and_says_why(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import atomic as atomic_mod
+
+    _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
+
+    def refuse(src: Path, dst: Path) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(atomic_mod, "_rename_dir", refuse)
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "left papers/2024_Foo_Bar/: Access is denied; "
+        "close any file open from it and run --fix again"
+    ) in " ".join(result.output.split())
+    assert (vault / "papers" / "2024_Foo_Bar" / "paper.pdf").is_file()
+    assert not (vault / "papers" / "2024_Foo_Baz").exists()
+    assert list((vault / ".litman-staging").iterdir()) == []
+
+
+def test_fix_renames_the_folder_before_any_arm_looks_a_paper_up_by_id(
+    vault: Path,
+) -> None:
+    """Until the folder carries its metadata id, an arm that finds a paper by
+    id sees it as missing: the discussion log the scaffold arm would create
+    would never be created, and a later run would still report it. Renaming
+    first lets every arm act on the moved folder in the same pass."""
+    from litman.commands.health import _apply_fixes
+
+    _write_paper(
+        vault, "2024_Foo_Bar", override_id="2024_Foo_Baz",
+        title="Foo\n   bar", no_discussion=True,
+    )
+    issues = run_all_checks(vault, list_papers(vault))
+    assert {"unfinished_rename", "discussion_scaffold", "dirty_metadata"} <= {
+        i.category for i in issues
+    }
+
+    counts = _apply_fixes(vault, issues)
+
+    assert counts["unfinished_rename"] == 1
+    assert sorted(p.name for p in (vault / "papers").iterdir()) == ["2024_Foo_Baz"]
+    folder = vault / "papers" / "2024_Foo_Baz"
+    assert (folder / "paper.pdf").is_file()
+    assert (folder / "discussion.md").is_file()
+    assert _meta(vault, "2024_Foo_Baz")["title"] == "Foo bar"
+    after = {i.category for i in run_all_checks(vault, list_papers(vault))}
+    assert not after & {"unfinished_rename", "discussion_scaffold", "dirty_metadata"}
+
+
+def test_fix_renames_the_folder_before_the_derived_rebuild(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Until the folder carries its metadata id, the rebuild links views and
+    project hubs to a folder that is not there — on Windows that fails and
+    reads as "this filesystem cannot hold folder links". So the folder is
+    renamed first, and the library is rebuilt once."""
+    from litman.commands import health as health_mod
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    _half_renamed(vault)
+    real_regen = health_mod.regen
+    calls: list[bool] = []
+
+    def regen_after_the_rename(vault_arg: Path, issues: Any = None) -> Any:
+        calls.append((vault / "papers" / "2024_Foo_Baz").is_dir())
+        return real_regen(vault_arg, issues)
+
+    monkeypatch.setattr(health_mod, "regen", regen_after_the_rename)
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [True]
+    again = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    assert again.exit_code == 0, again.output
+    assert "All checks passed" in again.output
+
+
+def _derived_files_name_the_folder(vault: Path) -> None:
+    """Half-renamed with INDEX.json and views/ still built for the folder name
+    — an id edited by hand, or a rename that stopped before its rebuild."""
+    from litman.core.correctors import regen
+
+    _write_paper(vault, "2024_Foo_Bar")
+    regen(vault)
+    _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
+
+
+def test_a_moved_folder_is_rebuilt_even_with_no_derived_finding(
+    vault: Path,
+) -> None:
+    """The views still point at the old folder name after the move, whether or
+    not the report happened to name them."""
+    from litman.commands.health import _apply_fixes
+
+    _derived_files_name_the_folder(vault)
+    only_rename = [
+        i for i in run_all_checks(vault, list_papers(vault))
+        if i.category == "unfinished_rename"
+    ]
+
+    counts = _apply_fixes(vault, only_rename)
+
+    assert counts["unfinished_rename"] == 1
+    link = vault / "views" / "by-status" / "deep-read" / "2024_Foo_Baz"
+    assert is_portable_link(link)
+    assert link.resolve() == (vault / "papers" / "2024_Foo_Baz").resolve()
+    after = {i.category for i in run_all_checks(vault, list_papers(vault))}
+    assert not after & {"unfinished_rename", "index_vs_disk", "views_vs_metadata"}
+
+
+def _mismatch(vault: Path, folder: str) -> Any:
+    (issue,) = [
+        i for i in check_paper_dir_validity(vault, list_papers(vault))
+        if i.paper_id == folder and "metadata id" in i.message
+    ]
+    return issue
+
+
+@pytest.mark.parametrize(
+    ("kind", "where"),
+    [
+        ("relation", "2021_C_x's related"),
+        ("wikilink", "papers/2021_C_x/notes.md"),
+        ("repo", "codes/myrepo/repo-meta.yaml"),
+    ],
+)
+def test_a_folder_the_library_still_names_is_left_for_a_person(
+    vault: Path, kind: str, where: str
+) -> None:
+    """An id edited by hand, not a rename that stopped halfway: moving the
+    folder would leave the link that still names it dangling."""
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(
+        vault, "2020_A_x", override_id="2020_B_x",
+        code_clones=["myrepo"] if kind == "repo" else [],
+    )
+    _write_paper(
+        vault, "2021_C_x",
+        related=["2020_A_x"] if kind == "relation" else [],
+        notes="See [[2020_A_x]].\n" if kind == "wikilink" else None,
+    )
+    if kind == "repo":
+        _write_repo_meta(vault, "myrepo", ["2020_A_x"])
+
+    issue = _mismatch(vault, "2020_A_x")
+
+    assert issue.category == "paper_dir_validity"
+    assert issue.hint == (
+        f"{where} still names '2020_A_x': set id in metadata.yaml back to "
+        "'2020_A_x' by hand, then `lit rename 2020_A_x 2020_B_x`"
+    )
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert (vault / "papers" / "2020_A_x").is_dir()
+
+
+def test_fix_keeps_a_link_to_a_folder_whose_id_was_edited_by_hand(
+    vault: Path,
+) -> None:
+    """Renamed, A's folder would leave C's edge to it dangling, and the same
+    --fix drops dangling edges (D's is a real one)."""
+    _write_paper(vault, "2020_A_x", override_id="2020_B_x", related=["2021_C_x"])
+    _write_paper(vault, "2021_C_x", related=["2020_A_x"])
+    _write_paper(vault, "2022_D_x", related=["2019_Ghost_x"])
+
+    for _ in range(2):
+        CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert _meta(vault, "2021_C_x")["related"] == ["2020_A_x"]
+    assert _meta(vault, "2022_D_x")["related"] == []
+    assert sorted(p.name for p in (vault / "papers").iterdir()) == [
+        "2020_A_x", "2021_C_x", "2022_D_x"
+    ]
+    assert _mismatch(vault, "2020_A_x").category == "paper_dir_validity"
+
+
+def test_a_folder_a_leftover_commit_moves_is_left_to_that_commit(
+    vault: Path,
+) -> None:
+    """A rename killed after its commit point: the folder already carries the
+    new name, its metadata still the old id, and the commit's own recovery is
+    what finishes it. --fix must not move the folder back."""
+    from litman.core.atomic import StagedWrite
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(vault, "2020_Old_A")
+    stage = StagedWrite(vault, op_id="rename-2020_Old_A-to-2024_New_C")
+    stage.__enter__()
+    stage.move_dir("papers/2020_Old_A", "papers/2024_New_C")
+    stage.write_text("papers/2024_New_C/metadata.yaml", "id: 2024_New_C\n")
+    stage._fsync_staged_files()
+    stage._write_manifest()
+    stage._move_dirs()
+    stage._write_sentinel()
+
+    issue = _mismatch(vault, "2024_New_C")
+
+    assert issue.category == "paper_dir_validity"
+    assert issue.hint == (
+        ".litman-staging/rename-2020_Old_A-to-2024_New_C/ still moves this "
+        "folder: settle that finding first"
+    )
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert (vault / "papers" / "2024_New_C").is_dir()
+    assert not (vault / "papers" / "2020_Old_A").exists()
+
+
+def test_a_fix_rename_whose_commit_is_still_kept_is_left_with_the_reason(
+    vault: Path,
+) -> None:
+    """A kept op under the id the --fix rename would use: no traceback, the
+    folder is left and the reason named."""
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(vault, "2024_Foo_Bar", override_id="2024_Foo_Baz")
+    op_dir = vault / ".litman-staging" / "fix-rename-2024_Foo_Bar-to-2024_Foo_Baz"
+    op_dir.mkdir()
+    (op_dir / "MANIFEST.json").write_text(
+        json.dumps({"op_id": op_dir.name, "files": ["lost.md"]}), encoding="utf-8"
+    )
+    (op_dir / "COMMITTED").write_bytes(b"")
+
+    assert finish_unfinished_renames(vault) == (
+        0,
+        [(
+            "2024_Foo_Bar",
+            "2024_Foo_Baz",
+            "its earlier --fix is kept in .litman-staging/; settle that finding first",
+        )],
+    )
+    assert (vault / "papers" / "2024_Foo_Bar").is_dir()
+
+
+def test_a_half_renamed_folder_reads_no_other_metadata_without_a_twin(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whether another folder claims the id is counted from the paper list;
+    the folders are read only to name one."""
+    from litman.core import checks as checks_mod
+
+    _write_paper(vault, "2020_A_x", override_id="2020_B_x")
+    _write_paper(vault, "2021_C_x")
+    _write_paper(vault, "2022_D_x")
+
+    def no_scan(paper_dir: Path) -> object:
+        raise AssertionError(f"read {paper_dir} with no twin to name")
+
+    monkeypatch.setattr(checks_mod, "_declared_id", no_scan)
+
+    assert _mismatch(vault, "2020_A_x").category == "unfinished_rename"
+
+
+def test_two_folders_claiming_one_id_are_both_left_for_a_person(
+    vault: Path,
+) -> None:
+    from litman.core.checks import finish_unfinished_renames
+
+    _write_paper(vault, "2020_A_x", override_id="2020_B_x")
+    _write_paper(vault, "2020_C_x", override_id="2020_B_x")
+
+    assert _mismatch(vault, "2020_A_x").hint == (
+        "papers/2020_A_x/ and papers/2020_C_x/ both claim '2020_B_x': decide "
+        "by hand which one keeps it"
+    )
+    assert _mismatch(vault, "2020_C_x").hint == (
+        "papers/2020_C_x/ and papers/2020_A_x/ both claim '2020_B_x': decide "
+        "by hand which one keeps it"
+    )
+    assert finish_unfinished_renames(vault) == (0, [])
+    assert sorted(p.name for p in (vault / "papers").iterdir()) == [
+        "2020_A_x", "2020_C_x"
+    ]
 
 
 # --- discussion_scaffold -----------------------------------------------------
@@ -1615,6 +2037,248 @@ def test_taxonomy_drift_missing_taxonomy_file(vault: Path) -> None:
     assert "TAXONOMY.md" in issues[0].message
 
 
+# --- taxonomy_similar / taxonomy_unused / taxonomy_singletons --------------
+
+_VOCAB_CATEGORIES = ("taxonomy_similar", "taxonomy_unused", "taxonomy_singletons")
+
+# Twelve methods with nothing alike between any two of them.
+_METHODS = [
+    "BERT", "GNN", "MCTS", "MD", "MPNN", "RL",
+    "VAE", "alphafold", "diffusion", "docking", "random-forest", "transformer",
+]
+
+
+def _vocab_library(vault: Path, *, methods_once: int = 10) -> None:
+    """A library with one look-alike pair, one unused value, and a methods
+    dict of 12 values of which ``methods_once`` are used by one paper each
+    (the rest by two). Its one project has no papers, which is normal for a
+    project and must not count as unused vocabulary."""
+    from litman.core.project_link import add_project
+    from litman.core.taxonomy import add_taxonomy_values
+
+    project_dir = vault.parent / "pepforge"
+    project_dir.mkdir()
+    add_project(vault, "pepforge", project_dir)
+    add_taxonomy_values(vault, "topics", ("peptide", "peptidedrug", "spps"), force=True)
+    add_taxonomy_values(vault, "methods", tuple(_METHODS))
+    once, twice = _METHODS[:methods_once], _METHODS[methods_once:]
+    _write_paper(vault, "2024_A_a", topics=["peptide"], methods=once[0::2] + twice)
+    _write_paper(vault, "2024_B_b", topics=["peptide"], methods=once[1::2] + twice)
+    _write_paper(vault, "2024_C_c", topics=["peptidedrug"])
+
+
+def _by_category(issues: list[Any]) -> dict[str, list[Any]]:
+    out: dict[str, list[Any]] = {c: [] for c in _VOCAB_CATEGORIES}
+    for issue in issues:
+        if issue.category in out:
+            out[issue.category].append(issue)
+    return out
+
+
+def test_vocabulary_checks_report_each_finding_once(vault: Path) -> None:
+    _vocab_library(vault)
+
+    found = _by_category(run_all_checks(vault, list_papers(vault)))
+
+    similar, unused, singletons = (found[c] for c in _VOCAB_CATEGORIES)
+    assert len(similar) == 1
+    assert similar[0].message == "topics: 'peptidedrug' looks like 'peptide' (prefix)"
+    # The less-used value folds into the more-used one.
+    assert similar[0].hint == "merge with `lit taxonomy merge topics peptidedrug --into peptide`"
+    assert len(unused) == 1
+    assert unused[0].message == "topics: 'spps' is used by no paper"
+    assert unused[0].hint == "remove with `lit taxonomy rm topics spps`"
+    assert len(singletons) == 1
+    assert singletons[0].message == "methods: 10 of 12 values are used by one paper"
+    assert "`lit taxonomy list methods`" in (singletons[0].hint or "")
+    for issue in similar + unused + singletons:
+        assert issue.severity == "info"
+        assert issue.paper_id is None
+        assert len(issue.hint or "") <= 120
+
+
+def test_similar_keeps_the_value_more_papers_use(vault: Path) -> None:
+    """Usage decides before the alphabet: here the kept value sorts last."""
+    from litman.core.taxonomy import add_taxonomy_values
+
+    add_taxonomy_values(vault, "topics", ("alpha-model", "alpha-models"), force=True)
+    papers = [
+        {"id": "2024_A_a", "topics": ["alpha-model"]},
+        {"id": "2024_B_b", "topics": ["alpha-models"]},
+        {"id": "2024_C_c", "topics": ["alpha-models"]},
+    ]
+
+    issues = check_taxonomy_similar(vault, papers)
+
+    assert [(i.message, i.hint) for i in issues] == [
+        (
+            "topics: 'alpha-model' looks like 'alpha-models' (same after normalisation)",
+            "merge with `lit taxonomy merge topics alpha-model --into alpha-models`",
+        )
+    ]
+
+
+def test_similar_keeps_the_alphabetically_first_value_on_a_tie(vault: Path) -> None:
+    from litman.core.taxonomy import add_taxonomy_values
+
+    add_taxonomy_values(vault, "topics", ("language model", "language-models"), force=True)
+
+    issues = check_taxonomy_similar(vault, [])
+
+    assert [i.hint for i in issues] == [
+        "merge with `lit taxonomy merge topics language-models --into 'language model'`"
+    ]
+
+
+def test_singletons_need_ten_values_used_once(vault: Path) -> None:
+    _vocab_library(vault, methods_once=9)
+
+    assert check_taxonomy_singletons(vault, list_papers(vault)) == []
+
+
+@pytest.mark.parametrize(
+    ("once", "size", "fires"), [(10, 33, True), (10, 34, False), (12, 40, True)]
+)
+def test_singletons_need_thirty_percent_of_the_dict(
+    vault: Path, once: int, size: int, fires: bool
+) -> None:
+    """10 of 33 is 30.3 %, 10 of 34 is 29.4 %, and exactly 30 % (12 of 40) fires."""
+    from litman.core.taxonomy import add_taxonomy_values
+
+    values = [f"value {chr(ord('a') + i // 26)}{chr(ord('a') + i % 26)}" for i in range(size)]
+    add_taxonomy_values(vault, "data", tuple(values), force=True)
+    papers = [{"id": f"2024_P_{i}", "data": [v]} for i, v in enumerate(values[:once])]
+
+    issues = check_taxonomy_singletons(vault, papers)
+
+    assert [i.message for i in issues] == (
+        [f"data: {once} of {size} values are used by one paper"] if fires else []
+    )
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreadable"])
+def test_vocabulary_checks_stay_silent_without_a_taxonomy(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    """taxonomy_drift owns a missing or unreadable TAXONOMY.md."""
+    _vocab_library(vault)
+    papers = list_papers(vault)
+    # Control: the same library reports all three while TAXONOMY.md reads.
+    assert all(_by_category(run_all_checks(vault, papers)).values())
+    if damage == "missing":
+        unlock_truth_file(vault / "TAXONOMY.md")
+        (vault / "TAXONOMY.md").unlink()
+    else:
+        real_read_text = Path.read_text
+
+        def _refuse(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self.name == "TAXONOMY.md":
+                raise PermissionError("simulated unreadable TAXONOMY.md")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _refuse)
+
+    issues = run_all_checks(vault, papers)
+
+    assert _by_category(issues) == {c: [] for c in _VOCAB_CATEGORIES}
+    assert [i.category for i in issues if i.category == "taxonomy_drift"]
+    for check in (check_taxonomy_similar, check_taxonomy_unused, check_taxonomy_singletons):
+        assert check(vault, papers) == []
+
+
+def _append_latin1_line(vault: Path) -> int:
+    """End TAXONOMY.md with a line an editor set to Latin-1 wrote: its é is
+    the single byte 0xE9. Returns that line's number."""
+    path = vault / "TAXONOMY.md"
+    data = path.read_bytes()
+    unlock_truth_file(path)
+    path.write_bytes(data + b"- caf\xe9\n")
+    locking.lock_truth_file(path)
+    return data.count(b"\n") + 1
+
+
+def test_a_taxonomy_that_is_not_utf8_is_one_error_naming_its_line(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drift check reports it; the checks that read the same file stay
+    silent; --fix leaves the file as it is."""
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core.correctors import regen
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    _vocab_library(vault)
+    regen(vault)
+    papers = list_papers(vault)
+    # Control: the same library reports all three while TAXONOMY.md reads.
+    assert all(_by_category(run_all_checks(vault, papers)).values())
+    line = _append_latin1_line(vault)
+    data = (vault / "TAXONOMY.md").read_bytes()
+
+    issues = run_all_checks(vault, papers)
+
+    message = (
+        f"TAXONOMY.md is present but unreadable (line {line} is not UTF-8): "
+        "taxonomy drift cannot be checked"
+    )
+    # One finding from the five checks that read TAXONOMY.md: the vocabulary
+    # checks and project_config_consistency leave it to taxonomy_drift.
+    readers = {"taxonomy_drift", *_VOCAB_CATEGORIES, "project_config_consistency"}
+    assert [
+        (i.category, i.severity, i.message, i.hint) for i in issues if i.category in readers
+    ] == [("taxonomy_drift", "error", message, "re-save TAXONOMY.md as UTF-8, then re-run")]
+
+    for args in (["health-check"], ["health-check", "--fix"]):
+        result = CliRunner().invoke(cli, [*args, "--library", str(vault)])
+
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), result.exception
+        assert message in result.output
+        assert "Look-alike vocabulary values" not in result.output
+        assert (vault / "TAXONOMY.md").read_bytes() == data
+
+
+def test_vocabulary_findings_survive_fix_and_do_not_gate_the_exit_code(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core.correctors import regen
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    _vocab_library(vault)
+    regen(vault)
+
+    def snapshot() -> dict[str, bytes]:
+        return {
+            str(p.relative_to(vault)): p.read_bytes()
+            for p in sorted(vault.rglob("*"))
+            if p.is_file() and ".litman-staging" not in p.parts
+        }
+
+    before = snapshot()
+    runner = CliRunner()
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert fix.exit_code == 0, fix.output
+    assert snapshot() == before
+    for header in (
+        "Look-alike vocabulary values (topics / methods / data) (1 issue)",
+        "Vocabulary values no paper uses (1 issue)",
+        "Vocabularies mostly made of values used by one paper (1 issue)",
+    ):
+        assert header in fix.output
+    assert "lit taxonomy merge topics peptidedrug --into peptide" in fix.output
+    assert "lit taxonomy rm topics spps" in fix.output
+    assert "(fixable via --fix)" not in fix.output
+    assert "Auto-fix:" not in fix.output
+
+
 # --- inbox_staleness --------------------------------------------------------
 
 
@@ -2381,6 +3045,30 @@ def test_dangling_wikilinks_unreadable_notes_is_a_finding(
     assert unreadable[0].severity == "warning"
 
 
+def test_a_notes_file_that_is_not_utf8_is_reported_not_a_crash(vault: Path) -> None:
+    """A Latin-1 byte in notes.md is a decode error, not an OSError: it must
+    land in the same "could not read" warning instead of a traceback."""
+    pid = "2024_Foo_Bar"
+    _write_paper(vault, pid)
+    (vault / "papers" / pid / "notes.md").write_bytes(b"caf\xe9 latin-1 line\n")
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+    assert result.exit_code == 1, result.output
+    notes_rel = str(Path("papers") / pid / "notes.md")
+    lines = [
+        line
+        for line in result.output.splitlines()
+        if "could not read notes file" in line
+    ]
+    assert len(lines) == 1, result.output
+    assert "warning" in lines[0]
+    assert notes_rel in lines[0]
+    assert "UnicodeDecodeError" in lines[0]
+
+
 # ===========================================================================
 # Orchestration + autofix
 # ===========================================================================
@@ -2432,6 +3120,10 @@ def test_auto_fixable_categories_constant() -> None:
             "skill_drift",
             "retired_priority",
             "dangling_refs",
+            "supplementary_missing",
+            "supplementary_unrecorded",
+            "dirty_metadata",
+            "unfinished_rename",
         }
     )
 
@@ -3301,3 +3993,861 @@ def test_kept_hub_folders_are_never_auto_fixed(vault: Path) -> None:
         "Folders kept out of project hubs"
     )[1].split("\n")[0]
     assert check_trash_health(vault, list_papers(vault))
+
+
+# ===========================================================================
+# supplementary — SI records ↔ papers/<id>/supplementary/ (ledger #13)
+# ===========================================================================
+
+# SI named ci9b00237_* carries this DOI's number, so it verifies by name.
+_SI_DOI = "10.1021/acs.jcim.9b00237"
+_SI_PAPER = "2019_Yang_Si"
+
+
+def _si_paper(vault: Path, tmp_path: Path, n: int = 2) -> Path:
+    """A paper with ``n`` recorded SI files (si-01.csv …); returns its folder."""
+    from litman.core.supplementary import SiItem, add_supplementary
+
+    _write_paper(vault, _SI_PAPER, doi=_SI_DOI)
+    items = []
+    for i in range(1, n + 1):
+        src = tmp_path / f"ci9b00237_si_{i:03d}.csv"
+        src.write_text(f"row,{i}\n", encoding="utf-8")
+        items.append(SiItem(src, src.name))
+    add_supplementary(vault, _SI_PAPER, items, allow_unverified=False)
+    return vault / "papers" / _SI_PAPER / "supplementary"
+
+
+def _si_records(vault: Path) -> list[tuple[str, str]]:
+    from litman.core.document import find_paper
+
+    meta = find_paper(vault, _SI_PAPER)
+    return [(r["file"], r["check"]) for r in meta.get("supplementary") or []]
+
+
+def _si_issues(vault: Path) -> list[Any]:
+    from litman.core.checks import check_supplementary
+
+    return check_supplementary(vault, list_papers(vault))
+
+
+def test_supplementary_check_reports_each_drift(vault: Path, tmp_path: Path) -> None:
+    si = _si_paper(vault, tmp_path)
+    assert _si_issues(vault) == []
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    unlock_truth_file(si / "si-02.csv")
+    (si / "si-02.csv").write_text("row,2,edited\n", encoding="utf-8")
+    (si / "notes from the email.txt").write_text("x", encoding="utf-8")
+    (si / ".DS_Store").write_bytes(b"\0")  # clutter is nobody's finding
+    _write_paper(vault, "2020_Bad_Field")
+    _append_metadata(vault, "2020_Bad_Field", "supplementary: si-01.pdf\n")
+
+    issues = _si_issues(vault)
+
+    assert sorted((i.category, i.severity, i.paper_id) for i in issues) == [
+        ("supplementary_changed", "error", _SI_PAPER),
+        ("supplementary_field", "error", "2020_Bad_Field"),
+        ("supplementary_missing", "error", _SI_PAPER),
+        ("supplementary_unrecorded", "warning", _SI_PAPER),
+    ]
+    by_category = {i.category: i for i in issues}
+    assert "si-01.csv is recorded but missing" in by_category["supplementary_missing"].message
+    assert by_category["supplementary_missing"].hint.endswith(
+        f"`lit rm {_SI_PAPER} --si si-01 --yes`"
+    )
+    assert "'supplementary' is not a list" in by_category["supplementary_field"].message
+    assert "notes from the email.txt" in by_category["supplementary_unrecorded"].message
+
+
+def test_supplementary_errors_block_push_but_a_stray_does_not(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.checks import run_push_integrity_errors
+
+    si = _si_paper(vault, tmp_path)
+    (si / "stray.txt").write_text("x", encoding="utf-8")
+
+    def si_errors() -> set[str]:
+        return {
+            i.category
+            for i in run_push_integrity_errors(vault, list_papers(vault))
+            if i.category.startswith("supplementary")
+        }
+
+    assert si_errors() == set()  # a stray is a warning
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    assert si_errors() == {"supplementary_missing"}
+
+
+def test_health_check_reports_si_findings(vault: Path, tmp_path: Path) -> None:
+    si = _si_paper(vault, tmp_path)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exit_code == 1
+    header = next(
+        line for line in result.output.splitlines()
+        if line.startswith("SI files recorded but missing")
+    )
+    assert "fixable via --fix" in header
+
+
+def test_fix_without_a_terminal_records_only_what_verifies(
+    vault: Path, tmp_path: Path
+) -> None:
+    """No one to ask: a stray that verifies is recorded; the dead record, the
+    unconfirmable stray and the refused one stay — each with the command that
+    would settle it."""
+    si = _si_paper(vault, tmp_path, n=1)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    (si / "ci9b00237_si_004.csv").write_text("verified,4\n", encoding="utf-8")
+    (si / "Table S2.xlsx").write_bytes(b"PK sheet")
+    _write_paper(vault, "2023_Zhong_Other", doi="10.1038/s41467-023-38851-5")
+    (si / "41467_2023_38851_MOESM1_ESM.pdf").write_bytes(b"%PDF-1.4 theirs\n")
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    out = result.output
+    assert f"lit rm {_SI_PAPER} --si si-01 --yes" in out
+    assert f'lit add --si {_SI_PAPER} "{si / "Table S2.xlsx"}" --force' in out
+    assert "looks like the SI of 2023_Zhong_Other" in out
+    assert "supplementary_unrecorded: cleaned 1 item" in out
+    assert _si_records(vault) == [("si-01.csv", "filename"), ("si-02.csv", "filename")]
+    assert not (si / "ci9b00237_si_004.csv").exists()
+    assert (si / "Table S2.xlsx").exists()
+    assert (si / "41467_2023_38851_MOESM1_ESM.pdf").exists()
+    assert result.exit_code == 1  # what was left is still reported
+
+
+def test_fix_at_a_terminal_asks_before_dropping_or_recording(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    si = _si_paper(vault, tmp_path, n=1)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    # Already si-NN: recorded where it is, keeping a number notes may cite.
+    (si / "si-07.csv").write_text("x,7\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)], input="y\ny\n"
+    )
+
+    assert "si-01.csv recorded but missing. Drop the record(s)?" in result.output
+    assert "can't confirm si-07.csv belongs to it. Record it anyway?" in result.output
+    assert _si_records(vault) == [("si-07.csv", "user")]
+    assert (si / "si-07.csv").is_file()
+    assert _si_issues(vault) == []
+
+
+def test_fix_at_a_terminal_defaults(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enter twice: the dead record goes (default yes), the unconfirmable
+    stray stays out (default no)."""
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    si = _si_paper(vault, tmp_path, n=2)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    (si / "unsure.csv").write_text("u\n", encoding="utf-8")
+
+    CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)], input="\n\n"
+    )
+
+    assert _si_records(vault) == [("si-02.csv", "filename")]
+    assert (si / "unsure.csv").exists()
+
+
+_undecodable_names = pytest.mark.skipif(
+    sys.platform != "linux" or sys.getfilesystemencoding() != "utf-8",
+    reason="needs Linux (APFS refuses a file name that is not UTF-8; a Windows "
+    "name is UTF-16) and a UTF-8 file-name encoding, under which a bad byte "
+    "becomes a lone surrogate",
+)
+
+
+def _undecodable_stray(si: Path) -> Path:
+    """``Table S2 caf\\xe9.xlsx`` in ``si``: no DOI, so litman can't confirm it."""
+    raw = os.fsencode(si) + b"/Table S2 caf\xe9.xlsx"
+    with open(raw, "wb") as fh:
+        fh.write(b"PK sheet")
+    return Path(os.fsdecode(raw))
+
+
+@_undecodable_names
+def test_fix_without_a_terminal_names_an_undecodable_stray_so_it_pastes_back(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The line names the file as its record would (U+FFFD for the byte that
+    is not UTF-8); the command carries the real byte, so bash finds the file."""
+    import subprocess
+
+    from litman.core.supplementary import shell_path
+
+    si = _si_paper(vault, tmp_path, n=1)
+    stray = _undecodable_stray(si)
+    assert [i.message for i in _si_issues(vault)] == [
+        f"papers/{_SI_PAPER}/supplementary/Table S2 caf\ufffd.xlsx has no record "
+        "in metadata.yaml"
+    ]
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    out = result.output
+    assert f"left {si}/Table S2 caf\ufffd.xlsx: can't confirm it belongs" in out
+    quoted = shell_path(stray)
+    assert quoted == f"$'{si}/Table S2 caf\\xe9.xlsx'"
+    assert f"lit add --si {_SI_PAPER} {quoted} --force" in out
+    assert subprocess.run(["bash", "-c", f"test -f {quoted}"]).returncode == 0
+    assert stray.exists()
+
+
+@_undecodable_names
+def test_fix_at_a_terminal_asks_about_an_undecodable_stray_by_its_recorded_name(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import confirm as confirm_mod
+
+    monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
+    si = _si_paper(vault, tmp_path, n=1)
+    _undecodable_stray(si)
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)], input="y\n"
+    )
+
+    assert "can't confirm Table S2 caf\ufffd.xlsx belongs to it." in result.output
+    from litman.core.document import find_paper
+
+    records = find_paper(vault, _SI_PAPER).get("supplementary") or []
+    assert [r["original"] for r in records] == [
+        "ci9b00237_si_001.csv",
+        "Table S2 caf\ufffd.xlsx",
+    ]
+
+
+def test_apply_autofix_without_a_policy_asks_nobody(
+    vault: Path, tmp_path: Path
+) -> None:
+    si = _si_paper(vault, tmp_path, n=1)
+    unlock_truth_file(si / "si-01.csv")
+    (si / "si-01.csv").unlink()
+    (si / "ci9b00237_si_009.csv").write_text("v\n", encoding="utf-8")
+    (si / "unsure.csv").write_text("u\n", encoding="utf-8")
+
+    counts = apply_autofix(vault, run_all_checks(vault, list_papers(vault)))
+
+    assert counts["supplementary_missing"] == 0
+    assert counts["supplementary_unrecorded"] == 1
+    assert [f for f, _ in _si_records(vault)] == ["si-01.csv", "si-02.csv"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX read-only bit semantics"
+)
+def test_health_check_relocks_si_files(vault: Path, tmp_path: Path) -> None:
+    si = _si_paper(vault, tmp_path, n=1)
+    os.chmod(si / "si-01.csv", 0o644)  # e.g. pulled by a sync, mode lost
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    # Folded at the console width: compare with the line breaks flattened.
+    flat = " ".join(result.output.split())
+    assert "Re-locked" in flat
+    assert "/ SI files made read-only" in flat
+    assert not os.access(si / "si-01.csv", os.W_OK)
+
+
+def test_layout_findings_are_report_only(vault: Path, tmp_path: Path) -> None:
+    """What --fix will never touch — a sub-folder, a supplementary that is a
+    file — sits in a category outside AUTO_FIXABLE, whose header and hints
+    promise nothing about --fix."""
+    si = _si_paper(vault, tmp_path, n=1)
+    unzipped = si / "unzipped"
+    unzipped.mkdir()
+    (unzipped / "table.csv").write_text("t\n", encoding="utf-8")
+    _write_paper(vault, "2020_File_Folder")
+    placeholder = vault / "papers" / "2020_File_Folder" / "supplementary"
+    placeholder.write_text("x", encoding="utf-8")
+
+    layout = [i for i in _si_issues(vault) if i.category == "supplementary_layout"]
+
+    assert sorted((i.paper_id, i.severity) for i in layout) == [
+        ("2019_Yang_Si", "warning"),
+        ("2020_File_Folder", "error"),
+    ]
+    assert "supplementary_layout" not in AUTO_FIXABLE_CATEGORIES
+    assert all("--fix" not in (i.hint or "") for i in layout)
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+    header = next(
+        line for line in result.output.splitlines()
+        if line.startswith("SI folder layout")
+    )
+    assert "fixable via --fix" not in header
+    assert (unzipped / "table.csv").is_file()
+    assert placeholder.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="chmod cannot take a folder's read bit"
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores the permission bits this takes away",
+)
+def test_health_check_reports_an_unreadable_si_folder(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A folder litman cannot read is a finding ("can't check X"), never a
+    traceback out of the relock sweep or the check."""
+    si = _si_paper(vault, tmp_path, n=1)
+    si.chmod(0o000)
+    try:
+        result = CliRunner().invoke(
+            cli, ["health-check", "--library", str(vault)]
+        )
+    finally:
+        si.chmod(0o755)
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    flat = " ".join(result.output.split())
+    assert "SI litman cannot check" in flat
+    assert "cannot be read (PermissionError)" in flat
+
+
+# ===========================================================================
+# supplementary_cited — si-NN citations in notes ↔ SI records (ledger #14)
+# ===========================================================================
+
+
+def _cited_issues(vault: Path) -> list[Any]:
+    from litman.core.checks import check_supplementary_cited
+
+    return check_supplementary_cited(vault, list_papers(vault))
+
+
+def _added_day(vault: Path) -> str:
+    from litman.core.document import find_paper
+
+    return str(find_paper(vault, _SI_PAPER)["supplementary"][0]["added"])[:10]
+
+
+def test_supplementary_cited_reports_each_case_with_its_line(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=2)  # si-01.csv, si-02.csv, added today
+    paper = vault / "papers" / _SI_PAPER
+    (paper / "notes.md").write_text(
+        "# Notes\n"
+        "si-01.csv（ci9b00237_si_001.csv） is still right\n"
+        "si-02.csv（other.csv）\n"
+        "si-01.csv（ci9b00237_si_002.csv）\n"
+        "si-05\n",
+        encoding="utf-8",
+    )
+    (paper / "discussion.md").write_text(
+        f"# Discussion log for {_SI_PAPER}\n\n"
+        "## 2026-01-02 10:00\n"
+        "si-01 was read before it was added\n"
+        "si-02.csv（ci9b00237_si_002.csv） names its file\n",
+        encoding="utf-8",
+    )
+
+    issues = _cited_issues(vault)
+
+    assert {(i.category, i.severity, i.paper_id) for i in issues} == {
+        ("supplementary_cited", "warning", _SI_PAPER)
+    }
+    assert [(i.message, i.hint) for i in issues] == [
+        (
+            "notes.md:3 cites si-02.csv as other.csv, but si-02.csv is now "
+            "ci9b00237_si_002.csv",
+            f"check which file it means — `lit show {_SI_PAPER}` lists each SI "
+            "with its original name",
+        ),
+        (
+            "notes.md:4 cites si-01.csv as ci9b00237_si_002.csv, but si-01.csv "
+            "is now ci9b00237_si_001.csv — that file is now si-02.csv",
+            "change it to si-02.csv",
+        ),
+        (
+            "notes.md:5 cites si-05, which this paper no longer has",
+            f"point it at the right file (`lit show {_SI_PAPER}` lists the SI), "
+            "or remove it",
+        ),
+        (
+            f"discussion.md:4 (§2026-01-02) cites si-01, added later "
+            f"({_added_day(vault)}) — may refer to a file since replaced",
+            "if it means this file, write its name after it: "
+            "si-01.csv（ci9b00237_si_001.csv）",
+        ),
+    ]
+
+
+def test_an_original_from_the_notes_is_shown_printable(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "notes.md").write_text(
+        "si-01.csv（evil\u202eftp.csv）\n", encoding="utf-8"
+    )
+    (issue,) = _cited_issues(vault)
+    assert issue.message == (
+        "notes.md:1 cites si-01.csv as evil ftp.csv, but si-01.csv is now "
+        "ci9b00237_si_001.csv"
+    )
+
+
+def test_a_citation_in_a_paper_with_no_si_is_reported(vault: Path) -> None:
+    _write_paper(vault, "2020_No_Si", notes="# N\n\nsee si-01.pdf\n")
+    (issue,) = _cited_issues(vault)
+    assert (issue.paper_id, issue.message) == (
+        "2020_No_Si",
+        "notes.md:3 cites si-01.pdf, which this paper no longer has",
+    )
+
+
+def test_health_check_lists_stale_citations_under_their_header(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "discussion.md").write_text(
+        "# Discussion log\n\nsee si-07.csv\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exit_code == 1
+    header = next(
+        line for line in result.output.splitlines()
+        if line.startswith("SI citations in notes / discussion that no longer match")
+    )
+    assert "fixable via --fix" not in header
+    line = next(
+        line for line in result.output.splitlines() if "cites si-07.csv" in line
+    )
+    assert line.split() == [
+        "warning", _SI_PAPER, "discussion.md:3", "cites", "si-07.csv,", "which",
+        "this", "paper", "no", "longer", "has",
+    ]
+
+
+def test_a_notes_file_that_is_not_utf8_leaves_its_si_citations_unchecked(
+    vault: Path, tmp_path: Path
+) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "notes.md").write_bytes(b"si-01 caf\xe9\n")
+
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+    (issue,) = _cited_issues(vault)
+    assert (issue.paper_id, issue.message, issue.hint) == (
+        _SI_PAPER,
+        "notes.md cannot be read (UnicodeDecodeError); its SI citations went "
+        "unchecked",
+        "save it as UTF-8 (or fix its permissions), then rerun `lit health-check`",
+    )
+    assert issue.message in result.output
+
+
+def test_a_malformed_si_field_gets_no_citation_findings(vault: Path) -> None:
+    """Which files the paper has is unknown until the field parses: it gets
+    supplementary_field, and its citations wait."""
+    _write_paper(vault, "2020_Bad_Field", notes="si-01 and si-02.pdf\n")
+    _append_metadata(vault, "2020_Bad_Field", "supplementary: si-01.pdf\n")
+
+    assert _cited_issues(vault) == []
+    categories = {
+        i.category
+        for i in run_all_checks(vault, list_papers(vault))
+        if i.paper_id == "2020_Bad_Field"
+    }
+    assert "supplementary_field" in categories
+    assert "supplementary_cited" not in categories
+
+
+def test_fix_never_edits_a_stale_citation(vault: Path, tmp_path: Path) -> None:
+    _si_paper(vault, tmp_path, n=1)
+    notes = vault / "papers" / _SI_PAPER / "notes.md"
+    notes.write_text("# N\n\nsi-09 is gone\n", encoding="utf-8")
+    before = notes.read_bytes()
+
+    result = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert "supplementary_cited" not in AUTO_FIXABLE_CATEGORIES
+    assert notes.read_bytes() == before
+    assert [i.message for i in _cited_issues(vault)] == [
+        "notes.md:3 cites si-09, which this paper no longer has"
+    ]
+    assert result.exit_code == 1
+
+
+def test_the_push_gate_never_reads_the_notes(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale citation is a warning, which never blocks a push; the gate
+    skips the check rather than read every notes file for nothing."""
+    from litman.core.checks import run_push_integrity_errors
+
+    _si_paper(vault, tmp_path, n=1)
+    (vault / "papers" / _SI_PAPER / "notes.md").write_text(
+        "si-09\n", encoding="utf-8"
+    )
+    papers = list_papers(vault)
+    read: list[str] = []
+    real_read_text = Path.read_text
+
+    def spy(self: Path, *a, **kw):  # type: ignore[no-untyped-def]
+        read.append(self.name)
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    # Control: the spy does see the check read notes.md.
+    assert len(_cited_issues(vault)) == 1
+    assert "notes.md" in read
+    read.clear()
+
+    assert run_push_integrity_errors(vault, papers) == []
+    assert "notes.md" not in read
+
+
+def test_an_unreadable_added_date_is_a_finding_not_a_skip(vault: Path) -> None:
+    """Invariant #14: a record whose ``added`` cannot be read cannot clear a
+    dated citation either. A record with no original name cannot be named in
+    the hint, which then points at `lit show`."""
+    _write_paper(vault, "2020_Hand_Made")
+    _append_metadata(
+        vault,
+        "2020_Hand_Made",
+        "supplementary:\n"
+        "  - file: si-01.pdf\n"
+        "    original: Table_S1.pdf\n"
+        "    added: sometime last week\n"
+        "  - file: si-02.csv\n"
+        "    added: '2026-10-21T10:00:00+02:00'\n",
+    )
+    (vault / "papers" / "2020_Hand_Made" / "discussion.md").write_text(
+        "# Discussion log\n\n## 2026-09-02 10:00\nsi-01 and si-02\n",
+        encoding="utf-8",
+    )
+
+    assert [(i.message, i.hint) for i in _cited_issues(vault)] == [
+        (
+            "discussion.md:4 (§2026-09-02) cites si-01, whose added date can't "
+            "be read — may refer to a file since replaced",
+            "if it means this file, write its name after it: si-01.pdf（Table_S1.pdf）",
+        ),
+        (
+            "discussion.md:4 (§2026-09-02) cites si-02, added later (2026-10-21) — "
+            "may refer to a file since replaced",
+            "check which file it means — `lit show 2020_Hand_Made` lists each SI "
+            "with its original name",
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# dirty_metadata: a publisher's line breaks and markup, and what --fix does
+#
+# Titles and journals as Crossref returned them for 10.1021/jacs.6c11517 (A),
+# 10.1021/acs.jcim.6c00587 (B) and 10.1093/bib/bbae714 (C). notes.md goes to
+# disk as bytes: the line endings are the point of two of these tests.
+# ---------------------------------------------------------------------------
+
+_PP = "\n" + " " * 20
+_TITLE_A = (
+    f"({_PP}<i>N</i>{_PP}-Hydroxy)amide-Mediated\nRapid Head-to-Tail "
+    "Cyclization of Unprotected Peptides in Water"
+)
+_CLEAN_A = (
+    "(N-Hydroxy)amide-Mediated Rapid Head-to-Tail Cyclization of "
+    "Unprotected Peptides in Water"
+)
+_TITLE_B = (
+    "Advancing Biochemical\nMolecule Registration, Representation\nand "
+    "Search for New Drug Modalities"
+)
+_CLEAN_B = (
+    "Advancing Biochemical Molecule Registration, Representation and "
+    "Search for New Drug Modalities"
+)
+_TITLE_C = "<i>cyclicpeptide</i>: a Python package for cyclic peptide drug design"
+_CLEAN_C = "cyclicpeptide: a Python package for cyclic peptide drug design"
+_EDITED_C = b"# cyclicpeptide, the package\n\nMy notes on <i>cyclicpeptide</i>.\n"
+
+
+def _scaffold_notes(title: str, newline: str = "\n") -> bytes:
+    """notes.md byte for byte as `lit add` writes it. Text mode, so a library
+    written on Windows has CRLF throughout — inside a broken title too."""
+    text = f"# {title}\n\n{WIKILINK_REMINDER}\n\n(Personal notes go here.)\n"
+    return text.replace("\n", newline).encode("utf-8")
+
+
+def _notes(vault: Path, paper_id: str) -> Path:
+    return vault / "papers" / paper_id / "notes.md"
+
+
+def _dirty_library(vault: Path) -> dict[str, str]:
+    """The three samples as they sit in a library filled before the fix.
+
+    A: id derived from the dirty title, notes written on Windows. B: line
+    breaks only, LF notes the user has added to below the heading. C: id given
+    by hand, and a notes.md whose heading the user rewrote.
+    """
+    ids = {
+        "A": derive_id(2026, "Zhang", _TITLE_A),
+        "B": "2026_Pinto-Gil_Advancing-Biochemical-Molecule",
+        "C": "2025_Zhu_CyclicPeptide",
+    }
+    _write_paper(
+        vault, ids["A"], title=_TITLE_A, authors=["Zhang, Yue"], year=2026,
+        journal="Journal of the American\nChemical Society",
+    )
+    _write_paper(
+        vault, ids["B"], title=_TITLE_B, authors=["Pinto-Gil, Kevin"], year=2026,
+        journal="Journal of Chemical Information\nand Modeling",
+    )
+    _write_paper(
+        vault, ids["C"], title=_TITLE_C, authors=["Yang, Liu", "Zhu, Ruixin"],
+        year=2024, journal="Briefings in Bioinformatics",
+    )
+    _notes(vault, ids["A"]).write_bytes(_scaffold_notes(_TITLE_A, "\r\n"))
+    _notes(vault, ids["B"]).write_bytes(_scaffold_notes(_TITLE_B) + b"Mine.\n")
+    _notes(vault, ids["C"]).write_bytes(_EDITED_C)
+    return ids
+
+
+def test_dirty_metadata_reported_then_cleaned_by_fix(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+
+    # The probe, not sys.platform (see the linkless-drive fixture above).
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    # Wide and pinned: each assertion below reads one whole line.
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    ids = _dirty_library(vault)
+    stamps = {k: _meta(vault, pid)["updated-at"] for k, pid in ids.items()}
+    runner = CliRunner()
+
+    report = runner.invoke(cli, ["health-check", "--library", str(vault)])
+
+    assert report.exit_code == 1, report.output
+    assert (
+        "Line breaks, stray spaces or markup in title / journal / authors"
+        in report.output
+    )
+    assert "(5 issues)" in report.output
+    # Only A's id was derived from its broken title.
+    clean_id = derive_id(2026, "Zhang", _CLEAN_A)
+    assert f"`lit rename {ids['A']} {clean_id}`" in report.output
+    assert report.output.count("lit rename") == 1
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert fix.exit_code == 0, fix.output
+    assert "dirty_metadata: cleaned 5 items" in fix.output
+    assert (
+        f"kept {ids['C']}: notes.md heading differs from the one lit add "
+        "wrote, left as is"
+    ) in fix.output
+    assert fix.output.count("kept ") == 1
+    assert (
+        f"rename {ids['A']}: `lit rename {ids['A']} {clean_id}` if you want "
+        "the id to match the clean title"
+    ) in fix.output
+
+    expected = {
+        "A": (_CLEAN_A, "Journal of the American Chemical Society"),
+        "B": (_CLEAN_B, "Journal of Chemical Information and Modeling"),
+        "C": (_CLEAN_C, "Briefings in Bioinformatics"),
+    }
+    for letter, pid in ids.items():
+        meta = _meta(vault, pid)
+        assert (meta["title"], meta["journal"]) == expected[letter]
+        assert meta["id"] == pid  # never renamed
+        assert meta["updated-at"] != stamps[letter]
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    assert {p["id"]: p["title"] for p in index["papers"]} == {
+        pid: expected[letter][0] for letter, pid in ids.items()
+    }
+    # The heading lit add wrote becomes one line, in the file's own line
+    # endings, and nothing after it moves; a heading the user wrote stays.
+    assert _notes(vault, ids["A"]).read_bytes() == _scaffold_notes(_CLEAN_A, "\r\n")
+    assert _notes(vault, ids["B"]).read_bytes() == (
+        _scaffold_notes(_CLEAN_B) + b"Mine.\n"
+    )
+    assert _notes(vault, ids["C"]).read_bytes() == _EDITED_C
+
+    again = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert again.exit_code == 0, again.output
+    assert "Line breaks, stray spaces or markup" not in again.output
+
+
+def test_clean_dirty_metadata_counts_fields_and_runs_once(vault: Path) -> None:
+    """One per finding — A and B two each, C one — and a second run finds
+    nothing to do."""
+    ids = _dirty_library(vault)
+    assert len(check_dirty_metadata(vault, list_papers(vault))) == 5
+
+    clean_id = derive_id(2026, "Zhang", _CLEAN_A)
+    assert clean_dirty_metadata(vault) == (5, [ids["C"]], [(ids["A"], clean_id)])
+
+    assert check_dirty_metadata(vault, list_papers(vault)) == []
+    assert clean_dirty_metadata(vault) == (0, [], [])
+
+
+def test_a_notes_heading_that_already_reads_clean_is_left_quietly(
+    vault: Path,
+) -> None:
+    """Someone fixed the heading by hand and not the metadata: nothing to say."""
+    _write_paper(vault, "2025_Zhu_CyclicPeptide", title=_TITLE_C, year=2024)
+    notes = _scaffold_notes(_CLEAN_C) + b"Mine.\n"
+    _notes(vault, "2025_Zhu_CyclicPeptide").write_bytes(notes)
+
+    assert clean_dirty_metadata(vault) == (1, [], [])
+    assert _notes(vault, "2025_Zhu_CyclicPeptide").read_bytes() == notes
+
+
+def test_fix_carries_the_clean_title_into_project_references(
+    vault: Path, tmp_path: Path
+) -> None:
+    from litman.core.correctors import regen
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    _configure_project(vault, "myproj", proj)
+    pid = "2026_Pinto-Gil_Advancing-Biochemical-Molecule"
+    _write_paper(
+        vault, pid, title=_TITLE_B, authors=["Pinto-Gil, Kevin"], year=2026,
+        projects=["myproj"],
+    )
+    regen(vault)
+    refs = proj / "litman_reflib" / "REFERENCES.md"
+    assert "Advancing Biochemical\nMolecule" in refs.read_text(encoding="utf-8")
+
+    clean_dirty_metadata(vault)
+
+    assert f"**{_CLEAN_B}**" in refs.read_text(encoding="utf-8")
+
+
+def test_clean_dirty_metadata_names_the_rename_only_for_an_id_made_from_the_title(
+    vault: Path,
+) -> None:
+    """The same broken title twice: under the id `lit add` derived from it,
+    and under one picked by hand. Only the first gets a rename, and neither
+    id moves."""
+    derived = derive_id(2026, "Zhang", _TITLE_A)
+    by_hand = "2026_Zhang_Head-to-tail-cyclization"
+    for pid in (derived, by_hand):
+        _write_paper(
+            vault, pid, title=_TITLE_A, authors=["Zhang, Yue"], year=2026
+        )
+
+    n, kept, renames = clean_dirty_metadata(vault)
+
+    assert (n, kept) == (2, [])
+    assert renames == [(derived, derive_id(2026, "Zhang", _CLEAN_A))]
+    assert {_meta(vault, pid)["id"] for pid in (derived, by_hand)} == {
+        derived,
+        by_hand,
+    }
+
+
+def _noisy_paper(vault: Path, paper_id: str) -> None:
+    """A hand-given id whose every text field is dirty: five findings."""
+    _write_paper(
+        vault, paper_id, year=2020,
+        title="Noisy\n    <i>Peptide</i>\n    Cyclization",
+        journal="Journal of\n  Noise",
+        authors=["Zhang,\n  Yue", "Wang, Weifeng", "<i>Fu</i>, Hua", "Lu,\xa0Ana"],
+    )
+    # A JSON string is a YAML double-quoted scalar: the line break goes to
+    # disk as an escape and comes back as a line break on read.
+    booktitle = json.dumps("Proceedings of\n  <i>NeurIPS</i>")
+    publisher = json.dumps("Curran &amp; Associates")
+    _append_metadata(
+        vault, paper_id, f"booktitle: {booktitle}\npublisher: {publisher}\n"
+    )
+
+
+def test_fix_cleans_authors_booktitle_and_publisher(vault: Path) -> None:
+    pid = "2020_Zhang_Noisy-Peptide"
+    _noisy_paper(vault, pid)
+    clean_authors = ["Zhang, Yue", "Wang, Weifeng", "Fu, Hua", "Lu, Ana"]
+
+    fix = CliRunner().invoke(
+        cli, ["health-check", "--fix", "--library", str(vault)]
+    )
+
+    assert fix.exit_code == 0, fix.output
+    assert "dirty_metadata: cleaned 5 items" in fix.output
+    meta = _meta(vault, pid)
+    assert meta["authors"] == clean_authors  # order kept
+    assert meta["booktitle"] == "Proceedings of NeurIPS"
+    assert meta["publisher"] == "Curran & Associates"
+    assert (meta["title"], meta["journal"]) == (
+        "Noisy Peptide Cyclization",
+        "Journal of Noise",
+    )
+    # INDEX.json is what the web UI's paper list shows.
+    index = json.loads((vault / "INDEX.json").read_text(encoding="utf-8"))
+    (entry,) = index["papers"]
+    assert entry["authors"] == clean_authors
+    assert entry["title"] == "Noisy Peptide Cyclization"
+
+
+def test_fix_gives_the_rename_even_when_the_report_folded_the_finding(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A's title finding sorts sixth, past the fold, so the report never shows
+    its `lit rename`; the --fix output must, because afterwards nothing can."""
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    _noisy_paper(vault, "2020_Zhang_Noisy-Peptide")
+    pid = derive_id(2026, "Zhang", _TITLE_A)
+    _write_paper(vault, pid, title=_TITLE_A, authors=["Zhang, Yue"], year=2026)
+    target = derive_id(2026, "Zhang", _CLEAN_A)
+    runner = CliRunner()
+
+    report = runner.invoke(cli, ["health-check", "--library", str(vault)])
+    assert "(6 issues)" in report.output
+    assert "and 1 more in this category" in report.output
+    assert "lit rename" not in report.output
+
+    fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert fix.exit_code == 0, fix.output
+    assert (
+        f"rename {pid}: `lit rename {pid} {target}` if you want the id to "
+        "match the clean title"
+    ) in fix.output
+    assert _meta(vault, pid)["id"] == pid
+    assert not (vault / "papers" / target).exists()

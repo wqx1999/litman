@@ -1955,7 +1955,7 @@ export default function PdfView({
                 }}
                 rows={2}
                 placeholder="Add a note…"
-                className="w-52 resize-none rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800 placeholder:text-stone-400 focus:border-accent-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent-400"
+                className="w-52 resize-none rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800 placeholder:text-stone-400 focus:border-accent-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent-500"
               />
             )}
             <button

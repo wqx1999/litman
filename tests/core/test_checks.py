@@ -18,6 +18,7 @@ import pytest
 from litman.core.checks import (
     all_fixed_enums,
     check_config_readable,
+    check_dirty_metadata,
     check_duplicate_doi,
     check_placeholder_id,
     check_placeholder_metadata,
@@ -30,6 +31,7 @@ from litman.core.checks import (
     run_push_integrity_errors,
 )
 from litman.core.document import list_papers
+from litman.core.id import derive_id
 from litman.core.library import create_vault
 
 
@@ -413,6 +415,33 @@ def test_push_gate_excludes_the_retired_priority_field(vault: Path) -> None:
     ), "fixture must actually trigger a retired-field error"
 
     assert run_push_integrity_errors(vault, papers) == []
+
+
+def test_push_gate_does_not_run_the_vocabulary_checks(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """They report `info` only, so they could never block a push, and their
+    pairwise scan of every dict is not worth paying on each one."""
+    from dataclasses import replace
+    from typing import Any
+
+    from litman.core import checks
+    from litman.core.checks import Issue
+
+    def _must_not_run(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
+        raise AssertionError("a vocabulary check ran")
+
+    vocab = {"taxonomy_similar", "taxonomy_unused", "taxonomy_singletons"}
+    registry = tuple(
+        replace(spec, fn=_must_not_run) if spec.category in vocab else spec
+        for spec in checks._CHECK_REGISTRY
+    )
+    monkeypatch.setattr(checks, "_CHECK_REGISTRY", registry)
+    # Control: the stand-ins are wired in, so a full run does reach them.
+    with pytest.raises(AssertionError, match="a vocabulary check ran"):
+        run_all_checks(vault, [])
+
+    assert run_push_integrity_errors(vault, []) == []
 
 
 def test_push_gate_still_blocks_a_broken_schema(vault: Path) -> None:
@@ -812,4 +841,193 @@ def test_weak_id_check_runs_in_the_full_health_check(vault: Path) -> None:
     )
     assert not any(
         i.category == "weak_id_keyword" for i in run_all_checks(vault, [clean])
+    )
+
+
+# ---------------------------------------------------------------------------
+# dirty_metadata: a publisher's line breaks and markup stored with the text
+#
+# Titles as Crossref returned them for 10.1021/jacs.6c11517 (A),
+# 10.1021/acs.jcim.6c00587 (B) and 10.1093/bib/bbae714 (C).
+# ---------------------------------------------------------------------------
+
+_PP = "\n" + " " * 20
+_DIRTY_A = (
+    f"({_PP}<i>N</i>{_PP}-Hydroxy)amide-Mediated\nRapid Head-to-Tail "
+    "Cyclization of Unprotected Peptides in Water"
+)
+_CLEAN_A = (
+    "(N-Hydroxy)amide-Mediated Rapid Head-to-Tail Cyclization of "
+    "Unprotected Peptides in Water"
+)
+_DIRTY_B = (
+    "Advancing Biochemical\nMolecule Registration, Representation\nand "
+    "Search for New Drug Modalities"
+)
+_DIRTY_C = "<i>cyclicpeptide</i>: a Python package for cyclic peptide drug design"
+
+
+def _dirty_findings(paper: dict[str, object]) -> dict[str, object]:
+    issues = check_dirty_metadata(Path("."), [paper])
+    assert all(i.category == "dirty_metadata" for i in issues)
+    assert all(i.severity == "warning" for i in issues)
+    return {i.message.split(" ", 1)[0]: i for i in issues}
+
+
+def test_dirty_metadata_reports_title_and_journal_with_their_breaks_visible() -> None:
+    """Sample B: line breaks only, so the id was never touched."""
+    paper = _minimal_paper(
+        id="2026_Pinto-Gil_Advancing-Biochemical-Molecule",
+        title=_DIRTY_B,
+        journal="Journal of Chemical Information\nand Modeling",
+        authors=["Pinto-Gil, Kevin"],
+        year=2026,
+    )
+    found = _dirty_findings(paper)
+    assert set(found) == {"title", "journal"}
+    # repr, so the line break shows as \n instead of breaking the report line.
+    assert "Biochemical\\nMolecule" in found["title"].message
+    assert found["journal"].hint == (
+        "`lit health-check --fix` writes "
+        "'Journal of Chemical Information and Modeling'"
+    )
+    assert "lit rename" not in (found["title"].hint or "")
+
+
+def test_dirty_metadata_suggests_a_rename_when_the_id_came_from_the_dirty_title() -> None:
+    """Sample A: `<i>N</i>` slugged into the id as `INi`."""
+    pid = derive_id(2026, "Zhang", _DIRTY_A)
+    assert pid == "2026_Zhang_INi--Hydroxyamide-Mediated-Rapid"
+    paper = _minimal_paper(
+        id=pid, title=_DIRTY_A, authors=["Zhang, Yue"], year=2026
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert hint.startswith(f"`lit health-check --fix` writes {_CLEAN_A!r}")
+    assert (
+        f"`lit rename {pid} {derive_id(2026, 'Zhang', _CLEAN_A)}`" in hint
+    )
+
+
+_DIRTY_D = "<i>Nostoc</i> lanthipeptides promote symbiosis"
+
+
+def test_dirty_metadata_suggests_a_rename_for_an_id_from_before_transliteration() -> None:
+    """`Müller` used to lose its `ü`, so the id derived back then reads `Mller`.
+
+    It still came from the dirty title, so the hint still offers the rename —
+    to the id the current rule derives from the clean title.
+    """
+    pid = "2021_Mller_INostoci-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid, title=_DIRTY_D, authors=["Müller, Hans"], year=2021
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert (
+        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+    )
+
+
+def test_dirty_metadata_suggests_a_rename_for_an_id_from_the_current_rule() -> None:
+    pid = "2021_Muller_INostoci-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid, title=_DIRTY_D, authors=["Müller, Hans"], year=2021
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert (
+        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+    )
+
+
+def test_dirty_metadata_leaves_an_old_rule_id_the_dirt_never_reached() -> None:
+    """Line breaks alone never reached `2021_Mller_…`; renaming it to `Muller`
+    would be about the old rule, not about the dirty title."""
+    pid = "2021_Mller_Nostoc-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid,
+        title="Nostoc lanthipeptides\n  promote symbiosis",
+        authors=["Müller, Hans"],
+        year=2021,
+    )
+    found = _dirty_findings(paper)
+    assert set(found) == {"title"}
+    assert "lit rename" not in (found["title"].hint or "")
+
+
+def test_dirty_metadata_judges_an_id_by_the_clean_author_name() -> None:
+    """The entity in `M&uuml;ller` did reach the id, though the title's line
+    break did not — so the clean name decides, and the hint stays."""
+    pid = "2021_Muumlller_Nostoc-lanthipeptides-promote"
+    paper = _minimal_paper(
+        id=pid,
+        title="Nostoc lanthipeptides\n  promote symbiosis",
+        authors=["M&uuml;ller, Hans"],
+        year=2021,
+    )
+    hint = _dirty_findings(paper)["title"].hint or ""
+    assert (
+        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+    )
+
+
+def test_dirty_metadata_leaves_a_hand_given_id_alone() -> None:
+    """Sample C: its id was given by hand, so nothing suggests renaming it."""
+    paper = _minimal_paper(
+        id="2025_Zhu_CyclicPeptide",
+        title=_DIRTY_C,
+        authors=["Yang, Liu", "Zhu, Ruixin"],
+        year=2024,
+        journal="Briefings in Bioinformatics",
+    )
+    found = _dirty_findings(paper)
+    assert set(found) == {"title"}
+    assert found["title"].hint == (
+        "`lit health-check --fix` writes "
+        "'cyclicpeptide: a Python package for cyclic peptide drug design'"
+    )
+
+
+def test_dirty_metadata_names_the_dirty_authors_in_one_finding() -> None:
+    paper = _minimal_paper(
+        title="Clean",
+        authors=["Zhang,\n  Yue", "Wang, Weifeng", "<i>Fu</i>, Hua"],
+    )
+    found = _dirty_findings(paper)
+    assert set(found) == {"authors"}
+    assert found["authors"].message == (
+        "authors has line breaks, stray spaces or markup: "
+        "'Zhang,\\n  Yue', '<i>Fu</i>, Hua'"
+    )
+    assert found["authors"].hint == (
+        "`lit health-check --fix` writes 'Zhang, Yue', 'Fu, Hua'"
+    )
+
+
+def test_dirty_metadata_covers_booktitle_and_publisher() -> None:
+    paper = _minimal_paper(
+        title="Clean",
+        booktitle="Proceedings of\n  <i>NeurIPS</i>",
+        publisher="Curran &amp; Associates",
+    )
+    assert set(_dirty_findings(paper)) == {"booktitle", "publisher"}
+
+
+def test_dirty_metadata_silent_on_clean_or_odd_fields() -> None:
+    assert _dirty_findings(
+        _minimal_paper(title="Clean title", authors=["Doe, Jane"], journal="J")
+    ) == {}
+    # Mid-repair or hand-edited shapes never crash the check.
+    assert _dirty_findings(_minimal_paper(title=None, authors="Doe,\nJane")) == {}
+    assert _dirty_findings(_minimal_paper(title=1984, authors=[None, 3])) == {}
+
+
+def test_dirty_metadata_runs_in_the_full_health_check(vault: Path) -> None:
+    """Registered, not merely importable — asserted in both directions."""
+    dirty = _minimal_paper(title=_DIRTY_C, authors=["Yang, Liu"])
+    assert any(
+        i.category == "dirty_metadata" for i in run_all_checks(vault, [dirty])
+    ), "check_dirty_metadata is not wired into _CHECK_REGISTRY"
+
+    clean = _minimal_paper(title="Chemistry of the amatoxins", authors=["W, T"])
+    assert not any(
+        i.category == "dirty_metadata" for i in run_all_checks(vault, [clean])
     )

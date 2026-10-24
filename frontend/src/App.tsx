@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
+  cancelSi,
   clearPins,
+  createSiRequest,
   createVault,
   fetchCapabilities,
   fetchDocMtimes,
@@ -32,15 +34,20 @@ import {
   setVaultPath,
   unpinPaper,
   unregisterVault,
+  type SiRequestSeed,
+  type SiSnapshot,
 } from './api'
 import type { PdfHandle } from './pdf/PdfView'
 import type { MdDraft } from './md/MdView'
 import type { CockpitHandle } from './cockpit/Cockpit'
 import { useKeyboardShortcuts } from './useKeyboardShortcuts'
+import { inAppWindow, routeExternalLinks } from './externalLinks'
 import CheatSheet from './ui/CheatSheet'
 import WhatsNew from './ui/WhatsNew'
 import DropZone from './ui/DropZone'
 import AddPaper from './ui/AddPaper'
+import AddSi from './ui/AddSi'
+import { escapeLayerOpen } from './ui/escapeStack'
 import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
@@ -79,6 +86,23 @@ const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 // on the slow side of the ≤5s the spec asks for.
 const VAULT_POLL_MS = 4000
 
+// An SI window that would pop on its own waits while someone is typing: an
+// editable has focus and a key went down within this long. Popping mid-word
+// would take the next keystrokes — and an Esc meant for the text would cancel
+// the request the agent is waiting on.
+const SI_TYPING_PAUSE_MS = 2000
+
+function editableFocused(): boolean {
+  const el = document.activeElement
+  return (
+    el instanceof HTMLElement &&
+    (el.isContentEditable ||
+      el instanceof HTMLInputElement ||
+      el instanceof HTMLTextAreaElement ||
+      el instanceof HTMLSelectElement)
+  )
+}
+
 // Link advisory, dismissed for good. localStorage (not the server) because
 // this is a per-person "yes, I know" — nothing about the library changed, and a
 // second machine reading the same vault deserves to be told once too.
@@ -94,6 +118,9 @@ const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
   'methods',
   'data',
 ]
+
+/** The open SI window: its request, and whether the poll popped it. */
+type SiWindowState = SiRequestSeed & { auto: boolean }
 
 function tabLabel(id: string, kind: TabKind): string {
   if (kind === 'pdf') return id
@@ -303,6 +330,30 @@ export default function App() {
   >(null)
   // A dropped PDF is on its way up (upload + server-side DOI sniff).
   const [uploading, setUploading] = useState(false)
+  const uploadingRef = useRef(uploading)
+  uploadingRef.current = uploading
+  // The SI window (task-supplementary-info): the open request, or null. A
+  // BLOCKING modal like Add paper. Mirrored in a ref because the poll decides
+  // from inside an await whether one is already up. `auto`: popped by the poll
+  // rather than opened by the person (Add SI).
+  const [siWindow, setSiWindowState] = useState<SiWindowState | null>(null)
+  const siWindowRef = useRef<SiWindowState | null>(null)
+  const setSiWindow = useCallback((next: SiWindowState | null) => {
+    siWindowRef.current = next
+    setSiWindowState(next)
+  }, [])
+  // Requests this page has closed. A poll answer computed just before a Done
+  // or Cancel landed still names the request; without this it would pop again.
+  const closedSiIds = useRef(new Set<string>())
+  // The open window's request is unknown to the server (set by the window).
+  const siGoneRef = useRef<string | null>(null)
+  // The open window's own refresh, run on every poll tick.
+  const siRefreshRef = useRef<(() => void) | null>(null)
+  // When a key last went down, and the look-again scheduled for when typing
+  // pauses (see SI_TYPING_PAUSE_MS); `pollNowRef` runs a poll tick now.
+  const lastKeyRef = useRef(0)
+  const siTypingTimer = useRef<number | undefined>(undefined)
+  const pollNowRef = useRef<(() => void) | null>(null)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   // Controlled vocabulary + fixed-enum whitelists feed the cockpit's tag-add
   // affordance and dropdowns (3b). Fetched once on mount; taxonomy re-fetches
@@ -361,6 +412,11 @@ export default function App() {
   // it. Dismissable, and the dismissal sticks. Never shown for a working
   // mechanism ('symlink' / 'junction'): those are silent full-function states.
   const [linkNotice, setLinkNotice] = useState(false)
+  // Whether a plain click on an SI chip opens the file with the default app
+  // of the machine the server runs on ('desktop'), or the chip stays a link
+  // into the browser ('none': an SSH session, a headless box — and until the
+  // server has answered).
+  const [openFiles, setOpenFiles] = useState<'desktop' | 'none'>('none')
   // One place decides what a failed read means, so every catch site agrees.
   // Each verdict clears the other flag, so the banners are mutually exclusive
   // and the one showing is always the FRESHER fact: a 410 arrived over a
@@ -413,12 +469,18 @@ export default function App() {
   const searchToken = useRef(0)
 
   // A single transient toast (dangling wikilink, failed save, project linked).
-  // Last write wins; `variant` tints the dot (default neutral 'info').
+  // Last write wins; `variant` tints the dot (default neutral 'info'). `id` is
+  // the Toast's key: every notify mounts a new one with its own timer, even when
+  // the message repeats.
   const [toast, setToast] = useState<{
+    id: number
     message: string
     variant: ToastVariant
     sticky?: boolean
   } | null>(null)
+  const toastSeq = useRef(0)
+  // One identity for the app's lifetime, so an App re-render never restarts the timer.
+  const dismissToast = useCallback(() => setToast(null), [])
   // Session activity log: every notify (toast) also appends here so a GUI-only
   // user has a scrollback the last-write-wins toast can't give. In-memory ring
   // (cap 200, newest kept), cleared on refresh (AC4 — no persistence, no second
@@ -428,7 +490,8 @@ export default function App() {
   const [logUnread, setLogUnread] = useState(false)
   const notify = useCallback(
     (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) => {
-      setToast({ message: msg, variant, sticky: opts?.sticky })
+      toastSeq.current += 1
+      setToast({ id: toastSeq.current, message: msg, variant, sticky: opts?.sticky })
       setActivityLog((prev) =>
         [...prev, { ts: Date.now(), variant, message: msg }].slice(-200),
       )
@@ -437,6 +500,10 @@ export default function App() {
     [],
   )
   const markLogRead = useCallback(() => setLogUnread(false), [])
+
+  // In the --window app window only: links to other sites go to the default
+  // browser, where the user is signed in (externalLinks.ts). A tab never routes.
+  useEffect(() => (inAppWindow() ? routeExternalLinks(notify) : undefined), [notify])
 
   // Silent log sink for resync-diff entries: appends to the same ring + lights
   // the unread dot like notify, but does NOT toast (a resync can yield dozens of
@@ -576,6 +643,9 @@ export default function App() {
   // Modal-open flags reported up from the children, so the dispatcher's modal
   // guard can suppress global shortcuts while a blocking surface is open.
   const [cockpitModalOpen, setCockpitModalOpen] = useState(false)
+  // A facet popover in the browse panel — the left-hand twin of the cockpit's
+  // Tags panels, which cockpitModalOpen already covers.
+  const [facetPopoverOpen, setFacetPopoverOpen] = useState(false)
   const [projectsOpen, setProjectsOpen] = useState(false)
   // True while either observability panel (activity log / health) is open, so
   // the shortcut dispatcher's modal guard suppresses global write-shortcuts
@@ -737,17 +807,20 @@ export default function App() {
         }, 3000)
       })
       .catch(() => {})
-    // Link-capability advisory: cheap (one cached probe server-side) so it runs
-    // inline with the rest of the boot fetches — unlike the Tier-2 health check,
-    // which also runs on load now but waits for idle. Best-effort — a failure
-    // just leaves the notice off; it must never block or error the boot path.
-    if (localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
-      fetchCapabilities()
-        .then((c) => {
-          if (c.links === 'none') setLinkNotice(true)
-        })
-        .catch(() => {})
-    }
+    // Host capabilities: cheap (one cached probe server-side) so they run
+    // inline with the rest of the boot fetches — unlike the Tier-2 health
+    // check, which also runs on load now but waits for idle. Read on every
+    // boot for the SI chips; the link advisory only while not dismissed.
+    // Best-effort — a failure leaves the notice off and the chips as links;
+    // it must never block or error the boot path.
+    fetchCapabilities()
+      .then((c) => {
+        setOpenFiles(c.open_files === 'desktop' ? 'desktop' : 'none')
+        if (c.links === 'none' && localStorage.getItem(LINK_NOTICE_DISMISSED) !== '1') {
+          setLinkNotice(true)
+        }
+      })
+      .catch(() => {})
     // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
     // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
     // resync never diffs against an empty baseline (which would log every paper
@@ -1160,6 +1233,137 @@ export default function App() {
     }
   }, [doResync])
 
+  // --- SI window (task-supplementary-info) --------------------------------
+  // `lit add --si <paper>` registers a request with this GUI and waits; the
+  // poll below carries the oldest open one (`siRequest`) and this page shows
+  // it as the SI window. One window at a time, oldest first — the server
+  // answers in that order, so a request that has to wait simply comes up on a
+  // later tick.
+  const closeSiWindow = useCallback(
+    (id: string) => {
+      closedSiIds.current.add(id)
+      if (siWindowRef.current?.id === id) setSiWindow(null)
+    },
+    [setSiWindow],
+  )
+  // One toast, since a second would replace the first: the warnings (rare,
+  // and sentences long) go to the activity log, and the toast points there.
+  const onSiAdded = useCallback(
+    (snap: SiSnapshot) => {
+      closeSiWindow(snap.id)
+      const n = snap.added.length
+      const added = n === 1 ? 'Added 1 SI file' : `Added ${n} SI files`
+      const w = snap.warnings.length
+      if (w === 0) {
+        notify(added, 'success')
+      } else {
+        notify(
+          `${added} · ${w === 1 ? '1 warning' : `${w} warnings`} in the activity log`,
+          'warning',
+        )
+        appendLog(
+          snap.warnings.map((message) => ({ ts: Date.now(), variant: 'warning', message })),
+        )
+      }
+      refreshAfterWrite()
+    },
+    [closeSiWindow, notify, appendLog, refreshAfterWrite],
+  )
+  // Closed at once; the server is told after. Cancel has nothing to show for
+  // itself, so it says nothing — unless the server refused, in which case the
+  // request is still open and the next tick brings the window back.
+  const onSiCancel = useCallback(
+    (id: string) => {
+      closeSiWindow(id)
+      cancelSi(id).catch((err) => {
+        // 404: forgotten already; 409: Done landed elsewhere first. Ended
+        // either way.
+        if (err instanceof ApiError && (err.status === 404 || err.status === 409)) return
+        closedSiIds.current.delete(id)
+        notify(err instanceof Error ? err.message : String(err), 'error')
+      })
+    },
+    [closeSiWindow, notify],
+  )
+  const onSiGone = useCallback((id: string) => {
+    siGoneRef.current = id
+  }, [])
+  // The cockpit's Add SI: same window, a request of the page's own making
+  // (the server hands back the open one if the paper already has one).
+  const openAddSi = useCallback(
+    (paperId: string) => {
+      createSiRequest(paperId)
+        .then((snap) => {
+          if (siWindowRef.current) return
+          closedSiIds.current.delete(snap.id)
+          setSiWindow({
+            id: snap.id,
+            paperId: snap.paperId,
+            title: snap.title,
+            link: snap.link,
+            auto: false,
+          })
+        })
+        .catch((err) => notify(err instanceof Error ? err.message : String(err), 'error'))
+    },
+    [notify, setSiWindow],
+  )
+  // Per poll tick. An open window refreshes its rows (a Done or Cancel from
+  // another page closes it). Otherwise the request pops — but never over
+  // another dialog or popover, and never while a dropped PDF is uploading for
+  // Add paper: it waits a tick and asks again. Two reasons, one rule: a window
+  // that opens on its own must not bury what the person is doing, and the
+  // Escape stack must not gain a layer under one that is already up
+  // (ui/escapeStack). Popping never changes the selection. The same courtesy
+  // for someone typing: the pop waits until the typing pauses, and is looked at
+  // again right then rather than a whole poll interval later. A focused editor
+  // nobody is typing in does not hold it.
+  const onSiPoll = (seed: SiRequestSeed | null) => {
+    const open = siWindowRef.current
+    if (open) {
+      // A window whose request the server forgot (the GUI restarted) gives way
+      // to the CLI's rerun.
+      if (
+        seed &&
+        seed.id !== open.id &&
+        siGoneRef.current === open.id &&
+        !closedSiIds.current.has(seed.id)
+      ) {
+        closedSiIds.current.add(open.id)
+        setSiWindow({ ...seed, auto: true })
+        return
+      }
+      siRefreshRef.current?.()
+      return
+    }
+    if (!seed || closedSiIds.current.has(seed.id)) return
+    if (escapeLayerOpen() || uploadingRef.current) return
+    const sinceKey = Date.now() - lastKeyRef.current
+    if (editableFocused() && sinceKey < SI_TYPING_PAUSE_MS) {
+      window.clearTimeout(siTypingTimer.current)
+      siTypingTimer.current = window.setTimeout(
+        () => pollNowRef.current?.(),
+        SI_TYPING_PAUSE_MS - sinceKey + 100,
+      )
+      return
+    }
+    setSiWindow({ ...seed, auto: true })
+  }
+  const onSiPollRef = useRef(onSiPoll)
+  onSiPollRef.current = onSiPoll
+  // Only ever reads the key: capture, so it sees every key whoever stops it
+  // later, and it never prevents or stops anything.
+  useEffect(() => {
+    const onKey = () => {
+      lastKeyRef.current = Date.now()
+    }
+    window.addEventListener('keydown', onKey, { capture: true, passive: true })
+    return () => {
+      window.removeEventListener('keydown', onKey, { capture: true })
+      window.clearTimeout(siTypingTimer.current)
+    }
+  }, [])
+
   // Live refresh — an agent (or a CLI in another window) writes while this page
   // stays focused. The focus/visibility path above cannot see that: focus never
   // leaves, so nothing fires and the UI sits on stale truth until the user hits
@@ -1198,7 +1402,7 @@ export default function App() {
         return
       }
       try {
-        const { version } = await fetchVaultVersion()
+        const { version, siRequest } = await fetchVaultVersion()
         if (stopped) return
         const seen = vaultVersionRef.current
         vaultVersionRef.current = { served, version }
@@ -1206,6 +1410,7 @@ export default function App() {
           lastResyncRef.current = Date.now()
           void doResyncRef.current()
         }
+        onSiPollRef.current(siRequest ?? null)
       } catch {
         // Silent by design: a failed poll degrades to exactly today's behaviour
         // (resync on focus / the refresh button). It must never raise the
@@ -1215,9 +1420,22 @@ export default function App() {
     }
     void tick()
     const t = setInterval(() => void tick(), VAULT_POLL_MS)
+    pollNowRef.current = () => void tick()
+    // Back on the tab: tick now rather than up to a poll interval later, so a
+    // waiting SI request pops the moment the page is looked at. Forgetting the
+    // token first makes this tick seed instead of diff — the visibility
+    // handler above already sweeps on the way back.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      vaultVersionRef.current = null
+      void tick()
+    }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       stopped = true
       clearInterval(t)
+      pollNowRef.current = null
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [served, disconnected, vaultGone])
 
@@ -2042,12 +2260,15 @@ export default function App() {
     pendingRemove !== null ||
     pendingVault !== null ||
     cockpitModalOpen ||
+    facetPopoverOpen ||
     projectsOpen ||
     observabilityOpen ||
     vaultManagerOpen ||
     agentPanelOpen ||
     // The Add-paper confirm dialog owns a text input + its own Esc.
     addUpload !== null ||
+    // The SI window: its own Done / Cancel / Esc, nothing behind it.
+    siWindow !== null ||
     // Trash mode owns its own (read-only) surface; suppress the library's global
     // shortcuts (PDF tools, ⌥-curation) while it is up — none apply there.
     trashMode
@@ -2273,6 +2494,8 @@ export default function App() {
           <>
             <BrowsePanel
               scoped={scoped}
+              universe={allPapers}
+              onPopoverChange={setFacetPopoverOpen}
               visible={visible}
               pinnedRows={pinnedVisible}
               pinnedHiddenCount={pins.length - pinnedVisible.length}
@@ -2337,6 +2560,8 @@ export default function App() {
               notify={notify}
               onRegisterHandle={registerCockpit}
               onModalState={setCockpitModalOpen}
+              onAddSi={openAddSi}
+              openFiles={openFiles}
             />
           </>
         )}
@@ -2374,9 +2599,12 @@ export default function App() {
       {whatsNew && <WhatsNew info={whatsNew} onClose={closeWhatsNew} />}
       {/* Drag-in ingest: the drop catcher is the ONLY GUI add entry (no
           button by design). Parked while the confirm dialog is up so a
-          second drop can't orphan the first stash. */}
+          second drop can't orphan the first stash, and while the SI window
+          is up: a file dropped there is an SI file, never a new paper. */}
       <DropZone
-        accepting={addUpload === null && !uploading && !trashMode}
+        accepting={
+          addUpload === null && !uploading && !trashMode && siWindow === null
+        }
         busy={uploading}
         onPdf={onPdfDropped}
         onReject={(m) => notify(m, 'info')}
@@ -2390,12 +2618,25 @@ export default function App() {
           onOpenExisting={(id) => onOpenExistingFromAdd(addUpload.handle, id)}
         />
       )}
+      {siWindow && (
+        <AddSi
+          key={siWindow.id}
+          seed={siWindow}
+          autoPopped={siWindow.auto}
+          refreshRef={siRefreshRef}
+          onAdded={onSiAdded}
+          onEnded={closeSiWindow}
+          onCancel={onSiCancel}
+          onGone={onSiGone}
+        />
+      )}
       {toast && (
         <Toast
+          key={toast.id}
           message={toast.message}
           variant={toast.variant}
           sticky={toast.sticky}
-          onDismiss={() => setToast(null)}
+          onDismiss={dismissToast}
         />
       )}
     </div>

@@ -127,6 +127,8 @@ def test_registry_drift_rm_routes_to_vault_remove(
     """
     _seed_two_entries_one_dangling(tmp_path)
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    # `lit vault remove` asks for itself, at the same terminal.
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _answer(monkeypatch, "rm")
     seen: list[str] = []
 
@@ -155,6 +157,8 @@ def test_registry_drift_rm_declined_changes_nothing(
     """
     _seed_two_entries_one_dangling(tmp_path)
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    # `lit vault remove` asks for itself, at the same terminal.
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _answer(monkeypatch, "rm")
 
     def abort(*_a: object, **_kw: object) -> bool:
@@ -438,6 +442,8 @@ def test_registry_drift_false_status_prompts(
         },
     )
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    # `lit vault remove` asks for itself, at the same terminal.
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     _answer(monkeypatch, "rm")
     monkeypatch.setattr(click, "confirm", lambda *a, **kw: True)
 

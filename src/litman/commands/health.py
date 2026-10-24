@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
@@ -34,10 +34,15 @@ from rich.markup import escape
 
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
+from litman.core import confirm as confirm_mod
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
+    DIRTY_NOTES_KEPT,
+    DIRTY_RENAMES,
+    UNFINISHED_RENAME_LEFT,
     Issue,
     apply_autofix,
+    finish_unfinished_renames,
     group_by_category,
     klass_a_checks,
     run_all_checks,
@@ -46,6 +51,9 @@ from litman.core.correctors import regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import ensure_truth_locked
+
+if TYPE_CHECKING:
+    from litman.core.supplementary import SiFixPolicy
 
 console = Console()
 
@@ -98,9 +106,13 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "placeholder_metadata": "Filler metadata (title / authors hold a placeholder)",
     "placeholder_id": "Filler inside a paper id (folder name, wikilink, cite key)",
     "weak_id_keyword": "Uninformative id keyword (and a title that cannot fix it)",
+    "dirty_metadata": (
+        "Line breaks, stray spaces or markup in title / journal / authors"
+    ),
     "paper_dir_validity": (
         "Paper directory integrity (dir name / parseable metadata / id / paper.pdf)"
     ),
+    "unfinished_rename": "Half-finished renames (folder name vs metadata id)",
     "duplicate_doi": "Duplicate DOIs (--paper-doi lookups become ambiguous)",
     "discussion_scaffold": "Discussion log scaffold (discussion.md + its format header)",
     "index_vs_disk": "INDEX.json vs papers/ on disk",
@@ -115,6 +127,9 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "relevance_orphan": "Orphan relevance-<project> annotations",
     "priority_orphan": "Orphan priority-<project> grades",
     "taxonomy_drift": "Taxonomy drift (unregistered values)",
+    "taxonomy_similar": "Look-alike vocabulary values (topics / methods / data)",
+    "taxonomy_unused": "Vocabulary values no paper uses",
+    "taxonomy_singletons": "Vocabularies mostly made of values used by one paper",
     "project_config_consistency": (
         "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"
     ),
@@ -129,6 +144,13 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
     "vault_registry_drift": "Vault registry drift (registered path missing)",
+    "supplementary_field": "SI records (the supplementary field in metadata.yaml)",
+    "supplementary_missing": "SI files recorded but missing",
+    "supplementary_changed": "SI files whose content changed",
+    "supplementary_unrecorded": "Files in supplementary/ with no record",
+    "supplementary_layout": "SI folder layout litman will not change (links, files, folders)",
+    "supplementary_unchecked": "SI litman cannot check (unreadable, or no checksum on record)",
+    "supplementary_cited": "SI citations in notes / discussion that no longer match",
 }
 
 
@@ -220,14 +242,21 @@ def _summarize(issues: list[Issue], n_papers: int) -> None:
     help=(
         "Auto-regenerate all derived artifacts from metadata, clean stale "
         "staging dirs / orphan trash sidecars, refresh stale installed agent "
-        "skills, migrate the retired paper-level `priority` onto "
+        "skills, rename a paper folder to the id in its metadata.yaml when a "
+        "rename stopped halfway, migrate the retired paper-level `priority` onto "
         "priority-<project> (a paper in no project loses it), drop relation "
         "links to papers no longer in the library (deleted, lost, or in the "
-        "trash), and put links back where a copied project folder left real "
+        "trash), rewrite titles, journal names and authors that carry line "
+        "breaks, stray spaces or markup (and the notes.md heading lit add "
+        "wrote from the title), record files found in a paper's "
+        "supplementary/ folder once "
+        "they check out and drop the records of SI files that are gone (both "
+        "ask first at a terminal), "
+        "and put links back where a copied project folder left real "
         "folders (one that does "
         "not match the vault is kept under .trash/replaced-folders/). "
-        "Registry / project / taxonomy / code-clone drift stays report-only "
-        "(it needs a per-case decision; --fix never picks a side)."
+        "Registry / project / code-clone drift and every taxonomy finding stay "
+        "report-only (each needs a per-case decision; --fix never picks a side)."
     ),
 )
 @click.option(
@@ -280,7 +309,8 @@ def health_check_cmd(
         console.print(
             f"[green]✓[/] Re-locked {n_relocked} TRUTH file"
             f"{'s' if n_relocked != 1 else ''} "
-            f"[dim](metadata.yaml / TAXONOMY.md / paper.pdf made read-only)[/]"
+            f"[dim](metadata.yaml / TAXONOMY.md / paper.pdf / SI files made "
+            "read-only)[/]"
         )
 
     issues = run_all_checks(vault, papers)
@@ -298,7 +328,14 @@ def health_check_cmd(
             for cat, n in applied.items():
                 # hub_* carry detail about the project-link rebuild, not a
                 # per-category count; they render under project_references.
-                if cat.startswith("hub_"):
+                # The kept notes.md and rename lists render under
+                # dirty_metadata, the folders left as they were under
+                # unfinished_rename.
+                if cat.startswith("hub_") or cat in (
+                    DIRTY_NOTES_KEPT,
+                    DIRTY_RENAMES,
+                    UNFINISHED_RENAME_LEFT,
+                ):
                     continue
                 if n > 0:
                     console.print(
@@ -308,6 +345,11 @@ def health_check_cmd(
                 if cat == "project_references":
                     _report_hub_settlements(applied)
                     hub_reported = True
+                if cat == "dirty_metadata":
+                    _report_notes_kept(applied)
+                    _report_renames(applied)
+                if cat == "unfinished_rename":
+                    _report_renames_left(applied)
             if not hub_reported:
                 # The rebuild can settle hub folders while some OTHER klass-A
                 # category is what fired it.
@@ -378,6 +420,110 @@ def _report_hub_settlements(applied: dict[str, Any]) -> None:
         console.print(f"    {line}", soft_wrap=True)
 
 
+def _report_notes_kept(applied: dict[str, Any]) -> None:
+    """Name each paper whose notes.md heading the metadata cleanup left alone.
+
+    Its title is clean in metadata.yaml now, but notes.md no longer opens with
+    the heading ``lit add`` wrote, so that line is the user's to change.
+    """
+    kept = applied.get(DIRTY_NOTES_KEPT)
+    for folder in kept if isinstance(kept, list) else []:
+        console.print(
+            f"    [yellow]kept[/] {escape(folder)}: notes.md heading differs "
+            "from the one lit add wrote, left as is",
+            soft_wrap=True,
+        )
+
+
+def _report_renames(applied: dict[str, Any]) -> None:
+    """Give the ``lit rename`` for each id made from a title the fix cleaned.
+
+    The report's finding said so too, but it can sit past the per-category
+    fold, and once the title is clean no later run can tell.
+    """
+    renames = applied.get(DIRTY_RENAMES)
+    for pid, target in renames if isinstance(renames, list) else []:
+        console.print(
+            f"    [yellow]rename[/] {escape(pid)}: `lit rename {escape(pid)} "
+            f"{escape(target)}` if you want the id to match the clean title",
+            soft_wrap=True,
+        )
+
+
+def _report_renames_left(applied: dict[str, Any]) -> None:
+    """Name each folder the ``unfinished_rename`` arm could not rename.
+
+    The finding stays in the report after the fix, but the reason the move
+    failed is known only now.
+    """
+    left = applied.get(UNFINISHED_RENAME_LEFT)
+    for folder, _target, reason in left if isinstance(left, list) else []:
+        # The finding above names the id it was to take; this line says why
+        # not and what to do, and names no op id.
+        console.print(
+            f"    [yellow]left[/] papers/{escape(folder)}/: {escape(reason)}",
+            soft_wrap=True,
+        )
+
+
+def _si_fix_policy() -> SiFixPolicy:
+    """How ``--fix`` settles the SI cases it must not decide alone.
+
+    At a terminal it asks: whether to drop the records of SI files that are
+    gone (default yes — the file is not there) and whether to record a file it
+    cannot confirm belongs to the paper (default no). With nobody to ask it
+    does neither and prints the command that would.
+    """
+    from litman.core.supplementary import SiFixPolicy, shell_path, si_stem
+    from litman.core.undecodable import printable
+
+    interactive = confirm_mod._stdin_is_tty()
+
+    def confirm_drop(paper_id: str, names: list[str]) -> bool:
+        listed = ", ".join(names)
+        if interactive:
+            return click.confirm(
+                f"{paper_id}: {listed} recorded but missing. "
+                "Drop the record(s)?",
+                default=True,
+            )
+        flags = " ".join(f"--si {si_stem(name)}" for name in names)
+        record, them = ("record", "it") if len(names) == 1 else ("records", "them")
+        console.print(
+            f"  [yellow]kept[/] {escape(paper_id)}: {record} of missing "
+            f"{escape(listed)} [dim](drop {them}: `lit rm {escape(paper_id)} "
+            f"{flags} --yes`)[/]",
+            soft_wrap=True,
+        )
+        return False
+
+    # A name that is not UTF-8 text is shown with U+FFFD, as its record will
+    # hold it; the command carries the real bytes (shell_path), so it pastes back.
+    def confirm_unverified(paper_id: str, path: Path, verdict: Any) -> bool:
+        if interactive:
+            return click.confirm(
+                f"{paper_id}: can't confirm {printable(path.name)} belongs to it. "
+                "Record it anyway?",
+                default=False,
+            )
+        command = f"lit add --si {paper_id} {shell_path(path)} --force"
+        console.print(
+            f"  [yellow]left[/] {escape(printable(str(path)))}: can't confirm it belongs "
+            f"to {escape(paper_id)} [dim](record it: `{escape(command)}`)[/]",
+            soft_wrap=True,
+        )
+        return False
+
+    def on_rejected(paper_id: str, path: Path, verdict: Any) -> None:
+        console.print(
+            f"  [yellow]left[/] {escape(printable(str(path)))}: {escape(verdict.reason)} "
+            "[dim](move it out of supplementary/)[/]",
+            soft_wrap=True,
+        )
+
+    return SiFixPolicy(confirm_drop, confirm_unverified, on_rejected)
+
+
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
 
@@ -386,7 +532,8 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     * **klass-A regen** — any klass-A category present (derived↔truth drift)
       triggers a single full ``regen`` (drop INDEX.json + views, recompute from
       metadata). Lossless. Reported under each fired klass-A category for
-      transparency.
+      transparency. A half-renamed paper's folder is renamed before it
+      (``unfinished_rename``), and a folder that moved triggers the regen too.
     * **validity** — ``stale_staging`` roll-back/forward and
       ``orphan_trash_sidecar`` removal stay routed through
       :func:`apply_autofix`, unchanged, alongside the scaffold / skill / retired
@@ -397,14 +544,30 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     here — it needs a per-case user decision (the Tier-1 ``resolve`` prompt or
     an explicit ``lit`` command). Returns ``{category: n_fixed}`` plus, when a
     klass-A regen ran, ``hub_replaced_copies`` / ``hub_moved_aside`` — detail
-    about the project-link rebuild, not categories.
+    about the project-link rebuild, not categories — and, from the
+    ``dirty_metadata`` arm, ``dirty_metadata_notes_kept`` /
+    ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_KEPT`` /
+    ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name, and
+    ``unfinished_rename_left`` (``checks.UNFINISHED_RENAME_LEFT``) when a
+    folder could not be renamed.
     """
     counts: dict[str, Any] = {}
+
+    # Folders first. Until a half-renamed paper's folder carries its metadata
+    # id, the rebuild links views and project hubs to a folder that is not
+    # there — on Windows that fails and reads as "cannot hold folder links".
+    moved = 0
+    if any(i.category == "unfinished_rename" for i in issues):
+        moved, left = finish_unfinished_renames(vault)
+        counts["unfinished_rename"] = moved
+        if left:
+            counts[UNFINISHED_RENAME_LEFT] = left
+        issues = [i for i in issues if i.category != "unfinished_rename"]
 
     klass_a_present = {
         i.category for i in issues if i.category in _KLASS_A_CATEGORIES
     }
-    if klass_a_present:
+    if klass_a_present or moved:
         regenerated = regen(vault, issues)
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.
@@ -416,5 +579,5 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
             if key in regenerated:
                 counts[key] = regenerated[key]
 
-    counts.update(apply_autofix(vault, issues))
+    counts.update(apply_autofix(vault, issues, si_policy=_si_fix_policy()))
     return counts

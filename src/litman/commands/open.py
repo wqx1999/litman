@@ -1,18 +1,29 @@
-"""``lit open <id>`` — resolve id and launch a PDF viewer (M9.1).
+"""``lit open <id>`` — resolve id and launch a PDF viewer.
 
 Thin wrapper: resolves the paper id (exact or substring match), validates
 ``paper.pdf`` exists, dispatches to a viewer per ``core.viewer``. No state
 file, no skill hook — the rationale lives in ADR-004 (lit-open-no-state).
+``--si NAME`` opens one of the paper's SI files instead, with this machine's
+default app.
 
-Spawning the viewer is fire-and-forget so the user's shell isn't blocked
-waiting for the GUI viewer to close.
+The viewer is waited on only long enough to hear it fail
+(``core.viewer.OPEN_WAIT_S``), so the user's shell isn't blocked waiting for
+the GUI viewer to close.
 
-Exit codes (per M9 spec):
+Exit codes:
     0 — viewer launched.
-    1 — paper resolve failure (id not found, multiple matches, pdf missing).
-    2 — viewer launch failure (no usable viewer); path printed for manual
-        handling so the shell pipe / scripts can distinguish "paper missing"
-        from "you don't have a viewer".
+    1 — paper resolve failure (id not found, multiple matches, pdf missing);
+        with --si, no such SI file, or one the default app would run (path
+        printed).
+    2 — viewer launch failure (no usable viewer, or no app took the file;
+        with --si, also an SSH session); path printed for manual handling so
+        the shell pipe / scripts can distinguish "paper missing" from "you
+        don't have a viewer".
+
+The ``Opened`` line and the ``error:`` lines this command prints itself are
+soft-wrapped, and path lines unwrapped (``commands/_path_lines``): piped, the
+console is 80 columns wide, and a message or a path folded across lines reads
+as two.
 """
 
 from __future__ import annotations
@@ -25,6 +36,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from litman.commands._options import library_option, vault_option
+from litman.commands._path_lines import print_unwrapped
 from litman.core.config import load_config
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import (
@@ -32,7 +44,12 @@ from litman.core.paper_lookup import (
     find_paper_id_by_doi,
     most_recent_paper_id,
 )
-from litman.core.viewer import launch_pdf, resolve_paper_id
+from litman.core.viewer import (
+    is_ssh_session,
+    launch_file,
+    launch_pdf,
+    resolve_paper_id,
+)
 from litman.exceptions import (
     AmbiguousPaperIdError,
     LitmanError,
@@ -40,6 +57,73 @@ from litman.exceptions import (
 )
 
 console = Console()
+
+
+def _open_si(vault: Path, paper_id: str, name: str) -> None:
+    """``lit open PAPER --si NAME``: one recorded SI file, in the default app.
+
+    A PDF goes to ``default_pdf_viewer`` when one is set, as the paper's PDF
+    does — that viewer may well work without a desktop of this machine's own
+    (``ssh -X``). Anything else is refused up front in an SSH session, where
+    it would reach no screen in front of the user; elsewhere
+    :func:`~litman.core.viewer.launch_file` names what is missing (a display,
+    an opener). A file the default app would run is never handed to it.
+    """
+    from litman.core import supplementary
+    from litman.core.document import find_paper
+    from litman.exceptions import SupplementaryError
+
+    meta = find_paper(vault, paper_id)
+    records = supplementary.list_supplementary(meta)
+    if not records:
+        console.print(
+            f"[bold red]error:[/] {escape(paper_id)} has no SI files. "
+            f"Run lit add --si {escape(paper_id)} to add them.",
+            soft_wrap=True,
+        )
+        sys.exit(1)
+    try:
+        (record,) = supplementary.resolve_si_records(paper_id, meta, [name])
+    except SupplementaryError:
+        console.print(
+            f"[bold red]error:[/] {escape(paper_id)} has no SI file "
+            f"{escape(repr(name))}. Its SI files:",
+            soft_wrap=True,
+        )
+        for rec in records:
+            label = supplementary.original_label(rec) or "?"
+            console.print(f"  {escape(rec['file'])} ({escape(label)})", soft_wrap=True)
+        sys.exit(1)
+
+    file = record["file"]
+    path, _record = supplementary.recorded_si_file(vault, paper_id, file)
+    path_line = [f"[dim]SI path:[/] {escape(str(path))}"]
+    if supplementary.is_runnable_si(file):
+        console.print(
+            f"[bold red]error:[/] {escape(file)} could be run, not viewed.",
+            soft_wrap=True,
+        )
+        print_unwrapped(console, path_line)
+        sys.exit(1)
+    configured = load_config(vault).default_pdf_viewer if file.endswith(".pdf") else None
+    if not configured and is_ssh_session():
+        console.print(
+            f"[bold red]error:[/] This session has no desktop to open {escape(file)} on.",
+            soft_wrap=True,
+        )
+        print_unwrapped(console, path_line)
+        sys.exit(2)
+    try:
+        cmd, source = launch_file(path, configured)
+    except FileNotFoundError as e:
+        console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
+        print_unwrapped(console, path_line)
+        sys.exit(2)
+    console.print(
+        f"[green]Opened[/] [bold]{escape(paper_id)} {escape(file)}[/] "
+        f"[dim](viewer: {escape(cmd)}, {source})[/]",
+        soft_wrap=True,
+    )
 
 
 @click.command("open")
@@ -55,11 +139,22 @@ console = Console()
         "Mutually exclusive with the positional paper id."
     ),
 )
+@click.option(
+    "--si",
+    "si_name",
+    default=None,
+    metavar="NAME",
+    help=(
+        "Open one of the paper's SI files (si-02, or si-02.xlsx) instead of "
+        "its PDF, in this machine's default app."
+    ),
+)
 @library_option
 @vault_option
 def open_cmd(
     paper_id: str | None,
     paper_doi: str | None,
+    si_name: str | None,
     library: Path | None,
     vault_name: str | None,
 ) -> None:
@@ -70,7 +165,8 @@ def open_cmd(
     otherwise accepts a full id, a unique case-insensitive substring, or
     omit it and pass --paper-doi <DOI> instead. Multiple substring matches
     print the candidate list and exit 1 so the user can re-run with a more
-    specific id.
+    specific id. With --si NAME, opens one of the paper's SI files instead
+    (`lit show` lists them).
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
@@ -109,6 +205,10 @@ def open_cmd(
             )
             sys.exit(1)
 
+    if si_name is not None:
+        _open_si(vault, resolved_id, si_name)
+        return
+
     pdf_path = vault / "papers" / resolved_id / "paper.pdf"
     if not pdf_path.is_file():
         raise PaperNotFoundError(
@@ -119,11 +219,12 @@ def open_cmd(
     try:
         cmd, source = launch_pdf(pdf_path, config.default_pdf_viewer)
     except FileNotFoundError as e:
-        console.print(f"[bold red]error:[/] {escape(str(e))}")
-        console.print(f"[dim]PDF path:[/] {escape(str(pdf_path))}")
+        console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
+        print_unwrapped(console, [f"[dim]PDF path:[/] {escape(str(pdf_path))}"])
         sys.exit(2)
 
     console.print(
         f"[green]Opened[/] [bold]{escape(resolved_id)}[/] "
-        f"[dim](viewer: {escape(cmd)}, {source})[/]"
+        f"[dim](viewer: {escape(cmd)}, {source})[/]",
+        soft_wrap=True,
     )

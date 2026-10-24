@@ -21,9 +21,11 @@ Cross-references:
 
 * M2.0 added ``created-at`` / ``updated-at``. M2.8 enforces them.
 * M2.3 added ``.litman-staging/``. M2.8 surfaces leftovers.
-* M2.6 ``lit rename`` is two-phase (file content via staged_write, then
-  ``os.rename`` of the dir). A failure between phases leaves dir name and
-  metadata id out of sync — caught by :func:`check_paper_dir_validity`.
+* ``lit rename`` moves the paper's folder inside its staged_write, so a
+  failed rename leaves the library as it was. A dir name that still differs
+  from its metadata id (a library an older ``lit rename`` left halfway, or a
+  hand edit) is caught by :func:`check_paper_dir_validity`,
+  and ``--fix`` renames the folder when that is safe (``unfinished_rename``).
 * M2.7 ``lit rm`` is also two-phase; orphan paper dirs (file commit
   succeeded but ``move_to_trash`` failed) surface via
   :func:`check_paper_dir_validity` (structural) and
@@ -36,16 +38,23 @@ Cross-references:
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
 
 from ruamel.yaml import YAMLError
 
-from litman.core.atomic import cleanup_stale_staging
+from litman.core.atomic import (
+    DirMoveError,
+    cleanup_stale_staging,
+    op_moving_folders,
+    staged_write,
+)
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
 from litman.core.dates import (
     date_ordering_violations,
@@ -53,10 +62,17 @@ from litman.core.dates import (
     is_iso_datetime,
 )
 from litman.core.dedup import normalize_doi
-from litman.core.document import library_paper_ids, malformed_list_fields
+from litman.core.document import (
+    library_paper_ids,
+    list_papers,
+    malformed_list_fields,
+)
 from litman.core.id import (
+    derive_id,
+    derive_id_without_transliteration,
     derive_keyword,
     family_segment,
+    find_case_fold_collision,
     first_author_family,
     is_valid_id,
     is_weak_keyword,
@@ -75,12 +91,20 @@ from litman.core.portable_link import (
     links_unsupported_hint,
 )
 from litman.core.relations import (
+    ALL_REF_FIELDS,
     RELATION_PAIRS,
     REVERSE_REF_FIELDS,
     dangling_relation_edges,
     relation_refs,
 )
-from litman.core.taxonomy import USER_DICTS, parse_taxonomy
+from litman.core.taxonomy import (
+    USER_DICTS,
+    count_usage,
+    parse_taxonomy,
+    read_taxonomy_text,
+)
+from litman.core.taxonomy_similarity import similar_values
+from litman.core.textclean import dirty_text_fields
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
@@ -88,12 +112,19 @@ from litman.core.trash import (
     is_trash_entry_name,
     list_trash,
 )
+from litman.core.undecodable import printable
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
     ConfigError,
+    IDError,
     MalformedMetadataError,
+    UnreadableTaxonomyError,
     VaultRegistryError,
 )
+
+if TYPE_CHECKING:
+    from litman.core.si_citations import CitationProblem
+    from litman.core.supplementary import SiFixPolicy
 
 _yaml = ThreadLocalYAML(typ="safe")
 
@@ -204,6 +235,31 @@ class CheckSpec:
 # edge it carries itself and gets their other halves back on restore; the cost
 # is a half-edge only the surviving paper held. Per-finding consent again, the
 # same way: an edge into the trash gets its own message, offering the restore.
+#
+# ``supplementary_missing`` / ``supplementary_unrecorded`` are the SI pair, and
+# the only arms that ask before acting. Recording a file found in a paper's
+# supplementary/ folder verifies it first and never takes one that belongs
+# elsewhere; one that cannot be confirmed goes in only on a yes. Dropping the
+# record of an SI file that is gone loses a pointer to nothing, but a
+# half-pulled sync looks the same, so it is asked about too (default yes) —
+# and with no one to ask, both are left in the report with the explicit
+# command that would do it.
+#
+# ``dirty_metadata`` is lossless again: a title, venue or author name still
+# carrying line breaks, indentation or markup from a publisher's record is
+# rewritten as the plain line it reads as — every word kept, only the layout
+# and the tags gone. Never the id (the finding names the `lit rename` when the
+# id was made from the broken title), and notes.md only when its first line is
+# exactly the heading `lit add` wrote from that title.
+#
+# ``unfinished_rename`` is lossless where it is offered: it moves a paper's
+# folder to the id its metadata.yaml holds and writes no content. It is
+# offered only when that id is valid and free, no other folder claims it, no
+# unfinished write in .litman-staging/ moves either folder, and nothing in the
+# library — a relation field, a wikilink, a bound repo — still names the
+# folder (_unfinished_rename_blocker). Any other mismatch stays a
+# `paper_dir_validity` finding for a person. `lit health-check --fix` runs it
+# itself, before the derived rebuild (commands/health.py, _apply_fixes).
 AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     {
         "stale_staging",
@@ -212,8 +268,22 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
         "skill_drift",
         "retired_priority",
         "dangling_refs",
+        "supplementary_missing",
+        "supplementary_unrecorded",
+        "dirty_metadata",
+        "unfinished_rename",
     }
 )
+
+# Key under which apply_autofix reports the papers whose notes.md heading the
+# dirty_metadata arm left alone. Detail for the CLI to print, not a category.
+DIRTY_NOTES_KEPT = "dirty_metadata_notes_kept"
+# Same, for the (id, clean-derived id) pairs of papers whose id came from the
+# title that arm cleaned: the `lit rename` it leaves to the user.
+DIRTY_RENAMES = "dirty_metadata_renames"
+# Key under which `lit health-check --fix` reports the (folder, metadata id,
+# why and what to do) of each folder finish_unfinished_renames could not move.
+UNFINISHED_RENAME_LEFT = "unfinished_rename_left"
 
 # Threshold (days) for ``status: inbox`` papers to be flagged as stale.
 INBOX_STALE_DAYS = 14
@@ -619,6 +689,115 @@ def check_placeholder_metadata(
     return out
 
 
+def check_dirty_metadata(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Titles, venues and author names with line breaks, stray spaces or markup.
+
+    CrossRef returns what the publisher deposited, and some deposits are
+    pretty-printed XML: a title with line breaks and indentation inside it, an
+    ``<i>`` around one word. ``lit add`` cleans them at the door now
+    (``core/textclean.py``); these are the papers stored before it did. One
+    finding per field — title, journal, booktitle, publisher — and one for the
+    author list naming its dirty entries. The message shows the value with
+    ``repr`` so the line breaks are visible.
+
+    Warning, not error: nothing is inconsistent, the text just reads wrong.
+    Unlike the placeholder checks the repair is mechanical and loses no word,
+    so ``--fix`` makes it (:func:`litman.core.ripple.clean_dirty_metadata`,
+    reading the same :func:`~litman.core.textclean.dirty_text_fields`). It
+    never touches the id; when the id was derived from the broken title, the
+    title's hint adds the ``lit rename`` that would derive it from the clean
+    one.
+    """
+    out: list[Issue] = []
+    for p in papers:
+        dirty = dirty_text_fields(p)
+        if not dirty:
+            continue
+        pid = p.get("id") or "(unknown)"
+        for field, clean in dirty.items():
+            if field == "authors":
+                changed = [
+                    (a, c) for a, c in zip(p[field], clean, strict=True) if a != c
+                ]
+                stored = ", ".join(repr(a) for a, _ in changed)
+                written = ", ".join(repr(c) for _, c in changed)
+            else:
+                stored, written = repr(p[field]), repr(clean)
+            hint = f"`lit health-check --fix` writes {written}"
+            if field == "title":
+                target = _clean_title_rename_target(p, dirty)
+                if target is not None:
+                    hint += (
+                        f", then `lit rename {pid} {target}` if you want the "
+                        "id to match"
+                    )
+            out.append(
+                Issue(
+                    category="dirty_metadata",
+                    severity="warning",
+                    paper_id=pid,
+                    message=(
+                        f"{field} has line breaks, stray spaces or markup: "
+                        f"{stored}"
+                    ),
+                    hint=hint,
+                )
+            )
+    return out
+
+
+def _clean_title_rename_target(
+    paper: dict[str, Any], dirty: dict[str, Any]
+) -> str | None:
+    """The id the clean title derives, if the current id came from the dirty one.
+
+    Only an id ``derive_id`` produced from the stored title and authors is a
+    machine accident worth undoing; one that does not match was chosen by
+    hand (``--id``, a ``lit rename``) or carries a collision suffix, and is
+    left alone. So is an id the clean title would derive anyway — line breaks
+    alone never reached it, because the keyword is built from whitespace-split
+    words. An id from before accented letters were transliterated
+    (``2021_Mller_…`` for ``Müller``) counts as derived too, and is held to the
+    same test under the rule that made it; the target is always what the
+    current rule derives.
+    """
+    pid = paper.get("id")
+    if not isinstance(pid, str):
+        return None
+    authors = paper.get("authors")
+    if not isinstance(authors, list):
+        authors = []
+    year = paper.get("year")
+    clean_authors = dirty.get("authors", authors)
+    rules = [
+        derive
+        for derive in (derive_id, derive_id_without_transliteration)
+        if _derive_or_none(derive, year, authors, paper["title"]) == pid
+    ]
+    if not rules or any(
+        _derive_or_none(derive, year, clean_authors, dirty["title"]) == pid
+        for derive in rules
+    ):
+        return None
+    target = _derive_or_none(derive_id, year, clean_authors, dirty["title"])
+    return target if target != pid else None
+
+
+def _derive_or_none(
+    derive: Callable[[Any, str, str], str],
+    year: Any,
+    authors: list[Any],
+    title: str,
+) -> str | None:
+    family = first_author_family([a for a in authors if isinstance(a, str)])
+    try:
+        return derive(year, family, title)
+    except IDError:
+        return None
+
+
 def _rename_target(paper: dict[str, Any], parts: list[str]) -> tuple[str, bool]:
     """The id ``paper`` should be renamed to, and whether it is fully computed.
 
@@ -793,6 +972,125 @@ def check_weak_id_keyword(
     return out
 
 
+def _unfinished_rename_blocker(
+    vault: Path,
+    folder: str,
+    metadata: dict[str, Any],
+    papers: list[dict[str, Any]],
+) -> str | None:
+    """Why ``--fix`` must not rename ``papers/<folder>/`` to its metadata id.
+
+    ``None`` when it may: the metadata id is a valid id, it differs from the
+    folder name by more than case, no other entry under ``papers/`` is a case
+    variant of it, ``papers/<id>`` does not exist, no leftover op in
+    ``.litman-staging/`` moves either folder, no other paper in ``papers``
+    claims the id, and nothing in the library still names the folder. Otherwise the
+    hint saying what to do by hand. The check and the fix both ask here, so
+    ``--fix`` renames exactly the folders the report offered.
+
+    The case questions come before the disk is asked: where the filesystem
+    ignores case, ``papers/<id>`` "exists" whenever a case variant does, and
+    asking them first gives the same verdict on every platform.
+
+    The last question is what makes the move lossless. A folder the library
+    still calls by its name — an id edited by hand rather than a rename that
+    stopped halfway — would leave every such link dangling, and the next
+    ``--fix`` would drop them.
+    """
+    meta_id = metadata.get("id")
+    if not isinstance(meta_id, str) or not is_valid_id(meta_id):
+        return (
+            f"{meta_id!r} is not a valid paper id: set id in metadata.yaml "
+            f"back to {folder!r} by hand"
+        )
+    if meta_id.casefold() == folder.casefold():
+        return (
+            "the two differ only in case: rename the folder to "
+            f"papers/{meta_id}/ by hand"
+        )
+    papers_dir = vault / "papers"
+    others = [p.name for p in papers_dir.iterdir() if p.name != folder]
+    clash = find_case_fold_collision(others, meta_id)
+    if clash is not None:
+        return (
+            f"papers/{clash}/ differs from {meta_id!r} only in case: keep one "
+            "of the two by hand"
+        )
+    if os.path.lexists(papers_dir / meta_id):
+        return (
+            f"papers/{meta_id}/ exists too: compare the two folders and keep "
+            "one by hand"
+        )
+    op = op_moving_folders(vault, {f"papers/{folder}", f"papers/{meta_id}"})
+    if op is not None:
+        return (
+            f".litman-staging/{op}/ still moves this folder: settle that "
+            "finding first"
+        )
+    if sum(1 for paper in papers if paper.get("id") == meta_id) > 1:
+        # Counted from the list in memory; the disk is read only to name it.
+        twin = next(
+            (n for n in others if _declared_id(papers_dir / n) == meta_id),
+            "another folder",
+        )
+        return (
+            f"papers/{folder}/ and papers/{twin}/ both claim {meta_id!r}: "
+            "decide by hand which one keeps it"
+        )
+    where = _still_naming(vault, folder, metadata, papers)
+    if where is not None:
+        return (
+            f"{where} still names {folder!r}: set id in metadata.yaml back to "
+            f"{folder!r} by hand, then `lit rename {folder} {meta_id}`"
+        )
+    return None
+
+
+def _declared_id(paper_dir: Path) -> object:
+    """The ``id`` a folder's metadata.yaml declares, or ``None`` if unreadable."""
+    try:
+        data = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
+    except (OSError, YAMLError, UnicodeDecodeError):
+        return None
+    return data.get("id") if isinstance(data, dict) else None
+
+
+def _still_naming(
+    vault: Path,
+    folder: str,
+    metadata: dict[str, Any],
+    papers: list[dict[str, Any]],
+) -> str | None:
+    """Where the library still names ``folder`` as a paper id, or ``None``.
+
+    Relation fields come from ``papers`` (already in memory), the bound
+    repos from the paper's own ``code-clones``; the notes are read last, and
+    only because a mismatch was found.
+    """
+    for paper in papers:
+        for field in ALL_REF_FIELDS:
+            if folder in relation_refs(paper.get(field)):
+                return f"{paper.get('id')}'s {field}"
+    for repo in relation_refs(metadata.get("code-clones")):
+        repo_meta = vault / CODES_DIRNAME / repo / REPO_META_FILENAME
+        try:
+            bound = _yaml.load(repo_meta.read_text(encoding="utf-8"))
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if isinstance(bound, dict) and folder in relation_refs(bound.get("papers")):
+            return f"{CODES_DIRNAME}/{repo}/{REPO_META_FILENAME}"
+    for md_path in enumerate_markdown_files(vault):
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for m in _WIKILINK_RE.finditer(_HTML_COMMENT_RE.sub("", text)):
+            vault_prefix, target = parse_wikilink_target(m.group(1))
+            if vault_prefix is None and target == folder:
+                return md_path.relative_to(vault).as_posix()
+    return None
+
+
 def check_paper_dir_validity(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -815,7 +1113,10 @@ def check_paper_dir_validity(
       field that holds something else — the paper is invisible to
       ``list_papers``, ``INDEX``, and every metadata-keyed check, so it is
       reported here instead of vanishing silently;
-    * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename);
+    * ``metadata.yaml`` ``id`` field ≠ directory name (half-finished rename)
+      — under ``unfinished_rename`` instead when ``--fix`` can rename the
+      folder (:func:`_unfinished_rename_blocker`), so one check emits two
+      categories, as :func:`check_schema` does;
     * ``paper.pdf`` missing (``lit open`` depends on it; irreplaceable).
 
     ``notes.md`` absence is NOT checked — empty/deleted is a legitimate state
@@ -934,18 +1235,26 @@ def check_paper_dir_validity(
             else:
                 meta_id = data.get("id")
                 if meta_id and meta_id != child.name:
+                    blocker = _unfinished_rename_blocker(
+                        vault, child.name, data, papers
+                    )
                     out.append(
                         Issue(
-                            category="paper_dir_validity",
+                            category=(
+                                "unfinished_rename"
+                                if blocker is None
+                                else "paper_dir_validity"
+                            ),
                             severity="error",
                             paper_id=child.name,
                             message=(
                                 f"directory name {child.name!r} != metadata id "
                                 f"{meta_id!r} (likely a half-finished rename)"
                             ),
-                            hint=(
-                                f"reconcile manually: rename dir or "
-                                f"`lit modify {child.name} --set id={child.name}`"
+                            hint=blocker
+                            or (
+                                "`lit health-check --fix` renames the folder "
+                                f"to papers/{meta_id}/"
                             ),
                         )
                     )
@@ -1398,7 +1707,7 @@ def check_dangling_wikilinks(
         rel = md_path.relative_to(vault)
         try:
             text = md_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             # No silent-skip (M30 / invariant #14): a notes file we cannot read
             # means its wikilinks go unchecked, which is itself a finding.
             out.append(
@@ -1703,8 +2012,8 @@ def check_taxonomy_drift(
             )
         ]
     try:
-        registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
-    except OSError as exc:
+        registered = parse_taxonomy(read_taxonomy_text(vault))
+    except UnreadableTaxonomyError as exc:
         # No silent-skip (invariant #14): the file is present but unreadable
         # (permissions, non-UTF-8, dropped mount). Swallowing it would report a
         # clean vault while taxonomy governance is actually un-checkable — and
@@ -1715,11 +2024,14 @@ def check_taxonomy_drift(
                 severity="error",
                 paper_id=None,
                 message=(
-                    f"TAXONOMY.md is present but unreadable "
-                    f"({exc.__class__.__name__}): taxonomy drift cannot be "
-                    "checked"
+                    f"TAXONOMY.md is present but unreadable ({exc.reason}): "
+                    "taxonomy drift cannot be checked"
                 ),
-                hint="fix the file's permissions / encoding, then re-run",
+                hint=(
+                    "re-save TAXONOMY.md as UTF-8, then re-run"
+                    if exc.not_utf8
+                    else "make TAXONOMY.md readable, then re-run"
+                ),
             )
         ]
     out: list[Issue] = []
@@ -1744,6 +2056,131 @@ def check_taxonomy_drift(
                             ),
                         )
                     )
+    return out
+
+
+# The dicts the vocabulary checks below read: the words the user made up. An
+# unused project is normal (a new one has no papers yet), and the fixed enums
+# are not the user's vocabulary.
+_VOCAB_DICTS: tuple[str, ...] = ("topics", "methods", "data")
+
+# taxonomy_singletons fires when at least this many values of a dict are used
+# by exactly one paper each AND they are at least this share of the dict. The
+# share alone would fire on any small library (7 of 9 methods in an 18-paper
+# one), the count alone on any large one.
+SINGLETON_MIN = 10
+SINGLETON_PERCENT = 30
+
+
+def _registered_vocab(vault: Path) -> dict[str, list[str]] | None:
+    """TAXONOMY.md's dicts, or None when the file is missing or unreadable.
+
+    Either case is check_taxonomy_drift's finding; the vocabulary checks stay
+    silent rather than report it again.
+    """
+    try:
+        text = read_taxonomy_text(vault)
+    except UnreadableTaxonomyError:
+        return None
+    return parse_taxonomy(text)
+
+
+def check_taxonomy_similar(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Pairs of registered topics / methods / data values that look alike.
+
+    One finding per pair, worded and ranked by
+    :func:`~litman.core.taxonomy_similarity.similar_values`. The hint merges
+    the less-used value into the more-used one (alphabetical on a tie); which
+    name to keep, or whether to keep both, is the user's call — so this
+    reports and never fixes.
+    """
+    registered = _registered_vocab(vault)
+    if registered is None:
+        return []
+    out: list[Issue] = []
+    for dict_name in _VOCAB_DICTS:
+        values = registered[dict_name]
+        used_by = count_usage(papers, dict_name, values)
+        for i, value in enumerate(values):
+            for other, reason in similar_values(value, values[i + 1 :]):
+                keep, drop = sorted((value, other), key=lambda v: (-used_by[v], v))
+                out.append(
+                    Issue(
+                        category="taxonomy_similar",
+                        severity="info",
+                        paper_id=None,
+                        message=f"{dict_name}: {drop!r} looks like {keep!r} ({reason})",
+                        hint=(
+                            f"merge with `lit taxonomy merge {dict_name} "
+                            f"{shlex.quote(drop)} --into {shlex.quote(keep)}`"
+                        ),
+                    )
+                )
+    return out
+
+
+def check_taxonomy_unused(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Registered topics / methods / data values that no paper uses.
+
+    Report-only: a value can be registered ahead of the papers it is for.
+    """
+    registered = _registered_vocab(vault)
+    if registered is None:
+        return []
+    out: list[Issue] = []
+    for dict_name in _VOCAB_DICTS:
+        used_by = count_usage(papers, dict_name, registered[dict_name])
+        for value, n in used_by.items():
+            if n == 0:
+                out.append(
+                    Issue(
+                        category="taxonomy_unused",
+                        severity="info",
+                        paper_id=None,
+                        message=f"{dict_name}: {value!r} is used by no paper",
+                        hint=f"remove with `lit taxonomy rm {dict_name} {shlex.quote(value)}`",
+                    )
+                )
+    return out
+
+
+def check_taxonomy_singletons(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Dicts where many values are each used by a single paper.
+
+    One finding per dict past :data:`SINGLETON_MIN` and
+    :data:`SINGLETON_PERCENT`. Which of those values belong together is a
+    judgment about meaning, so the hint hands it to the agent's vocabulary
+    review rather than naming a command.
+    """
+    registered = _registered_vocab(vault)
+    if registered is None:
+        return []
+    out: list[Issue] = []
+    for dict_name in _VOCAB_DICTS:
+        values = registered[dict_name]
+        used_by = count_usage(papers, dict_name, values)
+        once = sum(1 for n in used_by.values() if n == 1)
+        if once >= SINGLETON_MIN and once * 100 >= SINGLETON_PERCENT * len(values):
+            out.append(
+                Issue(
+                    category="taxonomy_singletons",
+                    severity="info",
+                    paper_id=None,
+                    message=(
+                        f"{dict_name}: {once} of {len(values)} values are used by one paper"
+                    ),
+                    hint=(
+                        f"see the counts with `lit taxonomy list {dict_name}`, "
+                        "then ask your agent to tidy the vocabulary"
+                    ),
+                )
+            )
     return out
 
 
@@ -1840,8 +2277,8 @@ def check_project_config_consistency(
     if not taxonomy_file.is_file():
         return []
     try:
-        registered = parse_taxonomy(taxonomy_file.read_text(encoding="utf-8"))
-    except OSError:
+        registered = parse_taxonomy(read_taxonomy_text(vault))
+    except UnreadableTaxonomyError:
         # Unreadable TAXONOMY.md is OWNED by check_taxonomy_drift (it emits the
         # error); deferring here keeps it a single report (invariant #14 is
         # satisfied by the other check, not violated by this return []).
@@ -2620,7 +3057,9 @@ def check_stale_staging(
 
     * No ``COMMITTED`` sentinel → clean abort before the commit decision
       point. Normal, recoverable via roll-back → ``info`` severity, in
-      ``AUTO_FIXABLE_CATEGORIES`` (``--fix`` rolls it back).
+      ``AUTO_FIXABLE_CATEGORIES`` (``--fix`` rolls it back). When its
+      manifest lists a folder already moved, the finding says the folder
+      will be moved back — the roll-back is more than deleting the dir.
     * ``COMMITTED`` present, manifest fully replayable → torn commit that
       roll-forward can finish → ``info`` severity, auto-fixable. (In
       practice the vault-open hook has already healed this before
@@ -2634,7 +3073,15 @@ def check_stale_staging(
     recovery classifier without mutating anything (``--fix`` performs the
     actual roll-back / roll-forward through ``cleanup_stale_staging``).
     """
-    from litman.core.atomic import _SENTINEL_FILENAME, RecoveryResult
+    from litman.core.atomic import (
+        _SENTINEL_FILENAME,
+        RecoveryResult,
+        _dir_move_plan,
+        _folders_unreadable_message,
+        _manifest_unreadable_message,
+        _moved_back_message,
+        _read_manifest_dir_moves,
+    )
 
     out: list[Issue] = []
     staging = vault / ".litman-staging"
@@ -2655,20 +3102,77 @@ def check_stale_staging(
             )
             continue
 
-        sentinel = child / _SENTINEL_FILENAME
-        if not sentinel.is_file():
+        committed = (child / _SENTINEL_FILENAME).is_file()
+        # Same reading of the folder moves as the recoverer (_recover_one_op).
+        moves = _read_manifest_dir_moves(child)
+        try:
+            back, blocked = (
+                _dir_move_plan(child, vault, moves, committed=committed)
+                if moves is not None
+                else ([], None)
+            )
+        except OSError as err:
             out.append(
                 Issue(
-                    category="stale_staging",
-                    severity="info",
+                    category="stale_staging_unrecoverable",
+                    severity="error",
                     paper_id=None,
-                    message=(
-                        f".litman-staging/{child.name}/ — leftover op dir "
-                        "(clean abort, no commit record)"
-                    ),
-                    hint="run `lit health-check --fix` to clean",
+                    message=_folders_unreadable_message(vault, err),
+                    hint="the next lit command retries; check again after it",
                 )
             )
+            continue
+        if blocked is not None:
+            out.append(
+                Issue(
+                    category="stale_staging_unrecoverable",
+                    severity="error",
+                    paper_id=None,
+                    message=blocked,
+                    hint=(
+                        "settle the folders it names by hand, then remove "
+                        f".litman-staging/{child.name}/ — NOT auto-fixed"
+                    ),
+                )
+            )
+            continue
+        if not committed:
+            if moves is None:
+                out.append(
+                    Issue(
+                        category="stale_staging_unrecoverable",
+                        severity="error",
+                        paper_id=None,
+                        message=_manifest_unreadable_message(child.name),
+                        hint=(
+                            f"inspect .litman-staging/{child.name}/ by hand, "
+                            "then remove it — NOT auto-fixed"
+                        ),
+                    )
+                )
+            elif back:
+                out.append(
+                    Issue(
+                        category="stale_staging",
+                        severity="info",
+                        paper_id=None,
+                        message=_moved_back_message(back, mode="pending"),
+                        hint="run `lit health-check --fix` to move it back",
+                    )
+                )
+            else:
+                out.append(
+                    Issue(
+                        category="stale_staging",
+                        severity="info",
+                        paper_id=None,
+                        message=(
+                            f".litman-staging/{child.name}/ — leftover op dir "
+                            "(clean abort, no commit record)"
+                        ),
+                        hint="run `lit health-check --fix` to clean",
+                    )
+                )
             continue
 
         result = _classify_torn_op(child, vault, RecoveryResult)
@@ -2698,6 +3202,7 @@ def check_stale_staging(
                     message=(
                         f".litman-staging/{child.name}/ — torn commit, "
                         "roll-forward pending"
+                        + (f" (moves {result.message})" if result.message else "")
                     ),
                     hint="run `lit health-check --fix` to roll forward",
                 )
@@ -2713,37 +3218,63 @@ def _classify_torn_op(
     """Read-only classification of a ``COMMITTED`` op dir.
 
     Returns a :class:`RecoveryResult`-shaped object with ``kind`` of
-    ``rolled_forward`` (all files replayable) or ``unrecoverable`` (some
-    manifested relpath lost from both sides, or manifest unreadable).
-    Performs no filesystem mutation — health-check must be able to report
-    without changing state.
+    ``rolled_forward`` (all files replayable; ``message`` names the folder
+    moves still to make, or is ``None``) or ``unrecoverable`` (some
+    manifested relpath lost from both sides, folders the op cannot settle,
+    or manifest unreadable). A file already promoted into a folder that is
+    not moved yet is looked for where that folder is now. Performs no
+    filesystem mutation — health-check must be able to report without
+    changing state.
     """
     # Shared, side-effect-free helpers from the recoverer so the
     # unrecoverable-detection predicate AND the Chinese data-loss-path
     # message strings have a single source of truth and cannot drift
     # between the read-only classifier and the mutating recoverer.
     from litman.core.atomic import (
+        _dir_move_plan,
+        _folders_unreadable_message,
         _manifest_unreadable_message,
+        _read_manifest_dir_moves,
         _read_manifest_relpaths,
         _unrecoverable_message,
     )
 
     op_id = op_dir.name
     relpaths = _read_manifest_relpaths(op_dir)
-    if relpaths is None:
+    moves = _read_manifest_dir_moves(op_dir)
+    if relpaths is None or moves is None:
         return result_cls(
             op_id=op_id,
             kind="unrecoverable",
             n_files=0,
             message=_manifest_unreadable_message(op_id),
         )
+    try:
+        forward, blocked = _dir_move_plan(op_dir, vault, moves, committed=True)
+    except OSError as err:
+        blocked = _folders_unreadable_message(vault, err)
+    if blocked is not None:
+        return result_cls(
+            op_id=op_id, kind="unrecoverable", n_files=0, message=blocked
+        )
+
+    def promoted_before_the_move(relpath: str) -> bool:
+        rel = Path(relpath)
+        for src, dst in forward:
+            if rel.is_relative_to(dst):
+                return (vault / src / rel.relative_to(dst)).exists()
+        return False
 
     recoverable = 0
     unrecoverable: list[str] = []
     for relpath in relpaths:
         staging_path = op_dir / relpath
         target_path = vault / relpath
-        if staging_path.exists() or target_path.exists():
+        if (
+            staging_path.exists()
+            or target_path.exists()
+            or promoted_before_the_move(relpath)
+        ):
             recoverable += 1
         else:
             unrecoverable.append(relpath)
@@ -2764,7 +3295,11 @@ def _classify_torn_op(
         op_id=op_id,
         kind="rolled_forward",
         n_files=recoverable,
-        message=None,
+        message=(
+            ", ".join(f"{src}/ to {dst}/" for src, dst in forward)
+            if forward
+            else None
+        ),
     )
 
 
@@ -3037,6 +3572,272 @@ def check_trash_health(
     return out
 
 
+def check_supplementary(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Each paper's ``supplementary`` records ↔ its ``supplementary/`` folder.
+
+    Six categories. Two are ``--fix``-able (AUTO_FIXABLE_CATEGORIES):
+
+    * ``supplementary_missing`` (error) — a record whose file is gone.
+    * ``supplementary_unrecorded`` (warning) — a plain file in the folder with
+      no record (dropped in by hand, or left by a half-finished sync).
+
+    The rest are report-only:
+
+    * ``supplementary_field`` (error) — the list is malformed (not a list, an
+      entry that is not a mapping, a bad or repeated ``file``). Nothing else
+      is checked for that paper until it is fixed.
+    * ``supplementary_changed`` (error) — a recorded file whose content no
+      longer matches its checksum: which copy is right is the user's call.
+    * ``supplementary_layout`` — what litman will not touch: the folder is a
+      link or a file (error, and nothing else is checked for that paper), a
+      recorded file was replaced by a link or a folder (error), or the folder
+      holds a sub-folder or a link (warning).
+    * ``supplementary_unchecked`` (warning) — what cannot be checked: a
+      record without ``sha256`` / ``bytes``, or an entry that cannot be read.
+
+    The errors block ``lit sync push``: pushing would delete or overwrite the
+    good copy in the cloud (rclone does not follow links either). Content is
+    compared by size, and re-hashed only when the file's mtime moved away from
+    its ``added`` stamp. Nothing is followed through a link, and an
+    unreadable folder is a finding, never an exception. Full tier — it reads
+    every paper's metadata (invariant #15).
+    """
+    # Lazy: this module loads on every `lit` command (the drift hook), the SI
+    # module only once a full health check runs.
+    from litman.core.locking import SI_DIRNAME
+    from litman.core.supplementary import (
+        SUPPLEMENTARY_FIELD,
+        si_stem,
+        supplementary_drift,
+    )
+
+    kind_words = {"link": "a link", "dir": "a folder", "other": "a special file"}
+    out: list[Issue] = []
+
+    def add(category: str, severity: str, paper_id: str, message: str, hint: str) -> None:
+        # A name read off the folder can hold a byte that is not UTF-8; it is
+        # shown as U+FFFD, the form the record keeps once the file is added.
+        out.append(Issue(category, severity, paper_id, printable(message), printable(hint)))
+
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        paper_id = str(paper_id)
+        where = f"papers/{paper_id}/supplementary"
+        if SUPPLEMENTARY_FIELD not in paper and not os.path.lexists(
+            vault / "papers" / paper_id / SI_DIRNAME
+        ):
+            continue
+        try:
+            drift = supplementary_drift(vault, paper_id, paper)
+        except OSError as exc:
+            add(
+                "supplementary_unchecked", "warning", paper_id,
+                f"{where} cannot be checked ({exc.__class__.__name__})",
+                "fix its permissions, then rerun `lit health-check`",
+            )
+            continue
+        for problem in drift.problems:
+            add(
+                "supplementary_field", "error", paper_id,
+                f"papers/{paper_id}/metadata.yaml: 'supplementary' {problem}",
+                "fix it by hand — litman leaves this paper's SI alone until "
+                "it parses",
+            )
+        if drift.folder == "link":
+            add(
+                "supplementary_layout", "error", paper_id,
+                f"{where} is a link; litman does not follow it",
+                "replace it with a real folder holding the SI files",
+            )
+        elif drift.folder == "file":
+            add(
+                "supplementary_layout", "error", paper_id,
+                f"{where} is a file, not a folder",
+                "move it out of the paper folder; add SI with `lit add --si`",
+            )
+        for name in drift.missing:
+            add(
+                "supplementary_missing", "error", paper_id,
+                f"{where}/{name} is recorded but missing",
+                "put the file back, or drop the record: "
+                f"`lit rm {paper_id} --si {si_stem(name)} --yes`",
+            )
+        for name in drift.changed:
+            add(
+                "supplementary_changed", "error", paper_id,
+                f"{where}/{name} no longer matches its recorded checksum",
+                "put the original back; to keep this one, copy it out, "
+                f"`lit rm {paper_id} --si {si_stem(name)} --yes`, then "
+                f"`lit add --si {paper_id}` the copy",
+            )
+        for name, kind in drift.odd_recorded:
+            add(
+                "supplementary_layout", "error", paper_id,
+                f"{where}/{name} is recorded, but is now {kind_words[kind]}",
+                "put the recorded file back in its place",
+            )
+        for name in drift.unrecorded:
+            add(
+                "supplementary_unrecorded", "warning", paper_id,
+                f"{where}/{name} has no record in metadata.yaml",
+                "`lit health-check --fix` checks it and records it",
+            )
+        for name, kind in drift.odd_strays:
+            if kind == "dir":
+                message = f"{where}/{name}/ is a folder; SI files are single files"
+                hint = "move it out; to keep it as SI, zip it and `lit add --si` the zip"
+            elif kind == "link":
+                message = f"{where}/{name} is a link; litman does not follow it"
+                hint = "replace it with a copy of the file itself"
+            else:
+                message = f"{where}/{name} is not a regular file"
+                hint = "move it out of supplementary/"
+            add("supplementary_layout", "warning", paper_id, message, hint)
+        for name, why in drift.unchecked:
+            if why == "no checksum":
+                add(
+                    "supplementary_unchecked", "warning", paper_id,
+                    f"{where}/{name} has no sha256 / bytes on record — its "
+                    "content can't be verified",
+                    f"copy it out, `lit rm {paper_id} --si {si_stem(name)} "
+                    f"--yes`, then `lit add --si {paper_id}` the copy to record "
+                    "its checksum",
+                )
+            else:
+                path = f"{where}/{name}" if name else where
+                add(
+                    "supplementary_unchecked", "warning", paper_id,
+                    f"{path} cannot be read ({why}); litman can't check it",
+                    "fix its permissions, then rerun `lit health-check`",
+                )
+    return out
+
+
+def _cited_finding(paper_id: str, problem: CitationProblem) -> tuple[str, str]:
+    """Message and hint for one stale SI citation (see check_supplementary_cited)."""
+    from litman.core.supplementary import original_label
+
+    citation = problem.citation
+    where = f"{citation.file}:{citation.line}"
+    record = problem.record
+    if problem.kind == "predates" and record is not None:
+        section = citation.section.isoformat() if citation.section else "?"
+        when = (
+            f"added later ({problem.added.isoformat()})"
+            if problem.added is not None
+            else "whose added date can't be read"
+        )
+        message = (
+            f"{where} (§{section}) cites {citation.token}, {when} — may refer "
+            "to a file since replaced"
+        )
+        label = original_label(record)
+        hint = (
+            f"if it means this file, write its name after it: "
+            f"{record['file']}（{label}）"
+            if label
+            else f"check which file it means — `lit show {paper_id}` lists "
+            "each SI with its original name"
+        )
+        return message, hint
+    if record is None:
+        message = f"{where} cites {citation.token}, which this paper no longer has"
+        hint = (
+            f"point it at the right file (`lit show {paper_id}` lists the SI), "
+            "or remove it"
+        )
+    else:
+        now = original_label(record) or record.get("original")
+        # Read from the user's notes: shown through the same filter as a
+        # record's name, so a tab or a bidi mark cannot garble the line.
+        cited_as = original_label({"original": citation.original}) or "?"
+        message = (
+            f"{where} cites {citation.token} as {cited_as}, but "
+            f"{record['file']} is now {now}"
+        )
+        hint = (
+            f"check which file it means — `lit show {paper_id}` lists each SI "
+            "with its original name"
+        )
+    if problem.moved_to:
+        message += f" — that file is now {problem.moved_to}"
+        hint = f"change it to {problem.moved_to}"
+    return message, hint
+
+
+def check_supplementary_cited(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """``si-NN`` citations in each paper's notes.md / discussion.md ↔ its
+    ``supplementary`` records (``supplementary_cited``, warning).
+
+    A deleted file's number is given again, so a citation can outlive its
+    file or come to name another one. Each finding names the file and line:
+
+    * the paper has no file by that number (or by that exact name);
+    * the original name written after it is not the one on record — and,
+      when another record holds that name, the number it has now;
+    * in discussion.md, written without an original name in a section dated
+      before the record was added, or the record's ``added`` cannot be read:
+      it may mean a file since replaced.
+
+    A notes file that cannot be read is a finding too (invariant #14).
+    Report only, never ``--fix``: the text is the user's. Kept out of the
+    ``lit sync push`` gate (see _PUSH_GATE_EXCLUDED_CATEGORIES). A paper
+    whose ``supplementary`` field is malformed is skipped — it already gets
+    ``supplementary_field``. Full tier: it reads every paper's notes
+    (invariant #15).
+    """
+    # Lazy, like check_supplementary: this module loads on every `lit` call.
+    from litman.core.si_citations import (
+        NOTE_FILES,
+        citation_problems,
+        read_si_citations,
+    )
+    from litman.core.supplementary import (
+        SUPPLEMENTARY_FIELD,
+        field_problems,
+        list_supplementary,
+    )
+
+    out: list[Issue] = []
+    for paper in papers:
+        paper_id = paper.get("id")
+        if not paper_id:
+            continue
+        paper_id = str(paper_id)
+        if field_problems(paper.get(SUPPLEMENTARY_FIELD)):
+            continue
+        citations, unreadable = read_si_citations(vault / "papers" / paper_id)
+        found: list[tuple[int, int, Issue]] = []
+        for name, why in unreadable:
+            found.append((
+                NOTE_FILES.index(name),
+                0,
+                Issue(
+                    "supplementary_cited", "warning", paper_id,
+                    f"{name} cannot be read ({why}); its SI citations went "
+                    "unchecked",
+                    "save it as UTF-8 (or fix its permissions), then rerun "
+                    "`lit health-check`",
+                ),
+            ))
+        for problem in citation_problems(citations, list_supplementary(paper)):
+            message, hint = _cited_finding(paper_id, problem)
+            citation = problem.citation
+            found.append((
+                NOTE_FILES.index(citation.file),
+                citation.line,
+                Issue("supplementary_cited", "warning", paper_id, message, hint),
+            ))
+        out.extend(issue for _, _, issue in sorted(found, key=lambda f: f[:2]))
+    return out
+
+
 def check_code_clone_integrity(
     vault: Path, papers: list[dict[str, Any]]
 ) -> list[Issue]:
@@ -3278,11 +4079,19 @@ def check_code_clone_integrity(
 #
 # Tag rationale (mapped from spec §3 ledger + §3 non-drift-diagnostics table):
 #   schema — fixed-enum validity, truth-internal → klass=validity, report.
+#   dirty_metadata — a title / journal / booktitle / publisher / author name
+#       holding line breaks, indentation or markup, stored before the ingest
+#       boundary cleaned it → klass=validity (truth-internal, nothing derived
+#       disagrees), correction=regen through the validity-fix path
+#       (AUTO_FIXABLE_CATEGORIES): the rewrite is deterministic and keeps
+#       every word. Never the id.
 #   paper_dir_validity — truth-internal structural integrity (dir name / parseable
 #       metadata / id match / paper.pdf), directory-enumeration truth side →
 #       klass=validity, report. (M30 Phase 3: merges + replaces the old
 #       id_consistency + invalid_paper_dirs and kills their except: continue
-#       silent skips, invariant #14.)
+#       silent skips, invariant #14.) An id mismatch `--fix` can settle by
+#       renaming the folder is emitted as `unfinished_rename` instead, which
+#       rides the validity-fix path (AUTO_FIXABLE_CATEGORIES).
 #   index_vs_disk (#1) — INDEX.json (derived) ↔ papers/ dir → klass=A, regen.
 #       Cheap: reads only INDEX ids + papers/ listing, no per-paper metadata
 #       (invariant #15) → tier=cheap. Tier-1 repairs it metadata-free.
@@ -3329,6 +4138,14 @@ def check_code_clone_integrity(
 #       litman cannot pick a side → klass=B-ext, correction=resolve. #6d is the
 #       symmetric forward check: repo-meta.papers names a live paper whose
 #       code-clones does not list the repo back (one-sided binding).
+#   taxonomy_similar / taxonomy_unused / taxonomy_singletons — the shape of
+#       the topics / methods / data vocabulary itself (look-alike pairs, values
+#       no paper uses, dicts mostly made of once-used values). Nothing is
+#       inconsistent, so klass=validity, report, severity=info (health-check
+#       does not gate its exit code on them: a pair kept on purpose would
+#       otherwise fail every run). Never --fix: which name survives a merge,
+#       and whether a value is registered ahead of its papers, is the user's.
+#       tier=full (they count usage over every paper).
 #   vault_registry_drift (#4) — truth↔external dir, machine-level (registry ↔
 #       vault dir), bounded-stat only, no per-paper metadata → tier=cheap,
 #       klass=B-ext, resolve. (M30 Phase 2: detection moved here from the two
@@ -3338,6 +4155,18 @@ def check_code_clone_integrity(
 #       only, no per-paper metadata) → tier=cheap, klass=B-ext, resolve.
 #   inbox_staleness / stale_staging / trash_health / pdf_viewer — non-drift
 #       diagnostics, surface only → klass=validity, correction=report.
+#   supplementary (#13) — metadata `supplementary` records ↔ the files in
+#       papers/<id>/supplementary/ → klass=B-auth (both sides are authored
+#       truth), report; tier=full (the records are not in the INDEX
+#       projection, invariant #15). Of its six finding categories only
+#       missing / unrecorded are `--fix`able, with consent (see
+#       AUTO_FIXABLE_CATEGORIES); field / changed / layout / unchecked need
+#       a person.
+#   supplementary_cited (#14) — si-NN citations in notes.md / discussion.md
+#       ↔ the supplementary records (number, original name; a discussion
+#       section's date against the record's `added`) → klass=B-auth, report
+#       (warning, never --fix: the text is the user's); tier=full (reads every
+#       paper's notes); outside the push gate.
 _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec("schema", check_schema, "full", "validity", "report"),
     # Same shape as schema (metadata read, nothing derived to regenerate), but
@@ -3349,6 +4178,12 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "full",
         "validity",
         "report",
+    ),
+    # Same reads as placeholder_metadata, but the repair needs no one's
+    # knowledge — the clean text is already in the field — so, like
+    # discussion_scaffold, it rides the validity-fix path instead of reporting.
+    CheckSpec(
+        "dirty_metadata", check_dirty_metadata, "full", "validity", "regen"
     ),
     # The id half of placeholder_metadata, registered next to it so a legacy
     # vault reports both together. Never `regen`: renaming is a cascade over
@@ -3405,6 +4240,11 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "priority_orphan", check_priority_orphan, "full", "B-auth", "report"
     ),
     CheckSpec("taxonomy_drift", check_taxonomy_drift, "full", "B-ext", "resolve"),
+    CheckSpec("taxonomy_similar", check_taxonomy_similar, "full", "validity", "report"),
+    CheckSpec("taxonomy_unused", check_taxonomy_unused, "full", "validity", "report"),
+    CheckSpec(
+        "taxonomy_singletons", check_taxonomy_singletons, "full", "validity", "report"
+    ),
     CheckSpec(
         "project_config_consistency",
         check_project_config_consistency,
@@ -3445,6 +4285,10 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "full",
         "B-ext",
         "resolve",
+    ),
+    CheckSpec("supplementary", check_supplementary, "full", "B-auth", "report"),
+    CheckSpec(
+        "supplementary_cited", check_supplementary_cited, "full", "B-auth", "report"
     ),
 )
 
@@ -3497,8 +4341,20 @@ def run_all_checks(
 #     readable and its grade intact, so an unmigrated vault mirrors losslessly
 #     — and the backup has to stay available across the upgrade window, which
 #     is exactly when the user has not run `--fix` yet (ADR-025).
+#   - supplementary_cited: warnings only, so it could never block; listed so
+#     a push does not read every paper's notes.md / discussion.md for nothing.
+#   - taxonomy_similar / taxonomy_unused / taxonomy_singletons: info only, so
+#     they can never block; listed so a push skips the pairwise value scan.
 _PUSH_GATE_EXCLUDED_CATEGORIES: frozenset[str] = frozenset(
-    {"vault_registry_drift", "dangling_wikilinks", "retired_priority"}
+    {
+        "vault_registry_drift",
+        "dangling_wikilinks",
+        "retired_priority",
+        "supplementary_cited",
+        "taxonomy_similar",
+        "taxonomy_unused",
+        "taxonomy_singletons",
+    }
 )
 
 
@@ -3551,8 +4407,86 @@ def group_by_category(issues: Iterable[Issue]) -> dict[str, list[Issue]]:
     return grouped
 
 
-def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
+def finish_unfinished_renames(
+    vault: Path,
+) -> tuple[int, list[tuple[str, str, str]]]:
+    """Rename every folder whose metadata id names where it belongs.
+
+    Re-reads ``papers/`` rather than trusting the issue list, and asks
+    :func:`_unfinished_rename_blocker` again right before each move (an
+    earlier move can take the name a later folder wants). Each move is its
+    own ``staged_write``, so a crash mid-move is settled by the next command.
+    A folder that cannot be moved is left and returned as
+    ``(folder, metadata id, why and what to do)``; the rest still move.
+
+    Returns ``(moved, left)`` and rebuilds nothing: the caller runs the one
+    derived rebuild, after every folder is in place.
+    """
+    papers_dir = vault / "papers"
+    if not papers_dir.is_dir():
+        return 0, []
+    papers = list_papers(vault)
+    moved = 0
+    left: list[tuple[str, str, str]] = []
+    for child in sorted(papers_dir.iterdir()):
+        meta_file = child / "metadata.yaml"
+        if not is_valid_id(child.name) or not meta_file.is_file():
+            continue
+        try:
+            data = _yaml.load(meta_file.read_text(encoding="utf-8"))
+        except (OSError, YAMLError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        meta_id = data.get("id")
+        if not meta_id or meta_id == child.name:
+            continue
+        if _unfinished_rename_blocker(vault, child.name, data, papers) is not None:
+            continue
+        op_id = f"fix-rename-{child.name}-to-{meta_id}"
+        if os.path.lexists(vault / ".litman-staging" / op_id):
+            left.append(
+                (
+                    child.name,
+                    meta_id,
+                    "its earlier --fix is kept in .litman-staging/; "
+                    "settle that finding first",
+                )
+            )
+            continue
+        try:
+            with staged_write(vault, op_id=op_id) as stage:
+                stage.move_dir(f"papers/{child.name}", f"papers/{meta_id}")
+        except DirMoveError as err:
+            left.append(
+                (
+                    child.name,
+                    meta_id,
+                    f"{err.reason}; close any file open from it and run --fix again",
+                )
+            )
+            continue
+        moved += 1
+    return moved, left
+
+
+def apply_autofix(
+    vault: Path,
+    issues: list[Issue],
+    *,
+    si_policy: SiFixPolicy | None = None,
+) -> dict[str, Any]:
     """Auto-clean fixable categories. Returns ``{category: n_fixed}``.
+
+    Plus, when the ``dirty_metadata`` arm left a notes.md alone, the folders
+    under :data:`DIRTY_NOTES_KEPT`, and when it cleaned a title an id was
+    derived from, the ``(id, clean-derived id)`` pairs under
+    :data:`DIRTY_RENAMES` — detail for the CLI, not categories.
+
+    ``unfinished_rename`` is not fixed here: ``lit health-check --fix``
+    renames those folders itself (:func:`finish_unfinished_renames`), before
+    the derived rebuild and before every arm below, since until a folder
+    carries its id the arms that look a paper up by id see it as missing.
 
     Currently fixes:
 
@@ -3576,8 +4510,17 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
     * ``dangling_refs`` — removes every relation edge naming a paper no longer
       in the library, forward and reverse. Also not lossless; see the same
       constant.
+    * ``dirty_metadata`` — rewrites titles, venues and author names that carry
+      line breaks, stray spaces or markup, and the notes.md heading ``lit add``
+      wrote from the old title (:func:`litman.core.ripple.clean_dirty_metadata`).
+      Lossless; never the id.
+    * ``supplementary_missing`` / ``supplementary_unrecorded`` — drops the
+      records of SI files that are gone and records files found in a paper's
+      ``supplementary/`` folder (verified first), asking through
+      ``si_policy``. Without one, nobody is asked: only files that verify are
+      recorded, and the rest stays in the report.
     """
-    counts: dict[str, int] = {}
+    counts: dict[str, Any] = {}
 
     fixable_present = {i.category for i in issues if i.category in AUTO_FIXABLE_CATEGORIES}
 
@@ -3664,6 +4607,33 @@ def apply_autofix(vault: Path, issues: list[Issue]) -> dict[str, int]:
         from litman.core.ripple import drop_dangling_relations
 
         counts["dangling_refs"] = drop_dangling_relations(vault)
+
+    if "dirty_metadata" in fixable_present:
+        # Lazy for the same reason as the arm above.
+        from litman.core.ripple import clean_dirty_metadata
+
+        n_cleaned, notes_kept, renames = clean_dirty_metadata(vault)
+        counts["dirty_metadata"] = n_cleaned
+        if notes_kept:
+            counts[DIRTY_NOTES_KEPT] = notes_kept
+        if renames:
+            counts[DIRTY_RENAMES] = renames
+
+    si_present = fixable_present & {
+        "supplementary_missing",
+        "supplementary_unrecorded",
+    }
+    if si_present:
+        from litman.core.supplementary import NO_PROMPT_POLICY, fix_supplementary
+
+        si_ids = {
+            i.paper_id for i in issues if i.category in si_present and i.paper_id
+        }
+        fixed = fix_supplementary(
+            vault, si_ids, policy=si_policy or NO_PROMPT_POLICY
+        )
+        for category in si_present:
+            counts[category] = fixed[category]
 
     if "stale_staging" in fixable_present:
         counts["stale_staging"] = cleanup_stale_staging(vault)

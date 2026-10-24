@@ -16,6 +16,8 @@ disk. The places worth looking at are where it crosses that boundary:
 - the local Web UI server (`lit gui`) and its HTTP API
 - metadata fetched over the network (Crossref) and the PyPI update check
 - PDF parsing — the files come from publishers, not from you
+- supplementary (SI) files, which can be of any type, and the Web UI opening one
+  in the system's default app
 - cloud sync through rclone
 
 A crash or a wrong result on its own is a bug, not a vulnerability; those belong

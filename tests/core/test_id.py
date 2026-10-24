@@ -7,8 +7,10 @@ import pytest
 from litman.core.id import (
     _KEYWORD_MAX_LEN,
     derive_id,
+    derive_id_without_transliteration,
     derive_keyword,
     derive_keyword_alternatives,
+    family_segment,
     find_case_fold_collision,
     id_segments,
     is_valid_id,
@@ -248,7 +250,7 @@ def test_a_mixed_title_below_the_ratio_is_refused_however_good_the_fragment() ->
         # ratio — the gate is about scripts, not about stray diacritics. (The
         # keyword itself is poor because the stop-word list is English-only;
         # that predates the gate and is not what this asserts.)
-        ("Rôle de la protéine dans la réaction", "Rle-de-la"),
+        ("Rôle de la protéine dans la réaction", "Role-de-la"),
         ("α-Synuclein aggregation in vivo", "-Synuclein-aggregation-vivo"),
     ],
 )
@@ -262,6 +264,106 @@ def test_a_title_that_is_half_latin_still_passes() -> None:
     assert derive_id(2018, "Zhang", "CRISPR-Cas9 基因编辑技术的研究进展") == (
         "2018_Zhang_CRISPR-Cas9"
     )
+
+
+# ---------------------------------------------------------------------------
+# Accented Latin letters — written without the accent, never dropped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "family,expected",
+    [
+        ("Brüssow", "Brussow"),
+        ("Müller", "Muller"),
+        ("Søren", "Soren"),
+        ("Gößwein", "Gosswein"),
+        ("Łukasiewicz", "Lukasiewicz"),
+        # The letters NFKD leaves whole, one name each.
+        ("Østergaard", "Ostergaard"),
+        ("Sæther", "Saether"),
+        ("Bœuf", "Boeuf"),
+        ("Đặng", "Dang"),
+        ("Guðmundsson", "Gudmundsson"),
+        ("Þórsson", "Thorsson"),
+        ("Yıldız", "Yildiz"),
+        ("GROẞMANN", "GROSSMANN"),
+    ],
+)
+def test_an_accented_family_name_keeps_its_letters(
+    family: str, expected: str
+) -> None:
+    """`Brüssow` used to become `Brssow`, and the id outlives the mistake."""
+    assert family_segment(family) == expected
+    assert derive_id(2021, family, "Cyclic peptides") == (
+        f"2021_{expected}_Cyclic-peptides"
+    )
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("Synthèse des protéines cycliques", "Synthese-des-proteines"),
+        # The colon path slugs its post-colon word separately.
+        ("RiPPs: Biosynthèse des lanthipeptides", "RiPPs-Biosynthese"),
+    ],
+)
+def test_a_french_title_keeps_its_letters(title: str, expected: str) -> None:
+    assert derive_keyword(title) == expected
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("Synthèse à haute pression des peptides", "Synthese-haute-pression"),
+        ("À propos des peptides cycliques", "Propos-des-peptides"),
+        ("Accès à la chimie verte", "Acces-la-chimie"),
+        ("RiPPs: à la recherche des lanthipeptides", "RiPPs-Recherche"),
+        # The colon path's length rule already skips `à`; a stop word long
+        # enough to get past it arrives non-ASCII as a full-width form.
+        ("PepTune: ｕｓｉｎｇ diffusion to design peptides", "PepTune-Diffusion"),
+    ],
+)
+def test_an_accented_stop_word_is_still_a_stop_word(
+    title: str, expected: str
+) -> None:
+    """`à` slugs to `a`; matched as typed, it would take a keyword slot."""
+    assert derive_keyword(title) == expected
+
+
+def test_a_ligature_becomes_the_letters_it_stands_for() -> None:
+    """`ﬃ` is one character with no accent to strip; it is still `ffi`."""
+    assert derive_keyword("Eﬃcient ﬁbril assembly") == "Efficient-fibril-assembly"
+
+
+_BRUSSOW_TITLE = (
+    "An Oligomeric Lanthipeptide from Nostoc punctiforme Promotes Host "
+    "Association During Early Symbiosis with Blasia pusilla"
+)
+
+
+@pytest.mark.parametrize(
+    "year,family,title,old,new",
+    [
+        (2026, "Brüssow", _BRUSSOW_TITLE,
+         "2026_Brssow_Oligomeric-Lanthipeptide-Nostoc",
+         "2026_Brussow_Oligomeric-Lanthipeptide-Nostoc"),
+        (1999, "Müller", "Rôle de la protéine",
+         "1999_Mller_Rle-de-la",
+         "1999_Muller_Role-de-la"),
+        # A non-ASCII space split words under the old rule as well.
+        (2021, "Müller", "Cyclic\u00a0peptides in water",
+         "2021_Mller_Cyclic-peptides-water",
+         "2021_Muller_Cyclic-peptides-water"),
+    ],
+)
+def test_the_old_rule_is_still_there_to_recognise_old_ids(
+    year: int, family: str, title: str, old: str, new: str
+) -> None:
+    """Ids already in a vault keep the dropped letters; the health check still
+    has to tell that such an id was derived rather than chosen."""
+    assert derive_id_without_transliteration(year, family, title) == old
+    assert derive_id(year, family, title) == new
 
 
 # ---------------------------------------------------------------------------

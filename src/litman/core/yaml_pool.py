@@ -17,6 +17,9 @@ real ``YAML`` instance (constructed once per thread with identical configuration
 and forwards all attribute access to it. Existing ``_yaml.load(...)`` /
 ``_yaml.dump(...)`` call sites are unchanged. Within one thread the instance is
 reused, so the single-threaded CLI pays no per-call construction cost.
+
+It is also the one place every YAML file litman writes passes through, so its
+``dump`` refuses text that is not UTF-8 (``core/undecodable.py``).
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ import threading
 from typing import Any
 
 from ruamel.yaml import YAML
+
+from litman.core.undecodable import encode_error, find_undecodable
 
 
 class ThreadLocalYAML:
@@ -70,6 +75,16 @@ class ThreadLocalYAML:
             instance = self._build()
             self._local.yaml = instance
         return instance
+
+    def dump(self, data: Any, stream: Any = None, **kwargs: Any) -> Any:
+        """``YAML.dump``, raising first if a string in ``data`` holds a lone
+        surrogate. ruamel would write it as a ``\\uDCxx`` escape that the C
+        loader then rejects, so the file would no longer read back; raising
+        before the dump leaves a stream nothing has been written to."""
+        bad = find_undecodable(data)
+        if bad is not None:
+            raise encode_error(bad)
+        return self._yaml.dump(data, stream, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         # Only reached for names not found on the proxy itself (load/dump/...).

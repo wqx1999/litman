@@ -724,7 +724,7 @@ export default function TopBar({
               ? 'Only one vault registered'
               : 'Switch the active vault (applies globally)'
         }
-        className="rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-700 shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:bg-stone-100 disabled:text-stone-500"
+        className="rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-700 shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:bg-stone-100 disabled:text-stone-500"
       >
         {vaults?.active ? (
           vaults.vaults.map((v) => (
@@ -1148,7 +1148,7 @@ function ProjectManager({
             type="button"
             disabled={blocked}
             onClick={() => setShowNew(true)}
-            className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+            className="rounded-lg border border-accent-200 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
           >
             + New project
           </button>
@@ -1293,7 +1293,7 @@ function RenameProjectDialog({
 
   const INPUT =
     'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ' +
     'disabled:opacity-50'
 
   useEscapeLayer(true, onCancel)
@@ -1393,7 +1393,7 @@ function SetProjectPathDialog({
           the folder — move it yourself first, then paste the new location here.
         </p>
         <label className="mt-4 flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             Absolute path
           </span>
           <PathField
@@ -1470,7 +1470,7 @@ function NewProjectDialog({
 
   const INPUT =
     'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ' +
     'disabled:opacity-50'
 
   useEscapeLayer(true, onClose)
@@ -1489,7 +1489,7 @@ function NewProjectDialog({
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Name
             </span>
             <input
@@ -1503,7 +1503,7 @@ function NewProjectDialog({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Absolute path
             </span>
             <PathField
@@ -1668,7 +1668,7 @@ function VaultManager({
                     title={`Point “${v.name}” at its new folder`}
                     disabled={blocked}
                     onClick={() => setPendingLocate(v)}
-                    className="rounded-md border border-accent-300 bg-accent-50 px-2 py-0.5 text-[11px] font-medium text-accent-700 transition-colors hover:bg-accent-100 disabled:opacity-40"
+                    className="rounded-md border border-accent-200 bg-accent-50 px-2 py-0.5 text-[11px] font-medium text-accent-700 transition-colors hover:bg-accent-100 disabled:opacity-40"
                   >
                     Locate
                   </button>
@@ -1705,7 +1705,7 @@ function VaultManager({
               type="button"
               disabled={blocked}
               onClick={() => setShowRegister(true)}
-              className="rounded-lg border border-accent-300 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
+              className="rounded-lg border border-accent-200 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
             >
               + Register existing…
             </button>
@@ -1887,7 +1887,7 @@ function LocateVaultDialog({
           a lit-config.yaml.
         </p>
         <label className="mt-4 flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             New vault path
           </span>
           <PathField
@@ -1969,7 +1969,7 @@ function RegisterVaultDialog({
 
   const INPUT =
     'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ' +
     'disabled:opacity-50'
 
   // Guarded like Cancel: this dialog is the error's only surface, so closing it
@@ -1995,7 +1995,7 @@ function RegisterVaultDialog({
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Name
             </span>
             <input
@@ -2009,7 +2009,7 @@ function RegisterVaultDialog({
             />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Vault path
             </span>
             <PathField
@@ -2030,7 +2030,7 @@ function RegisterVaultDialog({
               checked={setActive}
               disabled={busy}
               onChange={(e) => setSetActive(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-400"
+              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-500"
             />
             Switch to it after registering
           </label>
@@ -2139,7 +2139,7 @@ function CreateVaultDialog({
 
   const INPUT =
     'w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm ' +
-    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 ' +
+    'text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 ' +
     'disabled:opacity-50'
 
   // Same guard as RegisterVaultDialog, same reason: mid-write the layer holds
@@ -2171,7 +2171,7 @@ function CreateVaultDialog({
             </div>
           </div>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Location
             </span>
             <PathField
@@ -2187,7 +2187,7 @@ function CreateVaultDialog({
             </span>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
               Name
             </span>
             <input
@@ -2210,7 +2210,7 @@ function CreateVaultDialog({
               checked={setActive}
               disabled={busy}
               onChange={(e) => setSetActive(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-400"
+              className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-500"
             />
             Switch to it after creating
           </label>
@@ -2350,7 +2350,7 @@ function HealthPanel({
                 key={category}
                 className="border-b border-stone-100 last:border-b-0"
               >
-                <div className="bg-stone-50 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                <div className="bg-stone-50 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   {category} · {bucket.length}
                 </div>
                 {bucket.map((issue, i) => (

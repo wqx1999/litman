@@ -46,7 +46,7 @@ from litman.commands._paper_count import (
     plural_papers,
 )
 from litman.core.config import config_to_yaml_dict, load_config
-from litman.core.confirm import _confirm_destructive
+from litman.core.confirm import _confirm_destructive, is_interactive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.project_link import (
@@ -64,7 +64,9 @@ from litman.core.project_refs import (
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
+    read_taxonomy_text,
 )
+from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import TaxonomyError
 
@@ -73,7 +75,7 @@ console = Console()
 
 def _stdin_isatty() -> bool:
     """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
-    return sys.stdin is not None and sys.stdin.isatty()
+    return is_interactive(sys.stdin)
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -85,6 +87,9 @@ _PROJECTS_DICT = "projects"
 
 
 def _dump_config_yaml(config_map: dict[str, Any]) -> str:
+    message = config_refusal(config_map)
+    if message is not None:
+        raise TaxonomyError(message)
     buf = io.StringIO()
     _yaml.dump(config_map, buf)
     return buf.getvalue()
@@ -104,7 +109,7 @@ def _config_with_projects(vault: Path, projects: dict[str, str]) -> str:
 
 
 def _load_taxonomy(vault: Path) -> tuple[str, dict[str, list[str]]]:
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     return text, parse_taxonomy(text)
 
 

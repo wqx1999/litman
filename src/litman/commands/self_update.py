@@ -49,6 +49,7 @@ from rich.console import Console
 
 from litman import __version__
 from litman.core import launcher_stubs, self_update_helper, update_check
+from litman.core.confirm import refuse_without_terminal
 from litman.exceptions import SelfUpdateError
 
 console = Console()
@@ -255,6 +256,7 @@ def self_update_cmd(yes: bool) -> None:
     target = latest or "latest"
     console.print(f"current [bold]{current}[/] → [bold]{target}[/]")
     if not yes:
+        refuse_without_terminal("pass --yes to confirm")
         click.confirm("Upgrade litman now?", default=False, abort=True)
 
     cmd = _UPGRADE_CMDS[installer]

@@ -34,6 +34,7 @@ from rich.table import Table
 
 from litman.commands._options import format_option
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
+from litman.core.confirm import refuse_without_terminal
 from litman.core.sync import humanize_bytes
 from litman.core.vault_registry import (
     VaultEntry,
@@ -473,6 +474,7 @@ def vault_remove_cmd(name: str, yes: bool) -> None:
         return  # unreachable — remove_vault raised; here for type-checkers
 
     if not yes:
+        refuse_without_terminal("pass --yes to confirm")
         msg = f"Unregister vault {name!r} (path {entry.path} unchanged)?"
         if entry.is_active:
             msg += " This is the ACTIVE vault — you'll need `lit vault use` after."

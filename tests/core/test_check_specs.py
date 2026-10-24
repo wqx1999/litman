@@ -31,6 +31,7 @@ from litman.core.checks import (
 _EXPECTED_CATEGORIES = (
     "schema",
     "placeholder_metadata",
+    "dirty_metadata",
     "placeholder_id",
     "weak_id_keyword",
     "duplicate_doi",
@@ -46,6 +47,9 @@ _EXPECTED_CATEGORIES = (
     "relevance_orphan",
     "priority_orphan",
     "taxonomy_drift",
+    "taxonomy_similar",
+    "taxonomy_unused",
+    "taxonomy_singletons",
     "project_config_consistency",
     "config_unreadable",
     "vault_registry_drift",
@@ -57,11 +61,13 @@ _EXPECTED_CATEGORIES = (
     "pdf_viewer",
     "skill_drift",
     "code_clone_integrity",
+    "supplementary",
+    "supplementary_cited",
 )
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 28
+    assert len(_CHECK_REGISTRY) == 34
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -101,8 +107,11 @@ def test_auto_fixable_categories_unchanged() -> None:
     refreshing it never touches files the user added), and two members that
     are NOT lossless, each admitted on the argument recorded beside the
     constant: the retired-field migration (ADR-025) and the removal of
-    relation edges that name a paper no longer in the library. Broadening to
-    klass-A regen is separate."""
+    relation edges that name a paper no longer in the library — the SI
+    pair, which records verified strays and drops records of missing files,
+    asking first, the lossless rewrite of text fields that carry line
+    breaks or markup, and the lossless rename of a folder to the id its
+    metadata.yaml holds. Broadening to klass-A regen is separate."""
     assert AUTO_FIXABLE_CATEGORIES == frozenset(
         {
             "stale_staging",
@@ -111,8 +120,48 @@ def test_auto_fixable_categories_unchanged() -> None:
             "skill_drift",
             "retired_priority",
             "dangling_refs",
+            "supplementary_missing",
+            "supplementary_unrecorded",
+            "dirty_metadata",
+            "unfinished_rename",
         }
     )
+
+
+def test_dirty_metadata_is_full_validity_regen() -> None:
+    """Reads per-paper metadata (journal / publisher are not in the INDEX
+    projection, invariant #15), judges truth-internal content, and is
+    repaired by a deterministic rewrite through the validity-fix path."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "dirty_metadata")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "regen")
+    assert "dirty_metadata" in AUTO_FIXABLE_CATEGORIES
+
+
+def test_vocabulary_checks_are_full_validity_report_and_never_fixed() -> None:
+    """The three vocabulary-shape checks count usage over every paper (full
+    tier), judge nothing derived (validity), and leave every decision to the
+    user: never in ``--fix``."""
+    for category in ("taxonomy_similar", "taxonomy_unused", "taxonomy_singletons"):
+        spec = next(s for s in _CHECK_REGISTRY if s.category == category)
+        assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "report")
+        assert category not in AUTO_FIXABLE_CATEGORIES
+
+
+def test_supplementary_is_full_b_auth_report() -> None:
+    """Ledger #13: SI records ↔ SI files. Both sides are authored truth, and
+    the records are not in the INDEX projection, so the check can only run
+    in the full tier (invariant #15)."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
+
+
+def test_supplementary_cited_is_full_b_auth_report() -> None:
+    """Ledger #14: si-NN citations in notes / discussion ↔ SI records. Both
+    sides are authored, the text is the user's (report, never --fix), and it
+    reads every paper's notes (full tier, invariant #15)."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary_cited")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
+    assert "supplementary_cited" not in AUTO_FIXABLE_CATEGORIES
 
 
 def test_cheap_checks_returns_only_cheap_tier() -> None:

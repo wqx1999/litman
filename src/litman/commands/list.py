@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from litman.commands._options import library_option, vault_option
+from litman.core.confirm import is_interactive
 from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -57,7 +58,7 @@ def _stdout_isatty() -> bool:
     off it, and the guarantee is that piped / redirected output is never
     truncated (only the human-facing terminal view is).
     """
-    return sys.stdout.isatty()
+    return is_interactive(sys.stdout)
 
 
 def _format_cell(value: Any) -> str:

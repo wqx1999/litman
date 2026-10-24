@@ -9,6 +9,243 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **When your agent needs a paper's supplementary information, litman asks you
+  for it.** Ask about a detail the article leaves to its SI and the agent runs
+  `lit add --si <paper>`: the web UI opens an SI window, **Open website ↗**
+  takes you to the article's page, and the files you download there and drop
+  into the window are checked against the paper — the DOI in their names, or
+  the title on their first pages — and added together when you press
+  **Done**. A file that is empty, looks like another paper's SI, or is the
+  article itself is refused; one litman cannot confirm goes in only if you tick
+  **add anyway**. The files land in the paper's own `supplementary/` folder as
+  `si-01.pdf`, `si-02.xlsx` and so on, read-only like its PDF and recorded in
+  its `metadata.yaml` with the names they were downloaded under, and the agent
+  answers with the file and the page it found the answer on. litman never
+  downloads the SI itself. With no web UI open, the command prints the
+  article's link and the way to add the files yourself; it has to run on the
+  machine the web UI's server runs on.
+
+- **SI you already have goes in from the command line.**
+  `lit add --si <paper> <file>...` runs the same check, one line per file, and
+  adds all the files or none: a refused file stops the whole add, even with
+  `--force`. One litman cannot confirm, or one over 100 MiB, needs a yes at the
+  terminal, or `--force`. Like `lit add`, it moves the files into the library.
+  `lit show` lists a paper's SI files below its PDF and notes, with each file's
+  original name and size.
+
+- **A Supplementary row in the cockpit.** Each SI file is a chip —
+  `si-01.pdf · 7.6 MB`, with the original name on hover — and **+ Add SI**
+  opens the SI window without waiting to be asked. When the web UI's server
+  runs on a machine with a desktop, clicking a chip opens the file there in the
+  system's default app, and the toast names the machine;
+  `lit open <paper> --si si-02` does the same from the command line. In an ssh
+  session, or on a machine without a display, the chip stays a link that opens
+  a PDF in the browser and downloads anything else, and `lit open --si` prints
+  the file's path. A Ctrl- or Cmd-click still leaves it to the browser. A file
+  that would run rather than open — a program, a script, an installer — is
+  never handed to the system.
+
+- **`lit rm <paper> --si si-02` deletes an SI file for good,** and so does the
+  × on its chip. The confirmation lists how often your notes cite the file, and
+  `--dry-run` shows the same without deleting. There is no trash for SI files:
+  add the file again to get it back, and it takes the lowest free number —
+  often its old one. Deleting the whole paper still takes its SI files into
+  the trash with it, and `lit trash restore` brings them back.
+
+- **`lit health-check` checks SI files and the notes that cite them.** It
+  reports a recorded file that is missing or whose content changed, a file in
+  `supplementary/` with no record, a malformed `supplementary` field, links or
+  folders inside `supplementary/` that litman will not touch, and a file it
+  cannot check. `lit health-check --fix` records a stray file that checks out
+  as the paper's SI and, after asking at a terminal, drops the record of one
+  that is gone; off a terminal it drops no record, records only the files that
+  check out, and prints the command for the rest. It never deletes an SI file.
+  A line in `notes.md` or `discussion.md` that cites `si-01.pdf` after that
+  file was deleted, or whose name in brackets is not the file that number holds
+  now, is listed with its file and line and what to change. That is a
+  warning: `lit health-check` exits 1 until the line is changed, but
+  `lit sync push` is not held up.
+
+- **Filters and tags open in one panel that lays the values side by side.**
+  The Status, Type, Topics, Methods and Data headings in the left panel, and
+  the Tags pills in the cockpit, open the same panel: the values in up to
+  three columns, scrolling only past that, each with the number of papers
+  that use it — in the current view on the left, in the whole library in the
+  cockpit, where a project shows the paper's grade instead. A search box
+  narrows the list (on the left, once there are more than 18 values); Esc or
+  a click outside closes it. On the left, a value that papers elsewhere in
+  the library use, but none in the view, stays in the list, greyed, with a
+  dash. The short scrolling lists and **Expand all / Collapse all** are gone.
+
+- **litman asks before you create a value that looks like one you have.**
+  With `peptide` registered, `lit taxonomy add topics peptidedrug` is refused
+  and names `peptide`; `--force` adds it anyway. In the web UI, creating such
+  a tag opens a confirmation that lists the similar values: click one to tag
+  the paper with it, or **Create anyway**. Two values look alike when they
+  differ only in case, `-` / `_`, spaces, punctuation or a plural `s`, when
+  one starts with the other (6 characters or more), or when they are a letter
+  or two apart (8 characters or more).
+
+- **See how many papers use each value, and what to tidy.**
+  `lit taxonomy list` shows the count next to each value, and
+  `--format json` gives it as `used_by`. In topics, methods and data,
+  `lit health-check` notes values that look alike, with the
+  `lit taxonomy merge` that would fold them, values no paper uses, and a
+  vocabulary where many values are each used by one paper. They are notes:
+  they do not change the exit code, and `--fix` leaves them alone. Ask your
+  agent to tidy your tags, and it proposes the merges and removals for you
+  to approve.
+
+### Changed
+
+- **The small uppercase labels are one shade darker.** The titles over each
+  field in the cockpit (METADATA, AUTHORS, STATUS…), the group titles in the
+  left panel and the field names in dialogs were faint on a bright screen; they
+  now read clearly, in light and dark mode alike.
+
+- **`lit open` no longer says `Opened` when nothing opened.** When the viewer
+  fails as it starts — a display that is set but no longer reachable, or no
+  app for PDFs — `lit open` now says why, prints the PDF's path and exits 2,
+  as it already did with no display at all. It gives the viewer up to 1.5
+  seconds to report such a failure, so a viewer that stays in the foreground
+  (zathura, evince) opens at once and the command returns 1.5 seconds later.
+
+### Fixed
+
+- **Titles from CrossRef no longer keep the publisher's line breaks and
+  markup.** Some publishers deposit a title or journal name with line breaks,
+  indentation and tags such as `<i>` inside it, and `lit add --doi` stored it
+  that way: the tag ended up in the paper id (`2026_Zhang_INi--Hydroxyamide-…`),
+  the heading of `notes.md` broke across lines, and the panel after the add
+  showed only the title's first line. Titles, journal names and authors now
+  come in as one plain line — from CrossRef, from `--from-llm-json` and from
+  `lit modify`. For papers already in your library, `lit health-check` lists
+  every title, journal or author name with line breaks, stray spaces or
+  markup, and `lit health-check --fix` cleans them, along with the `notes.md`
+  heading `lit add` wrote from the title if you have not changed it. It never
+  changes a paper id; when an id was made from a broken title, the report and
+  the `--fix` output give the `lit rename` that would make it match.
+
+- **Code links that `lit add` finds in a PDF are no longer cut off at a line
+  break.** When the PDF broke a repository link across lines, `lit add` missed
+  it, or listed only the part before the break — a user page such as
+  `https://github.com/dfwlab`, or a bare `https://github.com`. It now finds the
+  whole link (`https://github.com/dfwlab/cyclicpeptide`) and no longer lists the
+  cut-off part.
+
+- **A file name that is not valid UTF-8 no longer stops `lit`.** On Linux, a
+  name from an old archive or another system's encoding (GBK, Latin-1) made
+  any `lit` command that printed it stop with a Python error. It now prints,
+  with each byte that cannot be read shown as an escape such as `\udce9`.
+  Such a name, or text with such a byte, is no longer written into a file
+  litman cannot read back. `lit project add`, `lit project set-path` and
+  `lit sync setup --path` recorded such a folder in `lit-config.yaml`, and
+  `lit vault set-path` in the vault registry, after which every command that
+  reads them failed until the line was edited by hand; `lit modify --set` and
+  `lit add --from-llm-json` wrote such text into a paper's `metadata.yaml`,
+  after which litman could no longer read that paper. They now refuse it before
+  writing anything, and so do `lit vault add`, which stopped with a Python
+  error, and `lit init`, which stopped with one after creating the library
+  (with `--no-register` it created one that could never be registered). Rename
+  the folder and run the command again; other text is named in a one-line
+  error. `lit code add` imports such a folder (given `--name`) and a
+  repository whose origin holds such a byte, noting where it came from with
+  `�` for each byte it cannot read, as `lit vault add --import-from` now does
+  for its note, and a vault registry whose note already holds one is fixed on
+  its own. Any other file an earlier version wrote such a name into is still
+  reported by name (`lit health-check` lists a `metadata.yaml` it cannot
+  read); edit that line by hand.
+  The web UI no longer fails on such a name either: the folder picker lists
+  the folder greyed out (rename it to open it), and the health-check panel,
+  search and the page's live refresh carry on, showing the name with `�`.
+  `lit health-check` names such an SI file the same way, and the
+  `lit add --si` command its `--fix` prints for one pastes back into bash or
+  zsh.
+
+- **Long error messages stay on one line.** Piped into another program or a
+  log, a `lit` error longer than 80 characters was broken across lines, which
+  split the paths inside it. It now prints on one line. A path holding a
+  bracketed word, such as `draft[v2].pdf`, keeps it too — it was taken for
+  formatting and dropped.
+
+- **`lit health-check` no longer stops at a notes file that is not UTF-8.** A
+  `notes.md` or `discussion.md` saved in another encoding by another editor
+  made `lit health-check` stop with a Python error, and the health panel in
+  the web UI fail to load. The file is now reported as one that could not be
+  read, and the rest of the check runs.
+
+- **A `TAXONOMY.md` saved in another encoding no longer stops litman.**
+  Re-saved by another editor as Latin-1, GBK or UTF-16, it made
+  `lit taxonomy`, `lit project`, `lit modify --add-tag`, `lit health-check` and
+  `lit sync push` stop with a Python error, the web UI's health panel fail to
+  load, and the web UI answer "Internal Server Error" when you tagged a paper or
+  added a topic or project. They now name the line that is not UTF-8 and ask you
+  to re-save the file as UTF-8; litman leaves the file as it is.
+
+- **The path `lit open` prints is no longer split across lines.** When
+  `lit open` cannot open a PDF, the `PDF path:` line it prints broke at the
+  edge of a narrow terminal, or at 80 characters when piped, and so did its
+  other messages. Each now prints on one line however narrow the terminal, so
+  the path can be pasted as it stands.
+
+- **`lit uninstall` no longer leaves litman's own files behind.** It removed
+  the vault registry and the agent preferences but kept the update-check cache
+  (`update-check.json`) and the self-update log (`self-update.log`,
+  `self-update-failed`) beside them, so the folder that held the registry
+  stayed on disk. Those files now go too, and so does the folder once nothing
+  of yours is left in it.
+
+- **Focus rings in the web UI are blue.** Text boxes and the tag search box had
+  a near-black ring (near-white in dark mode); a few other outlines were off too.
+
+- **Notices in the web UI go away on time.** A notice at the bottom stayed up
+  while you kept working, moving through the list or typing a search.
+
+- **Links in the desktop app open in your own browser.** In the window the
+  desktop shortcut opens (`lit gui --window`) on Windows and Linux, a link to
+  another site — Open website in the SI window, a paper's DOI, a link in your
+  notes, in a PDF or in What's new, an agent's install link — opened in a
+  browser window with none of your sign-ins or extensions, so SI behind a
+  login could not be downloaded. These links now open in your default
+  browser. `lit gui` in a browser tab is unchanged.
+
+- **Accented letters in a paper id are no longer dropped.** The first author
+  `Brüssow` gave an id `…_Brssow_…`, `Søren` gave `Sren`. Such letters are now
+  written plainly — `Brussow`, `Soren`, `Gosswein`, `Lukasiewicz` — in the
+  author's name and in the title words, from `lit add` and from the web UI.
+  Ids already in your library stay as they are.
+
+- **`lit rename` no longer leaves a paper half-renamed.** When the paper's
+  folder could not be renamed — on Windows a PDF open in Acrobat is
+  enough — its id had already changed everywhere else and the folder kept the
+  old name. The folder is now renamed first; if that fails nothing changes and
+  `lit rename` says to close the file. A library already left this way is put
+  right by `lit health-check --fix`, and at a terminal litman no longer marks
+  that paper's links `(deleted)` in the meantime.
+
+- **On Windows, a command your agent runs no longer stops at a bare
+  `Aborted!`.** When the command needed an answer — `lit install-skill` over
+  an older skill, `lit add` onto an id already taken — it asked anyway, got
+  no answer and printed only `Aborted!`. It now says which option to pass, as
+  it does on macOS and Linux, and the first `lit init` uses the default
+  registry location instead of stopping at its question. `lit add
+  --from-llm-json -` with nothing piped in now says so, on every system.
+
+- **Commands with no one to answer them no longer take stray input for a
+  yes.** `lit self-update`, the first `lit sync push`, `lit vault remove`,
+  `lit uninstall` and `lit code rm` without `--yes`, and `lit sync setup`
+  without `--remote` or `--path`, asked their question even when no one was
+  at a terminal: they stopped at a bare `Aborted!`, or took a `y` piped in as
+  the answer. They now say which option to pass and change nothing. With no
+  terminal, `lit trash restore` without `-y` restores the paper and skips
+  cloning a deleted code repository again, printing the `lit code add` that
+  clones it; it used to stop with an error there, and the repository's
+  address was lost.
+
 ## 1.3.7 — 2026-10-05
 
 ### Added

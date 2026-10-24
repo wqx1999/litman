@@ -37,6 +37,7 @@ from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.locking import rmtree
+from litman.core.undecodable import printable
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
@@ -217,6 +218,7 @@ def _extract_upstream_from_git_dir(repo_dir: Path) -> str | None:
             check=False,
             capture_output=True,
             text=True,
+            errors="surrogateescape",
         )
     except FileNotFoundError as e:
         raise CodeError(
@@ -465,12 +467,14 @@ def make_repo_meta(
     ``upstream`` may be ``None`` (e.g., a local git repo without an origin
     remote — nothing fetchable to record). ``restore_missing_repos`` treats
     empty or absent upstream as "cannot restore" and reports it as failed.
+    A byte of it that is not UTF-8 is kept as U+FFFD, since the note has to be
+    YAML; ``restore_missing_repos`` then reports that clone as failed.
     """
     timestamp = now or now_iso()
     return {
         # === identity (machine-maintained) ===
         "name": name,
-        "upstream": upstream,
+        "upstream": printable(upstream) if upstream is not None else None,
         # === audit (machine-maintained) ===
         "created-at": timestamp,
         "updated-at": timestamp,
@@ -512,7 +516,7 @@ def write_notes(repo_dir: Path, name: str, upstream: str | None) -> Path:
     """Write the placeholder ``<repo_dir>/notes.md`` and return its path."""
     target = repo_dir / NOTES_FILENAME
     target.write_text(
-        _NOTES_TEMPLATE.format(name=name, upstream=upstream or "(none)"),
+        _NOTES_TEMPLATE.format(name=name, upstream=printable(upstream or "(none)")),
         encoding="utf-8",
     )
     return target

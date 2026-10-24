@@ -60,6 +60,7 @@ import click
 from rich.console import Console
 
 from litman.commands._hub_report import hub_settlement_lines
+from litman.core.confirm import is_interactive
 from litman.core.vault_registry import (
     VaultRegistryError,
     find_active,
@@ -69,13 +70,8 @@ from litman.core.vault_registry import (
 
 def _default_tty_probe() -> bool:
     # A windows-subsystem process (the litw desktop launcher) has stdin set
-    # to None, and None.isatty() is an AttributeError, not an answer.
-    return (
-        sys.stdin is not None
-        and sys.stdout is not None
-        and sys.stdin.isatty()
-        and sys.stdout.isatty()
-    )
+    # to None; is_interactive answers "no" for that rather than raising.
+    return is_interactive(sys.stdin) and is_interactive(sys.stdout)
 
 
 def _exists_bounded(
@@ -195,7 +191,7 @@ def check_and_prompt_registry_drift(
 
     Args:
         stdin_is_tty: Indirection so tests can force either branch without
-            faking stdin. Defaults to ``sys.stdin.isatty() and sys.stdout.isatty()``
+            faking stdin. Defaults to stdin and stdout both being a terminal
             — both streams must be TTY before we prompt, so a piped stdout
             (``lit list | less``) does not get a drift question mid-pipe.
     """

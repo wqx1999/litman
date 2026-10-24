@@ -18,6 +18,7 @@ from litman.core.locking import (
     rmtree,
     unlock_truth_file,
 )
+from litman.core.portable_link import make_portable_link
 
 # The Windows read-only attribute does not produce the same POSIX
 # os.access(W_OK) / PermissionError semantics, and CI runs on Linux; gate the
@@ -147,6 +148,30 @@ def test_is_truth_lockable_false_cases(tmp_path: Path) -> None:
         assert not is_truth_lockable(vault, p), p
 
 
+def test_is_truth_lockable_covers_si_files(tmp_path: Path) -> None:
+    """Every file directly in papers/<id>/supplementary/ is locked like
+    paper.pdf — but not OS clutter, not deeper nesting, and only that
+    folder name."""
+    vault = tmp_path / "v"
+    vault.mkdir()
+    si = vault / "papers" / "2024_x" / "supplementary"
+    assert is_truth_lockable(vault, si / "si-01.pdf")
+    assert is_truth_lockable(vault, si / "si-02.tar.gz")
+    # A stray dropped in by hand is locked too: it is a file in the SI folder.
+    assert is_truth_lockable(vault, si / "Table S2.xlsx")
+    assert is_truth_lockable(vault, Path("papers/2024_x/supplementary/si-03.csv"))
+    for p in (
+        si / ".DS_Store",
+        si / "Thumbs.db",
+        si / "desktop.ini",
+        si / "sub" / "si-01.pdf",
+        vault / "papers" / "2024_x" / "supplements" / "si-01.pdf",
+        # A deleted paper's SI rides into the trash with it, unlocked there.
+        vault / ".trash" / "2024_x-20261020T083000Z" / "supplementary" / "si-02.pdf",
+    ):
+        assert not is_truth_lockable(vault, p), p
+
+
 def test_is_truth_lockable_relative_target(tmp_path: Path) -> None:
     """A relative target (as appears in a staging manifest) resolves correctly."""
     vault = tmp_path / "v"
@@ -220,6 +245,97 @@ def test_ensure_truth_locked_leaves_non_truth_writable(tmp_path: Path) -> None:
     assert os.access(paper_dir / "discussion.md", os.W_OK)
     assert os.access(vault / "INDEX.json", os.W_OK)
     assert os.access(vault / "lit-config.yaml", os.W_OK)
+
+
+@_posix_only
+def test_ensure_truth_locked_covers_si_files(tmp_path: Path) -> None:
+    """The re-lock sweep (health-check, post-pull) reaches SI files; OS
+    clutter stays writable, and a second pass finds nothing to do."""
+    vault = create_vault(tmp_path)
+    paper_dir = _make_paper(vault, "2024_a")
+    si = paper_dir / "supplementary"
+    si.mkdir()
+    (si / "si-01.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    (si / "si-02.xlsx").write_bytes(b"PK")
+    (si / ".DS_Store").write_bytes(b"\0")
+    (si / ".my notes.txt").write_bytes(b"hidden, not SI")
+    ensure_truth_locked(vault)
+
+    os.chmod(si / "si-01.pdf", 0o644)  # a pulled copy arrives writable
+    os.chmod(si / "si-02.xlsx", 0o644)
+    assert ensure_truth_locked(vault) == 2
+    assert not os.access(si / "si-01.pdf", os.W_OK)
+    assert not os.access(si / "si-02.xlsx", os.W_OK)
+    assert os.access(si / ".DS_Store", os.W_OK)
+    assert os.access(si / ".my notes.txt", os.W_OK)
+    assert ensure_truth_locked(vault) == 0
+
+
+@_posix_only
+def test_ensure_truth_locked_does_not_follow_si_symlinks(tmp_path: Path) -> None:
+    """chmod acts on a link's target, which could be any file on the machine."""
+    vault = create_vault(tmp_path)
+    paper_dir = _make_paper(vault, "2024_a")
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.4\n")
+    si = paper_dir / "supplementary"
+    si.mkdir()
+    (si / "si-01.pdf").symlink_to(outside)
+
+    ensure_truth_locked(vault)
+
+    assert os.access(outside, os.W_OK)
+
+
+def test_ensure_truth_locked_never_reaches_through_a_linked_si_folder(
+    tmp_path: Path,
+) -> None:
+    """A supplementary/ that is a folder link (symlink, or junction on
+    Windows) leads to some other folder on the machine — say the user's
+    Downloads. The sweep must not lock anything in there."""
+    vault = create_vault(tmp_path)
+    paper_dir = _make_paper(vault, "2024_a")
+    outside = tmp_path / "Downloads"
+    outside.mkdir()
+    personal = outside / "personal.docx"
+    personal.write_bytes(b"mine")
+    if not make_portable_link(paper_dir / "supplementary", outside):
+        pytest.skip("this filesystem cannot hold folder links")
+
+    ensure_truth_locked(vault)
+
+    assert os.access(personal, os.W_OK)
+
+
+@_posix_only
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores the permission bits this takes away",
+)
+def test_ensure_truth_locked_survives_an_unreadable_si_folder(
+    tmp_path: Path,
+) -> None:
+    """The sweep runs first in `lit health-check` and after `lit sync pull`:
+    a folder it cannot list must not abort either (the SI check reports it)."""
+    vault = create_vault(tmp_path)
+    paper_dir = _make_paper(vault, "2024_a")
+    si = paper_dir / "supplementary"
+    si.mkdir()
+    (si / "si-01.pdf").write_bytes(b"%PDF-1.4\n")
+    si.chmod(0o000)
+    try:
+        ensure_truth_locked(vault)
+    finally:
+        si.chmod(0o755)
+
+
+def test_ensure_truth_locked_tolerates_a_file_named_supplementary(
+    tmp_path: Path,
+) -> None:
+    vault = create_vault(tmp_path)
+    paper_dir = _make_paper(vault, "2024_a")
+    (paper_dir / "supplementary").write_text("not a folder", encoding="utf-8")
+    ensure_truth_locked(vault)  # no error
 
 
 def test_ensure_truth_locked_empty_papers_dir(tmp_path: Path) -> None:

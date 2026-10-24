@@ -17,17 +17,22 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
+from litman.core import viewer
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
 from litman.core.config import CONFIG_FILENAME
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
+from litman.core.fs_identity import Anchor
+from litman.core.gui_registry import host_id
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
 from litman.core.search import search_notes
-from litman.core.taxonomy import parse_taxonomy
+from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.core.trash import TRASH_DIRNAME
+from litman.core.undecodable import has_undecodable, printable, printable_tree, refusal
 from litman.core.vault_registry import find_active, load_registry, registry_path
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
@@ -216,12 +221,19 @@ def get_whatsnew() -> dict[str, Any]:
 
 @router.get("/capabilities")
 def get_capabilities(request: Request) -> dict[str, Any]:
-    """What this host can do — currently just: which folder-link mechanism works.
+    """What this host can do: which folder-link mechanism works, and whether a
+    file can be opened on its screen.
 
     ``links`` is ``"symlink"`` (POSIX), ``"junction"`` (Windows) or ``"none"``
     (a drive that cannot hold links at all — FAT32 / exFAT, network shares).
     The SPA raises its advisory only on ``"none"``; both working mechanisms are
     silent, fully-functional states.
+
+    ``open_files`` is ``"desktop"`` when an SI file can be opened with this
+    machine's default app (``POST /api/paper/{id}/si/{file}/open``) and
+    ``"none"`` when nobody would see it (an SSH session, a headless box): the
+    SPA's SI chips then stay plain links into the browser
+    (:func:`litman.core.viewer.open_files_mode`).
 
     Cheap enough for the frontend to call on page load, which is the whole
     reason it is not folded into ``GET /health``: that endpoint is Tier-2 (it
@@ -246,7 +258,64 @@ def get_capabilities(request: Request) -> dict[str, Any]:
     return {
         "links": link_mechanism(_vault(request)),
         "platform": sys.platform,
+        "open_files": viewer.open_files_mode(),
     }
+
+
+@router.post("/open-url")
+async def post_open_url(request: Request) -> dict[str, Any]:
+    """Open a web page in this machine's default browser, for a link clicked
+    in the ``lit gui --window`` app window.
+
+    That window runs on a browser profile of litman's own (see
+    ``commands/gui.py`` ``browser_profile_dir``), so a link opened inside it
+    has none of the user's sign-ins or extensions, and the page cannot send
+    it to their own browser by itself. Only the page in that window calls
+    this: ``gui.py`` marks the window's start address, and any refusal below
+    sends the page back to opening the link where it is.
+
+    Body JSON ``{"url": "<http(s) address>"}``. 400 for anything
+    ``viewer.web_address_problem`` refuses (another scheme, this computer
+    under any name — litman itself included); 409 when nobody would see a
+    browser (``viewer.open_files_mode``) or the opener failed. A foreign
+    page never gets this far: it is a POST, so ``local_guard`` checks its
+    Origin. Not a vault route, and allowed without one — the what's-new card
+    on the welcome page has a link too.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    url = payload.get("url") if isinstance(payload, dict) else None
+    if not isinstance(url, str):
+        raise HTTPException(
+            status_code=400, detail='Body must be a JSON object with a "url" string.'
+        )
+    problem = viewer.web_address_problem(url)
+    if problem is not None:
+        raise HTTPException(
+            status_code=400, detail=f"{problem} — opening it in this window instead"
+        )
+    host = host_id()
+    if viewer.open_files_mode() == "none":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{host} has no desktop to show your browser on — "
+            "opening it in this window instead",
+        )
+    try:
+        # The opener gets a moment to report failure; that wait holds a
+        # worker thread, not the event loop.
+        await run_in_threadpool(viewer.launch_url, url)
+    except viewer.OpenFailed as exc:
+        detail = (
+            f"No browser on {host} took the link — opening it in this window instead"
+            if exc.reason == "no-app"
+            else f"{host} could not start {exc.command} for the link — "
+            "opening it in this window instead"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
+    return {"opened": True, "host": host}
 
 
 @router.get("/health")
@@ -271,7 +340,10 @@ def get_health(request: Request) -> list[dict[str, Any]]:
     vault = _vault(request)
     papers = list_papers(vault)
     issues = run_all_checks(vault, papers)
-    return [dataclasses.asdict(i) for i in issues]
+    # A message can carry a name read off the disk that is not UTF-8 text (a
+    # paper folder, an SI file), which no JSON response can hold: shown as
+    # U+FFFD, the panel lists it instead of the whole check failing.
+    return printable_tree([dataclasses.asdict(i) for i in issues])  # type: ignore[return-value]
 
 
 def _stat_mtime(path: Path) -> float | None:
@@ -352,7 +424,7 @@ def _fingerprint(path: Path) -> str:
 
 
 @router.get("/vault-version")
-def get_vault_version(request: Request) -> dict[str, str]:
+def get_vault_version(request: Request) -> dict[str, Any]:
     """An opaque token that changes iff the vault changed on disk.
 
     PURE READ (invariant #16), and stat-only: it never opens a file. The webUI
@@ -367,12 +439,20 @@ def get_vault_version(request: Request) -> dict[str, str]:
     Cost is O(papers) stats — the same walk ``GET /api/doc-mtimes`` already does
     on every resync — plus five. No content is read and nothing is parsed, so a
     poll is orders of magnitude cheaper than the sweep it guards.
+
+    ``siRequest`` rides along on the same poll: the oldest open SI request of
+    this library (``{id, paperId, title, link}``, all held in memory since the
+    request was made) or ``null`` — how the page learns that ``lit add --si``
+    is waiting for it, without a timer of its own. It is not part of the token.
     """
     vault = _vault(request)
     digest = hashlib.blake2b(digest_size=12)
 
     def feed(label: str, path: Path) -> None:
-        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8"))
+        # surrogatepass: a paper folder whose name is not UTF-8 text (any lone
+        # surrogate, whatever the platform) still feeds the hash instead of
+        # failing every poll.
+        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8", "surrogatepass"))
 
     for name in _VAULT_VERSION_FILES:
         feed(name, vault / name)
@@ -389,7 +469,11 @@ def get_vault_version(request: Request) -> dict[str, str]:
         for doc in _VAULT_VERSION_DOCS:
             feed(f"{paper_id}/{doc}", papers_dir / paper_id / doc)
 
-    return {"version": digest.hexdigest()}
+    si_request = None
+    table = getattr(request.app.state, "si_requests", None)
+    if table is not None and table.has_open():
+        si_request = table.first_open(Anchor.of(vault))
+    return {"version": digest.hexdigest(), "siRequest": si_request}
 
 
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:
@@ -462,7 +546,8 @@ def get_search(
         }
         for h in best.values()
     ]
-    return {"query": q, "hits": hits}
+    # A hit's id is its folder's name, which can be one that is not UTF-8 text.
+    return {"query": q, "hits": printable_tree(hits)}
 
 
 @router.get("/paper/{paper_id}")
@@ -603,37 +688,16 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
         ) from exc
 
 
-def _taxonomy_text(vault: Path) -> str:
-    """TAXONOMY.md's text, or a described 500 when it cannot be served.
-
-    A missing / non-UTF-8 TAXONOMY.md is damaged TRUTH (health-check's beat
-    on the CLI side). Left unguarded it took down /api/taxonomy AND
-    /api/projects with raw tracebacks, which the frontend swallows into a
-    silently empty panel.
-    """
-    path = vault / "TAXONOMY.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "TAXONOMY.md is missing from this library — run "
-                "`lit health-check` to diagnose."
-            ),
-        ) from exc
-    except (OSError, UnicodeDecodeError) as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"TAXONOMY.md cannot be read (not UTF-8, or unreadable): {exc}",
-        ) from exc
-
-
 @router.get("/taxonomy")
 def get_taxonomy(request: Request) -> dict[str, list[str]]:
-    """The TAXONOMY controlled vocabulary, one list per dict key."""
+    """The TAXONOMY controlled vocabulary, one list per dict key.
+
+    Read through the CLI's reader: a missing, unreadable or non-UTF-8
+    TAXONOMY.md is the app-wide ``UnreadableTaxonomyError`` 500, worded as
+    the CLI words it.
+    """
     vault = _vault(request)
-    return parse_taxonomy(_taxonomy_text(vault))
+    return parse_taxonomy(read_taxonomy_text(vault))
 
 
 @router.get("/fixed-enums")
@@ -665,12 +729,13 @@ def get_projects(request: Request) -> list[dict[str, str]]:
     """Registered projects (name / path / status).
 
     Same JOIN of TAXONOMY.md's projects section and the lit-config.yaml
-    projects map that backs ``lit project list``.
+    projects map that backs ``lit project list``, read through the same
+    reader.
     """
     from litman.core.config import load_config
 
     vault = _vault(request)
-    taxonomy_names = set(parse_taxonomy(_taxonomy_text(vault))["projects"])
+    taxonomy_names = set(parse_taxonomy(read_taxonomy_text(vault))["projects"])
     config_map = load_config(vault).projects
     config_names = set(config_map)
 
@@ -815,7 +880,16 @@ def _directory_listing(target: Path, show_hidden: bool = False) -> dict[str, Any
     spirit: the two fs endpoints share one listing path, not two copies).
     ``target`` must already be a resolved, existing directory; each caller does
     the path resolution / validation appropriate to its own input.
+
+    A name that is not UTF-8 text cannot travel in the JSON response, and its
+    path could not be recorded anywhere if picked (``core/undecodable.py``). A
+    subfolder with one is still listed — ``name`` with U+FFFD, ``path`` null,
+    ``undecodable`` true — so the picker can show why it cannot be opened; a
+    ``target`` that itself resolves to one (through a link) is a 400.
     """
+    message = refusal(target)
+    if message is not None:
+        raise HTTPException(status_code=400, detail=message)
     entries: list[dict[str, Any]] = []
     denied = False
     try:
@@ -826,6 +900,16 @@ def _directory_listing(target: Path, show_hidden: bool = False) -> dict[str, Any
                     if not show_hidden and name.startswith("."):
                         continue
                     if not entry.is_dir():  # follows symlinks; files skipped
+                        continue
+                    if has_undecodable(name):
+                        entries.append(
+                            {
+                                "name": printable(name),
+                                "path": None,
+                                "is_vault": False,
+                                "undecodable": True,
+                            }
+                        )
                         continue
                     child = Path(entry.path)
                     entries.append(

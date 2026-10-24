@@ -19,10 +19,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 pytest.importorskip("fastapi")
 
+from litman.cli import cli
 from litman.core.library import create_vault
 from litman.exceptions import ImporterError
 from litman.server import create_app
@@ -208,6 +210,19 @@ def test_preview_resolves_metadata_and_proposes_id(
     assert payload["proposedId"] == _PAPER_ID
     assert payload["idError"] is None
     assert payload["inVault"] is None
+
+
+def test_preview_proposes_an_accented_first_author_without_the_accent(
+    client: TestClient,
+    mock_crossref: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        SAMPLE_MESSAGE, "author", [{"family": "Brüssow", "given": "Nico"}]
+    )
+    payload = client.get("/api/ingest/preview", params={"doi": _DOI}).json()
+    assert payload["authors"] == ["Brüssow, Nico"]
+    assert payload["proposedId"] == "2024_Brussow_HELM-GPT-Macrocyclic"
 
 
 def test_preview_canonicalizes_resolver_url(
@@ -545,6 +560,69 @@ def test_derive_id_returns_what_the_write_would_produce(client: TestClient) -> N
         "keyword": "Method-continuous-macrocyclisation",
         "needs": [],
     }
+
+
+def test_derive_id_previews_the_id_a_pasted_dirty_title_gets(
+    client: TestClient, vault: Path
+) -> None:
+    """A title pasted with its line breaks and <i> is cleaned on the write, so
+    the preview cleans it too — otherwise the line under the form shows the
+    `INi` id that the write no longer produces."""
+    meta = {
+        "title": "(\n  <i>N</i>\n  -Hydroxy)amide-Mediated\nRapid Cyclization",
+        "authors": ["<i>Zhang</i>, Yue"],
+        "year": 2026,
+    }
+    preview = _derive(client, **meta).json()
+    assert preview["id"] == "2026_Zhang_N-Hydroxyamide-Mediated-Rapid"
+
+    resp = _manual_confirm(client, meta)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == preview["id"]
+    written = _yaml.load(
+        (vault / "papers" / preview["id"] / "metadata.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert written["title"] == "(N-Hydroxy)amide-Mediated Rapid Cyclization"
+    assert written["authors"] == ["Zhang, Yue"]
+
+
+def test_an_accented_first_author_gets_one_id_from_preview_drop_and_lit_add(
+    client: TestClient, vault: Path, tmp_path: Path
+) -> None:
+    """`Brüssow` is `Brussow` on the Paper ID line, in the folder the drop
+    writes and in the one `lit add --from-llm-json` writes."""
+    meta = {
+        "title": "An Oligomeric Lanthipeptide from Nostoc punctiforme",
+        "authors": ["Brüssow, Nico", "Dittmann, Elke"],
+        "year": 2026,
+    }
+    expected = "2026_Brussow_Oligomeric-Lanthipeptide-Nostoc"
+
+    assert _derive(client, **meta).json()["id"] == expected
+
+    resp = _manual_confirm(client, meta)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == expected
+    written = _yaml.load(
+        (vault / "papers" / expected / "metadata.yaml").read_text(encoding="utf-8")
+    )
+    # Only the id loses the accent; the stored name keeps it.
+    assert written["authors"][0] == "Brüssow, Nico"
+
+    cli_vault = create_vault(tmp_path, name="cli_vault")
+    pdf = tmp_path / "brussow.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% fake content for tests\n%%EOF\n")
+    llm_json = tmp_path / "brussow.json"
+    llm_json.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    result = CliRunner().invoke(
+        cli,
+        ["add", str(pdf), "--from-llm-json", str(llm_json),
+         "--library", str(cli_vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert [p.name for p in (cli_vault / "papers").iterdir()] == [expected]
 
 
 def test_derive_id_refuses_a_chinese_title_and_offers_nothing_bogus(

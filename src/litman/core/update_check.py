@@ -65,6 +65,43 @@ def cache_path() -> Path:
     return registry_path().parent / CACHE_FILENAME
 
 
+def _tmp_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".tmp")
+
+
+def cache_files() -> list[Path]:
+    """The cache, and the temp file a write killed mid-way left beside it —
+    those that exist. What ``lit uninstall`` removes."""
+    path = cache_path()
+    return [p for p in (path, _tmp_path(path)) if p.is_file()]
+
+
+def remove_cache() -> dict[str, object]:
+    """Delete :func:`cache_files`, and the config dir too once it is empty.
+
+    Counterpart of :func:`_write_cache` for ``lit uninstall``. Returns
+    ``{"path", "removed", "dir_removed"}``; ``removed`` lists the files
+    actually deleted.
+    """
+    path = cache_path()
+    removed: list[Path] = []
+    for target in (path, _tmp_path(path)):
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            continue
+        removed.append(target)
+    dir_removed = False
+    parent = path.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            dir_removed = True
+    except OSError:
+        pass
+    return {"path": path, "removed": removed, "dir_removed": dir_removed}
+
+
 def _current_version() -> str:
     # Read through the package object (not a bound import) so a test can
     # monkeypatch ``litman.__version__`` to drive the comparison.
@@ -137,7 +174,7 @@ def _write_cache(data: dict[str, Any]) -> None:
     """Persist ``data`` atomically (tmp + replace) beside the registry."""
     path = cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = _tmp_path(path)
     tmp.write_text(json.dumps(data), encoding="utf-8")
     tmp.replace(path)
 

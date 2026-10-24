@@ -224,13 +224,13 @@ export default function TrashView({
                   <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-0.5">
                     <button
                       onClick={() => openTab(e, 'pdf')}
-                      className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                      className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                     >
                       📄 PDF
                     </button>
                     <button
                       onClick={() => openTab(e, 'notes')}
-                      className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-300"
+                      className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                     >
                       📝 notes
                     </button>

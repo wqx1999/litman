@@ -14,6 +14,9 @@ reads every ``metadata.yaml``) and so is deferred to the first idle after the
 page paints, while this endpoint runs inline with the boot fetches. Idle is
 still far too late for a banner that has to be up when the user first looks.
 
+It also says whether a plain click on an SI chip may open the file with this
+machine's default app (``open_files``).
+
 Guarded with ``importorskip`` so the suite still collects when the optional
 ``web`` extra is absent (invariant #5).
 """
@@ -29,6 +32,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 import litman.core.portable_link as portable_link
+from litman.core import viewer
 from litman.core.library import create_vault
 from litman.core.portable_link import reset_link_probe_cache
 from litman.server import create_app
@@ -127,3 +131,35 @@ def test_probe_leaves_no_litter_in_the_vault(tmp_path: Path) -> None:
     _client(vault).get("/api/capabilities")
 
     assert sorted(p.name for p in vault.iterdir()) == before
+
+
+# ---------------------------------------------------------------------------
+# open_files: whether an SI chip's click may open the file on this machine
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("variable", ["SSH_CONNECTION", "SSH_CLIENT"])
+def test_open_files_is_none_in_an_ssh_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    """Nothing faked but the environment, so this holds on every OS the suite
+    runs on: a display that came along over SSH is not the user's screen."""
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv(variable, "10.0.0.1 50022 10.0.0.2 22")
+
+    body = _client(create_vault(tmp_path)).get("/api/capabilities").json()
+
+    assert body["open_files"] == "none"
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_open_files_is_desktop_on_a_desktop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    for variable in ("SSH_CONNECTION", "SSH_CLIENT"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(viewer, "_platform", lambda: platform)
+
+    body = _client(create_vault(tmp_path)).get("/api/capabilities").json()
+
+    assert body["open_files"] == "desktop"

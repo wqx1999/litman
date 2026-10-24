@@ -107,7 +107,7 @@ export default function RemovePaperConfirm({
             </p>
           ) : (
             <>
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                 This also breaks
               </p>
               <ul className="space-y-1">

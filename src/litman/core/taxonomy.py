@@ -28,16 +28,23 @@ makes that mapping explicit so callers don't hard-code it.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
+from litman.core.taxonomy_similarity import similar_values
 from litman.core.views import (
     papers_for_index,
     render_index,
     view_fields_snapshot,
 )
-from litman.exceptions import TaxonomyError
+from litman.exceptions import (
+    TaxonomyError,
+    TaxonomySimilarError,
+    UnreadableTaxonomyError,
+)
 
 USER_DICTS: tuple[str, ...] = ("projects", "topics", "methods", "data")
 FIXED_DICTS: tuple[str, ...] = ("type", "status")
@@ -77,6 +84,27 @@ def parse_taxonomy(text: str) -> dict[str, list[str]]:
                 result[current].append(value)
 
     return result
+
+
+def read_taxonomy_text(vault: Path) -> str:
+    """TAXONOMY.md's text, for every command, check and web UI route that reads it.
+
+    Raises:
+        UnreadableTaxonomyError: the file is missing or unreadable, or holds
+            bytes that are not UTF-8 (the message names the first such line).
+    """
+    path = vault / "TAXONOMY.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        line = exc.object.count(b"\n", 0, exc.start) + 1
+        raise UnreadableTaxonomyError(
+            path, f"line {line} is not UTF-8", not_utf8=True
+        ) from exc
+    except OSError as exc:
+        raise UnreadableTaxonomyError(
+            path, exc.strerror or exc.__class__.__name__, not_utf8=False
+        ) from exc
 
 
 def render_user_dict_body(values: list[str]) -> list[str]:
@@ -170,6 +198,29 @@ def find_referencing_papers(
     return sorted(matches)
 
 
+def count_usage(
+    papers: Iterable[dict[str, Any]], dict_name: str, values: Iterable[str]
+) -> dict[str, int]:
+    """How many papers use each of ``values`` in the ``dict_name`` field.
+
+    Every value in ``values`` is a key, unused ones at 0. A list field
+    (projects / topics / methods / data) counts a paper once per value it
+    holds; a scalar field (type / status) counts the papers set to the value.
+    Values a paper uses that are not in ``values`` are not counted — that is
+    ``taxonomy_drift``'s finding.
+    """
+    counts = dict.fromkeys(values, 0)
+    for p in papers:
+        field = p.get(dict_name)
+        if field is None:
+            continue
+        used = {str(v) for v in field} if isinstance(field, list) else {str(field)}
+        for value in used:
+            if value in counts:
+                counts[value] += 1
+    return counts
+
+
 def replace_value_in_field(
     metadata: dict, field: str, replacements: dict[str, str]
 ) -> bool:
@@ -249,7 +300,11 @@ def validate_user_dict(dict_name: str) -> None:
 
 
 def add_taxonomy_values(
-    vault: Path, dict_name: str, values: tuple[str, ...]
+    vault: Path,
+    dict_name: str,
+    values: tuple[str, ...],
+    *,
+    force: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Register new value(s) in a user dict (atomic TAXONOMY.md write).
 
@@ -259,21 +314,30 @@ def add_taxonomy_values(
     is rewritten in sorted order. Only TAXONOMY.md is touched (registering a
     value never ripples into any paper's metadata).
 
+    A new value that looks like one already in the dict, or like an earlier
+    new value of the same call (:func:`similar_values`), is refused unless
+    ``force`` — and then nothing is written, so a call registers all of its
+    values or none. Only creation is guarded: rename, merge and tagging a
+    paper with a registered value never come through here.
+
     Returns:
         ``(added, skipped)`` — values newly registered vs already present.
 
     Raises:
+        TaxonomySimilarError: a new value looks like another and ``force`` is
+            False.
         TaxonomyError: ``dict_name`` is ``projects`` (use ``add_project``),
             a fixed enum, an unknown dict, or any value is empty.
     """
     reject_projects_write(dict_name)
     validate_user_dict(dict_name)
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     current = parse_taxonomy(text)[dict_name]
 
     added: list[str] = []
     skipped: list[str] = []
+    similar: dict[str, list[tuple[str, str]]] = {}
     new_set = set(current)
     for v in values:
         v = v.strip()
@@ -282,9 +346,15 @@ def add_taxonomy_values(
         if v in new_set:
             skipped.append(v)
             continue
+        if not force:
+            matches = similar_values(v, [*current, *added])
+            if matches:
+                similar[v] = matches
         new_set.add(v)
         added.append(v)
 
+    if similar:
+        raise TaxonomySimilarError(similar)
     if not added:
         return added, skipped
 
@@ -328,7 +398,7 @@ def remove_taxonomy_value(
     reject_projects_write(dict_name)
     validate_user_dict(dict_name)
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     current = parse_taxonomy(text)[dict_name]
     if value not in current:
         raise TaxonomyError(f"{value!r} is not registered in {dict_name}.")
@@ -438,7 +508,7 @@ def rename_taxonomy_value(
     if not new.strip():
         raise TaxonomyError("`new` value cannot be empty.")
 
-    text = (vault / "TAXONOMY.md").read_text(encoding="utf-8")
+    text = read_taxonomy_text(vault)
     current = parse_taxonomy(text)[dict_name]
     if old not in current:
         raise TaxonomyError(

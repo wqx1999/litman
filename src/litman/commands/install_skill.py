@@ -32,6 +32,7 @@ from rich.panel import Panel
 
 from litman.core import agent_prefs, agents
 from litman.core.agent_permissions import PermissionResult
+from litman.core.confirm import is_interactive
 from litman.core.skill import (
     SkillInstallError,
     bundled_skill_root,
@@ -47,7 +48,7 @@ console = Console()
 
 def _stdin_is_tty() -> bool:
     """Seam for tests (mirrors ``litman.commands.setup._stdin_is_tty``)."""
-    return sys.stdin.isatty()
+    return is_interactive(sys.stdin)
 
 
 @click.command("install-skill")

@@ -1,0 +1,267 @@
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { fetchSiRmPreview, openSiFile, siFileUrl, type SiRmPreview } from '../api'
+import { formatBytes } from '../ui/bytes'
+import { useEscapeLayer } from '../ui/escapeStack'
+import { modalBackdropProps } from '../ui/modalShell'
+import type { ToastVariant } from '../ui/Toast'
+
+/** One recorded SI file, as far as the cockpit needs it. */
+export interface SiRecord {
+  file: string
+  original: string | null
+  bytes: number | null
+}
+
+// core/supplementary.py `_SI_NAME_RE`: si-01.pdf, si-02.tar.gz, si-100.xlsx.
+const SI_NAME = /^si-(\d{2,})((?:\.[a-z0-9]+){0,2})$/
+
+/** The paper's SI records, read the way core's `list_supplementary` reads
+ * them: a list of mappings with a valid, unrepeated `file`; anything else in
+ * the field is left out (`lit health-check` is what reports it). */
+export function parseSupplementary(value: unknown): SiRecord[] {
+  if (!Array.isArray(value)) return []
+  const out: SiRecord[] = []
+  const seen = new Set<string>()
+  for (const entry of value) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    const file = record.file
+    if (typeof file !== 'string' || !SI_NAME.test(file) || seen.has(file)) continue
+    seen.add(file)
+    const { original, bytes } = record
+    out.push({
+      file,
+      original: typeof original === 'string' && original ? original : null,
+      bytes: typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0 ? bytes : null,
+    })
+  }
+  return out
+}
+
+const chipLabel = (r: SiRecord) =>
+  r.bytes === null ? r.file : `${r.file} · ${formatBytes(r.bytes)}`
+
+const CHIP = 'rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700'
+
+/** The Supplementary row: one chip per SI file, hover for the name it was
+ * downloaded under.
+ *
+ * Editable, each chip opens the file in a new tab (the browser's own viewer
+ * for a PDF, a download under the original name for anything else) and has a
+ * × at its end; "+ Add SI" at the end of the row opens the SI window. When the
+ * server's machine has a desktop, a plain click opens the file there with its
+ * default app instead, and falls back to the new tab when that fails.
+ * Read-only (the trash inspector) the chips are plain: no route serves a
+ * trashed paper's SI, so a link there would only lead to a 404. */
+export function SupplementaryChips({
+  paperId,
+  value,
+  readOnly = false,
+  busy = false,
+  openFiles = 'none',
+  notify,
+  onRemove,
+  onAdd,
+}: {
+  paperId: string
+  /** The paper's raw `supplementary` field. */
+  value: unknown
+  readOnly?: boolean
+  /** A write is in flight — the × and Add SI stop taking clicks. */
+  busy?: boolean
+  /** 'desktop': a plain click opens the file with the server machine's
+   * default app; 'none': the chip is only a link. */
+  openFiles?: 'desktop' | 'none'
+  notify?: (msg: string, variant?: ToastVariant) => void
+  onRemove?: (record: SiRecord) => void
+  onAdd?: () => void
+}) {
+  // `${paperId}/${file}` keys: opens still waiting for the server, and files
+  // whose open failed — the next plain click on one of those is left to the
+  // browser.
+  const opening = useRef(new Set<string>())
+  const fellBack = useRef(new Set<string>())
+  const records = parseSupplementary(value)
+
+  function openOnServer(e: MouseEvent<HTMLAnchorElement>, file: string) {
+    // A click with Ctrl / Cmd / Shift / Alt keeps the browser's meaning (new
+    // tab, window, download); middle and right clicks never come here.
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    const key = `${paperId}/${file}`
+    if (fellBack.current.has(key)) return
+    e.preventDefault()
+    if (opening.current.has(key)) return
+    opening.current.add(key)
+    const href = siFileUrl(paperId, file)
+    openSiFile(paperId, file)
+      .then((r) => notify?.(`Opened ${r.file} on ${r.host}`, 'success'))
+      .catch((err: unknown) => {
+        fellBack.current.add(key)
+        notify?.(err instanceof Error ? err.message : String(err), 'error')
+        // Still within the click's user activation (the server waits only a
+        // moment for the app), so the browser lets this through. Opened with
+        // 'noopener' it would come back null, so the tie is cut by hand.
+        const w = window.open(href, '_blank')
+        if (w) w.opener = null
+      })
+      .finally(() => opening.current.delete(key))
+  }
+
+  if (readOnly) {
+    if (records.length === 0) return <span className="text-stone-400">—</span>
+    return (
+      <div className="flex flex-wrap gap-1">
+        {records.map((r) => (
+          <span key={r.file} title={r.original ?? undefined} className={CHIP}>
+            {chipLabel(r)}
+          </span>
+        ))}
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {records.map((r) => (
+        // One chip holding two controls side by side: the link and the ×. The
+        // × is never inside the link (a button in a link is invalid and its
+        // click would open the file too). Its slot at the chip's end is always
+        // there and only fades in on hover, so the label never moves under the
+        // pointer — which is how a click meant to open the file lands on the
+        // delete — and chips sit as close as the code-clone ones.
+        <span
+          key={r.file}
+          className="group/si inline-flex items-stretch rounded-md bg-stone-200 text-xs text-stone-700 transition-colors hover:bg-stone-300"
+        >
+          <a
+            href={siFileUrl(paperId, r.file)}
+            target="_blank"
+            rel="noreferrer"
+            title={r.original ?? undefined}
+            onClick={openFiles === 'desktop' ? (e) => openOnServer(e, r.file) : undefined}
+            className="rounded-l-md py-0.5 pl-2 transition-colors hover:text-stone-900"
+          >
+            {chipLabel(r)}
+          </a>
+          <button
+            type="button"
+            aria-label={`Remove ${r.file}`}
+            title="Remove"
+            disabled={busy}
+            onClick={() => onRemove?.(r)}
+            className="grid w-4 place-items-center rounded-r-md leading-none text-stone-500 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/si:opacity-100 disabled:opacity-0"
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onAdd}
+        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium text-accent-700 transition-colors hover:bg-accent-50 disabled:opacity-50"
+      >
+        <span aria-hidden className="text-accent-600">
+          +
+        </span>
+        Add SI
+      </button>
+    </div>
+  )
+}
+
+/** "Cited 2× in discussion.md." / "Cited 1× in notes.md and 2× in discussion.md." */
+function citedLine(cited: SiRmPreview['cited']): string {
+  return `Cited ${cited.map((c) => `${c.count}× in ${c.name}`).join(' and ')}.`
+}
+
+/** Confirm before an SI file is deleted — the relation-remove confirm's
+ * shape. It first asks the server where the paper's notes cite the file (the
+ * lines `lit rm --si` lists) and says so; that only informs: Delete stays
+ * allowed, also when the check fails, and waits only while it runs. There is
+ * no trash for SI — the way back is adding the file again. The dialog stays
+ * up while the delete runs, holding Escape without acting on it. */
+export function SiRemoveConfirm({
+  paperId,
+  record,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  paperId: string
+  record: SiRecord
+  busy: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const [preview, setPreview] = useState<SiRmPreview | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEscapeLayer(true, busy ? null : onCancel)
+
+  // The `alive` guard drops a late answer if the dialog closed first.
+  useEffect(() => {
+    let alive = true
+    setPreview(null)
+    setFailed(false)
+    fetchSiRmPreview(paperId, record.file)
+      .then((p) => alive && setPreview(p))
+      .catch(() => alive && setFailed(true))
+    return () => {
+      alive = false
+    }
+  }, [paperId, record.file])
+  const checking = preview === null && !failed
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      {...modalBackdropProps}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label="Delete this SI file?"
+        className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Delete this SI file?</h2>
+        <p className="mt-1.5 font-mono text-xs leading-relaxed text-stone-600">
+          {record.file}
+        </p>
+        {record.original && (
+          <p className="truncate text-xs leading-relaxed text-stone-600" title={record.original}>
+            {record.original}
+          </p>
+        )}
+        <div className="mt-3 space-y-1 text-xs leading-relaxed">
+          {checking && <p className="text-stone-400">Checking the notes for citations…</p>}
+          {failed && <p className="text-stone-500">Couldn't check the notes for citations.</p>}
+          {preview && preview.cited.length > 0 && (
+            <p className="text-amber-700 dark:text-amber-400">{citedLine(preview.cited)}</p>
+          )}
+          {preview && preview.unchecked.length > 0 && (
+            <p className="text-stone-500">
+              Couldn't check {preview.unchecked.join(' and ')} for citations.
+            </p>
+          )}
+          <p className="text-stone-600">This can't be undone — add it again with Add SI.</p>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy || checking}
+            className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

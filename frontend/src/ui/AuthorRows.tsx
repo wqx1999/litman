@@ -38,7 +38,7 @@ export default function AuthorRows({
 
   return (
     <div>
-      <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+      <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         Authors{' '}
         <span className="normal-case tracking-normal text-stone-400">
           — order matters: the first author names the paper

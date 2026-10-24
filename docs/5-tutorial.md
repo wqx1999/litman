@@ -2,8 +2,9 @@
 
 This walkthrough takes one real paper through a complete everyday workflow:
 install litman, set up a library, register a project, add the paper, read it,
-keep its fields up to date, write notes, link it to the project, clone its code,
-export a bibliography, and come back for a second read. By the end you have done
+keep its fields up to date, write notes, pull in its supplementary information
+when a question needs it, link it to the project, clone its code, export a
+bibliography, and come back for a second read. By the end you have done
 every action a normal reading day needs.
 
 It is deliberately the **basic daily path**, not a complete reference. Anything
@@ -20,7 +21,7 @@ public repository so the code-binding step works for real. A second paper,
 have more than one row. Both DOIs resolve through CrossRef, so you can reproduce
 every step.
 
-> **Tested with** litman 1.3.3 on Unix (Linux and macOS), August 2026, with Claude
+> **Tested with** litman 1.3.8 on Unix (Linux and macOS), October 2026, with Claude
 > Sonnet 5 driving the agent path in Claude Code. The command output shown
 > below comes from this setup; exact wording can shift slightly with a different
 > litman version.
@@ -47,9 +48,9 @@ way. Reach for whichever fits the moment:
 Read and tag in the UI, hand bigger jobs to the agent, drop to the CLI when you
 want control — and mix them freely; all three drive the same validated core. The
 Web UI covers the everyday reading and curation and keeps growing; whatever it
-does not cover yet, the agent or the CLI always can. A couple of steps (installing
-the tool, importing a PDF) start from the agent or command line by nature, and
-are marked so.
+does not cover yet, the agent or the CLI always can. A few steps (installing
+the tool, cloning code, exporting a bibliography) start from the agent or command
+line by nature, and are marked so.
 
 ## The fields you maintain while reading
 
@@ -75,7 +76,7 @@ not in a cleanup pass three months on.
 [3-concepts.md](3-concepts.md) §1.1). `topics`, `methods`, and `data` take any
 value you register first in the TAXONOMY ([3-concepts.md](3-concepts.md) §1.3).
 `projects` and `priority-<project>` are both set by linking, covered in
-step 8.
+step 9.
 
 ---
 
@@ -140,6 +141,15 @@ below.
 ```console
 $ lit init ~/research
 Parent directory /home/you/research does not exist. Create it? [Y/n]:
+╭─────────────────────────────── lit init ────────────────────────────────╮
+│ Vault initialized & registered.                                         │
+│ Registry name: literature_vault  (active)                               │
+│                                                                         │
+│ lit will use this vault automatically — no environment variable needed. │
+╰─────────────────────────────────────────────────────────────────────────╯
+  Vault: /home/you/research/literature_vault
+
+Next: lit add <path-to-pdf> --doi <doi>
 ```
 
 (One Enter — the prompt only appears when the folder is not there yet.) This
@@ -159,7 +169,7 @@ them yourself if you want them gone.
 ## 3. Register your first project
 
 A *project* is a name bound to a directory on disk. Linking a paper to it (step
-8) drops a reference into that directory and lets you export a per-project
+9) drops a reference into that directory and lets you export a per-project
 bibliography. The directory must already exist.
 
 🤖 **Agent:** *"register a project called peptide-design at ~/projects/peptide-design"*
@@ -214,12 +224,20 @@ the agent prepared.
 
 ```console
 $ lit add ~/Downloads/pepinvent.pdf --doi 10.1039/D4SC07642G --id 2025_Geylan_PepINVENT
-Paper added: 2025_Geylan_PepINVENT
+╭─────────────────────────────── lit add ────────────────────────────────╮
+│ Paper added: 2025_Geylan_PepINVENT                                     │
+│                                                                        │
+│ Title: PepINVENT: generative peptide design beyond natural amino acids │
+│ Year: 2025    Journal: Chemical Science                                │
+│ Authors: Geylan, Gökçe et al. (10 authors)                             │
+│ Source PDF moved into the vault.                                       │
+╰────────────────────────────────────────────────────────────────────────╯
+  Folder: /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT
 
-Title: PepINVENT: generative peptide design beyond natural amino acids
-Year: 2025    Journal: Chemical Science
-Authors: Geylan, Gökçe et al. (10 authors)
-  Folder: ~/research/literature_vault/papers/2025_Geylan_PepINVENT
+Code candidates (full-text scan):
+[code_candidates]
+https://github.com/MolecularAI/PepINVENT (p14, ×1)
+[/code_candidates]
 ```
 
 CrossRef fills the identity fields. The `--id` gives the paper a short handle;
@@ -229,7 +247,10 @@ be folder names on Windows, macOS and Linux alike, so a title written in Chinese
 Japanese or Korean cannot produce one on its own — litman says so and stops,
 rather than invent a handle you would then be stuck with, and you pass `--id`
 yourself. Only the id is ASCII: the title, authors and journal are stored exactly
-as they were written.
+as they were written. The `code_candidates` block at the end lists any
+code-repository links litman found in the PDF's text, with the page each first
+appears on and how many times, for the agent to pick up; here it is the
+PepINVENT repository that step 9 clones.
 
 One thing to know before you run it on a paper you care about: `lit add` *moves*
 the PDF into the vault, so the original in `~/Downloads` is gone once the import
@@ -249,14 +270,14 @@ the left pane):
 ```console
 $ lit list
                                           Papers (2 of 2)
-┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━┳━━━━━━━━┳━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ id                    ┃ year ┃ type ┃ status ┃ pri ┃ title                                       ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━╇━━━━━━━━╇━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ 2025_Geylan_PepINVENT │ 2025 │ -    │ inbox  │  -  │ PepINVENT: generative peptide design beyond │
-│                       │      │      │        │     │ natural amino a…                            │
-│ 2026_Peng_PocketXMol  │ 2026 │ -    │ inbox  │  -  │ Unified modeling of 3D molecular generation │
-│                       │      │      │        │     │ via atomic inte…                            │
-└───────────────────────┴──────┴──────┴────────┴─────┴─────────────────────────────────────────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ id                    ┃ year ┃ type ┃ status ┃ title                                             ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 2025_Geylan_PepINVENT │ 2025 │ -    │ inbox  │ PepINVENT: generative peptide design beyond       │
+│                       │      │      │        │ natural amino a…                                  │
+│ 2026_Peng_PocketXMol  │ 2026 │ -    │ inbox  │ Unified modeling of 3D molecular generation via   │
+│                       │      │      │        │ atomic inte…                                      │
+└───────────────────────┴──────┴──────┴────────┴───────────────────────────────────────────────────┘
 ```
 
 **To remove a paper:** preview the impact with `lit rm 2025_Geylan_PepINVENT
@@ -324,8 +345,10 @@ summary. This is the everyday curation the Web UI is built for.
 
 🖥️ **Web UI:** in the paper's context panel, set `type` from its dropdown and
 add `topics` / `methods` tags — type a new value and it is
-registered in the TAXONOMY on the spot. Write the summary straight into the notes
-tab (`Shift+N` opens it). You are already reading the PDF right there, so nothing
+registered in the TAXONOMY on the spot; one that looks like a value you already
+have asks first, listing the look-alikes so you can pick one instead. Write the
+summary straight into the notes tab (`Shift+N` opens it). You are already
+reading the PDF right there, so nothing
 pulls you out of the paper. The bibliographic fields live behind the pencil in the
 METADATA header:
 open it to correct a title the import garbled, fill in a missing journal, or fix
@@ -369,7 +392,82 @@ changes later).
 topics=de-novo-design` removes one tag; `lit modify ... --set type=` (empty
 value) clears a scalar.
 
-## 8. Finish: link to the project and clone the code
+## 8. When the answer is in the SI
+
+Some details never make it into the article itself: the full parameter tables,
+the extra benchmarks, the raw data sit in its supplementary information (SI),
+which the publisher hosts beside the article. litman does not download it. You
+fetch it from the article's page — the agent asks you for it the moment a
+question needs it — and litman files it with the paper as `si-01.pdf`,
+`si-02.xlsx`, …, read-only like the PDF, with the name it was downloaded under
+kept beside the number.
+
+🤖 **Agent:** ask about something the article leaves to its SI — *"look in
+PepINVENT's SI for the settings of the reinforcement-learning runs"*. When the
+paper has no SI yet, the agent runs `lit add --si 2025_Geylan_PepINVENT` and the
+SI window opens in the Web UI (below). Once you have added the files, the
+command hands the agent their paths; it reads them and answers with the file
+and the place: `si-01.pdf (d4sc07642g1.pdf)` and the page. Say *"note that
+down"* and it appends the exchange to `discussion.md`, citing the file in that
+same form. The command waits 90 seconds at a time; if you need longer, the agent
+runs it again and the same window stays open. With no Web UI open, the agent passes on the article's
+link and the command for adding the files yourself.
+
+🖥️ **Web UI:** the SI window opens by itself within a few seconds — in a
+background tab, the moment you switch to it. Click **Open website ↗** and the
+article's page opens in a new tab (from the desktop app, in your default
+browser); download the SI there and drag the files
+from the browser's download bar or your Downloads folder onto the window. Each
+file is checked as it lands: `✓` when its name carries the paper's DOI or its
+first pages carry the paper's title, `?` when litman cannot tell (tick
+**add anyway** if you know it belongs), `✕` when it is empty, another paper's SI
+or the article itself. **Done** adds them. Like dragging in the PDF, this
+copies: the downloads stay where they are. To add SI before anyone asks, click
+**+ Add SI** in the context panel's **Supplementary** row; the files appear in
+that row as chips (`si-01.pdf · 1.8 MB`), and a click opens one.
+
+⌨️ **CLI:** when you already have the file, hand it to `lit add --si`:
+
+```console
+$ lit add --si 2025_Geylan_PepINVENT ~/Downloads/d4sc07642g1.pdf
+✓ d4sc07642g1.pdf (1.8 MiB) — name matches the paper's DOI
+SI ready: 1 file(s)
+/home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/supplementary/si-01.pdf	d4sc07642g1.pdf
+```
+
+Like `lit add`, this moves the file: `~/Downloads/d4sc07642g1.pdf` is gone once
+it is in. A file litman cannot confirm, or one over 100 MiB, is asked about
+first, and a file that belongs to another paper is refused — and then nothing is
+added. `lit show` lists the paper's SI files below its metadata (cut short
+here):
+
+```console
+$ lit show 2025_Geylan_PepINVENT
+…
+PDF:   /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/paper.pdf
+Notes: /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/notes.md
+SI:    /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/supplementary/si-01.pdf  (d4sc07642g1.pdf, 1.8 MiB)
+```
+
+On a desktop, `lit open 2025_Geylan_PepINVENT --si si-01` opens it in your PDF
+viewer.
+
+**To undo:** `lit rm 2025_Geylan_PepINVENT --si si-01` deletes the file for good
+after a `Continue? [y/N]` prompt — there is no trash for SI files, and adding the
+file again is the way back. Preview it first; the preview also counts where your
+notes cite the file — here, the note the agent wrote above:
+
+```console
+$ lit rm 2025_Geylan_PepINVENT --si si-01 --dry-run
+Would delete from 2025_Geylan_PepINVENT (dry-run):
+  si-01.pdf (d4sc07642g1.pdf)
+  si-01.pdf is cited 1× in discussion.md
+Dry-run only — nothing deleted. Drop --dry-run to delete for real.
+```
+
+In the Web UI, the × on the chip does the same, after the same warning.
+
+## 9. Finish: link to the project and clone the code
 
 When you have finished the read, stamp it, connect it to your project, and pull in
 its code.
@@ -401,7 +499,7 @@ paper in both directions at once.
 **To undo:** `lit unlink 2025_Geylan_PepINVENT --project peptide-design` reverses
 the link; `lit code rm PepINVENT --cascade` removes the clone and unbinds it.
 
-## 9. Export a bibliography
+## 10. Export a bibliography
 
 Exporting a `.bib` is an agent/CLI step. When you cite the paper, export the
 project's references as BibTeX; the cite key is the paper id, so
@@ -423,10 +521,10 @@ For a single paste-ready citation instead of a whole file — the kind you drop 
 slide — `lit cite 2025_Geylan_PepINVENT` prints one clean line to stdout, and the
 Web UI shows the same per-paper Cite button.
 
-## 10. Come back: the second read
+## 11. Come back: the second read
 
 Months later you open the paper again. litman records this with `last-revisited`,
-the companion to the `read-date` you stamped in step 8:
+the companion to the `read-date` you stamped in step 9:
 
 - `read-date` is set **once** — the day you first read the paper, and it never
   moves after that.

@@ -526,8 +526,9 @@ def test_cli_vault_remove_with_yes_unregisters(
 
 
 def test_cli_vault_remove_aborts_on_n_prompt(
-    fake_home: Path, vault_a: Path
+    fake_home: Path, vault_a: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
     result = runner.invoke(cli, ["vault", "remove", "main"], input="n\n")
@@ -535,6 +536,19 @@ def test_cli_vault_remove_aborts_on_n_prompt(
 
     reg = load_registry()
     assert len(reg.vaults) == 1  # not removed
+
+
+def test_cli_vault_remove_without_a_terminal_asks_for_yes(
+    fake_home: Path, vault_a: Path
+) -> None:
+    """Nobody is asked, so a stray "y" on stdin is not taken as the answer."""
+    runner = CliRunner()
+    runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
+    result = runner.invoke(cli, ["vault", "remove", "main"], input="y\n")
+    assert result.exit_code == 1
+    assert "pass --yes to confirm" in result.output
+    assert "Unregister vault" not in result.output
+    assert len(load_registry().vaults) == 1
 
 
 def test_cli_vault_remove_active_warns_in_prompt(

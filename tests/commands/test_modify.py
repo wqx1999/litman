@@ -340,6 +340,34 @@ def test_modify_set_updated_at_forbidden(
     assert isinstance(result.exception, ModifyError)
 
 
+def test_modify_set_supplementary_forbidden(
+    vault_with_paper: tuple[Path, str]
+) -> None:
+    """SI records pair with locked files in supplementary/: only `lit add
+    --si` / `lit rm --si` write them. `_apply_set` is also what the GUI's
+    metadata PUT runs, so one refusal covers both front doors."""
+    from litman.commands.modify import _apply_set
+
+    vault, paper_id = vault_with_paper
+    meta_path = vault / "papers" / paper_id / "metadata.yaml"
+    before = meta_path.read_bytes()
+    runner = CliRunner()
+    for args in (
+        ["--set", "supplementary=si-01.pdf"],
+        ["--set", "supplementary="],
+        ["--add-tag", "supplementary=si-01.pdf"],
+    ):
+        result = runner.invoke(
+            cli, ["modify", paper_id, *args, "--library", str(vault)]
+        )
+        assert result.exit_code != 0, args
+        assert isinstance(result.exception, ModifyError), args
+    assert meta_path.read_bytes() == before
+
+    with pytest.raises(ModifyError, match="lit rm --si"):
+        _apply_set(vault, paper_id, {}, "supplementary", "si-01.pdf")
+
+
 def test_modify_set_on_list_field_rejected(
     vault_with_paper: tuple[Path, str]
 ) -> None:
@@ -1650,6 +1678,87 @@ def test_set_author_updates_index(
         p for p in _read_index(vault)["papers"] if p["id"] == paper_id
     ]
     assert indexed["authors"] == ["Bar, Bob", "Foo, Alice"]
+
+
+# ---------------------------------------------------------------------------
+# Text pasted from a PDF or a publisher's page: line breaks and markup are
+# cleaned as at ingest, so a hand edit cannot put them back.
+# ---------------------------------------------------------------------------
+
+
+def test_set_title_and_journal_store_one_clean_line(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--set", "title=(\n  <i>N</i>\n  -Hydroxy)amide-Mediated\nRapid",
+            "--set", "journal=Journal of the American\nChemical Society",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    meta = _read_meta(vault, paper_id)
+    assert meta["title"] == "(N-Hydroxy)amide-Mediated Rapid"
+    assert meta["journal"] == "Journal of the American Chemical Society"
+    (indexed,) = [
+        p for p in _read_index(vault)["papers"] if p["id"] == paper_id
+    ]
+    assert indexed["title"] == "(N-Hydroxy)amide-Mediated Rapid"
+
+
+def test_set_a_field_that_is_not_text_is_left_as_typed(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """Only title / journal / booktitle / publisher are cleaned: a custom
+    field holds whatever the user writes (invariant #7)."""
+    vault, paper_id = vault_with_paper
+    result = CliRunner().invoke(
+        cli,
+        ["modify", paper_id, "--set", "my-note=<i>kept</i>", "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["my-note"] == "<i>kept</i>"
+
+
+def test_set_author_and_add_tag_author_store_clean_names(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    result = _set_authors(vault, paper_id, "Zhang,\n  Yue", "<i>Wang</i>, Weifeng")
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == ["Zhang, Yue", "Wang, Weifeng"]
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "modify", paper_id,
+            "--add-tag", "authors=Fu,\n  <b>Hua</b>",
+            "--library", str(vault),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _read_meta(vault, paper_id)["authors"] == [
+        "Zhang, Yue", "Wang, Weifeng", "Fu, Hua",
+    ]
+
+
+def test_set_author_counts_markup_only_as_empty_and_spellings_as_one(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    meta_file = vault / "papers" / paper_id / "metadata.yaml"
+    before = meta_file.read_bytes()
+
+    empty = _set_authors(vault, paper_id, "Foo, Alice", "<i></i>")
+    assert empty.exit_code != 0
+    assert "empty" in str(empty.exception)
+    twice = _set_authors(vault, paper_id, "Foo, Alice", "<i>Foo</i>, Alice")
+    assert twice.exit_code != 0
+    assert "twice" in str(twice.exception)
+    assert meta_file.read_bytes() == before
 
 
 # ---------------------------------------------------------------------------

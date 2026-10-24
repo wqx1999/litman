@@ -14,6 +14,7 @@ import builtins
 import functools
 import importlib
 import io
+import json
 import logging
 import os
 import plistlib
@@ -27,7 +28,7 @@ import time
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from click.testing import CliRunner
@@ -111,6 +112,15 @@ def _no_real_native_window(request, monkeypatch) -> None:
     if "real_webview_loader" in request.keywords:
         return
     monkeypatch.setattr(_mac_shell, "load_webview", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _a_desktop_to_open_links_on(monkeypatch) -> None:
+    """Answer ``viewer.open_files_mode`` as a machine showing the app window
+    does — "desktop" — so whether the window's start address is marked never
+    rides on the runner (an SSH session, a CI box without xdg-open). The few
+    tests about the other answer patch it themselves."""
+    monkeypatch.setattr(gui.viewer, "open_files_mode", lambda: "desktop")
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +399,7 @@ def test_gui_window_uses_chromium_app_mode(
     assert len(procs) == 1
     argv = procs[0].argv
     assert argv[0] == "/usr/bin/google-chrome"
-    assert f"--app={_served_url(result.output)}" in argv
+    assert f"--app={_served_url(result.output)}/?window=app" in argv
 
 
 def test_gui_window_gives_the_browser_a_profile_of_its_own(
@@ -605,6 +615,90 @@ def test_gui_tab_mode_never_ties_the_server_to_a_browser(
     (server,) = _FakeServer.instances
     assert server.should_exit is False
     assert "Close the window" not in result.output
+
+
+def test_app_window_url_is_marked_only_where_a_browser_can_be_shown(monkeypatch) -> None:
+    # The page routes links to the default browser only when it finds this
+    # mark; with nobody to see that browser, it keeps them in the window.
+    url = "http://127.0.0.1:8765"
+    assert gui._app_window_url(url) == f"{url}/?window=app"
+    monkeypatch.setattr(gui.viewer, "open_files_mode", lambda: "none")
+    assert gui._app_window_url(url) == url
+
+
+def test_gui_window_without_a_desktop_starts_unmarked(
+    monkeypatch, gui_harness, chromium_on_path, vault_with_paper
+) -> None:
+    _opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui.viewer, "open_files_mode", lambda: "none")
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert f"--app={_served_url(result.output)}" in procs[0].argv
+
+
+def test_a_browser_that_will_not_start_falls_back_to_the_plain_address(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    # The tab is the user's own browser: it must never carry the window's mark,
+    # or every link in it would be sent off to a second copy of that browser.
+    opened, _procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui, "display_available", lambda: True)
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(gui, "_shed_darwin_app_identity", lambda: False)
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+
+    tried: list[list[str]] = []
+
+    def _no_browser(argv, **kw):
+        tried.append(list(argv))
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "Popen", _no_browser)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    url = _served_url(result.output)
+    assert tried == [["chromium", f"--app={url}/?window=app"]]
+    assert opened == [url]
+
+
+def test_a_window_that_dies_before_loading_falls_back_to_the_plain_address(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    opened, procs = gui_harness
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(gui, "display_available", lambda: True)
+    monkeypatch.setattr(gui, "_load_mac_shell", lambda: None)
+    monkeypatch.setattr(gui, "_shed_darwin_app_identity", lambda: False)
+    monkeypatch.setattr(gui, "_brand_windows_taskbar", lambda stop_event: None)
+    monkeypatch.setattr(
+        gui, "_app_window_argv", lambda url: ["chromium", f"--app={url}"]
+    )
+    fell_back = threading.Event()
+
+    def _window_died(proc, *a, on_launch_failed=None, **k):
+        on_launch_failed()
+        fell_back.set()
+
+    # The server "runs" until the watcher has given up on the window, so the
+    # fallback lands while the run is live — not after its own teardown.
+    monkeypatch.setattr(gui, "_stop_server_when_window_closes", _window_died)
+    monkeypatch.setattr(_FakeServer, "run", lambda self: fell_back.wait(5))
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
+
+    assert result.exit_code == 0, result.output
+    assert fell_back.is_set()
+    url = _served_url(result.output)
+    assert procs[0].argv == ["chromium", f"--app={url}/?window=app"]
+    assert opened == [url]
 
 
 def test_gui_window_falls_back_to_tab_when_no_chromium(
@@ -2686,7 +2780,7 @@ def test_gui_window_darwin_shell_failure_falls_back_to_the_browser_unchanged(
     (proc,) = procs
     assert proc.argv == [
         str(binary),
-        f"--app={url}",
+        f"--app={url}/?window=app",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -2720,7 +2814,7 @@ def test_gui_window_darwin_window_layer_failure_falls_back_to_the_browser(
     (fake_server,) = _FakeServer.instances
     assert fake_server.ran  # gui_cmd still ran the server itself
     (proc,) = procs
-    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}/?window=app"]
     assert opened == []
 
 
@@ -2853,7 +2947,7 @@ def test_gui_window_darwin_respawn_failure_serves_in_place(
     (fake_server,) = _FakeServer.instances
     assert fake_server.ran  # the launch stayed here and served
     (proc,) = procs
-    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}"]
+    assert proc.argv == ["chromium", f"--app={_served_url(result.output)}/?window=app"]
     assert opened == []
 
 
@@ -2900,7 +2994,7 @@ def test_gui_window_linux_argv_is_unchanged_by_the_native_shell(
     (proc,) = procs
     assert proc.argv == [
         "/usr/bin/google-chrome",
-        f"--app={url}",
+        f"--app={url}/?window=app",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -2943,7 +3037,7 @@ def test_gui_window_win32_argv_is_unchanged_by_the_native_shell(
     (proc,) = procs
     assert proc.argv == [
         "C:\\browsers\\google-chrome",
-        f"--app={url}",
+        f"--app={url}/?window=app",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -3735,3 +3829,185 @@ def test_installing_the_filter_is_idempotent() -> None:
         assert logger.filter(_access_record("/api/papers"))
     finally:
         logger.filters = before
+
+
+def _method_record(method: str, path: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1", method, path, "1.1", 200),
+        exc_info=None,
+    )
+
+
+_RID = "0123456789abcdef0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/si/ping"),
+        ("GET", f"/api/si/requests/{_RID}"),
+        ("GET", f"/api/si/requests/{_RID}?collect=1"),
+    ],
+)
+def test_the_si_handshake_polls_are_dropped(method: str, path: str) -> None:
+    """`lit add --si` pings and then polls once a second for up to 90 s."""
+    assert gui._DropPolledAccessLines().filter(_method_record(method, path)) is False
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/si/requests"),
+        ("POST", f"/api/si/requests/{_RID}/files"),
+        ("DELETE", f"/api/si/requests/{_RID}/files/{_RID}"),
+        ("POST", f"/api/si/requests/{_RID}/confirm"),
+        ("POST", f"/api/si/requests/{_RID}/cancel"),
+        ("GET", "/api/si/requests/not-a-request-id"),
+        ("GET", f"/api/si/requests/{_RID}x"),
+        ("GET", "/api/paper/x/si/si-01.pdf"),
+    ],
+)
+def test_every_other_si_line_survives(method: str, path: str) -> None:
+    assert gui._DropPolledAccessLines().filter(_method_record(method, path)) is True
+
+
+# ---------------------------------------------------------------------------
+# GUI registration (task-supplementary-info M2): the record `lit add --si`
+# finds a running GUI by
+# ---------------------------------------------------------------------------
+
+
+class _RecordingServer:
+    """uvicorn.Server stand-in whose run() does what the real lifespan does
+    on startup: record the server. Nothing drops the record afterwards but
+    gui_cmd's own cleanup."""
+
+    seen: ClassVar[list[tuple[Path, dict[str, Any]]]] = []
+
+    def __init__(self, config: Any, *a: Any, **k: Any) -> None:
+        self.config = config
+        self.should_exit = False
+
+    def run(self) -> None:
+        from litman.core.gui_registry import register_gui
+
+        app = self.config.app
+        path = register_gui(app.state.gui_port, app.state.vault)
+        app.state.gui_registration = path
+        _RecordingServer.seen.append(
+            (path, json.loads(path.read_text(encoding="utf-8")))
+        )
+
+
+def _capture_config(app: Any, **kwargs: Any) -> SimpleNamespace:
+    return SimpleNamespace(app=app, **kwargs)
+
+
+def test_gui_tells_the_app_its_port_and_drops_the_record_on_return(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    import uvicorn
+
+    vault, _pid = vault_with_paper
+    _RecordingServer.seen.clear()
+    monkeypatch.setattr(uvicorn, "Server", _RecordingServer)
+    monkeypatch.setattr(uvicorn, "Config", _capture_config)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    ((record, data),) = _RecordingServer.seen
+    port = int(_served_url(result.output).rsplit(":", 1)[1])
+    assert record.name.endswith(f"-{os.getpid()}.json")
+    assert data["port"] == port
+    assert data["vault"] == str(vault.resolve())
+    assert not record.exists()
+    assert not record.parent.exists()
+
+
+def test_gui_drops_the_record_even_when_the_server_raises(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    import uvicorn
+
+    vault, _pid = vault_with_paper
+    _RecordingServer.seen.clear()
+
+    class _CrashingServer(_RecordingServer):
+        def run(self) -> None:
+            super().run()
+            raise RuntimeError("the server died")
+
+    monkeypatch.setattr(uvicorn, "Server", _CrashingServer)
+    monkeypatch.setattr(uvicorn, "Config", _capture_config)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert isinstance(result.exception, RuntimeError)
+    ((record, _data),) = _RecordingServer.seen
+    assert not record.exists()
+
+
+@pytest.fixture
+def _no_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from litman.core import update_check
+
+    monkeypatch.setattr(update_check, "refresh_cache_if_stale", lambda: None)
+
+
+def test_lifespan_records_a_gui_with_a_port_and_drops_it_on_stop(
+    _no_update_check: None, vault_with_paper: tuple[Path, str]
+) -> None:
+    from litman.core.gui_registry import gui_dir
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    vault, _pid = vault_with_paper
+    app = create_app(vault)
+    app.state.gui_port = 8799
+    with TestClient(app):
+        record = app.state.gui_registration
+        assert record is not None and record.parent == gui_dir()
+        data = json.loads(record.read_text(encoding="utf-8"))
+        assert (data["port"], data["pid"]) == (8799, os.getpid())
+        assert data["vault"] == str(vault.resolve())
+    assert not record.exists()
+    assert not gui_dir().exists()
+
+
+def test_lifespan_records_nothing_without_a_port(
+    _no_update_check: None, vault_with_paper: tuple[Path, str]
+) -> None:
+    from litman.core.gui_registry import gui_dir
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    vault, _pid = vault_with_paper
+    app = create_app(vault)
+    with TestClient(app):
+        assert app.state.gui_registration is None
+        assert not gui_dir().exists()
+
+
+def test_a_record_that_cannot_be_written_never_stops_the_gui(
+    monkeypatch: pytest.MonkeyPatch, _no_update_check: None, vault_with_paper: tuple[Path, str]
+) -> None:
+    from litman.core import gui_registry
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    def unwritable(*_a: Any, **_k: Any) -> Path:
+        raise PermissionError(13, "read-only config dir")
+
+    monkeypatch.setattr(gui_registry, "register_gui", unwritable)
+    vault, _pid = vault_with_paper
+    app = create_app(vault)
+    app.state.gui_port = 8799
+    with TestClient(app) as client:
+        assert app.state.gui_registration is None
+        assert client.get("/api/si/ping").status_code == 200

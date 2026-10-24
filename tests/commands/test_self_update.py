@@ -432,8 +432,22 @@ def test_upgrade_nonzero_exit_errors(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_confirm_abort_skips_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without -y, a 'no' answer aborts before any upgrade subprocess."""
     ran = _wire_dispatch(monkeypatch, manager="uv")
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     result = CliRunner().invoke(cli, ["self-update"], input="n\n")
     assert result.exit_code != 0  # click abort
+    assert ran == []
+
+
+def test_without_a_terminal_it_asks_for_yes_and_upgrades_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nobody is asked, so a stray "y" on stdin is not taken as the answer."""
+    ran = _wire_dispatch(monkeypatch, manager="uv")
+    result = CliRunner().invoke(cli, ["self-update"], input="y\n")
+    assert result.exit_code == 1
+    assert "Non-interactive environment" in result.output
+    assert "pass --yes to confirm" in result.output
+    assert "Upgrade litman now?" not in result.output
     assert ran == []
 
 

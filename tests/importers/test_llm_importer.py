@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core.id import derive_id
 from litman.core.library import create_vault
 from litman.exceptions import AddError, ImporterError
 from litman.importers.llm import (
@@ -680,6 +681,31 @@ def test_cli_add_from_llm_json_stdin_tty_no_pipe_errors(
     assert "stdin is a terminal" in str(result.exception)
 
 
+@pytest.mark.parametrize("piped", ["", " \n"])
+def test_cli_add_from_llm_json_stdin_empty_says_nothing_was_read(
+    vault: Path, fake_pdf: Path, piped: str
+) -> None:
+    """Nothing on stdin (the null device, an empty pipe) is named as such, not
+    as a JSON parse error."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "add", str(fake_pdf),
+            "--from-llm-json", "-",
+            "--library", str(vault),
+        ],
+        input=piped,
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, AddError)
+    assert str(result.exception) == (
+        "--from-llm-json - read nothing on stdin. Pipe the JSON in, or pass a "
+        "file path instead."
+    )
+    assert fake_pdf.exists()
+
+
 def test_cli_add_from_llm_json_stdin_mutually_exclusive_with_doi(
     vault: Path, fake_pdf: Path
 ) -> None:
@@ -931,3 +957,82 @@ def test_missing_year_error_forbids_guessing(
     # Bounded must not mean anonymous: the agent still sees which file.
     assert "meta.json" in message
     assert fake_pdf.exists()
+
+
+# ---------------------------------------------------------------------------
+# Line breaks and markup are cleaned on the way in
+#
+# A model reading a PDF can copy a title's line breaks, or a publisher's <i>,
+# into the JSON. Cleaned before the placeholder guard looks, so markup cannot
+# smuggle a filler past it.
+# ---------------------------------------------------------------------------
+
+_DIRTY_TITLE = "(\n  <i>N</i>\n  -Hydroxy)amide-Mediated\nRapid Cyclization"
+_CLEAN_TITLE = "(N-Hydroxy)amide-Mediated Rapid Cyclization"
+
+
+def test_line_breaks_and_markup_are_cleaned_on_the_way_in() -> None:
+    parsed = parse_llm_json_text(
+        json.dumps({
+            "title": _DIRTY_TITLE,
+            "authors": ["Zhang,\n  Yue", "<i>Wang</i>, Weifeng"],
+            "year": 2026,
+            "journal": "Journal of the American\nChemical Society",
+            "booktitle": None,
+            "publisher": "ACS &amp; Partners",
+            "pages": " 42190-42199\n",
+        })
+    )
+    assert parsed["title"] == _CLEAN_TITLE
+    assert parsed["authors"] == ["Zhang, Yue", "Wang, Weifeng"]
+    assert parsed["journal"] == "Journal of the American Chemical Society"
+    assert parsed["booktitle"] == ""
+    assert parsed["publisher"] == "ACS & Partners"
+    assert parsed["pages"] == "42190-42199"
+
+
+@pytest.mark.parametrize("title", ["<i>Unknown</i>", "<i>Untitled</i>\n", "<i></i>"])
+def test_a_placeholder_title_in_markup_is_still_refused(title: str) -> None:
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({"title": title, "authors": ["Wieland, Theodor"]})
+        )
+    assert "placeholder" in str(exc.value)
+
+
+def test_a_placeholder_first_author_in_markup_is_still_refused() -> None:
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({
+                "title": "Amatoxins",
+                "authors": ["<i>Unknown</i>", "Wieland, Theodor"],
+            })
+        )
+    assert "placeholder" in str(exc.value)
+
+
+def test_an_empty_title_keeps_the_message_the_skill_documents() -> None:
+    """lit-library/SKILL.md tells the agent to re-extract on exactly this."""
+    with pytest.raises(ImporterError) as exc:
+        parse_llm_json_text(
+            json.dumps({"title": "", "authors": ["Wieland, Theodor"]})
+        )
+    assert "String should have at least 1 character" in str(exc.value)
+
+
+def test_cli_add_from_llm_json_writes_the_clean_title(
+    vault: Path, fake_pdf: Path, tmp_path: Path
+) -> None:
+    j = _write_json(
+        tmp_path / "meta.json",
+        {"title": _DIRTY_TITLE, "authors": ["Zhang, Yue"], "year": 2026},
+    )
+    result = CliRunner().invoke(
+        cli,
+        ["add", str(fake_pdf), "--from-llm-json", str(j), "--library", str(vault)],
+    )
+    assert result.exit_code == 0, result.output
+
+    paper_dir = vault / "papers" / derive_id(2026, "Zhang", _CLEAN_TITLE)
+    meta = _yaml.load((paper_dir / "metadata.yaml").read_text(encoding="utf-8"))
+    assert meta["title"] == _CLEAN_TITLE

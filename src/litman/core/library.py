@@ -14,10 +14,12 @@ from click.core import ParameterSource
 
 from litman.core.locking import lock_truth_file, rmtree
 from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
+from litman.core.undecodable import refusal
 from litman.core.views import write_index
 from litman.exceptions import (
     LibraryNotFoundError,
     ParentNotFoundError,
+    UndecodablePathError,
     VaultExistsError,
     VaultRegistryError,
 )
@@ -52,17 +54,22 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
         Absolute path to the newly created vault.
 
     Raises:
+        UndecodablePathError: ``parent_dir / name`` is not UTF-8 text — nothing
+            is created, since no registry, config or web UI could hold the path.
         ParentNotFoundError: ``parent_dir`` does not exist or is not a directory.
         VaultExistsError: ``parent_dir / name`` already exists and is non-empty.
     """
     parent = parent_dir.resolve()
+    vault = parent / name
+    message = refusal(vault)
+    if message is not None:
+        raise UndecodablePathError(message)
     if not parent.is_dir():
         raise ParentNotFoundError(
             f"Parent directory does not exist or is not a directory: {parent}. "
             "Create it first or pass a different path."
         )
 
-    vault = parent / name
     if vault.exists() and any(vault.iterdir()):
         # Whatever is sitting there is NOT necessarily a vault — it is just a
         # non-empty directory, and it may well be a folder of the user's own

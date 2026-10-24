@@ -63,7 +63,9 @@ from litman.core.relations import (
     REVERSE_REF_FIELDS,
     relation_refs,
 )
-from litman.core.taxonomy import USER_DICTS, parse_taxonomy
+from litman.core.supplementary import SUPPLEMENTARY_FIELD
+from litman.core.taxonomy import USER_DICTS, parse_taxonomy, read_taxonomy_text
+from litman.core.textclean import TEXT_FIELDS, clean_metadata_text
 from litman.core.views import (
     load_index_papers,
     render_index,
@@ -208,6 +210,13 @@ def _apply_set(
             f"--set on list field {key!r} would clobber it. "
             f"Use --add-tag {key}=<value> / --rm-tag {key}=<value> instead."
         )
+    # Each SI record pairs with a locked file in supplementary/; a value set
+    # here would describe files that are not there (or forget ones that are).
+    if key == SUPPLEMENTARY_FIELD:
+        raise ModifyError(
+            f"Cannot --set {key!r}: SI files are added with `lit add --si` "
+            "and removed with `lit rm --si`."
+        )
     # The retired paper-level field and its per-project replacement (ADR-025).
     # Placed AFTER the two gates above so a field that is both forbidden and
     # retired keeps its existing message, and BEFORE _coerce_scalar so the
@@ -243,6 +252,12 @@ def _apply_set(
                 f"Invalid {key} {graded_value!r}. Allowed values: "
                 f"{', '.join(sorted(PROJECT_PRIORITY_VALUES))}."
             )
+    # A title or venue pasted from a PDF or a publisher's page can bring its
+    # line breaks and markup along; cleaned as at ingest, so a hand edit
+    # cannot put back what `lit add` keeps out. A value that cleans to
+    # nothing unsets the field, like `--set title=`.
+    if key in TEXT_FIELDS:
+        raw_value = clean_metadata_text(raw_value)
     before = metadata.get(key)
     after = _coerce_scalar(raw_value)
     # Fixed-enum gate (review F37): status / type / priority accept only their
@@ -329,12 +344,14 @@ def _apply_add_tag(
             f"--add-tag rejects {key!r}: not a list field. "
             f"Allowed: {', '.join(sorted(USER_TAG_FIELDS))}."
         )
+    if key == "authors":
+        # The other list fields are controlled vocabulary or paper ids; an
+        # author name is free text, cleaned as `--set-author` cleans it.
+        value = clean_metadata_text(value)
     if not value:
         raise ModifyError(f"--add-tag {key}= got empty value.")
     if key in USER_DICTS:
-        registered = parse_taxonomy(
-            (vault / "TAXONOMY.md").read_text(encoding="utf-8")
-        )[key]
+        registered = parse_taxonomy(read_taxonomy_text(vault))[key]
         if value not in registered:
             if key == "projects":
                 hint = (
@@ -434,12 +451,15 @@ def _apply_set_list(
         )
     cleaned: list[str] = []
     for position, value in enumerate(values):
-        if not isinstance(value, str) or not value.strip():
+        # Line breaks and markup go before the shape checks below, so a name
+        # that is only markup counts as empty and two spellings of one name
+        # as a duplicate.
+        entry = clean_metadata_text(value) if isinstance(value, str) else ""
+        if not entry:
             raise ModifyError(
                 f"{key}[{position}] is empty. Every entry must carry a value; "
                 "drop the entry instead of blanking it."
             )
-        entry = value.strip()
         if entry in cleaned:
             raise ModifyError(
                 f"{key} lists {entry!r} twice (positions "

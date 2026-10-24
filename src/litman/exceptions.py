@@ -26,6 +26,10 @@ class VaultExistsError(LitmanError):
     """`lit init` target vault path already exists and is non-empty."""
 
 
+class UndecodablePathError(LitmanError):
+    """`lit init` target vault path is not UTF-8 text (see core/undecodable.py)."""
+
+
 class ImporterError(LitmanError):
     """An importer (CrossRef / arXiv / PDF) failed to fetch or parse metadata."""
 
@@ -136,6 +140,57 @@ class TaxonomyError(LitmanError):
     """
 
 
+class TaxonomySimilarError(TaxonomyError):
+    """`lit taxonomy add` refused a new value that looks like one already in
+    the dict (or like another new value of the same call).
+
+    Carries ``similar``: each refused value mapped to its ``(matching value,
+    reason)`` matches, closest first, so the web UI can name the match
+    without parsing the message. The message lists the closest match
+    per refused value, then how to proceed.
+    """
+
+    def __init__(self, similar: dict[str, list[tuple[str, str]]]) -> None:
+        self.similar = similar
+        lines = []
+        for value, matches in similar.items():
+            closest, reason = matches[0]
+            more = f" (+{len(matches) - 1} more)" if len(matches) > 1 else ""
+            lines.append(f"{value!r} looks like {closest!r} ({reason}){more}.")
+        lines.append("Use the matching value, or add --force to register it anyway.")
+        super().__init__("\n".join(lines))
+
+
+class UnreadableTaxonomyError(LitmanError):
+    """TAXONOMY.md cannot be read: it is missing, unreadable, or not UTF-8.
+
+    Raised by :func:`litman.core.taxonomy.read_taxonomy_text`, the reader
+    every command, check and web UI route goes through, so each names the
+    file and the way out instead of stopping on a raw ``UnicodeDecodeError``
+    or ``OSError``. ``reason`` is the short cause (``line 14 is not UTF-8``,
+    ``Permission denied``) that health-check's finding repeats, and
+    ``not_utf8`` picks its hint. litman never guesses another encoding: the
+    same bytes decode to different text under each guess, and the person who
+    saved the file is the one who knows which it was.
+
+    Not a :class:`TaxonomyError`: the web UI turns those into a 400 for a bad
+    request, and a damaged file is not one.
+    """
+
+    def __init__(self, path: object, reason: str, *, not_utf8: bool) -> None:
+        self.path = path
+        self.reason = reason
+        self.not_utf8 = not_utf8
+        if not_utf8:
+            message = f"Cannot read {path}: {reason}. Re-save it as UTF-8, then retry."
+        else:
+            message = (
+                f"Cannot read {path} ({reason}). "
+                "Run `lit health-check` to see how to fix it."
+            )
+        super().__init__(message)
+
+
 class RenameError(LitmanError):
     """`lit rename` rejected an op: invalid new id, name collision,
     identical old/new, or attempting to rename a non-existent paper.
@@ -152,6 +207,14 @@ class RmError(LitmanError):
 class TrashError(LitmanError):
     """`lit trash` rejected an op: missing source, ambiguous id, restore
     collision with an active paper, or empty/unknown entry lookup.
+    """
+
+
+class SupplementaryError(LitmanError):
+    """A paper's SI files could not be added or removed: a file failed
+    verification or needs confirmation, a source is missing or sits inside
+    the library, an SI name is unknown, or the ``supplementary`` field is
+    malformed.
     """
 
 

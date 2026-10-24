@@ -242,9 +242,18 @@ export function fetchDocMtimes(): Promise<DocMtimes> {
 /** An opaque token that changes iff the vault changed on disk (stat-only, a few
  * dozen bytes). The live-refresh poll compares it against the last one it saw
  * and runs the real 7-request resync sweep ONLY when they differ — which is why
- * this must never be treated as anything but an equality check. */
-export function fetchVaultVersion(): Promise<{ version: string }> {
-  return getJSON<{ version: string }>('/api/vault-version')
+ * this must never be treated as anything but an equality check.
+ *
+ * `siRequest` rides along: the oldest SI request still open for this library
+ * (`lit add --si` waiting, or a page's own Add SI), or null. Not part of the
+ * token. Older servers leave it out. */
+export function fetchVaultVersion(): Promise<{
+  version: string
+  siRequest?: SiRequestSeed | null
+}> {
+  return getJSON<{ version: string; siRequest?: SiRequestSeed | null }>(
+    '/api/vault-version',
+  )
 }
 
 /** The status/type whitelists (+ allowsNone) backing the cockpit
@@ -590,6 +599,200 @@ export function discardIngest(handle: string): Promise<void> {
   )
 }
 
+// --- SI window (task-supplementary-info) ------------------------------------
+
+/** One file dropped into the SI window, as the server checked it.
+ * `ok` = ✓ (counts on Done), `unverified` = ? (only when ticked "add anyway"),
+ * `rejected` = ✕ (can never be added; `reason` says why). */
+export interface SiRow {
+  id: string
+  name: string
+  bytes: number
+  verdict: 'ok' | 'unverified' | 'rejected'
+  check: 'filename' | 'title' | null
+  reason: string
+  otherId: string | null
+}
+
+/** A file Done put into the library. */
+export interface SiAdded {
+  file: string
+  path: string
+  original: string
+  bytes: number
+  check: string
+}
+
+/** The whole state of one SI request — every `/api/si/requests*` answer
+ * carries it. `vaultServed` is false when the GUI now shows another library. */
+export interface SiSnapshot {
+  id: string
+  paperId: string
+  title: string
+  link: string | null
+  status: 'pending' | 'confirming' | 'added' | 'cancelled'
+  vaultServed: boolean
+  rows: SiRow[]
+  added: SiAdded[]
+  warnings: string[]
+}
+
+/** What the poll hands over (`/api/vault-version`): enough to open the window. */
+export interface SiRequestSeed {
+  id: string
+  paperId: string
+  title: string
+  link: string | null
+}
+
+/** A failed SI call. A conflict (409) also carries the request as it now is,
+ * so the window can show the rows the server holds instead of guessing. */
+export class SiApiError extends ApiError {
+  readonly request: SiSnapshot | null
+
+  constructor(message: string, status: number, request: SiSnapshot | null) {
+    super(message, status)
+    this.name = 'SiApiError'
+    this.request = request
+  }
+}
+
+/** `mutateJSON`'s error handling, keeping the 409 body's `request` too. */
+async function siFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const resp = await apiFetch(url, init)
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    let request: SiSnapshot | null = null
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown; request?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+      if (parsed.request && typeof parsed.request === 'object') {
+        request = parsed.request as SiSnapshot
+      }
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    throw new SiApiError(detail, resp.status, request)
+  }
+  return (await resp.json()) as T
+}
+
+function siJSON<T>(url: string, body: unknown): Promise<T> {
+  return siFetch<T>(url, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+const siRequestUrl = (rid: string) => `/api/si/requests/${encodeURIComponent(rid)}`
+
+/** Add SI from the cockpit: opens the paper's request, or rejoins the one
+ * already open (the server never keeps two for one paper). */
+export async function createSiRequest(paperId: string): Promise<SiSnapshot> {
+  const r = await siJSON<{ request: SiSnapshot }>('/api/si/requests', {
+    paperId,
+    source: 'page',
+  })
+  return r.request
+}
+
+/** The request as it is now. Never `?collect=1`: collecting is how the CLI
+ * marks a result as seen, and the page reading it must not take it away. */
+export async function fetchSiRequest(rid: string): Promise<SiSnapshot> {
+  const r = await siFetch<{ request: SiSnapshot }>(siRequestUrl(rid))
+  return r.request
+}
+
+/** One dropped file, raw bytes in, its checked row out. The name rides in a
+ * header, percent-encoded so any name survives HTTP. */
+export function uploadSiFile(
+  rid: string,
+  file: File,
+  signal?: AbortSignal,
+): Promise<{ row: SiRow; request: SiSnapshot }> {
+  return siFetch(`${siRequestUrl(rid)}/files`, {
+    method: 'POST',
+    body: file,
+    headers: { 'X-Litman-Filename': encodeURIComponent(file.name) },
+    signal,
+  })
+}
+
+/** Take one row out of the window; its stashed upload goes with it. */
+export function removeSiRow(
+  rid: string,
+  fid: string,
+): Promise<{ removed: boolean; request: SiSnapshot }> {
+  return siFetch(`${siRequestUrl(rid)}/files/${encodeURIComponent(fid)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** Done: every ✓ row plus the ? rows in `addAnyway`, in one write. */
+export async function confirmSi(rid: string, addAnyway: string[]): Promise<SiSnapshot> {
+  const r = await siJSON<{ request: SiSnapshot }>(`${siRequestUrl(rid)}/confirm`, {
+    addAnyway,
+  })
+  return r.request
+}
+
+/** Cancel: the request ends and every dropped file is thrown away. */
+export async function cancelSi(rid: string): Promise<SiSnapshot> {
+  const r = await siFetch<{ request: SiSnapshot }>(`${siRequestUrl(rid)}/cancel`, {
+    method: 'POST',
+  })
+  return r.request
+}
+
+/** Where one recorded SI file is served: a PDF opens in the browser, anything
+ * else downloads under the name it was added with. */
+export function siFileUrl(paperId: string, file: string): string {
+  return `/api/paper/${encodeURIComponent(paperId)}/si/${encodeURIComponent(file)}`
+}
+
+/** Where the paper's notes cite one SI file, for the delete confirm: lines
+ * per notes file (`cited`, only files citing it) and the notes files that
+ * could not be read (`unchecked`). `lit rm --si` lists the same. */
+export interface SiRmPreview {
+  file: string
+  cited: { name: string; count: number }[]
+  unchecked: string[]
+}
+
+/** Read-only; the error carries the server's reason. */
+export function fetchSiRmPreview(paperId: string, file: string): Promise<SiRmPreview> {
+  return getJSONDetailed<SiRmPreview>(`${siFileUrl(paperId, file)}/rm-preview`)
+}
+
+/** Delete one SI file for good — what `lit rm --si` does; there is no trash
+ * for SI. `warnings`: a view rebuild that failed after the delete. */
+export function removeSiFile(
+  paperId: string,
+  file: string,
+): Promise<{ file: string; warnings: string[] }> {
+  return mutateJSON(siFileUrl(paperId, file), 'DELETE')
+}
+
+/** Open one recorded SI file with the default app of the machine the server
+ * runs on — `host` names it. Refused, the reason in the error's message, for
+ * a file that app would run, when that machine has no desktop, or when no app
+ * took the file; the caller then lets the browser have it. */
+export function openSiFile(
+  paperId: string,
+  file: string,
+): Promise<{ opened: boolean; file: string; host: string }> {
+  return mutateJSON(`${siFileUrl(paperId, file)}/open`, 'POST')
+}
+
+/** Hand a web page to the default browser on the server's machine — a click on
+ * a link to another site in the --window app window (externalLinks.ts). An
+ * ApiError carries the server's one-line reason when it cannot; the caller
+ * then opens the link where it is. */
+export function openUrlOutside(url: string): Promise<{ opened: boolean; host: string }> {
+  return mutateJSON('/api/open-url', 'POST', { url })
+}
+
 /** Kick off the one-click update: the server spawns a detached helper and
  * shuts itself down; the helper upgrades litman and relaunches the GUI. 409
  * (ApiError with the human hint as its message) when litman cannot update
@@ -608,10 +811,16 @@ export function postSelfUpdate(): Promise<{ status: string; installer: string }>
  * not being created — the library itself is unaffected. A GUI-only user has no
  * other way to learn this: the CLI prints a warning to stderr, and the desktop
  * shortcut launches the console-less `litw` entry point, so that warning is
- * shown to nobody. */
+ * shown to nobody.
+ *
+ * `open_files` is whether a file opened on the server's machine reaches a
+ * screen: 'desktop' lets a plain click on an SI chip open it there
+ * (`openSiFile`); 'none' — an SSH session, a headless box — leaves the chips
+ * plain links into the browser, as does no answer at all. */
 export interface Capabilities {
   links: 'symlink' | 'junction' | 'none'
   platform: string
+  open_files?: 'desktop' | 'none'
 }
 
 export function fetchCapabilities(): Promise<Capabilities> {
@@ -868,14 +1077,67 @@ export function setProjectPath(
   })
 }
 
+/** A registered value a new one looks like, and why: `[value, reason]`. */
+export type SimilarPair = [string, string]
+
+/** The server refused a new value because it looks like a registered one (409).
+ * The message is the CLI's sentence and tells the reader to add `--force`, which
+ * means nothing in the GUI: never show it. Show `similar` (closest first) and
+ * offer to create the value anyway instead. */
+export class TaxonomySimilarError extends ApiError {
+  readonly similar: SimilarPair[]
+
+  constructor(message: string, similar: SimilarPair[]) {
+    super(message, 409)
+    this.name = 'TaxonomySimilarError'
+    this.similar = similar
+  }
+}
+
+function isSimilarPair(x: unknown): x is SimilarPair {
+  return (
+    Array.isArray(x) &&
+    x.length === 2 &&
+    typeof x[0] === 'string' &&
+    typeof x[1] === 'string'
+  )
+}
+
 /** Register a new controlled-vocab value through the `lit taxonomy add` backend
  * (register-first per invariant #2). This only registers the value; the caller
- * then attaches it via `putMetadata` addTag (two-step inline-create). */
-export function addTaxonomyValue(
+ * then attaches it via `putMetadata` addTag (two-step inline-create).
+ *
+ * A near-duplicate of a registered value is refused unless `force` is set; that
+ * refusal throws `TaxonomySimilarError`. Every other failure throws `ApiError`
+ * with the backend's message, as `mutateJSON` does. */
+export async function addTaxonomyValue(
   key: string,
   value: string,
+  force = false,
 ): Promise<{ ok: boolean; added: string[]; skipped: string[] }> {
-  return mutateJSON(`/api/taxonomy/${encodeURIComponent(key)}`, 'POST', { value })
+  const resp = await apiFetch(`/api/taxonomy/${encodeURIComponent(key)}`, {
+    method: 'POST',
+    body: JSON.stringify(force ? { value, force: true } : { value }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`
+    let similar: SimilarPair[] = []
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown; similar?: unknown }
+      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
+      if (Array.isArray(parsed.similar) && parsed.similar.every(isSimilarPair)) {
+        similar = parsed.similar
+      }
+    } catch {
+      /* non-JSON error body — keep the status-line fallback */
+    }
+    if (resp.status === 409 && similar.length > 0) {
+      throw new TaxonomySimilarError(detail, similar)
+    }
+    throw new ApiError(detail, resp.status)
+  }
+  return (await resp.json()) as { ok: boolean; added: string[]; skipped: string[] }
 }
 
 /** Remove a controlled-vocab value through the `lit taxonomy rm` backend
@@ -912,11 +1174,15 @@ export function renameTaxonomyValue(
 // --- Filesystem directory picker (read-only) — backs the path fields' Browse --
 
 /** One subdirectory row from GET /api/fs/list. `is_vault` is true when the
- * folder holds a lit-config.yaml (drives the picker's ✓ library badge). */
+ * folder holds a lit-config.yaml (drives the picker's ✓ library badge).
+ * `undecodable` marks a folder whose name is not UTF-8 text: listed with
+ * U+FFFD in `name` so the user sees it, with no `path`, since none could be
+ * sent back or recorded. */
 export interface FsEntry {
   name: string
-  path: string
+  path: string | null
   is_vault: boolean
+  undecodable?: boolean
 }
 
 /** A standard one-click location (Home / Desktop / Documents / Downloads) — only

@@ -24,18 +24,20 @@ from fastapi.staticfiles import StaticFiles
 
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
-from litman.exceptions import CorruptMetadataError
+from litman.exceptions import CorruptMetadataError, UnreadableTaxonomyError
 from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
 from litman.server.routes_ingest import sweep_uploads
 from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
+from litman.server.routes_si import router as si_router
 from litman.server.routes_structured import router as structured_router
 from litman.server.routes_trash import router as trash_router
 from litman.server.routes_ui_state import router as ui_state_router
 from litman.server.routes_update import router as update_router
 from litman.server.routes_write import router as write_router
+from litman.server.si_requests import SiRequestTable
 
 # The vendored SPA build lands here once `frontend/build.sh` has run; it does
 # not exist until Phase 1, so the factory guards on its presence.
@@ -92,6 +94,15 @@ _VAULTLESS_ALLOWED = frozenset(
         # litman (task-picker-create-folder).
         ("GET", "/api/fs/list"),
         ("POST", "/api/fs/mkdir"),
+        # `lit add --si` asks this to tell a live GUI from a stale
+        # registration and to learn which library it shows. Any answer means
+        # "alive"; refused here, a GUI with no library (or a gone one) would
+        # answer 409/410 and read as a GUI the CLI cannot identify.
+        ("GET", "/api/si/ping"),
+        # Hands a link clicked in the app window to the default browser and
+        # touches no vault. A library gone mid-session leaves the main view up,
+        # DOI and what's-new links and all.
+        ("POST", "/api/open-url"),
     }
 )
 
@@ -176,8 +187,31 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Record this server where `lit add --si` looks for a running GUI
+    # (core/gui_registry.py). Only `lit gui` sets the port, so a test's app —
+    # or any app the command did not start — records nothing. Here rather
+    # than around `server.run()`: uvicorn runs this shutdown half on Ctrl+C
+    # and SIGTERM, and when the bind fails, where the command's own `finally`
+    # is not reached. A failure to record must never stop the GUI.
+    registration = None
+    port = getattr(app.state, "gui_port", None)
+    if port is not None:
+        try:
+            from litman.core.gui_registry import register_gui
+
+            registration = register_gui(port, app.state.vault)
+        except Exception:
+            registration = None
+    app.state.gui_registration = registration
+
     threading.Thread(target=_refresh, daemon=True).start()
-    yield
+    try:
+        yield
+    finally:
+        if registration is not None:
+            from litman.core.gui_registry import unregister_gui
+
+            unregister_gui(registration)
 
 
 def create_app(vault: Path | None) -> FastAPI:
@@ -200,6 +234,9 @@ def create_app(vault: Path | None) -> FastAPI:
     # but nothing consumes the signal — only the --window watcher does, so no
     # mode switch is needed here.
     app.state.presence = PresenceTracker()
+    # The SI window's requests (routes_si). Here, not in the lifespan: a bare
+    # TestClient never runs the lifespan, and memory is all they need.
+    app.state.si_requests = SiRequestTable()
 
     @app.middleware("http")
     async def _guard_vault(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -282,6 +319,16 @@ def create_app(vault: Path | None) -> FastAPI:
         "Internal Server Error" instead of which file to fix and how."""
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
+    @app.exception_handler(UnreadableTaxonomyError)
+    async def _unreadable_taxonomy(
+        request: Request, exc: UnreadableTaxonomyError
+    ) -> JSONResponse:
+        """TAXONOMY.md cannot be read: a 500 naming the file and the way out,
+        for every route that reads it — the vocabulary and project lists,
+        registering a value, tagging a paper, adding or renaming a project —
+        worded as the CLI words it, instead of "Internal Server Error"."""
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
     app.include_router(read_router)
     app.include_router(write_router)
     app.include_router(structured_router)
@@ -291,6 +338,7 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(update_router)
     app.include_router(ui_state_router)
     app.include_router(ingest_router)
+    app.include_router(si_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.

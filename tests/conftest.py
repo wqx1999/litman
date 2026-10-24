@@ -14,9 +14,11 @@ import io
 import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from litman.core import fs_identity
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.vault_registry import REGISTRY_ENV_VAR
@@ -176,6 +178,20 @@ def fake_junction(
         return path
 
     return _plant
+
+
+@pytest.fixture
+def no_inodes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Play a volume without inode numbers: every stat the identity check
+    (``litman.core.fs_identity``) makes answers with the real device and inode
+    0, as some Windows network and virtual disks do (bpo-33935). Identity then
+    tells no two entries apart, and the paths have to decide."""
+    real_stat = os.stat
+
+    def stat_without_inode(path: str | os.PathLike[str]) -> SimpleNamespace:
+        return SimpleNamespace(st_dev=real_stat(path).st_dev, st_ino=0)
+
+    monkeypatch.setattr(fs_identity, "_stat", stat_without_inode)
 
 
 @pytest.fixture(autouse=True)

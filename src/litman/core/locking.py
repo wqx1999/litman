@@ -10,9 +10,13 @@ path unlocks the target immediately before the replace (:func:`unlock_truth_file
 and re-locks after.
 
 Locked: ``papers/<id>/metadata.yaml``, ``TAXONOMY.md`` (vault root),
-``papers/<id>/paper.pdf``. NOT locked: ``notes.md`` / ``discussion.md`` /
-``lit-config.yaml`` / ``INDEX.json`` / ``views/`` / ``codes/`` / ``.trash/`` /
-``.litman-staging/`` (rationale in ADR-015).
+``papers/<id>/paper.pdf``, and every file directly inside
+``papers/<id>/supplementary/`` (a paper's SI files get the same treatment as
+its PDF; the folder itself is not locked, nothing is followed through a
+link, and hidden files such as ``.DS_Store`` or ``Thumbs.db`` are left
+alone). NOT locked: ``notes.md`` /
+``discussion.md`` / ``lit-config.yaml`` / ``INDEX.json`` / ``views/`` /
+``codes/`` / ``.trash/`` / ``.litman-staging/`` (rationale in ADR-015).
 
 This module depends only on ``pathlib`` / ``os`` / ``stat`` / ``sys`` — no
 import of any other litman module — so ``core/atomic.py`` (the central write
@@ -38,6 +42,32 @@ from pathlib import Path
 # enumerate exactly the same set.
 _PAPER_TRUTH_NAMES: frozenset[str] = frozenset({"metadata.yaml", "paper.pdf"})
 _ROOT_TRUTH_NAME = "TAXONOMY.md"
+
+# A paper's SI files live one level further down, in papers/<id>/supplementary/.
+SI_DIRNAME = "supplementary"
+
+# Files a file manager drops into any folder it shows (AppleDouble "._*" files
+# are the fourth kind). They are not SI, locking one would only make Finder /
+# Explorer fail to save its view state, and they are the only files litman
+# deletes along with an emptied supplementary/ folder.
+_FILE_MANAGER_DROPPINGS: frozenset[str] = frozenset(
+    {".ds_store", "thumbs.db", "desktop.ini"}
+)
+
+
+def is_file_manager_dropping(name: str) -> bool:
+    """``.DS_Store``, an AppleDouble ``._*`` file, ``Thumbs.db``, ``desktop.ini``."""
+    return name.lower() in _FILE_MANAGER_DROPPINGS or name.startswith("._")
+
+
+def is_si_candidate_name(name: str) -> bool:
+    """Whether a file in ``supplementary/`` can be an SI file at all.
+
+    Hidden files and file-manager droppings never are: they are not locked,
+    not reported as unrecorded, and never taken in. Shared with
+    :mod:`litman.core.supplementary`, so both draw the line in one place.
+    """
+    return not (name.startswith(".") or is_file_manager_dropping(name))
 
 
 def _chmod_readonly(path: Path) -> None:
@@ -96,11 +126,12 @@ def unlock_truth_file(path: Path) -> None:
 
 
 def is_truth_lockable(vault: Path, target: Path) -> bool:
-    """Whether ``target`` is one of the three lockable TRUTH files.
+    """Whether ``target`` is one of the lockable TRUTH files.
 
     True iff ``target`` is, relative to ``vault``:
         * ``papers/<id>/metadata.yaml``
         * ``papers/<id>/paper.pdf``
+        * ``papers/<id>/supplementary/<file>`` (not a hidden file)
         * ``TAXONOMY.md`` (vault root)
 
     False for ``notes.md`` / ``discussion.md`` / ``lit-config.yaml`` /
@@ -125,16 +156,21 @@ def is_truth_lockable(vault: Path, target: Path) -> bool:
         and parts[2] in _PAPER_TRUTH_NAMES
     ):
         return True
-    return False
+    return (
+        len(parts) == 4
+        and parts[0] == "papers"
+        and parts[2] == SI_DIRNAME
+        and is_si_candidate_name(parts[3])
+    )
 
 
 def ensure_truth_locked(vault: Path) -> int:
     """Idempotent vault-wide re-lock sweep. Returns the number re-locked.
 
     Stats ``<vault>/TAXONOMY.md`` and, for each ``<vault>/papers/<id>/``, its
-    ``metadata.yaml`` + ``paper.pdf``; any that exists and is currently
-    writable is locked and counted. A second run over an already-locked vault
-    returns 0.
+    ``metadata.yaml`` + ``paper.pdf`` and the files in its ``supplementary/``;
+    any that exists and is currently writable is locked and counted. A second
+    run over an already-locked vault returns 0.
 
     **Stat only — never opens or reads file contents.** Enumeration uses
     ``os.scandir`` (not ``list_papers``, which parses every metadata.yaml);
@@ -165,7 +201,36 @@ def ensure_truth_locked(vault: Path) -> int:
             if target.exists() and os.access(target, os.W_OK):
                 lock_truth_file(target)
                 n += 1
+        n += _lock_si_files(Path(entry.path) / SI_DIRNAME)
 
+    return n
+
+
+def _lock_si_files(si_dir: Path) -> int:
+    """Lock every writable SI file in one paper's ``supplementary/``.
+
+    Nothing is reached through a link. Not the folder: as a symlink or a
+    Windows junction it leads to some other folder on the machine. Not a
+    file in it either: ``chmod`` acts on the link's target. A folder that
+    cannot be listed is left as it is — the SI health check reports it.
+    """
+    try:
+        if si_dir.is_symlink() or si_dir.is_junction():
+            return 0
+        si_entries = list(os.scandir(si_dir))
+    except OSError:
+        return 0
+    n = 0
+    for si_entry in si_entries:
+        if (
+            si_entry.is_symlink()
+            or not si_entry.is_file()
+            or not is_si_candidate_name(si_entry.name)
+        ):
+            continue
+        if os.access(si_entry.path, os.W_OK):
+            lock_truth_file(Path(si_entry.path))
+            n += 1
     return n
 
 

@@ -29,6 +29,7 @@ export interface CockpitHandle {
 }
 import {
   ApiError,
+  TaxonomySimilarError,
   addTaxonomyValue,
   deleteTaxonomyValue,
   fetchCite,
@@ -37,11 +38,15 @@ import {
   postRevisit,
   postUnread,
   putMetadata,
+  removeSiFile,
   renameTaxonomyValue,
   unlinkProject,
 } from '../api'
-import type { MetadataWrite } from '../api'
+import type { MetadataWrite, SimilarPair } from '../api'
 import AuthorRows from '../ui/AuthorRows'
+import VocabPopover from '../ui/VocabPopover'
+import type { ToastVariant } from '../ui/Toast'
+import { SiRemoveConfirm, SupplementaryChips, type SiRecord } from './Supplementary'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { isYearShape, YEAR_HINT } from '../ui/year'
 import {
@@ -93,7 +98,13 @@ interface Props {
    * /api/projects, keeping the dropdowns/autocomplete current (3c-1). */
   onVocabChanged?: () => void
   /** Toast a message (used to surface the backend's raw error verbatim). */
-  notify?: (msg: string) => void
+  notify?: (msg: string, variant?: ToastVariant) => void
+  /** Add SI: open the SI window for this paper (App hosts the one window). */
+  onAddSi?: (paperId: string) => void
+  /** 'desktop': a plain click on an SI chip opens the file with the default
+   * app of the machine the server runs on; 'none': the chip is a plain link
+   * into the browser (GET /api/capabilities `open_files`). */
+  openFiles?: 'desktop' | 'none'
   /** Register/unregister the imperative handle the global keyboard shortcuts
    * (Phase 4) drive curation through. Null on unmount. */
   onRegisterHandle?: (handle: CockpitHandle | null) => void
@@ -195,7 +206,7 @@ function formatAuthors(authors: string[]): string {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-3.5">
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         {label}
       </div>
       <div className="text-sm text-stone-800">{children}</div>
@@ -206,7 +217,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const SELECT_CLASS =
   'w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 ' +
   'shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 ' +
-  'focus:ring-accent-400 disabled:opacity-50'
+  'focus:ring-accent-500 disabled:opacity-50'
 
 /** A single fixed-enum dropdown (status / type), and the per-project grade
  * picker in the Projects panel. Options come from `fixedEnums` for the former
@@ -280,39 +291,44 @@ function EnumSelect({
 const PROJECT_GRADES = ['A', 'B', 'C']
 
 /** One pill in the Tags group: the field name plus a count badge when the field
- * has values. Clicking toggles the field's inline editor panel open/closed. A
- * filled (accent) pill means the field is non-empty, so the collapsed group still
- * reads at a glance which fields are tagged (problem 1's glanceability cost). */
+ * has values. Clicking toggles the field's value popover open/closed; `ref` is
+ * what the popover lines up with. A filled (accent) pill means the field is
+ * non-empty, so the collapsed group still reads at a glance which fields are
+ * tagged (problem 1's glanceability cost). */
 function TagPill({
   label,
   count,
   active,
   disabled,
   onClick,
+  ref,
 }: {
   label: string
   count: number
   active: boolean
   disabled: boolean
   onClick: () => void
+  ref?: React.Ref<HTMLButtonElement>
 }) {
   const filled = count > 0
   return (
     <button
+      ref={ref}
       type="button"
       aria-label={`${label} (${count} selected)`}
+      aria-haspopup="dialog"
       aria-expanded={active}
       disabled={disabled}
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50 ${
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:opacity-50 ${
         filled
-          ? 'border-accent-300 bg-accent-50 text-accent-700 hover:bg-accent-100'
+          ? 'border-accent-200 bg-accent-50 text-accent-700 hover:bg-accent-100'
           : 'border-stone-300 bg-white text-stone-500 hover:bg-stone-50'
-      } ${active ? 'ring-1 ring-accent-400' : ''}`}
+      } ${active ? 'ring-1 ring-accent-500' : ''}`}
     >
       <span>{label}</span>
       {filled && (
-        <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent-200 px-1 text-[10px] font-bold text-accent-800">
+        <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accent-200 px-1 text-[10px] font-bold text-accent-700">
           {count}
         </span>
       )}
@@ -320,16 +336,14 @@ function TagPill({
   )
 }
 
-/** One row of a TagPanel's value list.
+/** One projects row of a TagPanel (topics / methods / data use the popover's
+ * plain row).
  *
- * Two shapes. Without `onGrade` (topics / methods / data) it is what it always
- * was: a single full-width button that toggles the value on the paper.
- *
- * With `onGrade` (projects only) it splits into a div carrying a name button
- * and a grade `<select>` — buttons cannot nest, so the row itself stops being
- * one. The name wraps instead of truncating (`break-words`, no `truncate`):
- * project names are long and the aside is only 320px, and a name the user
- * cannot read is worse than a taller row. `items-start` + `ml-auto shrink-0`
+ * A div carrying a name button and a grade `<select>` — buttons cannot nest, so
+ * the row itself is not one. The name wraps instead of truncating
+ * (`break-words`, no `truncate`): project names are long and the popover is
+ * narrow, and a name the user cannot read is worse than a taller row.
+ * `items-start` + `ml-auto shrink-0`
  * keeps the dropdown pinned to the FIRST line while the name flows under it.
  *
  * The two link states differ deliberately (ADR-025 decision 5):
@@ -359,7 +373,7 @@ function TagPanelRow({
   grade: string | null
   busy: boolean
   onToggle: () => void
-  onGrade?: (value: string, grade: string) => void
+  onGrade: (value: string, grade: string) => void
 }) {
   const selectRef = useRef<HTMLSelectElement>(null)
   const badge = health && (
@@ -371,24 +385,6 @@ function TagPanelRow({
       {health.badge}
     </span>
   )
-
-  if (!onGrade) {
-    return (
-      <button
-        type="button"
-        disabled={busy}
-        title={health?.title}
-        onClick={onToggle}
-        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
-      >
-        <span className={`w-3 shrink-0 ${on ? 'text-accent-600' : 'text-transparent'}`}>
-          ✓
-        </span>
-        <span className="truncate">{value}</span>
-        {badge}
-      </button>
-    )
-  }
 
   // Linking is refused for an unhealthy project, so an unlinked one gets no
   // picker to offer a write that cannot land.
@@ -453,18 +449,24 @@ function TagPanelRow({
   )
 }
 
-/** The inline editor panel for one tag field — a combobox (problem 3). The input
- * is search-only (never doubles as a create box); the list shows every registered
- * value (attached ones get a ✓, click to add/remove); a contextual "Create" row
- * appears as the last list entry only when the typed text matches no existing
- * value (controlled-vocab fields); a "Manage…" footer enters the dictionary
- * editor. `onCreate`/`onManage` are omitted for projects (a project is
- * created/deleted from the TopBar, never here). The panel mounts fresh per open
- * (keyed on field in TagGroup), so the draft is always empty on open. */
+/** The value popover for one tag field (problem 3), opened from its pill. The
+ * input is search-only (never doubles as a create box); the list shows every
+ * registered value with the number of papers using it (attached ones get a ✓,
+ * click to add/remove); a contextual "Create" row appears under the list only
+ * when the typed text matches no existing value (controlled-vocab fields), and
+ * a value the server finds too close to registered ones is asked about in
+ * CreateSimilarConfirm before anything is created; a "Manage…" footer enters
+ * the dictionary editor.
+ * `onCreate`/`onManage` are omitted for projects (a project is created/deleted
+ * from the TopBar, never here), whose rows carry their grade picker. The panel
+ * mounts fresh per open (keyed on field in TagGroup), so the draft is always
+ * empty on open. */
 function TagPanel({
   field,
+  label,
   values,
   vocabulary,
+  count,
   note,
   busy,
   onAdd,
@@ -474,10 +476,14 @@ function TagPanel({
   onCreate,
   onManage,
   onClose,
+  anchor,
 }: {
   field: string
+  label: string
   values: string[] | undefined
   vocabulary: string[]
+  /** Papers in the library using `value`; absent = no count (projects). */
+  count?: (value: string) => number
   /** Per-value health marker, for a vocabulary whose entries can go bad behind
    * litman's back. Only projects supply it (a project is bound to a folder, and
    * the folder can move); a taxonomy value is just a word and cannot rot. A
@@ -487,100 +493,92 @@ function TagPanel({
    * one links but lands the tag outside the taxonomy. */
   note?: (value: string) => ProjectHealth | null
   busy: boolean
-  onAdd: (value: string) => void
+  onAdd: (value: string) => void | Promise<void>
   onRemove: (value: string) => void
   /** See TagFieldConfig — projects only. */
   grade?: (value: string) => string | null
   onGrade?: (value: string, grade: string) => void
-  /** Register-then-attach a brand-new taxonomy value (controlled-vocab fields). */
-  onCreate?: (value: string) => void
+  /** Register-then-attach a brand-new taxonomy value (controlled-vocab fields).
+   * Resolves to the registered values it was refused for looking like. */
+  onCreate?: (value: string, force: boolean) => Promise<SimilarPair[] | null>
   /** Open the dictionary editor for this field (controlled-vocab fields). */
   onManage?: () => void
   onClose: () => void
+  /** The pill this panel opened from. */
+  anchor: () => HTMLElement | null
 }) {
-  const [draft, setDraft] = useState('')
+  // A create the server refused as too close to registered values, waiting on
+  // CreateSimilarConfirm; `settle` resumes the popover's pending create with
+  // whether the dialog ended in a write.
+  const [refusal, setRefusal] = useState<{
+    value: string
+    pairs: SimilarPair[]
+    settle: (done: boolean) => void
+  } | null>(null)
   const attached = values ?? []
-  const typed = draft.trim()
-  const lower = typed.toLowerCase()
-  // Inline-create is offered only on a controlled-vocab field, for a genuinely
-  // new value: non-empty, matching no registered value and nothing attached
-  // (case-insensitive, so "Test" won't offer to re-create "test").
-  const isNew =
-    onCreate != null &&
-    typed.length > 0 &&
-    !vocabulary.some((v) => v.toLowerCase() === lower) &&
-    !attached.some((v) => v.toLowerCase() === lower)
-  // The list shows every registered value, filtered by the draft (case-insensitive
-  // substring) so the search box doubles as autocomplete.
-  const filtered = (
-    typed ? vocabulary.filter((v) => v.toLowerCase().includes(lower)) : vocabulary
-  )
+  const toggle = (v: string) => (attached.includes(v) ? onRemove(v) : onAdd(v))
+  const items = vocabulary
     .slice()
     .sort((a, b) => a.localeCompare(b))
-
-  // A popover rather than a modal card, but still a dismissible layer: it opens
-  // on top of the cockpit and Escape belongs to it while it is up.
-  useEscapeLayer(true, onClose)
+    .map((v) => ({ value: v, count: count ? count(v) : null, on: attached.includes(v) }))
+  const create =
+    onCreate &&
+    (async (value: string): Promise<SimilarPair[] | null> => {
+      const pairs = await onCreate(value, false)
+      if (!pairs?.length) return null
+      const done = await new Promise<boolean>((settle) => setRefusal({ value, pairs, settle }))
+      setRefusal(null)
+      return done ? null : pairs
+    })
   return (
-    <div
-      className="mt-1.5 rounded-lg border border-stone-200 bg-white p-1.5 shadow-md"
-    >
-      <input
-        type="text"
-        autoFocus
-        aria-label={`Search ${field}`}
-        placeholder={`Search ${field}…`}
-        value={draft}
-        disabled={busy}
-        onChange={(e) => setDraft(e.target.value)}
-        className="mb-1 w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+    <>
+      <VocabPopover
+        label={label}
+        noun={field}
+        values={items}
+        anchor={anchor}
+        align="right"
+        busy={busy}
+        taken={attached}
+        onToggle={toggle}
+        onCreate={create}
+        onManage={onManage}
+        onClose={onClose}
+        renderRow={
+          onGrade
+            ? (item) => (
+                <TagPanelRow
+                  value={item.value}
+                  on={item.on}
+                  health={note?.(item.value) ?? null}
+                  grade={grade?.(item.value) ?? null}
+                  busy={busy}
+                  onToggle={() => toggle(item.value)}
+                  onGrade={onGrade}
+                />
+              )
+            : undefined
+        }
       />
-      <div className="max-h-48 overflow-y-auto">
-        {filtered.length === 0 && !isNew && (
-          <div className="px-2 py-1.5 text-xs text-stone-400">
-            {vocabulary.length === 0 ? 'No values yet.' : 'No match.'}
-          </div>
-        )}
-        {filtered.map((v) => (
-          <TagPanelRow
-            key={v}
-            value={v}
-            on={attached.includes(v)}
-            health={note?.(v) ?? null}
-            grade={grade?.(v) ?? null}
-            busy={busy}
-            onToggle={() => (attached.includes(v) ? onRemove(v) : onAdd(v))}
-            onGrade={onGrade}
-          />
-        ))}
-        {isNew && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              onCreate!(typed)
-              setDraft('')
-            }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-accent-700 transition-colors hover:bg-accent-50 disabled:opacity-50"
-          >
-            <span className="w-3 shrink-0 text-accent-600">+</span>
-            <span className="truncate">Create “{typed}”</span>
-          </button>
-        )}
-      </div>
-      {onManage && (
-        <div className="mt-1 border-t border-stone-100 pt-1">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onManage}
-            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
-          >
-            <span className="text-stone-400">⚙</span> Manage {field}…
-          </button>
-        </div>
+      {refusal && onCreate && (
+        <CreateSimilarConfirm
+          field={field}
+          value={refusal.value}
+          pairs={refusal.pairs}
+          taken={attached}
+          busy={busy}
+          onUse={async (v) => {
+            await onAdd(v)
+            refusal.settle(true)
+          }}
+          onCancel={() => refusal.settle(false)}
+          onConfirm={async () => {
+            await onCreate(refusal.value, true)
+            refusal.settle(true)
+          }}
+        />
       )}
-    </div>
+    </>
   )
 }
 
@@ -591,9 +589,11 @@ type TagFieldConfig = {
   values: string[] | undefined
   vocabulary: string[]
   note?: (value: string) => ProjectHealth | null
-  onAdd: (value: string) => void
+  /** Papers in the library using `value` (controlled-vocab fields). */
+  count?: (value: string) => number
+  onAdd: (value: string) => void | Promise<void>
   onRemove: (value: string) => void
-  onCreate?: (value: string) => void
+  onCreate?: (value: string, force: boolean) => Promise<SimilarPair[] | null>
   onManage?: () => void
   /** This paper's grade for `value`, or null when the link is ungraded.
    * Supplied ONLY by projects — a grade is a property of a paper↔project link,
@@ -607,9 +607,10 @@ type TagFieldConfig = {
 /** The "Tags" group (problem 1): collapses the four multi-value association
  * fields (topics/methods/data via TAXONOMY, projects via the registry) under one
  * header so they no longer stack as four full-width dropdowns. The body is a row
- * of pills; clicking a pill opens that field's TagPanel inline below the row, one
- * at a time. A click outside the group (or Esc) closes the open panel. The open
- * field is held by the parent (shared `openField`) so it resets on paper change. */
+ * of pills; clicking a pill opens that field's TagPanel, a popover lined up with
+ * the pill's right edge, one at a time. A click outside the panel and its pill
+ * (or Esc) closes it. The open field is held by the parent (shared `openField`)
+ * so it resets on paper change. */
 function TagGroup({
   fields,
   openKey,
@@ -621,27 +622,21 @@ function TagGroup({
   onOpenKey: (key: string | null) => void
   busy: boolean
 }) {
-  const rootRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (openKey == null) return
-    function onDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onOpenKey(null)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [openKey, onOpenKey])
-
+  const pills = useRef<Record<string, HTMLButtonElement | null>>({})
   const openCfg = fields.find((f) => f.key === openKey) ?? null
 
   return (
-    <div ref={rootRef} className="mb-3.5">
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+    <div className="mb-3.5">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         Tags
       </div>
       <div className="flex flex-wrap gap-1.5">
         {fields.map((f) => (
           <TagPill
             key={f.key}
+            ref={(el) => {
+              pills.current[f.key] = el
+            }}
             label={f.label}
             count={(f.values ?? []).length}
             active={openKey === f.key}
@@ -654,8 +649,10 @@ function TagGroup({
         <TagPanel
           key={openCfg.key}
           field={openCfg.key}
+          label={openCfg.label}
           values={openCfg.values}
           vocabulary={openCfg.vocabulary}
+          count={openCfg.count}
           note={openCfg.note}
           busy={busy}
           onAdd={openCfg.onAdd}
@@ -665,6 +662,7 @@ function TagGroup({
           onCreate={openCfg.onCreate}
           onManage={openCfg.onManage}
           onClose={() => onOpenKey(null)}
+          anchor={() => pills.current[openCfg.key] ?? null}
         />
       )}
     </div>
@@ -900,7 +898,7 @@ function RenameValueDialog({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) onConfirm(trimmed)
           }}
-          className="mt-3 w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-400 disabled:opacity-50"
+          className="mt-3 w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:opacity-50"
         />
         {collides && (
           <p className="mt-1.5 text-[11px] text-rose-500">
@@ -979,6 +977,98 @@ function DeleteValueConfirm({
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
             Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Default-No confirm for a new controlled-vocab value the server found too
+ * close to registered ones (its 409). Every match is listed with its reason; a
+ * click on one tags the paper with that existing value instead, and nothing is
+ * created. "Create anyway" registers the value regardless and tags the paper
+ * with it. Cancel and Esc close only this dialog: the value popover under it
+ * keeps the typed text. The server's own message is written for the CLI (it
+ * names --force) and is never shown. Same shell as DeleteValueConfirm, stacked
+ * above the value popover; mid-write Esc is held, as in RemovePaperConfirm.
+ * A dense vocabulary can return dozens of matches: the card stays inside the
+ * window and only the list scrolls, so the title and both buttons stay in
+ * reach. Matches already on the paper carry the popover's tick. */
+function CreateSimilarConfirm({
+  field,
+  value,
+  pairs,
+  taken,
+  busy,
+  onUse,
+  onCancel,
+  onConfirm,
+}: {
+  field: string
+  value: string
+  pairs: SimilarPair[]
+  /** Values already on the paper. */
+  taken: readonly string[]
+  busy: boolean
+  onUse: (existing: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  useEscapeLayer(true, busy ? null : onCancel)
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      {...modalBackdropProps}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Create “${value}”?`}
+        className="flex w-[22rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
+        style={{ maxHeight: 'calc(100vh - 32px)' }}
+      >
+        <h2 className="text-sm font-semibold text-stone-900">Create “{value}”?</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+          Similar {field} already exist:
+        </p>
+        <ul className="-mx-2 mt-2 min-h-0 overflow-y-auto overscroll-contain">
+          {pairs.map(([v, why]) => (
+            <li key={v}>
+              <button
+                type="button"
+                title={`Use ${v}`}
+                disabled={busy}
+                onClick={() => onUse(v)}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
+              >
+                <span
+                  className={`w-3 shrink-0 ${taken.includes(v) ? 'text-accent-600' : 'text-transparent'}`}
+                >
+                  ✓
+                </span>
+                <span className="min-w-0 break-words">{v}</span>
+                <span className="ml-auto shrink-0 text-[11px] text-stone-400">{why}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            Create anyway
           </button>
         </div>
       </div>
@@ -1199,7 +1289,7 @@ function MetadataEditDialog({
               key={f.key}
               className={f.wide ? 'col-span-2 block' : 'block'}
             >
-              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+              <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                 {f.label}
                 {f.hint && (
                   <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-400">
@@ -1521,7 +1611,7 @@ function ReadOnlyCockpit({
         }`}
       >
         <div className="mb-3 flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             Trashed paper
           </span>
           <button
@@ -1625,6 +1715,9 @@ function ReadOnlyCockpit({
                 missing={paper['code-clones-missing']}
               />
             </Field>
+            <Field label="Supplementary">
+              <SupplementaryChips paperId={paper.id} value={paper.supplementary} readOnly />
+            </Field>
           </div>
         )}
       </aside>
@@ -1649,6 +1742,8 @@ function WriteCockpit({
   notify = () => {},
   onRegisterHandle = () => {},
   onModalState = () => {},
+  onAddSi = () => {},
+  openFiles = 'none',
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
@@ -1680,6 +1775,11 @@ function WriteCockpit({
     rel: RelField
     id: string
   } | null>(null)
+  // The SI file asked to be deleted, frozen with its paper like `pendingRel`
+  // above.
+  const [pendingSi, setPendingSi] = useState<{ me: string; record: SiRecord } | null>(
+    null,
+  )
   // The currently-open pill in the Tags group (topics/methods/data/projects), or
   // null. One field at a time: opening one collapses the others (problem 1/3).
   const [openField, setOpenField] = useState<string | null>(null)
@@ -1705,6 +1805,7 @@ function WriteCockpit({
     setShowUnread(false)
     setShowDrop(false)
     setPendingRel(null)
+    setPendingSi(null)
     setOpenField(null)
     setManageField(null)
     setEditingMeta(false)
@@ -1780,7 +1881,7 @@ function WriteCockpit({
   function addTag(field: 'topics' | 'methods' | 'data', value: string) {
     if (!paper) return
     const id = paper.id
-    runWrite(() => putMetadata(id, { addTag: { [field]: [value] } }))
+    return runWrite(() => putMetadata(id, { addTag: { [field]: [value] } }))
   }
 
   function removeTag(field: 'topics' | 'methods' | 'data', value: string) {
@@ -1835,16 +1936,60 @@ function WriteCockpit({
     }
   }
 
+  // Delete the confirmed SI file through the `lit rm --si` backend. The
+  // confirm stays up until the delete answers.
+  async function doRemoveSi() {
+    if (!pendingSi) return
+    const { me, record } = pendingSi
+    await runWrite(async () => {
+      const { warnings } = await removeSiFile(me, record.file)
+      if (warnings.length) notify(`Deleted ${record.file} · ${warnings.join(' · ')}`, 'warning')
+      else notify(`Deleted ${record.file}`, 'success')
+    })
+    setPendingSi(null)
+  }
+
   // Inline-create: register the new taxonomy value first (invariant #2), then
   // attach it via the existing addTag path — two steps, one button click. The
   // vocabulary refresh keeps the new value in autocomplete for other papers.
-  function createTag(field: 'topics' | 'methods' | 'data', value: string) {
-    if (!paper) return
+  //
+  // A value too close to a registered one comes back as the list of those
+  // values, for the panel's confirm to ask about; the server's sentence
+  // (written for the CLI, it names --force) is never toasted. `force` is the
+  // confirm's "Create anyway".
+  async function createTag(
+    field: 'topics' | 'methods' | 'data',
+    value: string,
+    force: boolean,
+  ): Promise<SimilarPair[] | null> {
+    if (!paper) return null
     const id = paper.id
-    runWrite(async () => {
-      await addTaxonomyValue(field, value)
-      await putMetadata(id, { addTag: { [field]: [value] } })
-    }, true)
+    setWriting(true)
+    try {
+      await addTaxonomyValue(field, value, force)
+    } catch (err) {
+      setWriting(false)
+      // A 409 says the vocabulary on disk has a value like this one, which this
+      // page may not have loaded yet (made by the CLI or an agent since):
+      // refresh it, so a match used from the confirm shows up ticked in the
+      // popover. Not awaited: the confirm lists the server's matches.
+      const refused = err instanceof ApiError && err.status === 409
+      if (refused) onVocabChanged()
+      if (err instanceof TaxonomySimilarError) return err.similar
+      // Without the matches there is nothing to ask about, and the server's
+      // sentence is still the CLI's.
+      notify(
+        refused
+          ? `“${value}” looks like an existing value. Look for it in the list.`
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      )
+      return null
+    }
+    setWriting(false)
+    await runWrite(() => putMetadata(id, { addTag: { [field]: [value] } }), true)
+    return null
   }
 
   // Delete a controlled-vocab value through the `lit taxonomy rm` backend
@@ -1872,12 +2017,23 @@ function WriteCockpit({
   }
 
   // In-use count for a value, read off the loaded INDEX (no round-trip). Backs
-  // the Manage list's "used by N" and the delete confirm's wording.
-  function countValue(
-    field: 'topics' | 'methods' | 'data',
-    value: string,
-  ): number {
-    return allPapers.filter((p) => (p[field] ?? []).includes(value)).length
+  // the Tags panels' per-value counts, the Manage list's "used by N" and the
+  // delete confirm's wording. Counted once per INDEX, not once per row.
+  const usage = useMemo(() => {
+    const out = {
+      topics: new Map<string, number>(),
+      methods: new Map<string, number>(),
+      data: new Map<string, number>(),
+    }
+    for (const p of allPapers) {
+      for (const f of ['topics', 'methods', 'data'] as const) {
+        for (const v of new Set(p[f] ?? [])) out[f].set(v, (out[f].get(v) ?? 0) + 1)
+      }
+    }
+    return out
+  }, [allPapers])
+  function countValue(field: 'topics' | 'methods' | 'data', value: string): number {
+    return usage[field].get(value) ?? 0
   }
 
   /** Link + grade in ONE request (ADR-025 decision 5): the panel's unlinked
@@ -2000,6 +2156,7 @@ function WriteCockpit({
     showUnread ||
     showDrop ||
     pendingRel != null ||
+    pendingSi != null ||
     manageField != null ||
     openField != null
   useEffect(() => {
@@ -2035,7 +2192,7 @@ function WriteCockpit({
         }`}
       >
         <div className="mb-3 flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
             Metadata
           </span>
           <div className="flex items-center gap-2.5">
@@ -2265,9 +2422,10 @@ function WriteCockpit({
                   label: 'Topics',
                   values: paper.topics,
                   vocabulary: taxonomy?.topics ?? [],
+                  count: (v) => countValue('topics', v),
                   onAdd: (v) => addTag('topics', v),
                   onRemove: (v) => removeTag('topics', v),
-                  onCreate: (v) => createTag('topics', v),
+                  onCreate: (v, force) => createTag('topics', v, force),
                   onManage: () => {
                     setOpenField(null)
                     setManageField('topics')
@@ -2278,9 +2436,10 @@ function WriteCockpit({
                   label: 'Methods',
                   values: paper.methods,
                   vocabulary: taxonomy?.methods ?? [],
+                  count: (v) => countValue('methods', v),
                   onAdd: (v) => addTag('methods', v),
                   onRemove: (v) => removeTag('methods', v),
-                  onCreate: (v) => createTag('methods', v),
+                  onCreate: (v, force) => createTag('methods', v, force),
                   onManage: () => {
                     setOpenField(null)
                     setManageField('methods')
@@ -2291,9 +2450,10 @@ function WriteCockpit({
                   label: 'Data',
                   values: paper.data,
                   vocabulary: taxonomy?.data ?? [],
+                  count: (v) => countValue('data', v),
                   onAdd: (v) => addTag('data', v),
                   onRemove: (v) => removeTag('data', v),
-                  onCreate: (v) => createTag('data', v),
+                  onCreate: (v, force) => createTag('data', v, force),
                   onManage: () => {
                     setOpenField(null)
                     setManageField('data')
@@ -2339,6 +2499,17 @@ function WriteCockpit({
                 missing={paper['code-clones-missing']}
               />
             </Field>
+            <Field label="Supplementary">
+              <SupplementaryChips
+                paperId={paper.id}
+                value={paper.supplementary}
+                busy={writing}
+                openFiles={openFiles}
+                notify={notify}
+                onRemove={(record) => setPendingSi({ me: paper.id, record })}
+                onAdd={() => onAddSi(paper.id)}
+              />
+            </Field>
           </div>
         )}
       </aside>
@@ -2371,6 +2542,16 @@ function WriteCockpit({
           busy={writing}
           onCancel={() => setPendingRel(null)}
           onConfirm={doRemoveRelation}
+        />
+      )}
+
+      {pendingSi && (
+        <SiRemoveConfirm
+          paperId={pendingSi.me}
+          record={pendingSi.record}
+          busy={writing}
+          onCancel={() => setPendingSi(null)}
+          onConfirm={() => void doRemoveSi()}
         />
       )}
 

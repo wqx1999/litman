@@ -131,7 +131,7 @@ export default function PaperIdField({
           }}
           disabled={disabled}
           title="Click to choose the id yourself"
-          className="rounded font-mono text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-2 transition duration-200 ease-fluid hover:text-accent-600 hover:decoration-accent-400 disabled:opacity-40"
+          className="rounded font-mono text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-2 transition duration-200 ease-fluid hover:text-accent-600 hover:decoration-accent-500 disabled:opacity-40"
         >
           {proposedId}
         </button>
@@ -140,7 +140,7 @@ export default function PaperIdField({
   }
 
   const label = (
-    <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+    <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
       Paper ID {proposedId === null && <span className="text-red-500">*</span>}
       {/* The charset sits on the label, not on the hint line below, because
           that line is spoken for whenever `error` is set — which is exactly

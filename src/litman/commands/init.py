@@ -21,7 +21,9 @@ from rich.panel import Panel
 
 from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
+from litman.core.confirm import is_interactive
 from litman.core.library import DEFAULT_VAULT_NAME, create_vault
+from litman.core.undecodable import has_undecodable, printable, refusal
 from litman.core.vault_registry import (
     VaultEntry,
     add_vault,
@@ -32,7 +34,7 @@ from litman.core.vault_registry import (
     mark_health_checked,
     save_registry,
 )
-from litman.exceptions import VaultRegistryError
+from litman.exceptions import UndecodablePathError, VaultRegistryError
 
 console = Console()
 
@@ -59,7 +61,8 @@ def apply_init(
             shape or already registered), or ``parent_dir / name`` is a
             directory some other entry already holds — raised BEFORE anything
             is created.
-        ParentNotFoundError / VaultExistsError: from :func:`create_vault`.
+        UndecodablePathError / ParentNotFoundError / VaultExistsError: from
+            :func:`create_vault`.
     """
     register_name = register_as or name
     reg = load_registry()
@@ -83,7 +86,7 @@ def apply_init(
 
 def _stdin_isatty() -> bool:
     """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
-    return sys.stdin is not None and sys.stdin.isatty()
+    return is_interactive(sys.stdin)
 
 
 @click.command("init")
@@ -139,6 +142,17 @@ def init_cmd(
     PARENT_DIR defaults to the current working directory.
     """
     register_name = register_as or name
+
+    # Before the offer below: a folder created under such a name would be left
+    # behind when create_vault then refuses it.
+    if has_undecodable(name):
+        raise UndecodablePathError(
+            f"Vault name “{printable(name)}” is not UTF-8 text. "
+            "Pass another --name, then retry."
+        )
+    message = refusal(parent_dir.resolve())
+    if message is not None:
+        raise UndecodablePathError(message)
 
     # The tutorial's first hands-on command is `lit init ~/research` on a
     # machine where ~/research does not exist yet — dead-ending there with

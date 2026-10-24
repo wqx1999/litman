@@ -8,6 +8,7 @@ and trash-dir exclusion from active views.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,10 @@ from litman.exceptions import TrashError
 from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
+
+# Read once at import (ci.md, trap 1): a test body must never consult the live
+# value, which a fixture elsewhere may have patched.
+_REAL_WIN32 = sys.platform == "win32"
 
 
 def _write_paper(vault: Path, paper_id: str, **fields: Any) -> None:
@@ -758,3 +763,70 @@ def test_trash_empty_that_removes_nothing_does_not_claim_success(
     assert "( removed)" not in result.output
     assert "Nothing was removed" in result.output
     assert entry.is_dir()  # still there, as the message says
+
+
+# ===========================================================================
+# SI in the trash: only inside a deleted paper's folder
+# ===========================================================================
+
+
+def test_a_leftover_removed_si_folder_is_ignored(vault: Path) -> None:
+    """``lit rm --si`` deletes for good. A ``.trash/removed-si/`` left by an
+    earlier development build is no entry: list, restore, empty and the
+    trash health check all pass it by."""
+    from litman.core.checks import check_trash_health
+    from litman.core.trash import is_trash_entry_name
+
+    folder = vault / TRASH_DIRNAME / "removed-si" / "2024_Foo"
+    folder.mkdir(parents=True)
+    leftover = folder / "20261020T083000Z-si-02.xlsx"
+    leftover.write_bytes(b"sheet")
+    (folder / f"{leftover.name}.meta.yaml").write_text(
+        "paper_id: 2024_Foo\nrecord:\n  file: si-02.xlsx\n", encoding="utf-8"
+    )
+    runner = CliRunner()
+
+    assert not is_trash_entry_name("removed-si")
+    assert list_trash(vault) == []
+    assert check_trash_health(vault, []) == []
+    listed = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    assert listed.exit_code == 0, listed.output
+    assert "(trash is empty)" in listed.output
+    rows = runner.invoke(
+        cli, ["trash", "list", "--format", "json", "--library", str(vault)]
+    )
+    assert json.loads(rows.stdout) == []
+    emptied = runner.invoke(cli, ["trash", "empty", "--yes", "--library", str(vault)])
+    assert emptied.exit_code == 0, emptied.output
+    assert "(trash is already empty)" in emptied.output
+    assert leftover.read_bytes() == b"sheet"
+
+
+def test_rm_paper_takes_its_si_along_and_restore_brings_it_back(
+    vault: Path, tmp_path: Path
+) -> None:
+    import os
+
+    from litman.core.supplementary import SiItem, add_supplementary
+
+    _write_paper(vault, "2024_Foo")
+    sheet = tmp_path / "Table_S1.xlsx"
+    sheet.write_bytes(b"sheet")
+    add_supplementary(
+        vault, "2024_Foo", [SiItem(sheet, sheet.name)], allow_unverified=True
+    )
+    runner = CliRunner()
+
+    removed = runner.invoke(cli, ["rm", "2024_Foo", "--yes", "--library", str(vault)])
+    assert removed.exit_code == 0, removed.output
+    (entry,) = list_trash(vault)
+    assert (entry.entry_path / "supplementary" / "si-01.xlsx").is_file()
+
+    restored = runner.invoke(
+        cli, ["trash", "restore", "2024_Foo", "--library", str(vault)]
+    )
+    assert restored.exit_code == 0, restored.output
+    si_file = vault / "papers" / "2024_Foo" / "supplementary" / "si-01.xlsx"
+    assert si_file.read_bytes() == b"sheet"
+    if not _REAL_WIN32:
+        assert not os.access(si_file, os.W_OK)  # the lock rode along

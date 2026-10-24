@@ -16,8 +16,10 @@ pytest.importorskip("fastapi")
 
 from litman.cli import cli
 from litman.core.document import list_papers
+from litman.core.locking import unlock_truth_file
 from litman.core.query import recency_key
 from litman.core.views import INDEX_PAPER_FIELDS, project_paper, write_index
+from litman.exceptions import UnreadableTaxonomyError
 from litman.server import create_app
 from tests.server._client import TestClient
 
@@ -217,23 +219,75 @@ def test_non_utf8_notes_is_a_described_500_not_a_traceback(
     assert "notes.md cannot be read" in resp.json()["detail"]
 
 
+# Each route that serves the vocabulary, and the command that prints the
+# same list at a terminal.
+_TAXONOMY_READERS = [
+    ("/api/taxonomy", ["taxonomy", "list"]),
+    ("/api/projects", ["project", "list"]),
+]
+
+
+def _cli_error(vault: Path, args: list[str]) -> str:
+    """The error ``lit <args>`` stops with on this vault's TAXONOMY.md."""
+    result = CliRunner().invoke(cli, [*args, "--library", str(vault)])
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, UnreadableTaxonomyError), result.output
+    return str(result.exception)
+
+
 def test_missing_taxonomy_is_a_described_500_on_both_consumers(
     vault_with_paper: tuple[Path, str],
 ) -> None:
     """One damaged TAXONOMY.md previously 500'd /api/taxonomy AND
-    /api/projects with raw tracebacks; both must describe the damage and
-    point at health-check instead."""
+    /api/projects with raw tracebacks; both must describe the damage in
+    the CLI's words, which point at health-check."""
     vault, _ = vault_with_paper
-    (vault / "TAXONOMY.md").chmod(0o644)
+    unlock_truth_file(vault / "TAXONOMY.md")
     (vault / "TAXONOMY.md").unlink()
 
     client = TestClient(create_app(vault), raise_server_exceptions=False)
-    for route in ("/api/taxonomy", "/api/projects"):
+    for route, args in _TAXONOMY_READERS:
         resp = client.get(route)
         assert resp.status_code == 500, route
         detail = resp.json()["detail"]
-        assert "TAXONOMY.md is missing" in detail, route
+        assert detail == _cli_error(vault, args), route
         assert "health-check" in detail, route
+
+
+def _damage_taxonomy(vault: Path, kind: str) -> None:
+    path = vault / "TAXONOMY.md"
+    text = path.read_text(encoding="utf-8")
+    unlock_truth_file(path)
+    if kind == "latin1":
+        # An editor set to Latin-1 added a topic: one byte that is not UTF-8.
+        path.write_bytes(text.encode("utf-8") + b"- caf\xe9\n")
+    elif kind == "utf16":
+        path.write_bytes(text.encode("utf-16"))
+    else:
+        # Cannot be opened as a file on any platform: IsADirectoryError on
+        # Linux and macOS, PermissionError on Windows.
+        path.unlink()
+        path.mkdir()
+
+
+@pytest.mark.parametrize("kind", ["latin1", "utf16", "folder"])
+@pytest.mark.parametrize(("route", "args"), _TAXONOMY_READERS, ids=["taxonomy", "projects"])
+def test_an_unreadable_taxonomy_is_reported_in_the_cli_words(
+    vault_with_paper: tuple[Path, str], kind: str, route: str, args: list[str]
+) -> None:
+    """The web UI reads TAXONOMY.md through the CLI's reader, so a file the
+    CLI cannot read is the same sentence here: which line is not UTF-8, or
+    why it cannot be opened, and the way out."""
+    vault, _ = vault_with_paper
+    _damage_taxonomy(vault, kind)
+
+    client = TestClient(create_app(vault), raise_server_exceptions=False)
+    resp = client.get(route)
+
+    assert resp.status_code == 500
+    expected = _cli_error(vault, args)
+    assert resp.json()["detail"] == expected
+    assert expected.startswith(f"Cannot read {vault / 'TAXONOMY.md'}")
 
 
 def test_get_projects_empty_vault(

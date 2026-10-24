@@ -2,7 +2,8 @@
 
 **lit**(erature) **man**(ager) keeps every paper you read on your own computer, and
 lets an AI assistant do the filing. You curate the library by hand; each paper lives in one folder of
-plain files — the PDF, structured metadata, and your notes. Day to day you work in the **Web UI** (`lit gui`), a
+plain files — the PDF, structured metadata, your notes, and any supplementary
+files you add. Day to day you work in the **Web UI** (`lit gui`), a
 browser app for reading, annotating, and everyday curation; for anything beyond
 that, ask your **AI agent** in plain language and it runs the right command
 for you. Underneath both, the `lit` **command line** performs every operation itself
@@ -16,8 +17,9 @@ what each of the others is for.
 1. **Don't move a vault or project folder by hand.** The links, project
    bridges, and registry that hold it together are path-based; if you must move
    one, run `lit health-check --fix` afterward to repair what broke.
-2. **Don't edit metadata files by hand.** Change papers and taxonomy through the
-   Web UI or your AI agent — both go through validated `lit` commands.
+2. **Don't edit metadata files by hand.** Change papers and taxonomy, and add
+   or delete a paper's supplementary files, through the Web UI or your AI agent
+   — both go through validated `lit` commands.
    `lit-config.yaml` is the one settings file you may edit directly.
 3. **Figure and table reading needs a multimodal model.** A text-only model falls
    back to plain-text extraction and cannot see figures or image-based tables.
@@ -32,9 +34,9 @@ what each of the others is for.
 
 **If you just want to use litman, read the [tutorial](5-tutorial.md) and nothing
 else.** It walks one real paper through a complete reading day — install, set up
-a library, add the paper, read it, keep its fields current, write notes, link its
-code, export a bibliography — and that single path covers about 80% of everyday
-use.
+a library, add the paper, read it, keep its fields current, write notes, pull in
+its supplementary information, link its code, export a bibliography — and that
+single path covers about 80% of everyday use.
 
 For the occasional thing the tutorial leaves out (a second library, cloud sync,
 TAXONOMY housekeeping, a flag you half-remember), you have two routes, fastest
