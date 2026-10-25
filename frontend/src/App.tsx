@@ -618,6 +618,18 @@ export default function App() {
     docMtimesRef.current = { ...cur, [paperId]: next }
   }, [])
 
+  // A title saved in the cockpit also rewrote that paper's notes.md heading, in
+  // the backend's same write. Treated like a GUI md save: the baseline moves so
+  // the next resync does not log it as an outside edit, and the open md tab is
+  // re-read so the new heading shows now rather than at the next resync.
+  const notesRetitled = useCallback(
+    (paperId: string) => {
+      bumpDocMtime(paperId, 'notes')
+      setMdReloadToken((t) => t + 1)
+    },
+    [bumpDocMtime],
+  )
+
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   // The server's reason the selected paper could not be loaded, shown in the
   // cockpit instead of its empty state. Cleared whenever the paper loads or the
@@ -2556,6 +2568,7 @@ export default function App() {
               allPapers={allPapers}
               fixedEnums={fixedEnums}
               onChanged={refreshAfterWrite}
+              onNotesRetitled={notesRetitled}
               onVocabChanged={refreshVocab}
               notify={notify}
               onRegisterHandle={registerCockpit}

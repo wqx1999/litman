@@ -98,6 +98,10 @@ interface Props {
   /** Called after a successful structured write so the parent re-fetches the
    * cockpit paper AND the left list (status/read-date move smart-list members). */
   onChanged?: () => void
+  /** Called after a metadata save that set a new title: the backend rewrote
+   * the heading of the paper's notes.md in the same write, so the parent
+   * re-reads the open md tab and counts that change as the GUI's own. */
+  onNotesRetitled?: (paperId: string) => void
   /** Called after a write that changes the shared vocabulary (a new taxonomy
    * value or project link/unlink) so the parent re-fetches /api/taxonomy +
    * /api/projects, keeping the dropdowns/autocomplete current (3c-1). */
@@ -1775,6 +1779,7 @@ function WriteCockpit({
   allPapers = [],
   fixedEnums = null,
   onChanged = () => {},
+  onNotesRetitled = () => {},
   onVocabChanged = () => {},
   notify = () => {},
   onRegisterHandle = () => {},
@@ -2607,6 +2612,8 @@ function WriteCockpit({
             // and swallow), and on success onChanged re-fetches the cockpit.
             await putMetadata(paper.id, body)
             onChanged()
+            // A cleared title (null) leaves notes.md as it was.
+            if (typeof body.set?.title === 'string') onNotesRetitled(paper.id)
           }}
           onClose={() => setEditingMeta(false)}
         />
