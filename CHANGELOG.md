@@ -23,6 +23,39 @@ own entry. Read those before you upgrade, whatever the number says.
   Projects, Vaults and Manage topics / methods / data windows show how many
   entries they list.
 
+### Changed
+
+- **`lit health-check --fix` updates the `notes.md` heading even if you
+  changed it.** When it cleans a title, the first line of `notes.md` becomes
+  `# ` and the clean title, as `lit modify` now does. 1.3.8 left a heading you
+  had rewritten alone and printed `kept …: notes.md heading differs …`; that
+  line is gone. A `notes.md` that starts without a heading gets one on top, and
+  nothing below the first line changes.
+
+### Fixed
+
+- **Changing a paper's id or title now updates the heading that goes with
+  it.** `lit rename` rewrites the first line of the paper's `discussion.md` to
+  `# Discussion log for <new id>`, and `lit modify --set title=` — and the
+  title in the web UI's **Edit metadata** — rewrites the first line of its
+  `notes.md` to `# <new title>`. Both used to keep the old one. The line is
+  replaced even if you edited it, and added on top if the file starts without
+  one; the rest of the file stays as it was. The web UI's notes tab shows the
+  new heading as soon as you save. If `notes.md` cannot be read, `lit modify`
+  changes nothing and names the file.
+
+- **`lit rename` lists where the old id is still written as plain text.** It
+  rewrites every `[[old-id]]` link, but an id typed as plain text — in a
+  quote, or a command such as `lit show <old-id>` — is left as it is, so it now
+  prints each such file with the line numbers. A notes file it cannot read is
+  named too, where it used to be skipped without a word.
+
+- **`notes.md` and `discussion.md` keep Windows line endings.** When
+  `lit rename`, `lit rm` or `lit trash restore` rewrote a `[[id]]` link in a
+  file saved with Windows line endings, the whole file came back with Unix
+  ones; on Windows, the `(deleted)` tag added after a paper folder was deleted
+  by hand did the reverse. Each file now keeps its own.
+
 ## 1.3.8 — 2026-10-24
 
 ### Added

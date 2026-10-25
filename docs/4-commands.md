@@ -490,6 +490,8 @@ citation). Other caveats (missing volume/pages, preprint venue) go to stderr too
 
 Edit fields on a paper's `metadata.yaml`. Writes `metadata.yaml` (refreshing
 `updated-at`) and `INDEX.json` atomically; `views/by-*` are rebuilt afterwards.
+A new title also becomes the first line of the paper's `notes.md` (`# <title>`)
+in the same write; if `notes.md` cannot be read, nothing is changed.
 Accepts a full id, a unique substring, or `--paper-doi`.
 
 ```
@@ -534,8 +536,11 @@ removed with `lit rm --si`.
 
 Change a paper id, rippling the change everywhere: the renamed paper's metadata
 and directory, every other paper's metadata that references it, every `notes.md`
-with a `[[<old>]]` wikilink, `INDEX.json`, and `views/`. `<old>` accepts a unique
-substring; `<new>` must be the exact target id.
+and `discussion.md` with a `[[<old>]]` wikilink, the first line of the paper's
+own `discussion.md` (`# Discussion log for <new>`), `INDEX.json`, and `views/`.
+`<old>` accepts a unique substring; `<new>` must be the exact target id.
+Where a note still has `<old>` as plain text, outside `[[ ]]`, the command
+prints the file and the line numbers and leaves the text as it is.
 
 ```
 lit rename <old-id> <new-id>
@@ -843,7 +848,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), refresh out-of-date installed agent skills (files you added next to them are kept), and rename a paper folder to the id in its `metadata.yaml` when a rename stopped halfway. Five repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; a title, journal or author name carrying line breaks, stray spaces or markup is rewritten as one plain line, as is the title line `lit add` put at the top of `notes.md` if you have not changed it (the paper id is never changed; if it was made from the old title, the output prints the `lit rename` that matches the new one); and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), refresh out-of-date installed agent skills (files you added next to them are kept), and rename a paper folder to the id in its `metadata.yaml` when a rename stopped halfway. Five repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; a title, journal or author name carrying line breaks, stray spaces or markup is rewritten as one plain line, and the first line of `notes.md` becomes `# ` and the clean title, even if you changed it (the paper id is never changed; if it was made from the old title, the output prints the `lit rename` that matches the new one); and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of
