@@ -5,17 +5,22 @@ description, so what the skill is for, the line that sends the other half of
 the work to the other skill, and the most common triggers have to sit there.
 The body is held to a ceiling a little above its slimmed length: Claude Code
 keeps only the first few thousand tokens of a skill once it compacts, and
-rules past that point are silently gone.
+rules past that point are silently gone. What a workflow needs only on one
+branch lives in a helper file next to SKILL.md, which the agent reads when
+SKILL.md says "read `<name>.md`"; a pointer to a file that does not ship, or a
+file nothing points to, would leave that branch untaught.
 """
 
 from __future__ import annotations
 
 import io
+import re
+from pathlib import Path
 
 import pytest
 from ruamel.yaml import YAML
 
-from litman.core.skill import bundled_skill_root
+from litman.core.skill import bundled_skill_root, install_skill
 
 _HEAD = 500
 
@@ -29,9 +34,17 @@ _HEAD_MUST_HAVE = {
 # Body length in characters (everything after the frontmatter): the slimmed
 # length plus about 10 percent.
 _BODY_LIMIT = {
-    "lit-library": 35_600,
-    "lit-reading": 43_900,
+    "lit-library": 24_400,
+    "lit-reading": 27_500,
 }
+
+# The helper files each skill ships next to SKILL.md, and the phrase that
+# sends the agent to one.
+_HELPERS = {
+    "lit-library": {"add-errors.md", "legacy-repair.md"},
+    "lit-reading": {"health-check.md", "si.md"},
+}
+_POINTER = re.compile(r"read `([\w.-]+\.md)`")
 
 
 def _split(name: str) -> tuple[str, str]:
@@ -56,3 +69,24 @@ def test_body_stays_within_its_ceiling(name: str) -> None:
     assert len(body) <= _BODY_LIMIT[name], (
         f"{name}: body is {len(body)} characters, ceiling {_BODY_LIMIT[name]}"
     )
+
+
+@pytest.mark.parametrize("name", sorted(_HELPERS))
+def test_every_helper_file_is_pointed_to_and_shipped(name: str) -> None:
+    pointed = set(_POINTER.findall(_split(name)[1]))
+    shipped = {
+        child.name
+        for child in bundled_skill_root(name).iterdir()
+        if child.is_file() and child.name.endswith(".md") and child.name != "SKILL.md"
+    }
+    assert pointed == _HELPERS[name], f"{name}: SKILL.md points to {sorted(pointed)}"
+    assert shipped == _HELPERS[name], f"{name}: ships {sorted(shipped)}"
+
+
+@pytest.mark.parametrize("name", sorted(_HELPERS))
+def test_install_copies_the_helper_files(name: str, tmp_path: Path) -> None:
+    target = tmp_path / name
+    install_skill(target=target, name=name)
+    for helper in sorted(_HELPERS[name]):
+        bundled = bundled_skill_root(name).joinpath(helper).read_bytes()
+        assert (target / helper).read_bytes() == bundled, helper

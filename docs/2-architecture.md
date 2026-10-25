@@ -160,11 +160,13 @@ Your choice is recorded in `preferences.yaml` next to the vault registry —
 machine-level, not per-vault, because which agent you run is a property of the
 machine.
 
-Two boundaries keep this safe. The agent only ever proposes the command. The CLI
-is what validates the input and writes the data, so a hallucinated or malformed
-value is rejected before it reaches disk. And the agent works one paper at a
-time, with no autonomous bulk operations. Remove Layer 4 entirely and every data
-operation still works from the CLI.
+Three boundaries keep this safe. The agent changes the library only when you
+ask, and before a deletion or an overwrite it shows you what will go and waits
+for your go; emptying the trash and purging a paper it never runs at all. Every
+change goes through the CLI, which validates the input and writes the data, so a
+hallucinated or malformed value is rejected before it reaches disk. And the agent
+works one paper at a time, with no autonomous bulk operations. Remove Layer 4
+entirely and every data operation still works from the CLI.
 
 ## Data flow
 

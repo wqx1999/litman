@@ -25,6 +25,23 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Changed
 
+- **Your agent runs what you ask for, and writes only when you ask.** Ask it
+  to add a paper, tag one or link it to a project and it runs the command
+  without asking again; ask for something the skills have no step for —
+  rebuilding the views, say — and it looks the command up and runs it, where it
+  used to hand you the command to type. A remark is not a request: say "读完了"
+  or "this one's done" and you get one proposal — the status and read date it
+  would stamp, whether to rewrite `notes.md`, the empty fields it could fill —
+  and nothing is written until you say yes; "mark it read, deep-read" runs at
+  once. It no longer adds a line to `discussion.md` after cloning a paper's
+  code.
+
+- **Deleting and overwriting wait for your go.** Before it deletes a paper or
+  an SI file, removes a tag value or a project, or overwrites a `.bib` you
+  edited by hand, the agent shows what will go and waits for you to say so.
+  Emptying the trash and `lit rm --purge` it never runs: it gives you the
+  command to type.
+
 - **`lit health-check --fix` updates the `notes.md` heading even if you
   changed it.** When it cleans a title, the first line of `notes.md` becomes
   `# ` and the clean title, as `lit modify` now does. 1.3.8 left a heading you

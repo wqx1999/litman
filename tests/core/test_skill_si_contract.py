@@ -1,10 +1,11 @@
 """The shipped skills teach the SI contract the CLI actually prints.
 
-An agent learns what `lit add --si <id>` means only from lit-reading's SKILL.md:
-it reads the exit code and the first stdout line and acts on them. Both live
-in ``commands/_si_gui.py``; the skill's exit table copies them by hand, so a
-reworded line or a renumbered code would leave the skill teaching something
-the CLI no longer does. The skill's description is the only signal that
+An agent learns what `lit add --si <id>` means only from lit-reading's si.md,
+which its SKILL.md says to read before running the command: it reads the exit
+code and the first stdout line and acts on them. Both live in
+``commands/_si_gui.py``; the exit table copies them by hand, so a reworded
+line or a renumbered code would leave the skill teaching something the CLI no
+longer does. The skill's description is the only signal that
 loads it at all, so it has to carry an SI trigger, early (Codex trims
 description tails when many skills are installed), and stay within the
 1024-character limit of the Agent Skills standard. Both skills' never-write
@@ -30,8 +31,8 @@ _TRIGGER_WITHIN = 200
 _SI_WORD = re.compile(r"\bSI\b")
 
 
-def _skill_text(name: str) -> str:
-    return bundled_skill_root(name).joinpath("SKILL.md").read_text(encoding="utf-8")
+def _skill_text(name: str, filename: str = "SKILL.md") -> str:
+    return bundled_skill_root(name).joinpath(filename).read_text(encoding="utf-8")
 
 
 def _description(name: str) -> str:
@@ -58,7 +59,16 @@ _EXIT_ROWS = [
 @pytest.mark.parametrize(("code", "line"), _EXIT_ROWS)
 def test_lit_reading_exit_table_pairs_each_code_with_its_line(code: int, line: str) -> None:
     assert line
-    assert f"| {code} | `{line}`" in _skill_text("lit-reading")
+    assert f"| {code} | `{line}`" in _skill_text("lit-reading", "si.md")
+
+
+def test_lit_reading_sends_the_agent_to_the_exit_table() -> None:
+    """The table only helps if SKILL.md sends the agent there before the command."""
+    pointers = [
+        line for line in _skill_text("lit-reading").splitlines() if "read `si.md`" in line
+    ]
+    assert pointers, "lit-reading SKILL.md never says to read si.md"
+    assert any("`lit add --si`" in line for line in pointers), pointers
 
 
 def test_si_ready_is_what_the_cli_prints(capsys: pytest.CaptureFixture[str]) -> None:

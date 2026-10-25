@@ -30,6 +30,15 @@ _FILES = (
     "docs/4-commands.md",
     "docs/5-tutorial.md",
 )
+# The helper files the skills point to carry the same kind of prose, but not
+# every one has reason to mention the grade, so only the retired shapes are
+# checked there.
+_HELPER_FILES = (
+    "src/litman/skills/lit-library/add-errors.md",
+    "src/litman/skills/lit-library/legacy-repair.md",
+    "src/litman/skills/lit-reading/health-check.md",
+    "src/litman/skills/lit-reading/si.md",
+)
 
 # Each pattern is a shape the retired field had and its replacement cannot.
 _RETIRED_SHAPES: tuple[tuple[str, str, str], ...] = (
@@ -57,7 +66,7 @@ _RETIRED_SHAPES: tuple[tuple[str, str, str], ...] = (
 )
 
 
-@pytest.mark.parametrize("relpath", _FILES)
+@pytest.mark.parametrize("relpath", _FILES + _HELPER_FILES)
 @pytest.mark.parametrize(
     "name,pattern,why",
     _RETIRED_SHAPES,

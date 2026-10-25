@@ -1012,7 +1012,7 @@ def test_a_placeholder_first_author_in_markup_is_still_refused() -> None:
 
 
 def test_an_empty_title_keeps_the_message_the_skill_documents() -> None:
-    """lit-library/SKILL.md tells the agent to re-extract on exactly this."""
+    """lit-library/add-errors.md tells the agent to re-extract on exactly this."""
     with pytest.raises(ImporterError) as exc:
         parse_llm_json_text(
             json.dumps({"title": "", "authors": ["Wieland, Theodor"]})
