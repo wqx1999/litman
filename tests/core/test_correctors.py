@@ -238,6 +238,22 @@ def test_annotate_marks_deleted_wikilink(vault: Path) -> None:
     )
 
 
+def test_annotate_keeps_each_files_own_line_endings(vault: Path) -> None:
+    """CRLF stays CRLF and LF stays LF, on every platform."""
+    paper_dir = vault / "papers" / "2024_A_Foo"
+    paper_dir.mkdir(parents=True)
+    notes = paper_dir / "notes.md"
+    discussion = paper_dir / "discussion.md"
+    notes.write_bytes(b"# Foo\r\n\r\nSee [[2099_Z_Ghost]].\r\n")
+    discussion.write_bytes(b"# Log\n\nSee [[2099_Z_Ghost]].\n")
+
+    n = correctors.annotate(vault, ["2099_Z_Ghost"])
+
+    assert n == 2
+    assert notes.read_bytes() == b"# Foo\r\n\r\nSee [[2099_Z_Ghost]] (deleted).\r\n"
+    assert discussion.read_bytes() == b"# Log\n\nSee [[2099_Z_Ghost]] (deleted).\n"
+
+
 def test_annotate_is_idempotent(vault: Path) -> None:
     paper_dir = vault / "papers" / "2024_A_Foo"
     paper_dir.mkdir(parents=True)

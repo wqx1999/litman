@@ -570,6 +570,24 @@ def test_restore_deannotates(vault: Path) -> None:
     ).read_text() == "Discussed in [[2024_Target]] earlier.\n"
 
 
+def test_restore_keeps_windows_line_endings_in_the_notes_it_untags(
+    vault: Path,
+) -> None:
+    _write_paper(vault, "2024_Target")
+    _write_paper(vault, "2024_Other")
+    notes = vault / "papers/2024_Other/notes.md"
+    notes.write_bytes(b"# Other\r\n\r\ncf [[2024_Target]] (deleted).\r\n")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert notes.read_bytes() == b"# Other\r\n\r\ncf [[2024_Target]].\r\n"
+
+
 def test_restore_refreshes_index_and_views(vault: Path) -> None:
     _write_paper(vault, "2024_Foo", topics=["alpha"])
     runner = CliRunner()

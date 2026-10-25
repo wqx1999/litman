@@ -553,7 +553,9 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
         if md_path.parent.name == paper_id:
             continue
         try:
-            text = md_path.read_text(encoding="utf-8")
+            # Decoded from bytes: read_text would turn a CRLF note into LF
+            # when it is written back.
+            text = md_path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             # Best-effort, mirroring restore_from_trash (trash.py, F22): skip a
             # non-UTF-8 / unreadable note so one bad file cannot block every

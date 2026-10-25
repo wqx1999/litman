@@ -540,6 +540,22 @@ def test_rm_annotate_idempotent(vault: Path) -> None:
     assert "(deleted) (deleted)" not in notes_after
 
 
+def test_rm_keeps_windows_line_endings_in_the_notes_it_tags(vault: Path) -> None:
+    """A library written on Windows has CRLF notes; tagging a link must not
+    turn the whole file into LF."""
+    _write_paper(vault, "2024_Target")
+    _write_paper(vault, "2024_Other")
+    notes = vault / "papers/2024_Other/notes.md"
+    notes.write_bytes(b"# Other\r\n\r\ncf [[2024_Target]].\r\n")
+
+    result = CliRunner().invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert notes.read_bytes() == b"# Other\r\n\r\ncf [[2024_Target]] (deleted).\r\n"
+
+
 def test_rm_does_not_touch_unreferenced_notes(vault: Path) -> None:
     # A note that does not reference the deleted paper stays byte-identical.
     _write_paper(vault, "2024_Target")
