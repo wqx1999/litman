@@ -428,8 +428,10 @@ def test_rename_says_which_notes_file_it_could_not_read(
 ) -> None:
     _wide(monkeypatch)
     _write_paper(vault, "2024_Foo_Bar")
-    _write_paper(vault, "2024_Other", notes="See [[2024_Foo_Bar]].\n")
+    _write_paper(vault, "2024_Other")
     unreadable = vault / "papers" / "2024_Other" / "notes.md"
+    # Bytes: the text-mode fixture would write CRLF on Windows.
+    unreadable.write_bytes(b"See [[2024_Foo_Bar]].\n")
     real_read_bytes = Path.read_bytes
 
     def read_bytes(self: Path) -> bytes:
