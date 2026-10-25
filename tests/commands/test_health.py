@@ -4613,7 +4613,8 @@ def _dirty_library(vault: Path) -> dict[str, str]:
 
     A: id derived from the dirty title, notes written on Windows. B: line
     breaks only, LF notes the user has added to below the heading. C: id given
-    by hand, and a notes.md whose heading the user rewrote.
+    by hand, and a notes.md whose heading the user rewrote — it follows the
+    clean title all the same.
     """
     ids = {
         "A": derive_id(2026, "Zhang", _TITLE_A),
@@ -4670,11 +4671,8 @@ def test_dirty_metadata_reported_then_cleaned_by_fix(
 
     assert fix.exit_code == 0, fix.output
     assert "dirty_metadata: cleaned 5 items" in fix.output
-    assert (
-        f"kept {ids['C']}: notes.md heading differs from the one lit add "
-        "wrote, left as is"
-    ) in fix.output
-    assert fix.output.count("kept ") == 1
+    assert "kept " not in fix.output
+    assert "heading" not in fix.output
     assert (
         f"rename {ids['A']}: `lit rename {ids['A']} {clean_id}` if you want "
         "the id to match the clean title"
@@ -4695,12 +4693,15 @@ def test_dirty_metadata_reported_then_cleaned_by_fix(
         pid: expected[letter][0] for letter, pid in ids.items()
     }
     # The heading lit add wrote becomes one line, in the file's own line
-    # endings, and nothing after it moves; a heading the user wrote stays.
+    # endings, and nothing after it moves; a heading the user wrote is
+    # overwritten the same way, the rest of the file byte for byte.
     assert _notes(vault, ids["A"]).read_bytes() == _scaffold_notes(_CLEAN_A, "\r\n")
     assert _notes(vault, ids["B"]).read_bytes() == (
         _scaffold_notes(_CLEAN_B) + b"Mine.\n"
     )
-    assert _notes(vault, ids["C"]).read_bytes() == _EDITED_C
+    assert _notes(vault, ids["C"]).read_bytes() == (
+        f"# {_CLEAN_C}\n".encode() + _EDITED_C.split(b"\n", 1)[1]
+    )
 
     again = runner.invoke(cli, ["health-check", "--library", str(vault)])
     assert again.exit_code == 0, again.output
@@ -4714,7 +4715,7 @@ def test_clean_dirty_metadata_counts_fields_and_runs_once(vault: Path) -> None:
     assert len(check_dirty_metadata(vault, list_papers(vault))) == 5
 
     clean_id = derive_id(2026, "Zhang", _CLEAN_A)
-    assert clean_dirty_metadata(vault) == (5, [ids["C"]], [(ids["A"], clean_id)])
+    assert clean_dirty_metadata(vault) == (5, [], [(ids["A"], clean_id)])
 
     assert check_dirty_metadata(vault, list_papers(vault)) == []
     assert clean_dirty_metadata(vault) == (0, [], [])
@@ -4730,6 +4731,51 @@ def test_a_notes_heading_that_already_reads_clean_is_left_quietly(
 
     assert clean_dirty_metadata(vault) == (1, [], [])
     assert _notes(vault, "2025_Zhu_CyclicPeptide").read_bytes() == notes
+
+
+def test_fix_puts_the_clean_title_on_notes_that_lost_their_heading(
+    vault: Path,
+) -> None:
+    _write_paper(vault, "2025_Zhu_CyclicPeptide", title=_TITLE_C, year=2024)
+    body = b"Straight into the body.\r\n"
+    _notes(vault, "2025_Zhu_CyclicPeptide").write_bytes(body)
+
+    assert clean_dirty_metadata(vault) == (1, [], [])
+    assert _notes(vault, "2025_Zhu_CyclicPeptide").read_bytes() == (
+        f"# {_CLEAN_C}\r\n\r\n".encode() + body
+    )
+
+
+def test_fix_names_a_notes_file_it_could_not_read(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+
+    monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
+    monkeypatch.setattr(health_cmd, "console", Console(width=200))
+    pid = "2025_Zhu_CyclicPeptide"
+    _write_paper(vault, pid, title=_TITLE_C, year=2024)
+    _notes(vault, pid).write_bytes(_scaffold_notes(_TITLE_C))
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self.name == "notes.md":
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    fix = CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+
+    assert "dirty_metadata: cleaned 1 item" in fix.output
+    assert (
+        f"could not read papers/{pid}/notes.md (PermissionError): its heading "
+        "keeps the old title"
+    ) in fix.output
+    assert _meta(vault, pid)["title"] == _CLEAN_C
+    assert real_read_bytes(_notes(vault, pid)) == _scaffold_notes(_TITLE_C)
 
 
 def test_fix_carries_the_clean_title_into_project_references(

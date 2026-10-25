@@ -131,6 +131,52 @@ def test_put_metadata_set_same_value_is_noop(
     assert _meta(vault, paper_id)["updated-at"] == before_updated
 
 
+def test_put_metadata_title_carries_into_the_notes_heading(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The cockpit's metadata editor goes through the same backend as
+    `lit modify`, so the notes.md heading follows a title edited there, a
+    heading the user rewrote included."""
+    vault, paper_id = vault_with_paper
+    notes = vault / "papers" / paper_id / "notes.md"
+    notes.write_bytes(b"# My own heading\r\n\r\nMine.\r\n")
+
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata",
+        json={"set": {"title": "Foo\n  <i>Bar</i> Revisited"}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _meta(vault, paper_id)["title"] == "Foo Bar Revisited"
+    assert notes.read_bytes() == b"# Foo Bar Revisited\r\n\r\nMine.\r\n"
+
+
+def test_put_metadata_title_is_400_when_notes_cannot_be_read(
+    vault_with_paper: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, paper_id = vault_with_paper
+    (vault / "papers" / paper_id / "notes.md").write_bytes(b"# Foo Bar\n")
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self.name == "notes.md":
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    resp = _client(vault).put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"title": "Other"}}
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        f"Cannot change the title: papers/{paper_id}/notes.md could not be "
+        "read (PermissionError). Fix that file, then retry."
+    )
+    assert _meta(vault, paper_id)["title"] == "Foo Bar"
+
+
 def test_put_metadata_invalid_enum_400_with_backend_message(
     vault_with_paper: tuple[Path, str],
 ) -> None:

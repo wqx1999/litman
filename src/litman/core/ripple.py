@@ -51,6 +51,7 @@ from litman.core.document import (
     load_yaml_or_raise,
     read_metadata,
 )
+from litman.core.notes import retitle_heading
 from litman.core.relations import dangling_relation_edges, relation_refs
 from litman.core.taxonomy import replace_value_in_field
 from litman.core.textclean import dirty_text_fields
@@ -583,10 +584,10 @@ def drop_dangling_relations(vault: Path) -> int:
 
 def clean_dirty_metadata(
     vault: Path,
-) -> tuple[int, list[str], list[tuple[str, str]]]:
+) -> tuple[int, list[tuple[str, str]], list[tuple[str, str]]]:
     """Rewrite text fields with line breaks, stray spaces or markup.
 
-    Returns ``(n, kept, renames)``.
+    Returns ``(n, unreadable, renames)``.
 
     The ``lit health-check --fix`` arm behind the ``dirty_metadata`` finding.
     Every title / journal / booktitle / publisher / author string that
@@ -595,14 +596,14 @@ def clean_dirty_metadata(
     what is dirty. Lossless: every word stays, only line breaks, indentation,
     markup and entity escapes go. The id is never changed.
 
-    notes.md is rewritten only where ``lit add`` left it. When its first line
-    is exactly the heading the scaffold wrote from the old title — ``# `` +
-    title + a line break, LF or (on a vault written on Windows) CRLF, the
-    breaks inside the old title included — that heading becomes ``# `` + the
-    clean title with the same line ending, and every other byte of the file
-    stays. Any other notes.md is the user's and is not touched; its folder
-    goes into ``kept`` so the caller can say so, unless its heading already
-    reads the clean title.
+    A cleaned title carries into notes.md, whose first line becomes ``# `` +
+    the clean title — a heading the user rewrote included, as after
+    ``lit modify --set title=`` (``core.notes.retitle_heading``). The heading
+    ``lit add`` wrote from the old title is replaced whole, the line breaks
+    inside it included; a notes.md without a heading gets one on top. Every
+    other byte of the file stays, line endings included. A notes.md that
+    cannot be read goes into ``unreadable`` as ``(folder, reason)`` so the
+    caller can say its heading keeps the old title.
 
     ``renames`` pairs each id derived from a title this cleans with the id the
     clean title derives — the ``lit rename`` the title finding suggests, by the
@@ -622,7 +623,7 @@ def clean_dirty_metadata(
     now = now_iso()
     staged: list[tuple[str, bytes]] = []
     index_papers: list[dict[str, Any]] = []
-    kept: list[str] = []
+    unreadable: list[tuple[str, str]] = []
     renames: list[tuple[str, str]] = []
     n_cleaned = 0
     for paper_dir, paper in _papers_by_folder(vault, None):
@@ -661,14 +662,12 @@ def clean_dirty_metadata(
             continue
         try:
             raw = notes.read_bytes()
-        except OSError:
-            kept.append(paper_dir.name)
+        except OSError as exc:
+            unreadable.append((paper_dir.name, exc.__class__.__name__))
             continue
-        retitled = _retitle_scaffold_heading(raw, old_title, dirty["title"])
-        if retitled is not None:
+        retitled = retitle_heading(raw, dirty["title"], scaffold_title=old_title)
+        if retitled != raw:
             staged.append((f"{folder}/notes.md", retitled))
-        elif not _heading_reads(raw, dirty["title"]):
-            kept.append(paper_dir.name)
 
     if not staged:
         return 0, [], []
@@ -684,23 +683,4 @@ def clean_dirty_metadata(
     # titles and authors this rewrote, next to relevance-<project>, so project
     # refs are rebuilt from the committed files rather than a list built here.
     reconcile_derived(vault, project_refs=True)
-    return n_cleaned, kept, renames
-
-
-def _retitle_scaffold_heading(raw: bytes, old: str, new: str) -> bytes | None:
-    """``raw`` with ``lit add``'s heading for ``old`` retitled ``new``, or None.
-
-    ``lit add`` writes the heading in text mode, so on Windows every line
-    break in it — those inside a broken title too — went to disk as CRLF.
-    """
-    for newline in ("\n", "\r\n"):
-        heading = f"# {old}\n".replace("\n", newline).encode()
-        if raw.startswith(heading):
-            return f"# {new}{newline}".encode() + raw[len(heading):]
-    return None
-
-
-def _heading_reads(raw: bytes, title: str) -> bool:
-    """Whether notes.md already starts with the heading ``# <title>``."""
-    first_line = raw.split(b"\n", 1)[0].removesuffix(b"\r")
-    return first_line == f"# {title}".encode()
+    return n_cleaned, unreadable, renames

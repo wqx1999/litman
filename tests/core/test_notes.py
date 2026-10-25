@@ -27,6 +27,8 @@ from litman.core.notes import (
     has_discussion_reminder,
     heal_discussion_scaffold,
     heal_wikilink_reminder,
+    plain_id_lines,
+    retitle_heading,
 )
 
 _MARKER = "not backticks or plain text"  # _WIKILINK_REMINDER_MARKER, kept local
@@ -338,3 +340,107 @@ def test_heal_discussion_keeps_log_writable(tmp_path: Path) -> None:
     _make_paper(tmp_path, "2024_A")
     heal_discussion_scaffold(tmp_path, "2024_A")
     assert os.access(tmp_path / "papers" / "2024_A" / "discussion.md", os.W_OK)
+
+
+# ---------------------------------------------------------------------------
+# retitle_heading: the first line follows the title (notes) or id (discussion)
+# ---------------------------------------------------------------------------
+
+
+def test_retitle_replaces_a_heading_and_keeps_every_other_byte() -> None:
+    raw = b"# Old title\n\nMine, [[2024_A]].\n"
+    assert retitle_heading(raw, "New title") == b"# New title\n\nMine, [[2024_A]].\n"
+
+
+def test_retitle_overwrites_a_heading_the_user_rewrote() -> None:
+    raw = b"# My own heading\n\nbody\n"
+    assert retitle_heading(raw, "New title") == b"# New title\n\nbody\n"
+
+
+def test_retitle_keeps_the_line_endings_of_a_windows_file() -> None:
+    raw = b"# Old\r\n\r\nbody\r\n"
+    assert retitle_heading(raw, "New") == b"# New\r\n\r\nbody\r\n"
+
+
+def test_retitle_a_file_that_is_only_its_heading() -> None:
+    assert retitle_heading(b"# Old", "New") == b"# New"
+    assert retitle_heading(b"#", "New") == b"# New"
+
+
+def test_retitle_puts_a_heading_on_top_of_a_file_without_one() -> None:
+    raw = b"First line of body.\n\n# A heading further down\n"
+    assert retitle_heading(raw, "New") == b"# New\n\n" + raw
+
+
+def test_retitle_puts_the_heading_in_the_files_own_line_endings() -> None:
+    raw = b"body\r\nmore\r\n"
+    assert retitle_heading(raw, "New") == b"# New\r\n\r\n" + raw
+
+
+def test_retitle_an_empty_file() -> None:
+    assert retitle_heading(b"", "New") == b"# New\n\n"
+
+
+def test_retitle_does_not_take_a_smaller_heading_or_a_hash_word_for_the_title() -> None:
+    for raw in (b"## Section\n", b"#tag at the start\n", b" # indented\n"):
+        assert retitle_heading(raw, "New") == b"# New\n\n" + raw
+
+
+def test_retitle_keeps_a_byte_order_mark_in_front() -> None:
+    bom = b"\xef\xbb\xbf"
+    assert retitle_heading(bom + b"# Old\nbody\n", "New") == bom + b"# New\nbody\n"
+    assert retitle_heading(bom + b"body\n", "New") == bom + b"# New\n\nbody\n"
+
+
+def test_retitle_writes_a_non_ascii_title_as_utf8() -> None:
+    raw = b"# Alt\n\nNotiz\n"
+    assert retitle_heading(raw, "Brüssow über Lanthipeptide") == (
+        "# Brüssow über Lanthipeptide\n\nNotiz\n".encode()
+    )
+
+
+def test_retitle_returns_the_same_bytes_when_the_heading_already_reads_right() -> None:
+    raw = b"# New\r\nbody\r\n"
+    assert retitle_heading(raw, "New") == raw
+
+
+def test_retitle_takes_the_whole_heading_lit_add_wrote_from_a_broken_title() -> None:
+    """A title with line breaks went into notes.md as a heading over several
+    lines: all of them are the heading, not just the first."""
+    old = "(\n    <i>N</i>\n    -Hydroxy)amide\nRapid"
+    for nl in ("\n", "\r\n"):
+        raw = f"# {old}\n\nbody\n".replace("\n", nl).encode()
+        assert retitle_heading(raw, "(N-Hydroxy)amide Rapid", scaffold_title=old) == (
+            f"# (N-Hydroxy)amide Rapid{nl}{nl}body{nl}".encode()
+        )
+
+
+def test_retitle_falls_back_to_the_first_line_when_the_old_title_does_not_match() -> None:
+    raw = b"# Edited\n    <i>N</i>\nbody\n"
+    assert retitle_heading(raw, "New", scaffold_title="Old\n    <i>N</i>") == (
+        b"# New\n    <i>N</i>\nbody\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# plain_id_lines: an id written as plain text, outside a [[ ]] link
+# ---------------------------------------------------------------------------
+
+
+def test_plain_id_lines_names_each_line_with_the_bare_id() -> None:
+    raw = (
+        b"# Discussion log for 2024_Foo_Bar\n"
+        b"\n"
+        b"Ran `lit show 2024_Foo_Bar` twice.\r\n"
+        b"See [[2024_Foo_Bar]] only.\n"
+        b"Ends with 2024_Foo_Bar.\n"
+    )
+    assert plain_id_lines(raw, "2024_Foo_Bar") == [1, 3, 5]
+
+
+def test_plain_id_lines_skips_links_and_longer_ids() -> None:
+    raw = (
+        b"[[2024_Foo_Bar]] and [[other:2024_Foo_Bar]]\n"
+        b"2024_Foo_Bar-2 and 2024_Foo_Bar.v2 and x2024_Foo_Bar\n"
+    )
+    assert plain_id_lines(raw, "2024_Foo_Bar") == []

@@ -27,6 +27,12 @@ and tests stay valid. The cross-vault form lets agents and humans
 write references to papers living in linked fork vaults without
 having to first copy them across.
 
+Heading lines: each file opens with a ``# `` heading litman wrote, notes.md
+from the paper's title and discussion.md from its id. :func:`retitle_heading`
+keeps that line in step when ``lit modify`` / ``lit health-check --fix``
+change the title and ``lit rename`` the id. :func:`plain_id_lines` finds the
+plain-text mentions of an id that ``lit rename`` reports but never rewrites.
+
 Deletion-status tags (M24): the CLI maintains an inline ``(deleted)``
 suffix on same-vault ``[[A]]`` links whenever ``papers/A/`` is absent.
 :func:`annotate_deleted_wikilinks` adds it on ``lit rm``,
@@ -50,6 +56,17 @@ _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
 # The status suffix appended right after a ``[[A]]`` whose target is gone.
 _DELETED_SUFFIX = " (deleted)"
+
+# The same wikilink form over bytes, for the scans that read files as bytes
+# so a CRLF file keeps its line endings.
+_WIKILINK_BYTES_RE = re.compile(rb"\[\[[^\[\]\n]+\]\]")
+
+# The characters a paper id is made of (``core/id.is_valid_id``). A mention
+# of an id is the id with none of these on either side; a dot after it counts
+# as the end of a sentence unless another id character follows.
+_ID_CHAR = rb"A-Za-z0-9_.\-"
+
+_UTF8_BOM = b"\xef\xbb\xbf"
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +335,71 @@ def ensure_discussion_scaffold(text: str, paper_id: str) -> str:
     if tail and tail[0] == "":
         tail = tail[1:]
     return "\n".join([*head, "", DISCUSSION_FORMAT_REMINDER, "", *tail])
+
+
+def retitle_heading(
+    raw: bytes, heading: str, *, scaffold_title: str | None = None
+) -> bytes:
+    """``raw`` with its first line made ``# <heading>``, every other byte kept.
+
+    The line follows the title or id it was written from, whatever it holds
+    now: a heading the user rewrote gives way too, since only the value the
+    command just wrote is current. Bytes in, bytes out, so a file written on
+    Windows keeps its CRLF.
+
+    * ``scaffold_title`` is the title before the change. When the file opens
+      with the heading ``lit add`` wrote from it (``# `` + title + a line
+      break, LF or CRLF throughout), that whole heading is replaced: a title
+      that held line breaks spans several lines of it.
+    * Otherwise a first line that is a level-1 heading (``#`` alone or
+      ``# …``) is replaced and keeps its own line ending.
+    * Otherwise the heading and a blank line go on top, in the line ending of
+      the file's first line (LF when it has none).
+
+    A UTF-8 byte order mark stays in front. Returns ``raw`` itself when the
+    heading already reads right.
+    """
+    bom = _UTF8_BOM if raw.startswith(_UTF8_BOM) else b""
+    body = raw[len(bom):]
+    line = f"# {heading}".encode()
+    if scaffold_title:
+        for newline in (b"\n", b"\r\n"):
+            old = f"# {scaffold_title}\n".encode().replace(b"\n", newline)
+            if body.startswith(old):
+                return bom + line + newline + body[len(old):]
+    end = body.find(b"\n")
+    first = body if end == -1 else body[:end].removesuffix(b"\r")
+    if first == b"#" or first.startswith((b"# ", b"#\t")):
+        retitled = bom + line + body[len(first):]
+    else:
+        newline = b"\r\n" if body[:end + 1].endswith(b"\r\n") else b"\n"
+        retitled = bom + line + newline + newline + body
+    return raw if retitled == raw else retitled
+
+
+def plain_id_lines(raw: bytes, paper_id: str) -> list[int]:
+    """Line numbers (1-based) where ``paper_id`` appears outside a ``[[ ]]``.
+
+    What ``lit rename`` reports and leaves alone: an id typed as plain text
+    may sit in a quote or a command record, where rewriting it would be wrong.
+    Any ``[[...]]`` is skipped — a same-vault one was just rewritten, and a
+    cross-vault ``[[vault:id]]`` names another library's paper. An id that is
+    part of a longer one (``<id>-2``, ``<id>.v2``) is not a mention.
+    """
+    needle = paper_id.encode()
+    if needle not in raw:
+        # The common case across a whole library: no regex over every line.
+        return []
+    pattern = re.compile(
+        rb"(?<![" + _ID_CHAR + rb"])"
+        + re.escape(needle)
+        + rb"(?![" + _ID_CHAR.replace(b".", b"") + rb"]|\.[" + _ID_CHAR + rb"])"
+    )
+    return [
+        number
+        for number, text in enumerate(raw.split(b"\n"), start=1)
+        if pattern.search(_WIKILINK_BYTES_RE.sub(b" ", text))
+    ]
 
 
 def heal_discussion_scaffold(vault: Path, paper_id: str) -> bool:

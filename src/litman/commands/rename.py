@@ -9,8 +9,12 @@ metadata.yaml ``id`` field, the value used in other papers'
    in the ref-list fields.
 2. Every other ``papers/<other>/metadata.yaml`` whose ref lists contain
    ``<old>``.
-3. Every markdown notes file in ``papers/*/notes.md`` containing the
-   literal substring ``[[<old>]]``.
+3. Every ``papers/*/notes.md`` / ``discussion.md`` containing the literal
+   substring ``[[<old>]]``, and the renamed paper's own ``discussion.md``,
+   whose heading ``# Discussion log for <id>`` follows the id. These files
+   are read and written as bytes, so a CRLF file keeps its line endings.
+   The old id written as plain text, outside ``[[ ]]``, is reported with its
+   line numbers and never rewritten: it may sit in a quote or a command.
 4. ``INDEX.json`` (regenerated from the post-rename paper list).
 5. The directory itself: ``papers/<old>/`` → ``papers/<new>/``.
 6. ``views/by-*/`` symlink hubs (rebuilt afterward).
@@ -52,7 +56,11 @@ from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.id import find_case_fold_collision, is_valid_id
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.notes import enumerate_markdown_files
+from litman.core.notes import (
+    enumerate_markdown_files,
+    plain_id_lines,
+    retitle_heading,
+)
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.relations import ALL_REF_FIELDS
 from litman.core.views import render_index
@@ -104,6 +112,13 @@ def _replace_in_ref_lists(
     return changed
 
 
+def _format_line_list(lines: list[int], limit: int = 5) -> str:
+    text = ",".join(str(n) for n in lines[:limit])
+    if len(lines) > limit:
+        text += f" (+{len(lines) - limit} more)"
+    return text
+
+
 def _format_id_list(ids: list[str], limit: int = 5) -> str:
     if not ids:
         return ""
@@ -133,9 +148,10 @@ def rename_cmd(
     <old> vs <new> when <old> is omitted. Use lit list to
     look up the id by DOI if needed.
 
-    Touches the renamed paper's metadata + dir, every other paper's
-    metadata that references it, every notes.md with a [[<old>]]
-    wikilink, INDEX.json, and views/.
+    Touches the renamed paper's metadata + dir and its discussion.md
+    heading, every other paper's metadata that references it, every
+    notes.md / discussion.md with a [[<old>]] wikilink, INDEX.json, and
+    views/. The old id written as plain text is listed, not rewritten.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     old = resolve_paper_id(vault, old)
@@ -302,24 +318,34 @@ def rename_cmd(
         ] = _dump_yaml_to_string(rt)
         repo_binders.append(repo_name)
 
-    # ----- Notes.md wikilink rewrites -----
-    needle = f"[[{old}]]"
-    replacement = f"[[{new}]]"
-    note_updates: dict[str, str] = {}  # vault-relative path → new content
+    # ----- Notes / discussion: wikilinks, the heading, plain-text ids -----
+    # Bytes, not text: read_text would turn a CRLF file into LF on rewrite.
+    needle = f"[[{old}]]".encode()
+    replacement = f"[[{new}]]".encode()
+    note_updates: dict[str, bytes] = {}  # vault-relative path → new content
+    plain_mentions: list[tuple[str, list[int]]] = []
+    unreadable: list[tuple[str, str]] = []
     for md_path in enumerate_markdown_files(vault):
+        rel = md_path.relative_to(vault)
+        own = rel.parts[:2] == ("papers", old)
+        # The renamed paper's own notes move with its folder.
+        relpath = Path("papers", new, *rel.parts[2:]) if own else rel
         try:
-            text = md_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            # Best-effort (mirrors rm.py / restore_from_trash F22): skip an
-            # unreadable note rather than abort the whole rename; a missed
-            # wikilink rewrite is surfaced by health-check.
+            raw = md_path.read_bytes()
+        except OSError as exc:
+            # Skip it rather than abort the whole rename, and say so: its
+            # wikilinks (and, for the renamed paper's discussion.md, its
+            # heading) are left as they were.
+            unreadable.append((relpath.as_posix(), exc.__class__.__name__))
             continue
-        if needle in text:
-            rel = md_path.relative_to(vault)
-            # The renamed paper's own notes move with its folder.
-            if rel.parts[:2] == ("papers", old):
-                rel = Path("papers", new, *rel.parts[2:])
-            note_updates[str(rel)] = text.replace(needle, replacement)
+        content = raw.replace(needle, replacement)
+        if own and rel.name == "discussion.md":
+            content = retitle_heading(content, f"Discussion log for {new}")
+        if content != raw:
+            note_updates[relpath.as_posix()] = content
+        lines = plain_id_lines(content, old)
+        if lines:
+            plain_mentions.append((relpath.as_posix(), lines))
 
     # ----- INDEX.json -----
     new_index = render_index(safe_papers, now)
@@ -334,7 +360,7 @@ def rename_cmd(
             for relpath, content in repo_meta_updates.items():
                 stage.write_text(relpath, content)
             for relpath, content in note_updates.items():
-                stage.write_text(relpath, content)
+                stage.write_bytes(relpath, content)
             stage.write_text("INDEX.json", new_index)
     except DirMoveError as err:
         raise RenameError(
@@ -378,6 +404,18 @@ def rename_cmd(
         n = len(note_updates)
         console.print(
             f"  Updated [bold]{n}[/] notes file{'s' if n != 1 else ''}"
+        )
+    for relpath, lines in plain_mentions:
+        console.print(
+            f"  [yellow]plain text[/] {escape(relpath)}:"
+            f"{_format_line_list(lines)} still says {escape(old)}, left as is",
+            soft_wrap=True,
+        )
+    for relpath, reason in unreadable:
+        console.print(
+            f"  [yellow]could not read notes file {escape(relpath)} "
+            f"({reason}) — skipped[/]",
+            soft_wrap=True,
         )
     # Renaming a linked paper rebuilds the project hubs, which can move a
     # folder out of the user's own directory (see commands/_hub_report).

@@ -249,8 +249,9 @@ class CheckSpec:
 # carrying line breaks, indentation or markup from a publisher's record is
 # rewritten as the plain line it reads as — every word kept, only the layout
 # and the tags gone. Never the id (the finding names the `lit rename` when the
-# id was made from the broken title), and notes.md only when its first line is
-# exactly the heading `lit add` wrote from that title.
+# id was made from the broken title). In notes.md only the first line changes:
+# the `# <title>` heading is derived from the title and follows it, as after
+# `lit modify --set title=`, even where the user rewrote it.
 #
 # ``unfinished_rename`` is lossless where it is offered: it moves a paper's
 # folder to the id its metadata.yaml holds and writes no content. It is
@@ -275,9 +276,10 @@ AUTO_FIXABLE_CATEGORIES: frozenset[str] = frozenset(
     }
 )
 
-# Key under which apply_autofix reports the papers whose notes.md heading the
-# dirty_metadata arm left alone. Detail for the CLI to print, not a category.
-DIRTY_NOTES_KEPT = "dirty_metadata_notes_kept"
+# Key under which apply_autofix reports the (folder, reason) of each notes.md
+# the dirty_metadata arm could not read, so its heading keeps the old title.
+# Detail for the CLI to print, not a category.
+DIRTY_NOTES_UNREADABLE = "dirty_metadata_notes_unreadable"
 # Same, for the (id, clean-derived id) pairs of papers whose id came from the
 # title that arm cleaned: the `lit rename` it leaves to the user.
 DIRTY_RENAMES = "dirty_metadata_renames"
@@ -4478,10 +4480,10 @@ def apply_autofix(
 ) -> dict[str, Any]:
     """Auto-clean fixable categories. Returns ``{category: n_fixed}``.
 
-    Plus, when the ``dirty_metadata`` arm left a notes.md alone, the folders
-    under :data:`DIRTY_NOTES_KEPT`, and when it cleaned a title an id was
-    derived from, the ``(id, clean-derived id)`` pairs under
-    :data:`DIRTY_RENAMES` — detail for the CLI, not categories.
+    Plus, when the ``dirty_metadata`` arm could not read a notes.md, the
+    ``(folder, reason)`` pairs under :data:`DIRTY_NOTES_UNREADABLE`, and when
+    it cleaned a title an id was derived from, the ``(id, clean-derived id)``
+    pairs under :data:`DIRTY_RENAMES` — detail for the CLI, not categories.
 
     ``unfinished_rename`` is not fixed here: ``lit health-check --fix``
     renames those folders itself (:func:`finish_unfinished_renames`), before
@@ -4511,8 +4513,8 @@ def apply_autofix(
       in the library, forward and reverse. Also not lossless; see the same
       constant.
     * ``dirty_metadata`` — rewrites titles, venues and author names that carry
-      line breaks, stray spaces or markup, and the notes.md heading ``lit add``
-      wrote from the old title (:func:`litman.core.ripple.clean_dirty_metadata`).
+      line breaks, stray spaces or markup, and the notes.md heading, which
+      follows the title (:func:`litman.core.ripple.clean_dirty_metadata`).
       Lossless; never the id.
     * ``supplementary_missing`` / ``supplementary_unrecorded`` — drops the
       records of SI files that are gone and records files found in a paper's
@@ -4612,10 +4614,10 @@ def apply_autofix(
         # Lazy for the same reason as the arm above.
         from litman.core.ripple import clean_dirty_metadata
 
-        n_cleaned, notes_kept, renames = clean_dirty_metadata(vault)
+        n_cleaned, notes_unreadable, renames = clean_dirty_metadata(vault)
         counts["dirty_metadata"] = n_cleaned
-        if notes_kept:
-            counts[DIRTY_NOTES_KEPT] = notes_kept
+        if notes_unreadable:
+            counts[DIRTY_NOTES_UNREADABLE] = notes_unreadable
         if renames:
             counts[DIRTY_RENAMES] = renames
 

@@ -284,6 +284,172 @@ def test_rename_rewrites_paper_discussion_md(vault: Path) -> None:
     assert "[[2024_Foo_Bar]]" not in discussion
 
 
+# ---------------------------------------------------------------------------
+# The renamed paper's discussion.md heading follows the id; plain-text
+# mentions of the old id anywhere are listed, never rewritten.
+# ---------------------------------------------------------------------------
+
+
+def _discussion(vault: Path, paper_id: str) -> Path:
+    return vault / "papers" / paper_id / "discussion.md"
+
+
+def _wide(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One whole line per assertion: the console width is fixed at first use."""
+    from rich.console import Console
+
+    monkeypatch.setattr(rename_mod, "console", Console(width=200))
+
+
+def _rename_foo(vault: Path) -> Any:
+    return CliRunner().invoke(
+        cli, ["rename", "2024_Foo_Bar", "2024_Foo_Baz", "--library", str(vault)]
+    )
+
+
+def test_rename_retitles_the_discussion_heading_lit_add_wrote(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    _discussion(vault, "2024_Foo_Bar").write_text(
+        discussion_scaffold("2024_Foo_Bar") + "\n## 2026-10-01 10:00\n\nMine.\n",
+        encoding="utf-8",
+    )
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    assert _discussion(vault, "2024_Foo_Baz").read_text(encoding="utf-8") == (
+        discussion_scaffold("2024_Foo_Baz") + "\n## 2026-10-01 10:00\n\nMine.\n"
+    )
+
+
+def test_rename_overwrites_a_discussion_heading_the_user_rewrote(
+    vault: Path,
+) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    rest = b"\n\n<!-- format -->\n\n## 2026-10-01 10:00\n\nMine.\n"
+    _discussion(vault, "2024_Foo_Bar").write_bytes(b"# My own log title" + rest)
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    assert _discussion(vault, "2024_Foo_Baz").read_bytes() == (
+        b"# Discussion log for 2024_Foo_Baz" + rest
+    )
+    assert "heading" not in result.output
+
+
+def test_rename_puts_a_heading_on_a_discussion_that_lost_it(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar")
+    body = b"## 2026-10-01 10:00\n\n**Question:** why?\n"
+    _discussion(vault, "2024_Foo_Bar").write_bytes(body)
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    assert _discussion(vault, "2024_Foo_Baz").read_bytes() == (
+        b"# Discussion log for 2024_Foo_Baz\n\n" + body
+    )
+
+
+def test_rename_of_a_paper_without_discussion_md_creates_none(vault: Path) -> None:
+    _write_paper(vault, "2024_Foo_Bar", notes="# Foo Bar\n")
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    assert not _discussion(vault, "2024_Foo_Baz").exists()
+
+
+def test_rename_keeps_windows_line_endings_in_the_files_it_rewrites(
+    vault: Path,
+) -> None:
+    """A library written on Windows has CRLF notes: the wikilink rewrite and
+    the heading change must not turn them into LF."""
+    _write_paper(vault, "2024_Foo_Bar")
+    _write_paper(vault, "2024_Other")
+    _discussion(vault, "2024_Foo_Bar").write_bytes(
+        discussion_scaffold("2024_Foo_Bar").replace("\n", "\r\n").encode()
+    )
+    other_notes = vault / "papers" / "2024_Other" / "notes.md"
+    other_notes.write_bytes(b"# Other\r\n\r\nSee [[2024_Foo_Bar]].\r\n")
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    assert _discussion(vault, "2024_Foo_Baz").read_bytes() == (
+        discussion_scaffold("2024_Foo_Baz").replace("\n", "\r\n").encode()
+    )
+    assert other_notes.read_bytes() == b"# Other\r\n\r\nSee [[2024_Foo_Baz]].\r\n"
+
+
+def test_rename_lists_plain_text_mentions_of_the_old_id_and_leaves_them(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _wide(monkeypatch)
+    _write_paper(
+        vault, "2024_Foo_Bar",
+        notes="# Foo Bar\n\nAdded as 2024_Foo_Bar.\n",
+    )
+    _write_paper(
+        vault, "2024_Other",
+        notes="Ran `lit show 2024_Foo_Bar`.\n\nSee [[2024_Foo_Bar]].\n"
+        "Again 2024_Foo_Bar here.\n",
+    )
+    _write_paper(vault, "2024_Quiet", notes="Only 2024_Foo_Bar-2 and [[2024_Foo_Bar]].\n")
+    plain_only = vault / "papers" / "2024_Third" / "discussion.md"
+    _write_paper(vault, "2024_Third")
+    plain_only.write_bytes(b"# Discussion log for 2024_Third\n\nvs 2024_Foo_Bar\n")
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    assert lines.count(
+        "plain text papers/2024_Foo_Baz/notes.md:3 still says 2024_Foo_Bar, left as is"
+    ) == 1
+    assert lines.count(
+        "plain text papers/2024_Other/notes.md:1,4 still says 2024_Foo_Bar, left as is"
+    ) == 1
+    assert lines.count(
+        "plain text papers/2024_Third/discussion.md:3 still says 2024_Foo_Bar, left as is"
+    ) == 1
+    assert "2024_Quiet" not in result.output
+    assert result.output.count("plain text") == 3
+    # Only the [[ ]] links changed; the plain text is as the user wrote it.
+    assert (vault / "papers/2024_Other/notes.md").read_text(encoding="utf-8") == (
+        "Ran `lit show 2024_Foo_Bar`.\n\nSee [[2024_Foo_Baz]].\n"
+        "Again 2024_Foo_Bar here.\n"
+    )
+    assert plain_only.read_bytes() == b"# Discussion log for 2024_Third\n\nvs 2024_Foo_Bar\n"
+
+
+def test_rename_says_which_notes_file_it_could_not_read(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _wide(monkeypatch)
+    _write_paper(vault, "2024_Foo_Bar")
+    _write_paper(vault, "2024_Other", notes="See [[2024_Foo_Bar]].\n")
+    unreadable = vault / "papers" / "2024_Other" / "notes.md"
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        # By name, not by path: the vault may come back resolved.
+        if (self.parent.name, self.name) == ("2024_Other", "notes.md"):
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    result = _rename_foo(vault)
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "could not read notes file papers/2024_Other/notes.md "
+        "(PermissionError) — skipped"
+    ) in result.output
+    assert real_read_bytes(unreadable) == b"See [[2024_Foo_Bar]].\n"
+
+
 def test_rename_refreshes_index_and_views(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar", topics=["alpha"])
 
@@ -701,6 +867,9 @@ def test_rename_whose_folder_cannot_be_moved_changes_nothing(
         "Close any file open from it, then retry."
     )
     assert _library(vault) == before
+    assert (vault / "papers" / _OLD / "discussion.md").read_text(
+        encoding="utf-8"
+    ) == discussion_scaffold(_OLD)
     assert (vault / "papers" / _OLD).is_dir()
     assert not (vault / "papers" / _NEW).exists()
     assert _staging_is_empty(vault)
@@ -721,6 +890,9 @@ def test_rename_stages_the_papers_own_files_at_the_new_path(
     new = vault / "papers" / _NEW
     assert (new / "notes.md").read_text(encoding="utf-8") == (
         f"# Foo Bar\n\nSee [[{_NEW}]] for context.\n"
+    )
+    assert (new / "discussion.md").read_text(encoding="utf-8") == (
+        discussion_scaffold(_NEW)
     )
     assert _read_meta(vault, _NEW)["id"] == _NEW
     assert _read_meta(vault, _NEW)["updated-at"] == _PINNED
