@@ -96,12 +96,12 @@ At the start of a reading session load the vocabulary once: `lit taxonomy list -
 
 **When.** The user names the SI or an S-numbered item ("Table S3", "Figure S2", "SI 里…", "补充材料"), or asks for a detail the main text leaves to the SI ("see Table S3"). Not for the gist, a skim, or anything the main text answers.
 
+**Red lines.** Never download SI yourself — not from the publisher, PMC, Figshare or any copy. Never write, rename, copy into or delete anything in `supplementary/`. A refused file stays refused. Deleting an SI file belongs to lit-library [L].
+
 1. **Already in the library?** `lit show <id>` prints one `SI:` line per file: its absolute path, original name and size (`--format json` has no paths). Never probe with `lit add --si <id>`: on a paper with no SI it opens a window on the user's screen.
 2. **To run `lit add --si`, or to find the answer inside an SI file → read `si.md` (next to this SKILL.md) first**: the exit codes and what to do on each, the per-file checks, how to find a page in a long SI PDF.
 
 **Answer = the file + where the user can jump to**: `si-01.pdf (ci9b00237_si_001.pdf), p. 12, Table S3`, or an xlsx sheet + rows. `si-NN` is litman's numbering, not the publisher's: never infer "Supplementary Data 2" from `si-02`. A file you couldn't search → say which and where you stopped. Never guess, and never pass off the main text or your memory of the paper as SI content.
-
-**Red lines.** Never download SI yourself — not from the publisher, PMC, Figshare or any copy. Never write, rename, copy into or delete anything in `supplementary/`. A refused file stays refused. Deleting an SI file belongs to lit-library [L].
 
 ---
 
