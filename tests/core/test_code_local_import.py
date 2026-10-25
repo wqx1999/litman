@@ -96,6 +96,11 @@ def _git_init_with_commit(repo_dir: Path, *, file_contents: str = "x\n") -> None
             "git", "-C", str(repo_dir),
             "-c", "user.email=test@example.com",
             "-c", "user.name=test",
+            # No auto maintenance: newer git runs it detached after a commit,
+            # adding and removing .git/objects/maintenance.lock while a test
+            # is still listing that directory (CI, macOS, 2026-10-25).
+            "-c", "maintenance.auto=false",
+            "-c", "gc.auto=0",
             "commit", "-q", "-m", "init",
         ],
         check=True,
