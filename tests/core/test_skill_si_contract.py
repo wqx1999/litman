@@ -6,9 +6,9 @@ in ``commands/_si_gui.py``; the skill's exit table copies them by hand, so a
 reworded line or a renumbered code would leave the skill teaching something
 the CLI no longer does. The skill's description is the only signal that
 loads it at all, so it has to carry an SI trigger, early (Codex trims
-description tails when many skills are installed), and stay within Claude
-Code's 1536-character listing limit. Both skills' never-write lists name the
-SI folder.
+description tails when many skills are installed), and stay within the
+1024-character limit of the Agent Skills standard. Both skills' never-write
+lists name the SI folder.
 """
 
 from __future__ import annotations
@@ -22,8 +22,9 @@ from ruamel.yaml import YAML
 from litman.commands import _si_gui
 from litman.core.skill import bundled_skill_root
 
-# Claude Code truncates a skill's description (plus when_to_use) here.
-_DESCRIPTION_LIMIT = 1536
+# The Agent Skills standard caps a description here; ZCode drops a skill
+# whose description is longer.
+_DESCRIPTION_LIMIT = 1024
 # An SI trigger past this point is the first thing a trimmed listing loses.
 _TRIGGER_WITHIN = 200
 _SI_WORD = re.compile(r"\bSI\b")
