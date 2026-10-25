@@ -46,7 +46,12 @@ import type { MetadataWrite, SimilarPair } from '../api'
 import AuthorRows from '../ui/AuthorRows'
 import VocabPopover from '../ui/VocabPopover'
 import type { ToastVariant } from '../ui/Toast'
-import { SiRemoveConfirm, SupplementaryChips, type SiRecord } from './Supplementary'
+import {
+  parseSupplementary,
+  SiRemoveConfirm,
+  SupplementaryChips,
+  type SiRecord,
+} from './Supplementary'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { isYearShape, YEAR_HINT } from '../ui/year'
 import {
@@ -203,11 +208,25 @@ function formatAuthors(authors: string[]): string {
   ].join('; ')
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/** A labelled row of the inspector. `count` goes on the label of a list-valued
+ * field (authors, relations, …) and stays off while the list is empty — the
+ * row's own "—" already says so. */
+function Field({
+  label,
+  count,
+  children,
+}: {
+  label: string
+  count?: number
+  children: React.ReactNode
+}) {
   return (
     <div className="mb-3.5">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         {label}
+        {count != null && count > 0 && (
+          <span className="font-normal tabular-nums text-stone-400"> · {count}</span>
+        )}
       </div>
       <div className="text-sm text-stone-800">{children}</div>
     </div>
@@ -754,7 +773,12 @@ function ManageDialog({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[24rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Manage {field}</h2>
+        <h2 className="text-sm font-semibold text-stone-900">
+          Manage {field}
+          {sorted.length > 0 && (
+            <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
+          )}
+        </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
           Rename a value to fix a typo or merge wording — it updates everywhere
           it is used. Deleting a value removes it from the {field} vocabulary and
@@ -1084,6 +1108,19 @@ type RelField =
   | 'contradicts'
   | 'contradicted-by'
 
+const REL_FIELDS: RelField[] = [
+  'related',
+  'extends',
+  'extended-by',
+  'contradicts',
+  'contradicted-by',
+]
+
+/** Every linked paper across the five fields — the number on the Relations label. */
+function relationCount(paper: PaperMeta): number {
+  return REL_FIELDS.reduce((n, rel) => n + (paper[rel]?.length ?? 0), 0)
+}
+
 /** Where a removal on a REVERSE row has to be sent. The backend refuses a write
  * that names a reverse field (ADR-012: those edges exist only as the mirror of
  * a forward write), so removing `extended-by: A` while standing on B means
@@ -1107,13 +1144,10 @@ function Relations({
   /** A structured write is in flight — the × stops taking clicks. */
   busy?: boolean
 }) {
-  const groups: Array<[RelField, string[] | undefined]> = [
-    ['related', paper.related],
-    ['extends', paper.extends],
-    ['extended-by', paper['extended-by']],
-    ['contradicts', paper.contradicts],
-    ['contradicted-by', paper['contradicted-by']],
-  ]
+  const groups: Array<[RelField, string[] | undefined]> = REL_FIELDS.map((rel) => [
+    rel,
+    paper[rel],
+  ])
   const nonEmpty = groups.filter(([, ids]) => ids && ids.length > 0)
   if (nonEmpty.length === 0) return <span className="text-stone-400">—</span>
   return (
@@ -1655,7 +1689,7 @@ function ReadOnlyCockpit({
                 )}
               </div>
             </div>
-            <Field label="Authors">
+            <Field label="Authors" count={paper.authors?.length}>
               {paper.authors && paper.authors.length > 0 ? (
                 <span
                   title={
@@ -1706,16 +1740,19 @@ function ReadOnlyCockpit({
             <Field label="Projects">
               <Chips values={paper.projects} suffix={(v) => paper[`priority-${v}`] ?? null} />
             </Field>
-            <Field label="Relations">
+            <Field label="Relations" count={relationCount(paper)}>
               <Relations paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
-            <Field label="Code-clones">
+            <Field label="Code-clones" count={paper['code-clones']?.length}>
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
               />
             </Field>
-            <Field label="Supplementary">
+            <Field
+              label="Supplementary"
+              count={parseSupplementary(paper.supplementary).length}
+            >
               <SupplementaryChips paperId={paper.id} value={paper.supplementary} readOnly />
             </Field>
           </div>
@@ -2295,7 +2332,7 @@ function WriteCockpit({
                 </div>
               )}
             </div>
-            <Field label="Authors">
+            <Field label="Authors" count={paper.authors?.length}>
               {paper.authors && paper.authors.length > 0 ? (
                 <span
                   title={
@@ -2485,7 +2522,7 @@ function WriteCockpit({
                 },
               ]}
             />
-            <Field label="Relations">
+            <Field label="Relations" count={relationCount(paper)}>
               <Relations
                 paper={paper}
                 onOpenPaper={onOpenPaper}
@@ -2493,13 +2530,16 @@ function WriteCockpit({
                 busy={writing}
               />
             </Field>
-            <Field label="Code-clones">
+            <Field label="Code-clones" count={paper['code-clones']?.length}>
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
               />
             </Field>
-            <Field label="Supplementary">
+            <Field
+              label="Supplementary"
+              count={parseSupplementary(paper.supplementary).length}
+            >
               <SupplementaryChips
                 paperId={paper.id}
                 value={paper.supplementary}

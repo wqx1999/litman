@@ -16,6 +16,12 @@ own entry. Read those before you upgrade, whatever the number says.
 - **The web UI shows how many papers the list holds.** The count sits at the
   right of the **Show** row above the list and follows everything that narrows
   it: the project, Reading / Read / All, the filters and the search box.
+- **Lists in the web UI say how long they are.** The paper panel numbers its
+  authors, relations, code clones and SI files, so an author list cut short
+  with "…" now tells you how many authors there are. A tag menu shows how many
+  values its vocabulary holds, or how many match while you search. The
+  Projects, Vaults and Manage topics / methods / data windows show how many
+  entries they list.
 
 ## 1.3.8 — 2026-10-24
 

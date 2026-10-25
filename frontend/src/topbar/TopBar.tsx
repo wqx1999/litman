@@ -1057,7 +1057,12 @@ function ProjectManager({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[28rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Projects</h2>
+        <h2 className="text-sm font-semibold text-stone-900">
+          Projects
+          {sorted.length > 0 && (
+            <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
+          )}
+        </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
           Register a project, rename it, or re-point its folder if you moved it.
           Removing unlinks it from every paper and tears down its reflib links,
@@ -1612,7 +1617,12 @@ function VaultManager({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
+        <h2 className="text-sm font-semibold text-stone-900">
+          Vaults
+          {sorted.length > 0 && (
+            <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
+          )}
+        </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
           Create a new vault, or register one that already exists. Unregistering
           removes the registry entry only — the vault folder on disk is kept. Switch

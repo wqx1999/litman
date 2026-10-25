@@ -311,15 +311,25 @@ export default function VocabPopover({
         </button>
       )}
       {onManage && (
-        <div className="mt-1 border-t border-stone-100 pt-1">
+        <div className="mt-1 flex items-center border-t border-stone-100 pt-1">
           <button
             type="button"
             disabled={busy}
             onClick={onManage}
-            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
+            className="flex flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
           >
             <span className="text-stone-400">⚙</span> Manage {noun}…
           </button>
+          {/* The size of the vocabulary, not a paper count: the rows above
+              already end in those, so this one names its noun. While a search
+              narrows the list it reads "3 of 8". */}
+          {n > 0 && (
+            <span className="shrink-0 px-2 text-[11px] tabular-nums text-stone-400">
+              {typed
+                ? `${shown.length} of ${n}`
+                : `${n} ${n === 1 ? noun.replace(/s$/, '') : noun}`}
+            </span>
+          )}
         </div>
       )}
     </div>
