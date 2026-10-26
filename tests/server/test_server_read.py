@@ -859,5 +859,39 @@ def test_get_paper_still_carries_every_schemaless_extra(
     assert meta["relevance-pepforge"] == "Direct baseline"
     assert meta["funding"] == "ERC-2024"
     assert meta["created-at"].startswith("2026-01-01")
-    # And the derived hint the cockpit needs.
+    # And the derived hints the cockpit needs.
     assert meta["code-clones-missing"] == []
+    assert meta["code-clones-upstream"] == {}
+
+
+def test_get_paper_maps_each_live_clone_to_its_upstream_page(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The ↗ beside a code-clone chip: only a clone on disk whose upstream has
+    a web page gets one; a local import and a missing clone get none."""
+    vault, _ = vault_with_paper
+    for name, upstream in [
+        ("web", "https://github.com/o/web.git"),
+        ("ssh", "git@github.com:o/ssh.git"),
+        ("local", "local:/home/me/src/local"),
+    ]:
+        (vault / "codes" / name).mkdir(parents=True)
+        (vault / "codes" / name / "repo-meta.yaml").write_text(
+            f"name: {name}\nupstream: {upstream}\npapers: [2024_Clones]\n",
+            encoding="utf-8",
+        )
+    _write_sparse_paper(
+        vault,
+        "2024_Clones",
+        "id: 2024_Clones\ntitle: Clones\n"
+        "created-at: '2026-01-01T00:00:00+02:00'\n"
+        "code-clones: [web, ssh, local, gone]\n",
+    )
+
+    meta = _client(vault).get("/api/paper/2024_Clones").json()
+
+    assert meta["code-clones-upstream"] == {
+        "web": "https://github.com/o/web",
+        "ssh": "https://github.com/o/ssh",
+    }
+    assert meta["code-clones-missing"] == ["gone"]

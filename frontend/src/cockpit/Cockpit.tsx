@@ -46,6 +46,7 @@ import type { MetadataWrite, SimilarPair } from '../api'
 import AuthorRows from '../ui/AuthorRows'
 import VocabPopover from '../ui/VocabPopover'
 import HelpHint from '../ui/HelpHint'
+import { ExternalLinkIcon } from '../ui/icons'
 import type { ToastVariant } from '../ui/Toast'
 import {
   parseSupplementary,
@@ -159,17 +160,35 @@ function Chips({
  * resolved: codes/<name>/ is gone, the same criterion lit health-check uses for
  * invariant #12) renders amber + ⚠ "missing", so a link to a deleted codebase
  * never reads as live (e.g. after a restore that did not re-clone). The link is
- * kept by design — re-clone via `lit code add` or drop it via `lit code unlink`. */
+ * kept by design — re-clone via `lit code add` or drop it via `lit code unlink`.
+ * With `vaultPath`, a live chip copies the clone's folder path, like Copy path
+ * does for the paper; the chip itself flashes ✓, since the copied note by the
+ * Copy buttons is often scrolled out of view down here. A clone with an entry
+ * in `upstream` gets a ↗ beside it that opens that page in a new tab. */
 function CodeCloneChips({
   values,
   missing,
+  vaultPath = null,
+  upstream,
 }: {
   values: string[] | undefined
   missing: string[] | undefined
+  vaultPath?: string | null
+  upstream?: Record<string, string>
 }) {
+  const [copied, setCopied] = useState<string | null>(null)
   if (!values || values.length === 0)
     return <span className="text-stone-400">—</span>
   const gone = new Set(missing ?? [])
+  async function copy(name: string) {
+    try {
+      await navigator.clipboard.writeText(`${vaultPath}/codes/${name}`)
+      setCopied(name)
+      setTimeout(() => setCopied(null), 1200)
+    } catch {
+      /* no clipboard in some sandboxes — silently ignore */
+    }
+  }
   return (
     <div className="flex flex-wrap gap-1">
       {values.map((v) =>
@@ -184,6 +203,33 @@ function CodeCloneChips({
             <span className="text-[10px] font-medium uppercase tracking-wide opacity-80">
               missing
             </span>
+          </span>
+        ) : vaultPath ? (
+          <span key={v} className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => copy(v)}
+              title={`Copy the clone's folder path (codes/${v})`}
+              className={
+                copied === v
+                  ? 'rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700'
+                  : 'rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700 transition-colors hover:bg-stone-300 hover:text-stone-900'
+              }
+            >
+              {copied === v ? `✓ ${v}` : v}
+            </button>
+            {upstream?.[v] && (
+              <a
+                href={upstream[v]}
+                target="_blank"
+                rel="noreferrer"
+                title={upstream[v]}
+                aria-label={`Open ${v} upstream: ${upstream[v]}`}
+                className="rounded p-0.5 text-stone-400 transition-colors hover:text-accent-600"
+              >
+                <ExternalLinkIcon className="h-[13px] w-[13px]" />
+              </a>
+            )}
           </span>
         ) : (
           <span
@@ -2536,6 +2582,8 @@ function WriteCockpit({
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
+                vaultPath={vaultPath}
+                upstream={paper['code-clones-upstream']}
               />
             </Field>
             <Field

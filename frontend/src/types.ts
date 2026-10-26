@@ -58,6 +58,10 @@ export interface PaperMeta extends IndexPaper {
    * codes/<name>/ is gone on disk, so the cockpit can mark them as missing.
    * Absent on the trash-inspector path (that endpoint does not annotate it). */
   'code-clones-missing'?: string[]
+  /** Derived by the server (get_paper): clone name → web page of its upstream,
+   * for the live clones whose repo-meta.yaml records an http(s) or git@ one.
+   * A local import, a missing clone and the trash inspector have no entry. */
+  'code-clones-upstream'?: Record<string, string>
   /** The paper's SI files, as metadata.yaml records them (task-supplementary-
    * info): a list of `{file, original, sha256, bytes, added, check}`. Typed
    * loosely on purpose — the field is hand-editable, so the cockpit reads it

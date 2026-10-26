@@ -22,8 +22,8 @@ from starlette.concurrency import run_in_threadpool
 from litman.core import viewer
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
+from litman.core.code import code_clone_upstreams, missing_code_clones
 from litman.core.config import CONFIG_FILENAME
-from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import host_id
@@ -596,6 +596,10 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
     # — codes/<name>/ gone — so the cockpit marks them instead of showing a
     # deleted codebase as live. Same criterion as lit health-check (invariant #12).
     out["code-clones-missing"] = missing_code_clones(
+        vault, meta.get("code-clones") or []
+    )
+    # Derived too: clone name -> web page of its upstream, for the ↗ link.
+    out["code-clones-upstream"] = code_clone_upstreams(
         vault, meta.get("code-clones") or []
     )
     return out

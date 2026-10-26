@@ -22,6 +22,13 @@ own entry. Read those before you upgrade, whatever the number says.
   values its vocabulary holds, or how many match while you search. The
   Projects, Vaults and Manage topics / methods / data windows show how many
   entries they list.
+- **Click a code clone in the web UI to copy its folder path.** A name under
+  **Code-clones** in the paper panel copies the clone's local folder
+  (`codes/<name>/` in the vault), ready to paste into a terminal or an agent,
+  the way **Copy path** does for the paper. The ↗ beside it opens the
+  repository's web page, such as its GitHub page, in a new tab. A clone whose
+  folder is missing can't be clicked, and a clone imported from a local folder
+  has no ↗.
 
 ### Changed
 
