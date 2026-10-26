@@ -45,6 +45,7 @@ import {
 import type { MetadataWrite, SimilarPair } from '../api'
 import AuthorRows from '../ui/AuthorRows'
 import VocabPopover from '../ui/VocabPopover'
+import HelpHint from '../ui/HelpHint'
 import type { ToastVariant } from '../ui/Toast'
 import {
   parseSupplementary,
@@ -782,12 +783,8 @@ function ManageDialog({
           {sorted.length > 0 && (
             <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
           )}
+          <HelpHint text="Rename fixes a typo or merges two values everywhere they're used. Delete untags a value from every paper." />
         </h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Rename a value to fix a typo or merge wording — it updates everywhere
-          it is used. Deleting a value removes it from the {field} vocabulary and
-          untags it from every paper. Both cannot be undone.
-        </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">

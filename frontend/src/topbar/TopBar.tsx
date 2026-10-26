@@ -29,6 +29,7 @@ import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
 import { anchorIcon } from '../ui/icons'
+import HelpHint from '../ui/HelpHint'
 import PathField, { describeLocation } from '../ui/PathField'
 import { useEscapeLayer } from '../ui/escapeStack'
 import {
@@ -1062,12 +1063,8 @@ function ProjectManager({
           {sorted.length > 0 && (
             <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
           )}
+          <HelpHint text="Register, rename or re-point your projects. Removing one never deletes its folder." />
         </h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Register a project, rename it, or re-point its folder if you moved it.
-          Removing unlinks it from every paper and tears down its reflib links,
-          but always leaves the project folder on disk.
-        </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
@@ -1622,12 +1619,8 @@ function VaultManager({
           {sorted.length > 0 && (
             <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
           )}
+          <HelpHint text="Create or register vaults, and switch between them from the toolbar. Unregistering never deletes the folder." />
         </h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Create a new vault, or register one that already exists. Unregistering
-          removes the registry entry only — the vault folder on disk is kept. Switch
-          vaults from the selector in the toolbar.
-        </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
@@ -2623,13 +2616,8 @@ function AgentSetup({
     <>
       <h2 className="text-sm font-semibold text-stone-900">
         {status.default ? 'Manage agents' : 'Set up your agent'}
+        <HelpHint text="The toolbar button and ~ open your default agent. A skill also lets it run lit without asking, where the agent allows it." />
       </h2>
-      <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-        Choose one installed agent as your default. The toolbar button and ~
-        launch it directly. Installing a skill also allows that agent to run
-        lit commands without repeated approval; other commands keep their
-        normal permissions.
-      </p>
       <div className="mt-3 flex flex-col gap-2">
         {status.agents.map((agent) =>
           agent.supported ? (

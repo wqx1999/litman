@@ -117,6 +117,16 @@ export function ChevronRightIcon(p: IconProps) {
 /** The line icon for a standard anchor / location kind; a plain folder for
  * anything else. `kind` is an anchor label ('Home'/'Desktop'/'Documents'/
  * 'Downloads') or 'folder'. */
+export function QuestionCircleIcon(p: IconProps) {
+  return (
+    <Line {...p}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.1-2.4 3.7" />
+      <path d="M12 17h.01" />
+    </Line>
+  )
+}
+
 export function anchorIcon(kind: string, className?: string) {
   switch (kind) {
     case 'Home':
