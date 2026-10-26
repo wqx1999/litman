@@ -37,7 +37,6 @@ from litman.core.supplementary import (
     doi_tokens,
     field_problems,
     list_supplementary,
-    mentions_supplementary,
     name_matches,
     plan_names,
     prepare_items,
@@ -226,51 +225,6 @@ def test_name_matches_publisher_si_names(filename: str, doi: str) -> None:
 )
 def test_name_matches_refuses_near_misses(filename: str, doi: str) -> None:
     assert not name_matches(filename, doi)
-
-
-# ---------------------------------------------------------------------------
-# §核验 0 — does the article mention SI?
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "Supporting Information is available free of charge.",
-        "See the Supplementary Materials for the full protocol.",
-        "Supplemental Table 3 lists all peptides.",
-        "Additional file 1: Table S1 summarises the runs.",
-        "The code is in Additional file2 of this article.",
-        "Methods are detailed in SI Appendix.",
-        "Electronic supplementary information (ESI) available.",
-    ],
-)
-def test_mentions_supplementary_each_phrasing(
-    make_text_pdf: MakePdf, line: str
-) -> None:
-    # On page 2: the whole text is searched, not the first page.
-    pdf = make_text_pdf([["A paper about peptides"], ["Results", line]])
-    assert mentions_supplementary(pdf) is True
-
-
-def test_mentions_supplementary_esi_ms_is_not_si(make_text_pdf: MakePdf) -> None:
-    pdf = make_text_pdf(
-        [["Peptide masses were confirmed by ESI-MS and HPLC (ESI+ mode)."]]
-    )
-    assert mentions_supplementary(pdf) is False
-
-
-def test_mentions_supplementary_none_without_a_text_layer(
-    make_text_pdf: MakePdf, tmp_path: Path
-) -> None:
-    assert mentions_supplementary(make_text_pdf([[]], name="scan.pdf")) is None
-    broken = _blob(tmp_path, "broken.pdf", b"%PDF-1.4\nnot really\n")
-    assert mentions_supplementary(broken) is None
-
-
-def test_mentions_supplementary_across_a_line_break(make_text_pdf: MakePdf) -> None:
-    pdf = make_text_pdf([["see the Supporting", "Information for the tables"]])
-    assert mentions_supplementary(pdf) is True
 
 
 # ---------------------------------------------------------------------------

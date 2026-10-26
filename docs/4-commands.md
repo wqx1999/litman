@@ -259,7 +259,7 @@ lit add --si <paper> [--force]
 | `--id <id>` | Override the auto-derived id, and the way past a title litman cannot turn into one. |
 | `--auto-suffix` | On id collision, auto-append `_b` / `_c` without prompting. Required for non-interactive (non-TTY) batch use. |
 | `--si <paper>` | Add SI files to `<paper>` (a full id or a unique id substring) instead of importing a paper. Not with `--doi`, `--from-llm-json`, `--id` or `--auto-suffix`. |
-| `--force` | Only with `--si`. With files: add a file that cannot be confirmed as the paper's SI, or is over 100 MiB, without asking — never a refused one. Without files: ask the Web UI even when the paper has SI already or its text never mentions any. |
+| `--force` | Only with `--si`. With files: add a file that cannot be confirmed as the paper's SI, or is over 100 MiB, without asking — never a refused one. Without files: ask the Web UI even when the paper has SI already. |
 
 `lit add` writes a complete metadata skeleton (all fields, defaults filled); see
 [3-concepts.md](3-concepts.md) §1.1 for the schema.
@@ -289,9 +289,8 @@ article's page and drop them in (see `lit gui` below), and the command waits up
 to 90 seconds for **Done**, printing
 `Waiting for the SI to be added in the litman GUI…` on stderr meanwhile. Run
 it on the same machine as the `lit gui` that serves this library. When the
-paper has SI already, it prints those files without asking; when the paper's
-text never mentions supplementary material, it exits 13 — `--force` asks the
-Web UI in both cases. The first line on stdout says how it ended:
+paper has SI already, it prints those files without asking; `--force` asks the
+Web UI anyway. The first line on stdout says how it ended:
 
 | Exit | First line on stdout | What it means |
 |---|---|---|
@@ -299,7 +298,6 @@ Web UI in both cases. The first line on stdout says how it ended:
 | 10 | `SI request cancelled in the GUI` | **Cancel** (or Esc) was pressed in the SI window. |
 | 11 | `Still waiting in the GUI — run the same command again to keep waiting` | 90 seconds passed, or the wait was interrupted. The window stays open, and the same command run again picks up the same request. |
 | 12 | `No litman GUI page is open for this library` | No `lit gui` on this machine has a page open on this library (or it stopped answering, or shows another library). A line saying why follows when there is one, then the article's link and the `lit add --si <paper> <file>...` form. |
-| 13 | `The paper's text never mentions supplementary material` | Nothing was asked; `--force` asks anyway. |
 | 1 | `error: …` | No such paper, a broken SI record, and the like. |
 
 ### `lit list`

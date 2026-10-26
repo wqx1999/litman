@@ -49,6 +49,12 @@ own entry. Read those before you upgrade, whatever the number says.
   line is gone. A `notes.md` that starts without a heading gets one on top, and
   nothing below the first line changes.
 
+- **`lit add --si <paper>` opens the SI window whatever the paper's text
+  says.** It used to exit 13 when the text never said "supplementary" or
+  "supporting information", so a paper whose appendix is a separate file
+  ("see Appendix D", as NeurIPS papers write it) got no window unless you
+  added `--force`. Exit code 13 is gone.
+
 ### Fixed
 
 - **Changing a paper's id or title now updates the heading that goes with

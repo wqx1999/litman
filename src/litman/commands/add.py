@@ -686,8 +686,7 @@ def _apply_add(
     help=(
         "With --si FILE...: add files that cannot be confirmed as the paper's "
         "SI, or are over 100 MiB, without asking; never adds a refused file. "
-        "With --si alone: ask the GUI even when the paper has SI already or "
-        "its text never mentions any."
+        "With --si alone: ask the GUI even when the paper has SI already."
     ),
 )
 @library_option
@@ -741,8 +740,6 @@ def add_cmd(
       11  still waiting: run the same command again to keep waiting
       12  no GUI page is open for this library: prints the article link
           and the lit add --si PAPER FILE... form
-      13  the paper's text never mentions supplementary material
-          (--force asks anyway)
     """
     ctx = click.get_current_context()
     if si_paper is not None:

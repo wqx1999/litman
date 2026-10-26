@@ -10,7 +10,6 @@ Read this before you run `lit add --si`, or before you look for an answer inside
    | 11 | `Still waiting in the GUI — run the same command again to keep waiting` | Run the same command again. After about three runs, answer from the main text and say the SI window is still open — they can tell you once the files are in |
    | 10 | `SI request cancelled in the GUI` | Answer from the main text and say you did not see the SI; don't ask again unless the user does |
    | 12 | `No litman GUI page is open for this library`, often a line saying why, then `Download the SI from the article page: <link>` (or `No link on record — download the SI from the article's page yourself`) and `Then add the files: lit add --si <id> <file>...` | Relay the lines. The user starts `lit gui` (or opens its page) and you rerun — or they download the files and give you the paths (step 3) |
-   | 13 | `The paper's text never mentions supplementary material` | Tell the user; rerun with `--force` only if they insist |
    | 1 | `error: …` | Relay it |
 
    A paper that has SI already returns at once (`… (already in the library)`); when the user says a file is missing, `lit add --si <id> --force` opens the window anyway.

@@ -52,7 +52,6 @@ _EXIT_ROWS = [
     (_si_gui.EXIT_WAITING, _si_gui.STILL_WAITING),
     (_si_gui.EXIT_CANCELLED, _si_gui.CANCELLED_LINE),
     (_si_gui.EXIT_NO_GUI, _si_gui.NO_PAGE),
-    (_si_gui.EXIT_NOT_MENTIONED, _si_gui.NOT_MENTIONED),
 ]
 
 
@@ -60,6 +59,12 @@ _EXIT_ROWS = [
 def test_lit_reading_exit_table_pairs_each_code_with_its_line(code: int, line: str) -> None:
     assert line
     assert f"| {code} | `{line}`" in _skill_text("lit-reading", "si.md")
+
+
+def test_lit_reading_exit_table_lists_no_code_the_cli_dropped() -> None:
+    """13 (the text never mentions SI) is gone from the CLI; its row too."""
+    rows = re.findall(r"^\s*\| (\d+) \|", _skill_text("lit-reading", "si.md"), re.M)
+    assert {int(code) for code in rows} == {code for code, _ in _EXIT_ROWS} | {1}
 
 
 def test_lit_reading_sends_the_agent_to_the_exit_table() -> None:
