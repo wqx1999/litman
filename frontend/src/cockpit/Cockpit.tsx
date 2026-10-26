@@ -1178,6 +1178,12 @@ const REVERSE_TO_FORWARD = {
   'contradicted-by': 'contradicts',
 } as const
 
+/** Links a relation group lists before folding the rest behind "+ N more". */
+const REL_PREVIEW = 5
+
+/** The five relation groups, each a label over one id per line. A long id is
+ * cut with … (the full id is its tooltip) so every link stays one line, and a
+ * group longer than REL_PREVIEW folds the rest behind "+ N more". */
 function Relations({
   paper,
   onOpenPaper,
@@ -1191,52 +1197,75 @@ function Relations({
   /** A structured write is in flight — the × stops taking clicks. */
   busy?: boolean
 }) {
+  // Groups unfolded past REL_PREVIEW. The call sites key this component by
+  // paper id, so the next paper starts folded again.
+  const [unfolded, setUnfolded] = useState<ReadonlySet<RelField>>(new Set())
   const groups: Array<[RelField, string[] | undefined]> = REL_FIELDS.map((rel) => [
     rel,
     paper[rel],
   ])
   const nonEmpty = groups.filter(([, ids]) => ids && ids.length > 0)
   if (nonEmpty.length === 0) return <span className="text-stone-400">—</span>
+  function toggle(rel: RelField) {
+    setUnfolded((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(rel)) next.add(rel)
+      return next
+    })
+  }
   return (
-    <div className="space-y-1">
-      {nonEmpty.map(([rel, ids]) => (
-        <div key={rel}>
-          <span className="text-xs text-stone-500">{rel}: </span>
-          {ids!.map((id) => (
-            // The × is a SIBLING of the link, never nested inside it (buttons
-            // cannot nest), and it is always in the DOM — `opacity-0` rather
-            // than a conditional render keeps the box, so the id does not shift
-            // sideways on hover. A moving target is exactly how a click meant
-            // for the link lands on the delete.
-            <span
-              key={id}
-              className="group/rel mr-1 inline-flex items-center gap-0.5"
-            >
+    <div className="space-y-1.5">
+      {nonEmpty.map(([rel, ids]) => {
+        const shown = unfolded.has(rel) ? ids! : ids!.slice(0, REL_PREVIEW)
+        const folded = ids!.length - shown.length
+        return (
+          <div key={rel}>
+            <div className="text-[11px] text-stone-500">{rel}</div>
+            <ul className="mt-0.5 border-l border-stone-200 pl-2">
+              {shown.map((id) => (
+                // The × is a SIBLING of the link, never nested inside it (buttons
+                // cannot nest), and it is always in the DOM — `opacity-0` rather
+                // than a conditional render keeps the box, so the id does not shift
+                // sideways on hover. A moving target is exactly how a click meant
+                // for the link lands on the delete.
+                <li key={id} className="group/rel flex items-center gap-0.5">
+                  <button
+                    onClick={() => onOpenPaper(id)}
+                    title={id}
+                    className="min-w-0 truncate text-left text-xs leading-5 text-accent-600 transition-colors hover:underline"
+                  >
+                    {id}
+                  </button>
+                  {onRemove && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${rel} link to ${id}`}
+                      title="Remove link"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onRemove(rel, id)
+                      }}
+                      className="shrink-0 px-0.5 text-xs leading-none text-stone-400 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/rel:opacity-100 disabled:opacity-0"
+                    >
+                      ×
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {ids!.length > REL_PREVIEW && (
               <button
-                onClick={() => onOpenPaper(id)}
-                className="text-xs text-accent-600 transition-colors hover:underline"
+                type="button"
+                onClick={() => toggle(rel)}
+                className="mt-0.5 pl-2.5 text-[11px] text-stone-500 transition-colors hover:text-stone-800"
               >
-                {id}
+                {folded > 0 ? `+ ${folded} more` : 'Show less'}
               </button>
-              {onRemove && (
-                <button
-                  type="button"
-                  aria-label={`Remove ${rel} link to ${id}`}
-                  title="Remove link"
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onRemove(rel, id)
-                  }}
-                  className="px-0.5 text-xs leading-none text-stone-400 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/rel:opacity-100 disabled:opacity-0"
-                >
-                  ×
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-      ))}
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1788,7 +1817,7 @@ function ReadOnlyCockpit({
               <Chips values={paper.projects} suffix={(v) => paper[`priority-${v}`] ?? null} />
             </Field>
             <Field label="Relations" count={relationCount(paper)}>
-              <Relations paper={paper} onOpenPaper={onOpenPaper} />
+              <Relations key={paper.id} paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
             <Field label="Code-clones" count={paper['code-clones']?.length}>
               <CodeCloneChips
@@ -2572,6 +2601,7 @@ function WriteCockpit({
             />
             <Field label="Relations" count={relationCount(paper)}>
               <Relations
+                key={paper.id}
                 paper={paper}
                 onOpenPaper={onOpenPaper}
                 onRemove={(rel, id) => setPendingRel({ me: paper.id, rel, id })}

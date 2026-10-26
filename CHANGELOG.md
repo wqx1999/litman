@@ -32,6 +32,11 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Changed
 
+- **Relations in the web UI's paper panel read as a tidy list.** Each kind
+  (related, extends, …) has its own line with one paper per line below it, so
+  a long id no longer wraps into a ragged block: it ends in "…" instead, and
+  hovering shows it in full. A kind with more than five papers shows the first
+  five and a **+ N more** to unfold the rest.
 - **Your agent runs what you ask for, and writes only when you ask.** Ask it
   to add a paper, tag one or link it to a project and it runs the command
   without asking again; ask for something the skills have no step for —
