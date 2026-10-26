@@ -55,6 +55,11 @@ own entry. Read those before you upgrade, whatever the number says.
   ("see Appendix D", as NeurIPS papers write it) got no window unless you
   added `--force`. Exit code 13 is gone.
 
+- **Dialogs in the web UI keep their explanation behind a ?.** The agent,
+  Projects, Vaults and Manage topics / methods / data windows no longer open
+  with a paragraph of explanation. Hover the circled ? beside the title to read
+  what the window is for.
+
 ### Fixed
 
 - **Changing a paper's id or title now updates the heading that goes with
