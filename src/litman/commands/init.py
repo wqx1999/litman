@@ -10,6 +10,7 @@ variable to set. ``--no-register`` opts out.
 
 from __future__ import annotations
 
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,21 @@ def apply_init(
 def _stdin_isatty() -> bool:
     """Interactivity probe (seam for tests; litw-safe — stdin is None there)."""
     return is_interactive(sys.stdin)
+
+
+def _platform() -> str:
+    # Read at call time, so a test fakes the platform here instead of
+    # patching ``sys.platform`` (the whole interpreter's).
+    return sys.platform
+
+
+def _shell_path(path: Path) -> str:
+    """``path`` the way it must be typed into the user's shell: double-quoted
+    on Windows (PowerShell and cmd both take that), shell-quoted elsewhere —
+    a parent folder with a space must not split the command."""
+    if _platform() == "win32":
+        return f'"{path}"'
+    return shlex.quote(str(path))
 
 
 @click.command("init")
@@ -175,14 +191,19 @@ def init_cmd(
             "[yellow]Not registered[/] (--no-register)."
         )
         console.print(Panel.fit(body, title="lit init", border_style="green"))
-        shown = escape(str(vault))
+        shown = escape(_shell_path(vault))
+        env_line = (
+            f"$env:LIT_LIBRARY = {shown}"
+            if _platform() == "win32"
+            else f"export LIT_LIBRARY={shown}"
+        )
         print_unwrapped(
             console,
             [
                 *path_lines([("Vault:", vault)]),
                 "",
                 "Point lit at it with one of:",
-                f"  [dim]•[/] export LIT_LIBRARY={shown}",
+                f"  [dim]•[/] {env_line}",
                 f"  [dim]•[/] lit <cmd> --library {shown}",
                 f"  [dim]•[/] lit vault add <name> {shown}",
                 "",

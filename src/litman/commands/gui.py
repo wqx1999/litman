@@ -1394,6 +1394,32 @@ def _write_shortcut_darwin(target: Path, lit: str) -> None:
         os.utime(target)
 
 
+
+def _platform() -> str:
+    # Read at call time, so a test fakes the platform here instead of
+    # patching ``sys.platform`` (the whole interpreter's).
+    return sys.platform
+
+
+# Set by sshd in a login session and inherited by everything started from it.
+_SSH_ENV_VARS = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")
+
+
+def _wants_ssh_tunnel_hint() -> bool:
+    """Should startup print the ``ssh -L`` line?
+
+    Always on Linux — the servers and HPC nodes litman runs on remotely —
+    because a remote shell there need not carry the SSH variables (a
+    JupyterHub / Open OnDemand terminal, a tmux pane from a local session),
+    and a missing hint strands a remote user while a spare one costs a line.
+    On Windows and macOS only inside an SSH session: there the server is
+    almost always on the machine in front of the user.
+    """
+    if _platform() not in ("win32", "darwin"):
+        return True
+    return any(os.environ.get(var) for var in _SSH_ENV_VARS)
+
+
 @click.command("gui")
 @click.option(
     "--port",
@@ -1544,10 +1570,11 @@ def gui_cmd(
             f"[green]litman webUI[/] on [bold]{url}[/]\n"
             "[dim]No vault yet — open the URL to create your library.[/]"
         )
-    console.print(
-        "[dim]SSH tunnel (run on your local machine):[/]\n"
-        f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"
-    )
+    if _wants_ssh_tunnel_hint():
+        console.print(
+            "[dim]SSH tunnel (run on your local machine):[/]\n"
+            f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"
+        )
 
     # Keep the app reference: the window watcher reads the presence tracker
     # off app.state (created unconditionally by create_app).

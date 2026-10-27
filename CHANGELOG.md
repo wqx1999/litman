@@ -96,6 +96,14 @@ own entry. Read those before you upgrade, whatever the number says.
   ones; on Windows, the `(deleted)` tag added after a paper folder was deleted
   by hand did the reverse. Each file now keeps its own.
 
+- **`lit init --no-register` suggests commands you can paste.** The vault path
+  in its three suggestions is now quoted, so a parent folder with a space no
+  longer splits the command, and on Windows the environment-variable line is
+  PowerShell's `$env:LIT_LIBRARY = "…"` instead of `export`.
+
+- **`lit gui` on your own Windows or Mac no longer prints the SSH tunnel
+  line.** It still shows inside an SSH session there, and always on Linux.
+
 ## 1.3.8 — 2026-10-24
 
 ### Added
