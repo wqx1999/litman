@@ -2,11 +2,12 @@
 tasks).
 
 The catalog is the code-level source of truth for which agents litman can
-launch/onboard. These tests pin the five-agent shape and order (claude first,
-the rest alphabetical), that every catalog entry is supported (claude + agy +
-codex + cursor + opencode), generic (per-agent-branch-free) detection, the
-skill adapters' delegation to ``core.skill`` (claude → the Claude Code dir;
-cursor, codex, and opencode → the shared open-standard dir; agy → the
+launch/onboard. These tests pin the six-agent shape and order (the two main
+agents first — claude, then zcode — the rest alphabetical), that every catalog
+entry is supported, generic (per-agent-branch-free) detection — by ``kind``:
+a terminal CLI is probed on PATH, a desktop app through ``core.app_launch`` —
+the skill adapters' delegation to ``core.skill`` (claude → the Claude Code dir;
+zcode, cursor, codex, and opencode → the shared open-standard dir; agy → the
 Antigravity CLI app-data dir), the per-agent skills-dir resolvers, and the
 loud failure of the dormant ``supported=False`` placeholder machinery (no
 live catalog agent uses it today, so it is covered directly via
@@ -35,19 +36,21 @@ from litman.core.agents import (
 )
 
 
-def test_catalog_has_exactly_five_named_agents() -> None:
-    """Claude first (the fallback default tops the picker), the rest
-    alphabetical — the GUI picker renders catalog order verbatim."""
+def test_catalog_has_exactly_six_named_agents() -> None:
+    """The two main agents first — Claude Code (the fallback default tops the
+    picker), then ZCode — the rest alphabetical (ADR-028). The GUI picker
+    renders catalog order verbatim."""
     names = [spec.name for spec in AGENTS]
-    assert names == ["claude", "agy", "codex", "cursor", "opencode"]
-    assert len(set(names)) == 5
+    assert names == ["claude", "zcode", "agy", "codex", "cursor", "opencode"]
+    assert len(set(names)) == 6
 
 
-def test_supported_set_is_the_five_standard_agents() -> None:
+def test_supported_set_is_the_six_agents() -> None:
     supported = {spec.name for spec in AGENTS if spec.supported}
-    assert supported == {"claude", "agy", "codex", "cursor", "opencode"}
+    assert supported == {"claude", "zcode", "agy", "codex", "cursor", "opencode"}
     assert [s.name for s in supported_agents()] == [
         "claude",
+        "zcode",
         "agy",
         "codex",
         "cursor",
@@ -69,6 +72,36 @@ def test_beginner_facing_brands_identify_the_major_agent_families() -> None:
     assert brands["claude"] == "Claude · Anthropic"
     assert brands["agy"] == "Google"
     assert brands["codex"] == "ChatGPT · OpenAI"
+    assert brands["zcode"] == "GLM · Z.ai"
+
+
+def test_zcode_is_a_desktop_app_row() -> None:
+    zcode = get_agent("zcode")
+    assert zcode.kind == "app"
+    assert zcode.install_url == "https://zcode.z.ai"
+    assert zcode.app_args == ("--open-workspace", "{vault}")
+    assert zcode.open_url == "zcode://workspace/open?path={vault}"
+    assert zcode.mac_bundle == "ZCode.app"
+    assert "Autonomous mode" in zcode.permission_hint
+
+
+def test_only_app_rows_carry_app_fields_and_no_launch_command() -> None:
+    """An app opens through its link scheme, never a PATH command: ZCode
+    ships its own `zcode` CLI, so a launch / detect_bin of "zcode" would exec
+    that instead of opening the app."""
+    for spec in AGENTS:
+        if spec.kind == "app":
+            assert spec.url_scheme and spec.open_url
+            assert spec.launch == ""
+            assert spec.detect_bin == ""
+        else:
+            assert spec.kind == "terminal"
+            assert spec.launch
+            assert spec.url_scheme is None
+            assert spec.open_url is None
+            assert spec.app_args == ()
+            assert spec.mac_bundle is None
+            assert spec.permission_hint is None
 
 
 def test_antigravity_install_url_targets_cli_download_section() -> None:
@@ -111,13 +144,32 @@ def test_detect_is_data_driven_no_per_agent_branch(
     assert detect(get_agent("codex")) is False
     assert detect(get_agent("cursor")) is False
 
+    terminal = [spec for spec in AGENTS if spec.kind == "terminal"]
     monkeypatch.setattr(agents.shutil, "which", lambda name: f"/usr/bin/{name}")
-    for spec in AGENTS:
+    for spec in terminal:
         assert detect(spec) is True
 
     monkeypatch.setattr(agents.shutil, "which", lambda name: None)
-    for spec in AGENTS:
+    for spec in terminal:
         assert detect(spec) is False
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_detect_app_asks_app_launch_never_path(
+    monkeypatch: pytest.MonkeyPatch, installed: bool
+) -> None:
+    probed: list[str] = []
+    monkeypatch.setattr(agents.shutil, "which", lambda name: probed.append(name))
+    monkeypatch.setattr(
+        agents.app_launch, "app_installed", lambda spec: installed and spec.kind == "app"
+    )
+    assert detect(get_agent("zcode")) is installed
+    assert probed == []
+
+
+def test_resolve_launch_of_an_app_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agents.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert agents.resolve_launch(get_agent("zcode")) is None
 
 
 def test_detect_uses_detect_bin_first_token_fallback(
@@ -504,6 +556,7 @@ def test_agent_skills_parent_dir_routes_by_catalog(
     )
     assert agent_skills_parent_dir("claude") == claude_dir
     assert agent_skills_parent_dir("cursor") == standard
+    assert agent_skills_parent_dir("zcode") == standard
     assert agent_skills_parent_dir("codex") == standard
     assert agent_skills_parent_dir("opencode") == standard
     assert agent_skills_parent_dir("agy") == antigravity
@@ -520,10 +573,10 @@ def test_agent_skills_parent_dir_rejects_non_supported(name: str) -> None:
 def test_skills_parent_dirs_three_dirs_catalog_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Still exactly three distinct dirs, catalog order (claude, agy, then
-    the shared open-standard dir). First-occurrence dedupe collapses the
-    three standard-dir agents — codex is now the first of them in catalog
-    order, cursor and opencode reuse the same path."""
+    """Still exactly three distinct dirs, first-occurrence catalog order:
+    claude's, then the shared open-standard dir (zcode is the first of the
+    four agents reading it; codex, cursor and opencode reuse the same path),
+    then agy's."""
     claude_dir = tmp_path / "claude-skills"
     standard = tmp_path / "std-skills"
     antigravity = tmp_path / "agy-skills"
@@ -537,7 +590,7 @@ def test_skills_parent_dirs_three_dirs_catalog_order(
         "litman.core.skill.antigravity_skills_parent_dir",
         lambda: antigravity,
     )
-    assert skills_parent_dirs() == [claude_dir, antigravity, standard]
+    assert skills_parent_dirs() == [claude_dir, standard, antigravity]
 
 
 @pytest.mark.no_skills_isolation

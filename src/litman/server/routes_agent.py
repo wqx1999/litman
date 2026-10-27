@@ -4,7 +4,8 @@ building on task-agent-launch; ADR-020 / ADR-021).
 Endpoints:
 
 * ``GET  /api/agents``            — supported launchable agents + resolved default
-* ``POST /api/agent/launch``      — open the named agent in a terminal at the vault
+* ``POST /api/agent/launch``      — open the named agent in a terminal at the vault;
+  a desktop-app agent opens at the vault directly
 * ``GET  /api/agent/status``      — the red-dot / setup-panel data source; the
   server computes ``needs_setup`` (single source of truth for the state machine)
 * ``POST /api/agent/skill/install`` — install / refresh the named agent's skill
@@ -19,7 +20,9 @@ RED LINE (ADR-020): every endpoint reads an agent NAME only. The launch
 command, the skill install target, and the set of installable agents come
 exclusively from the server-side catalog; any ``command`` / ``target`` /
 ``path`` field in a request body is ignored and never executed — the
-localhost-bound server must not become a remote-code-execution surface.
+localhost-bound server must not become a remote-code-execution surface. A
+desktop app's exe comes from the registry only (:mod:`litman.core.app_launch`)
+and never appears in a response.
 
 RED LINE: the per-agent skills paths (the Claude Code dir, the open-standard
 dir, Antigravity CLI's app-data dir) stay inside the catalog adapters — they
@@ -40,7 +43,7 @@ import sys
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from litman.core import agent_prefs, agents, terminal
+from litman.core import agent_prefs, agents, app_launch, terminal
 
 router = APIRouter(prefix="/api")
 
@@ -48,6 +51,21 @@ router = APIRouter(prefix="/api")
 def _resolved_default() -> str:
     """The machine-level default agent, falling back to the catalog default."""
     return agent_prefs.load_default_agent() or agents.default_agent_name()
+
+
+def _copy_fallback(
+    agent_name: str, default: str, permission_warning: str | None
+) -> dict[str, object]:
+    """Hand back the `lit agent` wrapper (correct from any cwd), not the raw
+    command (which is only correct inside the vault)."""
+    lit_line = "lit agent" if agent_name == default else f"lit agent {agent_name}"
+    return {
+        "ok": True,
+        "mode": "copy",
+        "agent": agent_name,
+        "command": lit_line,
+        "permission_warning": permission_warning,
+    }
 
 
 async def _body_agent_name(request: Request) -> str | None:
@@ -83,7 +101,8 @@ def get_agents() -> dict[str, object]:
 
 @router.post("/agent/launch")
 async def launch_agent(request: Request) -> dict[str, object]:
-    """Launch a catalog agent in a terminal window at the vault.
+    """Launch a catalog agent in a terminal window at the vault, or open a
+    desktop-app agent at the vault (``mode: "app"``).
 
     Body JSON (optional): ``{"agent": "<name>"}`` — an absent body / key
     launches the resolved default. ONLY the name is read; the command comes
@@ -109,18 +128,36 @@ async def launch_agent(request: Request) -> dict[str, object]:
             detail=f"Agent '{agent_name}' is not available yet.",
         )
     if not agents.detect(spec):
-        raise HTTPException(
-            status_code=409,
-            detail=(
+        detail = (
+            app_launch.not_installed_message(spec)
+            if spec.kind == "app"
+            else (
                 f"Agent '{agent_name}' is not installed or is not available "
                 "on PATH. Install it, then recheck."
-            ),
+            )
         )
+        raise HTTPException(status_code=409, detail=detail)
 
     # Skills may already be present through another agent's shared directory,
     # while permissions are always agent-native. Heal this agent's own rule on
     # launch so "Ready" plus "Set default" cannot leave it prompting forever.
     permission = spec.install_lit_permission()
+
+    if spec.kind == "app":
+        # Module-attribute access, as for the spawn below.
+        try:
+            app_launch.open_app(spec, request.app.state.vault)
+        except app_launch.AppNoDisplay:
+            return _copy_fallback(agent_name, default, permission["warning"])
+        except app_launch.AppNotFound as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "mode": "app",
+            "agent": agent_name,
+            "command": "",
+            "permission_warning": permission["warning"],
+        }
 
     # A CLI may have been installed while this long-running GUI server was
     # open, or live under a per-user bin dir the desktop session's PATH omits.
@@ -149,16 +186,7 @@ async def launch_agent(request: Request) -> dict[str, object]:
             "permission_warning": permission["warning"],
         }
 
-    # Copy fallback: hand back the `lit agent` wrapper (correct from any cwd),
-    # not the raw command (which is only correct inside the vault).
-    lit_line = "lit agent" if agent_name == default else f"lit agent {agent_name}"
-    return {
-        "ok": True,
-        "mode": "copy",
-        "agent": agent_name,
-        "command": lit_line,
-        "permission_warning": permission["warning"],
-    }
+    return _copy_fallback(agent_name, default, permission["warning"])
 
 
 @router.get("/agent/status")
@@ -184,11 +212,12 @@ def agent_status(response: Response) -> dict[str, object]:
     (== state != "absent") stays alongside for the same reason.
 
     ``Cache-Control: no-store`` is mandatory: ``detected`` (is the agent binary
-    on PATH?) and ``skill_state`` are live machine state that flips the
-    moment the user installs the agent CLI or its skill in a terminal. Without
-    it the browser serves a cached "not installed" body, so even a plain reload
-    keeps showing the red dot until a hard refresh (same reason paper.pdf sets
-    it — the resource is mutable). Localhost, so caching buys nothing anyway.
+    on PATH? is the desktop app installed?) and ``skill_state`` are live
+    machine state that flips the moment the user installs the agent or its
+    skill. Without it the browser serves a cached "not installed" body, so
+    even a plain reload keeps showing the red dot until a hard refresh (same
+    reason paper.pdf sets it — the resource is mutable). Localhost, so caching
+    buys nothing anyway.
     """
     response.headers["Cache-Control"] = "no-store"
     entries = [
@@ -202,6 +231,8 @@ def agent_status(response: Response) -> dict[str, object]:
             # Per-agent skill verdict; placeholders are never probed (their
             # adapters loud-fail by design).
             "skill_state": spec.skill_state() if spec.supported else None,
+            "kind": spec.kind,
+            "permission_hint": spec.permission_hint,
         }
         for spec in agents.AGENTS
     ]
@@ -295,13 +326,16 @@ async def set_default_agent(request: Request) -> dict[str, object]:
         )
     spec = agents.get_agent(name)
     if spec is not None and spec.supported and not agents.detect(spec):
-        raise HTTPException(
-            status_code=409,
-            detail=(
+        detail = (
+            f"Agent '{name}' cannot be the default: "
+            f"{app_launch.not_installed_message(spec)}"
+            if spec.kind == "app"
+            else (
                 f"Agent '{name}' cannot be the default because it is not "
                 "installed or is not available on PATH."
-            ),
+            )
         )
+        raise HTTPException(status_code=409, detail=detail)
     try:
         agent_prefs.save_default_agent(name)
     except ValueError as exc:

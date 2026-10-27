@@ -10,16 +10,22 @@ consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
-litman supports five agents today. Two have a skills directory of their
+litman supports six agents today. Two have a skills directory of their
 own: Claude Code (``~/.claude/skills``) and Antigravity CLI (``agy``, whose
 only user-installable skills location is its own app-data directory
 ``~/.gemini/antigravity-cli/skills`` — it does not read the open-standard
-dir). The other three — Cursor, Codex, and OpenCode — all discover skills
-from the Agent Skills open-standard directory ``~/.agents/skills`` and so
-share one adapter shape (Cursor additionally does a compatibility read of
+dir). The other four — ZCode, Cursor, Codex, and OpenCode — all discover
+skills from the Agent Skills open-standard directory ``~/.agents/skills`` and
+so share one adapter shape (Cursor additionally does a compatibility read of
 the Claude dir).
 
-All five are ``supported=True`` — the catalog carries no greyed placeholder
+Five are terminal CLIs (``kind="terminal"``): ``launch`` is a command run in
+a terminal at the vault. ZCode is a desktop app (``kind="app"``): litman opens
+the app itself at the vault through :mod:`litman.core.app_launch`, with no
+terminal in between. Consumers branch on ``kind``, the same data-driven way
+they branch on ``supported``.
+
+All six are ``supported=True`` — the catalog carries no greyed placeholder
 today. The machinery for one nonetheless stays as dormant capability: the
 ``supported`` flag on :class:`AgentSpec`, the :func:`_unsupported` placeholder
 adapter, and every consumer's ``supported`` gate. A future roadmap agent
@@ -43,9 +49,9 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from litman.core import agent_permissions, skill
+from litman.core import agent_permissions, app_launch, skill
 from litman.core.skill import aggregate_skill_state, install_all_skills
 
 # Fallback default when the user has not chosen one (no per-vault override
@@ -79,6 +85,9 @@ class AgentSpec:
     adapter callables encapsulate everything agent-specific about skill
     detection, installation, and ``lit`` command approval so callers stay
     agent-agnostic.
+
+    ``launch`` and ``detect_bin`` are unused for ``kind="app"`` (left ``""``);
+    such a row is found and opened through the fields after ``kind``.
     """
 
     name: str
@@ -96,6 +105,22 @@ class AgentSpec:
     # Catalog-internal: consumers go through agent_skills_parent_dir() /
     # skills_parent_dirs(), never read the path into an endpoint contract.
     skills_dir: Callable[[], Path] | None = None
+    # How it starts: a CLI run in a terminal, or a desktop app opened at the
+    # vault (core.app_launch).
+    kind: Literal["terminal", "app"] = "terminal"
+    # The app's link scheme. Windows finds the exe from the scheme's registry
+    # open command; Linux looks the scheme's handler up in the XDG
+    # mimeapps.list / mimeinfo.cache files.
+    url_scheme: str | None = None
+    # Windows: the exe's arguments; "{vault}" becomes the vault path.
+    app_args: tuple[str, ...] = ()
+    # The link that opens the vault; "{vault}" becomes the percent-encoded path.
+    open_url: str | None = None
+    # macOS: the bundle's name under /Applications or ~/Applications.
+    mac_bundle: str | None = None
+    # For an agent litman writes no approval rule for: how the user lets lit
+    # run in the app. Shown when its skills are installed, never on launch.
+    permission_hint: str | None = None
 
 
 # Every supported agent's skill adapter reuses core.skill verbatim:
@@ -112,10 +137,13 @@ class AgentSpec:
 # Codex and OpenCode share the open-standard ``~/.agents/skills`` directory
 # with Cursor (the litman-bench harness measured both activating skills from
 # it and driving litman through them), so their adapters are copied verbatim
-# from Cursor's — no per-vendor resolver or generated config file.
+# from Cursor's — no per-vendor resolver or generated config file. ZCode
+# reads the same directory (checked on Windows: skills installed there for
+# Codex showed up in ZCode), so its adapters are the same too.
 #
-# Order: claude first (the fallback default tops the picker), the rest
-# alphabetical. The GUI picker and `skills_parent_dirs()` follow this order.
+# Order: the two main agents first — claude (the fallback default tops the
+# picker), then zcode — the rest alphabetical (ADR-028). The GUI picker and
+# `skills_parent_dirs()` follow this order.
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="claude",
@@ -131,6 +159,36 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.install_claude_lit_permission()
         ),
         skills_dir=lambda: skill.default_skills_parent_dir(),
+    ),
+    AgentSpec(
+        name="zcode",
+        display="ZCode",
+        brand="GLM · Z.ai",
+        # A desktop app: never a PATH command. ZCode also ships a CLI named
+        # `zcode`, which `lit agent` would otherwise exec instead.
+        launch="",
+        supported=True,
+        install_url="https://zcode.z.ai",
+        detect_bin="",
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.standard_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        install_lit_permission=(
+            lambda: agent_permissions.no_lit_permission("zcode")
+        ),
+        skills_dir=lambda: skill.standard_skills_parent_dir(),
+        kind="app",
+        url_scheme="zcode",
+        app_args=("--open-workspace", "{vault}"),
+        open_url="zcode://workspace/open?path={vault}",
+        mac_bundle="ZCode.app",
+        permission_hint=(
+            "In ZCode, switch to Autonomous mode so lit runs without asking "
+            "each time."
+        ),
     ),
     AgentSpec(
         name="agy",
@@ -349,7 +407,12 @@ def refresh_path() -> None:
 
 
 def resolve_launch(spec: AgentSpec) -> str | None:
-    """Resolve ``spec``'s launch executable against the live environment."""
+    """Resolve ``spec``'s launch executable against the live environment.
+
+    None for a desktop app, which has no launch command.
+    """
+    if spec.kind == "app":
+        return None
     refresh_path()
     argv = shlex.split(spec.launch)
     return shutil.which(argv[0]) if argv else None
@@ -385,7 +448,7 @@ def skills_parent_dirs() -> list[Path]:
     """Distinct skills parent dirs across supported agents, stable order.
 
     Catalog order, first occurrence wins — today that is the Claude Code
-    dir, Antigravity CLI's app-data dir, then the open-standard dir.
+    dir, the open-standard dir, then Antigravity CLI's app-data dir.
     ``lit uninstall`` sweeps this full list (not just the default agent's
     dir) so switching defaults never orphans litman files in a previously
     used agent's directory.
@@ -401,11 +464,14 @@ def skills_parent_dirs() -> list[Path]:
 
 
 def detect(spec: AgentSpec) -> bool:
-    """Is ``spec``'s command present on PATH?
+    """Is ``spec``'s command present on PATH (a desktop app: installed)?
 
-    Generic, data-driven — no per-agent branching. Probes ``detect_bin`` if
-    set, otherwise the first token of the launch command.
+    Generic, data-driven — no per-agent branching. A ``kind="app"`` row asks
+    :func:`litman.core.app_launch.app_installed`; any other probes
+    ``detect_bin`` if set, otherwise the first token of the launch command.
     """
+    if spec.kind == "app":
+        return app_launch.app_installed(spec)
     refresh_path()
     probe = spec.detect_bin or shlex.split(spec.launch)[0]
     return shutil.which(probe) is not None

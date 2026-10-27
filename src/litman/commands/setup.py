@@ -234,7 +234,12 @@ def _step_skill(
                     f"(lit install-skill --force re-copies them "
                     f"regardless.)[/]"
                 )
-                if permission["mode"] != "unchanged":
+                if permission["mode"] == "manual":
+                    # No rule litman can write. install-skill prints this
+                    # hint on the other branches; this one skips it.
+                    if spec.permission_hint:
+                        console.print(f"[dim]{spec.permission_hint}[/]")
+                elif permission["mode"] != "unchanged":
                     console.print(
                         f"[green]lit command approval "
                         f"{permission['mode']}:[/] {permission['rule']}"

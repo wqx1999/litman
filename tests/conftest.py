@@ -342,3 +342,18 @@ def _isolate_skills_dir(
             f"litman.core.agent_permissions.{function_name}",
             lambda: permission_result.copy(),
         )
+
+
+@pytest.fixture(autouse=True)
+def _no_desktop_apps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every desktop-app probe reports "not installed" unless a test says otherwise.
+
+    ``agents.detect`` of a ``kind="app"`` row reads the machine: the Windows
+    registry, the macOS app folders, or the XDG mime files on Linux. Left
+    real, an agent-status test would depend on whether the box has the app
+    installed. Tests that need an installed app re-patch these seams;
+    ``test_app_launch`` keeps the real ones it tests.
+    """
+    monkeypatch.setattr("litman.core.app_launch._read_scheme_command", lambda _s: None)
+    monkeypatch.setattr("litman.core.app_launch._app_dirs", lambda: [])
+    monkeypatch.setattr("litman.core.app_launch._xdg_default_handler", lambda _s: "")

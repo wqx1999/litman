@@ -570,6 +570,31 @@ def test_cli_agent_install_also_adds_only_that_agents_lit_approval(
     assert not (home / ".codex" / "rules" / "litman.rules").exists()
 
 
+@pytest.mark.no_skills_isolation
+def test_cli_install_skill_agent_zcode_tells_how_to_allow_lit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ZCode reads the open-standard dir; litman writes it no approval rule,
+    so instead of an approval line the output says how to allow lit in the
+    app — once."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "zcode"])
+
+    assert result.exit_code == 0, result.output
+    for name in list_bundled_skills():
+        assert (home / ".agents" / "skills" / name / "SKILL.md").is_file()
+    assert "lit command approval" not in result.output
+    assert result.output.count("Autonomous") == 1
+    written = sorted(
+        str(p.relative_to(home)) for p in home.rglob("*") if p.is_file()
+    )
+    assert all(Path(p).parts[:2] == (".agents", "skills") for p in written), written
+
+
 def test_cli_install_skill_agent_agy_writes_antigravity_dir() -> None:
     """--agent agy resolves the Antigravity CLI app-data dir through the
     catalog — NOT the open-standard dir, which agy does not read."""
@@ -607,6 +632,7 @@ def test_cli_install_skill_agent_unknown_name_lists_supported() -> None:
     assert result.exit_code != 0
     # click.Choice error names the valid agents (the full supported set).
     assert "claude" in result.output
+    assert "zcode" in result.output
     assert "agy" in result.output
     assert "codex" in result.output
     assert "cursor" in result.output
