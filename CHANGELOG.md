@@ -118,7 +118,8 @@ own entry. Read those before you upgrade, whatever the number says.
   list at the top showed the active one, picking that one did nothing, and the
   trash header named it too. The list now shows the open library — one opened
   by path that isn't in your list appears by its folder name, in amber — and
-  picking any vault in the list switches to it.
+  picking any vault in the list switches to it. `(active)` now appears only
+  when the active library isn't the one open.
 
 ## 1.3.8 — 2026-10-24
 

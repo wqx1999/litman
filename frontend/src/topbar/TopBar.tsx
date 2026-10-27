@@ -598,8 +598,10 @@ export default function TopBar({
   // The selector shows the SERVED vault, which need not be the registry's
   // active one: `lit gui --vault` serves another registered vault, and `lit gui
   // --library` / $LIT_LIBRARY can serve one that is not registered at all —
-  // that one gets an extra, unpickable first option named after its folder,
-  // set apart by colour (and the tooltip, for whoever can't tell the colour).
+  // that one gets an extra first option named after its folder, set apart by
+  // colour in the closed select and the open list alike (and the tooltip, for
+  // whoever can't tell the colour). Picking it is a no-op, like re-picking any
+  // current choice: its value is '' and switchVault ignores ''.
   const served = servedVault(vaults)
   const looseServed = served !== null && !served.registered
   const switchTargets = vaults?.vaults.filter((v) => !v.served).length ?? 0
@@ -752,7 +754,7 @@ export default function TopBar({
         } shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:bg-stone-100 disabled:text-stone-500`}
       >
         {looseServed && (
-          <option value="" disabled>
+          <option value="" className="text-amber-700 dark:text-amber-400">
             {served.name}
           </option>
         )}
@@ -761,9 +763,13 @@ export default function TopBar({
             // A missing vault stays listed and stays selectable: hiding it would
             // be one more thing happening without the user being told. Picking it
             // fails loudly (the server refuses to switch to a path that is gone).
+            // "(active)" only where it tells something: normally the served
+            // vault IS the active one (a GUI switch moves both), so the marker
+            // would just repeat the selection. It shows when `lit gui
+            // --library` / `--vault` / $LIT_LIBRARY left the active one behind.
             <option key={v.name} value={v.name} className="text-stone-700">
               {v.name}
-              {v.active ? ' (active)' : ''}
+              {v.active && !v.served ? ' (active)' : ''}
               {v.exists ? '' : ' — missing'}
             </option>
           ))
