@@ -150,7 +150,12 @@ export interface ProjectEntry {
 export interface VaultEntry {
   name: string
   path: string
+  /** The registry's active vault — the one `lit` uses in a terminal. */
   active: boolean
+  /** The vault this server is bound to. Usually the active one, but `lit gui
+   * --vault` / `--library` / $LIT_LIBRARY can serve another (or an unregistered
+   * one, when no entry is served). Compared server-side on resolved paths. */
+  served: boolean
   /** Whether `path` still holds a library (its lit-config.yaml), re-probed by
    * the server on every `GET /api/vaults`. A vault whose folder was moved,
    * deleted, or replaced by an unrelated folder comes back false, and switching

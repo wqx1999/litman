@@ -10,6 +10,7 @@ import type {
 } from '../types'
 import type { Candidate } from '../search'
 import { projectHealth } from '../projects'
+import { servedVault } from '../vaults'
 import {
   ApiError,
   createProject,
@@ -594,6 +595,15 @@ export default function TopBar({
     setRevealed(false)
   }
 
+  // The selector shows the SERVED vault, which need not be the registry's
+  // active one: `lit gui --vault` serves another registered vault, and `lit gui
+  // --library` / $LIT_LIBRARY can serve one that is not registered at all —
+  // that one gets an extra, unpickable first option named after its folder,
+  // set apart by colour (and the tooltip, for whoever can't tell the colour).
+  const served = servedVault(vaults)
+  const looseServed = served !== null && !served.registered
+  const switchTargets = vaults?.vaults.filter((v) => !v.served).length ?? 0
+
   return (
     <>
       {focusMode && (
@@ -725,32 +735,41 @@ export default function TopBar({
       {!trashMode && (
       <>
       <select
-        value={vaults?.active ?? ''}
+        value={served?.registered ? served.name : ''}
         onChange={(e) => onSwitchVault(e.target.value)}
-        disabled={switching || !vaults?.active || vaults.vaults.length < 2}
+        disabled={switching || switchTargets === 0}
         title={
-          !vaults?.active
-            ? 'No active vault'
-            : vaults.vaults.length < 2
+          looseServed
+            ? 'Opened by path, not in your vault list'
+            : switchTargets > 0
+            ? 'Switch the active vault (applies globally)'
+            : vaults?.vaults.length
               ? 'Only one vault registered'
-              : 'Switch the active vault (applies globally)'
+              : 'No vault registered'
         }
-        className="rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-700 shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:bg-stone-100 disabled:text-stone-500"
+        className={`rounded-md border border-stone-300 bg-white px-2 py-1 text-sm ${
+          looseServed ? 'text-amber-700 dark:text-amber-400' : 'text-stone-700'
+        } shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:bg-stone-100 disabled:text-stone-500`}
       >
-        {vaults?.active ? (
+        {looseServed && (
+          <option value="" disabled>
+            {served.name}
+          </option>
+        )}
+        {vaults?.vaults.length ? (
           vaults.vaults.map((v) => (
             // A missing vault stays listed and stays selectable: hiding it would
             // be one more thing happening without the user being told. Picking it
             // fails loudly (the server refuses to switch to a path that is gone).
-            <option key={v.name} value={v.name}>
+            <option key={v.name} value={v.name} className="text-stone-700">
               {v.name}
               {v.active ? ' (active)' : ''}
               {v.exists ? '' : ' — missing'}
             </option>
           ))
-        ) : (
+        ) : !served ? (
           <option value="">no vault</option>
-        )}
+        ) : null}
       </select>
 
       {/* Always enabled — NOT gated by the <select>'s <2-vault disable, so a
@@ -1559,7 +1578,7 @@ function NewProjectDialog({
  * Mirrors ProjectManager's portaled, auto-theming modal shell (no `dark:`
  * variants — the inverted `stone` ramp + `.dark .bg-white` handle dark mode).
  *
- * The served vault's row (`v.active`) has Unregister disabled with a "switch
+ * The served vault's row (`v.served`) has Unregister disabled with a "switch
  * first" tooltip — a front-of-house mirror of the server's 409 guard (a GUI-only
  * user who unregistered the served vault and closed the browser would be locked
  * out, since `lit gui` needs an active vault to boot). */
@@ -1673,7 +1692,7 @@ function VaultManager({
                 {!v.exists && (
                   // A moved vault's only way home: point the registry at its new
                   // folder. Rendered on missing rows only — including the served
-                  // one (v.active), whose Unregister stays disabled, so Locate is
+                  // one (v.served), whose Unregister stays disabled, so Locate is
                   // that user's sole escape from the 410.
                   <button
                     type="button"
@@ -1690,11 +1709,11 @@ function VaultManager({
                   type="button"
                   aria-label={`Unregister vault ${v.name}`}
                   title={
-                    v.active
+                    v.served
                       ? 'Switch to another vault first'
                       : `Unregister vault “${v.name}”`
                   }
-                  disabled={blocked || v.active}
+                  disabled={blocked || v.served}
                   onClick={() => setPendingUnregister(v.name)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-300"
                 >

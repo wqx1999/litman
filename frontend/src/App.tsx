@@ -76,6 +76,7 @@ import { emptyFilters } from './nav/BrowsePanel'
 import TabArea from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
+import { servedVault } from './vaults'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
@@ -1852,7 +1853,9 @@ export default function App() {
 
   const switchVault = useCallback(
     (name: string) => {
-      if (!name || name === vaults?.active) return
+      // Picking the vault already served is the no-op — not the active one,
+      // which `lit gui --library` / `--vault` may have left behind.
+      if (!name || vaults?.vaults.find((v) => v.name === name)?.served) return
       setPendingVault(name)
     },
     [vaults],
@@ -2497,7 +2500,7 @@ export default function App() {
           <TrashView
             entries={trashEntries}
             loading={trashLoading}
-            vaultName={vaults?.active ?? ''}
+            vaultName={servedVault(vaults)?.name ?? ''}
             onExit={exitTrash}
             onRestore={restoreFromTrash}
             restoringEntry={restoringEntry}

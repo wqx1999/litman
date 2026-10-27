@@ -113,6 +113,13 @@ own entry. Read those before you upgrade, whatever the number says.
   path and clicking a code clone's name copied the matching folder in the
   active library instead.
 
+- **The web UI names the library it has open.** With `lit gui --library`,
+  `--vault` or `$LIT_LIBRARY` on a library other than the active one, the vault
+  list at the top showed the active one, picking that one did nothing, and the
+  trash header named it too. The list now shows the open library — one opened
+  by path that isn't in your list appears by its folder name, in amber — and
+  picking any vault in the list switches to it.
+
 ## 1.3.8 — 2026-10-24
 
 ### Added
