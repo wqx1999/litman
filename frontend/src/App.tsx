@@ -1821,12 +1821,12 @@ export default function App() {
 
   const projectNames = useMemo(() => projects.map((p) => p.name), [projects])
 
-  // Active vault's filesystem path (server-side), used by the Cockpit to build
-  // the copy-path action. Null until /api/vaults resolves or if none is active.
-  const vaultPath = useMemo(
-    () => vaults?.vaults.find((v) => v.active)?.path ?? null,
-    [vaults],
-  )
+  // The served vault's filesystem path (server-side), used by the Cockpit to
+  // build the copy-path actions. Not the registry's active vault: `lit gui
+  // --library` / `--vault` serves another one, and a path built from the active
+  // vault then points into the wrong library. Null until /api/vaults resolves
+  // or while no vault is served.
+  const vaultPath = vaults?.served ?? null
 
   // Enter/exit focus mode: stash the current panel collapse, hide both panels,
   // restore on exit.

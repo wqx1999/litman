@@ -108,6 +108,11 @@ own entry. Read those before you upgrade, whatever the number says.
 - **`lit gui` on your own Windows or Mac no longer prints the SSH tunnel
   line.** It still shows inside an SSH session there, and always on Linux.
 
+- **Copy path copies a path in the library you have open.** With `lit gui
+  --library` or `--vault` open on a library other than the active one, Copy
+  path and clicking a code clone's name copied the matching folder in the
+  active library instead.
+
 ## 1.3.8 — 2026-10-24
 
 ### Added
