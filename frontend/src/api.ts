@@ -847,11 +847,13 @@ export function fetchAgents(): Promise<AgentsPayload> {
 }
 
 /** The launch endpoint's outcome: `spawned` = a native terminal window opened
- * on the server's machine; `copy` = it couldn't (headless / remote server), and
- * `command` carries the `lit agent …` line for the user's own terminal. */
+ * on the server's machine; `app` = a desktop app opened straight at the vault
+ * (no terminal, `command` empty); `copy` = it couldn't (headless / remote
+ * server), and `command` carries the `lit agent …` line for the user's own
+ * terminal. */
 export interface AgentLaunchResult {
   ok: boolean
-  mode: 'spawned' | 'copy'
+  mode: 'spawned' | 'app' | 'copy'
   agent: string
   command: string
   permission_warning: string | null
@@ -867,13 +869,15 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 
 /** One agent's onboarding view: display name, beginner-facing brand, whether
  * litman supports it today
- * (Claude Code, Antigravity CLI, Codex, Cursor and OpenCode — all supported
- * today), whether its launch command is on PATH, its
+ * (Claude Code, ZCode, Antigravity CLI, Codex, Cursor and OpenCode — all
+ * supported today), whether it is installed (launch command on PATH, or the
+ * desktop app registered), its
  * official install page, and `skill_state` — the server's content-level verdict
  * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
  * unsupported placeholder, which is never probed). Agents sharing a skills
- * location legitimately share a state. Agent-agnostic by contract: no
- * per-agent skill path ever appears here. */
+ * location legitimately share a state. `kind` says how it opens: in a terminal,
+ * or as a desktop `app` at the vault. Agent-agnostic by contract: no per-agent
+ * skill path or app path ever appears here. */
 export interface AgentStatusEntry {
   name: string
   display: string
@@ -882,6 +886,7 @@ export interface AgentStatusEntry {
   detected: boolean
   install_url: string
   skill_state: 'absent' | 'stale' | 'current' | null
+  kind: 'terminal' | 'app'
 }
 
 /** The agent-onboarding status — the single data source for the TopBar red dot

@@ -13,6 +13,10 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Added
 
+- **ZCode is a supported agent.** Pick it in the agent panel or run
+  `lit agent zcode`, and ZCode opens at your library — no terminal in between.
+  Install the skills from the same panel: ZCode now loads both of them. In
+  ZCode, turn on Autonomous mode so `lit` runs without asking each time.
 - **The web UI shows how many papers the list holds.** The count sits at the
   right of the **Show** row above the list and follows everything that narrows
   it: the project, Reading / Read / All, the filters and the search box.

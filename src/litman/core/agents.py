@@ -163,7 +163,7 @@ AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="zcode",
         display="ZCode",
-        brand="GLM · Z.ai",
+        brand="GLM · 智谱",
         # A desktop app: never a PATH command. ZCode also ships a CLI named
         # `zcode`, which `lit agent` would otherwise exec instead.
         launch="",

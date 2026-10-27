@@ -232,7 +232,6 @@ def agent_status(response: Response) -> dict[str, object]:
             # adapters loud-fail by design).
             "skill_state": spec.skill_state() if spec.supported else None,
             "kind": spec.kind,
-            "permission_hint": spec.permission_hint,
         }
         for spec in agents.AGENTS
     ]

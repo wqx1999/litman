@@ -152,10 +152,11 @@ run it reports the result rather than leaving you to check.
 You reach this layer from either interface. `lit agent` starts the agent with
 the vault as its working directory, and the Web UI can install the skills and
 launch the agent for you. Which agent that is comes from a catalog held in the
-package: Claude Code, Antigravity CLI, Codex, Cursor, and OpenCode are the
-supported entries. Skill onboarding also installs a native, narrowly scoped
+package: Claude Code, ZCode, Antigravity CLI, Codex, Cursor, and OpenCode are
+the supported entries. Skill onboarding also installs a native, narrowly scoped
 allow rule for the `lit` executable; it never switches the agent into a global
-permission-bypass mode.
+permission-bypass mode. ZCode keeps its approvals in its own settings, so there
+onboarding only tells you to turn on its Autonomous mode.
 Your choice is recorded in `preferences.yaml` next to the vault registry —
 machine-level, not per-vault, because which agent you run is a property of the
 machine.

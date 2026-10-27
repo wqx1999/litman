@@ -333,9 +333,11 @@ export default function TopBar({
 
   // Agent launcher: the primary action always launches the configured default;
   // management is a distinct secondary action on the same icon (right-click /
-  // Ctrl+~). A launch that cannot pop a terminal window comes back as mode
-  // "copy" and the panel shows the `lit agent …` line to run in a terminal on
-  // the server (which on a remote/headless box is not the browser's machine).
+  // Ctrl+~). A desktop-app agent comes back as mode "app", already open at the
+  // vault. A launch that cannot pop a terminal window (or the app) comes back
+  // as mode "copy" and the panel shows the `lit agent …` line to run in a
+  // terminal on the server (which on a remote/headless box is not the
+  // browser's machine).
   const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
   // Machine-global onboarding status — the red-dot source. Fetched once when the
@@ -404,6 +406,14 @@ export default function TopBar({
       setAgentUi(null)
       if (!res.permission_warning) {
         notify(`Launched ${res.agent} in a terminal window`, 'success')
+      }
+    } else if (res.mode === 'app') {
+      setAgentUi(null)
+      if (!res.permission_warning) {
+        const display =
+          agentStatus?.agents.find((a) => a.name === res.agent)?.display ??
+          res.agent
+        notify(`Opened ${display}`, 'success')
       }
     } else {
       setAgentUi({ kind: 'copy', agent: res.agent, command: res.command })
@@ -2642,7 +2652,9 @@ function AgentSetup({
               </div>
               {!agent.detected ? (
                 <div className="mt-2 text-xs leading-relaxed text-stone-500">
-                  {agent.display} isn't installed.{' '}
+                  {agent.kind === 'app'
+                    ? `${agent.display} isn't installed, or hasn't been opened yet.`
+                    : `${agent.display} isn't installed.`}{' '}
                   <a
                     href={agent.install_url}
                     target="_blank"

@@ -77,9 +77,15 @@ pipx install --force .
 Pick an agent to drive litman through its bundled skills; you bring the model — use
 whatever you already pay for. **Start with Claude Code.**
 
-| Agent CLI | Recommended model |
+| Agent | Recommended model |
 |:---|:---|
 | [Claude Code](https://claude.ai/code) | Official subscription |
+| [ZCode](https://zcode.z.ai) (new) | GLM, official subscription; turn on Autonomous mode |
+
+These also work — last checked with litman 1.3.8:
+
+| Agent CLI | Recommended model |
+|:---|:---|
 | [Codex](https://developers.openai.com/codex/cli/) | Official subscription |
 | [Antigravity CLI](https://antigravity.google/download#antigravity-cli) | Official subscription |
 | [Cursor](https://cursor.com/cli) | Composer 2.5 |

@@ -72,7 +72,7 @@ def test_beginner_facing_brands_identify_the_major_agent_families() -> None:
     assert brands["claude"] == "Claude · Anthropic"
     assert brands["agy"] == "Google"
     assert brands["codex"] == "ChatGPT · OpenAI"
-    assert brands["zcode"] == "GLM · Z.ai"
+    assert brands["zcode"] == "GLM · 智谱"
 
 
 def test_zcode_is_a_desktop_app_row() -> None:

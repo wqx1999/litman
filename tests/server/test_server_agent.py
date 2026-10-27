@@ -239,11 +239,9 @@ def test_status_returns_six_catalog_entries(vault: Path) -> None:
             "install_url",
             "skill_state",
             "kind",
-            "permission_hint",
         }
         assert isinstance(e["detected"], bool)
         assert e["kind"] in {"terminal", "app"}
-        assert e["permission_hint"] is None or e["kind"] == "app"
         # Per-agent skill verdict: every catalog agent is supported today, so
         # each reads a real verdict. The null branch is the latent
         # supported=False placeholder contract (no such entry ships now).
@@ -789,6 +787,8 @@ def test_status_never_leaks_the_app_exe_path(
     zcode = next(e for e in resp.json()["agents"] if e["name"] == "zcode")
     assert zcode["detected"] is True
     assert zcode["kind"] == "app"
-    assert "Autonomous mode" in zcode["permission_hint"]
+    # The Autonomous-mode hint is a CLI line (install-skill / setup); the GUI
+    # never shows it, so the status payload doesn't carry it.
+    assert "permission_hint" not in zcode
     assert "Secret Apps" not in resp.text
     assert "ZCode.exe" not in resp.text
