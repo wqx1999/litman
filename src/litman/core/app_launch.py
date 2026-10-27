@@ -162,6 +162,12 @@ def _popen_detached_windows(argv: list[str], env: dict[str, str]) -> None:
     only) is a second guard. ``DETACHED_PROCESS`` does little for a GUI exe
     and is harmless. No ``CREATE_BREAKAWAY_FROM_JOB``: the uv ``lit.exe``
     launcher's job allows silent breakaway, so the app outlives ``lit``.
+
+    Measured on Win11 with ZCode: started straight from PowerShell, it logs
+    into that window for as long as it runs and retitles it
+    ``zcode-host-local-1``. Started from here, by ``lit agent`` or the GUI's
+    launch route, the window keeps its title and gets no app output, and the
+    app keeps running after ``lit gui`` stops.
     """
     subprocess.Popen(
         argv,
