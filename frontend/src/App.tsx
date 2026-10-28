@@ -76,6 +76,7 @@ import { emptyFilters } from './nav/BrowsePanel'
 import TabArea from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
+import { servedVault } from './vaults'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
@@ -617,6 +618,18 @@ export default function App() {
     // prev.mtimes baseline; replacing the ref leaves that snapshot untouched.
     docMtimesRef.current = { ...cur, [paperId]: next }
   }, [])
+
+  // A title saved in the cockpit also rewrote that paper's notes.md heading, in
+  // the backend's same write. Treated like a GUI md save: the baseline moves so
+  // the next resync does not log it as an outside edit, and the open md tab is
+  // re-read so the new heading shows now rather than at the next resync.
+  const notesRetitled = useCallback(
+    (paperId: string) => {
+      bumpDocMtime(paperId, 'notes')
+      setMdReloadToken((t) => t + 1)
+    },
+    [bumpDocMtime],
+  )
 
   const [cockpitPaper, setCockpitPaper] = useState<PaperMeta | null>(null)
   // The server's reason the selected paper could not be loaded, shown in the
@@ -1809,12 +1822,12 @@ export default function App() {
 
   const projectNames = useMemo(() => projects.map((p) => p.name), [projects])
 
-  // Active vault's filesystem path (server-side), used by the Cockpit to build
-  // the copy-path action. Null until /api/vaults resolves or if none is active.
-  const vaultPath = useMemo(
-    () => vaults?.vaults.find((v) => v.active)?.path ?? null,
-    [vaults],
-  )
+  // The served vault's filesystem path (server-side), used by the Cockpit to
+  // build the copy-path actions. Not the registry's active vault: `lit gui
+  // --library` / `--vault` serves another one, and a path built from the active
+  // vault then points into the wrong library. Null until /api/vaults resolves
+  // or while no vault is served.
+  const vaultPath = vaults?.served ?? null
 
   // Enter/exit focus mode: stash the current panel collapse, hide both panels,
   // restore on exit.
@@ -1840,7 +1853,9 @@ export default function App() {
 
   const switchVault = useCallback(
     (name: string) => {
-      if (!name || name === vaults?.active) return
+      // Picking the vault already served is the no-op — not the active one,
+      // which `lit gui --library` / `--vault` may have left behind.
+      if (!name || vaults?.vaults.find((v) => v.name === name)?.served) return
       setPendingVault(name)
     },
     [vaults],
@@ -2485,7 +2500,7 @@ export default function App() {
           <TrashView
             entries={trashEntries}
             loading={trashLoading}
-            vaultName={vaults?.active ?? ''}
+            vaultName={servedVault(vaults)?.name ?? ''}
             onExit={exitTrash}
             onRestore={restoreFromTrash}
             restoringEntry={restoringEntry}
@@ -2556,6 +2571,7 @@ export default function App() {
               allPapers={allPapers}
               fixedEnums={fixedEnums}
               onChanged={refreshAfterWrite}
+              onNotesRetitled={notesRetitled}
               onVocabChanged={refreshVocab}
               notify={notify}
               onRegisterHandle={registerCockpit}

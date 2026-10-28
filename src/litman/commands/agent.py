@@ -15,6 +15,8 @@ new command code.
 On POSIX the launch is a true ``exec`` (process replacement), so Ctrl-C /
 exit semantics belong to the agent, not a lingering ``lit`` shell; Windows has
 no exec, so it falls back to a child process whose exit code is passed through.
+A desktop-app agent (``kind="app"``) is instead opened at the vault
+(:mod:`litman.core.app_launch`) and the command returns at once.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from pathlib import Path
 import click
 
 from litman.commands._options import library_option, vault_option
-from litman.core import agent_prefs, agents
+from litman.core import agent_prefs, agents, app_launch
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.exceptions import LitmanError
 
@@ -56,9 +58,10 @@ def agent_cmd(
     """Start your AI agent in the vault directory.
 
     Runs the agent's command (from the built-in catalog) with the active vault
-    as working directory. With no NAME it launches the machine-level default
-    agent (set via `lit setup`, the GUI, or `--set-default`); otherwise the
-    named catalog agent.
+    as working directory; a desktop-app agent is opened at the vault instead
+    and the command returns at once. With no NAME it launches the
+    machine-level default agent (set via `lit setup`, the GUI, or
+    `--set-default`); otherwise the named catalog agent.
     """
     if set_default is not None:
         try:
@@ -84,6 +87,19 @@ def agent_cmd(
             f"Agent '{agent_name}' is not available yet. "
             f"Supported agents: {supported}."
         )
+    if spec.kind == "app":
+        # A no-op for an app today (its approvals are set in the app); kept so
+        # both kinds heal their rule on launch the same way.
+        spec.install_lit_permission()
+        try:
+            app_launch.open_app(spec, vault)
+        except app_launch.AppNotFound as exc:
+            raise LitmanError(
+                f"{exc} Get {spec.display}: {spec.install_url}"
+            ) from exc
+        click.echo(f"Opened {spec.display} at {vault}.")
+        return
+
     # Windows installers update the registry PATH, not already-running
     # processes. Refresh it so this command also works from a shell that was
     # open before the agent CLI was installed.

@@ -734,7 +734,8 @@ def restore_from_trash(
             # health-check), exactly as before, just without the half-restore.
             for md_path in enumerate_markdown_files(vault):
                 try:
-                    text = md_path.read_text(encoding="utf-8")
+                    # From bytes, so a CRLF note stays CRLF (as in rm.py).
+                    text = md_path.read_bytes().decode("utf-8")
                 except (OSError, UnicodeDecodeError):
                     continue
                 if paper_id not in text:

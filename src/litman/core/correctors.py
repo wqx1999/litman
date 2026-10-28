@@ -269,7 +269,9 @@ def annotate(
     skipped: list[Path] = []
     for md_path in enumerate_markdown_files(vault):
         try:
-            original = md_path.read_text(encoding="utf-8")
+            # Bytes in and out: text mode would turn CRLF into LF on read and,
+            # on Windows, LF into CRLF on write.
+            original = md_path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             # No silent-skip (invariant #14 / review A2): a note we cannot read
             # (permissions, or non-UTF-8 — a UnicodeDecodeError that the old
@@ -287,7 +289,7 @@ def annotate(
         for deleted_id in deleted_ids:
             updated = annotate_deleted_wikilinks(updated, deleted_id)
         if updated != original:
-            md_path.write_text(updated, encoding="utf-8")
+            md_path.write_bytes(updated.encode("utf-8"))
             n_touched += 1
     if skipped:
         err = Console(stderr=True)

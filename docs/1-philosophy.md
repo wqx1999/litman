@@ -87,9 +87,11 @@ code, and projects far faster than reading them by hand, so it reaches the right
 context for a task without scanning the whole library.
 
 The agent works by typing the `lit` commands for you and reporting what each one
-did. It only ever proposes the command; the CLI is what validates the input and
-writes the data, so a hallucinated or malformed value is rejected before it
-reaches disk rather than quietly corrupting the library.
+did. It changes the library only when you ask, and a deletion or an overwrite
+waits until you have seen what will go. Every change still goes through the CLI,
+which validates the input and writes the data, so a hallucinated or malformed
+value is rejected before it reaches disk rather than quietly corrupting the
+library.
 
 ### Middle layer: everything lives in the vault, projects only borrow
 

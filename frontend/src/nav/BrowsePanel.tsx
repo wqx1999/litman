@@ -617,8 +617,17 @@ export default function BrowsePanel({
             {/* Smart-list views — a macOS segmented control with a sliding white
                 indicator that glides between segments. */}
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-stone-400">
-                Show
+              {/* The paper count rides on the label row and counts exactly the
+                  rows below — project, view, filters and search applied, pins
+                  and muted dropped papers included — so it moves with each of
+                  them. Hidden while the list loads or failed to load. */}
+              <div className="mb-1 flex items-baseline justify-between text-[10px] font-semibold uppercase tracking-wider text-stone-400">
+                <span>Show</span>
+                {!loading && !loadFailed && (
+                  <span className="normal-case tracking-normal tabular-nums">
+                    {visible.length} {visible.length === 1 ? 'paper' : 'papers'}
+                  </span>
+                )}
               </div>
               <div className="relative flex rounded-lg bg-stone-200 p-0.5">
                 <div

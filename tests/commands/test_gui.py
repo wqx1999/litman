@@ -373,6 +373,50 @@ def test_gui_headless_linux_never_opens(
     assert "SSH tunnel" in result.output
 
 
+@pytest.mark.parametrize(
+    ("platform", "ssh_var", "wanted"),
+    [
+        ("linux", None, True),
+        ("linux", "SSH_CONNECTION", True),
+        ("win32", None, False),
+        ("darwin", None, False),
+        ("win32", "SSH_CONNECTION", True),
+        ("darwin", "SSH_CLIENT", True),
+        ("darwin", "SSH_TTY", True),
+    ],
+)
+def test_ssh_tunnel_hint_only_where_the_server_may_be_remote(
+    monkeypatch, platform: str, ssh_var: str | None, wanted: bool
+) -> None:
+    monkeypatch.setattr(gui, "_platform", lambda: platform)
+    for var in gui._SSH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    if ssh_var is not None:
+        monkeypatch.setenv(ssh_var, "10.0.0.2 51022 10.0.0.1 22")
+
+    assert gui._wants_ssh_tunnel_hint() is wanted
+
+
+def test_gui_on_a_local_windows_box_prints_no_tunnel_line(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    vault, _pid = vault_with_paper
+    # Headless so nothing opens; only the tunnel rule sees Windows.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(gui, "_platform", lambda: "win32")
+    for var in gui._SSH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert "http://127.0.0.1:" in result.output
+    assert "SSH tunnel" not in result.output
+    assert "ssh -L" not in result.output
+
+
 @pytest.fixture
 def chromium_on_path(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
@@ -3504,6 +3548,8 @@ def test_want_splash_false_headless_keeps_remote_capability(
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.setattr(gui, "_launched_without_console", lambda: True)
+    # The tunnel line's own rule reads this; Linux is where it always shows.
+    monkeypatch.setattr(gui, "_platform", lambda: "linux")
 
     result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--window"])
 

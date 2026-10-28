@@ -22,8 +22,8 @@ from starlette.concurrency import run_in_threadpool
 from litman.core import viewer
 from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
 from litman.core.cite import format_acs
+from litman.core.code import code_clone_upstreams, missing_code_clones
 from litman.core.config import CONFIG_FILENAME
-from litman.core.code import missing_code_clones
 from litman.core.document import find_paper, list_papers
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import host_id
@@ -598,6 +598,10 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
     out["code-clones-missing"] = missing_code_clones(
         vault, meta.get("code-clones") or []
     )
+    # Derived too: clone name -> web page of its upstream, for the ↗ link.
+    out["code-clones-upstream"] = code_clone_upstreams(
+        vault, meta.get("code-clones") or []
+    )
     return out
 
 
@@ -775,10 +779,20 @@ def get_vaults(request: Request) -> dict[str, Any]:
     than letting the user pick it and collect a 400. A bare directory (an
     unrelated same-name folder at the old path) reads as missing, not as the
     vault having come back.
+
+    Each entry also carries ``served``: whether it is the vault this server is
+    bound to. It need not be the active one — ``lit gui --library`` /
+    ``--vault`` / ``$LIT_LIBRARY`` serve another, possibly unregistered, vault —
+    so the selector keys its selection and the switch's no-op guard off this,
+    not ``active``. Compared resolved, the same test as the unregister guard's
+    409, so ``~`` or a symlinked spelling of the same folder still matches.
     """
     reg = load_registry()
     active = find_active(reg)
     served = request.app.state.vault
+    served_resolved = (
+        Path(served).expanduser().resolve() if served is not None else None
+    )
     return {
         "active": active.name if active else None,
         "served": str(served) if served is not None else None,
@@ -787,6 +801,8 @@ def get_vaults(request: Request) -> dict[str, Any]:
                 "name": v.name,
                 "path": v.path,
                 "active": v.is_active,
+                "served": served_resolved is not None
+                and Path(v.path).expanduser().resolve() == served_resolved,
                 "exists": (Path(v.path).expanduser() / CONFIG_FILENAME).is_file(),
             }
             for v in reg.vaults

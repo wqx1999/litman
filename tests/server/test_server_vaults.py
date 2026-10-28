@@ -37,6 +37,7 @@ from litman.core.vault_registry import (
     find_by_name,
     load_registry,
     save_registry,
+    set_active,
 )
 from litman.server import create_app
 from tests.server._client import TestClient
@@ -46,6 +47,58 @@ def _register(vault: Path, name: str) -> None:
     """Append ``vault`` to the registry under ``name`` (persisted)."""
     reg = add_vault(load_registry(), name, vault)
     save_registry(reg)
+
+
+# ===========================================================================
+# GET /api/vaults — which entry is served (it need not be the active one)
+# ===========================================================================
+
+
+def _entries(app) -> dict[str, dict]:
+    payload = TestClient(app).get("/api/vaults").json()
+    return {v["name"]: v for v in payload["vaults"]}
+
+
+def test_get_vaults_marks_the_served_vault_not_the_active_one(
+    tmp_path: Path,
+) -> None:
+    """`lit gui --vault b` while `a` is active: `b` is the served entry."""
+    a = create_vault(tmp_path, name="a")
+    b = create_vault(tmp_path, name="b")
+    _register(a, "a")
+    _register(b, "b")
+    save_registry(set_active(load_registry(), "a"))
+
+    entries = _entries(create_app(b))
+    assert entries["a"]["active"] and not entries["a"]["served"]
+    assert entries["b"]["served"] and not entries["b"]["active"]
+
+
+def test_get_vaults_marks_no_entry_when_the_served_vault_is_unregistered(
+    tmp_path: Path,
+) -> None:
+    """`lit gui --library <copy>`: nothing registered is the served vault."""
+    a = create_vault(tmp_path, name="a")
+    _register(a, "a")
+    loose = create_vault(tmp_path, name="loose")
+
+    app = create_app(loose)
+    assert not any(v["served"] for v in _entries(app).values())
+    assert TestClient(app).get("/api/vaults").json()["served"] == str(loose)
+
+
+def test_get_vaults_marks_the_active_vault_served_in_the_usual_case(
+    tmp_path: Path,
+) -> None:
+    a = create_vault(tmp_path, name="a")
+    b = create_vault(tmp_path, name="b")
+    _register(a, "a")
+    _register(b, "b")
+    save_registry(set_active(load_registry(), "a"))
+
+    entries = _entries(create_app(a))
+    assert entries["a"]["served"] and entries["a"]["active"]
+    assert not entries["b"]["served"]
 
 
 # ===========================================================================

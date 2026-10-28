@@ -168,4 +168,6 @@ def test_init_prints_the_vault_outside_the_panel(
     vault = long_root / "literature_vault"
     _assert_whole_and_outside(result.output, str(vault))
     if not register:
-        _assert_whole_and_outside(result.output, f"--library {vault}")
+        # Quoted the way the user's shell needs it (double quotes on Windows).
+        shown = init_cmd._shell_path(vault)
+        _assert_whole_and_outside(result.output, f"--library {shown}")

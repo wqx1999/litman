@@ -396,3 +396,9 @@ def test_journal_issue_still_wins_the_number_field() -> None:
     })
     assert "number = {7}" in entry
     assert "WO2018115466A1" not in entry
+
+
+def test_emit_entry_family_only_author_loses_dangling_comma() -> None:
+    """A family-only "Yang, " would make bibtex report a name ending in a comma."""
+    out = emit_entry({"id": "x", "authors": ["Yang, ", "Corso, Gabriele"]})
+    assert "author = {Yang and Corso, Gabriele}," in out

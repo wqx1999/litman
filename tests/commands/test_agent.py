@@ -126,7 +126,7 @@ def test_agent_unsupported_name_is_rejected(
     assert isinstance(result.exception, LitmanError)
     message = str(result.exception)
     assert "'future' is not available yet" in message
-    assert "Supported agents: claude, agy, codex, cursor, opencode" in message
+    assert "Supported agents: claude, zcode, agy, codex, cursor, opencode" in message
     assert execd == []  # never reached the exec path
 
 
@@ -244,3 +244,43 @@ def test_agent_launches_saved_default(
     result = CliRunner().invoke(agent_cmd, ["--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert exec_capture["argv"] == ["claude"]
+
+
+# ---------------------------------------------------------------------------
+# A desktop-app agent (kind="app", task-zcode-agent): open it and return
+# ---------------------------------------------------------------------------
+
+
+def test_agent_app_opens_at_the_vault_and_returns(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    opened: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        app_launch, "open_app", lambda spec, at: opened.append((spec.name, at))
+    )
+    monkeypatch.setattr(os, "execvp", lambda *_a: pytest.fail("an app is never exec'd"))
+    monkeypatch.setattr(
+        "litman.commands.agent.subprocess.run",
+        lambda *_a, **_k: pytest.fail("an app is never waited on"),
+    )
+    result = CliRunner().invoke(agent_cmd, ["zcode", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert opened == [("zcode", vault)]
+    assert result.output.replace("\n", "") == f"Opened ZCode at {vault}."
+
+
+def test_agent_app_not_installed_names_the_download(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    monkeypatch.setattr(app_launch, "app_installed", lambda _spec: False)
+    result = CliRunner().invoke(agent_cmd, ["zcode", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+    message = str(result.exception)
+    assert "hasn't been opened yet" in message
+    assert "https://zcode.z.ai" in message
+    assert "PATH" not in message

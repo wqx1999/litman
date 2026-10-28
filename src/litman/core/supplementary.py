@@ -146,14 +146,6 @@ _PUBLISHER_SEQ_RES: tuple[re.Pattern[str], ...] = (
 _PDF_MAGIC = b"%PDF-"
 _PDF_SNIFF_BYTES = 1024
 
-# §核验 0: how the article itself says it has SI. No bare "ESI": chemistry
-# papers are full of "ESI-MS"; RSC's "electronic supplementary" covers it.
-_MENTION_RE = re.compile(
-    r"supporting information|supplementary|supplemental|additional file\s*\d"
-    r"|si appendix|electronic supplementary",
-    re.IGNORECASE,
-)
-
 # Measured on a real 28-paper library (spec §核验 3): a real SI's first page
 # shares at most 0.20 Jaccard with the article's first page; another copy of
 # the article itself scores 0.92.
@@ -450,26 +442,6 @@ def _ansi_c(char: str) -> str:
     if code < 0x20 or code == 0x7F:
         return f"\\x{code:02x}"
     return char
-
-
-# ---------------------------------------------------------------------------
-# §核验 0 — does the article mention SI at all?
-# ---------------------------------------------------------------------------
-
-
-def mentions_supplementary(pdf: Path) -> bool | None:
-    """Whether the article's text says it has supplementary material.
-
-    ``None`` when there is no text to judge — a scanned PDF, or one that does
-    not parse — which callers treat as "may well have SI".
-    """
-    pages = _pdf_text(pdf, None)
-    if not pages:
-        return None
-    text = " ".join(" ".join(pages).split())
-    if not text:
-        return None
-    return _MENTION_RE.search(text) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1828,7 +1800,6 @@ __all__ = [
     "is_runnable_si",
     "is_unprintable",
     "list_supplementary",
-    "mentions_supplementary",
     "name_matches",
     "official_link",
     "original_label",

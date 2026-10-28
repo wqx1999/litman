@@ -58,6 +58,10 @@ export interface PaperMeta extends IndexPaper {
    * codes/<name>/ is gone on disk, so the cockpit can mark them as missing.
    * Absent on the trash-inspector path (that endpoint does not annotate it). */
   'code-clones-missing'?: string[]
+  /** Derived by the server (get_paper): clone name → web page of its upstream,
+   * for the live clones whose repo-meta.yaml records an http(s) or git@ one.
+   * A local import, a missing clone and the trash inspector have no entry. */
+  'code-clones-upstream'?: Record<string, string>
   /** The paper's SI files, as metadata.yaml records them (task-supplementary-
    * info): a list of `{file, original, sha256, bytes, added, check}`. Typed
    * loosely on purpose — the field is hand-editable, so the cockpit reads it
@@ -146,7 +150,12 @@ export interface ProjectEntry {
 export interface VaultEntry {
   name: string
   path: string
+  /** The registry's active vault — the one `lit` uses in a terminal. */
   active: boolean
+  /** The vault this server is bound to. Usually the active one, but `lit gui
+   * --vault` / `--library` / $LIT_LIBRARY can serve another (or an unregistered
+   * one, when no entry is served). Compared server-side on resolved paths. */
+  served: boolean
   /** Whether `path` still holds a library (its lit-config.yaml), re-probed by
    * the server on every `GET /api/vaults`. A vault whose folder was moved,
    * deleted, or replaced by an unrelated folder comes back false, and switching

@@ -10,6 +10,7 @@ import type {
 } from '../types'
 import type { Candidate } from '../search'
 import { projectHealth } from '../projects'
+import { servedVault } from '../vaults'
 import {
   ApiError,
   createProject,
@@ -29,6 +30,7 @@ import SearchBox from './SearchBox'
 import type { ToastVariant } from '../ui/Toast'
 import LitmanMark from '../ui/LitmanMark'
 import { anchorIcon } from '../ui/icons'
+import HelpHint from '../ui/HelpHint'
 import PathField, { describeLocation } from '../ui/PathField'
 import { useEscapeLayer } from '../ui/escapeStack'
 import {
@@ -332,9 +334,11 @@ export default function TopBar({
 
   // Agent launcher: the primary action always launches the configured default;
   // management is a distinct secondary action on the same icon (right-click /
-  // Ctrl+~). A launch that cannot pop a terminal window comes back as mode
-  // "copy" and the panel shows the `lit agent …` line to run in a terminal on
-  // the server (which on a remote/headless box is not the browser's machine).
+  // Ctrl+~). A desktop-app agent comes back as mode "app", already open at the
+  // vault. A launch that cannot pop a terminal window (or the app) comes back
+  // as mode "copy" and the panel shows the `lit agent …` line to run in a
+  // terminal on the server (which on a remote/headless box is not the
+  // browser's machine).
   const [agentUi, setAgentUi] = useState<AgentUi | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
   // Machine-global onboarding status — the red-dot source. Fetched once when the
@@ -403,6 +407,14 @@ export default function TopBar({
       setAgentUi(null)
       if (!res.permission_warning) {
         notify(`Launched ${res.agent} in a terminal window`, 'success')
+      }
+    } else if (res.mode === 'app') {
+      setAgentUi(null)
+      if (!res.permission_warning) {
+        const display =
+          agentStatus?.agents.find((a) => a.name === res.agent)?.display ??
+          res.agent
+        notify(`Opened ${display}`, 'success')
       }
     } else {
       setAgentUi({ kind: 'copy', agent: res.agent, command: res.command })
@@ -583,6 +595,17 @@ export default function TopBar({
     setRevealed(false)
   }
 
+  // The selector shows the SERVED vault, which need not be the registry's
+  // active one: `lit gui --vault` serves another registered vault, and `lit gui
+  // --library` / $LIT_LIBRARY can serve one that is not registered at all —
+  // that one gets an extra first option named after its folder, set apart by
+  // colour in the closed select and the open list alike (and the tooltip, for
+  // whoever can't tell the colour). Picking it is a no-op, like re-picking any
+  // current choice: its value is '' and switchVault ignores ''.
+  const served = servedVault(vaults)
+  const looseServed = served !== null && !served.registered
+  const switchTargets = vaults?.vaults.filter((v) => !v.served).length ?? 0
+
   return (
     <>
       {focusMode && (
@@ -714,32 +737,45 @@ export default function TopBar({
       {!trashMode && (
       <>
       <select
-        value={vaults?.active ?? ''}
+        value={served?.registered ? served.name : ''}
         onChange={(e) => onSwitchVault(e.target.value)}
-        disabled={switching || !vaults?.active || vaults.vaults.length < 2}
+        disabled={switching || switchTargets === 0}
         title={
-          !vaults?.active
-            ? 'No active vault'
-            : vaults.vaults.length < 2
+          looseServed
+            ? 'Opened by path, not in your vault list'
+            : switchTargets > 0
+            ? 'Switch the active vault (applies globally)'
+            : vaults?.vaults.length
               ? 'Only one vault registered'
-              : 'Switch the active vault (applies globally)'
+              : 'No vault registered'
         }
-        className="rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-700 shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:bg-stone-100 disabled:text-stone-500"
+        className={`rounded-md border border-stone-300 bg-white px-2 py-1 text-sm ${
+          looseServed ? 'text-amber-700 dark:text-amber-400' : 'text-stone-700'
+        } shadow-sm transition-colors hover:bg-stone-50 focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:bg-stone-100 disabled:text-stone-500`}
       >
-        {vaults?.active ? (
+        {looseServed && (
+          <option value="" className="text-amber-700 dark:text-amber-400">
+            {served.name}
+          </option>
+        )}
+        {vaults?.vaults.length ? (
           vaults.vaults.map((v) => (
             // A missing vault stays listed and stays selectable: hiding it would
             // be one more thing happening without the user being told. Picking it
             // fails loudly (the server refuses to switch to a path that is gone).
-            <option key={v.name} value={v.name}>
+            // "(active)" only where it tells something: normally the served
+            // vault IS the active one (a GUI switch moves both), so the marker
+            // would just repeat the selection. It shows when `lit gui
+            // --library` / `--vault` / $LIT_LIBRARY left the active one behind.
+            <option key={v.name} value={v.name} className="text-stone-700">
               {v.name}
-              {v.active ? ' (active)' : ''}
+              {v.active && !v.served ? ' (active)' : ''}
               {v.exists ? '' : ' — missing'}
             </option>
           ))
-        ) : (
+        ) : !served ? (
           <option value="">no vault</option>
-        )}
+        ) : null}
       </select>
 
       {/* Always enabled — NOT gated by the <select>'s <2-vault disable, so a
@@ -1057,12 +1093,13 @@ function ProjectManager({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[28rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Projects</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Register a project, rename it, or re-point its folder if you moved it.
-          Removing unlinks it from every paper and tears down its reflib links,
-          but always leaves the project folder on disk.
-        </p>
+        <h2 className="text-sm font-semibold text-stone-900">
+          Projects
+          {sorted.length > 0 && (
+            <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
+          )}
+          <HelpHint text="Register, rename or re-point your projects. Removing one never deletes its folder." />
+        </h2>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
@@ -1547,7 +1584,7 @@ function NewProjectDialog({
  * Mirrors ProjectManager's portaled, auto-theming modal shell (no `dark:`
  * variants — the inverted `stone` ramp + `.dark .bg-white` handle dark mode).
  *
- * The served vault's row (`v.active`) has Unregister disabled with a "switch
+ * The served vault's row (`v.served`) has Unregister disabled with a "switch
  * first" tooltip — a front-of-house mirror of the server's 409 guard (a GUI-only
  * user who unregistered the served vault and closed the browser would be locked
  * out, since `lit gui` needs an active vault to boot). */
@@ -1612,12 +1649,13 @@ function VaultManager({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Vaults</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Create a new vault, or register one that already exists. Unregistering
-          removes the registry entry only — the vault folder on disk is kept. Switch
-          vaults from the selector in the toolbar.
-        </p>
+        <h2 className="text-sm font-semibold text-stone-900">
+          Vaults
+          {sorted.length > 0 && (
+            <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
+          )}
+          <HelpHint text="Create or register vaults, and switch between them from the toolbar. Unregistering never deletes the folder." />
+        </h2>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
@@ -1660,7 +1698,7 @@ function VaultManager({
                 {!v.exists && (
                   // A moved vault's only way home: point the registry at its new
                   // folder. Rendered on missing rows only — including the served
-                  // one (v.active), whose Unregister stays disabled, so Locate is
+                  // one (v.served), whose Unregister stays disabled, so Locate is
                   // that user's sole escape from the 410.
                   <button
                     type="button"
@@ -1677,11 +1715,11 @@ function VaultManager({
                   type="button"
                   aria-label={`Unregister vault ${v.name}`}
                   title={
-                    v.active
+                    v.served
                       ? 'Switch to another vault first'
                       : `Unregister vault “${v.name}”`
                   }
-                  disabled={blocked || v.active}
+                  disabled={blocked || v.served}
                   onClick={() => setPendingUnregister(v.name)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-300"
                 >
@@ -2613,13 +2651,8 @@ function AgentSetup({
     <>
       <h2 className="text-sm font-semibold text-stone-900">
         {status.default ? 'Manage agents' : 'Set up your agent'}
+        <HelpHint text="The toolbar button and ~ open your default agent. A skill also lets it run lit without asking, where the agent allows it." />
       </h2>
-      <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-        Choose one installed agent as your default. The toolbar button and ~
-        launch it directly. Installing a skill also allows that agent to run
-        lit commands without repeated approval; other commands keep their
-        normal permissions.
-      </p>
       <div className="mt-3 flex flex-col gap-2">
         {status.agents.map((agent) =>
           agent.supported ? (
@@ -2644,7 +2677,9 @@ function AgentSetup({
               </div>
               {!agent.detected ? (
                 <div className="mt-2 text-xs leading-relaxed text-stone-500">
-                  {agent.display} isn't installed.{' '}
+                  {agent.kind === 'app'
+                    ? `${agent.display} isn't installed, or hasn't been opened yet.`
+                    : `${agent.display} isn't installed.`}{' '}
                   <a
                     href={agent.install_url}
                     target="_blank"

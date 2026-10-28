@@ -449,7 +449,7 @@ def _apply_add(
             # `source_label` is bounded — a DOI or a file basename, never an
             # absolute path — so the fixed half's measured 139 characters plus
             # a real label hold the 200 ceiling on every path. The DOI landing
-            # page as a second place to look lives in lit-library/SKILL.md,
+            # page as a second place to look lives in lit-library/add-errors.md,
             # where the rationale belongs; `lit add` always has the PDF in
             # hand, so page 1 always answers.
             raise IDError(
@@ -686,8 +686,7 @@ def _apply_add(
     help=(
         "With --si FILE...: add files that cannot be confirmed as the paper's "
         "SI, or are over 100 MiB, without asking; never adds a refused file. "
-        "With --si alone: ask the GUI even when the paper has SI already or "
-        "its text never mentions any."
+        "With --si alone: ask the GUI even when the paper has SI already."
     ),
 )
 @library_option
@@ -741,8 +740,6 @@ def add_cmd(
       11  still waiting: run the same command again to keep waiting
       12  no GUI page is open for this library: prints the article link
           and the lit add --si PAPER FILE... form
-      13  the paper's text never mentions supplementary material
-          (--force asks anyway)
     """
     ctx = click.get_current_context()
     if si_paper is not None:
@@ -984,7 +981,7 @@ def add_cmd(
                 # list when the filler is not the last author — hence "in
                 # order". Why the add was NOT blocked (the filler never reaches
                 # the id) belongs to the reader who wants it, not to every
-                # reader: it lives in lit-library/SKILL.md. A warning nobody
+                # reader: it lives in lit-library/add-errors.md. A warning nobody
                 # finishes reading protects nobody, so this line carries the
                 # verdict and the way out and stops.
                 f"Fix: `lit modify {escape(paper_id)} "

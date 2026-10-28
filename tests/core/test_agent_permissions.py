@@ -289,3 +289,19 @@ def test_malformed_json_is_left_byte_for_byte_untouched(_home: Path) -> None:
     assert result["mode"] == "skipped"
     assert result["warning"]
     assert path.read_bytes() == original
+
+
+def test_an_app_agent_gets_no_rule_file_and_no_warning(_home: Path) -> None:
+    """ZCode keeps its approvals in its own session database, which litman
+    never writes: the adapter touches nothing and reports "manual"."""
+    before = sorted(p.relative_to(_home) for p in _home.rglob("*"))
+    result = agent_permissions.no_lit_permission("zcode")
+    after = sorted(p.relative_to(_home) for p in _home.rglob("*"))
+    assert after == before
+    assert result == {
+        "agent": "zcode",
+        "path": None,
+        "mode": "manual",
+        "rule": "",
+        "warning": None,
+    }

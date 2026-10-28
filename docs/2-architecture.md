@@ -87,8 +87,8 @@ involved. It is organised into three parts:
 2. `importers/` pulls an external source into a draft metadata record:
    `crossref` resolves a DOI against CrossRef, and `llm` extracts fields from
    text the agent supplies.
-3. `exporters/` renders the library outward: `bibtex` emits a BibTeX file from a
-   set of papers.
+3. `exporters/` renders the library outward: `bibtex` emits a BibTeX file and
+   `ris` a RIS file from a set of papers.
 
 **Layer 3 is the `lit` CLI**, the interface a user actually types. `cli.py`
 defines the root Click group, and every command is its own module under
@@ -152,19 +152,22 @@ run it reports the result rather than leaving you to check.
 You reach this layer from either interface. `lit agent` starts the agent with
 the vault as its working directory, and the Web UI can install the skills and
 launch the agent for you. Which agent that is comes from a catalog held in the
-package: Claude Code, Antigravity CLI, Codex, Cursor, and OpenCode are the
-supported entries. Skill onboarding also installs a native, narrowly scoped
+package: Claude Code, ZCode, Antigravity CLI, Codex, Cursor, and OpenCode are
+the supported entries. Skill onboarding also installs a native, narrowly scoped
 allow rule for the `lit` executable; it never switches the agent into a global
-permission-bypass mode.
+permission-bypass mode. ZCode keeps its approvals in its own settings, so there
+onboarding only tells you to turn on its Autonomous mode.
 Your choice is recorded in `preferences.yaml` next to the vault registry —
 machine-level, not per-vault, because which agent you run is a property of the
 machine.
 
-Two boundaries keep this safe. The agent only ever proposes the command. The CLI
-is what validates the input and writes the data, so a hallucinated or malformed
-value is rejected before it reaches disk. And the agent works one paper at a
-time, with no autonomous bulk operations. Remove Layer 4 entirely and every data
-operation still works from the CLI.
+Three boundaries keep this safe. The agent changes the library only when you
+ask, and before a deletion or an overwrite it shows you what will go and waits
+for your go; emptying the trash and purging a paper it never runs at all. Every
+change goes through the CLI, which validates the input and writes the data, so a
+hallucinated or malformed value is rejected before it reaches disk. And the agent
+works one paper at a time, with no autonomous bulk operations. Remove Layer 4
+entirely and every data operation still works from the CLI.
 
 ## Data flow
 

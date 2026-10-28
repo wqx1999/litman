@@ -37,7 +37,7 @@ from litman.commands._options import library_option, vault_option
 from litman.core import confirm as confirm_mod
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
-    DIRTY_NOTES_KEPT,
+    DIRTY_NOTES_UNREADABLE,
     DIRTY_RENAMES,
     UNFINISHED_RENAME_LEFT,
     Issue,
@@ -328,11 +328,11 @@ def health_check_cmd(
             for cat, n in applied.items():
                 # hub_* carry detail about the project-link rebuild, not a
                 # per-category count; they render under project_references.
-                # The kept notes.md and rename lists render under
+                # The unreadable notes.md and rename lists render under
                 # dirty_metadata, the folders left as they were under
                 # unfinished_rename.
                 if cat.startswith("hub_") or cat in (
-                    DIRTY_NOTES_KEPT,
+                    DIRTY_NOTES_UNREADABLE,
                     DIRTY_RENAMES,
                     UNFINISHED_RENAME_LEFT,
                 ):
@@ -346,7 +346,7 @@ def health_check_cmd(
                     _report_hub_settlements(applied)
                     hub_reported = True
                 if cat == "dirty_metadata":
-                    _report_notes_kept(applied)
+                    _report_notes_unreadable(applied)
                     _report_renames(applied)
                 if cat == "unfinished_rename":
                     _report_renames_left(applied)
@@ -420,17 +420,17 @@ def _report_hub_settlements(applied: dict[str, Any]) -> None:
         console.print(f"    {line}", soft_wrap=True)
 
 
-def _report_notes_kept(applied: dict[str, Any]) -> None:
-    """Name each paper whose notes.md heading the metadata cleanup left alone.
+def _report_notes_unreadable(applied: dict[str, Any]) -> None:
+    """Name each notes.md the metadata cleanup could not read.
 
-    Its title is clean in metadata.yaml now, but notes.md no longer opens with
-    the heading ``lit add`` wrote, so that line is the user's to change.
+    Its title is clean in metadata.yaml now, but the heading in notes.md,
+    which follows the title, could not be rewritten.
     """
-    kept = applied.get(DIRTY_NOTES_KEPT)
-    for folder in kept if isinstance(kept, list) else []:
+    unreadable = applied.get(DIRTY_NOTES_UNREADABLE)
+    for folder, reason in unreadable if isinstance(unreadable, list) else []:
         console.print(
-            f"    [yellow]kept[/] {escape(folder)}: notes.md heading differs "
-            "from the one lit add wrote, left as is",
+            f"    [yellow]could not read[/] papers/{escape(folder)}/notes.md "
+            f"({escape(reason)}): its heading keeps the old title",
             soft_wrap=True,
         )
 
@@ -545,8 +545,8 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     an explicit ``lit`` command). Returns ``{category: n_fixed}`` plus, when a
     klass-A regen ran, ``hub_replaced_copies`` / ``hub_moved_aside`` — detail
     about the project-link rebuild, not categories — and, from the
-    ``dirty_metadata`` arm, ``dirty_metadata_notes_kept`` /
-    ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_KEPT`` /
+    ``dirty_metadata`` arm, ``dirty_metadata_notes_unreadable`` /
+    ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_UNREADABLE`` /
     ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name, and
     ``unfinished_rename_left`` (``checks.UNFINISHED_RENAME_LEFT``) when a
     folder could not be renamed.

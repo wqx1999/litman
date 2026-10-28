@@ -30,6 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from ruamel.yaml import YAMLError
 
@@ -78,6 +79,59 @@ def missing_code_clones(vault: Path, names: list[str]) -> list[str]:
         and name
         and not (codes_dir / name / REPO_META_FILENAME).is_file()
     ]
+
+
+# git@host:owner/repo and ssh://[user@]host[:port]/owner/repo — the SSH forms
+# of an upstream that also has a web page at https://host/owner/repo.
+_SCP_UPSTREAM_RE = re.compile(r"^[^@/\s]+@([^:/\s]+):(?!/)(\S+)$")
+_SSH_UPSTREAM_RE = re.compile(r"^ssh://(?:[^@/\s]+@)?([^:/\s]+)(?::\d+)?/(\S+)$")
+
+
+def upstream_web_url(upstream: object) -> str | None:
+    """The web page of a clone's ``upstream``, or None when it has none.
+
+    An http(s) URL loses any user / token and a trailing ``.git``; the SSH
+    forms become the https page on the same host. A ``local:<path>`` import
+    or anything else returns None, so only an http(s) link ever leaves here.
+    """
+    if not isinstance(upstream, str):
+        return None
+    text = upstream.strip()
+    m = _SCP_UPSTREAM_RE.match(text) or _SSH_UPSTREAM_RE.match(text)
+    if m:
+        text = f"https://{m.group(1)}/{m.group(2)}"
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return None
+    path = parts.path.rstrip("/").removesuffix(".git").rstrip("/")
+    if ":" in host:  # IPv6 literal: urlsplit drops the brackets
+        host = f"[{host}]"
+    netloc = f"{host}:{port}" if port else host
+    return f"{parts.scheme.lower()}://{netloc}{path}"
+
+
+def code_clone_upstreams(vault: Path, names: list[str]) -> dict[str, str]:
+    """Map each clone in ``names`` to the web page of its upstream.
+
+    Read from ``codes/<name>/repo-meta.yaml``; a missing or unreadable one,
+    or an upstream :func:`upstream_web_url` turns down, leaves the name out.
+    """
+    out: dict[str, str] = {}
+    for name in names:
+        if not isinstance(name, str) or not is_valid_repo_name(name):
+            continue
+        try:
+            url = upstream_web_url(read_repo_meta(vault, name).get("upstream"))
+        except CodeError:
+            continue
+        if url:
+            out[name] = url
+    return out
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},

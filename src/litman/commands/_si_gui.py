@@ -2,9 +2,9 @@
 
 The CLI's side of the SI window (task-supplementary-info, ADR-027). The
 command first settles what it can on its own — the paper, a broken
-``supplementary`` field or folder, SI already in the library, an article that
-never mentions any — then finds the ``lit gui`` serving this library on this
-machine (:func:`~litman.core.gui_registry.find_gui`), opens a request there
+``supplementary`` field or folder, SI already in the library — then finds the
+``lit gui`` serving this library on this machine
+(:func:`~litman.core.gui_registry.find_gui`), opens a request there
 and asks for its state once a second. The page shows the request as the SI
 window; the user downloads the files from the publisher, drops them in, and
 presses Done or Cancel.
@@ -24,7 +24,6 @@ goes to stderr. Exit codes:
     10  SI request cancelled in the GUI
     11  still waiting in the GUI: run the same command again
     12  no GUI page open for this library: where to download, and the FILE form
-    13  the paper's text never mentions supplementary material
     1   anything else (raised as a LitmanError)
 
 The only network use is the GUI on this machine's 127.0.0.1 (red line 1).
@@ -65,7 +64,6 @@ MAX_MISSES = 3
 EXIT_CANCELLED = 10
 EXIT_WAITING = 11
 EXIT_NO_GUI = 12
-EXIT_NOT_MENTIONED = 13
 
 # Read at call time, so tests replace them on this module.
 _clock: Callable[[], float] = time.monotonic
@@ -85,7 +83,6 @@ _ADDED = "added"
 _CANCELLED = "cancelled"
 
 NO_PAGE = "No litman GUI page is open for this library"
-NOT_MENTIONED = "The paper's text never mentions supplementary material"
 CANCELLED_LINE = "SI request cancelled in the GUI"
 STILL_WAITING = "Still waiting in the GUI — run the same command again to keep waiting"
 WAITING = "Waiting for the SI to be added in the litman GUI…"
@@ -371,7 +368,9 @@ def request_si(si_paper: str, *, force: bool, library: Path | None, vault_name: 
 
     Prints the contract lines (module docstring) and returns the exit code;
     exit 1 is raised as a LitmanError. ``force`` asks the GUI even when the
-    paper has SI already or its text never mentions any.
+    paper has SI already. Whether the article's text mentions SI is never
+    checked: no word list catches every way a paper points to it ("see
+    Appendix D"), and a miss turned the user's own request into a refusal.
     """
     deadline = _clock() + WAIT_BUDGET_S
     err = Console(stderr=True)
@@ -388,12 +387,6 @@ def request_si(si_paper: str, *, force: bool, library: Path | None, vault_name: 
         if recorded:
             _print_ready(err, vault, paper_id, recorded, already=True)
             return 0
-        # None (no text layer, no PDF) cannot rule SI out.
-        pdf = vault / "papers" / paper_id / "paper.pdf"
-        if supplementary.mentions_supplementary(pdf) is False:
-            click.echo(NOT_MENTIONED)
-            click.echo("Run the same command with --force to ask for the SI anyway")
-            return EXIT_NOT_MENTIONED
 
     fallback = _fallback(paper_id, supplementary.official_link(meta))
     client = _new_client()
@@ -466,7 +459,6 @@ def request_si(si_paper: str, *, force: bool, library: Path | None, vault_name: 
 
 __all__ = [
     "EXIT_CANCELLED",
-    "EXIT_NOT_MENTIONED",
     "EXIT_NO_GUI",
     "EXIT_WAITING",
     "MAX_MISSES",

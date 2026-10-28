@@ -477,6 +477,32 @@ def test_setup_skill_step_fresh_install_accepts_via_confirm(
     assert "More agents can be added" in result.output  # agent-management hint
 
 
+@pytest.mark.parametrize("state", ["current", "absent"])
+def test_setup_zcode_says_how_to_allow_lit_once(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """ZCode gets no approval rule; the wizard says how to allow lit in the
+    app exactly once — itself on the up-to-date branch (which skips
+    install-skill), through the real install-skill on the install branch."""
+    _force_tty(monkeypatch)
+    _no_rclone(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    monkeypatch.setattr(
+        "litman.commands.setup.skill_status",
+        lambda **kw: _fake_skill_status(default=state),
+    )
+    monkeypatch.setattr(
+        "litman.commands.setup.agent_prefs.save_default_agent", lambda _name: None
+    )
+
+    # completion no / agent: zcode / [install: Enter accepts Y] / vault no.
+    answers = "n\nzcode\nn\n" if state == "current" else "n\nzcode\n\nn\n"
+    result = CliRunner().invoke(cli, ["setup"], input=answers)
+    assert result.exit_code == 0, result.output
+    assert result.output.count("Autonomous") == 1
+    assert "lit command approval" not in result.output
+
+
 def test_setup_agent_choice_agy_records_default_before_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

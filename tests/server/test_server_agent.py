@@ -57,7 +57,7 @@ def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
     assert resp.json() == {
-        "agents": ["claude", "agy", "codex", "cursor", "opencode"],
+        "agents": ["claude", "zcode", "agy", "codex", "cursor", "opencode"],
         "default": "claude",
     }
 
@@ -210,10 +210,11 @@ def test_launch_non_string_agent_is_400(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_status_returns_five_catalog_entries(vault: Path) -> None:
+def test_status_returns_six_catalog_entries(vault: Path) -> None:
     body = _status(_client(vault))
     assert [e["name"] for e in body["agents"]] == [
         "claude",
+        "zcode",
         "agy",
         "codex",
         "cursor",
@@ -222,6 +223,7 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
     supported = {e["name"]: e["supported"] for e in body["agents"]}
     assert supported == {
         "claude": True,
+        "zcode": True,
         "agy": True,
         "codex": True,
         "cursor": True,
@@ -236,8 +238,10 @@ def test_status_returns_five_catalog_entries(vault: Path) -> None:
             "detected",
             "install_url",
             "skill_state",
+            "kind",
         }
         assert isinstance(e["detected"], bool)
+        assert e["kind"] in {"terminal", "app"}
         # Per-agent skill verdict: every catalog agent is supported today, so
         # each reads a real verdict. The null branch is the latent
         # supported=False placeholder contract (no such entry ships now).
@@ -287,7 +291,10 @@ def test_status_recheck_detects_cli_added_to_live_windows_registry_path(
 
     registry_paths.append(r"C:\new-agent-bin")
     after = agent_status(Response())
-    assert all(entry["detected"] for entry in after["agents"])
+    # A desktop app is found through its own registry key, not PATH.
+    assert all(
+        entry["detected"] for entry in after["agents"] if entry["kind"] == "terminal"
+    )
 
 
 def test_status_never_leaks_skill_paths(vault: Path) -> None:
@@ -642,3 +649,146 @@ def test_needs_setup_default_agy_follows_antigravity_dir(
     assert body["skill_state"] == "current"
     assert body["skill_installed"] is True
     assert body["needs_setup"] is False
+
+
+# ---------------------------------------------------------------------------
+# A desktop-app agent (kind="app", task-zcode-agent): opened, not spawned
+# ---------------------------------------------------------------------------
+
+
+def _record_open_app(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Path]]:
+    opened: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        "litman.core.app_launch.open_app",
+        lambda spec, vault: opened.append((spec.name, vault)),
+    )
+    monkeypatch.setattr(
+        "litman.core.terminal.spawn_terminal",
+        lambda _a, _c: pytest.fail("an app must never go through a terminal"),
+    )
+    return opened
+
+
+def test_launch_app_opens_it_at_the_server_vault(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
+    opened = _record_open_app(monkeypatch)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "zcode"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ok": True,
+        "mode": "app",
+        "agent": "zcode",
+        "command": "",
+        "permission_warning": None,
+    }
+    assert opened == [("zcode", vault)]
+
+
+def test_launch_app_ignores_body_command_and_path_fields(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malicious body: the app opens at the server's vault; `command` and
+    `path` are dead."""
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
+    opened = _record_open_app(monkeypatch)
+    resp = _client(vault).post(
+        "/api/agent/launch",
+        json={"agent": "zcode", "command": "rm -rf /", "path": str(tmp_path / "x")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "app"
+    assert opened == [("zcode", vault)]
+
+
+@pytest.mark.parametrize(
+    ("default", "command"), [("claude", "lit agent zcode"), ("zcode", "lit agent")]
+)
+def test_launch_app_without_a_display_falls_back_to_copy(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, default: str, command: str
+) -> None:
+    from litman.core import app_launch
+
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
+    monkeypatch.setattr(agent_prefs, "load_default_agent", lambda: default)
+
+    def no_display(spec: object, _vault: Path) -> None:
+        raise app_launch.AppNoDisplay("No display here to open ZCode in.")
+
+    monkeypatch.setattr("litman.core.app_launch.open_app", no_display)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "zcode"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ok": True,
+        "mode": "copy",
+        "agent": "zcode",
+        "command": command,
+        "permission_warning": None,
+    }
+
+
+def test_launch_app_not_installed_is_409_without_path_talk(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: False)
+    opened = _record_open_app(monkeypatch)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "zcode"})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "hasn't been opened yet" in detail
+    assert "PATH" not in detail
+    assert opened == []
+
+
+def test_launch_app_that_fails_to_start_is_409(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
+
+    def broken(spec: object, _vault: Path) -> None:
+        raise app_launch.AppNotFound("Could not open ZCode: access denied")
+
+    monkeypatch.setattr("litman.core.app_launch.open_app", broken)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "zcode"})
+    assert resp.status_code == 409
+    assert "access denied" in resp.json()["detail"]
+
+
+def test_put_default_app_not_installed_is_409_without_path_talk(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agents, "detect", lambda _spec: False)
+    resp = _client(vault).put("/api/agent/default", json={"agent": "zcode"})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "cannot be the default" in detail
+    assert "hasn't been opened yet" in detail
+    assert "PATH" not in detail
+    assert agent_prefs.load_default_agent() is None
+
+
+def test_status_never_leaks_the_app_exe_path(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exe is found in the registry and used server-side only."""
+    from litman.core import app_launch
+
+    exe = tmp_path / "Secret Apps" / "ZCode" / "ZCode.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        app_launch, "_read_scheme_command", lambda _scheme: f'"{exe}" -- "%1"'
+    )
+    resp = _client(vault).get("/api/agent/status")
+    zcode = next(e for e in resp.json()["agents"] if e["name"] == "zcode")
+    assert zcode["detected"] is True
+    assert zcode["kind"] == "app"
+    # The Autonomous-mode hint is a CLI line (install-skill / setup); the GUI
+    # never shows it, so the status payload doesn't carry it.
+    assert "permission_hint" not in zcode
+    assert "Secret Apps" not in resp.text
+    assert "ZCode.exe" not in resp.text

@@ -19,6 +19,14 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.9
+
+- Open your library in ZCode straight from litman.
+- Export references as an RIS file for EndNote.
+- Your AI writes only when you ask, and asks before deleting.
+- Renaming a paper or its title updates its note headings.
+- Lists in the window show how many items they hold.
+
 ## 1.3.8
 
 - When your AI needs a paper's SI, litman asks you to drop it in.

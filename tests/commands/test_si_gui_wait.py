@@ -51,7 +51,7 @@ A_DOI = "10.1021/acs.jcim.9b00237"
 A_TITLE = "Concepts of Artificial Intelligence for Computer-Assisted Drug Discovery"
 C_ID = "2020_Lee_Preprint"  # an arXiv id, no DOI
 D_ID = "2018_Kim_Notes"  # neither
-N_ID = "2017_Roe_Plain"  # its text never mentions SI
+N_ID = "2017_Roe_Plain"  # its text points to "Appendix D", never to SI
 
 NO_PAGE = "No litman GUI page is open for this library"
 STILL_WAITING = "Still waiting in the GUI — run the same command again to keep waiting"
@@ -120,7 +120,7 @@ def vault(tmp_path: Path) -> Path:
         N_ID,
         title="A plain article",
         doi="10.1000/plain.1",
-        text=["A plain article", "Jane Doe", "Everything is in the main text."],
+        text=["A plain article", "Jane Doe", "The ablations are in Appendix D."],
     )
     write_index(v, list_papers(v))
     return v
@@ -510,33 +510,21 @@ def test_force_asks_the_gui_although_si_is_there(
     assert _ready(lines[1:]) == [(_si_path(vault, "si-02.pdf"), "ci9b00237_si_002.pdf")]
 
 
-def test_a_text_that_never_mentions_si_is_13_and_the_gui_is_never_asked(
-    vault: Path, gui: Gui
-) -> None:
-    result = _run(vault, N_ID)
-
-    assert result.exit_code == 13, result.output
-    assert result.stdout.splitlines() == [
-        "The paper's text never mentions supplementary material",
-        "Run the same command with --force to ask for the SI anyway",
-    ]
-    assert gui.seen == []
-    assert gui.open_ids() == []
-
-
-def test_force_asks_the_gui_although_the_text_never_mentions_si(
+def test_a_text_that_never_mentions_si_still_asks_the_gui(
     vault: Path, gui: Gui, clock: FakeTime
 ) -> None:
+    """No --force needed: what the article's text says is never a reason not
+    to ask, since "see Appendix D" names a separate file as well as SI does."""
     clock.after(1, gui.cancel)
-    result = _run(vault, N_ID, "--force")
+    result = _run(vault, N_ID)
     assert result.exit_code == 10, result.output
     assert gui.posts() == 1
 
 
 @pytest.mark.parametrize("pdf", ["scanned", "missing"])
-def test_no_text_to_judge_is_not_13(vault: Path, pdf: str) -> None:
-    """A scan (no text layer) or no paper.pdf cannot rule SI out: on to the
-    GUI — here, none — rather than 13."""
+def test_no_text_layer_or_no_pdf_still_asks(vault: Path, pdf: str) -> None:
+    """A scan (no text layer) or no paper.pdf at all: on to the GUI — here,
+    none."""
     paper_pdf = vault / "papers" / N_ID / "paper.pdf"
     if pdf == "scanned":
         paper_pdf.write_bytes(_build_text_pdf([[]]))
@@ -695,7 +683,7 @@ def test_no_answer_in_90_s_is_11_and_the_rerun_rejoins_the_same_request(
 def test_a_done_after_11_reaches_the_next_rerun_once(
     vault: Path, gui: Gui, clock: FakeTime
 ) -> None:
-    """Deliver-once with --force (an article that never mentions SI, say):
+    """Deliver-once with --force (asking for a file the user missed, say):
     the rerun gets the result at once, the run after it a fresh window."""
     first = _run(vault, A_ID, "--force")
     assert first.exit_code == 11, first.output
@@ -906,13 +894,13 @@ def test_the_gui_switching_library_mid_wait_is_12(
 
 
 def _slow_precheck(monkeypatch: pytest.MonkeyPatch, clock: FakeTime, seconds: float) -> None:
-    real = si_mod.mentions_supplementary
+    real = si_mod.si_write_problem
 
-    def slow(pdf: Path) -> bool | None:
+    def slow(vault: Path, paper_id: str) -> str | None:
         clock.now += seconds
-        return real(pdf)
+        return real(vault, paper_id)
 
-    monkeypatch.setattr(si_mod, "mentions_supplementary", slow)
+    monkeypatch.setattr(si_mod, "si_write_problem", slow)
 
 
 def test_time_spent_before_the_request_counts(
@@ -1326,9 +1314,9 @@ def test_help_describes_the_third_form_and_its_exit_codes() -> None:
         "10 the SI request was cancelled in the GUI",
         "11 still waiting: run the same command again to keep waiting",
         "12 no GUI page is open for this library",
-        "13 the paper's text never mentions supplementary material",
     ):
         assert line in text
+    assert "never mentions" not in text
     assert "With --si alone: ask the GUI" in text
 
 

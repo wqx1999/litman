@@ -514,7 +514,8 @@ $ lit export --project peptide-design -o ~/projects/peptide-design/refs.bib
 ```
 
 Re-run the same command to update the file as you link more papers. `lit export
---all` exports the whole library. (There is nothing to undo — the `.bib` is a
+--all` exports the whole library. For EndNote, add `--format ris` and import
+the `.ris` instead. (There is nothing to undo — the exported file is a
 projection, not vault state; delete the file if you no longer want it.)
 
 For a single paste-ready citation instead of a whole file — the kind you drop on a

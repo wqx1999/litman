@@ -45,8 +45,15 @@ import {
 import type { MetadataWrite, SimilarPair } from '../api'
 import AuthorRows from '../ui/AuthorRows'
 import VocabPopover from '../ui/VocabPopover'
+import HelpHint from '../ui/HelpHint'
+import { ExternalLinkIcon } from '../ui/icons'
 import type { ToastVariant } from '../ui/Toast'
-import { SiRemoveConfirm, SupplementaryChips, type SiRecord } from './Supplementary'
+import {
+  parseSupplementary,
+  SiRemoveConfirm,
+  SupplementaryChips,
+  type SiRecord,
+} from './Supplementary'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { isYearShape, YEAR_HINT } from '../ui/year'
 import {
@@ -93,6 +100,10 @@ interface Props {
   /** Called after a successful structured write so the parent re-fetches the
    * cockpit paper AND the left list (status/read-date move smart-list members). */
   onChanged?: () => void
+  /** Called after a metadata save that set a new title: the backend rewrote
+   * the heading of the paper's notes.md in the same write, so the parent
+   * re-reads the open md tab and counts that change as the GUI's own. */
+  onNotesRetitled?: (paperId: string) => void
   /** Called after a write that changes the shared vocabulary (a new taxonomy
    * value or project link/unlink) so the parent re-fetches /api/taxonomy +
    * /api/projects, keeping the dropdowns/autocomplete current (3c-1). */
@@ -149,17 +160,35 @@ function Chips({
  * resolved: codes/<name>/ is gone, the same criterion lit health-check uses for
  * invariant #12) renders amber + ⚠ "missing", so a link to a deleted codebase
  * never reads as live (e.g. after a restore that did not re-clone). The link is
- * kept by design — re-clone via `lit code add` or drop it via `lit code unlink`. */
+ * kept by design — re-clone via `lit code add` or drop it via `lit code unlink`.
+ * With `vaultPath`, a live chip copies the clone's folder path, like Copy path
+ * does for the paper; the chip itself flashes ✓, since the copied note by the
+ * Copy buttons is often scrolled out of view down here. A clone with an entry
+ * in `upstream` gets a ↗ beside it that opens that page in a new tab. */
 function CodeCloneChips({
   values,
   missing,
+  vaultPath = null,
+  upstream,
 }: {
   values: string[] | undefined
   missing: string[] | undefined
+  vaultPath?: string | null
+  upstream?: Record<string, string>
 }) {
+  const [copied, setCopied] = useState<string | null>(null)
   if (!values || values.length === 0)
     return <span className="text-stone-400">—</span>
   const gone = new Set(missing ?? [])
+  async function copy(name: string) {
+    try {
+      await navigator.clipboard.writeText(`${vaultPath}/codes/${name}`)
+      setCopied(name)
+      setTimeout(() => setCopied(null), 1200)
+    } catch {
+      /* no clipboard in some sandboxes — silently ignore */
+    }
+  }
   return (
     <div className="flex flex-wrap gap-1">
       {values.map((v) =>
@@ -174,6 +203,33 @@ function CodeCloneChips({
             <span className="text-[10px] font-medium uppercase tracking-wide opacity-80">
               missing
             </span>
+          </span>
+        ) : vaultPath ? (
+          <span key={v} className="inline-flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => copy(v)}
+              title={`Copy the clone's folder path (codes/${v})`}
+              className={
+                copied === v
+                  ? 'rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700'
+                  : 'rounded-md bg-stone-200 px-2 py-0.5 text-xs text-stone-700 transition-colors hover:bg-stone-300 hover:text-stone-900'
+              }
+            >
+              {copied === v ? `✓ ${v}` : v}
+            </button>
+            {upstream?.[v] && (
+              <a
+                href={upstream[v]}
+                target="_blank"
+                rel="noreferrer"
+                title={upstream[v]}
+                aria-label={`Open ${v} upstream: ${upstream[v]}`}
+                className="rounded p-0.5 text-stone-400 transition-colors hover:text-accent-600"
+              >
+                <ExternalLinkIcon className="h-[13px] w-[13px]" />
+              </a>
+            )}
           </span>
         ) : (
           <span
@@ -203,11 +259,25 @@ function formatAuthors(authors: string[]): string {
   ].join('; ')
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+/** A labelled row of the inspector. `count` goes on the label of a list-valued
+ * field (authors, relations, …) and stays off while the list is empty — the
+ * row's own "—" already says so. */
+function Field({
+  label,
+  count,
+  children,
+}: {
+  label: string
+  count?: number
+  children: React.ReactNode
+}) {
   return (
     <div className="mb-3.5">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
         {label}
+        {count != null && count > 0 && (
+          <span className="font-normal tabular-nums text-stone-400"> · {count}</span>
+        )}
       </div>
       <div className="text-sm text-stone-800">{children}</div>
     </div>
@@ -754,12 +824,13 @@ function ManageDialog({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[24rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Manage {field}</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Rename a value to fix a typo or merge wording — it updates everywhere
-          it is used. Deleting a value removes it from the {field} vocabulary and
-          untags it from every paper. Both cannot be undone.
-        </p>
+        <h2 className="text-sm font-semibold text-stone-900">
+          Manage {field}
+          {sorted.length > 0 && (
+            <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
+          )}
+          <HelpHint text="Rename fixes a typo or merges two values everywhere they're used. Delete untags a value from every paper." />
+        </h2>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
@@ -1084,6 +1155,19 @@ type RelField =
   | 'contradicts'
   | 'contradicted-by'
 
+const REL_FIELDS: RelField[] = [
+  'related',
+  'extends',
+  'extended-by',
+  'contradicts',
+  'contradicted-by',
+]
+
+/** Every linked paper across the five fields — the number on the Relations label. */
+function relationCount(paper: PaperMeta): number {
+  return REL_FIELDS.reduce((n, rel) => n + (paper[rel]?.length ?? 0), 0)
+}
+
 /** Where a removal on a REVERSE row has to be sent. The backend refuses a write
  * that names a reverse field (ADR-012: those edges exist only as the mirror of
  * a forward write), so removing `extended-by: A` while standing on B means
@@ -1094,6 +1178,12 @@ const REVERSE_TO_FORWARD = {
   'contradicted-by': 'contradicts',
 } as const
 
+/** Links a relation group lists before folding the rest behind "+ N more". */
+const REL_PREVIEW = 5
+
+/** The five relation groups, each a label over one id per line. A long id is
+ * cut with … (the full id is its tooltip) so every link stays one line, and a
+ * group longer than REL_PREVIEW folds the rest behind "+ N more". */
 function Relations({
   paper,
   onOpenPaper,
@@ -1107,55 +1197,75 @@ function Relations({
   /** A structured write is in flight — the × stops taking clicks. */
   busy?: boolean
 }) {
-  const groups: Array<[RelField, string[] | undefined]> = [
-    ['related', paper.related],
-    ['extends', paper.extends],
-    ['extended-by', paper['extended-by']],
-    ['contradicts', paper.contradicts],
-    ['contradicted-by', paper['contradicted-by']],
-  ]
+  // Groups unfolded past REL_PREVIEW. The call sites key this component by
+  // paper id, so the next paper starts folded again.
+  const [unfolded, setUnfolded] = useState<ReadonlySet<RelField>>(new Set())
+  const groups: Array<[RelField, string[] | undefined]> = REL_FIELDS.map((rel) => [
+    rel,
+    paper[rel],
+  ])
   const nonEmpty = groups.filter(([, ids]) => ids && ids.length > 0)
   if (nonEmpty.length === 0) return <span className="text-stone-400">—</span>
+  function toggle(rel: RelField) {
+    setUnfolded((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(rel)) next.add(rel)
+      return next
+    })
+  }
   return (
-    <div className="space-y-1">
-      {nonEmpty.map(([rel, ids]) => (
-        <div key={rel}>
-          <span className="text-xs text-stone-500">{rel}: </span>
-          {ids!.map((id) => (
-            // The × is a SIBLING of the link, never nested inside it (buttons
-            // cannot nest), and it is always in the DOM — `opacity-0` rather
-            // than a conditional render keeps the box, so the id does not shift
-            // sideways on hover. A moving target is exactly how a click meant
-            // for the link lands on the delete.
-            <span
-              key={id}
-              className="group/rel mr-1 inline-flex items-center gap-0.5"
-            >
+    <div className="space-y-1.5">
+      {nonEmpty.map(([rel, ids]) => {
+        const shown = unfolded.has(rel) ? ids! : ids!.slice(0, REL_PREVIEW)
+        const folded = ids!.length - shown.length
+        return (
+          <div key={rel}>
+            <div className="text-[11px] text-stone-500">{rel}</div>
+            <ul className="mt-0.5 border-l border-stone-200 pl-2">
+              {shown.map((id) => (
+                // The × is a SIBLING of the link, never nested inside it (buttons
+                // cannot nest), and it is always in the DOM — `opacity-0` rather
+                // than a conditional render keeps the box, so the id does not shift
+                // sideways on hover. A moving target is exactly how a click meant
+                // for the link lands on the delete.
+                <li key={id} className="group/rel flex items-center gap-0.5">
+                  <button
+                    onClick={() => onOpenPaper(id)}
+                    title={id}
+                    className="min-w-0 truncate text-left text-xs leading-5 text-accent-600 transition-colors hover:underline"
+                  >
+                    {id}
+                  </button>
+                  {onRemove && (
+                    <button
+                      type="button"
+                      aria-label={`Remove ${rel} link to ${id}`}
+                      title="Remove link"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onRemove(rel, id)
+                      }}
+                      className="shrink-0 px-0.5 text-xs leading-none text-stone-400 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/rel:opacity-100 disabled:opacity-0"
+                    >
+                      ×
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {ids!.length > REL_PREVIEW && (
               <button
-                onClick={() => onOpenPaper(id)}
-                className="text-xs text-accent-600 transition-colors hover:underline"
+                type="button"
+                onClick={() => toggle(rel)}
+                className="mt-0.5 pl-2.5 text-[11px] text-stone-500 transition-colors hover:text-stone-800"
               >
-                {id}
+                {folded > 0 ? `+ ${folded} more` : 'Show less'}
               </button>
-              {onRemove && (
-                <button
-                  type="button"
-                  aria-label={`Remove ${rel} link to ${id}`}
-                  title="Remove link"
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onRemove(rel, id)
-                  }}
-                  className="px-0.5 text-xs leading-none text-stone-400 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/rel:opacity-100 disabled:opacity-0"
-                >
-                  ×
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-      ))}
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1655,7 +1765,7 @@ function ReadOnlyCockpit({
                 )}
               </div>
             </div>
-            <Field label="Authors">
+            <Field label="Authors" count={paper.authors?.length}>
               {paper.authors && paper.authors.length > 0 ? (
                 <span
                   title={
@@ -1706,16 +1816,19 @@ function ReadOnlyCockpit({
             <Field label="Projects">
               <Chips values={paper.projects} suffix={(v) => paper[`priority-${v}`] ?? null} />
             </Field>
-            <Field label="Relations">
-              <Relations paper={paper} onOpenPaper={onOpenPaper} />
+            <Field label="Relations" count={relationCount(paper)}>
+              <Relations key={paper.id} paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
-            <Field label="Code-clones">
+            <Field label="Code-clones" count={paper['code-clones']?.length}>
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
               />
             </Field>
-            <Field label="Supplementary">
+            <Field
+              label="Supplementary"
+              count={parseSupplementary(paper.supplementary).length}
+            >
               <SupplementaryChips paperId={paper.id} value={paper.supplementary} readOnly />
             </Field>
           </div>
@@ -1738,6 +1851,7 @@ function WriteCockpit({
   allPapers = [],
   fixedEnums = null,
   onChanged = () => {},
+  onNotesRetitled = () => {},
   onVocabChanged = () => {},
   notify = () => {},
   onRegisterHandle = () => {},
@@ -2295,7 +2409,7 @@ function WriteCockpit({
                 </div>
               )}
             </div>
-            <Field label="Authors">
+            <Field label="Authors" count={paper.authors?.length}>
               {paper.authors && paper.authors.length > 0 ? (
                 <span
                   title={
@@ -2485,21 +2599,27 @@ function WriteCockpit({
                 },
               ]}
             />
-            <Field label="Relations">
+            <Field label="Relations" count={relationCount(paper)}>
               <Relations
+                key={paper.id}
                 paper={paper}
                 onOpenPaper={onOpenPaper}
                 onRemove={(rel, id) => setPendingRel({ me: paper.id, rel, id })}
                 busy={writing}
               />
             </Field>
-            <Field label="Code-clones">
+            <Field label="Code-clones" count={paper['code-clones']?.length}>
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
+                vaultPath={vaultPath}
+                upstream={paper['code-clones-upstream']}
               />
             </Field>
-            <Field label="Supplementary">
+            <Field
+              label="Supplementary"
+              count={parseSupplementary(paper.supplementary).length}
+            >
               <SupplementaryChips
                 paperId={paper.id}
                 value={paper.supplementary}
@@ -2567,6 +2687,8 @@ function WriteCockpit({
             // and swallow), and on success onChanged re-fetches the cockpit.
             await putMetadata(paper.id, body)
             onChanged()
+            // A cleared title (null) leaves notes.md as it was.
+            if (typeof body.set?.title === 'string') onNotesRetitled(paper.id)
           }}
           onClose={() => setEditingMeta(false)}
         />

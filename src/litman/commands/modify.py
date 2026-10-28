@@ -17,6 +17,10 @@ Multi-file atomicity (metadata.yaml + INDEX.json) goes through
 ``staged_write`` from M2.3. The views/by-*/ symlink hubs are rebuilt
 separately in a best-effort step after the staged commit succeeds.
 
+A title change also rewrites the first line of the paper's notes.md to
+``# <title>`` (``core.notes.retitle_heading``) in the same staged write: the
+heading follows the title, a hand-edited one included.
+
 TAXONOMY validation (rejecting --add-tag values that aren't registered)
 lands in M2.5 — until then, --add-tag silently records arbitrary values.
 """
@@ -53,6 +57,7 @@ from litman.core.document import (
     load_yaml_or_raise,
 )
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.notes import retitle_heading
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.project_refs import (
     load_project_member_metas,
@@ -522,6 +527,36 @@ def _dump_yaml_to_string(data: dict[str, Any]) -> str:
     return buf.getvalue()
 
 
+def _retitled_notes(
+    vault: Path, paper_id: str, old_title: Any, title: Any
+) -> bytes | None:
+    """The paper's notes.md with its heading made ``# <title>``, or None.
+
+    None when there is nothing to write: no title to put there (it was
+    cleared), no notes.md, or a heading that already reads the title. A
+    notes.md that cannot be read refuses the whole modify, before anything is
+    written — the title and its heading change together or not at all.
+    """
+    if title is None or str(title) == "":
+        return None
+    notes = vault / "papers" / paper_id / "notes.md"
+    if not notes.is_file():
+        return None
+    try:
+        raw = notes.read_bytes()
+    except OSError as exc:
+        raise ModifyError(
+            f"Cannot change the title: papers/{paper_id}/notes.md could not be "
+            f"read ({exc.__class__.__name__}). Fix that file, then retry."
+        ) from exc
+    retitled = retitle_heading(
+        raw,
+        str(title),
+        scaffold_title=str(old_title) if old_title is not None else None,
+    )
+    return None if retitled == raw else retitled
+
+
 def _format_diff_value(value: Any) -> str:
     """Compact representation for the before/after summary."""
     if value is None:
@@ -555,7 +590,8 @@ def _apply_modify(
     3. No-op short-circuit if every op was already in effect — does NOT
        bump ``updated-at`` and skips staged_write entirely.
     4. Otherwise: bump ``updated-at``, render INDEX.json, staged-write
-       both files atomically, rebuild views/.
+       both files atomically — with notes.md when a title change moves its
+       heading — and rebuild views/.
     5. Print human-readable diff summary to the console.
 
     Args:
@@ -613,6 +649,8 @@ def _apply_modify(
     # lists in place) — diffed after the ops so views/ can be updated
     # incrementally instead of wiped and rebuilt per edit.
     old_view_fields = view_fields_snapshot(metadata)
+    # The heading `lit add` wrote into notes.md came from this title.
+    old_title = metadata.get("title")
 
     diffs: list[tuple[str, Any, Any]] = []
     # Relation tag ops that landed on the originating paper, recorded as
@@ -777,6 +815,14 @@ def _apply_modify(
         )
         return False
 
+    # Read before anything is written, so an unreadable notes.md refuses the
+    # modify with the library unchanged.
+    retitled_notes = None
+    if any(key == "title" for key, _, _ in diffs):
+        retitled_notes = _retitled_notes(
+            vault, paper_id, old_title, metadata.get("title")
+        )
+
     new_updated_at = now_iso()
     old_updated_at = metadata.get("updated-at")
     metadata["updated-at"] = new_updated_at
@@ -843,6 +889,8 @@ def _apply_modify(
                 f"papers/{opposite_id}/metadata.yaml",
                 _dump_yaml_to_string(opp_meta),
             )
+        if retitled_notes is not None:
+            stage.write_bytes(f"papers/{paper_id}/notes.md", retitled_notes)
         stage.write_text("INDEX.json", index_json)
 
     # Post-commit derived rebuild through the single shared funnel
@@ -914,13 +962,12 @@ def _apply_modify(
     # rather than only in `health-check --fix`.
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
+    refreshed = "INDEX.json + views/"
+    if retitled_notes is not None:
+        refreshed += " + notes.md heading"
     if projects_changed:
-        console.print(
-            "[dim]INDEX.json + views/ + project litman_reflib/REFERENCES.md "
-            "refreshed.[/]"
-        )
-    else:
-        console.print("[dim]INDEX.json + views/ refreshed.[/]")
+        refreshed += " + project litman_reflib/REFERENCES.md"
+    console.print(f"[dim]{refreshed} refreshed.[/]")
     return True
 
 
@@ -990,7 +1037,8 @@ def modify_cmd(
 
     Updates papers/<id>/metadata.yaml (with a refreshed updated-at
     audit timestamp) and INDEX.json atomically; views/by-*/ links
-    are rebuilt afterwards.
+    are rebuilt afterwards. A new title also becomes the first line of
+    the paper's notes.md.
     """
     if not (set_ops or add_tag_ops or rm_tag_ops or author_ops):
         raise ModifyError(

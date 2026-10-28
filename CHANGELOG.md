@@ -9,6 +9,132 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **ZCode is a supported agent.** Pick it in the agent panel or run
+  `lit agent zcode`, and ZCode opens at your library — no terminal in between.
+  Install the skills from the same panel: ZCode now loads both of them. In
+  ZCode, turn on Autonomous mode so `lit` runs without asking each time.
+
+- **Export for EndNote.** `lit export --format ris` writes a `.ris` file that
+  EndNote, Zotero and Mendeley import as it is — in EndNote, choose the
+  Reference Manager (RIS) import option. EndNote's own BibTeX import tends to
+  lose fields or fail outright. Each record's label is the paper id, the same
+  key you `\cite` in LaTeX.
+
+- **The web UI shows how many papers the list holds.** The count sits at the
+  right of the **Show** row above the list and follows everything that narrows
+  it: the project, Reading / Read / All, the filters and the search box.
+
+- **Lists in the web UI say how long they are.** The paper panel numbers its
+  authors, relations, code clones and SI files, so an author list cut short
+  with "…" now tells you how many authors there are. A tag menu shows how many
+  values its vocabulary holds, or how many match while you search. The
+  Projects, Vaults and Manage topics / methods / data windows show how many
+  entries they list.
+
+- **Click a code clone in the web UI to copy its folder path.** A name under
+  **Code-clones** in the paper panel copies the clone's local folder
+  (`codes/<name>/` in the vault), ready to paste into a terminal or an agent,
+  the way **Copy path** does for the paper. The ↗ beside it opens the
+  repository's web page, such as its GitHub page, in a new tab. A clone whose
+  folder is missing can't be clicked, and a clone imported from a local folder
+  has no ↗.
+
+### Changed
+
+- **Relations in the web UI's paper panel read as a tidy list.** Each kind
+  (related, extends, …) has its own line with one paper per line below it, so
+  a long id no longer wraps into a ragged block: it ends in "…" instead, and
+  hovering shows it in full. A kind with more than five papers shows the first
+  five and a **+ N more** to unfold the rest.
+
+- **Your agent runs what you ask for, and writes only when you ask.** Ask it
+  to add a paper, tag one or link it to a project and it runs the command
+  without asking again; ask for something the skills have no step for —
+  rebuilding the views, say — and it looks the command up and runs it, where it
+  used to hand you the command to type. A remark is not a request: say "读完了"
+  or "this one's done" and you get one proposal — the status and read date it
+  would stamp, whether to rewrite `notes.md`, the empty fields it could fill —
+  and nothing is written until you say yes; "mark it read, deep-read" runs at
+  once. It no longer adds a line to `discussion.md` after cloning a paper's
+  code.
+
+- **Deleting and overwriting wait for your go.** Before it deletes a paper or
+  an SI file, removes a tag value or a project, or overwrites a `.bib` you
+  edited by hand, the agent shows what will go and waits for you to say so.
+  Emptying the trash and `lit rm --purge` it never runs: it gives you the
+  command to type.
+
+- **`lit health-check --fix` updates the `notes.md` heading even if you
+  changed it.** When it cleans a title, the first line of `notes.md` becomes
+  `# ` and the clean title, as `lit modify` now does. 1.3.8 left a heading you
+  had rewritten alone and printed `kept …: notes.md heading differs …`; that
+  line is gone. A `notes.md` that starts without a heading gets one on top, and
+  nothing below the first line changes.
+
+- **`lit add --si <paper>` opens the SI window whatever the paper's text
+  says.** It used to exit 13 when the text never said "supplementary" or
+  "supporting information", so a paper whose appendix is a separate file
+  ("see Appendix D", as NeurIPS papers write it) got no window unless you
+  added `--force`. Exit code 13 is gone.
+
+- **Dialogs in the web UI keep their explanation behind a ?.** The agent,
+  Projects, Vaults and Manage topics / methods / data windows no longer open
+  with a paragraph of explanation. Hover the circled ? beside the title to read
+  what the window is for.
+
+### Fixed
+
+- **An author known only by family name exports cleanly.** A paper whose
+  author is stored as `Yang, ` went into the `.bib` as `Yang, ` too, and BibTeX
+  stopped on the trailing comma. The export now writes `Yang`.
+
+- **Changing a paper's id or title now updates the heading that goes with
+  it.** `lit rename` rewrites the first line of the paper's `discussion.md` to
+  `# Discussion log for <new id>`, and `lit modify --set title=` — and the
+  title in the web UI's **Edit metadata** — rewrites the first line of its
+  `notes.md` to `# <new title>`. Both used to keep the old one. The line is
+  replaced even if you edited it, and added on top if the file starts without
+  one; the rest of the file stays as it was. The web UI's notes tab shows the
+  new heading as soon as you save. If `notes.md` cannot be read, `lit modify`
+  changes nothing and names the file.
+
+- **`lit rename` lists where the old id is still written as plain text.** It
+  rewrites every `[[old-id]]` link, but an id typed as plain text — in a
+  quote, or a command such as `lit show <old-id>` — is left as it is, so it now
+  prints each such file with the line numbers. A notes file it cannot read is
+  named too, where it used to be skipped without a word.
+
+- **`notes.md` and `discussion.md` keep Windows line endings.** When
+  `lit rename`, `lit rm` or `lit trash restore` rewrote a `[[id]]` link in a
+  file saved with Windows line endings, the whole file came back with Unix
+  ones; on Windows, the `(deleted)` tag added after a paper folder was deleted
+  by hand did the reverse. Each file now keeps its own.
+
+- **`lit init --no-register` suggests commands you can paste.** The vault path
+  in its three suggestions is now quoted, so a parent folder with a space no
+  longer splits the command, and on Windows the environment-variable line is
+  PowerShell's `$env:LIT_LIBRARY = "…"` instead of `export`.
+
+- **`lit gui` on your own Windows or Mac no longer prints the SSH tunnel
+  line.** It still shows inside an SSH session there, and always on Linux.
+
+- **Copy path copies a path in the library you have open.** With `lit gui
+  --library` or `--vault` open on a library other than the active one, Copy
+  path and clicking a code clone's name copied the matching folder in the
+  active library instead.
+
+- **The web UI names the library it has open.** With `lit gui --library`,
+  `--vault` or `$LIT_LIBRARY` on a library other than the active one, the vault
+  list at the top showed the active one, picking that one did nothing, and the
+  trash header named it too. The list now shows the open library — one opened
+  by path that isn't in your list appears by its folder name, in amber — and
+  picking any vault in the list switches to it. `(active)` now appears only
+  when the active library isn't the one open.
+
 ## 1.3.8 — 2026-10-24
 
 ### Added

@@ -16,6 +16,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file, unlock_truth_file
+from litman.core.notes import WIKILINK_REMINDER
 from litman.exceptions import (
     CorruptMetadataError,
     ModifyError,
@@ -1707,6 +1708,184 @@ def test_set_title_and_journal_store_one_clean_line(
         p for p in _read_index(vault)["papers"] if p["id"] == paper_id
     ]
     assert indexed["title"] == "(N-Hydroxy)amide-Mediated Rapid"
+
+
+# ---------------------------------------------------------------------------
+# The notes.md heading follows the title: whatever its first line holds, a
+# heading the user rewrote included, it becomes `# <title>`.
+# ---------------------------------------------------------------------------
+
+
+def _scaffold_notes(title: str, newline: str = "\n") -> bytes:
+    """notes.md as `lit add` writes it (text mode: CRLF on Windows)."""
+    text = f"# {title}\n\n{WIKILINK_REMINDER}\n\n(Personal notes go here.)\n"
+    return text.replace("\n", newline).encode("utf-8")
+
+
+def _notes(vault: Path, paper_id: str) -> Path:
+    return vault / "papers" / paper_id / "notes.md"
+
+
+def _set(vault: Path, paper_id: str, *ops: str) -> Any:
+    args = ["modify", paper_id]
+    for op in ops:
+        args += ["--set", op]
+    return CliRunner().invoke(cli, [*args, "--library", str(vault)])
+
+
+def test_set_title_retitles_the_notes_heading_lit_add_wrote(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    _notes(vault, paper_id).write_bytes(_scaffold_notes("Foo Bar") + b"Mine.\n")
+
+    result = _set(vault, paper_id, "title=Foo Bar Revisited")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == (
+        _scaffold_notes("Foo Bar Revisited") + b"Mine.\n"
+    )
+
+
+def test_set_title_overwrites_a_notes_heading_the_user_rewrote(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    _notes(vault, paper_id).write_bytes(b"# My own heading\n\nMine.\n")
+
+    result = _set(vault, paper_id, "title=Foo Bar Revisited")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == b"# Foo Bar Revisited\n\nMine.\n"
+    assert "kept" not in result.output
+    assert "differs" not in result.output
+
+
+def test_set_title_puts_a_heading_on_notes_that_lost_it(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    body = b"Straight into the body.\n\n## Methods\n"
+    _notes(vault, paper_id).write_bytes(body)
+
+    result = _set(vault, paper_id, "title=Foo Bar Revisited")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == b"# Foo Bar Revisited\n\n" + body
+
+
+def test_set_title_on_a_paper_without_notes_creates_none(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    assert not _notes(vault, paper_id).exists()
+
+    result = _set(vault, paper_id, "title=Foo Bar Revisited")
+
+    assert result.exit_code == 0, result.output
+    assert not _notes(vault, paper_id).exists()
+
+
+def test_set_title_writes_the_clean_title_into_notes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    _notes(vault, paper_id).write_bytes(_scaffold_notes("Foo Bar"))
+
+    result = _set(vault, paper_id, "title=(\n  <i>N</i>\n  -Hydroxy)amide-Mediated\nRapid")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == (
+        _scaffold_notes("(N-Hydroxy)amide-Mediated Rapid")
+    )
+
+
+def test_set_title_keeps_the_line_endings_of_windows_notes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    _notes(vault, paper_id).write_bytes(_scaffold_notes("Foo Bar", "\r\n"))
+
+    result = _set(vault, paper_id, "title=Foo Bar Revisited")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == (
+        _scaffold_notes("Foo Bar Revisited", "\r\n")
+    )
+
+
+def test_set_title_replaces_the_whole_heading_of_a_broken_title(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A paper added before titles were cleaned: its heading runs over the
+    title's line breaks, and all of it gives way."""
+    vault, paper_id = vault_with_paper
+    meta = vault / "papers" / paper_id / "metadata.yaml"
+    text = meta.read_text(encoding="utf-8")
+    broken = "Foo\n    <i>Bar</i>"
+    assert text.count("title: Foo Bar\n") == 1
+    meta.write_text(
+        text.replace("title: Foo Bar\n", f"title: {json.dumps(broken)}\n"),
+        encoding="utf-8",
+    )
+    _notes(vault, paper_id).write_bytes(_scaffold_notes(broken))
+
+    result = _set(vault, paper_id, "title=Foo Bar")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == _scaffold_notes("Foo Bar")
+
+
+def test_set_title_is_refused_whole_when_notes_cannot_be_read(
+    vault_with_paper: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, paper_id = vault_with_paper
+    notes = _notes(vault, paper_id)
+    notes.write_bytes(_scaffold_notes("Foo Bar"))
+    meta_before = (vault / "papers" / paper_id / "metadata.yaml").read_bytes()
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        if self.name == "notes.md":
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    result = _set(vault, paper_id, "title=Foo Bar Revisited")
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ModifyError)
+    assert str(result.exception) == (
+        f"Cannot change the title: papers/{paper_id}/notes.md could not be "
+        "read (PermissionError). Fix that file, then retry."
+    )
+    assert (vault / "papers" / paper_id / "metadata.yaml").read_bytes() == meta_before
+    assert real_read_bytes(notes) == _scaffold_notes("Foo Bar")
+
+
+def test_clearing_the_title_leaves_notes_alone(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    _notes(vault, paper_id).write_bytes(_scaffold_notes("Foo Bar"))
+
+    result = _set(vault, paper_id, "title=")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == _scaffold_notes("Foo Bar")
+
+
+def test_setting_another_field_leaves_the_notes_heading_alone(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    vault, paper_id = vault_with_paper
+    _notes(vault, paper_id).write_bytes(b"# My own heading\n\nMine.\n")
+
+    result = _set(vault, paper_id, "journal=Other J.")
+
+    assert result.exit_code == 0, result.output
+    assert _notes(vault, paper_id).read_bytes() == b"# My own heading\n\nMine.\n"
 
 
 def test_set_a_field_that_is_not_text_is_left_as_typed(

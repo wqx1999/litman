@@ -28,9 +28,11 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core import code as code_mod
 from litman.core.code import (
+    code_clone_upstreams,
     import_local_repo,
     make_repo_meta,
     missing_code_clones,
+    upstream_web_url,
     write_repo_meta,
 )
 from litman.core.library import create_vault
@@ -96,6 +98,11 @@ def _git_init_with_commit(repo_dir: Path, *, file_contents: str = "x\n") -> None
             "git", "-C", str(repo_dir),
             "-c", "user.email=test@example.com",
             "-c", "user.name=test",
+            # No auto maintenance: newer git runs it detached after a commit,
+            # adding and removing .git/objects/maintenance.lock while a test
+            # is still listing that directory (CI, macOS, 2026-10-25).
+            "-c", "maintenance.auto=false",
+            "-c", "gc.auto=0",
             "commit", "-q", "-m", "init",
         ],
         check=True,
@@ -803,3 +810,61 @@ def test_missing_code_clones_skips_empty_and_non_string(vault: Path) -> None:
 def test_missing_code_clones_no_codes_dir(vault: Path) -> None:
     # No codes/ at all — every referenced name is missing.
     assert missing_code_clones(vault, ["x", "y"]) == ["x", "y"]
+
+
+# ---------------------------------------------------------------------------
+# upstream_web_url / code_clone_upstreams — the cockpit's ↗ link to a clone's
+# upstream page; only an http(s) link may come out (it becomes an href)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("upstream", "expected"),
+    [
+        ("https://github.com/uta-smile/RetroXpert", "https://github.com/uta-smile/RetroXpert"),
+        ("https://github.com/o/r.git", "https://github.com/o/r"),
+        ("https://github.com/o/r.git/", "https://github.com/o/r"),
+        ("HTTPS://GitHub.com/O/R", "https://github.com/O/R"),
+        ("http://git.lab.example:8080/g/r", "http://git.lab.example:8080/g/r"),
+        ("git@github.com:o/r.git", "https://github.com/o/r"),
+        ("ssh://git@gitlab.example.org:2222/g/sub/r.git", "https://gitlab.example.org/g/sub/r"),
+        ("  https://github.com/o/r  ", "https://github.com/o/r"),
+    ],
+)
+def test_upstream_web_url_gives_the_https_page(upstream: str, expected: str) -> None:
+    assert upstream_web_url(upstream) == expected
+
+
+def test_upstream_web_url_drops_credentials() -> None:
+    # A token in the clone URL must not reach the page's href or tooltip.
+    assert upstream_web_url("https://me:ghp_secret@github.com/o/r.git") == "https://github.com/o/r"
+
+
+@pytest.mark.parametrize(
+    "upstream",
+    [
+        "local:/home/me/src/r",
+        "file:///home/me/src/r",
+        "javascript:alert(1)",
+        "/home/me/src/r",
+        "https://",
+        "",
+        None,
+        42,
+    ],
+)
+def test_upstream_web_url_refuses_what_has_no_web_page(upstream: object) -> None:
+    assert upstream_web_url(upstream) is None
+
+
+def test_code_clone_upstreams_skips_missing_unreadable_and_local(vault: Path) -> None:
+    for name, meta in [
+        ("web", "upstream: https://github.com/o/web.git\n"),
+        ("local", "upstream: local:/home/me/src/local\n"),
+        ("no-upstream", "papers: []\n"),
+        ("broken", "upstream: [unclosed\n"),
+    ]:
+        (vault / "codes" / name).mkdir(parents=True, exist_ok=True)
+        (vault / "codes" / name / "repo-meta.yaml").write_text(meta, encoding="utf-8")
+    names = ["web", "local", "no-upstream", "broken", "gone", "../escape", ""]
+    assert code_clone_upstreams(vault, names) == {"web": "https://github.com/o/web"}

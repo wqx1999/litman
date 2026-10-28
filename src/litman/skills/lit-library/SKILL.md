@@ -1,143 +1,53 @@
 ---
 name: lit-library
-description: "Write side of the litman vault — drives the `lit` CLI to change the library. Use when the user wants to add a paper (or its SI files) to their **global** vault, browse/filter all papers, tag with controlled vocabulary, bind code repositories to a paper, export a BibTeX file for writing, manage the project registry (link/unlink papers to projects), govern the TAXONOMY, delete or restore a paper, or rebuild the vault's derived views. Triggers: 'add to lit library', '加到文献库', 'lit add', SI files ('把这些 SI 加到这篇', 'add these SI files', '删掉 si-02'), 'show me all my papers on X', 'tag/classify this paper', 'link this code repo to that paper'; export bib ('导出 bib', 'export refs', 'thesis bib', '准备引用', 'refs.bib'); project lifecycle ('新建项目', 'register a project', 'rename/delete the project', 'the project moved', 'list my projects'); TAXONOMY governance ('合并这两个 topic', 'merge/rename a tag value', '删掉这个 topic/method', '我的 topic 是不是太碎了', 'tidy my tags'); restore a trashed paper ('恢复删掉的论文', 'restore from trash'); delete a paper ('把这篇删了', '删掉这篇论文', 'delete/remove this paper', 'lit rm'); rebuild the vault's derived views ('views 乱了', '重建视图/索引', 'refresh-views'); unlink a paper from a project ('把 X 从这个项目里拿出来/移出', 'unlink this paper from the project'); clone/add a code repo to a paper ('把代码 clone 下来', 'clone this repo', 'add the github repo', 'lit code add'). NOT for discussing/comparing/summarizing a paper you are reading — that's the lit-reading skill. NOT for project-local References/ folders — that's the ref-manager skill."
+description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib (or RIS for EndNote), rename, delete or restore a paper, or tidy the topic / method / data vocabulary. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '导出到 EndNote', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids'. NOT for a project's own References/ folder — that's ref-manager."
 ---
 
-# lit-library — Global Literature Vault Skill
+# lit-library — the write side of the litman vault
 
-Write side of litman. Read-side companion: **lit-reading**.
+Changes the library through the `lit` CLI. Reading, discussing and closing out a paper is **lit-reading**.
 
-## Architecture you must respect
+## Rules — they hold for every workflow below
 
-1. **Two-root layout.** Vault and code repo live in different filesystem locations. Discover the vault via `$LIT_LIBRARY` (if set), the active registered vault (`lit vault list`), or `lit-config.yaml` walk-up — never assume a relative path.
-2. **LLM never writes data files directly.** Extract metadata as JSON to a temp file, then call `lit add --from-llm-json <path>`. The CLI writes `papers/<id>/metadata.yaml`. Never write yaml/markdown into the vault yourself.
-3. **TAXONOMY is mutated only via `lit taxonomy {add,rename,merge,rm}`** (and `lit project` for the `projects` dict). Never hand-edit `TAXONOMY.md`.
-4. **Vault is NOT git-tracked.** The CLI handles atomicity — don't try to use git to roll back.
-5. **Agent-writable free-form = `notes.md` (overwrite) + `discussion.md` (append) only.** `lit add` scaffolds both, each with an HTML-comment line stating its format — read it before you write, and never strip it. The one in-place edit in `discussion.md`: fixing an SI citation `lit health-check` flagged, on the user's go — that citation only (lit-reading B12). Every other file in `papers/<id>/` and `codes/<name>/` is CLI-mediated. Drive only the **forward** paper-to-paper relation fields (`related` / `extends` / `contradicts`); the CLI auto-maintains the reverse pair (`extended-by` / `contradicted-by`) — never set a reverse field by hand.
-6. **Run each `lit` command as a shell call of its own.** The command rule litman installs for your agent allows a command that *is* `lit …` and nothing else, so `which lit && lit …`, `cd <dir> && lit …`, `lit … ; echo $?`, `lit … | head` and redirections (`2>&1`, `> file`) are refused. Read the exit code and the output from the tool result, and filter the output yourself.
+1. **Read with `--format json`, one `lit` command per shell call.** Every read of the vault (`lit list`, `lit show`, `lit project list`, `lit taxonomy list`, …) takes `--format json` (`lit search` and `lit related` print JSON already): the table form is cut to the terminal's width. The command rule litman installs for your agent allows a command that *is* `lit …` and nothing else, so `which lit && lit …`, `cd <dir> && lit …`, `lit … ; echo $?`, `lit … | head` and redirections (`2>&1`, `> file`) are refused. Read the exit code and the output from the tool result, and filter the output yourself.
+2. **Not sure what the user means, or which command or flag does it → `lit help` / `lit <cmd> --help` first**; if it is still unclear, ask the user. Never guess a command or a flag from memory.
+3. **A request no workflow here covers → look it up in `lit help`.** If a command does it, run it — Rules 4 and 11 still apply. Don't answer "I can't" before you have looked.
+4. **Sensitive operations come in two levels.**
+   - **Never run these, even when asked — show the exact command and let the user type it:** `lit trash empty` and `lit rm --purge`. Nothing brings their files back. You may run `lit trash empty --dry-run` or `lit rm <id> --dry-run` first to show what would go; `trash empty` also deletes the folders `lit health-check --fix` moved to `.trash/replaced-folders/`, so say that too.
+   - **Run these only after the user has seen the consequences and said go:** `lit rm <id>` (moves the paper to the trash), `lit rm <id> --si si-NN` (deletes an SI file for good — there is no trash for SI), `lit code rm`, `lit taxonomy merge`, `lit taxonomy rm`, `lit project rm`, `lit export --force` (overwrites a hand-edited .bib), and rewriting a `notes.md` that holds more than the `lit add` scaffold. Never start one yourself — relaying a `lit` hint that names one is fine, and lit-reading B10 may offer a `notes.md` rewrite in its closing proposal. When the user asks for one, show the command and what it will do — run its `--dry-run` where it has one and relay the lines verbatim, never summarising a link count away — and wait. Their request and their go after seeing the consequences are the two confirmations: then run it (with `--yes`: the CLI's own `y/N` prompt never reaches you, and a non-interactive run without `--yes` aborts) and relay the result. Don't ask a third time.
+   - **Renames lose nothing** (`lit rename`, `lit taxonomy rename`, `lit project rename`): say what will change, then run them, with no separate question.
+5. **Write only in the active vault.** Reading another registered vault is fine. To write into another one, the user switches first (`lit vault use <name>`).
+6. **Windows PowerShell 5.1** shows whatever `lit` writes to stderr, warnings included, as a red error and may report exit code 1. Judge by what the command printed, not by the colour.
+7. **What you write yourself.** **Never** write `metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, `lit-config.yaml` or `codes/<name>/repo-meta.yaml`, and never write, rename, copy into or delete anything in `papers/<id>/supplementary/` — every such change goes through `lit` (metadata as JSON through `lit add --from-llm-json` or `lit modify`, vocabulary through `lit taxonomy` / `lit project`, SI through `lit add --si` / `lit rm <id> --si`). The only files you write are `notes.md` (overwrite) and `discussion.md` (append); `lit add` scaffolds both with an HTML-comment line stating the format — read it before you write and never strip it. The one edit inside existing `discussion.md` text is an SI citation `lit health-check` flagged, fixed on the user's go: that citation only (lit-reading B12). When `lit` stops with a message that leaves the act to the user — `Cannot use <file>: '<field>' is not a list`, `… by hand`, `Re-save it as UTF-8`, `Rename the folder, then retry`, `Fix that file, then retry`, `move it out of supplementary/`, `could not read notes file … — skipped` — relay it verbatim and stop: no metadata edit, no folder move or rename, no re-encoding, no rewriting that notes.md. If the user asks you to edit one of these files by hand, say why not and offer the `lit` command that does it.
+8. **Don't install, upgrade or uninstall litman.** If `lit` is missing, give the user the install command — `curl -LsSf https://get.litman.dev/install.sh | sh` (or `uv tool install litman` / `pipx install litman`) — and stop. If `lit hello` says a newer litman exists, pass that on and carry on with the task.
+9. **Cite in-vault papers as `[[paper-id]]`**, never in backticks or plain text — those escape `lit rm`'s `(deleted)` tagging and `lit health-check`'s dangling-link check. Check that each `[[X]]` you write or keep exists (`lit show X --format json`); a missing one becomes `[[X]] (deleted)`. Cite this paper's own SI file as `si-01.pdf（<original name>）`, never a bare number; another paper's SI as `[[<other-id>]]` plus the file's original name, without its `si-NN`.
+10. **Don't organise on your own.** Never tag, add an edge, link a paper to a project or bind code on your own initiative. Saying what you notice ("this touches tokenization") is fine — noticing is not tagging. Propose; the user decides; then you run the command.
+11. **Write only on an explicit instruction.** Reads need no permission. A write — a status or date stamp, a tag, a grade, `type`, an edge, a project link, rewriting `notes.md`, appending to `discussion.md` — runs only when (a) the user's message asks for that write ("标成已读", "记下来", "打上 X", "加到文献库"), or (b) the user said yes to a proposal that listed it. A remark is not an instruction: "这篇差不多了", "感觉没什么要读的了", "读完了", "looks done" get one proposal that lists every write you intend, and then you wait. A yes covers the listed items only — nothing extra on the side. One exception: `lit add --si <id>` with no files — say so in one line, then run it; it only opens a window, and nothing is written until the user adds files and presses Done.
 
-If a user request violates any of the above, push back and propose the CLI-mediated alternative.
+## Hand-offs with lit-reading
 
----
+- **Inbound.** lit-reading hands you one write mid-discussion, with the paper id, the exact intent ("add `extends=<other-id>`") and what the user already said: do it, report, hand control back. Don't start a fresh ingest session or take over the conversation.
+- **Outbound.** When the talk turns to reading — a read-finished remark ("读完了" / "这篇一般" → its B10), a question about the content or the SI ("Table S3 里…" → its B15), resume, inbox, library health — switch to lit-reading Phase 2 with the paper id, the PDF path and what the user said; most often right after a `lit add`. Its B10 owns the closing proposal; don't run it here.
 
-# PART A — Autonomy, chaining, scope (read this first)
+## Finding the vault
 
-## A1. Autonomy ladder
+`lit vault list --format json` lists the registered vaults and the active one (`$LIT_LIBRARY`, if set, overrides it); `lit hello` confirms `lit` is installed (Rule 8 if not). Never assume a relative path. A project `References/` folder and a global vault both present → ask which one the user means.
 
-Classify every action before you take it.
+## Workflows, most used first
 
-| Tier | Operation class | Behavior | Examples |
-|---|---|---|---|
-| 1 | **Read** | Just do it, don't ask | `lit list`, `lit show`, `lit cite`, scan a PDF, query INDEX via `lit list --format json`, `lit project list`, `lit code list`, `lit trash list`, `lit taxonomy list`, `lit vault list` (all five take `--format json`), `lit health-check` |
-| 2 | **Write, reversible, single-paper** | Do it, then report | `lit modify --set priority-<P>=A` *(only for a project the paper is linked to)*, `lit modify --add-tag topics=X` *(only after Flow A/B — [E])*, `lit modify --set-author "…"` *(ordered author rewrite)*, `lit read`/`skim`/`promote`/`drop`/`revisit`, `lit link`/`unlink` *(paper↔project, explicit request only — [H])*, `lit code link`, `lit code unlink`, `lit modify --set relevance-<P>=`, `lit add --si <id> FILE...` *(files the user handed you — say first that they will be moved into the vault; [L])* |
-| 3 | **Write, multi-paper / structural / remote-IO** | Ask once before acting | `lit add <pdf>` (a new paper; confirm — [A]/[B]), **`lit rename <old> <new>`** *(paper id — cascades into other papers' ref lists, every `[[id]]` in notes, project links; see [A]'s standalone-rename rule)*, `lit code add` (git clone), `lit taxonomy add` / `lit project add` (user types the new value; `taxonomy add` refuses a look-alike of a registered value — `--force` only when the user, having seen the match, still wants the new one — [E] Flow B), `lit taxonomy merge` + `lit project rename`/`rm` ([J]/[H]), `lit export --force` ([G]). *(Exception — `lit taxonomy rename`/`rm` of a value the user **named explicitly**: show the blast radius then act, do not re-ask — `rename` just runs (no prompt), `rm` runs with `--yes`; see [J].)* |
-
-The CLI hard-rejects unregistered controlled-vocabulary values, so your job is to **not invent values**.
-
-**Execution ownership.** lit-library runs every Tier-2 write inline — it owns the write surface. lit-reading runs single-paper *evaluation stamps* inline (`lit read`/`promote`/`skim`/`drop`/`revisit`, `lit modify --set priority-<P>=` / `--set type=`) and `lit add --si` for the paper it is reading (its B15), and chains to lit-library for everything else.
-
-## A2. Chain hand-off contract
-
-**Inbound from lit-reading:** when summoned mid-discussion, do the **one** write you were handed, report the result, and hand control back. Do **NOT** start a fresh interactive `lit add` session or swallow the conversation with a multi-step ingest. The hand-off carries: paper id, exact intent (e.g. "add `extends=<other-id>`"), any user instruction already given.
-
-## A2-out. Outbound hand-off to lit-reading
-
-The chain is **bidirectional**: lit-reading hands writes *in* (A2), and lit-library hands *reading/evaluation* back *out*. lit-library owns the write surface but NOT the reading verdict — the moment the conversation shifts from "change the library" to "read / discuss / evaluate this paper", **switch to lit-reading** and resume at its Phase 2 (with the paper id already in context).
-
-**Outbound triggers** (most common right after an `lit add`, but any time mid-session):
-
-- read-finished verdict — "读完了" / "这篇一般" / "没价值" / "done with this paper"
-- discussion / comprehension — "它讲了啥" / "这篇关于 X 怎么说" / "compare it to <other>" / "有没有类似的"
-- a question the SI answers — "Table S3 里…" / "SI 里写了啥" / "what's in the supporting information" → lit-reading B15 (it asks for the SI when the paper has none yet)
-- resume reading / inbox triage / library health — all lit-reading triggers
-
-**What to pass:** paper id, PDF path, and whatever the user just said. **Resume point:** lit-reading Phase 2 (loaded context) → B10 verdict ritual if the cue was read-finished. Do **NOT** try to run the status verdict, `read-date` stamp, or metadata self-check inside lit-library — those are lit-reading B10's, by design (SOP-1). The failure mode this prevents: staying parked in lit-library after add, so a "读完了，一般" never reaches the verdict ritual and the paper rots at `status: inbox`.
-
-## A3. Scope discipline — SOP vs maintenance, reversibility, active-vault confinement
-
-**(1) SOP vs maintenance.** Operation Routing below covers high-frequency literature actions — ingest, tag, link, bind code, export, govern vocab, restore. Low-frequency vault-maintenance (`lit sync`, `lit vault use`, `lit config`, `lit refresh-views`, `lit init`, `lit install-skill`, `lit vault {add,info,set-path,remove}`, `lit code update`/`restore-all`) has **no SOP** — fall through to `lit <cmd> --help`.
-
-- **Read vs write within the no-SOP set.** Pure-read no-SOP commands (`lit code list`, `lit vault info`, `lit vault list`, `lit config show`) stay **Tier 1: just run and report**.
-- **"Teach, don't do" applies only to no-SOP writes / maintenance.** Run `lit <cmd> --help`, surface the command, let the user run it. Execute it yourself only when the user explicitly asks. **Never guess a flag or invent a command from memory.**
-
-**Destructive operations by reversibility:**
-
-- **Soft-delete `lit rm`** (default → moves `papers/<id>/` into `.trash/`, recoverable via `lit trash restore`; [I]). **Never initiate.** May execute on explicit, confirmed request — via the agent path: the CLI's own `y/N` never reaches you (a non-tty run without `--yes` aborts with "pass --yes to confirm"; with `--yes` the warning block is skipped entirely), so first run `lit rm <id> --dry-run` (read-only) and **relay its impact set verbatim** (the paper + every reference that would be cleared / repo unbound / orphaned) — never silently delete, never summarize the link count away — then, on the user's go, run `lit rm <id> --yes`.
-- **Irreversible removal** (`lit rm --purge`, `lit trash empty`): **NEVER execute these, even on explicit request.** Surface the exact command and let the user run it. **Delete-safety preview (read-only, you MAY run it):** before surfacing a destructive command you may run `lit rm <id> --dry-run` (lists the paper + every link that would be cleared / unbound / orphaned) or `lit trash empty --dry-run` (lists every entry that would be permanently removed; folders `lit health-check --fix` moved out of project hubs — `.trash/replaced-folders/`, lit-reading B12 — are only counted, and `empty` deletes them too, so say so when surfacing the command). The `--dry-run` flag writes nothing — it belongs to the delete-safety family, NOT to retrieval; do not reach for `rm --dry-run` as a way to inspect a paper's links (use `lit show` / `lit related` for that).
-- **`lit rm <id> --si si-NN`** (repeatable) deletes an SI file **for good** — there is no trash for SI; the way back is adding the file again ([L]). Like `lit code rm` it is confirm-then-run, not the never-execute class. **Never initiate.** On an explicit request (including the user's go on a `lit health-check` hint or `kept …` line that names this command): run `lit rm <id> --si si-NN --dry-run` and relay its lines verbatim — each file with its original name, and any `<file> is cited 2× in discussion.md` — and tell the user the file goes for good: no trash, the only way back is adding it again (on this path the CLI's own `This can't be undone` warning never reaches them). A record whose file is already gone (`supplementary_missing`) still reads `Would delete` in the dry-run; say that only the record goes. Then, on the user's go, run it with `--yes` and relay the result, including a `still cited … — lit health-check lists the lines` line (those citations are now stale; lit-reading B12). `--si` cannot be combined with `--purge`. Deleting the whole paper moves its `supplementary/` into the trash with it (`--purge` deletes it too).
-- **`lit code rm`** stays governed by [C.3] (confirm before execute; clone is re-cloneable).
-
-**(2) Write only in the active (primary) vault.** Every write — ingest, modify, link, code add, taxonomy, appends to `notes.md` / `discussion.md` — targets the **currently-active vault only**. Cross-vault reading is fine; cross-vault writing is forbidden. If the user's intent requires writing into a different vault, **tell the user to switch first** (`lit vault use <name>`) and only then operate.
+**[A]** add a paper from a PDF · **[B]** from a DOI (preferred whenever one exists) · **[E]** metadata, tags, edges · **[G]** export a .bib or RIS · **[D]** browse · **[L]** a paper's SI files · **[C]** code repositories · **[H]** projects · **[I]** restore a trashed paper · **[J]** vocabulary governance · **[K]** repair a legacy library.
 
 ---
 
-## How to detect the vault
+## [A] Add a paper from a PDF
 
-```bash
-lit hello                                   # confirms `lit` is installed
-lit vault list                              # registered vaults + which is active ($LIT_LIBRARY, if set, overrides)
-lit list --limit 1 --format json            # confirms the vault is reachable
-```
+A local PDF with no DOI anywhere (none from the user, none printed in it), or a failed `--doi` fetch; otherwise [B]. Only a DOI or a URL → ask for the file.
 
-If `lit` is missing: tell the user to install it — `curl -LsSf https://get.litman.dev/install.sh | sh` (or `uv tool install litman` / `pipx install litman`). Do NOT try to install it yourself.
+1. **Read the PDF, down this ladder until a reader works:** your agent's file-read tool (in Claude Code: `Read(pdf_path, pages="1-3")`) → a PDF / document MCP tool, if you have one → `lit pdf-text <pdf> --pages 1-3`, which needs nothing beyond `lit` (exit 3 = no text layer, a scan: back to a multimodal reader or OCR). All three failed → say which rung failed and why, and give the user poppler's install command for their system, or suggest a vision-capable model. **Never run an install yourself.**
 
-If `lit hello` says a newer litman is available: pass that on to the user and get on with the task. Do NOT upgrade litman yourself — that would replace the tool mid-session.
-
-## When to use lit-library vs other skills
-
-| User intent | Skill |
-|-------------|-------|
-| Add / tag / link / export / govern in the **global** vault | **lit-library** (this skill) |
-| Discuss / compare / summarize a paper you are **reading** | lit-reading |
-| Add a paper to a **project**'s `References/` dir | ref-manager |
-| Cite in a `.bib` for a LaTeX manuscript | cite-retrieval |
-| Review/critique manuscript text | paper-reviewer |
-| Draft manuscript sections | academic-writing / paper-writer |
-
-If the user has both a project `References/` and a global vault, ask which one they mean before proceeding.
-
-## Operation Routing
-
-- **[A] Add paper from a PDF (LLM-augmented)** — PDF in hand and **no DOI anywhere** (not user-supplied AND none printed in the PDF), or the `--doi` CrossRef fetch failed.
-- **[B] Add paper from a DOI (direct CrossRef)** — a DOI is available **from any source** (user-supplied OR read off the PDF); no LLM extraction. Preferred whenever a DOI exists.
-- **[C] Code repositories** — bind new clone (URL or local dir), bind existing repo (1:N), retire/unbind.
-- **[D] Browse / search / inspect** — find a paper, list by filter, show metadata.
-- **[E] Modify metadata, tag, or apply an edge** — fields, Flow A/B tagging, confirmed edge.
-- **[G] Export bib for writing** — project vault → `.bib`.
-- **[H] Project operations** — register / link / unlink / list / rename / delete / set-path.
-- **[I] Restore a trashed paper** — execute the restore lit-reading B13 confirmed.
-- **[J] TAXONOMY governance** — merge / rename / remove a controlled value; tidy a fragmented vocabulary.
-- **[K] Repair a legacy library** — health-check reports filler metadata / filler ids in bulk on a vault filled before the guards existed.
-- **[L] A paper's SI files** — add the files the user hands you, delete one, add one back. Asking the GUI for SI while reading is lit-reading B15.
-
-**SOP-1 (hard rule for every branch):** the agent does not proactively tag, edge-link, project-link, or code-bind a paper. Listing observations ("this touches tokenization, evaluation") is fine — *listing ≠ tagging*. Always **propose → user decides → you run the CLI.** Never self-initiate a structural write.
-
----
-
-## [A] Add Paper from a PDF (LLM-augmented)
-
-Use when the user has a PDF and no DOI, or explicitly says "add this paper with AI".
-
-**PDF-required precondition.** `lit add <pdf>` (a new paper) requires `PDF_PATH` as a positional argument. If the user gives only a DOI / URL with no local file, ask for the path ("litman ingests from a local PDF you've read").
-
-**Pipeline**:
-
-1. **Read the PDF** — a *must-achieve* goal. Walk this ladder until one rung works:
-
-   1. **Your agent's file-read tool** (default; in Claude Code: `Read(pdf_path, pages="1-3")`): PDFs are natively handled when the agent's pipeline is multimodal.
-   2. **PDF-related MCP tool** (for non-multimodal backends): scan your `available tools` for any whose description mentions PDF / document / extract.
-   3. **`lit pdf-text` — deterministic fallback, no model / network / system tool**: `lit pdf-text <pdf> --pages 1-3` (omit `--pages` for the whole doc). litman ships pypdf as a hard dependency, so this works wherever `lit` runs — it does NOT need poppler / pdftoppm. Exit code 3 means "no extractable text layer" (scanned / image-only PDF): go back up to a multimodal reader or OCR, don't retry here.
-   4. **Only if every rung above failed** (no multimodal read, no PDF MCP, and `lit pdf-text` returned no text): name the rung that failed and the exact gap, then **surface** OS-appropriate install commands for the user to run (`brew install poppler` / `apt install poppler-utils` / `dnf install poppler-utils` / `scoop install poppler`) or suggest a vision-capable model. **Show these commands — never execute an install yourself.**
-
-   Extract: title (page 1 header), authors (page 1 list — preserve "Family, Given" order), year, DOI (search first 1-2 pages), journal / venue, abstract.
-
-   **DOI-found reroute (do this the moment a DOI surfaces).** If you read a DOI off the PDF, **abort the LLM-extraction path and switch to [B]** — run `lit add <pdf> --doi <doi>` instead. CrossRef returns authoritative metadata plus `volume` / `issue` / `pages` / `publisher` / `venue-type`, which the LLM-json schema cannot carry. Stay on [A] only when (a) no DOI appears anywhere in the PDF, or (b) the `--doi` CrossRef fetch fails — then fall back here with the fields you already extracted. The up-front [A]/[B] split keys off "did the user hand a DOI"; this rule covers the other case ("a DOI turned up while reading the PDF").
-
-   **Also harvest code-repo URLs into a side-buffer** (NOT part of the metadata JSON — feeds [C.1]). This is **best-effort over the pages you already read** — do NOT read the whole PDF just to collect URLs. Full-text code-URL discovery is the CLI's job: `lit add` runs a full-text scan and emits the `[code_candidates]` block ([C.1] source 1). So harvest opportunistically from whatever pages you opened for metadata (`Code Availability` / `Data Availability` blocks, Acknowledgments, footnotes, first-page footer, inline "we release at https://…" / "available at https://github.com/…"); for each URL note one short context cue ("we present X" / "we use X" / "see also"). An empty side-buffer is expected and fine — the CLI scan is the safety net.
-
-2. **Verify, do NOT hallucinate.** If you cannot find a field, leave it as `null` rather than guessing.
-
-3. **Write metadata to a temp JSON file** with your file-write tool, at a fresh path (e.g. `lit-llm-<random>.json` in the system temp dir):
+   Extract the title (page 1), the authors ("Family, Given", in order), year, DOI (first 1–2 pages), journal and abstract. **A DOI on the PDF → switch to [B] at once**: CrossRef's metadata is authoritative and carries volume / issue / pages. Note any code-repo URLs on the pages you opened (Code / Data Availability, footnotes), each with a one-line cue, for [C.1]; don't read the whole PDF for them — `lit add` scans the full text itself.
+2. **Leave a field `null` rather than guess it.**
+3. **Write the JSON to a fresh temp file** (e.g. `lit-llm-<random>.json` in the system temp dir). Unknown keys are rejected; tags are not part of it:
    ```json
    {
      "title": "<exact title from page 1>",
@@ -149,90 +59,71 @@ Use when the user has a PDF and no DOI, or explicitly says "add this paper with 
      "abstract": "<full abstract text or null>"
    }
    ```
+4. **Run `lit add <pdf-path> --from-llm-json <json-path>`, then delete that JSON file** — never leave it in the temp dir.
+5. **Confirm in two separate messages — never bundle them:**
+   - **5a** — only the derived `id` and the `title` (don't judge the title yourself); then **stop and wait** for the user to confirm the source is right. No code table, no status offer.
+   - **5b** — after their yes, in a new message: the [C.1] table if the CLI's `[code_candidates]` block or your URL notes found anything (a single CLI-only candidate still goes through it); both empty → stop. Don't offer tags, projects, status or grades (Rule 10). If the user then starts reading or judging the paper, hand off to lit-reading.
 
-4. **Call the CLI with that path written out, then delete the temp file**:
-   ```bash
-   lit add <pdf-path> --from-llm-json <json-path>
-   ```
-   Then delete that exact JSON file — it was a one-shot bridge, not a kept artifact. Never leave the extracted-metadata JSON lying in a temp dir.
+**`lit add --from-llm-json` stops with an error or prints a warning → read `add-errors.md` (next to this SKILL.md) before anything else.** Its two worst traps: 🔴 never `--auto-suffix` (it files another copy under an id nobody chose); 🔴 never take the year from the download, the file's date or today (a wrong year is only ever found by hand).
 
-5. **Confirmation gate (mandatory — human in the loop).** `lit add` prints a success panel and runs a full-text code-URL scan. Run this as **two separate messages — never bundle them**:
+**Duplicate.** `lit add` refuses a DOI already in the vault, naming the id: don't retry or force a second copy — say "already in your vault as `<id>`" and hand off to lit-reading Phase 2 with that id.
 
-   - **5a — STOP and confirm the source.** Report ONLY the derived `id` and the `title`, then **stop and wait** for the user to confirm the source metadata is right. Surface only id + title — do not self-judge title correctness. Do **NOT** attach the code-candidate table, a status offer, or anything else to this message. This is a hard gate: the next move waits on the user's word.
-   - **5b — after the user confirms, in a fresh message:** if **either** the CLI scan **or** your step-1 side-buffer surfaced a candidate → present the merged table ([C.1]). A single CLI-only candidate **still goes through the [C.1] three-state table** — no shortcut. If both are empty, stop here. Do **NOT** proactively enumerate tag / project / status / grade offers (SOP-1).
+**An SI file is not a paper** (`*_si_001.pdf`, `*_MOESM1_ESM.pdf`, "Supporting Information" on page 1). Say so before running anything: its paper in the vault → offer `lit add --si <id> <file>` ([L]); otherwise ask for the article's own PDF. Never switch commands silently.
 
-   **Post-ingest curation is lit-reading's, not yours.** Status verdict (`deep-read` / `skim` / `dropped`), `read-date`, and the metadata completeness self-check all live in **lit-reading B10** — lit-library deliberately does not run them after add (SOP-1). If, right after confirming, the user starts reading or evaluating the paper ("读完了" / "这篇一般" / "done with this" / "what does it say about X"), **hand off to lit-reading** (see A2-out) — do not stop dead and do not absorb the reading verdict here.
+**Wrong title or id after the add.** `lit modify <id> --set title=<correct>` fixes the title (notes.md's `# <title>` line follows), `lit rename <old> <new>` the id — each leaves the other alone; `lit rm` plays no part. "把这篇的 id 改成 X" / "rename this paper to X" is `lit rename`: don't ask whether they meant the title. It rewrites every in-vault reference and loses nothing — say what it will change, run it (Rule 4), and relay each `plain text <file>:<lines> still says <old>` line for the user to decide. Suggest an id as `<year>_<Family>_<Keyword>`, marked "computed — confirm or change".
 
-**Duplicate-add path.** `lit add` prechecks the DOI and **refuses** with a `DuplicateDOIError` naming the existing id. Do **not** retry or force a second copy — **relay "already in your vault as `<id>`" and route to *reading* it** (chain to lit-reading Phase 2 with that id). With no DOI, the same paper is caught by the id check instead (next list).
+## [B] Add a paper from a DOI
 
-**An SI file is not a paper.** A PDF named like `*_si_001.pdf` / `*_MOESM1_ESM.pdf`, or headed "Supporting Information", is the SI of a paper. If the user hands you one to add, tell them so before running anything: when its paper is in the vault, offer `lit add --si <id> <file>` ([L]); otherwise ask for the article's own PDF. Never switch commands silently.
-
-### JSON Schema Contract (LLMCandidateMeta)
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `title` | string (non-empty) | ✓ | Exactly as printed; no normalization |
-| `authors` | list[string] | ✓ (>=1) | "Family, Given" each; preserve order |
-| `year` | int \| null | – | Publication year |
-| `doi` | string \| null | – | Canonical DOI, no URL prefix |
-| `journal` | string \| null | – | Venue / journal / preprint server |
-| `arxiv-id` | string \| null | – | e.g. "2401.12345" |
-| `abstract` | string \| null | – | Currently informational |
-
-Unknown keys are rejected. Topics/methods/data are **NOT** in this schema — classification goes through Flow A ([E]) as a follow-up.
-
-### When `lit add --from-llm-json` errors
-
-- **`DuplicateDOIError` / "DOI 'x' already registered"** → see Duplicate-add path above.
-- **"Paper id 'X' already exists … Pass --auto-suffix … or --id"** → `lit show X` first. The same paper → the duplicate-add path above; a different one → propose an `--id` to the user and stop. 🔴 Never `--auto-suffix`: it files another copy under an id nobody chose.
-- **"Metadata from LLM JSON has no year"** → re-read the PDF (page 1, header/footer, DOI landing page), ask the user, or pass `--id <year>_<Family>_<Keyword>` explicitly. 🔴 **Never substitute the download year, the file's date, or the current year.** The year is baked into the id and into every exported citation; a guessed one passes every later check and is only findable by hand, years on.
-- **"field 'title': String should have at least 1 character"** → re-extract.
-- **"This title cannot produce a paper id"** → the title is in a script the id cannot carry. Ids are ASCII (they are folder names on Windows, macOS and Linux alike), and both keyword paths split on whitespace — so a Chinese, Japanese or Korean title arrives as one token and slugs down to whatever stray Latin fragment was inside it (`关于化合物A的合成方法` → `2018_Zhang_A`). That id is refused rather than written, because short of `lit rename` it is permanent. **Pass `--id <year>_<Family>_<Keyword>`.** The error names a candidate when the title held a usable fragment (`--id 2018_Zhang_PROTAC`); otherwise the keyword is **yours to invent** — the paper's English title if it has one (most Chinese journals print it), a transliteration otherwise. 🔴 **Say so and stop.** Report the id you chose *as invented*, not derived ("这个关键词是我起的,不是从标题算出来的 —— 用 `2018_Zhang_Green-synthesis` 可以吗?"), and let the user replace it before you run the add. Nothing in the vault records that an id was guessed, and short of `lit rename` it is permanent; one line now costs less than a handle nobody recognises. The keyword does **not** have to match the stored title, and the stored title stays in its own script: only the handle is ASCII. 🔴 **Never translate the `title` field to make the id easier** — the id is a door plate, not a translation, and rewriting the stored title to English destroys the paper's actual name. 🔴 The first author's family name has the same constraint — write it in pinyin/romanised form (`Zhang, Tianshun`), which is also what CrossRef and every .bib consumer expect.
-- **"is `…`, a placeholder"** (on `title` or on the **first author**) → the field holds a filler like `Unknown` / `N/A` / `untitled`. Re-extract it from page 1. 🔴 **Never fill a placeholder to get the add through** — the title keyword and the first author's family name both go into the id, so either one is permanent short of `lit rename`. For a work with no personal author (patent, editorial, standards document) name the **issuing body** — the patent assignee, the journal, the organisation. For a genuinely unattributed work write `Anonymous`: that is a claim about the document, whereas `Unknown` only says the metadata was never read.
-- **`Warning: author N is 'Unknown', not a real name`** (the add **succeeded**) → a filler after the first author does not block the import, because it never reaches the id. Do not walk away from it: re-read that one name off the PDF and rewrite the list with `lit modify <id> --set-author "…"` (one flag per author, **in order** — 🔴 not `--rm-tag`+`--add-tag`, which appends the correction to the END of the list). If the name is genuinely unreadable, say which position is unresolved when you report the add — do not leave the user to find `Unknown` inside a .bib later.
-
-### Title / id rollback (when the confirm gate fails)
-
-`id` and `title` are **decoupled**: `lit modify --set title=` changes the field without touching the id; `lit rename` changes the id handle (cascades every back-reference) without touching the title. Three branches:
-
-1. **Title field wrong** (almost only on `--from-llm-json`; `--doi` is authoritative) → `lit modify <id> --set title=<correct>`.
-2. **Door-plate keyword unsatisfying** (decoupled from title-correctness; possible on either path) → `lit rename <old> <new>`. **Suggest** a new id following `<year>_<Family>_<Keyword>`, label it "computed, confirm or change", let the user decide.
-3. **`lit rm` does NOT participate** — it is deletion semantics, would discard accumulated state and hit the reference safety net.
-
-**Standalone id rename (not a rollback).** When the user names both handles outside any add flow ("把 `<old>` 的 id 改成 `<new>`", "rename this paper to `<new>`", "把这篇的 id 改成 X"): `lit rename <old> <new>`. **Tier 3** — cascades every back-reference (`related` / `extends` / `contradicts` edges, project links, INDEX). Same discipline as `lit project rename` ([H]) and `lit taxonomy rename` ([J]): for an **explicitly named** rename, **show the cascade impact** ("renames `<old>`→`<new>`, updates the N papers referencing it") **then run and report**. Semantics-preserving (no data loss) → the CLI has no prompt and no `--yes`; **named ⇒ show-then-act, do NOT insert a separate y/n confirmation**. Map a bare "把这篇的 id 改成 …" straight to this — do not stall asking which of rename / modify-title / binding the user means; the id-change wording is unambiguous.
+`lit add <pdf-path> --doi <doi>` — the user gave a DOI, or [A] found one; a local PDF is still required. There is no `--arxiv`: given only an arXiv id, read the DOI off the PDF; none printed → stay on [A] with the id in `arxiv-id`. 🔴 Never make up a DOI from an arXiv id or look one up unprompted. The id keyword is still derived locally: **report the id and stop**; if the user dislikes it, `lit rename` ([A]).
 
 ---
 
-## [B] Add Paper from a DOI (direct, no LLM extraction)
+## [E] Metadata, tags, edges
 
-Entered two ways: (1) the user hands a DOI up front, or (2) the [A] DOI-found reroute fired because a DOI surfaced while reading the PDF. Either way, skip LLM extraction:
+**Every tag comes through Flow A or Flow B** (Rule 10).
 
-```bash
-lit add <pdf-path> --doi 10.1093/bioinformatics/btae364
-```
+- **Flow A — "tag this / classify it", no value named.** Propose **only registered values** (`lit taxonomy list <dict> --format json`, `used_by` = papers per value; never parse `TAXONOMY.md`); the user picks; you run `lit modify <id> --add-tag topics=<value>` (or `methods=` / `data=`). A near-duplicate you spot on the way → propose a merge ([J]), nothing more.
+- **Flow B — the user names a value.** Registered → apply it. **Not registered → `lit modify` refuses it**: register it first (`lit taxonomy add <dict> <value>`; a project through [H]), then apply. **Before registering, look for a near-duplicate** — up to case, `-` / `_` / spaces or a plural `s`, a prefix, a near spelling, the same meaning — and report it with its `used_by` ("`peptide` is already there, on 6 papers — use it?"). `lit taxonomy add` refuses a look-alike itself: relay it, offer the existing value, `--force` only if the user, having seen the match, still wants the new one. Never hand-edit `lit-config.yaml`'s `projects:` map.
+- **Stamps and fields.** Prefer the stamps to `lit modify --set`: `lit read` (read-date; `--date` backdates), `lit revisit`, `lit promote` (deep-read; it does not stamp read-date), `lit skim`, `lit drop`. A grade is `lit modify <id> --set priority-<project>=A|B|C` on a paper linked to that project; it can be changed, not cleared (`lit unlink` drops it). Authors: `lit modify <id> --set-author "Family, Given"`, one flag per author, in order — the only way to fix or reorder a name in place.
+- **Edges.** Only one the user confirmed, usually handed over by lit-reading. Run the **forward** field only — `lit modify <id> --add-tag extends=<other-id>` (or `related=` / `contradicts=`); the CLI writes the reverse field (`extended-by` / `contradicted-by`) on the other paper: **never set a reverse field, never run a second command for it.**
 
-Pipeline identical from id derivation onward; only the metadata source differs. Preferred whenever a DOI is available. PDF-required precondition still holds ([A]).
+## [G] Export a .bib or RIS
 
-**No `--arxiv` flag — to import a paper, `lit add` accepts only `--doi` / `--from-llm-json`.** If the user gives only an arxiv id, do NOT fabricate a DOI from it. A published/preprint PDF almost always prints its DOI on page 1 — read it off the PDF and use `--doi`. If no DOI is printed anywhere, stay on [A] (LLM extraction) and leave `doi: null`; the `arxiv-id` goes into the [A] JSON's `arxiv-id` field. Never resolve an arxiv id to a DOI by guessing or by an unprompted external lookup.
+| The user says | Command |
+|---|---|
+| "导出 bib" / names no project | `lit export --all -o refs.bib` — just run it |
+| "导出和 pepforge 有关的文献" | `lit export --project pepforge` (writes `./refs.bib`) |
+| "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` (A for any project; `--project <P>` for one) |
+| "导出到 EndNote" / "给 Zotero 用" | the same command plus `--format ris` (writes `./refs.ris`); EndNote imports it with the Reference Manager (RIS) option. A .bib does not import into EndNote reliably — don't offer it there |
 
-**Confirm gate.** Title is authoritative on this path — no re-confirm. But the door-plate keyword is still derived locally and can be unsatisfying. **Read out the derived `id` and stop**; if the user is unhappy with it, branch 2 of [A]'s rollback (`lit rename`).
+Cite keys are paper ids (`\cite{<paper-id>}`); re-running on the same file updates it. Other filters: `lit export --help`.
+
+1. **The CLI refuses to overwrite a file without the litman sentinel (a hand-edited bib) → never add `--force` yourself.** Relay the refusal: `--force` discards the user's edits, so it is Rule 4.
+2. "here" / "current dir" → the default `./refs.bib`; a *named* directory ("thesis 目录") → ask for the path, don't guess.
+3. An unregistered `--project` token → canonicalise case and whitespace only; else show the registered set.
+4. No project named → infer it from the context if you can, else `--all`, without asking.
+
+## [D] Browse and inspect
+
+`lit list --format json` with filters (`lit list --help`) and `lit show <id> --format json`. A paper id can be the full id, a unique case-insensitive substring, or `--paper-doi <DOI>` (not for `lit rename` or `lit add --si`). An ambiguous substring lists the candidates and exits non-zero — ask which one.
+
+## [L] A paper's SI files
+
+SI files sit in `papers/<id>/supplementary/` as `si-01.pdf`, `si-02.xlsx`, …; `si-NN` is litman's numbering (the lowest free number), not the publisher's.
+
+- **Add the files the user hands you** → `lit add --si <id> FILE...`. They are **moved** into the vault — the originals leave Downloads: say so before you run it. Each file is checked against the paper (stderr: `✓` / `?` / `✕` and the reason), and all are added or none. A `✕` cannot be added, even with `--force`: relay it. A `?` or a file over 100 MiB stops the run: ask the user; `--force` only on their yes.
+- **No files yet** → lit-reading B15: `lit add --si <id>` opens the SI window on the user's litman page.
+- **Delete one** → `lit rm <id> --si si-NN`, Rule 4. Run `--dry-run`, relay its lines verbatim (original names, any `cited 2× in discussion.md`), and say the file goes for good — no trash; the only way back is adding it again (the CLI's own warning never reaches the user here). A record whose file is already gone still reads `Would delete`: only the record goes. On the user's go, `--yes`; relay the result, a `still cited …` line included (lit-reading B12). `--si` does not combine with `--purge`.
+- **Add one back** → ask the user for the file, then `lit add --si <id> FILE`. **Open one** → `lit open <id> --si si-NN`.
+- 🔴 **Never download SI** — not from the publisher, PMC, Figshare or any copy; the user downloads it.
 
 ---
 
-## [C] Code repositories — bind, link, retire
+## [C] Code repositories
 
-A paper's `code-clones` field is a **1:N** relationship: one repo under `<vault>/codes/<name>/` can be cited by several papers.
+A repo under `<vault>/codes/<name>/` can serve several papers; `lit code add SOURCE` takes a URL or a local directory (copied; `--move` moves it).
 
-**`lit code add SOURCE` takes a URL *or* a local directory.** A URL is cloned shallow (depth = the config's `default_clone_depth`, 1 unless overridden; `--depth N` per call, `<1` = full history). A local path is copied in — or moved with `--move` — and a non-git directory is initialised as a fresh repo. `--name` overrides the derived repo name. So "bind the repo I already have on disk" is [C.1] with a path, not a reason to give up.
-
-### [C.1] Bind a NEW clone — reconcile CLI scan with agent re-read
-
-Two sources:
-
-1. **CLI scan** — `lit add` prints candidates fenced by `[code_candidates]` / `[/code_candidates]`, one per line as `<url> (p<page>, ×<count>)`. Empty: `no code repo URL found in full text`.
-2. **Agent side-buffer** — the URLs you harvested in [A] step 1.
-
-**Merge** (lowercase scheme + host, strip trailing `/` and sentence punctuation, preserve path case), tag each `[both]` / `[CLI only]` / `[agent only]`, present ONE table:
+**[C.1] Clone and bind a new repo.** Merge the CLI's `[code_candidates]` block with your URL notes from [A] (lowercase the scheme and host, strip a trailing `/` and sentence punctuation, keep the path's case), tag each, and present **one** table:
 
 ```
 Code repo candidates for <id>:
@@ -243,332 +134,38 @@ Code repo candidates for <id>:
 Pick which to bind: [1,3] / all / none
 ```
 
-Tag rules:
+Give a `[CLI only]` row a one-line cue from the PDF when you can — **never drop a CLI candidate silently**; say where you saw an `[agent only]` one. Both sources empty → no table, no question. Each pick: `lit code add <url> --paper <id>`.
 
-- **`[both]`** — high confidence.
-- **`[CLI only]`** — agent adds a one-line cue from PDF context when it can ("appears as dependency citation" / "deliverable in Methods"). **Advisory; never silently drop a CLI candidate.**
-- **`[agent only]`** — note where in the PDF the agent saw it.
+**[C.2] A repo already in the vault** → `lit code link <repo-name> --paper <id>`: binds, no clone. On the user's request only.
 
-**Both empty** → do not prompt.
+**[C.3] Unbind or retire — read the reverse list first** (`lit code list --format json`: each repo's `papers`). Other papers still use it → `lit code unlink <repo> --paper <id>`, which keeps the directory; 🔴 never `lit code rm --cascade` while other papers still cite the repo. The last one → `lit code rm <repo> --cascade --yes` deletes the directory: Rule 4. `lit unlink` without `code` is paper ↔ project ([H]).
 
-Each selected item runs:
-```bash
-lit code add <url> --paper <current-id>      # shallow clone (config default_clone_depth, 1 by default) + bind, atomic
-```
-**Tier 3** (git clone = remote IO). Binding one paper to multiple repos is not batch ingest — ingest is still one paper.
+## [H] Projects
 
-Inspect with `lit code list --paper <paper-id>` (tier-1 read). Pull updates with `lit code update <name>`.
-
-### [C.2] Bind an EXISTING vault repo (the 2nd+ paper in a 1:N)
-
-When the repo is already cloned in `<vault>/codes/` and the user wants another paper bound:
-
-```bash
-lit code link <repo-name> --paper <id>       # bind only, no clone
-```
-
-**Tier 2** (pure bind, single-paper reversible). **Trigger = explicit user request.**
-
-### [C.3] Retire / unbind — read the reverse list FIRST
-
-Before unbinding, read the repo's `papers:` reverse list with `lit code list --format json` (each row is that repo's `repo-meta.yaml`, `papers` included). Then branch:
-
-- **Reverse list now empty** (current paper is the last citer) → retire the whole repo to avoid an orphan clone:
-  ```bash
-  lit code rm <repo> --cascade --yes  # strips every binding, then removes the directory
-  ```
-  Directory removal is destructive → **ask the user before running.**
-- **Reverse list still non-empty** → unbind this paper only, keep the directory:
-  ```bash
-  lit code unlink <repo> --paper <id>     # drops BOTH sides, keeps the directory
-  ```
-  **Tier 2** (single-paper binding edit, reversible). `lit code unlink` is the inverse of `lit code link`: it removes the repo from the paper's code-clones AND the paper from the repo's reverse `papers:` list, atomically.
-- **Never** `lit code rm --cascade` while other papers still cite the repo.
-- Do NOT use `lit modify --rm-tag code-clones=<repo>` — modify rejects it, because writing only the paper side would strand the repo's reverse edge.
-- `lit unlink` (no `code`) is paper↔project ([H]), not for code.
-
----
-
-## [D] Browse / Search / Inspect
-
-```bash
-lit list                                     # full vault
-lit list --topic transformer --year 2023,2024 # filter (comma = OR; no range syntax)
-lit list --status deep-read --priority A     # graded A by ANY of its projects
-lit list --project pepforge --priority A      # graded A by pepforge specifically
-lit list --project pepforge --format json    # papers bound to a project
-lit show Pandi                               # fuzzy: unique substring of id
-lit show 2023_Pandi_Cell-free                # exact id also works
-lit show --paper-doi 10.1038/...             # DOI reverse-lookup
-```
-
-Every `lit` command that takes a paper id (`show`, `open`, `modify`, `rm`, `rename`, `related`, `cite`, the evaluation stamps `read` / `revisit` / `promote` / `skim` / `drop`, `link`, `unlink`, `code link`, `code unlink --paper`, `code add --paper`, `code list --paper`) accepts (a) the full id, (b) a unique case-insensitive substring, or (c) `--paper-doi <DOI>` (mutually exclusive with positional / `--paper`). Ambiguous substrings (2+ matches) print the candidate list and exit non-zero. `lit rename <old> <new>` is the one exception: no `--paper-doi` (two positionals would be ambiguous). `lit add --si <paper>` takes only (a) or (b) — no `--paper-doi`, and no most-recent fallback.
-
-For "find a paper I read last month about X", filter by date with `lit list --read-since YYYY-MM-DD` (read-date lower-bound) or `--added-since YYYY-MM-DD` (created-at lower-bound), combined with `--topic` / `--project`. For large vaults filter via `--topic` / `--project` first. For **author** cues use `lit list --author <cue>`, or read the `authors` field straight off the JSON rows.
-
----
-
-## [E] Modify Metadata, Tag, or Apply an Edge
-
-### SOP-1 — never proactively tag (restated)
-
-Every tag goes through Flow A or Flow B.
-
-### Flow A — user says "tag this / classify it" (no specific value)
-
-Propose candidates **only from registered values** → user picks → `lit modify --add-tag`. Sources:
-
-- `topics` / `methods` / `data` → `lit taxonomy list <dict> --format json` (`{dict, kind, count, values, used_by}` — the registered set, structured, with `used_by` = papers per value across the library; never hand-parse `TAXONOMY.md`).
-- `projects` → `lit project list` is canonical. A file read alone is incomplete; see [H].
-
-```bash
-lit modify <id> --add-tag topics=peptide-LM --add-tag methods=transformer
-lit modify <id> --rm-tag topics=outdated-value
-```
-
-While enumerating candidates you MAY **propose** a TAXONOMY merge if you spot near-duplicates ("your `topics` dict has both `tokenization` and `tokenisation` — merge them?") — propose only; governance runs through [J].
-
-### Flow B — user names a value ("add tokenization")
-
-Check if it is registered. **Registered → apply.** **Not registered → the CLI HARD-REJECTS** (no escape hatch); say so and route registration by dict.
-
-**Before proposing a new value, look for a near-duplicate in the list** — same words once case, `-` / `_` / spaces and a plural `s` are set aside (`Peptide Design` / `peptide-design`), a prefix (`peptidedrug` / `peptide`), a near spelling (`tokenisation` / `tokenization`), or a value that means the same. Report it with its `used_by` ("`peptide` is already there, on 6 papers — use it?"); your judgment, no command. `lit taxonomy add` refuses a look-alike on its own: `'peptidedrug' looks like 'peptide' (prefix).` — relay it and offer the existing value; rerun with `--force` only when the user, having seen the match, still wants the new one.
-
-```bash
-# topics / methods / data — register via lit taxonomy:
-lit taxonomy add topics peptide-LM
-lit modify <id> --add-tag topics=peptide-LM            # now allowed
-
-# projects — register via lit project (NOT lit taxonomy):
-lit project add pepforge --path /abs/path/to/pepforge
-lit modify <id> --add-tag projects=pepforge            # now allowed
-```
-
-After the user registers, **re-run `lit taxonomy list <dict> --format json`** and then apply.
-
-### Register-first (MANDATORY for the four controlled dicts)
-
-`projects` / `topics` / `methods` / `data` are **controlled vocabularies**. `lit modify --add-tag <dict>=<value>` HARD-REJECTS an unregistered value (no `--register` escape hatch). `projects` has its own group `lit project {add,list,rename,set-path,rm}` ([H]); **`lit taxonomy {add,rename,rm} projects` is hard-deprecated** — it errors and redirects. (`lit taxonomy list projects` still works.) Never hand-edit `lit-config.yaml`'s `projects:` map.
-
-**Not register-first checked**: schemaless scalar fields (`read-date`, `doi`, `year`, custom scalars), reference fields (`authors`, `related`, `contradicts`, `extends`), fixed enums (`type`, `status`), per-project grades (`priority-<project>`, A/B/C). `--rm-tag` is never register-checked. (`code-clones` and `supplementary` are not tag targets at all — modify rejects them; bind/unbind code via `lit code link` / `lit code unlink`, SI files via [L].)
-
-### Sugar commands — prefer over `lit modify --set` for known semantic fields
-
-```bash
-lit read <id> [--date YYYY-MM-DD]   # stamp read-date (defaults to today; --date backdates)
-lit revisit <id>                    # stamp last-revisited = today (distinct from read-date)
-lit drop <id>                       # status = dropped
-lit promote <id>                    # status = deep-read  (does NOT also stamp read-date)
-lit skim <id>                       # status = skim
-```
-
-Same-day repeats are no-ops. For a per-project grade or an arbitrary scalar, fall back to `lit modify <id> --set priority-<project>=A` (the paper must already be linked to that project; `lit link <id> --project <P> --priority A` does both at once). A grade can be changed but not cleared in place (`--set priority-<P>=` is refused, `--rm-tag` does not take it): an ungraded link is simply the absent key, and `lit unlink` is what drops it.
-
-### Apply a knowledge-graph edge (inbound from lit-reading's edge detection)
-
-When lit-reading hands off a **user-confirmed** edge, run the **forward** field only:
-
-```bash
-lit modify <id> --add-tag extends=<other-id>      # or related=<other-id> / contradicts=<other-id>
-```
-
-The CLI mirrors the paired reverse field on the opposite paper automatically — **never run a second command for the reverse, never set `extended-by` / `contradicted-by` directly.** You apply **only** an edge the user already confirmed; never originate edges here.
-
----
-
-## [G] Export bib for writing
-
-The user expresses *intent*; you translate it to `lit export` flags.
-
-| User says | Command |
-|---|---|
-| "给我导出一个 bib" / "导出文献库" / names no project | `lit export --all -o refs.bib` — no project scope ⇒ `--all` is the default; just run it (do not ask) |
-| "导出和 pepforge 有关的文献到这里" | `lit export --project pepforge` (defaults to `./refs.bib`) |
-| "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` *(A for any project; add `--project <P>` to mean A for that one)* |
-| "给 PepCodec 准备 bib" | `lit export --project pepcodec` (canonicalize the project token first — Flow B / [H]) |
-| "更新一下 refs.bib" | infer current project → `lit export --project <inferred>`; if not inferrable, `lit export --all` (do not ask) |
-
-Flags: `--project` XOR `--all` (exactly one required), `-o/--output` (default `./refs.bib`), `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` (comma-separated; within one flag OR, across flags AND; `--priority` is per project — any project's grade unless `--project` narrows it), `--force`, `--vault`. Cite keys equal paper ids — output drops into `\cite{<paper-id>}` directly. Re-running on the same file is the supported update path.
-
-Four hard rules:
-
-1. **Sentinel rejection → NEVER auto-add `--force`.** When the CLI refuses to overwrite a target lacking the litman sentinel (typically a hand-edited `references.bib`), relay verbatim and let the user decide — `--force` discards their hand edits.
-2. **Path inference**: "current dir" / "here" → default `./refs.bib`; a *named* directory ("thesis dir") → ask for the path, do not guess.
-3. **Project token**: unregistered `--project` gets deterministic canonicalization (case/whitespace) only, else present the registered set.
-4. **Bare export ⇒ `--all`, act don't ask.** When the request names no project and none is inferrable (common when no projects are registered), `lit export --all -o refs.bib` is the only sensible reading — run it. Reserve a clarifying question for a *named-but-unresolvable* project token (rule 3) or the `--force`-over-sentinel decision (rule 1), never for "which scope?" when there is only one.
-
-Tier: projection is **Tier 2**; `--force`-over-sentinel is a **Tier-3 ask**.
-
----
-
-## [H] Project operations
-
-- **Register** — `lit project add <name> --path <abs>`. **Tier 3.** **User supplies the path — never guess it.** Same register-first instance Flow B routes to.
-- **Link** — `lit link <paper-id> --project <name> [--relevance "..."] [--priority A|B|C]`. Atomically adds the project to the paper's `projects:`, builds the link folders, regenerates `<project>/REFERENCES.md`. **Trigger ownership = user** (only on explicit request; never self-initiate). **Tier 2.** Unregistered `--project` → Flow B routing (`lit project add`). If the output says `kept N folder(s) that do not match the vault: <path>`, relay the paths verbatim — that folder was moved to `<vault>/.trash/replaced-folders/` and comes back only by hand (lit-reading B12; the same line can come from `--rebuild-all`, `trash restore`, `health-check --fix`, and the drift prompt you answer after a project directory or the library moves).
-- **Unlink** — `lit unlink <paper-id> --project <name>`. **Tier 2.** Drops that project's `relevance-<project>` (unless `--keep-relevance`; the value is echoed in the summary) and its `priority-<project>` — there is no keep flag for the grade, and re-linking does not bring it back. (Not for code — that's [C].)
-- **Update relevance after linking** — `lit modify <paper-id> --set relevance-<project>=…` sets/edits the per-project relevance note without re-linking. **Tier 2.** At link time prefer the inline `lit link --relevance "..."`.
-- **Grade after linking** — `lit modify <paper-id> --set priority-<project>=A|B|C`. **Tier 2.** At link time prefer the inline `lit link --priority A`. Change by setting another letter; clearing has no path — see [E].
-- **List projects** — `lit project list` (add `--format json` for `{name, path, status}` per project). **Tier 1** read, **canonical source** for the registered set AND each project's path. `status` is the drift marker: `ok` / `path-missing` / `config-only` / `taxonomy-only`. Use this for both "what projects exist" and "where is `<project>` on disk". Do NOT hand-parse `lit-config.yaml`, do NOT use `lit config show` for project paths.
-- **List a project's literature** — `lit list --project <name>` (**Tier 1**; supports `--format json`). Per-project view of *papers*, distinct from `lit project list` which lists the *projects* themselves.
-- **Rename** — `lit project rename <old> <new>`. **Tier 3 governance** (cascades: TAXONOMY + config key + every referencing paper's `projects:` + INDEX). Reuse [J] discipline: never hand-edit; for an **explicitly named** rename ("把 `<old>` 改名 `<new>`") **show the impact** ("renames `<old>`→`<new>` across the N papers using it") **then run and report** (semantics-preserving — the CLI has no prompt and no `--yes`; named ⇒ show-then-act, don't re-ask); re-run `lit project list` afterward.
-- **Delete** — `lit project rm <name>`. **Tier 3 + destructive**: cascade-untags every referencing paper, removes the entry from TAXONOMY + `lit-config.yaml`, and deletes the project folder's `litman_reflib/` links + `REFERENCES.md` — those live *outside* the vault, so no trash covers them (papers themselves are never trashed). The CLI always confirms, **even at zero referencing papers** (zero papers ≠ zero damage), and a non-tty run without `--yes` aborts. Agent path: **never initiate**; on explicit request **show the impact + confirm once**, then run with `--yes` and relay the result.
-- **Set path** — `lit project set-path <name> <abs>`. **Tier 2.** For when the project dir moved; user supplies the new path; no cascade.
-
-Governance discipline (rename / rm) is shared with [J] — cross-reference, don't duplicate.
-
----
+- **Register** — `lit project add <name> --path <abs>`, or `lit project set-path <name> <abs>` after a move. **The user gives the path — never guess it.**
+- **Link** — `lit link <paper-id> --project <name> [--relevance "..."] [--priority A|B|C]`, on the user's explicit request only (Rule 10); register an unknown project first. A relevance on an already-linked paper: `lit modify <paper-id> --set relevance-<project>=…`. A `kept N folder(s) that do not match the vault: <path>` line, from any command → relay the paths verbatim: those folders went to `<vault>/.trash/replaced-folders/` and come back only by hand.
+- **Unlink** — `lit unlink <paper-id> --project <name>` drops `relevance-<project>` (unless `--keep-relevance`) and the grade; re-linking does not bring the grade back — say so.
+- **List** — `lit project list --format json` is the source for which projects exist and where — not `lit-config.yaml`, not `lit config show`.
+- **Rename** — `lit project rename <old> <new>`: say what it changes ("across the N papers using it"), then run it.
+- **Delete** — `lit project rm <name>` untags every paper and deletes the project folder's `litman_reflib/` links and `REFERENCES.md`, outside the vault: no trash covers them. Rule 4 — say that, `--yes` on the user's go, relay the result.
 
 ## [I] Restore a trashed paper
 
-After lit-reading B13 hands off a **user-confirmed** paper id, execute the restore and relay the outcome:
+Only the paper lit-reading B13 confirmed with the user — never on your own, never picking the candidate yourself. Read `lit trash list --format json` first: an entry's `orphan_repos` are what a restore would re-clone — tell the user. `lit trash restore <id> -y` restores and re-clones; without `-y` it skips the re-clone and prints the `lit code add` for later. Relay the result verbatim, a `kept N folder(s)` line included ([H]). The same id trashed twice → the CLI lists the `<id>-<UTC-timestamp>` entries: ask which, don't guess. A live paper already holds `papers/<id>/` → the restore refuses: relay it; don't force. An SI file deleted with `lit rm <id> --si` was never in the trash ([L]).
 
-```bash
-lit trash restore <id>          # or the full entry name <id>-<UTC-timestamp>
-```
+## [J] Vocabulary governance
 
-Behavior:
+`lit taxonomy rename <dict> <old> <new>`, `lit taxonomy merge <dict> <source>... --into <keep>` and `lit taxonomy rm <dict> <value>` work on topics / methods / data; projects go through [H]. 🔴 Never hand-edit `TAXONOMY.md`.
 
-- Accepts the **paper id** (must be unambiguous) or the **full entry name** `<id>-<UTC-timestamp>`. If the same id was deleted more than once, the CLI raises with the list of entry names — **relay it and ask which timestamp**, do not guess.
-- **id-slot collision**: if `papers/<id>/` already holds a LIVE paper, restore **REFUSES**. Relay the error; tell the user to rename / remove the active paper first. Do not force.
-- **Edges with deleted opposites are silently dropped**; surviving relations rebuild atomically.
-- **SI files**: a restored paper brings its `supplementary/` back with it. An SI file deleted with `lit rm <id> --si` was never in the trash and cannot be restored — add it again ([L]).
-- **Re-clone is built INTO restore.** If a repo was the paper's sole binder, it was hard-deleted at rm time with its upstream URL preserved. Restore re-clones it: **prompted per repo (default Yes) interactively, or auto with `-y`.** On refuse / clone failure the binding `code-clones:[X]` is **KEPT** + a warning emitted; re-clone is **never a precondition** for restore success.
+- **Show the blast radius first** ("removing `diffusion` strips it from the N papers tagged with it"). **`rename`** of a value the user named → say what it changes, run it. **`merge` / `rm`** → Rule 4: `--yes` once the user, having seen the blast radius, says go.
+- **Which values mean the same is the user's call.** You may propose a merge; never decide one.
 
-Agent behavior:
+**Tidy — "我的 topic 是不是太碎了" / "tidy my tags".** Run `lit health-check --all` and `lit taxonomy list --format json`; read the `taxonomy_similar`, `taxonomy_unused` and `taxonomy_singletons` findings (`info`, report-only, never `--fix`). An unused value may be registered ahead on purpose, or used only by a trashed paper (a restore would bring it back unregistered — say so). Add your own reading of `used_by`: same meaning without looking alike, once-used values that belong under a broader one. Propose **one** list of merges (`<drop> → <keep>`, both counts) and removals, as commands; run only what the user approves, with `--yes` — their yes to the list is the confirmation.
 
-- Before running, surface the re-clone target(s) to the user up front: `lit trash list --format json` carries `orphan_repos` (`{repo: upstream}`) per entry (tier 1 read).
-- **Without `-y` on a non-TTY stdin**, `lit trash restore <id>` restores the paper but skips the re-clone, as on a refusal, and prints the `lit code add <url> --paper <id> --name <repo>` that does it (`lit health-check` when no url was kept). Agent path: surface the re-clone target(s) → get the user's nod → run `lit trash restore <id> -y`; if the user wants the restore without the re-clone, run it without `-y` and relay the printed `lit code add` line.
-- **Tier 2** (local, reversible, single-paper). **Trigger = the user-confirmed identity from B13** — never restore on your own initiative, never pick the candidate for the user.
-- **Relay the CLI's result summary verbatim** (reverse edges rebuilt in N papers, re-bound to N repos, re-linked into N projects), including any `kept N folder(s) that do not match the vault` line ([H]).
+## [K] Repair a legacy library
 
----
+`lit health-check` reports `placeholder_metadata`, `placeholder_id`, `weak_id_keyword` or `dirty_metadata` (the `rename <id>` lines `--fix` prints), often dozens at once ("库里好多 Unknown" / "clean up these bad ids") → **read `legacy-repair.md` (next to this SKILL.md) first.** In short: `lit health-check --all` for the whole list, the fields before the id, one table and one yes for the batch.
 
-## [K] Repair a legacy library (filler metadata / filler ids)
+## `tip:` lines
 
-Trigger: `lit health-check` reports `placeholder_metadata`, `placeholder_id`, `weak_id_keyword` or `dirty_metadata` (the `rename <id>` lines `--fix` prints) — typically dozens or hundreds at once, on a vault filled before those guards existed. The user's phrasing is usually "库里好多 Unknown" / "clean up these bad ids".
-
-**Get the whole list first.** The report caps each category at its first few findings; **`lit health-check --all`** prints every one. Working from the capped view silently repairs 5 papers and reports the category done.
-
-**Fix the fields before the id, always.** The two are separate commands and the order is not cosmetic:
-
-```bash
-lit modify <id> --set title="…" --set-author "Family, Given" --set-author "…"   # Tier 2
-lit rename <old-id> <new-id>                                                     # Tier 3
-```
-
-Repairing the fields is the half that needs the PDF reopened. Once they are right, **re-run `lit health-check`** — `placeholder_id`'s hint is now a complete, filled-in `lit rename <old> <new>` computed from the corrected metadata, so the second half costs no thinking at all.
-
-🔴 **`--set-author`, one flag per author, the whole list in order.** `--add-tag` appends, which puts a corrected first author last — and the first author's family name is what the id is built from.
-
-**Batch the confirmation, don't batch the decision.** `lit rename` is Tier 3 and these are permanent handles, but asking 300 times is not "asking once". Present **one table** and take **one nod**:
-
-| old id | proposed | from |
-|---|---|---|
-| `2018_Unknown_Untitled` | `2018_Zhang_Green-synthesis` | 标题:关于化合物的绿色合成方法 |
-| `2019_Unknown_A` | `2019_Li_CRISPR-Cas9` | 标题里的 CRISPR-Cas9 |
-
-Then run the whole batch and report. The user scans, corrects the few they care about, and approves the rest in one message.
-
-**Mark the invented ones.** When a title is in a non-Latin script the keyword is yours to invent, not derive ([A]'s rule) — say which rows are guesses so the user knows where to look. 🔴 Never translate the `title` field to make an id easier.
-
-**What `lit rename` cannot reach.** It rewrites every in-vault reference — other papers' `related` / `extends` / `contradicts`, every `[[id]]` in notes, project links, INDEX. It cannot rewrite what left the vault: a `\cite{2024_Unknown_Untitled}` already sitting in the user's manuscript, a link they pasted somewhere. On an old library that is a real risk — **say it once** when proposing the batch, so "一次起对" is a choice and not a surprise.
-
-**Reporting is not fixing.** All three checks are report-only by design: only the reader knows what a paper should be called, so `--fix` never picks a handle. A paper the user chooses to leave alone stays reported — that is correct, not a bug to work around.
-
----
-
-## [J] TAXONOMY governance
-
-Maintain the controlled vocabulary. Trigger keywords: "合并这两个 topic" / "merge X into Y", "把 X 改名" / "rename", "删掉这个 topic/method/值" / "remove this value", "我的 topic 是不是太碎了" / "整理词表" / "tidy my tags".
-
-Commands (verify exact flag spelling with `lit taxonomy <verb> --help`):
-
-- `lit taxonomy rename <dict> <old> <new>` — rename a value, ripples to every referencing paper.
-- `lit taxonomy merge` — fold one or more near-duplicate sources into one destination, re-tags every referencing paper, drops the sources.
-- `lit taxonomy rm <dict> <value>` — remove a value, strips it from every referencing paper.
-
-Rules:
-
-- **NEVER hand-edit `TAXONOMY.md`** — always the atomic CLI.
-- **Tier 3 (cascades to N papers)**: always **show the blast radius first** ("removing `diffusion` strips it from the N papers tagged with it" / "merge folds `tokenisation` into `tokenization` and re-tags the N papers"). Then split by who owns the judgment:
-  - **`rename` of a value the user named explicitly** ("把 X 改名 Y") — semantics-preserving (no data loss), so the CLI has **no prompt and no `--yes`**: show the impact, **run, and report**.
-  - **`rm` of a value the user named explicitly** ("删掉 `diffusion` 这个 topic") — the named value **is** the user's decision; show the blast radius then **run with `--yes` / `-y` and report** — do **not** insert a separate confirmation question. The CLI's `Continue? [y/N]` is the safety gate for a human typing the command directly; an agent acting on an explicit, reversible instruction satisfies it with `--yes`. (`taxonomy rm` is atomic + reversible — re-add the value, re-tag — NOT the never-execute purge class; the real safety net is reversibility, not a relayed confirmation prompt.)
-  - **`merge`, or any consolidation YOU propose** (which values "mean the same" is the user's vocabulary judgment), **or genuinely ambiguous intent** (the user is musing, not commanding), **or a blast radius that contradicts the user's apparent expectation** — **ask once before acting**; `merge` then needs `--yes` / `-y` non-interactively (without it it aborts).
-  After running, **re-run `lit taxonomy list <dict> --format json`** to reload the vocabulary.
-- **Never decide a consolidation yourself** — which values "mean the same thing" is a vocabulary judgment the user owns. You MAY propose a merge when you spot near-duplicates (e.g. in Flow A), but propose only.
-- **dict routing**: these verbs operate on `topics` / `methods` / `data`. The `projects` dict is governed through `lit project` ([H]), not `lit taxonomy`.
-
-### Tidy the vocabulary (整理词表)
-
-Trigger: "我的 topic 是不是太碎了" / "整理一下词表" / "tidy my tags" / "my topics are a mess".
-
-1. Run `lit health-check --all` (Tier 1; without `--all` each category stops after 5) and `lit taxonomy list --format json`. Read three `info` findings — report-only, never `--fix`, they do not change the exit code: `taxonomy_similar` (two values that look alike; the hint is the merge, the less-used value into the more-used), `taxonomy_unused` (registered, used by no paper — may be registered ahead on purpose; a value only a trashed paper uses shows here too, so if `lit trash list` is not empty, say that restoring a paper could bring the value back unregistered), `taxonomy_singletons` (a dict where many values tag one paper each). Add your own reading of `used_by`: values that mean the same without looking alike, once-used values that belong under a broader one.
-2. Propose **one** list: each merge (`<drop> → <keep>`, with both counts) and each removal, as the commands you would run.
-3. Run `lit taxonomy merge <dict> <drop> --into <keep> --yes` / `lit taxonomy rm <dict> <value> --yes` **only for the items the user approves** (Tier 3 — the list is the one ask). Then re-run `lit taxonomy list --format json`.
-
-## [L] A paper's SI files (supplementary information)
-
-SI files live in `papers/<id>/supplementary/` as `si-01.pdf`, `si-02.xlsx`, …, each recorded in `metadata.yaml` with the name it was added under. `si-NN` is litman's own numbering (the lowest free number), not the publisher's.
-
-- **Add files the user hands you** → `lit add --si <id> FILE...` (**Tier 2**). Every file is checked against the paper first; stderr shows one line per file — `✓` / `?` / `✕`, its original name, size and the reason — and **all are added or none**:
-  - `✕` is refused (`empty file`, `this is the article itself`, `looks like the SI of <other-id>`, `already in the library`, `same file as <name>`) and cannot be added, even with `--force`. Relay the reason.
-  - `?` (`can't confirm it belongs to this paper`), or a file over 100 MiB, stops the run: `1 file needs a yes — nothing was added. Pass --force to add it anyway.` Ask the user; pass `--force` only on their yes.
-  - The files are **moved** into the vault, like `lit add`'s PDF — the originals leave Downloads. Say so before you run it.
-  - Success prints `SI ready: N file(s)`, then per file its absolute path, a tab and its original name.
-- **The user has no files yet** → lit-reading B15: `lit add --si <id>` opens the SI window on the user's litman page and waits for them.
-- **Delete one** → `lit rm <id> --si si-NN` — A3: never initiate; dry-run, relay, say it goes for good, then `--yes` on the user's go.
-- **Add one back** → there is no trash for SI: ask the user for the file, then `lit add --si <id> FILE`. It takes the lowest free number, often its old one.
-- **Open one** → `lit open <id> --si si-NN` (lit-reading B14).
-- **Never** write, rename, copy into or delete anything in `supplementary/` yourself, and never download SI (publisher sites, PMC, Figshare, any copy) — the user downloads it. `lit modify` refuses the `supplementary` field; `lit health-check` reports SI drift (lit-reading B12).
-
----
-
-## Architecture Invariants (do not violate)
-
-1. **Never** write `papers/<id>/metadata.yaml`, `TAXONOMY.md`, `INDEX.json`, or `codes/<name>/repo-meta.yaml` directly, and never write, copy, rename or delete anything in `papers/<id>/supplementary/`. Always go through `lit add` / `lit modify` / `lit taxonomy` / `lit project` / `lit code …` (SI: `lit add --si` / `lit rm <id> --si`). That holds even when a command stops with `Cannot use <file>: '<field>' is not a list; write it as …`: a hand edit broke that file and no command will rewrite it. Relay the file and the line to the user and stop — never unlock or edit it yourself. The same goes for every message that leaves the act to the user — `… by hand`, `Re-save it as UTF-8`, `Rename the folder, then retry`, SI's `move it out of supplementary/`, `could not read notes file … — skipped`: relay it verbatim and stop; never edit metadata, move or rename a folder, re-encode a file, or rewrite that notes.md.
-2. **Never** suggest hand-editing `TAXONOMY.md` or `lit-config.yaml`'s `projects:` map. Use `lit taxonomy {rm,rename,merge}` for topics/methods/data ([J]) and `lit project {add,rename,set-path,rm}` for projects ([H]). Tagging requires the value registered first.
-3. **Never** assume the vault is git-tracked. It is deliberately not.
-4. **Never** store API keys in `lit-config.yaml`. The CLI calls no LLM API — that's the agent's job, via the JSON-file bridge.
-5. **Never** install / uninstall litman or modify its installation. If `lit` is missing, tell the user and stop.
-6. **Cross-reference in-vault papers with `[[paper-id]]` wikilinks, then verify each against the filesystem.** When notes mention another paper in this vault, write it as a `[[paper-id]]` wikilink — **never backticks or plain text**, which escape `lit rm`'s `(deleted)` tagging and `lit health-check`'s dangling detection, leaving a silent dead link when the target is removed. When you rewrite a `notes.md` / `discussion.md`, for each `[[X]]` you emit or preserve, check that `papers/X/` exists (`lit show X` resolves, or it appears in `lit list`). If not, write it as `[[X]] (deleted)` — **never emit a bare `[[X]]` for a paper not in the vault.** Cite this paper's own SI file as `si-01.pdf（<original name>）`, never a bare number (lit-reading B15); another paper's SI as `[[<other-id>]]` + the file's original name, without its `si-NN`.
-7. **Never** set a reverse relation field (`extended-by` / `contradicted-by`) by hand — drive only the forward field and let the CLI maintain the pair ([E]).
-
-If unsure whether an operation respects these, run `lit health-check` after — it surfaces vault drift and the user inspects before acting.
-
-**Staleness nudges.** `lit` may append a dim `tip:` line after a command. Relay it and offer to run the named command — never auto-run. Two variants: (1) `tip: no lit health-check in 14+ days...` → offer `lit health-check`; (2) `tip: no lit sync push in 7+ days...` → offer `lit sync push` (backs the vault up to the configured remote; appears only when a remote is configured). A first push prints a size preview and stops for `--yes`: relay the preview, re-run with `--yes` on the user's go.
-
----
-
-## Quick Reference
-
-| Command | What it does |
-|---------|-------------|
-| `lit init [--name <vault>]` | Create a new vault skeleton |
-| `lit add <pdf> --doi <doi>` | Add via CrossRef ([B]) |
-| `lit add <pdf> --from-llm-json <json>` | Add via LLM-extracted JSON ([A]) |
-| `lit add --si <id> FILE... [--force]` | Add SI files the user handed you: checked, all or none, moved in ([L]); `--force` only on the user's yes |
-| `lit add --si <id> [--force]` | Ask the user's open litman page for the SI and wait about 90 s (exit codes: lit-reading B15) |
-| `lit pdf-text <pdf> [--pages 1-3]` | Dump PDF text layer (deterministic read fallback, [A] step 1) |
-| `lit list [filters] [--title <substr>] [--limit N] [--format json]` | Browse ([D]); `--title` = title substring, `--limit` = top-N |
-| `lit show <id-or-substring> [--format json]` | Single-paper metadata (fuzzy substring OK; `--paper-doi` supported); `--format json` = full field set; the table lists the SI files (`SI:` lines: path + original name) |
-| `lit search <query> [--in notes,discussion] [--limit N]` | Search free-form notes / discussion (read-only); `--limit` = first N hits; routes to lit-reading territory but usable here |
-| `lit related <id> [--by edges\|taxonomy]` | Knowledge-graph neighbours (read-only); routes to lit-reading territory but usable here |
-| `lit modify <id> --set k=v --add-tag list=v` | Edit fields / tag ([E]) |
-| `lit modify <id> --set-author "Family, Given" …` | Rewrite the author list (repeatable flag; flag order = stored order). The ONLY way to reorder authors or fix a non-final name in place — `--add-tag` appends | 
-| `lit read / revisit / drop / promote / skim <id>` | Status & date sugar ([E]) |
-| `lit taxonomy {list,add,rename,merge,rm} <dict> [args]` | Topics/methods/data vocab; `list` takes `--format json` (rows carry `used_by`); `add` refuses a look-alike value — `--force` on the user's yes ([E] Flow B); merge/rm prompt — pass `--yes` non-interactively ([J]) |
-| `lit project {add,list,rename,set-path,rm} [args]` | Project registry ([H]); `list` takes `--format json`; `rm` prompts — pass `--yes` non-interactively |
-| `lit link <id> --project <name> [--priority A] [--relevance "…"]` / `lit unlink <id> --project <name>` | Bind / unbind paper↔project ([H]); unlink drops that project's grade + relevance |
-| `lit export (--project <p> \| --all) [filters] [-o file]` | Project vault → `.bib` ([G]) |
-| `lit code add <url\|path> --paper <id>` | Clone (URL) or copy/move (local dir) + bind a code repo ([C.1]) |
-| `lit code link <repo> --paper <id>` | Bind an existing vault repo (1:N — [C.2]) |
-| `lit code unlink <repo> --paper <id>` | Unbind one paper, keep the clone ([C.3]) |
-| `lit code list [--paper <id>] [--orphan] [--format json]` | Browse code repos; `--format json` emits each `repo-meta.yaml` (incl. the `papers` reverse list) |
-| `lit code rm <repo> --cascade --yes` | Retire a repo (last citer only, user's nod first — [C.3]) |
-| `lit health-check [--fix] [--all]` | Vault consistency report; each category shows its first few findings and folds the rest — **`--all` for the full list, required before repairing a category paper by paper ([K])**; `--fix` = bulk repair (user's nod first), not all of it lossless: it migrates the retired paper-level `priority` (a paper in no project loses its grade), removes relation links to papers no longer in the library (trash included), and moves unmatched hub folder copies to `.trash/replaced-folders/` — procedure in lit-reading B12; it also cleans title / journal / author text and renames a folder left behind by a rename (its `rename <id>` lines go through [K]); for SI it records files that check out and never deletes one |
-| `lit rename <old> <new>` | Atomic id rename with cascade |
-| `lit cite <id-or-substring>` | Paste-ready ACS citation on stdout (caveats → stderr; `--paper-doi` supported) |
-| `lit rm <id> [--dry-run\|--yes\|--purge]` | Soft-delete (trash) or purge; `--dry-run` previews the impact set, a non-tty run needs `--yes`; `--si si-NN` deletes one SI file for good instead (no trash — to get it back, `lit add --si <id> FILE`; not with `--purge`; A3) |
-| `lit open <id> [--si si-NN]` | Open the PDF in the configured (or default) viewer — or, with `--si`, one SI file in the default app (lit-reading B14) |
-| `lit trash {list,restore,empty}` | Trash bin; `list` takes `--format json` (incl. `entry_path` + `orphan_repos`); `restore` rebuilds relations + re-clones ([I]) |
-| `lit config show` | Print parsed `lit-config.yaml` |
+A dim `tip:` line after a command (`no lit health-check in 14+ days…`, `no lit sync push in 7+ days…`) → relay it and offer to run the command it names; never run it unasked. A first `lit sync push` prints a size preview and stops for `--yes`: relay the preview, re-run with `--yes` on the user's go.

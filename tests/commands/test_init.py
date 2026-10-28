@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -415,6 +416,48 @@ def test_init_refuses_a_path_a_stale_entry_still_holds(tmp_path: Path) -> None:
     # error rather than "target non-empty".
     assert not (parent / "lib").exists()
     assert [v.name for v in load_registry().vaults] == ["main"]
+
+
+def _hint_line(output: str, marker: str) -> str:
+    """The text after ``marker`` on the hint line that carries it."""
+    line = next(ln for ln in output.splitlines() if marker in ln)
+    return line.split(marker, 1)[1].strip()
+
+
+def test_init_no_register_quotes_a_spaced_path_for_a_posix_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent folder with a space must not split the suggested commands."""
+    from litman.commands import init as init_mod
+
+    monkeypatch.setattr(init_mod, "_platform", lambda: "linux")
+    parent = tmp_path / "my papers"
+    parent.mkdir()
+    result = CliRunner().invoke(cli, ["init", str(parent), "--no-register"])
+    assert result.exit_code == 0, result.output
+
+    vault = (parent / "literature_vault").resolve()
+    for marker in ("export LIT_LIBRARY=", "--library ", "lit vault add <name> "):
+        assert shlex.split(_hint_line(result.output, marker)) == [str(vault)]
+    assert "$env:" not in result.output
+
+
+def test_init_no_register_speaks_powershell_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows gets the PowerShell form, every path double-quoted."""
+    from litman.commands import init as init_mod
+
+    monkeypatch.setattr(init_mod, "_platform", lambda: "win32")
+    parent = tmp_path / "my papers"
+    parent.mkdir()
+    result = CliRunner().invoke(cli, ["init", str(parent), "--no-register"])
+    assert result.exit_code == 0, result.output
+
+    vault = (parent / "literature_vault").resolve()
+    for marker in ("$env:LIT_LIBRARY = ", "--library ", "lit vault add <name> "):
+        assert _hint_line(result.output, marker) == f'"{vault}"'
+    assert "export LIT_LIBRARY" not in result.output
 
 
 def test_init_output_has_no_export_lit_library(tmp_path: Path) -> None:

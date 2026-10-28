@@ -9,6 +9,9 @@ agent alongside the skills:
 * Codex: ``$CODEX_HOME/rules/litman.rules`` (``~/.codex`` by default)
 * Cursor CLI: ``~/.cursor/cli-config.json``
 * OpenCode: ``~/.config/opencode/opencode.json[c]``
+* ZCode: none. Its approvals live in its own session database, which litman
+  never writes; installing its skills tells the user to turn on Autonomous
+  mode instead (the catalog's ``permission_hint``).
 
 Only commands whose executable is ``lit`` are approved.  This module never
 enables an agent's global bypass/auto-approve mode.  Existing configuration is
@@ -32,8 +35,11 @@ from typing import Any, Literal, TypedDict
 
 class PermissionResult(TypedDict):
     agent: str
-    path: Path
-    mode: Literal["created", "updated", "unchanged", "skipped"]
+    # None for "manual": there is no file litman could write.
+    path: Path | None
+    # "skipped" means writing the rule failed (see warning); "manual" means
+    # the agent has no store litman writes — the user allows lit in the app.
+    mode: Literal["created", "updated", "unchanged", "skipped", "manual"]
     rule: str
     warning: str | None
 
@@ -56,8 +62,8 @@ _CODEX_MARKER = "# Managed by litman."
 
 def _result(
     agent: str,
-    path: Path,
-    mode: Literal["created", "updated", "unchanged", "skipped"],
+    path: Path | None,
+    mode: Literal["created", "updated", "unchanged", "skipped", "manual"],
     rule: str,
     warning: str | None = None,
 ) -> PermissionResult:
@@ -293,6 +299,16 @@ def install_cursor_lit_permission() -> PermissionResult:
             f"these entries in permissions.deny: {', '.join(conflicts)}"
         )
     return result
+
+
+def no_lit_permission(agent: str) -> PermissionResult:
+    """Install nothing, for an agent whose approvals litman cannot write.
+
+    Touches no file and returns no warning, so the call made on every launch
+    stays silent; the catalog's ``permission_hint`` is shown with the skills
+    install instead.
+    """
+    return _result(agent, None, "manual", "")
 
 
 def _codex_home() -> Path:

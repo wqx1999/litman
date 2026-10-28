@@ -120,6 +120,8 @@ def install_skill_cmd(
     keys, or modify any of the user's other skills. For a catalog agent it
     also adds that agent's narrow command rule allowing ``lit ...`` without
     repeated approval; all other commands keep the agent's normal policy.
+    An agent litman cannot write a rule for (ZCode) gets a line on how to
+    allow lit in the app instead.
     A manual --parent-dir has no associated agent, so it only copies files.
     """
     if agent_name is not None and parent_dir is not None:
@@ -232,10 +234,12 @@ def install_skill_cmd(
             sweep_blocked = pending
 
     permission: PermissionResult | None = None
+    permission_hint: str | None = None
     if resolved_agent is not None:
         spec = agents.get_agent(resolved_agent)
         assert spec is not None and spec.supported
         permission = spec.install_lit_permission()
+        permission_hint = spec.permission_hint
 
     lines = []
     for r in results:
@@ -278,7 +282,11 @@ def install_skill_cmd(
     if permission is not None:
         permission_mode = str(permission["mode"])
         permission_rule = escape(str(permission["rule"]))
-        if permission_mode == "skipped":
+        if permission_mode == "manual":
+            # No rule litman can write: say how to allow lit in the app.
+            if permission_hint:
+                lines.append(f"[dim]{escape(permission_hint)}[/]")
+        elif permission_mode == "skipped":
             lines.append(
                 f"[yellow]lit command approval not installed:[/] "
                 f"{permission_rule}"

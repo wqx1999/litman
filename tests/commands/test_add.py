@@ -928,7 +928,7 @@ def test_filler_author_warning_is_one_verdict_and_one_way_out(
     A user-facing message has a length budget: past it people stop reading, so
     a sentence added "to be thorough" protects nobody. Why the add was NOT
     blocked (a filler after the first author never reaches the id) is the half
-    a reader can go look up, and it lives in lit-library/SKILL.md.
+    a reader can go look up, and it lives in lit-library/add-errors.md.
 
     What must survive every future trim is the ordering hint. `--add-tag`
     appends, so that recipe moves a corrected name to the END of the list —
@@ -971,7 +971,7 @@ def test_filler_author_warning_is_one_verdict_and_one_way_out(
     assert "lit modify" in msg and "--set-author" in msg
     # The --add-tag trap: dropping this is what the length budget must not buy.
     assert "in order" in msg
-    # Rationale that belongs to SKILL.md, not to every reader of every add.
+    # Rationale that belongs to the skill, not to every reader of every add.
     assert "paper id is unaffected" not in msg
 
 

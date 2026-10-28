@@ -1,14 +1,15 @@
 """The shipped skills teach the SI contract the CLI actually prints.
 
-An agent learns what `lit add --si <id>` means only from lit-reading's SKILL.md:
-it reads the exit code and the first stdout line and acts on them. Both live
-in ``commands/_si_gui.py``; the skill's exit table copies them by hand, so a
-reworded line or a renumbered code would leave the skill teaching something
-the CLI no longer does. The skill's description is the only signal that
+An agent learns what `lit add --si <id>` means only from lit-reading's si.md,
+which its SKILL.md says to read before running the command: it reads the exit
+code and the first stdout line and acts on them. Both live in
+``commands/_si_gui.py``; the exit table copies them by hand, so a reworded
+line or a renumbered code would leave the skill teaching something the CLI no
+longer does. The skill's description is the only signal that
 loads it at all, so it has to carry an SI trigger, early (Codex trims
-description tails when many skills are installed), and stay within Claude
-Code's 1536-character listing limit. Both skills' never-write lists name the
-SI folder.
+description tails when many skills are installed), and stay within the
+1024-character limit of the Agent Skills standard. Both skills' never-write
+lists name the SI folder.
 """
 
 from __future__ import annotations
@@ -22,15 +23,16 @@ from ruamel.yaml import YAML
 from litman.commands import _si_gui
 from litman.core.skill import bundled_skill_root
 
-# Claude Code truncates a skill's description (plus when_to_use) here.
-_DESCRIPTION_LIMIT = 1536
+# The Agent Skills standard caps a description here; ZCode drops a skill
+# whose description is longer.
+_DESCRIPTION_LIMIT = 1024
 # An SI trigger past this point is the first thing a trimmed listing loses.
 _TRIGGER_WITHIN = 200
 _SI_WORD = re.compile(r"\bSI\b")
 
 
-def _skill_text(name: str) -> str:
-    return bundled_skill_root(name).joinpath("SKILL.md").read_text(encoding="utf-8")
+def _skill_text(name: str, filename: str = "SKILL.md") -> str:
+    return bundled_skill_root(name).joinpath(filename).read_text(encoding="utf-8")
 
 
 def _description(name: str) -> str:
@@ -50,14 +52,28 @@ _EXIT_ROWS = [
     (_si_gui.EXIT_WAITING, _si_gui.STILL_WAITING),
     (_si_gui.EXIT_CANCELLED, _si_gui.CANCELLED_LINE),
     (_si_gui.EXIT_NO_GUI, _si_gui.NO_PAGE),
-    (_si_gui.EXIT_NOT_MENTIONED, _si_gui.NOT_MENTIONED),
 ]
 
 
 @pytest.mark.parametrize(("code", "line"), _EXIT_ROWS)
 def test_lit_reading_exit_table_pairs_each_code_with_its_line(code: int, line: str) -> None:
     assert line
-    assert f"| {code} | `{line}`" in _skill_text("lit-reading")
+    assert f"| {code} | `{line}`" in _skill_text("lit-reading", "si.md")
+
+
+def test_lit_reading_exit_table_lists_no_code_the_cli_dropped() -> None:
+    """13 (the text never mentions SI) is gone from the CLI; its row too."""
+    rows = re.findall(r"^\s*\| (\d+) \|", _skill_text("lit-reading", "si.md"), re.M)
+    assert {int(code) for code in rows} == {code for code, _ in _EXIT_ROWS} | {1}
+
+
+def test_lit_reading_sends_the_agent_to_the_exit_table() -> None:
+    """The table only helps if SKILL.md sends the agent there before the command."""
+    pointers = [
+        line for line in _skill_text("lit-reading").splitlines() if "read `si.md`" in line
+    ]
+    assert pointers, "lit-reading SKILL.md never says to read si.md"
+    assert any("`lit add --si`" in line for line in pointers), pointers
 
 
 def test_si_ready_is_what_the_cli_prints(capsys: pytest.CaptureFixture[str]) -> None:

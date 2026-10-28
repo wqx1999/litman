@@ -156,7 +156,7 @@ without them. Copies files only; does not install an agent or configure any
 keys.
 
 Skills go where the agent auto-discovers them: `~/.claude/skills` for Claude
-Code, the open-standard `~/.agents/skills` for Cursor, Codex, and OpenCode, and
+Code, the open-standard `~/.agents/skills` for ZCode, Cursor, Codex, and OpenCode, and
 `~/.gemini/antigravity-cli/skills` for Antigravity CLI. With no flags the
 command targets your default agent's directory; `--agent` targets another
 agent's.
@@ -178,7 +178,7 @@ lit install-skill --skill lit-reading
 | Flag | What it does |
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
-| `--agent <name>` | Install into this agent's skills directory (`claude`, `agy`, `codex`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
+| `--agent <name>` | Install into this agent's skills directory (`claude`, `zcode`, `agy`, `codex`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
 | `--parent-dir <path>` | Install into this exact directory instead. Mutually exclusive with `--agent`. |
 | `--force` | Overwrite files inside an existing target without asking. Files not part of the bundled skill are left in place. |
 
@@ -259,7 +259,7 @@ lit add --si <paper> [--force]
 | `--id <id>` | Override the auto-derived id, and the way past a title litman cannot turn into one. |
 | `--auto-suffix` | On id collision, auto-append `_b` / `_c` without prompting. Required for non-interactive (non-TTY) batch use. |
 | `--si <paper>` | Add SI files to `<paper>` (a full id or a unique id substring) instead of importing a paper. Not with `--doi`, `--from-llm-json`, `--id` or `--auto-suffix`. |
-| `--force` | Only with `--si`. With files: add a file that cannot be confirmed as the paper's SI, or is over 100 MiB, without asking — never a refused one. Without files: ask the Web UI even when the paper has SI already or its text never mentions any. |
+| `--force` | Only with `--si`. With files: add a file that cannot be confirmed as the paper's SI, or is over 100 MiB, without asking — never a refused one. Without files: ask the Web UI even when the paper has SI already. |
 
 `lit add` writes a complete metadata skeleton (all fields, defaults filled); see
 [3-concepts.md](3-concepts.md) §1.1 for the schema.
@@ -289,9 +289,8 @@ article's page and drop them in (see `lit gui` below), and the command waits up
 to 90 seconds for **Done**, printing
 `Waiting for the SI to be added in the litman GUI…` on stderr meanwhile. Run
 it on the same machine as the `lit gui` that serves this library. When the
-paper has SI already, it prints those files without asking; when the paper's
-text never mentions supplementary material, it exits 13 — `--force` asks the
-Web UI in both cases. The first line on stdout says how it ended:
+paper has SI already, it prints those files without asking; `--force` asks the
+Web UI anyway. The first line on stdout says how it ended:
 
 | Exit | First line on stdout | What it means |
 |---|---|---|
@@ -299,7 +298,6 @@ Web UI in both cases. The first line on stdout says how it ended:
 | 10 | `SI request cancelled in the GUI` | **Cancel** (or Esc) was pressed in the SI window. |
 | 11 | `Still waiting in the GUI — run the same command again to keep waiting` | 90 seconds passed, or the wait was interrupted. The window stays open, and the same command run again picks up the same request. |
 | 12 | `No litman GUI page is open for this library` | No `lit gui` on this machine has a page open on this library (or it stopped answering, or shows another library). A line saying why follows when there is one, then the article's link and the `lit add --si <paper> <file>...` form. |
-| 13 | `The paper's text never mentions supplementary material` | Nothing was asked; `--force` asks anyway. |
 | 1 | `error: …` | No such paper, a broken SI record, and the like. |
 
 ### `lit list`
@@ -490,6 +488,8 @@ citation). Other caveats (missing volume/pages, preprint venue) go to stderr too
 
 Edit fields on a paper's `metadata.yaml`. Writes `metadata.yaml` (refreshing
 `updated-at`) and `INDEX.json` atomically; `views/by-*` are rebuilt afterwards.
+A new title also becomes the first line of the paper's `notes.md` (`# <title>`)
+in the same write; if `notes.md` cannot be read, nothing is changed.
 Accepts a full id, a unique substring, or `--paper-doi`.
 
 ```
@@ -534,8 +534,11 @@ removed with `lit rm --si`.
 
 Change a paper id, rippling the change everywhere: the renamed paper's metadata
 and directory, every other paper's metadata that references it, every `notes.md`
-with a `[[<old>]]` wikilink, `INDEX.json`, and `views/`. `<old>` accepts a unique
-substring; `<new>` must be the exact target id.
+and `discussion.md` with a `[[<old>]]` wikilink, the first line of the paper's
+own `discussion.md` (`# Discussion log for <new>`), `INDEX.json`, and `views/`.
+`<old>` accepts a unique substring; `<new>` must be the exact target id.
+Where a note still has `<old>` as plain text, outside `[[ ]]`, the command
+prints the file and the line numbers and leaves the text as it is.
 
 ```
 lit rename <old-id> <new-id>
@@ -843,7 +846,7 @@ lit health-check --all
 
 | Flag | What it does |
 |---|---|
-| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), refresh out-of-date installed agent skills (files you added next to them are kept), and rename a paper folder to the id in its `metadata.yaml` when a rename stopped halfway. Five repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; a title, journal or author name carrying line breaks, stray spaces or markup is rewritten as one plain line, as is the title line `lit add` put at the top of `notes.md` if you have not changed it (the paper id is never changed; if it was made from the old title, the output prints the `lit rename` that matches the new one); and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
+| `--fix` | Auto-regenerate all derived artifacts from metadata, clean stale staging dirs / orphan trash sidecars, create any missing `discussion.md` (existing ones keep every section they hold), refresh out-of-date installed agent skills (files you added next to them are kept), and rename a paper folder to the id in its `metadata.yaml` when a rename stopped halfway. Five repairs touch more than derived files: a retired paper-level `priority` is copied onto each project the paper is linked to — **a paper in no project loses its grade**, so run `--all` first and `lit link` the ones you want to keep; a relation link to a paper no longer in the library (deleted, lost in a sync, or in the trash) is removed, so bring back any paper you still want first; where a copied project folder left real folders in place of links, a copy that matches the vault (or is empty) is replaced with the link while one that does not is kept under `<vault>/.trash/replaced-folders/` and named in the output; a title, journal or author name carrying line breaks, stray spaces or markup is rewritten as one plain line, and the first line of `notes.md` becomes `# ` and the clean title, even if you changed it (the paper id is never changed; if it was made from the old title, the output prints the `lit rename` that matches the new one); and a paper's SI records are brought in line with its `supplementary/` folder — the record of a file that is gone is dropped (asking first at a terminal, default yes), a file found there that checks out as the paper's SI is recorded, one it cannot confirm is recorded only on a yes at a terminal (default no), and one that belongs elsewhere is left where it is. Off a terminal it drops no record, records only the files that check out, and prints the command for the rest. It never deletes an SI file. Registry / project / taxonomy / code-clone drift stays report-only (it needs a per-case decision), and so do changed SI content, SI folder layout and SI citations. With `--fix`, the exit code reflects post-fix state. |
 | `--all` | Print every finding instead of the first few per category. |
 
 A library imported before a guard existed can hold hundreds of one kind of
@@ -920,7 +923,8 @@ them later with `lit code restore-all`).
 
 ### `lit export`
 
-Project the vault out to a `.bib` file for LaTeX. Cite keys equal paper ids, so
+Project the vault out to a `.bib` file for LaTeX, or with `--format ris` to a
+`.ris` file for EndNote, Zotero or Mendeley. Cite keys equal paper ids, so
 `\cite{<paper-id>}` works across machines. Re-running on the same file is the
 supported update path. One of `--project` / `--all` is required.
 
@@ -929,18 +933,19 @@ lit export --project <name>
 lit export --all
 lit export --project <name> -o path/to/refs.bib
 lit export --all --topic transformer --author wang
+lit export --project <name> --format ris
 ```
 
 | Flag | What it does |
 |---|---|
 | `--project <name>` | Export every paper linked to the project. Mutually exclusive with `--all`. |
 | `--all` | Export every paper in the vault. |
-| `-o`, `--output <file>` | Output path. Default `./refs.bib`. |
+| `-o`, `--output <file>` | Output path. Default `./refs.bib`, or `./refs.ris` with `--format ris`. |
 | `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). `--priority` is per project, exactly as in `lit list`. |
 | `--force` | Overwrite a target file even without the litman sentinel (typically a hand-edited `.bib`). |
-| `--format [bibtex]` | Output format. Only `bibtex` is implemented. |
+| `--format [bibtex\|ris]` | Output format. Default `bibtex`. |
 
-Every generated file's first line is a litman sentinel comment; `lit export`
+Every generated file's first line is a litman sentinel line; `lit export`
 refuses to overwrite a target whose first line is not that sentinel, so a
 hand-curated `.bib` at the same path is safe. The exporter uses the bib-oriented
 fields filled in by `lit add`; fill them on older papers with
@@ -950,6 +955,12 @@ fields filled in by `lit add`; fill them on older papers with
 `@patent` rather than a bare `@misc`, and a `patent-number` on the paper becomes
 that entry's number. Both are ordinary metadata fields — set them with
 `lit modify` on a patent that came in without them.
+
+EndNote reads BibTeX poorly; give it the `.ris`. In EndNote: **File → Import →
+File**, Import Option **Reference Manager (RIS)**. Each record's **Label** is the
+paper id, the same key as `\cite{<paper-id>}`. An arXiv preprint comes in as an
+unpublished work, with its arXiv id in the notes and a link to its abstract
+page.
 
 ### `lit config`
 
@@ -1072,14 +1083,19 @@ lit agent --set-default claude  # record the machine-level default agent
 
 The default agent is machine-level, not per-vault: it is recorded in
 `preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
-agent panel, or `lit agent --set-default`. Claude Code, Antigravity CLI
+agent panel, or `lit agent --set-default`. Claude Code, ZCode, Antigravity CLI
 (`agy`), Codex, Cursor, and OpenCode are the supported agents.
 
+ZCode is a desktop app, not a terminal agent: `lit agent zcode` opens ZCode at
+the vault and returns at once. If ZCode is already open, it switches to the
+vault. Open ZCode once after installing it, so litman can find it.
+
 Two things fail with a one-line error: a NAME that is not in the catalog, and an
-agent whose command is missing from PATH. The Web UI's agent button launches the same default agent: on a machine
-with a display it opens the agent in a new terminal window; when the server
-runs on a remote box (HPC) it shows the `lit agent` line to copy into your own
-terminal.
+agent whose command is missing from PATH (for ZCode: not installed, or never
+opened). The Web UI's agent button launches the same default agent: on a machine
+with a display it opens the agent in a new terminal window, or opens ZCode;
+when the server runs on a remote box (HPC) it shows the `lit agent` line to
+copy into your own terminal.
 
 ### `lit self-update`
 
