@@ -47,3 +47,66 @@ jobs:
       # did not cover.
       - name: Test (excludes tests/bench — its fixture PDFs cannot be committed)
         run: pytest -q --ignore=tests/bench
+
+  # ruff, mypy, and a check that the committed webUI build matches its source.
+  # Linux only: none of the three depends on the platform, and on Windows git's
+  # autocrlf rewrites line endings, so a byte comparison of the rebuilt webUI
+  # would fail there for no reason.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12.13'
+
+      # Every dependency at an exact version, not only ruff and mypy: mypy's
+      # verdict also depends on the types click, fastapi, pydantic and the rest
+      # ship, so a newer release could otherwise turn this job red on its own.
+      - name: Install (versions pinned in .github/lint-constraints.txt)
+        id: install
+        run: pip install -e ".[dev]" -c .github/lint-constraints.txt
+
+      # Each check runs whenever its own prerequisites succeeded, so one push
+      # reports every problem instead of stopping at the first red step.
+      - name: ruff
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ruff check src tests
+
+      - name: mypy
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: mypy
+
+      # The version that built the committed webUI.
+      - uses: actions/setup-node@v7
+        id: node
+        if: ${{ !cancelled() }}
+        with:
+          node-version: '25.7.0'
+
+      - name: npm ci
+        id: npm
+        if: ${{ !cancelled() && steps.node.outcome == 'success' }}
+        working-directory: frontend
+        run: npm ci
+
+      # build.sh runs `tsc -b` (the TypeScript type check) before vite.
+      - name: Build the webUI
+        id: build
+        if: ${{ !cancelled() && steps.npm.outcome == 'success' }}
+        run: bash frontend/build.sh
+
+      # The whole tree, not only src/litman/assets/webui/: a rebuilt bundle
+      # under a new hashed name is an untracked file that `git diff` misses,
+      # and build.sh also refreshes the brand icons copied into frontend/.
+      - name: Committed webUI matches the build
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          git status --porcelain
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::The committed webUI is out of date: run bash frontend/build.sh and commit src/litman/assets/webui/ with the source."
+            exit 1
+          fi

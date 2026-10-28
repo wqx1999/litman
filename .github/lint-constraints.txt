@@ -1,0 +1,47 @@
+# Exact versions for the lint job in .github/workflows/test.yml. mypy's verdict
+# depends on the type information that click, fastapi, pydantic, starlette,
+# httpx and the rest ship, so CI installs the same versions as the maintainer's
+# machine instead of whatever is newest; a new upstream release then cannot turn
+# the job red on its own. Upgrading any of these is a commit of its own.
+# The list is every distribution `pip install -e ".[dev]"` installs on Linux.
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.4.22
+click==8.3.3
+coverage==7.13.5
+fastapi==0.136.3
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.13
+iniconfig==2.3.0
+librt==0.9.0
+markdown-it-py==4.0.0
+mdurl==0.1.2
+mypy==1.20.2
+mypy-extensions==1.1.0
+packaging==26.0
+pathspec==1.1.1
+platformdirs==4.9.6
+pluggy==1.6.0
+pydantic==2.13.3
+pydantic-core==2.46.3
+pygments==2.20.0
+pypdf==6.10.2
+pytest==9.0.3
+pytest-cov==7.1.0
+python-dotenv==1.2.2
+pyyaml==6.0.3
+rich==15.0.0
+ruamel-yaml==0.19.1
+ruamel-yaml-clib==0.2.15
+ruff==0.15.12
+starlette==1.2.1
+typing-extensions==4.15.0
+typing-inspection==0.4.2
+uvicorn==0.49.0
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==16.0
