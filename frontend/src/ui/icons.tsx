@@ -1,6 +1,6 @@
 import type { SVGProps } from 'react'
 
-// SF-Symbols-style line icons — the same convention as TopBar's inline SVGs
+// SF-Symbols-style line icons, TopBar's toolbar set included
 // (24-grid, no fill, currentColor stroke @ 1.8, round caps). One shared set so
 // the picker and the create-vault cards draw from the same pen (no emoji).
 // Callers set size + color via className; the default is 18px like TopBar.
@@ -82,7 +82,7 @@ export function ArrowUpIcon(p: IconProps) {
 }
 
 export function PencilIcon(p: IconProps) {
-  // TopBar's exact pencil path (IconPencil), so the app draws one pen everywhere.
+  // Also the project manager's rename pencil, so the app draws one pen everywhere.
   return (
     <Line {...p}>
       <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -150,4 +150,113 @@ export function anchorIcon(kind: string, className?: string) {
     default:
       return <FolderIcon className={className} />
   }
+}
+
+/** Stacked cylinders (database) — the vault manager. */
+export function IconVault() {
+  return (
+    <Line>
+      <ellipse cx="12" cy="5" rx="7" ry="3" />
+      <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
+      <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+    </Line>
+  )
+}
+
+export function IconTrash() {
+  return (
+    <Line className="h-3.5 w-3.5">
+      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
+    </Line>
+  )
+}
+
+/** Folder with an arrow — "re-point at a new location" (set-path). */
+export function IconMove() {
+  return (
+    <Line className="h-3.5 w-3.5">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v3M3 7v10a2 2 0 0 0 2 2h6M16 16l3 3-3 3M19 19h-6" />
+    </Line>
+  )
+}
+
+/** Viewfinder brackets — "frame the content" (focus mode). */
+export function IconFocus() {
+  return (
+    <Line>
+      <path d="M8 3H6a3 3 0 0 0-3 3v2M16 3h2a3 3 0 0 1 3 3v2M8 21H6a3 3 0 0 1-3-3v-2M16 21h2a3 3 0 0 0 3-3v-2" />
+    </Line>
+  )
+}
+
+/** Question mark in a circle — the macOS help-button idiom; opens the
+ * keyboard-shortcut cheat sheet (and so reveals the `?` shortcut). */
+export function IconHelp() {
+  return (
+    <Line>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.2 9.3a2.8 2.8 0 0 1 5.4 1c0 1.8-2.7 2.3-2.7 4" />
+      <circle cx="12" cy="17.2" r="0.6" fill="currentColor" stroke="none" />
+    </Line>
+  )
+}
+
+export function IconMoon() {
+  return (
+    <Line>
+      <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.5 6.5 0 0 0 9.8 9.8z" />
+    </Line>
+  )
+}
+
+export function IconSun() {
+  return (
+    <Line>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </Line>
+  )
+}
+
+/** Two circular arrows — refresh / resync the views from disk. */
+export function IconRefresh() {
+  return (
+    <Line>
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+      <path d="M3 21v-5h5" />
+    </Line>
+  )
+}
+
+/** Clock-with-rewind — the session activity history (D2). */
+export function IconLog() {
+  return (
+    <Line>
+      <path d="M3 3v5h5" />
+      <path d="M3.05 11A9 9 0 1 0 6 5.3L3 8" />
+      <path d="M12 8v4l3 2" />
+    </Line>
+  )
+}
+
+/** Shield-with-check — the library health check (D1). */
+export function IconShield() {
+  return (
+    <Line>
+      <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />
+      <path d="M9 12l2 2 4-4" />
+    </Line>
+  )
+}
+
+/** Terminal window with a prompt — launch the configured AI agent. */
+export function IconAgent() {
+  return (
+    <Line>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9.5l3 2.5-3 2.5M12.5 15.5H17" />
+    </Line>
+  )
 }
