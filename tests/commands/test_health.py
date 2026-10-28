@@ -11,6 +11,7 @@ import ast
 import json
 import os
 import shlex
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -3082,6 +3083,71 @@ def test_run_all_checks_aggregates_categories(vault: Path) -> None:
     cats = {i.category for i in issues}
     assert "dangling_refs" in cats
     assert "stale_staging" in cats
+
+
+# Run in a child interpreter so the hash seed can be pinned: in this process
+# PYTHONHASHSEED is random, and sets that happened to iterate in the right
+# order would let the test pass by luck. Only the slow or outside-the-vault
+# work is stubbed; the ordering runs through the real _apply_fixes and
+# apply_autofix.
+_AUTOFIX_ORDER_SCRIPT = """
+import sys
+from pathlib import Path
+
+import litman.core.ripple as ripple
+import litman.core.skill as skill
+import litman.core.supplementary as supplementary
+from litman.commands import health
+from litman.core.checks import Issue, registry
+
+health.regen = lambda vault, issues: {}
+health._si_fix_policy = lambda: None
+registry._default_agent_skill_probe = lambda: None
+registry.cleanup_stale_staging = lambda vault: 1
+skill.refresh_stale_copies = lambda dirs: {"claude": ["litman"]}
+ripple.clean_dirty_metadata = lambda vault: (1, [], [])
+ripple.drop_dangling_relations = lambda vault: 1
+supplementary.fix_supplementary = lambda vault, ids, policy=None: {
+    "supplementary_missing": 1,
+    "supplementary_unrecorded": 1,
+}
+issues = [Issue(c, "warning", "2024_Doe_X", "drift") for c in sys.argv[1:]]
+print(" ".join(health._apply_fixes(Path("unused"), issues)))
+"""
+
+# One finding of each kind --fix cleans here — the validity arms, klass-A and
+# SI — in the order run_all_checks reports them.
+_FIXABLE_IN_REGISTRY_ORDER = [
+    "dirty_metadata",
+    "index_vs_disk",
+    "views_vs_metadata",
+    "project_references",
+    "project_bridge_dangling",
+    "dangling_refs",
+    "stale_staging",
+    "skill_drift",
+    "supplementary_missing",
+    "supplementary_unrecorded",
+]
+
+
+@pytest.mark.parametrize("order", ["registry", "reversed"])
+@pytest.mark.parametrize("seed", ["0", "1", "2", "3"])
+def test_apply_fixes_lists_in_report_order(seed: str, order: str) -> None:
+    """The Auto-fix lines of --fix come in the order of the report above them,
+    on every run. Reversed, the issues are out of registry order, so passing
+    both shows the order followed is the report's, not the registry's."""
+    categories = list(_FIXABLE_IN_REGISTRY_ORDER)
+    if order == "reversed":
+        categories.reverse()
+    result = subprocess.run(
+        [sys.executable, "-c", _AUTOFIX_ORDER_SCRIPT, *categories],
+        env={**os.environ, "PYTHONHASHSEED": seed},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == categories
 
 
 def test_apply_autofix_clears_staging(vault: Path) -> None:

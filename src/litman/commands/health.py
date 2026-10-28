@@ -554,6 +554,9 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     folder could not be renamed.
     """
     counts: dict[str, Any] = {}
+    # The report's order, for the return below; read before unfinished_rename
+    # is set aside.
+    report_order = list(dict.fromkeys(i.category for i in issues))
 
     # Folders first. Until a half-renamed paper's folder carries its metadata
     # id, the rebuild links views and project hubs to a folder that is not
@@ -582,4 +585,9 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
                 counts[key] = regenerated[key]
 
     counts.update(apply_autofix(vault, issues, si_policy=_si_fix_policy()))
-    return counts
+    # In the report's order (where each category first came up), so the
+    # Auto-fix lines read in the same order as the report above them. Keys the
+    # report has no section for — the detail keys, a skill sweep with no
+    # finding — keep their relative order, last.
+    rank = {category: n for n, category in enumerate(report_order)}
+    return dict(sorted(counts.items(), key=lambda kv: rank.get(kv[0], len(rank))))

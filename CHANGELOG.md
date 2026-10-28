@@ -17,6 +17,9 @@ own entry. Read those before you upgrade, whatever the number says.
   it cannot read and a `.litman-staging/` leftover it cannot clean up were
   headed by internal names (`config_unreadable`, `stale_staging_unrecoverable`).
   They now get a title like every other finding.
+- **`lit health-check --fix` lists what it fixed in a steady order.** The
+  **Auto-fix** lines could come out in a different order on each run. They now
+  follow the order of the report above them.
 
 ## 1.3.9 — 2026-10-28
 
