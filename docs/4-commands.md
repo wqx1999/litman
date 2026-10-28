@@ -923,7 +923,8 @@ them later with `lit code restore-all`).
 
 ### `lit export`
 
-Project the vault out to a `.bib` file for LaTeX. Cite keys equal paper ids, so
+Project the vault out to a `.bib` file for LaTeX, or with `--format ris` to a
+`.ris` file for EndNote, Zotero or Mendeley. Cite keys equal paper ids, so
 `\cite{<paper-id>}` works across machines. Re-running on the same file is the
 supported update path. One of `--project` / `--all` is required.
 
@@ -932,18 +933,19 @@ lit export --project <name>
 lit export --all
 lit export --project <name> -o path/to/refs.bib
 lit export --all --topic transformer --author wang
+lit export --project <name> --format ris
 ```
 
 | Flag | What it does |
 |---|---|
 | `--project <name>` | Export every paper linked to the project. Mutually exclusive with `--all`. |
 | `--all` | Export every paper in the vault. |
-| `-o`, `--output <file>` | Output path. Default `./refs.bib`. |
+| `-o`, `--output <file>` | Output path. Default `./refs.bib`, or `./refs.ris` with `--format ris`. |
 | `--priority` / `--status` / `--year` / `--type` / `--topic` / `--method` / `--data` / `--author` | A subset of `lit list`'s filters (within a flag OR, across flags AND). `--priority` is per project, exactly as in `lit list`. |
 | `--force` | Overwrite a target file even without the litman sentinel (typically a hand-edited `.bib`). |
-| `--format [bibtex]` | Output format. Only `bibtex` is implemented. |
+| `--format [bibtex\|ris]` | Output format. Default `bibtex`. |
 
-Every generated file's first line is a litman sentinel comment; `lit export`
+Every generated file's first line is a litman sentinel line; `lit export`
 refuses to overwrite a target whose first line is not that sentinel, so a
 hand-curated `.bib` at the same path is safe. The exporter uses the bib-oriented
 fields filled in by `lit add`; fill them on older papers with
@@ -953,6 +955,12 @@ fields filled in by `lit add`; fill them on older papers with
 `@patent` rather than a bare `@misc`, and a `patent-number` on the paper becomes
 that entry's number. Both are ordinary metadata fields — set them with
 `lit modify` on a patent that came in without them.
+
+EndNote reads BibTeX poorly; give it the `.ris`. In EndNote: **File → Import →
+File**, Import Option **Reference Manager (RIS)**. Each record's **Label** is the
+paper id, the same key as `\cite{<paper-id>}`. An arXiv preprint comes in as an
+unpublished work, with its arXiv id in the notes and a link to its abstract
+page.
 
 ### `lit config`
 

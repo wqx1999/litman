@@ -1,6 +1,6 @@
 ---
 name: lit-library
-description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib, rename, delete or restore a paper, or tidy the topic / method / data vocabulary. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids'. NOT for a project's own References/ folder — that's ref-manager."
+description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib (or RIS for EndNote), rename, delete or restore a paper, or tidy the topic / method / data vocabulary. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '导出到 EndNote', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids'. NOT for a project's own References/ folder — that's ref-manager."
 ---
 
 # lit-library — the write side of the litman vault
@@ -35,7 +35,7 @@ Changes the library through the `lit` CLI. Reading, discussing and closing out a
 
 ## Workflows, most used first
 
-**[A]** add a paper from a PDF · **[B]** from a DOI (preferred whenever one exists) · **[E]** metadata, tags, edges · **[G]** export a .bib · **[D]** browse · **[L]** a paper's SI files · **[C]** code repositories · **[H]** projects · **[I]** restore a trashed paper · **[J]** vocabulary governance · **[K]** repair a legacy library.
+**[A]** add a paper from a PDF · **[B]** from a DOI (preferred whenever one exists) · **[E]** metadata, tags, edges · **[G]** export a .bib or RIS · **[D]** browse · **[L]** a paper's SI files · **[C]** code repositories · **[H]** projects · **[I]** restore a trashed paper · **[J]** vocabulary governance · **[K]** repair a legacy library.
 
 ---
 
@@ -87,13 +87,14 @@ A local PDF with no DOI anywhere (none from the user, none printed in it), or a 
 - **Stamps and fields.** Prefer the stamps to `lit modify --set`: `lit read` (read-date; `--date` backdates), `lit revisit`, `lit promote` (deep-read; it does not stamp read-date), `lit skim`, `lit drop`. A grade is `lit modify <id> --set priority-<project>=A|B|C` on a paper linked to that project; it can be changed, not cleared (`lit unlink` drops it). Authors: `lit modify <id> --set-author "Family, Given"`, one flag per author, in order — the only way to fix or reorder a name in place.
 - **Edges.** Only one the user confirmed, usually handed over by lit-reading. Run the **forward** field only — `lit modify <id> --add-tag extends=<other-id>` (or `related=` / `contradicts=`); the CLI writes the reverse field (`extended-by` / `contradicted-by`) on the other paper: **never set a reverse field, never run a second command for it.**
 
-## [G] Export a .bib
+## [G] Export a .bib or RIS
 
 | The user says | Command |
 |---|---|
 | "导出 bib" / names no project | `lit export --all -o refs.bib` — just run it |
 | "导出和 pepforge 有关的文献" | `lit export --project pepforge` (writes `./refs.bib`) |
 | "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` (A for any project; `--project <P>` for one) |
+| "导出到 EndNote" / "给 Zotero 用" | the same command plus `--format ris` (writes `./refs.ris`); EndNote imports it with the Reference Manager (RIS) option. A .bib does not import into EndNote reliably — don't offer it there |
 
 Cite keys are paper ids (`\cite{<paper-id>}`); re-running on the same file updates it. Other filters: `lit export --help`.
 

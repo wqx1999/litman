@@ -17,6 +17,11 @@ own entry. Read those before you upgrade, whatever the number says.
   `lit agent zcode`, and ZCode opens at your library — no terminal in between.
   Install the skills from the same panel: ZCode now loads both of them. In
   ZCode, turn on Autonomous mode so `lit` runs without asking each time.
+- **Export for EndNote.** `lit export --format ris` writes a `.ris` file that
+  EndNote, Zotero and Mendeley import as it is — in EndNote, choose the
+  Reference Manager (RIS) import option. EndNote's own BibTeX import tends to
+  lose fields or fail outright. Each record's label is the paper id, the same
+  key you `\cite` in LaTeX.
 - **The web UI shows how many papers the list holds.** The count sits at the
   right of the **Show** row above the list and follows everything that narrows
   it: the project, Reading / Read / All, the filters and the search box.
@@ -77,6 +82,10 @@ own entry. Read those before you upgrade, whatever the number says.
   what the window is for.
 
 ### Fixed
+
+- **An author known only by family name exports cleanly.** A paper whose
+  author is stored as `Yang, ` went into the `.bib` as `Yang, ` too, and BibTeX
+  stopped on the trailing comma. The export now writes `Yang`.
 
 - **Changing a paper's id or title now updates the heading that goes with
   it.** `lit rename` rewrites the first line of the paper's `discussion.md` to

@@ -87,8 +87,8 @@ involved. It is organised into three parts:
 2. `importers/` pulls an external source into a draft metadata record:
    `crossref` resolves a DOI against CrossRef, and `llm` extracts fields from
    text the agent supplies.
-3. `exporters/` renders the library outward: `bibtex` emits a BibTeX file from a
-   set of papers.
+3. `exporters/` renders the library outward: `bibtex` emits a BibTeX file and
+   `ris` a RIS file from a set of papers.
 
 **Layer 3 is the `lit` CLI**, the interface a user actually types. `cli.py`
 defines the root Click group, and every command is its own module under

@@ -32,6 +32,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from litman.exporters.authors import clean_author
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -97,9 +99,10 @@ def emit_entry(meta: dict[str, Any]) -> str:
         fields.append(("title", "{" + escape_bibtex(title) + "}"))
 
     # --- author (bibtex uses ' and ' as separator) ---
+    # A family-only "Yang, " would leave bibtex a name with a dangling comma.
     authors = meta.get("authors") or []
     if authors:
-        rendered = " and ".join(escape_bibtex(a) for a in authors)
+        rendered = " and ".join(escape_bibtex(clean_author(a)) for a in authors)
         fields.append(("author", rendered))
 
     # --- year ---
