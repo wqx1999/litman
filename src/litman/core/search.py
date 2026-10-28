@@ -113,7 +113,7 @@ def search_notes(
         raw_lines = text.splitlines()
         masked_lines = _mask_html_comments(text).splitlines()
         for lineno, (raw_line, masked_line) in enumerate(
-            zip(raw_lines, masked_lines), start=1
+            zip(raw_lines, masked_lines, strict=False), start=1
         ):
             haystack = masked_line.lower() if case_insensitive else masked_line
             if needle in haystack:

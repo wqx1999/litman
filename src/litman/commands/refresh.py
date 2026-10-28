@@ -61,7 +61,10 @@ def refresh_views_cmd(
     for view_name, k in counts.items():
         console.print(f"  views/{view_name}: {k} link{'s' if k != 1 else ''}")
     if project_results:
-        console.print(f"[green]✓[/] Project REFERENCES.md ({len(project_results)} project{'s' if len(project_results) != 1 else ''})")
+        console.print(
+            f"[green]✓[/] Project REFERENCES.md ({len(project_results)} "
+            f"project{'s' if len(project_results) != 1 else ''})"
+        )
         for project, info in project_results.items():
             status = info["status"]
             n_papers = info["n_papers"]

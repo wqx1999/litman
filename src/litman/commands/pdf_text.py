@@ -44,7 +44,7 @@ def _parse_pages(spec: str) -> list[int]:
             try:
                 lo, hi = int(lo_s), int(hi_s)
             except ValueError:
-                raise click.BadParameter(f"invalid page range {tok!r}")
+                raise click.BadParameter(f"invalid page range {tok!r}") from None
             if lo < 1 or hi < lo:
                 raise click.BadParameter(f"invalid page range {tok!r}")
             result.extend(range(lo, hi + 1))
@@ -52,7 +52,7 @@ def _parse_pages(spec: str) -> list[int]:
             try:
                 p = int(tok)
             except ValueError:
-                raise click.BadParameter(f"invalid page number {tok!r}")
+                raise click.BadParameter(f"invalid page number {tok!r}") from None
             if p < 1:
                 raise click.BadParameter(f"invalid page number {tok!r}")
             result.append(p)

@@ -1000,7 +1000,7 @@ class StagedWrite:
         """
         if self._committed and not self._promoted:
             return
-        if not self._committed and self._moved:
+        if not self._committed and self._moved:  # noqa: SIM102 — the inner if runs the rollback
             if not self._drop_sentinel() or not self._undo_moves():
                 return
         if self.staging_root.exists():

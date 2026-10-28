@@ -170,7 +170,7 @@ else
   echo "[helper] relaunching" >> "$LOG"
   {relaunch} >> "$LOG" 2>&1 &
 fi
-"""
+"""  # noqa: E501 — a line of the generated shell script
         if relaunch
         else ""
     )

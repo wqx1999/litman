@@ -339,7 +339,7 @@ def list_trash(vault: Path) -> list[TrashEntry]:
         m = _ENTRY_NAME_RE.match(child.name)
         if not m:
             continue
-        parsed_id, parsed_ts = m.group(1), m.group(2)
+        parsed_id = m.group(1)
 
         sidecar = _sidecar_path(child)
         deleted_at = "(unknown)"

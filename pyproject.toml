@@ -131,6 +131,15 @@ select = [
     "C4",   # flake8-comprehensions
     "RUF",  # ruff-specific
 ]
+ignore = [
+    # Deliberate typography in user-facing text and docs (×, –, ℹ, CJK punctuation).
+    "RUF001", "RUF002", "RUF003",
+    # try/except/pass is the house style; contextlib.suppress would also swallow
+    # a matching ExceptionGroup, so the rewrite is not a pure no-op.
+    "SIM105",
+    # `xs + [x]` reads fine; the suggested `[*list(xs), x]` reads worse.
+    "RUF005",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]  # tests can use `assert False`

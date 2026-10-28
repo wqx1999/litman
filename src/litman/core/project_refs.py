@@ -156,7 +156,7 @@ def _group_by_priority(
         pr = p.get(f"priority-{project}")
         key = pr if pr in _PRIORITY_ORDER else None
         buckets.setdefault(key, []).append(p)
-    for key, group in buckets.items():
+    for group in buckets.values():
         group.sort(key=lambda x: (_year_sort_key(x), str(x.get("id", ""))))
     return buckets
 
@@ -335,7 +335,8 @@ def rebuild_all_project_refs(
             target = write_references_md(
                 vault, project, project_dir, now=now, papers=papers
             )
-        except Exception as e:  # defensive — write_references_md raises only FileNotFoundError currently
+        except Exception as e:
+            # defensive — write_references_md raises only FileNotFoundError currently
             out[project] = {
                 "status": "error",
                 "path": None,

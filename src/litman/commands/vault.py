@@ -485,7 +485,10 @@ def vault_remove_cmd(name: str, yes: bool) -> None:
 
     note = ""
     if entry.is_active:
-        note = "\n\n[yellow]The active vault was removed. Run `lit vault use <name>` to pick the next one.[/]"
+        note = (
+            "\n\n[yellow]The active vault was removed. "
+            "Run `lit vault use <name>` to pick the next one.[/]"
+        )
     console.print(
         Panel.fit(
             f"[bold green]Unregistered:[/] {escape(name)}\n"

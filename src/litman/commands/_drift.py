@@ -233,7 +233,7 @@ def check_and_prompt_registry_drift(
         # no prompt, no auto-prune (mutating registry without consent in
         # automation is a foot-gun even with default Y).
         err = Console(stderr=True)
-        joined = ", ".join(f"{n} ({p})" for n, p in zip(names, paths))
+        joined = ", ".join(f"{n} ({p})" for n, p in zip(names, paths, strict=False))
         # soft_wrap so Rich never hard-wraps mid-line: the message embeds a
         # copy-paste command (`lit vault remove <name>`) and a vault path, and a
         # default 80-col wrap would split the command across lines (breaking a

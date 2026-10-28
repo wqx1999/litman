@@ -208,10 +208,7 @@ def complete_paper_id(
     del ctx, param
     try:
         env_vault = os.environ.get("LIT_LIBRARY")
-        if env_vault:
-            vault = find_vault(Path(env_vault))
-        else:
-            vault = find_vault()
+        vault = find_vault(Path(env_vault)) if env_vault else find_vault()
         papers_dir = vault / "papers"
         if not papers_dir.is_dir():
             return []
