@@ -33,8 +33,10 @@ from datetime import UTC
 
 from litman.cli import cli
 from litman.core import locking
+from litman.core.config import CONFIG_FILENAME
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
+from litman.core.trash import list_trash
 from litman.core.vault_registry import (
     add_vault,
     find_active,
@@ -2172,3 +2174,101 @@ def test_a_write_on_a_taxonomy_that_is_not_utf8_is_a_described_500(
         f"Cannot read {path}: line 14 is not UTF-8. Re-save it as UTF-8, then retry."
     )
     assert path.read_bytes() == data
+
+
+# ---------------------------------------------------------------------------
+# A lit-config.yaml that cannot be read
+# ---------------------------------------------------------------------------
+
+
+def _damage_config(vault: Path, kind: str) -> None:
+    path = vault / CONFIG_FILENAME
+    if kind == "unparsable":
+        path.write_text("library_name: [unclosed\n", encoding="utf-8")
+    else:
+        with path.open("a", encoding="utf-8") as f:
+            f.write("no_such_setting: 1\n")
+
+
+def _assert_config_detail(detail: str, kind: str) -> None:
+    """One line for a toast: what is wrong with the file and the way out."""
+    if kind == "unparsable":
+        assert detail == (
+            "lit-config.yaml cannot be read (lit config show says why) "
+            "— fix it and try again"
+        )
+    else:
+        assert detail.startswith("lit-config.yaml is invalid (no_such_setting: ")
+        assert detail.endswith(") — fix it and try again")
+        assert "\n" not in detail
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "body"),
+    [
+        ("GET", "/api/projects", None),
+        ("POST", "/api/projects", {"name": "pepforge2", "path": "<dir>"}),
+        ("PUT", "/api/projects/pepforge", {"new": "pepforge2"}),
+        ("PUT", "/api/projects/pepforge/path", {"path": "<dir>"}),
+        ("DELETE", "/api/projects/pepforge", None),
+        ("POST", "/api/paper/{id}/project", {"project": "pepforge"}),
+        ("DELETE", "/api/paper/{id}/project/pepforge", None),
+    ],
+    ids=[
+        "project-list",
+        "project-add",
+        "project-rename",
+        "project-set-path",
+        "project-rm",
+        "link",
+        "unlink",
+    ],
+)
+@pytest.mark.parametrize("kind", ["unparsable", "invalid"])
+def test_a_config_that_cannot_be_read_is_a_described_500(
+    vault_with_paper: tuple[Path, str],
+    tmp_path: Path,
+    kind: str,
+    method: str,
+    url: str,
+    body: dict | None,
+) -> None:
+    """The toast says lit-config.yaml needs fixing instead of "Internal Server
+    Error", and nothing is written."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    assert linked.status_code == 200
+    _damage_config(vault, kind)
+    before = {
+        p: p.read_bytes()
+        for p in (vault / CONFIG_FILENAME, vault / "TAXONOMY.md", vault / "INDEX.json")
+    }
+    if body is not None and body.get("path") == "<dir>":
+        body = {**body, "path": str(tmp_path)}
+
+    resp = client.request(method, url.format(id=paper_id), json=body)
+
+    assert resp.status_code == 500
+    _assert_config_detail(resp.json()["detail"], kind)
+    assert {p: p.read_bytes() for p in before} == before
+
+
+@pytest.mark.parametrize("kind", ["unparsable", "invalid"])
+def test_restoring_a_paper_says_the_config_cannot_be_read(
+    vault_with_paper: tuple[Path, str], kind: str
+) -> None:
+    vault, paper_id = vault_with_paper
+    removed = CliRunner().invoke(cli, ["rm", paper_id, "--yes", "--library", str(vault)])
+    assert removed.exit_code == 0, removed.output
+    entry_name = list_trash(vault)[0].entry_name
+    client = _client(vault)
+    _damage_config(vault, kind)
+
+    resp = client.post(f"/api/trash/{entry_name}/restore")
+
+    assert resp.status_code == 500
+    _assert_config_detail(resp.json()["detail"], kind)
+    assert [e.entry_name for e in list_trash(vault)] == [entry_name]
+    assert not (vault / "papers" / paper_id).exists()

@@ -24,13 +24,18 @@ from fastapi.staticfiles import StaticFiles
 
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
-from litman.exceptions import CorruptMetadataError, UnreadableTaxonomyError
+from litman.exceptions import (
+    ConfigError,
+    CorruptMetadataError,
+    UnreadableTaxonomyError,
+)
 from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
 from litman.server.routes_ingest import sweep_uploads
 from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
+from litman.server.routes_si import config_problem
 from litman.server.routes_si import router as si_router
 from litman.server.routes_structured import router as structured_router
 from litman.server.routes_trash import router as trash_router
@@ -328,6 +333,18 @@ def create_app(vault: Path | None) -> FastAPI:
         registering a value, tagging a paper, adding or renaming a project —
         worded as the CLI words it, instead of "Internal Server Error"."""
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.exception_handler(ConfigError)
+    async def _config_unreadable(request: Request, exc: ConfigError) -> JSONResponse:
+        """lit-config.yaml cannot be read: a 500 saying so in one line, for
+        every route that reads it — the project list, adding, renaming or
+        removing a project, linking a paper, restoring one from the trash —
+        instead of "Internal Server Error". The CLI's own message carries the
+        file's path and pydantic's full report, too long for a toast."""
+        return JSONResponse(
+            status_code=500,
+            content={"detail": config_problem(exc, "fix it and try again")},
+        )
 
     app.include_router(read_router)
     app.include_router(write_router)

@@ -20,6 +20,11 @@ own entry. Read those before you upgrade, whatever the number says.
 - **`lit health-check --fix` lists what it fixed in a steady order.** The
   **Auto-fix** lines could come out in a different order on each run. They now
   follow the order of the report above them.
+- **The web UI keeps up when `lit-config.yaml` or `TAXONOMY.md` cannot be
+  read.** It stopped showing changes made from the terminal or by an agent
+  until the page was reloaded, and adding a project or restoring a paper said
+  only "Internal Server Error". It now stays up to date, and those actions say
+  that `lit-config.yaml` needs fixing; the health panel says what is wrong.
 
 ## 1.3.9 — 2026-10-28
 
