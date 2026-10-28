@@ -53,11 +53,10 @@ from litman.commands.add import (
     _PDF_SNIFF_BYTES,
     _apply_add,
     _looks_like_pdf,
-    first_author_family,
 )
 from litman.core.dedup import auto_suffix_id, canonicalize_doi, find_paper_by_doi
 from litman.core.doi_sniff import sniff_dois
-from litman.core.id import derive_id, id_segments, is_valid_id, suggest_id
+from litman.core.id import derive_id, first_author_family, id_segments, is_valid_id, suggest_id
 from litman.core.textclean import clean_metadata_text
 from litman.exceptions import (
     AddError,

@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.checks._base import TRASH_SIZE_WARN, Issue, _yaml
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME

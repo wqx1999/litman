@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import DirMoveError, cleanup_stale_staging, staged_write
 from litman.core.checks._base import (

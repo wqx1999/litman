@@ -1031,7 +1031,7 @@ def _windows_desktop_dir() -> Path:
         buf = ctypes.create_unicode_buffer(260)
         # 0x10 = CSIDL_DESKTOPDIRECTORY, the physical folder (0x00 is the
         # virtual desktop namespace); final 0 = SHGFP_TYPE_CURRENT.
-        ok = ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf)
+        ok = ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf)  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
         if ok == 0 and buf.value:
             return Path(buf.value)
     except (OSError, AttributeError):

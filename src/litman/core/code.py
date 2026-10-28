@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso

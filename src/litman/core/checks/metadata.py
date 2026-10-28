@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import op_moving_folders
 from litman.core.checks._base import INBOX_STALE_DAYS, Issue, _yaml

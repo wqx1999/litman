@@ -7,7 +7,7 @@ level and prints a friendly stderr message. Anything not a subclass of
 
 from __future__ import annotations
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 
 class LitmanError(Exception):

@@ -42,7 +42,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import _make_op_id, staged_write
 from litman.core.dates import now_iso

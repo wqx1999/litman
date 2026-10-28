@@ -161,6 +161,11 @@ strict = true
 warn_unused_ignores = true
 files = ["src/litman", "tests"]
 
+[[tool.mypy.overrides]]
+# macOS-only GUI dependencies (pywebview, and AppKit from its pyobjc runtime).
+module = ["webview", "webview.*", "AppKit"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
