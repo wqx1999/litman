@@ -9,6 +9,15 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Fixed
+
+- **`lit health-check` titles two more kinds of problem.** A `lit-config.yaml`
+  it cannot read and a `.litman-staging/` leftover it cannot clean up were
+  headed by internal names (`config_unreadable`, `stale_staging_unrecoverable`).
+  They now get a title like every other finding.
+
 ## 1.3.9 — 2026-10-28
 
 ### Added

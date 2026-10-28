@@ -130,6 +130,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "taxonomy_similar": "Look-alike vocabulary values (topics / methods / data)",
     "taxonomy_unused": "Vocabulary values no paper uses",
     "taxonomy_singletons": "Vocabularies mostly made of values used by one paper",
+    "config_unreadable": "Unreadable lit-config.yaml (config-dependent checks skipped)",
     "project_config_consistency": (
         "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"
     ),
@@ -137,6 +138,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "bidirectional_refs": "Bidirectional 'related' asymmetry",
     "inbox_staleness": "Inbox staleness (>14 days)",
     "stale_staging": ".litman-staging/ leftovers",
+    "stale_staging_unrecoverable": ".litman-staging/ leftovers to settle by hand",
     "orphan_trash_sidecar": "Orphan .trash/ sidecars",
     "trash_size": "Trash bloat (entry count)",
     "replaced_folders": "Folders kept out of project hubs",

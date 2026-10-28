@@ -7,6 +7,7 @@ code, and ``--fix`` round-trip.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shlex
@@ -20,7 +21,8 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
-from litman.commands.health import _CATEGORY_PREVIEW
+from litman.commands.health import _CATEGORY_HEADERS, _CATEGORY_PREVIEW
+from litman.core import checks as checks_pkg
 from litman.core import locking
 from litman.core import viewer as viewer_mod
 from litman.core.checks import (
@@ -3164,6 +3166,76 @@ def test_health_check_with_issues_exits_one(vault: Path) -> None:
     assert result.exit_code == 1
     assert "Dangling references" in result.output
     assert "GHOST" in result.output
+
+
+def _emitted_categories() -> dict[str, str]:
+    """Every category a check under core/checks/ can emit, read off the source.
+
+    A literal ``category=`` keyword, or the first argument of ``Issue(...)`` or
+    of the ``add(...)`` helper the SI check uses; both arms of a conditional
+    expression count. Maps each category to where it was first seen.
+    """
+
+    def literals(node: ast.expr) -> list[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, ast.IfExp):
+            return literals(node.body) + literals(node.orelse)
+        return []
+
+    found: dict[str, str] = {}
+    for path in sorted(Path(checks_pkg.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else ""
+            values = [
+                v for kw in node.keywords if kw.arg == "category"
+                for v in literals(kw.value)
+            ]
+            if name in ("Issue", "add") and node.args:
+                values += literals(node.args[0])
+            for value in values:
+                found.setdefault(value, f"{path.name}:{node.lineno}")
+    return found
+
+
+def test_every_emitted_category_has_a_header() -> None:
+    """A category with no entry in _CATEGORY_HEADERS prints its raw id as the
+    section title of the report."""
+    found = _emitted_categories()
+    # The scan sees each way a category is written: a keyword (schema), the
+    # SI helper's first argument (supplementary_missing), a conditional
+    # (unfinished_rename).
+    assert {"schema", "supplementary_missing", "unfinished_rename"} <= set(found)
+    missing = {c: where for c, where in found.items() if c not in _CATEGORY_HEADERS}
+    assert not missing
+
+
+def test_health_check_titles_an_unreadable_config(vault: Path) -> None:
+    (vault / "lit-config.yaml").write_text(": : [bad", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    flat = " ".join(result.output.split())
+    assert "Unreadable lit-config.yaml (config-dependent checks skipped)" in flat
+    assert "config_unreadable" not in result.output
+    assert "Summary:" in flat
+
+
+def test_health_check_titles_an_unrecoverable_staging_leftover(vault: Path) -> None:
+    # An op with no commit record whose folder moves cannot be read: kept as
+    # evidence, never cleaned up by --fix.
+    op = vault / ".litman-staging" / "op-unreadable"
+    op.mkdir()
+    (op / "MANIFEST.json").write_text(
+        '{"op_id": "op-unreadable", "files": [], "dirs": "not a list"}',
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    flat = " ".join(result.output.split())
+    assert ".litman-staging/ leftovers to settle by hand" in flat
+    assert "stale_staging_unrecoverable" not in result.output
+    assert "Summary:" in flat
 
 
 @pytest.mark.skipif(
