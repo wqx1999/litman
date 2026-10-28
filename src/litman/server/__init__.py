@@ -14,9 +14,9 @@ startup path stays fastapi-free even though fastapi is now a core dependency).
 from __future__ import annotations
 
 import threading
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse

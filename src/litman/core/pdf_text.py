@@ -53,7 +53,7 @@ def extract_pdf_text(
         reader = PdfReader(str(pdf_path))
         all_pages = reader.pages
         n = len(all_pages)
-    except Exception as exc:  # noqa: BLE001 — surface any pypdf failure uniformly
+    except Exception as exc:  # surface any pypdf failure uniformly
         raise PdfTextError(str(exc)) from exc
 
     wanted = range(1, n + 1) if pages is None else pages
@@ -65,6 +65,6 @@ def extract_pdf_text(
             continue
         try:
             out.append(all_pages[p - 1].extract_text() or "")
-        except Exception:  # noqa: BLE001 — one unreadable page must not abort
+        except Exception:  # one unreadable page must not abort
             out.append("")
     return out

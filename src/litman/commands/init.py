@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shlex
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -77,7 +77,7 @@ def apply_init(
     updated = mark_health_checked(
         add_vault(reg, register_name, vault),
         register_name,
-        now_iso or datetime.now(timezone.utc).isoformat(),
+        now_iso or datetime.now(UTC).isoformat(),
     )
     save_registry(updated)
     entry = find_by_name(updated, register_name)

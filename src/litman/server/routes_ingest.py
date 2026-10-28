@@ -52,8 +52,8 @@ from litman.commands.add import (
     _PDF_MAGIC,
     _PDF_SNIFF_BYTES,
     _apply_add,
-    first_author_family,
     _looks_like_pdf,
+    first_author_family,
 )
 from litman.core.dedup import auto_suffix_id, canonicalize_doi, find_paper_by_doi
 from litman.core.doi_sniff import sniff_dois

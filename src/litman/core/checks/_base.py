@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from litman.core.yaml_pool import ThreadLocalYAML
 

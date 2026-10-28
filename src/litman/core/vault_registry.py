@@ -267,7 +267,7 @@ class VaultRegistry(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _check_invariants(self) -> "VaultRegistry":
+    def _check_invariants(self) -> VaultRegistry:
         names = [v.name for v in self.vaults]
         if len(names) != len(set(names)):
             dups = sorted({n for n in names if names.count(n) > 1})

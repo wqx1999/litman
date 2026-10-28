@@ -41,7 +41,7 @@ import io
 import re
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -185,7 +185,7 @@ class RestoreResult:
 
 def _utc_compact_now() -> str:
     """Compact ISO 8601 basic format used in entry names."""
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _trash_dir(vault: Path) -> Path:

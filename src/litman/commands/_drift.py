@@ -53,8 +53,8 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import click
 from rich.console import Console
@@ -99,7 +99,7 @@ def _exists_bounded(
     instead abandon the wait. The leaked daemon thread dies with the
     short-lived CLI process — acceptable per ADR-014.
     """
-    result: dict[str, bool | None] = {p: None for p in paths}
+    result: dict[str, bool | None] = dict.fromkeys(paths)
 
     def _probe() -> None:
         for p in paths:

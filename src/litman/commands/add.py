@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import shutil
 import sys
+from collections.abc import Callable
 from gettext import ngettext
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import click
 from rich.console import Console

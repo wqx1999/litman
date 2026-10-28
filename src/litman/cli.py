@@ -50,7 +50,7 @@ def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
     must not crash — we assume UTC for it rather than raising. ``now`` is passed
     in (tz-aware) so callers / tests control the clock.
     """
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     if not ts:
         return True
@@ -59,7 +59,7 @@ def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
     except (ValueError, TypeError):
         return True
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return (now - parsed).total_seconds() > stale_days * 86400
 
 
@@ -376,7 +376,7 @@ class LitGroup(click.Group):
             pass
 
     @staticmethod
-    def _repair_index_vs_disk(vault: "Path", issues: list[Any]) -> None:
+    def _repair_index_vs_disk(vault: Path, issues: list[Any]) -> None:
         """Tier-1 vanished-id repair (spec §6). Metadata-free (invariant #15).
 
         Collects the vanished ids (``index_vs_disk`` errors — present in INDEX,
@@ -450,7 +450,7 @@ class LitGroup(click.Group):
         annotate(vault, vanished, targeted=True)
 
     @staticmethod
-    def _cheap_shared_exists(vault: "Path | None") -> dict[str, "bool | None"]:
+    def _cheap_shared_exists(vault: Path | None) -> dict[str, bool | None]:
         """Single bounded-stat over every path the cheap checks need (task 3).
 
         Gathers the registry vault paths plus (when an active vault resolves)
@@ -492,7 +492,7 @@ class LitGroup(click.Group):
         return _exists_bounded(sorted(paths))
 
     @staticmethod
-    def _cheap_active_vault() -> "Path | None":
+    def _cheap_active_vault() -> Path | None:
         """Resolve the active vault path without ``find_vault``'s bare stat.
 
         Reads the registry active entry and bounded-stats it (invariant #15:
@@ -557,7 +557,7 @@ class LitGroup(click.Group):
         pre-dispatch drift hook's defensive wrapper).
         """
         try:
-            from datetime import datetime, timezone
+            from datetime import UTC, datetime
 
             from litman.commands._drift import _default_tty_probe
             from litman.core.checks import (
@@ -578,7 +578,7 @@ class LitGroup(click.Group):
             if active is None:
                 return
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             tty = _default_tty_probe()
 
             def _emit(line: str) -> None:

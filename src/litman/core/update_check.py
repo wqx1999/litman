@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +109,7 @@ def _current_version() -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _parse_version(v: str) -> tuple[int, ...]:
@@ -157,7 +157,7 @@ def _is_stale(ts: Any, *, now: datetime, ttl_seconds: int) -> bool:
     except (ValueError, TypeError):
         return True
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return (now - parsed).total_seconds() > ttl_seconds
 
 

@@ -22,7 +22,7 @@ rendering, friendly error wording).
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -215,7 +215,7 @@ def vault_add_cmd(
     updated = mark_health_checked(
         updated,
         name,
-        datetime.now(timezone.utc).isoformat(),
+        datetime.now(UTC).isoformat(),
     )
     save_registry(updated)
 

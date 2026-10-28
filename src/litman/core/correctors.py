@@ -32,10 +32,10 @@ from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
 
 __all__ = [
+    "annotate",
     "reconcile_derived",
     "regen",
     "regen_index_drop_ids",
-    "annotate",
 ]
 
 

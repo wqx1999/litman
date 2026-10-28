@@ -7,7 +7,7 @@ staleness.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1054,7 +1054,7 @@ def check_inbox_staleness(
 ) -> list[Issue]:
     """``status: inbox`` papers older than :data:`INBOX_STALE_DAYS` days."""
     out: list[Issue] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     threshold = timedelta(days=INBOX_STALE_DAYS)
     for p in papers:
         if p.get("status") != "inbox":
@@ -1067,7 +1067,7 @@ def check_inbox_staleness(
         except ValueError:
             continue
         if created_dt.tzinfo is None:
-            created_dt = created_dt.replace(tzinfo=timezone.utc)
+            created_dt = created_dt.replace(tzinfo=UTC)
         age = now - created_dt
         if age > threshold:
             pid = p.get("id") or "(unknown)"

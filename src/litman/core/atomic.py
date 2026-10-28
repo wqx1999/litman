@@ -54,7 +54,7 @@ import shutil
 import sys
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import TracebackType
 from typing import Literal
@@ -105,7 +105,7 @@ def _make_op_id(prefix: str = "op") -> str:
     ``op-20260428T112545-abc123``. Two calls in the same second still get
     distinct ids via the uuid4 suffix.
     """
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     suffix = uuid.uuid4().hex[:6]
     return f"{prefix}-{ts}-{suffix}"
 
@@ -708,7 +708,7 @@ class StagedWrite:
         self._moves: list[tuple[str, str]] = []
         self._moved: list[tuple[str, str]] = []
 
-    def __enter__(self) -> "StagedWrite":
+    def __enter__(self) -> StagedWrite:
         # exist_ok=False: a collision means another op already grabbed this
         # id. With the auto-generated uuid suffix this is effectively
         # impossible; with a caller-supplied op_id it surfaces a real bug.

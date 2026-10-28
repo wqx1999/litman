@@ -49,7 +49,7 @@ from litman.core.trash import (
     resolve_trash_entry,
     restore_from_trash,
 )
-from litman.exceptions import CodeError, TrashError
+from litman.exceptions import CodeError
 
 console = Console()
 

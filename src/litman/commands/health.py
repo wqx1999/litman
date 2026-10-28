@@ -382,7 +382,7 @@ def _refresh_active_health_check_timestamp(vault: Path) -> None:
     health-check into a crash. If it cannot write, the next run simply nudges
     again — nothing silently wrong (no state was claimed to change).
     """
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     from litman.core.vault_registry import (
         VaultRegistryError,
@@ -399,7 +399,7 @@ def _refresh_active_health_check_timestamp(vault: Path) -> None:
             return
         if Path(active.path).resolve() != Path(vault).resolve():
             return
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         save_registry(mark_health_checked(reg, active.name, ts))
     except (VaultRegistryError, OSError):
         pass
