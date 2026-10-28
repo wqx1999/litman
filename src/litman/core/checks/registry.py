@@ -602,10 +602,10 @@ def apply_autofix(
         counts["discussion_scaffold"] = n
 
     if "retired_priority" in fixable_present:
-        # Local import: core.ripple reaches back into THIS module for
-        # PROJECT_PRIORITY_PREFIX, so importing it at the top would make
-        # checks <-> ripple a load-time cycle. Mirrors the lazy corrector
-        # imports in core/project_link.py.
+        # Local import: core.ripple imports core.correctors inside its functions
+        # and core.correctors imports this package, so checks -> ripple ->
+        # correctors -> checks is a loop. One local edge is enough to keep it out
+        # of module load; both stay local, as ripple.migrate_retired_priority notes.
         from litman.core.ripple import migrate_retired_priority
 
         counts["retired_priority"] = migrate_retired_priority(vault)

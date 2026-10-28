@@ -102,7 +102,7 @@ interface Dimension {
   order?: readonly string[]
 }
 
-// Status / type are fixed enums (core/checks.py:_FIXED_ENUM_VALUES); pin their
+// Status / type are fixed enums (core/schema.py:_FIXED_ENUM_VALUES); pin their
 // value order to the enum sequence rather than alphabetizing. Topics / methods /
 // data are free controlled-vocabulary lists → alphabetical.
 //
@@ -137,7 +137,7 @@ const DIMENSIONS: readonly Dimension[] = [
   { key: 'data', label: 'Data', kind: 'array' },
 ]
 
-// Keyed on the authoritative status enum (core/checks.py
+// Keyed on the authoritative status enum (core/schema.py
 // _FIXED_ENUM_VALUES["status"]); each value gets a macOS system-colour dot
 // (green / orange / teal / grey) defined as a `--color-status-*` theme token.
 //

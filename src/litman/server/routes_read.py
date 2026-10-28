@@ -53,7 +53,7 @@ def _index_papers(vault: Path) -> list[dict[str, Any]] | None:
     """Return the INDEX.json ``papers`` projection, or ``None`` if absent.
 
     Mirrors the thin-projection read used elsewhere (e.g.
-    ``checks._load_vault_paper_ids``): a missing or unparseable INDEX.json is
+    ``checks.links._load_vault_paper_ids``): a missing or unparseable INDEX.json is
     "not available", and the caller falls back to ``list_papers``.
     """
     index_path = vault / "INDEX.json"
@@ -709,7 +709,7 @@ def get_taxonomy(request: Request) -> dict[str, list[str]]:
 def get_fixed_enums() -> dict[str, dict[str, Any]]:
     """Whitelists for the status / type cockpit dropdowns.
 
-    Sourced from ``core.checks`` (the same table ``check_schema`` / ``lit modify
+    Sourced from ``core.schema`` (the same table ``check_schema`` / ``lit modify
     --set`` validate against), never hard-coded in the frontend. Each field
     carries its allowed ``values`` in display order plus ``allowsNone`` — whether
     the dropdown offers an "— (unset)" option (type, M29; status's unevaluated
