@@ -46,7 +46,7 @@ class _FakeResp:
     def __enter__(self) -> _FakeResp:
         return self
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> bool:  # type: ignore[exit-return]  # a fake; never swallows
         return False
 
 

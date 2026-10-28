@@ -1016,7 +1016,7 @@ def test_a_double_failure_on_several_files_speaks_of_them(
     monkeypatch.setattr(si_mod, "_delete_si_entry", _stuck_delete)
     real_commit = si_mod._commit_metadata
 
-    def undo_fails(vault_: Path, paper_id: str, meta: object, op_id: str, *a: object):
+    def undo_fails(vault_: Path, paper_id: str, meta: object, op_id: str, *a):
         if op_id.startswith("si-rm-undo-"):
             raise OSError(28, "No space left on device (mocked)")
         return real_commit(vault_, paper_id, meta, op_id, *a)
@@ -1042,7 +1042,7 @@ def test_a_failed_delete_whose_record_cannot_go_back_says_how_to_record_it(
     monkeypatch.setattr(si_mod, "_delete_si_entry", _stuck_delete)
     real_commit = si_mod._commit_metadata
 
-    def undo_fails(vault_: Path, paper_id: str, meta: object, op_id: str, *a: object):
+    def undo_fails(vault_: Path, paper_id: str, meta: object, op_id: str, *a):
         if op_id.startswith("si-rm-undo-"):
             raise OSError(28, "No space left on device (mocked)")
         return real_commit(vault_, paper_id, meta, op_id, *a)

@@ -265,7 +265,7 @@ def test_write_and_spawn_uses_temp_and_detaches(
 ) -> None:
     """The spawn seam: script written under temp, child fully detached."""
     monkeypatch.setenv("LITMAN_REGISTRY_DIR", str(tmp_path))
-    calls: list[dict[str, object]] = []
+    calls: list[dict] = []
 
     def fake_popen(argv, **kwargs):  # type: ignore[no-untyped-def]
         calls.append({"argv": argv, **kwargs})

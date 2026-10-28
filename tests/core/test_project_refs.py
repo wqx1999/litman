@@ -142,7 +142,7 @@ def test_render_relevance_annotation_present(vault: Path) -> None:
         vault, "2024_X_paper",
         projects=["pepforge"],
         priority="A",
-        **{"relevance-pepforge": "Direct baseline; PEPTIDE-only case."},
+        **{"relevance-pepforge": "Direct baseline; PEPTIDE-only case."},  # type: ignore[arg-type]  # a hyphenated metadata key, so it goes in via **
     )
     out = render_references_md(vault, "pepforge")
     assert "*Direct baseline; PEPTIDE-only case.*" in out
@@ -154,7 +154,7 @@ def test_render_relevance_for_wrong_project_ignored(vault: Path) -> None:
         vault, "2024_X_paper",
         projects=["pepforge"],
         priority="A",
-        **{"relevance-pepcodec": "Different-project note."},
+        **{"relevance-pepcodec": "Different-project note."},  # type: ignore[arg-type]  # a hyphenated metadata key, so it goes in via **
     )
     out = render_references_md(vault, "pepforge")
     assert "Different-project note" not in out

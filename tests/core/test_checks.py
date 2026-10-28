@@ -502,7 +502,7 @@ def test_all_fixed_enums_shape_and_order() -> None:
     assert enums["status"] == ["inbox", "skim", "deep-read", "dropped"]
     assert fixed_enum_allows_none("status") is False
 
-    # type: sorted, optional (None legal).
+    # "type": sorted, optional (None legal).
     assert enums["type"] == sorted(enums["type"])
     assert fixed_enum_allows_none("type") is True
 

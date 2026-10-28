@@ -174,7 +174,7 @@ def test_link_preserves_user_set_relevance_when_none_passed(
     _make_paper(
         vault, "p1",
         projects=["pepforge"],
-        **{"relevance-pepforge": "Manually set note"},
+        **{"relevance-pepforge": "Manually set note"},  # type: ignore[arg-type]  # a hyphenated metadata key, so it goes in via **
     )
     link_paper_to_project(
         vault, "p1", "pepforge", {"pepforge": str(project_dir)}

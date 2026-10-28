@@ -611,7 +611,7 @@ def test_get_fixed_enums(vault_with_paper: tuple[Path, str]) -> None:
     assert body["status"]["allowsNone"] is False
     assert body["status"]["values"] == ["inbox", "skim", "deep-read", "dropped"]
 
-    # type: optional (offer an unset), sorted values.
+    # "type": optional (offer an unset), sorted values.
     assert body["type"]["allowsNone"] is True
     assert "research" in body["type"]["values"]
     assert body["type"]["values"] == sorted(body["type"]["values"])

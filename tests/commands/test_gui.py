@@ -241,7 +241,7 @@ class _FakeProc:
 
     def __init__(self, argv) -> None:
         self.argv = argv
-        self.returncode = None
+        self.returncode: int | None = None
         self.terminated = False
         self._closed = threading.Event()
 
@@ -1264,7 +1264,7 @@ def test_window_launch_arms_the_tab_fallback(
     # the desktop shortcut on Ubuntu.
     opened, procs = gui_harness
     vault, _pid = vault_with_paper
-    armed: list[object] = []
+    armed: list[Any] = []
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(
@@ -3624,7 +3624,7 @@ def test_terminate_splash_when_visible_backstops_on_timeout() -> None:
     # C3: presence never arrives → the splash_timeout backstop still closes it.
     splash = _FakeSplash()
     _terminate_splash_when_visible(
-        splash, PresenceTracker(), threading.Event(),
+        splash, PresenceTracker(), threading.Event(),  # type: ignore[arg-type]  # a fake Popen
         splash_timeout=0.05, poll=0.01,
     )
     assert splash.terminated == 1
@@ -3636,7 +3636,7 @@ def test_terminate_splash_when_visible_backstops_on_stop_event() -> None:
     stop = threading.Event()
     stop.set()
     _terminate_splash_when_visible(
-        splash, PresenceTracker(), stop, splash_timeout=5.0, poll=0.01
+        splash, PresenceTracker(), stop, splash_timeout=5.0, poll=0.01  # type: ignore[arg-type]  # a fake Popen
     )
     assert splash.terminated == 1
 
@@ -3648,7 +3648,7 @@ def test_terminate_splash_when_visible_real_default_timeout() -> None:
     splash = _FakeSplash()
     tracker = PresenceTracker()
     tracker.connect()
-    _terminate_splash_when_visible(splash, tracker, threading.Event())
+    _terminate_splash_when_visible(splash, tracker, threading.Event())  # type: ignore[arg-type]  # a fake Popen
     assert splash.terminated == 1
 
 
@@ -3661,7 +3661,7 @@ def test_terminate_splash_when_visible_suppresses_oserror() -> None:
 
     tracker = PresenceTracker()
     tracker.connect()
-    _terminate_splash_when_visible(_BadSplash(), tracker, threading.Event())
+    _terminate_splash_when_visible(_BadSplash(), tracker, threading.Event())  # type: ignore[arg-type]  # a fake Popen
 
 
 def test_splash_terminated_on_tab_fallback(

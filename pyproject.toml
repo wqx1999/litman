@@ -160,6 +160,31 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 files = ["src/litman", "tests"]
+# tests/bench imports its harness through a sys.path entry its conftest adds at
+# runtime, so mypy finds every harness file under two module names; like pytest
+# and CI, mypy leaves the benchmark harness out.
+exclude = ["^tests/bench/"]
+
+[[tool.mypy.overrides]]
+# Tests are checked, but not as strictly as src: test functions and helpers go
+# unannotated, and assertions run straight on Optional results (narrowing them
+# would mean adding asserts). attr-defined: tests patch a module's own imports
+# (viewer.sys, atomic.os), and whether those count as exported is decided by
+# the src module, not here. func-returns-value: the `lambda: calls.append(x) or
+# result` spy idiom. strict_equality: three asserts compare a TypedDict with a
+# plain dict, or a faked Popen with a string. Unused ignores are not reported:
+# several mark deliberate type violations (a None on purpose) that only these
+# relaxations make silent.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+strict_optional = false
+strict_equality = false
+warn_unused_ignores = false
+disable_error_code = ["attr-defined", "func-returns-value"]
 
 [[tool.mypy.overrides]]
 # macOS-only GUI dependencies (pywebview, and AppKit from its pyobjc runtime).

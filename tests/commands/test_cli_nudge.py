@@ -148,7 +148,7 @@ def test_cheap_hook_uses_single_shared_bounded_stat(
     calls: list[list[str]] = []
     real = _drift._exists_bounded
 
-    def _spy(paths: list[str], *a: object, **kw: object) -> dict[str, bool | None]:
+    def _spy(paths: list[str], *a, **kw) -> dict[str, bool | None]:
         calls.append(list(paths))
         return real(paths, *a, **kw)
 

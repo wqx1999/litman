@@ -162,7 +162,7 @@ def test_window_gate_survives_the_browser_handoff_end_to_end() -> None:
         )
         # The Origin a browser sends, which the server checks (ADR-026).
         page = f"http://127.0.0.1:{port}"
-        with ws_connect(f"ws://127.0.0.1:{port}/api/presence", origin=page):
+        with ws_connect(f"ws://127.0.0.1:{port}/api/presence", origin=page):  # type: ignore[arg-type]  # websockets' Origin is a NewType of str
             watcher.start()
             time.sleep(1.0)
             # Old behavior killed the server the moment proc.wait() returned.

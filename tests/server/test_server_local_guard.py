@@ -398,11 +398,11 @@ def test_a_real_server_refuses_with_403() -> None:
         assert _wait_for(lambda: server.started, timeout=10), "server never started"
         url = f"ws://127.0.0.1:{port}/api/presence"
 
-        with ws_connect(url, origin=f"http://127.0.0.1:{port}"):
+        with ws_connect(url, origin=f"http://127.0.0.1:{port}"):  # type: ignore[arg-type]  # websockets' Origin is a NewType of str
             assert _wait_for(lambda: app.state.presence.count == 1)
         assert _wait_for(lambda: app.state.presence.count == 0)
 
-        with pytest.raises(InvalidStatus) as refused, ws_connect(url, origin=FOREIGN):
+        with pytest.raises(InvalidStatus) as refused, ws_connect(url, origin=FOREIGN):  # type: ignore[arg-type]  # websockets' Origin is a NewType of str
             pass
         assert refused.value.response.status_code == 403
         assert app.state.presence.count == 0

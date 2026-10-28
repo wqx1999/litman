@@ -3722,8 +3722,8 @@ def _linkless_vault(
     proj = tmp_path / "myproj"
     proj.mkdir()
     add_project(vault, "myproj", proj)
-    add_taxonomy_values(vault, "topics", ["peptides"])
-    add_taxonomy_values(vault, "methods", ["diffusion"])
+    add_taxonomy_values(vault, "topics", ["peptides"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
+    add_taxonomy_values(vault, "methods", ["diffusion"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
     _write_paper(
         vault,
         "2024_Foo_Bar",

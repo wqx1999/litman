@@ -156,8 +156,8 @@ def seeded(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
     # TAXONOMY registers the values the taxonomy tests ripple — through the
     # write API (TAXONOMY.md is lock-protected TRUTH; a bare write_text
     # would trip the read-only lock).
-    add_taxonomy_values(vault, "topics", ["deep-learning", "peptides"])
-    add_taxonomy_values(vault, "methods", ["docking"])
+    add_taxonomy_values(vault, "topics", ["deep-learning", "peptides"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
+    add_taxonomy_values(vault, "methods", ["docking"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
     _write_paper(
         vault,
         "2020_Alpha_One",

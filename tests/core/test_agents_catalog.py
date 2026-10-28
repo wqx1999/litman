@@ -194,7 +194,7 @@ def test_detect_uses_detect_bin_first_token_fallback(
         detect_bin="",
         skill_state=lambda: "absent",
         install_skill=lambda: [],
-        install_lit_permission=lambda: {},
+        install_lit_permission=lambda: {},  # type: ignore[typeddict-item]  # an empty stub result
     )
     assert detect(spec) is False
     assert probed == ["my-agent"]
