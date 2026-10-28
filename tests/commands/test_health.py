@@ -842,7 +842,7 @@ def test_a_half_renamed_folder_reads_no_other_metadata_without_a_twin(
     def no_scan(paper_dir: Path) -> object:
         raise AssertionError(f"read {paper_dir} with no twin to name")
 
-    monkeypatch.setattr(checks_mod, "_declared_id", no_scan)
+    monkeypatch.setattr(checks_mod.metadata, "_declared_id", no_scan)
 
     assert _mismatch(vault, "2020_A_x").category == "unfinished_rename"
 

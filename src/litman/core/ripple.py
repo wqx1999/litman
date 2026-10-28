@@ -367,7 +367,7 @@ def migrate_retired_priority(vault: Path) -> int:
     """Move every paper-level ``priority`` onto its per-project keys. Returns n.
 
     The permanent ``lit health-check --fix`` migration behind the
-    ``retired_priority`` finding (``core/checks.py``, ADR-025). Per paper
+    ``retired_priority`` finding (``core/checks/metadata.py``, ADR-025). Per paper
     holding the retired key:
 
     * a graded paper copies its letter onto ``priority-<project>`` for every

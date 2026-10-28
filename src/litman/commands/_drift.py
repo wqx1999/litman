@@ -6,7 +6,7 @@ deferred to a manual ``lit health-check`` they have to remember to run.
 
 **M30 Phase 2:** the *detection* of these two B-external drifts (registry ↔
 vault dir, ledger #4; config project path ↔ project dir, #5) now lives in the
-single tagged check core ``core/checks.py`` (``check_vault_registry_drift`` /
+single tagged check core ``core/checks/`` (``check_vault_registry_drift`` /
 ``check_project_path_exists``), both using the mount-safe bounded-stat below.
 This module keeps the ``[Y/n]`` **prompt + repair** machinery — it is the
 ``resolve`` corrector for those two checks. ``LitGroup.invoke`` runs the

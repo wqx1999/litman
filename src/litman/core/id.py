@@ -303,7 +303,7 @@ def is_weak_keyword(keyword: str) -> bool:
     """True when a keyword segment is too short to identify anything.
 
     ``2018_Zhang_A`` names a paper no better than ``2018_Zhang_`` does. Shared
-    with ``core/checks.py`` so the ingest guard and the health check agree on
+    with ``core/checks/metadata.py`` so the ingest guard and the health check agree on
     what counts as a keyword that carries no information.
     """
     return len(keyword) <= _WEAK_KEYWORD_MAX_LEN

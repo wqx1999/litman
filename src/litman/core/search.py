@@ -27,7 +27,7 @@ from litman.core.notes import enumerate_markdown_files
 # (notes.md the wikilink reminder, discussion.md the append-format reminder), so
 # a comment left in the corpus would return a hit on EVERY paper for a query
 # like "wikilink" or "append-only" — noise no user wrote. Same reasoning, same
-# regex as core/checks.py's dangling-wikilink scan, which strips comments for
+# regex as core/checks/links.py's dangling-wikilink scan, which strips comments for
 # the same reason.
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 

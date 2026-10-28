@@ -9,7 +9,7 @@ browse list, and every exported citation, where nothing downstream flags it
 because "non-empty" is all the schema check ever asked for.
 
 Shared by the ingest guard (``importers/llm.py``, which refuses these) and the
-health check (``core/checks.py``, which surfaces the ones already sitting in a
+health check (``core/checks/metadata.py``, which surfaces the ones already sitting in a
 vault) so the two can never disagree about what counts as a filler.
 
 Two views of the same set. :func:`is_placeholder` judges a metadata field,

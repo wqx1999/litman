@@ -49,7 +49,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-# Same ``[[...]]`` form health-check uses (core/checks.py): no ``|alias``
+# Same ``[[...]]`` form health-check uses (core/checks/links.py): no ``|alias``
 # support, no nested brackets, single line. Kept identical so annotate /
 # de-annotate / dangling-detection all agree on what a wikilink is.
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
@@ -105,7 +105,7 @@ _WIKILINK_REMINDER_MARKER = "not backticks or plain text"
 #
 # The example ``[[paper-id]]`` sits INSIDE the HTML comment on purpose. Both
 # scanners that would otherwise mistake it for a real graph edge ignore comment
-# regions: ``check_dangling_wikilinks`` (core/checks.py) strips them before
+# regions: ``check_dangling_wikilinks`` (core/checks/links.py) strips them before
 # matching, and ``search_notes`` (core/search.py) masks them before comparing.
 # The rewrite paths (``lit rm`` / ``lit rename``) deliberately preserve comments
 # and stay inert only because ``paper-id`` never resolves to a real paper — keep

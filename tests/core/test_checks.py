@@ -436,7 +436,7 @@ def test_push_gate_does_not_run_the_vocabulary_checks(
         replace(spec, fn=_must_not_run) if spec.category in vocab else spec
         for spec in checks._CHECK_REGISTRY
     )
-    monkeypatch.setattr(checks, "_CHECK_REGISTRY", registry)
+    monkeypatch.setattr(checks.registry, "_CHECK_REGISTRY", registry)
     # Control: the stand-ins are wired in, so a full run does reach them.
     with pytest.raises(AssertionError, match="a vocabulary check ran"):
         run_all_checks(vault, [])
