@@ -38,13 +38,6 @@ from rich.markup import escape
 from litman.commands._hub_report import hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
-from litman.core.checks import (
-    PROJECT_PRIORITY_PREFIX,
-    PROJECT_PRIORITY_VALUES,
-    fixed_enum_allows_none,
-    fixed_enum_values,
-    retired_field_replacement,
-)
 from litman.core.config import load_config
 from litman.core.correctors import moved_aside_from, reconcile_derived
 from litman.core.dates import date_ordering_violations, now_iso
@@ -67,6 +60,13 @@ from litman.core.relations import (
     RELATION_PAIRS,
     REVERSE_REF_FIELDS,
     relation_refs,
+)
+from litman.core.schema import (
+    PROJECT_PRIORITY_PREFIX,
+    PROJECT_PRIORITY_VALUES,
+    fixed_enum_allows_none,
+    fixed_enum_values,
+    retired_field_replacement,
 )
 from litman.core.supplementary import SUPPLEMENTARY_FIELD
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy, read_taxonomy_text

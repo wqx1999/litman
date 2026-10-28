@@ -67,9 +67,8 @@ from litman.core.document import (
     list_papers,
     malformed_list_fields,
 )
+from litman.core.id import clean_title_rename_target as _clean_title_rename_target
 from litman.core.id import (
-    derive_id,
-    derive_id_without_transliteration,
     derive_keyword,
     family_segment,
     find_case_fold_collision,
@@ -97,6 +96,19 @@ from litman.core.relations import (
     dangling_relation_edges,
     relation_refs,
 )
+from litman.core.schema import (
+    _FIXED_ENUM_VALUES,
+    _OPTIONAL_FIXED_ENUMS,
+    _REQUIRED_NONEMPTY_FIELDS,
+    _RETIRED_FIELDS,
+    PROJECT_PRIORITY_PREFIX,
+    PROJECT_PRIORITY_VALUES,
+)
+from litman.core.schema import _STATUS_ORDER as _STATUS_ORDER
+from litman.core.schema import all_fixed_enums as all_fixed_enums
+from litman.core.schema import fixed_enum_allows_none as fixed_enum_allows_none
+from litman.core.schema import fixed_enum_values as fixed_enum_values
+from litman.core.schema import retired_field_replacement as retired_field_replacement
 from litman.core.taxonomy import (
     USER_DICTS,
     count_usage,
@@ -116,7 +128,6 @@ from litman.core.undecodable import printable
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
     ConfigError,
-    IDError,
     MalformedMetadataError,
     UnreadableTaxonomyError,
     VaultRegistryError,
@@ -311,114 +322,6 @@ SYNC_STALE_DAYS = 7
 # midpoint that forms a "50 heads-up → 100 auto-evict" ladder.
 TRASH_SIZE_WARN = 50
 
-
-# Schema rules: required fields and their allowed values.
-_REQUIRED_NONEMPTY_FIELDS: tuple[str, ...] = (
-    "id",
-    "created-at",
-    "updated-at",
-)
-
-_FIXED_ENUM_VALUES: dict[str, frozenset[str]] = {
-    "type": frozenset(
-        {
-            "research",
-            "review",
-            "position",
-            "benchmark",
-            "dataset",
-            "tutorial",
-            "thesis",
-            "book-chapter",
-        }
-    ),
-    "status": frozenset({"deep-read", "skim", "inbox", "dropped"}),
-}
-
-# Fixed enums where ``None`` is a legitimate "not yet evaluated" state
-# rather than a schema error. M29: `type` is a personal-evaluation field
-# the user fills after reading; `lit add` writes None, and `lit-reading`
-# B10 self-check is the surfacing path. ``status`` stays required (its
-# "not yet evaluated" state is the explicit value "inbox", not None).
-_OPTIONAL_FIXED_ENUMS: frozenset[str] = frozenset({"type"})
-
-# Per-project grade. Not a fixed enum in the table above: the key is
-# variable (priority-<project>), so it never enters the INDEX projection
-# and is validated per key below (schema) + per membership (orphan).
-# ``None`` is legal and means "linked, not graded yet" (ADR-025 decision 5):
-# a link happens at ingest, a grade after reading, so the gap is a real state
-# and health-check must not nag about it. The migration still never WRITES a
-# null — it drops the key instead — but `lit modify --set priority-<P>=`
-# produces one, and nothing can delete a key, so rejecting it would strand
-# the vault with an unfixable error that blocks `lit sync push`.
-PROJECT_PRIORITY_PREFIX = "priority-"
-PROJECT_PRIORITY_VALUES: frozenset[str] = frozenset({"A", "B", "C"})
-
-# Fields retired from the schema. Present => schema error + a one-Enter
-# `--fix` migration (apply_autofix). Permanent by design - see ADR-025.
-_RETIRED_FIELDS: dict[str, str] = {"priority": "priority-<project>"}
-
-
-def fixed_enum_values(field: str) -> frozenset[str] | None:
-    """Allowed values for a fixed-enum metadata field, or ``None`` if ``field``
-    is not a fixed enum.
-
-    Read-only accessor so write commands (``lit modify --set``) can enforce the
-    same enum the read-side ``check_schema`` enforces, without reaching into
-    this module's private table. ``None`` is *additionally* a legal value for
-    the fields reported by :func:`fixed_enum_allows_none`.
-    """
-    return _FIXED_ENUM_VALUES.get(field)
-
-
-def retired_field_replacement(field: str) -> str | None:
-    """What replaced ``field``, or ``None`` if ``field`` is not retired.
-
-    Read-only accessor over the private ``_RETIRED_FIELDS`` table, for the
-    same reason :func:`fixed_enum_values` exists: the write commands
-    (``lit modify --set``) must refuse exactly what the read-side
-    ``check_schema`` reports, without reaching into this module's privates.
-    """
-    return _RETIRED_FIELDS.get(field)
-
-
-def fixed_enum_allows_none(field: str) -> bool:
-    """Whether ``field`` is a fixed enum for which ``None`` ("not yet
-    evaluated") is legal (``type``; M29). ``status`` is not — its
-    unevaluated state is the explicit value ``inbox``."""
-    return field in _OPTIONAL_FIXED_ENUMS
-
-
-# Display order for ``status``: a curation lifecycle (inbox → skim → deep-read,
-# then dropped), not alphabetical. Every other fixed enum has no natural order,
-# so it is sorted. This is the order the webUI dropdowns render (one source, not
-# a second list hard-coded in the frontend).
-_STATUS_ORDER: tuple[str, ...] = ("inbox", "skim", "deep-read", "dropped")
-
-
-def all_fixed_enums() -> dict[str, list[str]]:
-    """Every fixed-enum field's allowed values, in display order.
-
-    Public accessor over the private ``_FIXED_ENUM_VALUES`` table so the webUI
-    can populate its status / type dropdowns from the SAME source
-    ``check_schema`` / ``lit modify --set`` validate against (no second list in
-    the frontend). ``status`` comes first, in curation-lifecycle order; every
-    other field follows, sorted by name, with its values sorted.
-    ``None``-as-legal is reported separately via :func:`fixed_enum_allows_none`.
-
-    Derived from the table rather than naming each field a second time:
-    hard-indexing it meant retiring a field (``priority``, ADR-025) raised
-    KeyError here — and this is what ``GET /api/fixed-enums`` returns.
-    """
-    ordered = ["status", *sorted(f for f in _FIXED_ENUM_VALUES if f != "status")]
-    return {
-        field: (
-            list(_STATUS_ORDER)
-            if field == "status"
-            else sorted(_FIXED_ENUM_VALUES[field])
-        )
-        for field in ordered
-    }
 
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
 
@@ -748,56 +651,6 @@ def check_dirty_metadata(
                 )
             )
     return out
-
-
-def _clean_title_rename_target(
-    paper: dict[str, Any], dirty: dict[str, Any]
-) -> str | None:
-    """The id the clean title derives, if the current id came from the dirty one.
-
-    Only an id ``derive_id`` produced from the stored title and authors is a
-    machine accident worth undoing; one that does not match was chosen by
-    hand (``--id``, a ``lit rename``) or carries a collision suffix, and is
-    left alone. So is an id the clean title would derive anyway — line breaks
-    alone never reached it, because the keyword is built from whitespace-split
-    words. An id from before accented letters were transliterated
-    (``2021_Mller_…`` for ``Müller``) counts as derived too, and is held to the
-    same test under the rule that made it; the target is always what the
-    current rule derives.
-    """
-    pid = paper.get("id")
-    if not isinstance(pid, str):
-        return None
-    authors = paper.get("authors")
-    if not isinstance(authors, list):
-        authors = []
-    year = paper.get("year")
-    clean_authors = dirty.get("authors", authors)
-    rules = [
-        derive
-        for derive in (derive_id, derive_id_without_transliteration)
-        if _derive_or_none(derive, year, authors, paper["title"]) == pid
-    ]
-    if not rules or any(
-        _derive_or_none(derive, year, clean_authors, dirty["title"]) == pid
-        for derive in rules
-    ):
-        return None
-    target = _derive_or_none(derive_id, year, clean_authors, dirty["title"])
-    return target if target != pid else None
-
-
-def _derive_or_none(
-    derive: Callable[[Any, str, str], str],
-    year: Any,
-    authors: list[Any],
-    title: str,
-) -> str | None:
-    family = first_author_family([a for a in authors if isinstance(a, str)])
-    try:
-        return derive(year, family, title)
-    except IDError:
-        return None
 
 
 def _rename_target(paper: dict[str, Any], parts: list[str]) -> tuple[str, bool]:

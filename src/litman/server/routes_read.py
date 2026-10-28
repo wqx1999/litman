@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
 from litman.core import viewer
-from litman.core.checks import all_fixed_enums, fixed_enum_allows_none, run_all_checks
+from litman.core.checks import run_all_checks
 from litman.core.cite import format_acs
 from litman.core.code import code_clone_upstreams, missing_code_clones
 from litman.core.config import CONFIG_FILENAME
@@ -29,6 +29,7 @@ from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import host_id
 from litman.core.id import is_valid_id
 from litman.core.query import recency_key
+from litman.core.schema import all_fixed_enums, fixed_enum_allows_none
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.core.trash import TRASH_DIRNAME

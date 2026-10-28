@@ -54,6 +54,7 @@ from litman.core.project_refs import (
     load_project_member_metas,
     write_references_md,
 )
+from litman.core.schema import PROJECT_PRIORITY_PREFIX, PROJECT_PRIORITY_VALUES
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
@@ -668,14 +669,6 @@ def link_paper_to_project(
             outside A/B/C.
         PaperNotFoundError: paper id has no folder in the vault.
     """
-    # Local import: core.checks reaches back here through core.trash
-    # (checks -> trash -> project_link for CODE_SUBDIR), so a module-level
-    # import is a load-time cycle. Mirrors the lazy reconcile import below.
-    from litman.core.checks import (
-        PROJECT_PRIORITY_PREFIX,
-        PROJECT_PRIORITY_VALUES,
-    )
-
     # Validated here, not with a click.Choice on the CLI flag: Click would
     # raise UsageError (exit 2, its own formatting) for a metadata value,
     # while every other bad metadata value in this codebase surfaces as a
@@ -889,10 +882,7 @@ def unlink_paper_from_project(
     if removed_relevance:
         removed_relevance_value = metadata.pop(relevance_key)
 
-    # No purge_priority flag by design — see step 4b. Local import for the
-    # same checks -> trash -> project_link cycle as in link_paper_to_project.
-    from litman.core.checks import PROJECT_PRIORITY_PREFIX
-
+    # No purge_priority flag by design — see step 4b.
     priority_key = f"{PROJECT_PRIORITY_PREFIX}{project}"
     removed_priority = priority_key in metadata
     removed_priority_value: Any = None

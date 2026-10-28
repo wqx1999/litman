@@ -2077,11 +2077,11 @@ def test_retired_field_refusal_never_preempts_the_older_gates(
     through `retired_field_replacement()` rather than importing the private
     dict, so patching it here is what the command actually consults.
     """
-    from litman.core import checks as checks_mod
+    from litman.core import schema as schema_mod
 
     vault, paper_id = vault_with_paper
     monkeypatch.setattr(
-        checks_mod,
+        schema_mod,
         "_RETIRED_FIELDS",
         {"id": "x", "updated-at": "x", "topics": "x"},
     )
