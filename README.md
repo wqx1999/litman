@@ -80,7 +80,7 @@ whatever you already pay for. **Start with Claude Code.**
 | Agent | Recommended model |
 |:---|:---|
 | [Claude Code](https://claude.ai/code) | Official subscription |
-| [ZCode](https://zcode.z.ai) (new) | GLM, official subscription; turn on Autonomous mode |
+| [ZCode](https://zcode.z.ai) | GLM, official subscription; turn on Autonomous mode |
 
 These also work — last checked with litman 1.3.8:
 
