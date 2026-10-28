@@ -17,20 +17,24 @@ own entry. Read those before you upgrade, whatever the number says.
   `lit agent zcode`, and ZCode opens at your library — no terminal in between.
   Install the skills from the same panel: ZCode now loads both of them. In
   ZCode, turn on Autonomous mode so `lit` runs without asking each time.
+
 - **Export for EndNote.** `lit export --format ris` writes a `.ris` file that
   EndNote, Zotero and Mendeley import as it is — in EndNote, choose the
   Reference Manager (RIS) import option. EndNote's own BibTeX import tends to
   lose fields or fail outright. Each record's label is the paper id, the same
   key you `\cite` in LaTeX.
+
 - **The web UI shows how many papers the list holds.** The count sits at the
   right of the **Show** row above the list and follows everything that narrows
   it: the project, Reading / Read / All, the filters and the search box.
+
 - **Lists in the web UI say how long they are.** The paper panel numbers its
   authors, relations, code clones and SI files, so an author list cut short
   with "…" now tells you how many authors there are. A tag menu shows how many
   values its vocabulary holds, or how many match while you search. The
   Projects, Vaults and Manage topics / methods / data windows show how many
   entries they list.
+
 - **Click a code clone in the web UI to copy its folder path.** A name under
   **Code-clones** in the paper panel copies the clone's local folder
   (`codes/<name>/` in the vault), ready to paste into a terminal or an agent,
@@ -46,6 +50,7 @@ own entry. Read those before you upgrade, whatever the number says.
   a long id no longer wraps into a ragged block: it ends in "…" instead, and
   hovering shows it in full. A kind with more than five papers shows the first
   five and a **+ N more** to unfold the rest.
+
 - **Your agent runs what you ask for, and writes only when you ask.** Ask it
   to add a paper, tag one or link it to a project and it runs the command
   without asking again; ask for something the skills have no step for —
