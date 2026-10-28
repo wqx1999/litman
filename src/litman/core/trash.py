@@ -490,9 +490,9 @@ def _build_restore_ref_updates(
     # Decision #1: prune dead edges out of A's own relation fields, silently.
     if dead:
         for field_name in ALL_REF_FIELDS:
-            cur = restored_meta.get(field_name)
-            if cur:
-                restored_meta[field_name] = [v for v in cur if v not in dead]
+            vals = restored_meta.get(field_name)
+            if vals:
+                restored_meta[field_name] = [v for v in vals if v not in dead]
 
     return staged, rebuilt, dead
 

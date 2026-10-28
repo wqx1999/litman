@@ -42,6 +42,8 @@ sees WebSocket traffic, and pages reach ``/api/presence`` too.
 
 from __future__ import annotations
 
+from typing import cast
+
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -65,7 +67,7 @@ def _header(scope: Scope, name: bytes) -> str | None:
     """The first value of header ``name`` (lowercase bytes), or ``None``."""
     for key, value in scope.get("headers", ()):
         if key == name:
-            return value.decode("latin-1")
+            return cast(str, value.decode("latin-1"))
     return None
 
 

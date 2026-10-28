@@ -28,7 +28,7 @@ from litman.commands.init import apply_init
 from litman.commands.modify import ORDERED_LIST_FIELDS, _apply_modify
 from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
-from litman.commands.rm import discover_rm_impact, execute_rm
+from litman.commands.rm import RmPlan, discover_rm_impact, execute_rm
 from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
@@ -363,7 +363,7 @@ async def post_unread(request: Request, paper_id: str) -> dict[str, object]:
     return {"ok": True, "changed": changed, "message": message}
 
 
-def _rm_impact_summary(plan: object) -> dict[str, object]:
+def _rm_impact_summary(plan: RmPlan) -> dict[str, object]:
     """Project an :class:`RmPlan` into the JSON the confirm dialog renders.
 
     Lists every external link the delete would break so the GUI can warn before

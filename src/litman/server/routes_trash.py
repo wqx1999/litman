@@ -22,6 +22,7 @@ The vault is read from ``request.app.state.vault`` (set by
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -41,7 +42,7 @@ router = APIRouter(prefix="/api")
 
 
 def _vault(request: Request) -> Path:
-    return request.app.state.vault
+    return cast(Path, request.app.state.vault)
 
 
 def _resolve(vault: Path, entry_name: str) -> TrashEntry:

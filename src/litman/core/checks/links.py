@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from litman.core.checks._base import Issue
 from litman.core.document import library_paper_ids
@@ -133,7 +133,7 @@ def check_bidirectional_refs(
                 if pid in other_vals:
                     continue
                 if field == reverse:
-                    pair = tuple(sorted((pid, ref)))
+                    pair = cast(tuple[str, str], tuple(sorted((pid, ref))))
                     if pair in seen_related_pairs:
                         continue
                     seen_related_pairs.add(pair)
@@ -505,14 +505,14 @@ def check_views_vs_metadata(
                     if is_portable_link(entry):
                         on_disk.add((bucket.name, entry.name))
 
-        for bucket, pid in sorted(on_disk - expected[view_name]):
+        for bucket_name, pid in sorted(on_disk - expected[view_name]):
             out.append(
                 Issue(
                     category="views_vs_metadata",
                     severity="error",
                     paper_id=pid,
                     message=(
-                        f"views/{view_name}/{bucket}/{pid} link has no "
+                        f"views/{view_name}/{bucket_name}/{pid} link has no "
                         "matching metadata tag (stale derived view)"
                     ),
                     hint="run `lit health-check --fix` to rebuild views from metadata",
@@ -533,14 +533,14 @@ def check_views_vs_metadata(
             # defect.
             continue
 
-        for bucket, pid in sorted(expected[view_name] - on_disk):
+        for bucket_name, pid in sorted(expected[view_name] - on_disk):
             out.append(
                 Issue(
                     category="views_vs_metadata",
                     severity="error",
                     paper_id=pid,
                     message=(
-                        f"metadata implies views/{view_name}/{bucket}/{pid} "
+                        f"metadata implies views/{view_name}/{bucket_name}/{pid} "
                         "but the link is missing (derived view out of date)"
                     ),
                     hint="run `lit health-check --fix` to rebuild views from metadata",

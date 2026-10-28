@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from litman.exceptions import LitmanError
@@ -248,7 +248,7 @@ def app_installed(spec: AgentSpec) -> bool:
         return windows_exe(spec) is not None
     if platform == "darwin":
         bundle = spec.mac_bundle
-        return bool(bundle) and any((d / bundle).is_dir() for d in _app_dirs())
+        return bool(bundle) and any((d / cast(str, bundle)).is_dir() for d in _app_dirs())
     return bool(_xdg_default_handler(spec.url_scheme))
 
 

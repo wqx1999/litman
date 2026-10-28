@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import click
 from rich.console import Console
@@ -260,7 +261,7 @@ def code_add_cmd(
     try:
         repo_root.mkdir(parents=True)
         if use_url:
-            clone_repo(clone_url, repo_root / REPO_DIRNAME, depth=depth)
+            clone_repo(clone_url, repo_root / REPO_DIRNAME, depth=cast(int, depth))
             meta = make_repo_meta(name=repo_name, upstream=clone_url)
         else:
             assert src_path is not None  # mypy/pyright narrowing
@@ -302,7 +303,7 @@ def code_add_cmd(
     # (commands/_path_lines); the panel keeps what fits in a sentence.
     path_rows: list[tuple[str, object]] = [("Folder:", repo_root)]
     if use_url:
-        depth_label = "full history" if depth < 1 else f"depth {depth}"
+        depth_label = "full history" if cast(int, depth) < 1 else f"depth {depth}"
         provenance_line = f"[bold]Clone:[/] {depth_label}"
     else:
         verb = "moved" if move_src else "copied"

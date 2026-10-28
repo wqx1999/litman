@@ -39,6 +39,7 @@ import time
 import uuid
 from collections.abc import Callable
 from ctypes import POINTER, byref, c_int, c_ubyte, c_uint32, c_ushort, c_void_p
+from typing import cast
 
 # PKEY_AppUserModel_* share one fmtid; the property id picks the member.
 _PKEY_APPUSERMODEL = "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"
@@ -94,7 +95,7 @@ def _guid(text: str) -> _GUID:
 
 
 def _is_litman_aumid(aumid: str | None) -> bool:
-    return bool(aumid) and _AUMID_MARK in aumid
+    return bool(aumid) and _AUMID_MARK in cast(str, aumid)
 
 
 def _com_method(obj: c_void_p, slot: int, *argtypes: object) -> Callable[..., int]:

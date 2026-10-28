@@ -29,7 +29,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from ruamel.yaml.error import YAMLError
@@ -775,7 +775,9 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
                     "INDEX.json", render_index(all_papers, now_iso())
                 )
             if repo_changed:
-                stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
+                stage.write_text(
+                    rel_repo_meta, _dump_yaml_to_string(cast(dict[str, Any], repo_meta))
+                )
 
     # Tear down the now-orphaned project-side litman_code/ symlink(s): the repo
     # is gone from this paper's code-clones, so for each project the paper is in

@@ -27,6 +27,7 @@ version IT is running. See :func:`put_whatsnew_seen`.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -37,7 +38,7 @@ router = APIRouter(prefix="/api")
 
 
 def _vault(request: Request) -> Path:
-    return request.app.state.vault
+    return cast(Path, request.app.state.vault)
 
 
 def _pruned_pins(vault: Path) -> list[str]:

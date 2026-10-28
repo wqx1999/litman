@@ -329,23 +329,23 @@ def rename_cmd(
         rel = md_path.relative_to(vault)
         own = rel.parts[:2] == ("papers", old)
         # The renamed paper's own notes move with its folder.
-        relpath = Path("papers", new, *rel.parts[2:]) if own else rel
+        note_path = Path("papers", new, *rel.parts[2:]) if own else rel
         try:
             raw = md_path.read_bytes()
         except OSError as exc:
             # Skip it rather than abort the whole rename, and say so: its
             # wikilinks (and, for the renamed paper's discussion.md, its
             # heading) are left as they were.
-            unreadable.append((relpath.as_posix(), exc.__class__.__name__))
+            unreadable.append((note_path.as_posix(), exc.__class__.__name__))
             continue
-        content = raw.replace(needle, replacement)
+        new_raw = raw.replace(needle, replacement)
         if own and rel.name == "discussion.md":
-            content = retitle_heading(content, f"Discussion log for {new}")
-        if content != raw:
-            note_updates[relpath.as_posix()] = content
-        lines = plain_id_lines(content, old)
+            new_raw = retitle_heading(new_raw, f"Discussion log for {new}")
+        if new_raw != raw:
+            note_updates[note_path.as_posix()] = new_raw
+        lines = plain_id_lines(new_raw, old)
         if lines:
-            plain_mentions.append((relpath.as_posix(), lines))
+            plain_mentions.append((note_path.as_posix(), lines))
 
     # ----- INDEX.json -----
     new_index = render_index(safe_papers, now)
@@ -359,8 +359,8 @@ def rename_cmd(
                 stage.write_text(f"papers/{pid}/metadata.yaml", content)
             for relpath, content in repo_meta_updates.items():
                 stage.write_text(relpath, content)
-            for relpath, content in note_updates.items():
-                stage.write_bytes(relpath, content)
+            for relpath, data in note_updates.items():
+                stage.write_bytes(relpath, data)
             stage.write_text("INDEX.json", new_index)
     except DirMoveError as err:
         raise RenameError(

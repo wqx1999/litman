@@ -55,6 +55,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import click
 from rich.console import Console
@@ -66,6 +67,9 @@ from litman.core.vault_registry import (
     find_active,
     load_registry,
 )
+
+if TYPE_CHECKING:
+    from litman.core.config import LitConfig
 
 
 def _default_tty_probe() -> bool:
@@ -368,12 +372,13 @@ def check_and_prompt_project_drift(
         return
 
     if load_config_fn is None:
-        from litman.core.config import load_config as load_config_fn  # type: ignore[assignment]
+        from litman.core.config import load_config as load_config_fn
 
     vault = Path(active.path)
     try:
-        config = load_config_fn(vault)
-        projects: dict[str, str] = dict(config.projects)
+        # mypy does not narrow load_config_fn through the import above.
+        config = load_config_fn(vault)  # type: ignore[misc]
+        projects: dict[str, str] = dict(cast("LitConfig", config).projects)
     except Exception:
         # A broken config surfaces its own diagnostic on the next config-using
         # command; don't crash the user's actual command from inside the hook.
@@ -452,7 +457,8 @@ def check_and_prompt_project_drift(
     # deliberately cannot tell us apart).
     if removal_attempted:
         try:
-            projects = dict(load_config_fn(vault).projects)  # type: ignore[union-attr]
+            # mypy does not narrow load_config_fn through the import above.
+            projects = dict(cast("LitConfig", load_config_fn(vault)).projects)  # type: ignore[misc]
         except Exception:
             # Config unreadable right after a mutation: do not guess at a write.
             console.print(
@@ -577,12 +583,13 @@ def check_and_prompt_bridge_drift(
         return
 
     if load_config_fn is None:
-        from litman.core.config import load_config as load_config_fn  # type: ignore[assignment]
+        from litman.core.config import load_config as load_config_fn
 
     vault = Path(active.path)
     try:
-        config = load_config_fn(vault)
-        projects: dict[str, str] = dict(config.projects)
+        # mypy does not narrow load_config_fn through the import above.
+        config = load_config_fn(vault)  # type: ignore[misc]
+        projects: dict[str, str] = dict(cast("LitConfig", config).projects)
     except Exception:
         # A broken config surfaces its own diagnostic elsewhere; never crash
         # the user's actual command from inside the hook.

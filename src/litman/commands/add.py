@@ -36,7 +36,7 @@ import sys
 from collections.abc import Callable
 from gettext import ngettext
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 from rich.console import Console
@@ -231,7 +231,7 @@ def _resolve_collision(
     if kind == "alt" or kind == "suffix":
         return label
     if kind == "custom":
-        custom = click.prompt("Enter custom id", type=str).strip()
+        custom: str = click.prompt("Enter custom id", type=str).strip()
         if not is_valid_id(custom):
             raise AddError(f"Invalid id format: {custom!r}")
         if (vault / "papers" / custom).exists():
@@ -855,7 +855,7 @@ def add_cmd(
     source_label = (
         f"DOI {doi!r}" if doi is not None
         else "LLM JSON (stdin)" if from_stdin
-        else f"LLM JSON {Path(from_llm_json).name!r}"
+        else f"LLM JSON {Path(cast(Path, from_llm_json)).name!r}"
     )
 
     # Everything from the DOI precheck to the mv-semantics unlink lives in

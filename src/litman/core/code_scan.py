@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from pypdf import PdfReader
 
@@ -125,7 +126,7 @@ def _join_broken_url(token: str, next_lines: list[str]) -> str:
     return token
 
 
-def scan_code_urls(pdf_path: Path) -> list[dict]:
+def scan_code_urls(pdf_path: Path) -> list[dict[str, Any]]:
     """Scan a PDF's full text for code-repository URLs.
 
     Opens ``pdf_path`` with :class:`pypdf.PdfReader`, iterates pages calling
@@ -192,7 +193,7 @@ def scan_code_urls(pdf_path: Path) -> list[dict]:
         # the partial result gathered so far rather than propagating.
         pass
 
-    candidates = [
+    candidates: list[dict[str, Any]] = [
         {"url": url, "page": first_page[url], "count": counts[url]}
         for url in order
     ]

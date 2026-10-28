@@ -18,7 +18,7 @@ import os
 import sys
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import click
 from rich.console import Console
@@ -60,7 +60,7 @@ def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
         return True
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return (now - parsed).total_seconds() > stale_days * 86400
+    return cast(bool, (now - parsed).total_seconds() > stale_days * 86400)
 
 
 # Workflow-ordered command groups for `lit --help` / `lit help`. Any command
@@ -306,7 +306,9 @@ class LitGroup(click.Group):
                     "project_bridge_dangling",
                 ):
                     issues.extend(
-                        spec.fn(
+                        # These three checks take an extra keyword-only exists_status
+                        # (tests/core/test_check_specs.py pins that); _CheckFn does not say so.
+                        spec.fn(  # type: ignore[call-arg]
                             vault or Path("/nonexistent"),
                             [],
                             exists_status=shared_status,
@@ -755,7 +757,7 @@ def help_cmd(ctx: click.Context, command_path: tuple[str, ...]) -> None:
     "lit COMMAND ... --help"), e.g. "lit help code add".
     """
     # ctx.parent is the root `cli` group's context (info_name == "lit").
-    root_ctx = ctx.parent
+    root_ctx = cast(click.Context, ctx.parent)
     if not command_path:
         click.echo(cli.get_help(root_ctx))
         return

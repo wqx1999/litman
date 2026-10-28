@@ -47,9 +47,9 @@ __all__ = [
 def reconcile_derived(
     vault: Path,
     *,
-    papers: list[dict] | None = None,
+    papers: list[dict[str, Any]] | None = None,
     project_refs: bool = True,
-    views_delta: list[tuple[str, dict, dict]] | None = None,
+    views_delta: list[tuple[str, dict[str, Any], dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Recompute the derived artifacts (INDEX.json + views/ [+ project refs]) from TRUTH.
 

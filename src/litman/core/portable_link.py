@@ -152,7 +152,7 @@ def _create_junction(link_path: Path, target_path: Path) -> None:
     try:
         import _winapi
     except ImportError:
-        _winapi = None
+        _winapi = None  # type: ignore[assignment]  # no _winapi off Windows
     if _winapi is not None and hasattr(_winapi, "CreateJunction"):
         _winapi.CreateJunction(str(target_path), str(link_path))
         return

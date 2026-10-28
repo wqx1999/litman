@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api")
 
 
 def _vault(request: Request) -> Path:
-    return request.app.state.vault
+    return cast(Path, request.app.state.vault)
 
 
 def _index_papers(vault: Path) -> list[dict[str, Any]] | None:
