@@ -16,7 +16,7 @@ Every test redirects ``$HOME`` so the registry lands in tmp.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -24,16 +24,16 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import locking
 from litman.core.checks import check_dangling_wikilinks
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.notes import discussion_scaffold, parse_wikilink_target
 from litman.core.vault_registry import (
+    VaultRegistry,
     add_vault,
     save_registry,
 )
-from litman.core.vault_registry import VaultRegistry
-from litman.core import locking
 
 _yaml = YAML()
 
@@ -106,7 +106,7 @@ def _seed_paper(
     the 14-day inbox-staleness threshold and turn those assertions red purely
     because the wall-clock advanced.
     """
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -262,7 +262,6 @@ def test_cross_vault_registered_but_directory_gone(
     _seed_paper(vault_a, "n1", notes_body="see [[second:p1]]\n")
 
     # Now drop vault_b from disk (simulate unmount / accidental rm).
-    import shutil
     locking.rmtree(vault_b)
 
     issues = check_dangling_wikilinks(vault_a, list_papers(vault_a))

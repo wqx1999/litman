@@ -20,6 +20,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core import trash as trash_mod
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
@@ -28,7 +29,6 @@ from litman.core.trash import (
     move_to_trash,
 )
 from litman.exceptions import TrashError
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

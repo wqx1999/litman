@@ -17,7 +17,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from harness.agents import NOT_MEASURABLE, get_adapter
 from harness.agents.agy import (
     LIT_CALLS_FILENAME,

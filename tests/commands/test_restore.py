@@ -33,10 +33,10 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.supplementary import shell_path
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import TrashError
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

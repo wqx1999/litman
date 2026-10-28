@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from harness.scenarios import (
     SCENARIOS_DIR,
     WITHHELD_FIELDS,
@@ -34,10 +33,13 @@ EXPECTED_SKIP_IDS = {
     "J1-corrupt",
     "J2-amp-survey",
     "D2-pty-taxonomy-rm",
-    "G5-sync-push",  # needs harness-configured fake rclone remote + out-of-vault content verb (infra unbuilt)
+    # needs harness-configured fake rclone remote + out-of-vault content verb
+    # (infra unbuilt)
+    "G5-sync-push",
 }
 EXPECTED_MULTITURN_IDS = {
-    "G3-trash-restore",  # 'delete it… wait no, restore it' — one-breath retraction, unfair single-turn
+    # 'delete it… wait no, restore it' — one-breath retraction, unfair single-turn
+    "G3-trash-restore",
 }
 
 

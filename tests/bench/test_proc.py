@@ -17,7 +17,6 @@ import os
 import time
 
 import pytest
-
 from harness.proc import BoundedResult, run_bounded
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX-only (killpg/start_new_session)")

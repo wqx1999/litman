@@ -13,6 +13,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.project_link import (
     LinkError,
     link_paper_to_project,
@@ -20,7 +21,6 @@ from litman.core.project_link import (
     unlink_paper_from_project,
 )
 from litman.exceptions import PaperNotFoundError
-from litman.core.portable_link import is_portable_link
 
 _yaml_safe = YAML(typ="safe")
 _yaml = YAML()

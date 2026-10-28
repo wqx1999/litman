@@ -22,7 +22,6 @@ from harness.batch import (
 from harness.executor import ExecutorResult, LitCall, ToolResult
 from harness.scenarios import load_all_cards
 
-
 # ---------------------------------------------------------------------------
 # coverage_tag classification
 # ---------------------------------------------------------------------------
@@ -687,7 +686,6 @@ def test_a_card_that_poisons_the_seed_aborts_the_whole_batch(tmp_path: Path) -> 
     seed for its successors, so a passing score is no defence.
     """
     import pytest
-
     from harness import seeds
 
     seed_vault, work_root = _stamped_seed(tmp_path)
@@ -905,7 +903,6 @@ def test_a_routing_probe_that_poisons_the_seed_aborts_too(tmp_path: Path) -> Non
     the same canary as the card loop — an asymmetry here would be a hole in the
     same wall. Aborts on the FIRST poisoned case: the second must never run."""
     import pytest
-
     from harness import seeds
 
     seed_vault, work_root = _stamped_seed(tmp_path)
@@ -1083,7 +1080,6 @@ def test_score_routing_rejects_the_sentinel_loudly() -> None:
     """Defence in depth. If the sentinel ever reaches the scorer it is NOT None, so
     it would fall through to the miss branch and produce a confident RA of 0.0."""
     import pytest
-
     from harness.agents import NOT_MEASURABLE
     from harness.routing import score_routing
 
@@ -1641,7 +1637,6 @@ def test_seed_canary_still_fires_on_an_errored_round(tmp_path: Path) -> None:
     test above gives: what is under test is WHERE the alarm is wired.
     """
     import pytest
-
     from harness import seeds
 
     seed_vault, work_root = _stamped_seed(tmp_path)

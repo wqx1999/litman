@@ -23,12 +23,12 @@ from litman.core.code import (
     unbind_repo_from_all_papers,
 )
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.project_link import (
     CODE_SUBDIR,
     add_project,
     link_paper_to_project,
 )
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
@@ -169,7 +169,7 @@ def test_bind_noop_self_heals_missing_symlink(
     vault: Path, project_dir: Path
 ) -> None:
     """An idempotent re-bind refreshes a previously-stale (missing) symlink."""
-    registry = _register(vault, "pepforge", project_dir)
+    _register(vault, "pepforge", project_dir)
     _make_paper(vault, "p1", projects=["pepforge"])
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
@@ -188,7 +188,7 @@ def test_bind_noop_self_heals_missing_symlink(
 def test_unbind_removes_orphaned_code_symlink(
     vault: Path, project_dir: Path
 ) -> None:
-    registry = _register(vault, "pepforge", project_dir)
+    _register(vault, "pepforge", project_dir)
     _make_paper(vault, "p1", projects=["pepforge"])
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")

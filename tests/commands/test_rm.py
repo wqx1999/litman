@@ -12,7 +12,6 @@ refresh, and removal of ``--cascade``.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,9 +24,9 @@ from litman.cli import cli
 from litman.core import trash as trash_mod
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file
+from litman.core.portable_link import is_portable_link
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES, list_trash
 from litman.exceptions import PaperNotFoundError
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

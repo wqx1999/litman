@@ -8,7 +8,6 @@ spawn a GUI. The platform-detection branch is exercised by monkeypatching
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -163,7 +162,7 @@ class _PopenRecorder:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    def __call__(self, args: list[str], **kwargs: Any) -> "_PopenRecorder":
+    def __call__(self, args: list[str], **kwargs: Any) -> _PopenRecorder:
         self.calls.append(list(args))
         return self
 

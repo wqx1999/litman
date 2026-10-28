@@ -278,7 +278,9 @@ def test_rebuild_all_empty_registry(vault: Path) -> None:
     assert results == {}
 
 
-def test_rebuild_all_expands_tilde(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rebuild_all_expands_tilde(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``~`` in the registry path is expanded relative to HOME."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # "~" on Windows

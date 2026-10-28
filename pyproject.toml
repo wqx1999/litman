@@ -142,7 +142,18 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]  # tests can use `assert False`
+# How tests assert: `assert False`, `pytest.raises(Exception)`, plain-text
+# `match=` patterns, nested `with pytest.raises(...)`, `assert "x" == value`.
+"tests/*" = ["B011", "B017", "RUF043", "SIM117", "SIM300"]
+# Imports placed mid-file on purpose, next to the tests that use them.
+"tests/core/test_atomic.py" = ["E402"]
+"tests/server/test_server_write.py" = ["E402"]
+# Lines inside assertions (and the golden data beside them), kept as written.
+"tests/commands/test_trash.py" = ["C416"]
+"tests/server/test_server_health.py" = ["E501"]
+"tests/bench/test_batch.py" = ["E501"]
+"tests/bench/test_checker.py" = ["E501"]
+"tests/bench/test_routing.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

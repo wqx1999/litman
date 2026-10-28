@@ -28,13 +28,13 @@ from litman.core.checks import run_all_checks
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.notes import discussion_scaffold
+from litman.core.portable_link import is_portable_link
 from litman.core.vault_registry import VaultEntry, VaultRegistry, save_registry
 from litman.exceptions import (
     CorruptMetadataError,
     PaperNotFoundError,
     RenameError,
 )
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

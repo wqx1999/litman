@@ -105,7 +105,7 @@ SEEDS_CACHE_ROOT = Path("/tmp/litman-bench-seeds")
 WORK_ROOT = Path("/tmp")
 
 
-def _fake_run_card(card, *, round, model, **_kw):  # noqa: A002 - mirror run_card kw
+def _fake_run_card(card, *, round, model, **_kw):  # mirror run_card kw
     """A non-live stand-in for ``run_card`` (``--dry-run`` / LITMAN_BENCH_FAKE).
 
     Returns ``0`` (unresolved) without spawning any process, so the CLI exercises

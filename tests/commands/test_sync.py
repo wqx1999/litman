@@ -30,6 +30,7 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import locking
 from litman.core.config import SyncConfig, load_config
 from litman.core.library import create_vault
 from litman.core.sync import (
@@ -58,7 +59,6 @@ from litman.core.sync import (
     write_sync_to_config,
 )
 from litman.exceptions import SyncError
-from litman.core import locking
 
 _yaml_safe = YAML(typ="safe")
 
@@ -844,7 +844,7 @@ def test_cli_sync_setup_help() -> None:
 def test_cli_sync_push_uploads(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_paper(vault, "p1")
     runner = CliRunner()
     # First push triggers the size-preview prompt; --yes skips it.
@@ -1145,7 +1145,7 @@ def test_cli_sync_push_first_time_prompts(
 ) -> None:
     """Without --yes, the first push surfaces the size-preview prompt; 'n'
     aborts and nothing is transferred."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_paper(vault, "p1")
     monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
     runner = CliRunner()
@@ -1181,7 +1181,7 @@ def test_cli_sync_push_yes_skips_prompt(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """--yes skips the confirmation but still prints the preview."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_paper(vault, "p1")
     runner = CliRunner()
     result = runner.invoke(
@@ -1197,7 +1197,7 @@ def test_cli_sync_push_second_push_no_prompt(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """Second push (last-push already stamped) skips the preview entirely."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_paper(vault, "p1")
     # First push (with --yes) to stamp the state file.
     runner = CliRunner()
@@ -1218,7 +1218,7 @@ def test_cli_sync_push_dry_run_skips_preview_and_transfer(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """--dry-run on first push: no preview prompt, no transfer, no stamp."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_paper(vault, "p1")
     runner = CliRunner()
     result = runner.invoke(
@@ -1235,7 +1235,7 @@ def test_cli_sync_push_integrity_gate_blocks_corrupt_vault(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """A schema-broken paper aborts the push (exit 1) before any transfer."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_paper(vault, "ok")
     _seed_broken_paper(vault, "bad")
     runner = CliRunner()
@@ -1257,7 +1257,7 @@ def test_cli_sync_push_yes_does_not_bypass_integrity_gate(
     This is the core of C-ops1: an unattended cron push (`--yes`) must still
     refuse to mirror a broken vault over the cloud backup.
     """
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_broken_paper(vault, "bad")
     runner = CliRunner()
     result = runner.invoke(
@@ -1272,7 +1272,7 @@ def test_cli_sync_push_force_bypasses_integrity_gate(
 ) -> None:
     """--force mirrors the vault even with integrity errors (escape hatch);
     --yes here only skips the first-push size confirm."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_broken_paper(vault, "bad")
     runner = CliRunner()
     result = runner.invoke(
@@ -1289,7 +1289,7 @@ def test_cli_sync_push_dry_run_reports_gate_but_does_not_abort(
 ) -> None:
     """--dry-run surfaces the gate errors but never aborts, and (being a
     dry-run) transfers nothing."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_broken_paper(vault, "bad")
     runner = CliRunner()
     result = runner.invoke(
@@ -1304,7 +1304,7 @@ def test_cli_sync_push_exclude_repos_flag(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """--exclude-repos -> codes/*/repo/ excluded from the transfer."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     _seed_codes(vault, "MyRepo")
     runner = CliRunner()
     result = runner.invoke(
@@ -1327,7 +1327,7 @@ def test_cli_sync_push_include_repos_overrides_config_default(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """sync.exclude_repos: true in config but --include-repos on CLI wins."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     # Flip the config-file default to exclude_repos=True.
     write_sync_to_config(
         vault / "lit-config.yaml",
@@ -1360,7 +1360,7 @@ def test_cli_sync_push_config_default_exclude_repos(
     configured_vault: tuple[Path, str], fake_rclone_env: Path
 ) -> None:
     """sync.exclude_repos: true in config, no CLI flag -> excluded."""
-    vault, target = configured_vault
+    vault, _target = configured_vault
     write_sync_to_config(
         vault / "lit-config.yaml",
         SetupPayload(

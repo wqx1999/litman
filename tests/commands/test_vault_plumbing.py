@@ -20,7 +20,7 @@ vaults never touches the user's real registry.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -31,10 +31,10 @@ from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.notes import discussion_scaffold
 from litman.core.vault_registry import (
+    VaultRegistry,
     add_vault,
     save_registry,
 )
-from litman.core.vault_registry import VaultRegistry
 from litman.exceptions import VaultRegistryError
 
 _yaml = YAML()
@@ -88,7 +88,7 @@ def _seed_paper(vault: Path, paper_id: str, title: str = "Test") -> None:
     would silently rot past the 14-day inbox-staleness threshold and flip the
     assertion to red purely because the wall-clock advanced.
     """
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     paper_dir = vault / "papers" / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -245,7 +245,7 @@ def test_cli_show_paper_missing_in_chosen_vault(
     registry_with_two_vaults: tuple[Path, Path],
 ) -> None:
     """show with --vault main but paper is only in 'second' → not found."""
-    vault_a, vault_b = registry_with_two_vaults
+    _vault_a, vault_b = registry_with_two_vaults
     _seed_paper(vault_b, "ONLY_IN_SECOND")
     runner = CliRunner()
     res = runner.invoke(cli, ["show", "ONLY_IN_SECOND", "--vault", "main"])

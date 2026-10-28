@@ -26,7 +26,6 @@ from litman.core.vault_registry import (
     save_registry,
 )
 
-
 # ---------------------------------------------------------------------------
 # Registry isolation (copied verbatim from test_init.py — no shared conftest
 # fake_home; lit setup writes ~/.bashrc, ~/.claude/skills/, and the registry).

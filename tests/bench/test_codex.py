@@ -26,7 +26,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from harness.agents import family_of, get_adapter
 from harness.agents.codex import (
     CodexAdapter,

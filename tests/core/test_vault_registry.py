@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from litman.core import locking
 from litman.core.library import create_vault, find_vault
 from litman.core.vault_registry import (
     REGISTRY_FILENAME,
@@ -37,8 +38,6 @@ from litman.core.vault_registry import (
     set_vault_path,
 )
 from litman.exceptions import LibraryNotFoundError, VaultRegistryError
-from litman.core import locking
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -350,7 +349,6 @@ def test_ensure_name_registrable_dead_entry_points_at_set_path(
     """When the clashing entry's folder is gone, the duplicate error must point
     the user at ``lit vault set-path`` (their name back via the right tool)
     instead of a dead-end "already registered" — while still hard-blocking."""
-    import shutil
 
     reg = add_vault(VaultRegistry(), "main", vault_a)
     locking.rmtree(vault_a)  # the folder moved / was deleted behind litman's back
@@ -951,10 +949,10 @@ def test_mark_health_checked_round_trips_iso_string(
     fake_home: Path, vault_a: Path
 ) -> None:
     """The ISO timestamp survives save + load unchanged."""
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     reg = add_vault(VaultRegistry(), "main", vault_a)
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(UTC).isoformat()
     save_registry(mark_health_checked(reg, "main", ts))
 
     loaded = load_registry()
@@ -1095,7 +1093,6 @@ def test_find_vault_registry_active_stale_raises(
     """Active vault directory moved/deleted → LibraryNotFoundError with hint."""
     save_registry(add_vault(VaultRegistry(), "main", vault_a))
     # Simulate the directory disappearing.
-    import shutil
     locking.rmtree(vault_a)
     import os
     os.chdir(fake_home)

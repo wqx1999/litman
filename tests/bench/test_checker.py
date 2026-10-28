@@ -12,10 +12,8 @@ import json
 from pathlib import Path
 
 import pytest
-from ruamel.yaml import YAML
-
-from harness import checker
 from harness.checker import AssertResult, check_assertion, resolve
+from ruamel.yaml import YAML
 
 GOLDEN_DIR = Path(__file__).resolve().parent / "fixtures" / "golden"
 

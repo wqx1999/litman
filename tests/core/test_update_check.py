@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -43,7 +43,7 @@ class _FakeResp:
     def read(self) -> bytes:
         return self._body
 
-    def __enter__(self) -> "_FakeResp":
+    def __enter__(self) -> _FakeResp:
         return self
 
     def __exit__(self, *exc: object) -> bool:
@@ -80,7 +80,7 @@ def _mock_urlopen_fail(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
 
 def _iso_days_ago(days: float) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 # ---------------------------------------------------------------------------

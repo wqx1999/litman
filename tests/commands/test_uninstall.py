@@ -39,6 +39,7 @@ from litman.core.gui_registry import (
     unregister_gui,
 )
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.self_update_helper import fail_flag_path, log_path
 from litman.core.skill import (
     install_all_skills,
@@ -54,7 +55,6 @@ from litman.core.vault_registry import (
     remove_registry,
     save_registry,
 )
-from litman.core.portable_link import is_portable_link
 
 # --------------------------------------------------------------------------
 # uninstall_skill

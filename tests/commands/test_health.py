@@ -11,7 +11,7 @@ import json
 import os
 import shlex
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +21,8 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.commands.health import _CATEGORY_PREVIEW
+from litman.core import locking
 from litman.core import viewer as viewer_mod
-from litman.core.locking import unlock_truth_file
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     INBOX_STALE_DAYS,
@@ -32,8 +32,8 @@ from litman.core.checks import (
     check_dangling_refs,
     check_dangling_wikilinks,
     check_dirty_metadata,
-    check_inbox_staleness,
     check_discussion_scaffold,
+    check_inbox_staleness,
     check_paper_dir_validity,
     check_pdf_viewer,
     check_project_config_consistency,
@@ -42,19 +42,19 @@ from litman.core.checks import (
     check_skill_drift,
     check_stale_staging,
     check_taxonomy_drift,
-    check_taxonomy_singletons,
     check_taxonomy_similar,
+    check_taxonomy_singletons,
     check_taxonomy_unused,
     check_trash_health,
     run_all_checks,
 )
 from litman.core.document import list_papers
 from litman.core.id import derive_id
-from litman.core.ripple import clean_dirty_metadata, drop_dangling_relations
 from litman.core.library import create_vault
+from litman.core.locking import unlock_truth_file
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.portable_link import is_portable_link
-from litman.core import locking
+from litman.core.ripple import clean_dirty_metadata, drop_dangling_relations
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -955,7 +955,6 @@ def test_index_vs_disk_vanished_id_is_error(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar")
     _build_index(vault)
     # Manual rm of the paper dir, INDEX not rebuilt.
-    import shutil
 
     locking.rmtree(vault / "papers" / "2024_Foo_Bar")
     issues = check_index_vs_disk(vault, [])
@@ -2285,7 +2284,7 @@ def test_vocabulary_findings_survive_fix_and_do_not_gate_the_exit_code(
 def _iso_days_ago(n: int) -> str:
     """ISO 8601 timestamp `n` days ago (UTC)."""
     return (
-        datetime.now(timezone.utc) - timedelta(days=n)
+        datetime.now(UTC) - timedelta(days=n)
     ).isoformat(timespec="seconds")
 
 
@@ -3342,9 +3341,9 @@ def test_apply_fixes_propagates_project_refs_rebuild_failure(
     swallowed and falsely surfaced as "project_references: 1". This test uses
     the REAL ``regen`` (not a fake) so it pins the swallow narrowing end-to-end.
     """
+    import litman.core.project_refs as project_refs
     from litman.commands import health
     from litman.core.checks import Issue
-    import litman.core.project_refs as project_refs
 
     _write_paper(vault, "2024_A_Foo", title="Foo", projects=["pep"])
     proj_dir = tmp_path / "pep_project"

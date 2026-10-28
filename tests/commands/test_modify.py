@@ -17,12 +17,12 @@ from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file, unlock_truth_file
 from litman.core.notes import WIKILINK_REMINDER
+from litman.core.portable_link import is_portable_link
 from litman.exceptions import (
     CorruptMetadataError,
     ModifyError,
     PaperNotFoundError,
 )
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

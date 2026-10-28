@@ -16,15 +16,15 @@ from click.testing import CliRunner
 
 from litman.cli import cli
 from litman.commands import _drift
+from litman.core import locking
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.vault_registry import (
     VaultEntry,
     VaultRegistry,
     load_registry,
     save_registry,
 )
-from litman.core.portable_link import is_portable_link
-from litman.core import locking
 
 
 @pytest.fixture(autouse=True)
@@ -345,7 +345,6 @@ def test_hook_vanished_id_tty_regens_index_and_annotates(
     """Manual rm of one paper → next command (TTY) drops it from INDEX (metadata-
     free) and annotates ``[[id]] (deleted)`` in notes (targeted)."""
     import json
-    import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 2)
     # A note in the surviving paper references the soon-to-be-deleted one.
@@ -383,7 +382,6 @@ def test_hook_vanished_id_reads_no_per_paper_metadata(
     we verify the metadata-free repair path both ran AND completed.
     """
     import json
-    import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 2)
     locking.rmtree(vault / "papers" / "2024_P1_Foo")
@@ -423,7 +421,6 @@ def test_hook_vanished_id_bulk_defers_to_health_check(
     """> 5 vanished ids → single 'run health-check' line + INDEX regen, NO per-id
     annotate."""
     import json
-    import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 7)
     # A note referencing one of the bulk-deleted papers.
@@ -461,7 +458,6 @@ def test_hook_vanished_id_exactly_5_uses_per_id_annotate(
     NOT bulk, so the surviving note's wikilink IS annotated and the bulk
     deferral line does NOT appear.
     """
-    import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 6)
     (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
@@ -494,7 +490,6 @@ def test_hook_vanished_id_exactly_6_uses_bulk_defer(
     6 is the first value satisfying ``len(vanished) > 5``: a single
     'run health-check' line and NO per-id wikilink annotation.
     """
-    import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 7)
     (vault / "papers" / "2024_P0_Foo" / "notes.md").write_text(
@@ -522,8 +517,6 @@ def test_hook_vanished_id_non_tty_report_only(
     tmp_path: Path,
 ) -> None:
     """Non-TTY (agent): vanished-id drift is reported, INDEX is NOT mutated."""
-    import json
-    import shutil
 
     vault = _seed_active_vault_with_papers(tmp_path, 2)
     locking.rmtree(vault / "papers" / "2024_P1_Foo")
@@ -545,7 +538,6 @@ def test_hook_unindexed_dir_does_not_mutate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An un-indexed dir (warning, no vanished id) triggers no INDEX rewrite."""
-    import json
 
     vault = _seed_active_vault_with_papers(tmp_path, 1)
     # Add a paper dir on disk WITHOUT rebuilding INDEX → un-indexed warning only.

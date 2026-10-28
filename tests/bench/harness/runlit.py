@@ -101,7 +101,7 @@ class RunVault:
         self.log_path: Path | None = None
         self.env: dict[str, str] | None = None
 
-    def __enter__(self) -> "RunVault":
+    def __enter__(self) -> RunVault:
         self.run_dir = self.run_root / f"bench-{uuid.uuid4().hex}"
         self.run_dir.mkdir(parents=True)
         self.vault = self.run_dir / "vault"

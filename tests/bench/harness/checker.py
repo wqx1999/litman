@@ -617,7 +617,10 @@ def _check_count(vault: Path, arg: str) -> AssertResult:
     )
     ok = n == want
     return AssertResult(
-        verb, arg, ok, "" if ok else f"count title~{spec[len('title~'):].strip()!r}={n}, wanted {want}"
+        verb,
+        arg,
+        ok,
+        "" if ok else f"count title~{spec[len('title~'):].strip()!r}={n}, wanted {want}",
     )
 
 

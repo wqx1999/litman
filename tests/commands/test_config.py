@@ -22,7 +22,6 @@ from litman.core.config import (
 from litman.core.library import create_vault
 from litman.exceptions import ConfigError
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

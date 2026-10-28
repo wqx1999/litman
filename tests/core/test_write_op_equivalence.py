@@ -29,6 +29,7 @@ from litman.cli import cli
 from litman.commands.rm import discover_rm_impact, execute_rm
 from litman.core.correctors import reconcile_derived
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.project_link import (
     link_paper_to_project,
     unlink_paper_from_project,
@@ -39,7 +40,6 @@ from litman.core.taxonomy import (
     remove_taxonomy_value,
     rename_taxonomy_value,
 )
-from litman.core.portable_link import is_portable_link
 
 # Modules whose namespace holds a reachable ``list_papers`` reference on the
 # write paths under test. ``litman.core.document`` covers every lazy

@@ -52,9 +52,8 @@ from litman.commands.gui import (
     remove_browser_profile,
     shortcut_path,
 )
-from litman.core.presence import PresenceTracker
 from litman.core import locking
-
+from litman.core.presence import PresenceTracker
 
 # The REAL host, captured at import — before any test can fake it. Half this
 # file runs under ``monkeypatch.setattr(sys, "platform", ...)``, so reading

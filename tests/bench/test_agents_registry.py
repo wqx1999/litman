@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from harness.agents import (
     AGENT_NAMES,
     HOME_ESCAPING_CONFIG_VARS,

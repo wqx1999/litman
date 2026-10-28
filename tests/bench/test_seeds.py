@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from harness import seeds
 from harness.seeds import (
     SEED_DIGEST_FILE,
@@ -477,7 +476,7 @@ def test_a_poisoned_cache_heals_itself_on_the_next_build() -> None:
 def test_ensure_seeds_returns_paths() -> None:
     out = ensure_seeds(["seed-empty", "seed-1paper-diffdock"])
     assert set(out) == {"seed-empty", "seed-1paper-diffdock"}
-    for name, path in out.items():
+    for path in out.values():
         assert path.is_dir()
         assert (path / "lit-config.yaml").is_file()
 

@@ -1526,7 +1526,6 @@ def test_put_active_vault_unknown_name_400(tmp_path: Path) -> None:
 def test_put_active_vault_missing_path_refused_400(tmp_path: Path) -> None:
     """A stale registry entry (vault dir gone) is refused BEFORE persisting, so
     the global active + the live server stay on the old vault."""
-    import shutil
 
     v1, v2 = _two_registered_vaults(tmp_path)
     app = create_app(v1)

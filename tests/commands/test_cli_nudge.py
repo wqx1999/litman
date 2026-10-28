@@ -10,7 +10,7 @@ are all exercised end-to-end.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -57,7 +57,7 @@ def _seed_active_vault(tmp_path: Path, *, last_check: str | None) -> Path:
 
 
 def _iso_days_ago(days: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def test_nudge_fires_when_stale_non_tty_stderr(tmp_path: Path) -> None:
