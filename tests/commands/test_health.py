@@ -3715,8 +3715,8 @@ def _linkless_vault(
     # Patch the probe, not sys.platform: ``viewer_mod.sys`` IS the global sys
     # module, so faking "darwin" there also sent core.atomic._fsync_dir down
     # its POSIX arm on a Windows host, where os.O_DIRECTORY does not exist.
-    # checks.py imports this function at call time, so the module attribute is
-    # the seam. Windows would answer its own sentinel here anyway.
+    # checks/maintenance.py imports this function at call time, so the module
+    # attribute is the seam. Windows would answer its own sentinel here anyway.
     monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
 
     proj = tmp_path / "myproj"

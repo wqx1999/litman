@@ -9,8 +9,8 @@ import { modalBackdropProps } from '../ui/modalShell'
 /** The per-project grade vocabulary (ADR-025). Not from `/api/fixed-enums`:
  * that endpoint serves whole-field enums, and this one is keyed per project, so
  * core exposes it as PROJECT_PRIORITY_VALUES rather than a dropdown whitelist.
- * Three letters that only change with a code release, same as the enum lists
- * this file already pins the ORDER of. */
+ * Three letters that only change with a code release, so the list is written
+ * out here. */
 const PROJECT_GRADES = ['A', 'B', 'C']
 
 /** One pill in the Tags group: the field name plus a count badge when the field

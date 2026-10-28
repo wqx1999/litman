@@ -312,7 +312,7 @@ def test_health_reports_catches_code_clone_dangling(tmp_path: Path) -> None:
     """The ACTUAL H1 / J1-corrupt injection: a paper's ``code-clones`` points at
     a repo with no ``codes/<name>/`` dir (Critical 2 regression).
 
-    ``core/checks.py:check_code_clone_integrity`` emits an ``error``-severity
+    ``core/checks/maintenance.py:check_code_clone_integrity`` emits an ``error``-severity
     ``code_clone_integrity`` Issue whose message reads
     ``'<pid>'.code-clones references '<repo>' but no codes/<repo>/repo-meta.yaml
     exists`` — it contains NEITHER the substring "dangling" (the original card

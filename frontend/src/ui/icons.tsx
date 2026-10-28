@@ -82,7 +82,8 @@ export function ArrowUpIcon(p: IconProps) {
 }
 
 export function PencilIcon(p: IconProps) {
-  // Also the project manager's rename pencil, so the app draws one pen everywhere.
+  // Also the rename pencil in the project and vocabulary managers, so the app
+  // draws one pen everywhere.
   return (
     <Line {...p}>
       <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -114,9 +115,6 @@ export function ChevronRightIcon(p: IconProps) {
   )
 }
 
-/** The line icon for a standard anchor / location kind; a plain folder for
- * anything else. `kind` is an anchor label ('Home'/'Desktop'/'Documents'/
- * 'Downloads') or 'folder'. */
 export function ExternalLinkIcon(p: IconProps) {
   return (
     <Line {...p}>
@@ -137,6 +135,9 @@ export function QuestionCircleIcon(p: IconProps) {
   )
 }
 
+/** The line icon for a standard anchor / location kind; a plain folder for
+ * anything else. `kind` is an anchor label ('Home'/'Desktop'/'Documents'/
+ * 'Downloads') or 'folder'. */
 export function anchorIcon(kind: string, className?: string) {
   switch (kind) {
     case 'Home':
