@@ -263,7 +263,7 @@ def _manifest_unreadable_message(op_id: str) -> str:
 
     Single source of truth shared by the mutating recoverer
     (:func:`_recover_one_op`) and the read-only classifier
-    (``checks._classify_torn_op``) so the data-loss-path wording cannot
+    (``checks.maintenance._classify_torn_op``) so the data-loss-path wording cannot
     drift between the two call sites.
     """
     return (
@@ -283,7 +283,7 @@ def _unrecoverable_message(
 
     Single source of truth shared by the mutating recoverer
     (:func:`_recover_one_op`) and the read-only classifier
-    (``checks._classify_torn_op``). One parameterized template, two
+    (``checks.maintenance._classify_torn_op``). One parameterized template, two
     voices, so the data-loss-path wording cannot drift between the call
     sites:
 
